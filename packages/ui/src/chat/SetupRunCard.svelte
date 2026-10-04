@@ -12,6 +12,8 @@
    * Every button is a `SetupButton`; the `steps` face (on the wallpaper)
    * sets the white-on-art button colours, the others use shell tokens.
    */
+  import { onMount } from "svelte";
+  import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import SetupButton from "./SetupButton.svelte";
   import {
     SETUP_FAILURE_COPY,
@@ -83,6 +85,9 @@
     idle = false,
     onstoresecret,
   }: Props = $props();
+
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
 
 
   /** The guided component paired with the open question, when the host can serve it. */
@@ -212,7 +217,7 @@
   }
 
   const eyebrow = $derived(
-    done ? "Setup complete" : stopped ? "Setup paused" : mode === "resume" ? "Setup in progress" : "Setting up this Mac",
+    done ? "Setup complete" : stopped ? "Setup paused" : mode === "resume" ? "Setup in progress" : `Setting up this ${hostNoun}`,
   );
 </script>
 

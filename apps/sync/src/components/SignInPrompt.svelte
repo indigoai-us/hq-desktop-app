@@ -2,7 +2,12 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
-  import { emitDesktopOperationalTelemetry } from '../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../lib/desktop-telemetry';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -16,6 +21,10 @@
     type ContinuationDeps,
     type ContinuationState,
   } from '../lib/desktop-session-continuation';
+  import type { SignInProvider } from '../lib/onboarding-signin';
+
+  const AUTH_RECHECK_INTERVAL_MS = 2_000;
+  const CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
 
   interface Props {
     reauth?: boolean;
@@ -29,7 +38,6 @@
 
   let { reauth = false, onsuccess, bringMainToFront = true }: Props = $props();
 
-  type SignInProvider = 'Google' | 'Microsoft';
   const providers: { key: SignInProvider; label: string }[] = [
     { key: 'Google', label: 'Google' },
     { key: 'Microsoft', label: 'Microsoft' },
@@ -37,6 +45,8 @@
 
   let loadingProvider = $state<SignInProvider | null>(null);
   let error = $state('');
+  let microsoftEmail = $state('');
+  let microsoftEmailPrompt = $state(false);
 
   // ── Browser session continuation ────────────────────────────────────
   //
@@ -110,7 +120,10 @@
         const auth = await invoke<{ authenticated: boolean; expiresAt: string }>(
           'get_auth_state',
         );
-        if (auth.authenticated) onsuccess?.(auth);
+        if (auth.authenticated) {
+          acceptedExistingSession = true;
+          onsuccess?.(auth);
+        }
       } else {
         error = 'That sign-in did not finish. Choose your provider and try once more.';
       }
@@ -139,9 +152,34 @@
 
   let lastProvider = $state<SignInProvider | null>(null);
   let activeState = $state<string | null>(null);
+  let authorizeUrl = $state<string | null>(null);
   let cancelling = $state(false);
   let quitting = $state(false);
   let signInRun = 0;
+  let callbackTimeout: number | null = null;
+  let acceptedExistingSession = false;
+
+  function clearCallbackTimeout() {
+    if (callbackTimeout === null) return;
+    clearTimeout(callbackTimeout);
+    callbackTimeout = null;
+  }
+
+  function resetManualSignInState() {
+    clearCallbackTimeout();
+    loadingProvider = null;
+    activeState = null;
+    authorizeUrl = null;
+  }
+
+  function failSignIn(provider: SignInProvider, step: DesktopAuthProgressStep, cause: unknown) {
+    void emitDesktopAuthFailure({
+      provider: provider === 'Google' ? 'google' : 'microsoft',
+      step,
+      error: cause,
+    });
+    error = 'We couldn’t finish sign-in. Try again.';
+  }
 
   function isCurrentSignInRun(run: number): boolean {
     return run === signInRun;
@@ -155,7 +193,59 @@
     }
   }
 
+  async function acceptExistingSession(auth: { authenticated: boolean; expiresAt: string }) {
+    if (!auth.authenticated || acceptedExistingSession) return;
+    acceptedExistingSession = true;
+    const state = activeState;
+    ++signInRun;
+    resetManualSignInState();
+    if (state) await cancelPendingSignIn(state);
+    onsuccess?.(auth);
+  }
+
+  $effect(() => {
+    let disposed = false;
+    const recheck = async () => {
+      try {
+        const auth = await invoke<{ authenticated: boolean; expiresAt: string }>('get_auth_state');
+        if (!disposed && auth?.authenticated) await acceptExistingSession(auth);
+      } catch {
+        // A startup probe owns retries and diagnostics. This compact recheck is
+        // only the bridge from a newly valid native session to this screen.
+      }
+    };
+
+    void recheck();
+    const interval = window.setInterval(() => void recheck(), AUTH_RECHECK_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      const state = activeState;
+      ++signInRun;
+      resetManualSignInState();
+      if (state) void cancelPendingSignIn(state);
+    };
+  });
+
+  function armCallbackTimeout(provider: SignInProvider, run: number) {
+    clearCallbackTimeout();
+    callbackTimeout = window.setTimeout(() => {
+      if (!isCurrentSignInRun(run)) return;
+      const state = activeState;
+      ++signInRun;
+      resetManualSignInState();
+      if (state) void cancelPendingSignIn(state);
+      failSignIn(provider, 'provider_page_opened', new Error('sign-in timed out'));
+    }, CALLBACK_TIMEOUT_MS);
+  }
+
   async function handleSignIn(provider: SignInProvider) {
+    if (provider === 'Microsoft' && microsoftEmail.trim() === '') {
+      microsoftEmailPrompt = true;
+      error = '';
+      return;
+    }
+
     const run = ++signInRun;
     // Claim the flow before anything awaits, so a continuation whose config
     // lands mid-click sees this rather than racing it.
@@ -167,14 +257,20 @@
     lastProvider = provider;
     activeState = null;
     console.info('[signin] OAuth runner started', { provider });
+    const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
 
     try {
       // Step 1: Start OAuth login. This binds both loopback listener families
       // before the provider URL is returned, so a fast redirect cannot race it.
-      const { authorizeUrl, state } = await invoke<{
+      const { authorizeUrl: nextAuthorizeUrl, state } = await invoke<{
         authorizeUrl: string;
         state: string;
-      }>('start_oauth_login', { provider });
+      }>('start_oauth_login', {
+        provider,
+        ...(provider === 'Microsoft' ? { email: microsoftEmail.trim() } : {}),
+      });
       if (!isCurrentSignInRun(run)) {
         await cancelPendingSignIn(state);
         return;
@@ -183,9 +279,13 @@
 
       // Step 2: Open browser for user to authenticate
       console.info('[signin] OAuth browser open requested', { provider });
-      await open(authorizeUrl);
+      await open(nextAuthorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       console.info('[signin] OAuth browser opened', { provider });
       if (!isCurrentSignInRun(run)) return;
+      authorizeUrl = nextAuthorizeUrl;
+      armCallbackTimeout(provider, run);
 
       // Step 3: Listen for the OAuth callback code
       console.info('[signin] OAuth runner waiting for callback', { provider });
@@ -193,6 +293,9 @@
         'oauth_listen_for_code',
         { state }
       );
+      clearCallbackTimeout();
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInRun(run)) return;
 
       // Step 4: Exchange code for tokens
@@ -201,10 +304,15 @@
         authenticated: boolean;
         expiresAt: string;
       }>('oauth_exchange_code', { code });
+      authStep = 'token_exchange_ok';
+      if (result.authenticated) {
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      }
       if (!isCurrentSignInRun(run)) return;
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
+        acceptedExistingSession = true;
         // Pull focus back from the browser on macOS and Windows. JS setFocus
         // is often ignored while the browser holds activation — Rust raises
         // via AppKit / Win32. oauth_listen_for_code also raises on callback;
@@ -225,44 +333,52 @@
         console.info('[signin] OAuth runner succeeded', { provider });
         onsuccess?.(result);
       } else {
-        error = 'That sign-in did not finish. Choose your provider and try once more.';
+        failSignIn(provider, authStep, 'authentication rejected');
       }
     } catch (err) {
       if (!isCurrentSignInRun(run)) return;
+      clearCallbackTimeout();
       console.error('[signin] OAuth runner failed:', err);
-      error = 'That sign-in did not finish. Choose your provider and try once more.';
+      failSignIn(provider, authStep, err);
       await cancelPendingSignIn();
     } finally {
       if (isCurrentSignInRun(run)) {
-        loadingProvider = null;
-        activeState = null;
+        resetManualSignInState();
         console.info('[signin] OAuth runner idle', { provider });
       }
-    }
-  }
-
-  async function handleCancel() {
-    if (!loadingProvider || cancelling) return;
-
-    const provider = loadingProvider;
-    const state = activeState;
-    ++signInRun;
-    cancelling = true;
-    console.info('[signin] OAuth runner cancellation requested', { provider });
-    try {
-      await cancelPendingSignIn(state);
-      loadingProvider = null;
-      activeState = null;
-      error = 'Sign-in cancelled. Retry when you are ready.';
-      console.info('[signin] OAuth runner cancelled', { provider });
-    } finally {
-      cancelling = false;
     }
   }
 
   function handleRetry() {
     if (lastProvider && !loadingProvider) {
       void handleSignIn(lastProvider);
+    }
+  }
+
+  async function handleBack() {
+    if (!loadingProvider || cancelling) return;
+    const state = activeState;
+    ++signInRun;
+    cancelling = true;
+    try {
+      await cancelPendingSignIn(state);
+      resetManualSignInState();
+      error = '';
+    } finally {
+      cancelling = false;
+    }
+  }
+
+  async function reopenBrowser() {
+    if (!loadingProvider || !authorizeUrl) return;
+    try {
+      await open(authorizeUrl);
+    } catch (err) {
+      const provider = loadingProvider;
+      ++signInRun;
+      await cancelPendingSignIn();
+      resetManualSignInState();
+      failSignIn(provider, 'provider_page_opened', err);
     }
   }
 
@@ -351,7 +467,11 @@
     <div
       class="sign-in-actions"
       class:secondary={continuation.phase === 'confirming'}
-      hidden={continuation.phase === 'opening' || continuation.phase === 'waiting'}
+      hidden={
+        continuation.phase === 'opening' ||
+        continuation.phase === 'waiting' ||
+        loadingProvider !== null
+      }
     >
       {#each providers as provider}
         <button
@@ -372,20 +492,60 @@
           {/if}
         </button>
       {/each}
+      {#if microsoftEmailPrompt}
+        <form
+          class="microsoft-email"
+          data-testid="microsoft-email-form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void handleSignIn('Microsoft');
+          }}
+        >
+          <label for="signin-microsoft-email">Enter the Microsoft email you use with HQ</label>
+          <input
+            id="signin-microsoft-email"
+            data-testid="microsoft-email"
+            type="email"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+            bind:value={microsoftEmail}
+            disabled={loadingProvider !== null || quitting}
+          />
+          <button
+            class="sign-in-btn"
+            type="submit"
+            data-testid="microsoft-email-continue"
+            disabled={loadingProvider !== null || quitting || microsoftEmail.trim() === ''}
+          >
+            Continue
+          </button>
+        </form>
+      {/if}
     </div>
 
     {#if loadingProvider}
-      <p class="loading-hint">
-        A browser window opened for {loadingProvider} sign-in. Complete it there and
-        you'll return here automatically. You can cancel, retry, or quit if sign-in gets stuck.
-      </p>
+      <div class="browser-handoff" data-testid="signin-browser-handoff" role="status">
+        <p class="browser-handoff-title">Finish signing in in your browser</p>
+        <p class="loading-hint">
+          Continue with {loadingProvider} in your browser, then return to HQ.
+        </p>
+      </div>
+      <button
+        class="sign-in-btn"
+        onclick={reopenBrowser}
+        disabled={cancelling || quitting || !authorizeUrl}
+        data-testid="reopen-browser-signin"
+      >
+        Reopen {loadingProvider} sign-in
+      </button>
       <button
         class="cancel-btn"
-        onclick={handleCancel}
+        onclick={handleBack}
         disabled={cancelling || quitting}
         aria-busy={cancelling}
       >
-        {cancelling ? 'Cancelling…' : 'Cancel sign-in'}
+        {cancelling ? 'Going back…' : 'Back'}
       </button>
     {/if}
 
@@ -402,8 +562,8 @@
       <div class="error-block">
         <p class="error">{error}</p>
         {#if lastProvider}
-          <button class="retry-btn" onclick={handleRetry}>
-            Retry {lastProvider} sign-in
+          <button class="retry-btn" onclick={handleRetry} data-testid="retry-signin">
+            Try again
           </button>
         {/if}
         <CopyPromptButton
@@ -527,6 +687,38 @@
 
   .sign-in-actions[hidden] {
     display: none;
+  }
+
+  .microsoft-email {
+    display: grid;
+    gap: 0.5rem;
+    width: 100%;
+    margin-top: 0.25rem;
+    text-align: left;
+  }
+
+  .microsoft-email label {
+    font-size: 0.75rem;
+    color: var(--pop-muted);
+    line-height: 1.4;
+  }
+
+  .microsoft-email input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 36px;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--pop-border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--pop-text);
+    font: inherit;
+    font-size: 0.8125rem;
+  }
+
+  .microsoft-email input:focus-visible {
+    outline: 1.5px solid var(--pop-text);
+    outline-offset: 2px;
   }
 
   .continuation-card {

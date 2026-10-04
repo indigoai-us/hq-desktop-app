@@ -287,3 +287,19 @@ describe("setupFinaleDue", () => {
     expect(rich?.blocks).toEqual([{ kind: "setupDone" }]);
   });
 });
+
+describe("setupBotNoRuntime", () => {
+  it("names no button and no direction: the sign-in panel below carries the next step", async () => {
+    const { setupBotNoRuntime, isSetupBotNoRuntimeMessage } = await import("./setup-bot");
+    const text = setupBotNoRuntime({ noun: "Mac" });
+    expect(text).toBe("HQ needs a coding tool signed in on this Mac to finish setup.");
+    expect(text).not.toMatch(/Retry|above|CLI/);
+    expect(isSetupBotNoRuntimeMessage(text)).toBe(true);
+    // A host still on the older wording keeps showing the panel.
+    expect(
+      isSetupBotNoRuntimeMessage(
+        "HQ needs a coding tool signed in on this Mac to finish setup. Sign in above, then Retry.",
+      ),
+    ).toBe(true);
+  });
+});

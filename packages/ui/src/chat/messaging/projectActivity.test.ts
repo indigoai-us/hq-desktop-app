@@ -314,6 +314,28 @@ describe("activityTimelineMessages", () => {
     expect(rows.every(isActivityMessage)).toBe(true);
     expect(isActivityMessage({ eventId: "evt_real" })).toBe(false);
   });
+
+  it("stamps isMeshEvent:true on every row so the human-only filter never misclassifies a person-attributed activity row", () => {
+    // Regression for the bug where a mesh row posted under a real person's name
+    // (e.g. "Stefan Johnson noted …") was visible in human-only mode because
+    // isHumanMessage fell through to the uid-prefix check when isMeshEvent was absent.
+    const rows = activityTimelineMessages(entries);
+    expect(rows.every((r) => r.isMeshEvent === true)).toBe(true);
+  });
+
+  it("isMeshEvent:true is present even when the actor carries a person uid", () => {
+    const personRow = normalizeWorkMeshEvent({
+      eventKind: "note",
+      eventId: "ev-person-note",
+      authorUid: "prs_01KRKKKZYQM2SS0TWMG7NRKY0Y",
+      authorType: "human",
+      createdAt: "2026-09-04T10:00:00.000Z",
+      payload: { summary: "persona=marketer outcome=finished_by_session minutes=49.5 stuck=session" },
+    });
+    expect(personRow).not.toBeNull();
+    const rows = activityTimelineMessages([personRow!]);
+    expect(rows[0]?.isMeshEvent).toBe(true);
+  });
 });
 
 describe("mergeActivityIntoTimeline", () => {

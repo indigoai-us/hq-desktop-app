@@ -11,6 +11,7 @@
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
+  import CompanyStepPreview from './CompanyStepPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -20,6 +21,7 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
+  import { TOUR_SEEN_STORAGE_KEY } from '@hq/ui';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -126,6 +128,9 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?tour=1: a fresh install that has not seen the
+  //     first-run guided tour, so the tour starts by itself (clears the
+  //     local "seen" key on load)
   //   lifecycle view (channel-native company lifecycle, stateful mock) takes
   //     ?role=member (viewer.canAct=false everywhere) and ?state=blocked
   // For the signin view, size the browser viewport to ~320x440 (the real
@@ -133,6 +138,13 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  if (params.get('tour') === '1') {
+    try {
+      localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
+    } catch {
+      // Storage unavailable: the mocked host flag still says "not shown".
+    }
+  }
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
   const requestedOnboardingStep = Number.parseInt(params.get('step') ?? '0', 10);
@@ -227,10 +239,25 @@
   <div class="fake-desktop" aria-hidden="true"></div>
   <CinematicIntro onfinish={() => {}} startAtBeat={introBeat} />
 {:else if view === 'onboarding'}
-  <!-- First-run onboarding at its real 780x620 transparent-window size.
-       Pass ?step=0..3 to inspect every reachable lifecycle screen directly;
-       continuation=on previews the verified-browser-account offer. -->
-  <OnboardingWizard initialStep={onboardingStep} onfinish={() => {}} />
+  <!-- The first-run welcome flow. Size the viewport to ~800x900 (the real
+       window). ?step=0..10 opens a wizard step directly (0 welcome, 1 folder,
+       2 cloud with the install running, 5 ready with the Claude Code / Codex
+       options and the usage-data checkbox; 3 lands on ready too); the shortcut
+       screen is Next from 2. ?mode=replay previews the menu-bar "Replay
+       welcome intro" (the story screens only). In the app the window is
+       transparent over a native blur of the desktop; a browser cannot do that,
+       so the harness paints a stand-in desktop behind it. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <OnboardingWizard
+    initialStep={onboardingStep}
+    mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
+    onfinish={() => {}}
+  />
+{:else if view === 'onboarding-company'}
+  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+       Size the viewport to ~800x900 like the welcome window. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->

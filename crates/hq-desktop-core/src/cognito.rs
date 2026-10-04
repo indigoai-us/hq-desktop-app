@@ -1,10 +1,12 @@
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
+
+#[cfg(test)]
+pub(crate) static HQ_TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod expires_at_flexible {
     use serde::{self, Deserialize, Deserializer, Serializer};
@@ -49,6 +51,10 @@ const REFRESH_ATTEMPTS: usize = 3;
 const REFRESH_RETRY_DELAY_BASE_MS: u64 = 150;
 const REFRESH_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const VALID_TOKEN_RESOLUTION_ATTEMPTS: usize = 3;
+const INVALID_CLIENT_PARK: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+static INVALID_CLIENT_PARKED_UNTIL: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = std::sync::OnceLock::new();
 
 /// Positive, user-facing copy shared by startup and sync surfaces after the
 /// bounded automatic refresh attempts have been exhausted.
@@ -62,7 +68,10 @@ pub struct CognitoRefreshError {
     pub message: String,
     pub requires_reauth: bool,
     pub status_code: Option<u16>,
+    pub error_code: Option<String>,
     pub failure_class: CognitoRefreshFailureClass,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 /// Stable, low-cardinality classification for refresh diagnostics.
@@ -96,6 +105,8 @@ pub struct CognitoTokenResolutionError {
     pub message: String,
     pub refresh_failure_class: Option<CognitoRefreshFailureClass>,
     pub requires_reauth: bool,
+    /// Closed-set attribution only; never contains response text.
+    pub rejection_class: &'static str,
 }
 
 impl CognitoTokenResolutionError {
@@ -104,6 +115,7 @@ impl CognitoTokenResolutionError {
             message,
             refresh_failure_class: None,
             requires_reauth: false,
+            rejection_class: "none",
         }
     }
 
@@ -111,11 +123,13 @@ impl CognitoTokenResolutionError {
         message: String,
         failure_class: CognitoRefreshFailureClass,
         requires_reauth: bool,
+        rejection_class: &'static str,
     ) -> Self {
         Self {
             message,
             refresh_failure_class: Some(failure_class),
             requires_reauth,
+            rejection_class,
         }
     }
 }
@@ -159,16 +173,141 @@ fn cognito_error_code(body: &str) -> Option<String> {
 }
 
 fn classify_refresh_failure(status: u16, body: &str) -> (bool, bool) {
-    if matches!(
+    let invalid_client = cognito_error_code(body).as_deref() == Some("invalid_client");
+    let code_refusal = matches!(
         cognito_error_code(body).as_deref(),
-        Some("TooManyRequestsException")
-    ) {
-        return (true, false);
+        Some("NotAuthorizedException" | "invalid_grant")
+    );
+    let definitive_refusal = !invalid_client && (status == 401 || code_refusal);
+    (!definitive_refusal, definitive_refusal)
+}
+
+fn invalid_client_key(refresh_token: &str) -> String {
+    let digest = Sha256::digest(refresh_token.as_bytes());
+    format!("{digest:x}")
+}
+
+fn invalid_client_is_parked(refresh_token: &str) -> bool {
+    let key = invalid_client_key(refresh_token);
+    let parked = INVALID_CLIENT_PARKED_UNTIL
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let Ok(mut parked) = parked.lock() else {
+        eprintln!("Cognito invalid_client cooldown state is unavailable; refusing a fast retry");
+        return true;
+    };
+    let now = std::time::Instant::now();
+    parked.retain(|_, until| *until > now);
+    parked.contains_key(&key)
+}
+
+fn park_invalid_client(refresh_token: &str) {
+    let key = invalid_client_key(refresh_token);
+    if let Ok(mut parked) = INVALID_CLIENT_PARKED_UNTIL
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+    {
+        parked.insert(key, std::time::Instant::now() + INVALID_CLIENT_PARK);
+    } else {
+        eprintln!("Cognito invalid_client cooldown state is unavailable");
     }
-    (
-        refresh_status_is_retryable(status),
-        refresh_status_requires_reauth(status),
+}
+
+fn redact_refresh_message(message: &str) -> String {
+    let words = message.split_whitespace().collect::<Vec<_>>();
+    let mut redacted = Vec::with_capacity(words.len());
+    let mut skip_words = 0;
+    for word in words {
+        if skip_words > 0 {
+            skip_words -= 1;
+            continue;
+        }
+        let clean = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-' && c != '_' && c != '@');
+        let credential_key = word
+            .split_once(['=', ':'])
+            .map(|(key, value)| (key, !value.is_empty()))
+            .or_else(|| {
+                let key = clean.trim_matches(['"', '\'', '`']);
+                is_credential_key(key).then_some((key, false))
+            });
+        if let Some((key, has_inline_value)) = credential_key.filter(|(key, _)| is_credential_key(key)) {
+            redacted.push(format!("{}=[redacted]", key.trim_matches(['"', '\'', '`'])));
+            if !has_inline_value {
+                skip_words = if key.eq_ignore_ascii_case("authorization") { 2 } else { 1 };
+            }
+            continue;
+        }
+        if word.contains('@') {
+            redacted.push(word.replace(clean, "[redacted email]"));
+        } else if clean.matches('.').count() >= 2 && clean.len() > 30 {
+            redacted.push(word.replace(clean, "[redacted token]"));
+        } else if clean.matches('-').count() == 4 && clean.len() >= 32 {
+            redacted.push(word.replace(clean, "[redacted id]"));
+        } else {
+            redacted.push(word.to_string());
+        }
+    }
+    redacted.join(" ")
+}
+
+fn is_credential_key(key: &str) -> bool {
+    matches!(
+        key.trim_matches(['"', '\'', '`']).to_ascii_lowercase().as_str(),
+        "refresh_token" | "access_token" | "id_token" | "token" | "user_id" | "sub"
+            | "authorization" | "client_secret" | "password" | "secret" | "credential"
     )
+}
+
+/// Map refresh response metadata to the closed attribution vocabulary used by
+/// startup telemetry. The response body itself never leaves this classifier.
+pub fn refresh_rejection_class_tag(
+    failure_class: Option<CognitoRefreshFailureClass>,
+    status_code: Option<u16>,
+    error_code: Option<&str>,
+    requires_reauth: bool,
+) -> &'static str {
+    match error_code {
+        Some("invalid_grant") => return "invalid_grant",
+        Some("NotAuthorizedException") => return "not_authorized",
+        _ => {}
+    }
+    if requires_reauth && status_code.is_some_and(|status| (400..500).contains(&status)) {
+        return "other_4xx";
+    }
+    match failure_class {
+        Some(CognitoRefreshFailureClass::Network | CognitoRefreshFailureClass::Timeout) => {
+            "network"
+        }
+        None => "none",
+        Some(CognitoRefreshFailureClass::Unknown) => "unknown",
+        Some(_) => "unknown",
+    }
+}
+
+fn refresh_diagnostic(status: u16, body: &str, refresh_token: &str) -> (Option<String>, String) {
+    let code = cognito_error_code(body);
+    let message = cognito_error_message(body);
+    let message = if refresh_token.is_empty() {
+        message
+    } else {
+        message.replace(refresh_token, "[redacted token]")
+    };
+    let diagnostic = format!(
+        "Cognito refresh failed status={status} code={} message={message}",
+        code.as_deref().unwrap_or("unknown")
+    );
+    (code, diagnostic)
+}
+
+fn cognito_error_message(body: &str) -> String {
+    let value: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return "Cognito returned an unstructured error response".to_string(),
+    };
+    value.get("message").or_else(|| value.get("Message"))
+        .or_else(|| value.get("error_description"))
+        .and_then(serde_json::Value::as_str)
+        .map(redact_refresh_message)
+        .unwrap_or_else(|| "Cognito returned an error response without a message".to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,6 +367,10 @@ pub struct AuthState {
     pub email: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
+    /// The initial native token read for this auth probe, forwarded only to
+    /// the matching startup diagnostic command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_token_read_result: Option<String>,
 }
 
 /// Native auth classification shared by startup routing and diagnostics.
@@ -236,10 +379,41 @@ pub struct AuthState {
 pub enum AuthSessionStatus {
     Active,
     CredentialsAbsent,
+    CredentialsReadError,
     CredentialsInvalid,
     RefreshTemporarilyUnavailable,
     /// Usable credentials that belong to a fleet agent or outpost, not a person.
     NonHumanPrincipal,
+}
+
+/// Classify a missing token-store result after startup resolution fails.
+/// A failed read is not evidence that the store is empty.
+pub fn startup_token_store_status(read_failed: bool) -> AuthSessionStatus {
+    if read_failed {
+        AuthSessionStatus::CredentialsReadError
+    } else {
+        AuthSessionStatus::CredentialsAbsent
+    }
+}
+
+/// Classify a startup refresh failure using the initial token read and the
+/// resolver's outcome. A marker-filtered empty read is invalid only when the
+/// resolver says the hidden credential was rejected; all other cases preserve
+/// the pre-existing startup classification.
+pub fn classify_startup_refresh_failure(
+    before_present: bool,
+    first_read_failed: bool,
+    requires_reauth: bool,
+    after_present: bool,
+) -> AuthSessionStatus {
+    if !before_present && (first_read_failed || !requires_reauth) {
+        return startup_token_store_status(first_read_failed);
+    }
+    if requires_reauth || !after_present {
+        AuthSessionStatus::CredentialsInvalid
+    } else {
+        AuthSessionStatus::RefreshTemporarilyUnavailable
+    }
 }
 
 /// Convert the authoritative native session classification into the startup
@@ -283,36 +457,149 @@ fn token_file_lock_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-struct TokenFileLock(std::fs::File);
+struct TokenFileLock {
+    lock_path: PathBuf,
+    candidate_path: PathBuf,
+    owner_pid: u32,
+}
 
 impl Drop for TokenFileLock {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
+        if std::fs::read_to_string(&self.lock_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            == Some(self.owner_pid)
+        {
+            let _ = std::fs::remove_file(&self.lock_path);
+        }
+        let _ = std::fs::remove_file(&self.candidate_path);
     }
 }
 
-fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
+fn lock_owner_pid(lock_path: &Path) -> Option<u32> {
+    std::fs::read_to_string(lock_path).ok()?.trim().parse().ok()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LockFileIdentity(same_file::Handle);
+
+fn lock_file_identity(path: &Path) -> Option<LockFileIdentity> {
+    same_file::Handle::from_path(path).ok().map(LockFileIdentity)
+}
+
+fn remove_stale_lock_if_unchanged(
+    lock_path: &Path,
+    observed_owner: Option<u32>,
+    observed_identity: &LockFileIdentity,
+) -> bool {
+    if lock_owner_pid(lock_path) != observed_owner
+        || lock_file_identity(lock_path).as_ref() != Some(observed_identity)
+        || observed_owner.is_some_and(lock_owner_is_alive)
     {
+        return false;
+    }
+    std::fs::remove_file(lock_path).is_ok()
+}
+
+fn lock_owner_is_alive(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+        return result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+    }
+    #[cfg(windows)]
+    {
+        return std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}")])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(true);
+    }
+    #[allow(unreachable_code)]
+    true
+}
+
+fn lock_token_file_at(path: &Path) -> Result<TokenFileLock, String> {
+    lock_token_file_with_timeout(path, std::time::Duration::from_secs(20))
+}
+
+fn lock_token_file_with_timeout(path: &Path, timeout: std::time::Duration) -> Result<TokenFileLock, String> {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create token directory: {e}"))?;
     }
     let lock_path = token_file_lock_path(path);
+    let owner_pid = std::process::id();
+    static NEXT_CANDIDATE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let candidate_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let candidate_path = token_lock_candidate_path(
+        &lock_path,
+        owner_pid,
+        &candidate_nonce,
+        NEXT_CANDIDATE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    );
     let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options
-        .open(&lock_path)
-        .map_err(|e| format!("Failed to open token lock {}: {e}", lock_path.display()))?;
-    file.lock_exclusive()
-        .map_err(|e| format!("Failed to lock token file {}: {e}", path.display()))?;
-    Ok(TokenFileLock(file))
+    use std::io::Write;
+    let mut candidate = options
+        .open(&candidate_path)
+        .map_err(|e| format!("Failed to create token lock candidate: {e}"))?;
+    write!(candidate, "{owner_pid}")
+        .map_err(|e| format!("Failed to write token lock candidate: {e}"))?;
+    candidate.sync_all()
+        .map_err(|e| format!("Failed to flush token lock candidate: {e}"))?;
+    drop(candidate);
+
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match std::fs::hard_link(&candidate_path, &lock_path) {
+            Ok(()) => return Ok(TokenFileLock { lock_path, candidate_path, owner_pid }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let existing_owner = lock_owner_pid(&lock_path);
+                if existing_owner.is_none_or(|pid| !lock_owner_is_alive(pid)) {
+                    let removed = lock_file_identity(&lock_path).is_some_and(|identity| {
+                        remove_stale_lock_if_unchanged(
+                            &lock_path,
+                            existing_owner,
+                            &identity,
+                        )
+                    });
+                    if removed {
+                        continue;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        let _ = std::fs::remove_file(&candidate_path);
+                        return Err(format!("Timed out waiting for token lock {}", lock_path.display()));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = std::fs::remove_file(&candidate_path);
+                    return Err(format!("Timed out waiting for token lock {}", lock_path.display()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&candidate_path);
+                return Err(format!("Failed to acquire token lock {}: {error}", lock_path.display()));
+            }
+        }
+    }
+}
+
+fn token_lock_candidate_path(lock_path: &Path, owner_pid: u32, nonce: &str, counter: u64) -> PathBuf {
+    let mut name = lock_path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".candidate.{owner_pid}.{nonce}.{counter}"));
+    lock_path.with_file_name(name)
 }
 
 #[derive(Debug)]
@@ -369,6 +656,24 @@ fn remove_invalidation_marker_at(path: &Path, access_token: &str) -> Result<(), 
     }
 }
 
+fn record_rejected_refresh_at(path: &Path, access_token: &str, error_code: Option<&str>) -> Result<(), String> {
+    let _lock = lock_token_file_at(path)?;
+    invalidate_token_at_unlocked(path, access_token)?;
+    std::fs::write(
+        invalidation_path_for_token(path, access_token),
+        format!("refresh-rejected:{}", error_code.unwrap_or("unknown")),
+    )
+    .map_err(|e| format!("Failed to record rejected token refresh: {e}"))
+}
+
+fn refresh_rejection_recorded_at(path: &Path, access_token: &str) -> Result<bool, String> {
+    match std::fs::read(invalidation_path_for_token(path, access_token)) {
+        Ok(contents) => Ok(contents == b"refresh-rejected" || contents.starts_with(b"refresh-rejected:")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("Failed to read rejected token marker: {e}")),
+    }
+}
+
 fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     if !path.exists() {
         return Ok(None);
@@ -381,6 +686,114 @@ fn read_tokens_from_path_raw(path: &Path) -> Result<Option<CognitoTokens>, Token
 fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     let tokens = read_tokens_from_path_raw(path)?;
     Ok(tokens.filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+fn read_tokens_marked_invalidated_from_path(
+    path: &Path,
+) -> Result<Option<CognitoTokens>, TokenReadError> {
+    let tokens = read_tokens_from_path_raw(path)?;
+    Ok(tokens.filter(|tokens| token_is_invalidated_at(path, &tokens.access_token)))
+}
+
+/// Bounded, non-secret observations used by the unexpected startup surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupTokenStoreDiagnostics {
+    pub invalidation_marker_present: bool,
+    pub marker_kind: &'static str,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
+}
+
+fn token_read_result_label(result: Result<Option<CognitoTokens>, TokenReadError>) -> &'static str {
+    match result {
+        Ok(Some(_)) => "ok_some",
+        Ok(None) => "ok_none",
+        Err(TokenReadError::Io(_)) => "err_io",
+        Err(TokenReadError::Parse(_)) => "err_parse",
+    }
+}
+
+fn startup_token_store_diagnostics_at(path: &Path) -> StartupTokenStoreDiagnostics {
+    let first_read_result = token_read_result_label(read_tokens_from_path(path));
+    startup_token_store_diagnostics_after_first_at(path, first_read_result)
+}
+
+fn marker_kind_from_contents(contents: Option<&[u8]>) -> &'static str {
+    match contents {
+        None => "none",
+        Some([]) => "cli",
+        Some(contents)
+            if contents == b"refresh-rejected" || contents.starts_with(b"refresh-rejected:") =>
+        {
+            "desktop"
+        }
+        Some(_) => "unknown",
+    }
+}
+
+/// Classify the existing token-generation marker by its exact, bounded
+/// contents. No marker bytes are returned or logged.
+pub fn invalidation_marker_kind_tag(contents: Option<&[u8]>) -> &'static str {
+    marker_kind_from_contents(contents)
+}
+
+fn startup_token_store_diagnostics_after_first_at(
+    path: &Path,
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    let raw_tokens = read_tokens_from_path_raw(path);
+    let marker_kind = raw_tokens
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .filter(|tokens| !tokens.access_token.is_empty())
+        .map(|tokens| {
+            let marker = invalidation_path_for_token(path, &tokens.access_token);
+            match std::fs::read(marker) {
+                Ok(contents) => marker_kind_from_contents(Some(&contents)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => "none",
+                Err(_) => "unknown",
+            }
+        })
+        .unwrap_or("none");
+    let invalidation_marker_present = marker_kind != "none";
+    let recheck_read_result = token_read_result_label(read_tokens_from_path(path));
+    StartupTokenStoreDiagnostics {
+        invalidation_marker_present,
+        marker_kind,
+        first_read_result,
+        recheck_read_result,
+    }
+}
+
+/// Read the token store twice for startup diagnostics without returning token
+/// contents or free-form filesystem errors. This does not affect auth state.
+pub fn startup_token_store_diagnostics() -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_at(&path),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            marker_kind: "none",
+            first_read_result: "err_io",
+            recheck_read_result: "err_io",
+        },
+    }
+}
+
+/// Pair the auth resolver's original token-read result with one immediate
+/// filtered reread and a raw-token invalidation-marker check.
+pub fn startup_token_store_diagnostics_after_first(
+    first_read_result: &'static str,
+) -> StartupTokenStoreDiagnostics {
+    match tokens_file_path() {
+        Ok(path) => startup_token_store_diagnostics_after_first_at(&path, first_read_result),
+        Err(_) => StartupTokenStoreDiagnostics {
+            invalidation_marker_present: false,
+            marker_kind: "none",
+            first_read_result,
+            recheck_read_result: "err_io",
+        },
+    }
 }
 
 pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
@@ -490,8 +903,7 @@ fn write_tokens_to_path_unlocked(path: &Path, tokens: &CognitoTokens) -> Result<
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
 
     // A successful login/refresh for this exact token generation is
-    // authoritative. Remove its old rejection marker before publishing the
-    // token file; a failure observed after this point will recreate it.
+    // authoritative. Remove its old rejection marker before publishing it.
     remove_invalidation_marker_at(path, &tokens.access_token)?;
 
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -521,12 +933,20 @@ fn persist_refreshed_tokens_if_current_unlocked(
     path: &Path,
     started_from: &CognitoTokens,
     refreshed: &CognitoTokens,
+    accept_matching_invalidation: bool,
 ) -> Result<RefreshPersistenceOutcome, String> {
-    let current = read_tokens_from_path(path).map_err(|error| match error {
+    let current_raw = read_tokens_from_path_raw(path).map_err(|error| match error {
         TokenReadError::Io(error) => format!("Failed to read token file: {error}"),
         TokenReadError::Parse(error) => format!("Failed to parse token file: {error}"),
     })?;
-    if current.as_ref() != Some(started_from) {
+    let current = current_raw
+        .clone()
+        .filter(|tokens| !token_is_invalidated_at(path, &tokens.access_token));
+    let started_generation_is_usable = current.as_ref() == Some(started_from);
+    let started_generation_is_marked = accept_matching_invalidation
+        && current_raw.as_ref() == Some(started_from)
+        && token_is_invalidated_at(path, &started_from.access_token);
+    if !started_generation_is_usable && !started_generation_is_marked {
         return Ok(RefreshPersistenceOutcome::Superseded(current));
     }
 
@@ -540,7 +960,7 @@ fn persist_refreshed_tokens_if_current_at(
     refreshed: &CognitoTokens,
 ) -> Result<RefreshPersistenceOutcome, String> {
     let _lock = lock_token_file_at(path)?;
-    persist_refreshed_tokens_if_current_unlocked(path, started_from, refreshed)
+    persist_refreshed_tokens_if_current_unlocked(path, started_from, refreshed, false)
 }
 
 pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
@@ -548,9 +968,14 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     write_tokens_to_path(&path, tokens)
 }
 
-/// Get tokens, using in-memory cache with mtime invalidation.
-pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
-    let path = tokens_file_path()?;
+/// Get tokens and the bounded class of the initial file read, using the same
+/// in-memory cache and invalidation behavior as `get_tokens`.
+pub async fn get_tokens_with_read_result() -> (Result<Option<CognitoTokens>, String>, &'static str)
+{
+    let path = match tokens_file_path() {
+        Ok(path) => path,
+        Err(error) => return (Err(error), "err_io"),
+    };
 
     // Get mtime — treat NotFound as "no file" (avoids TOCTOU with path.exists())
     let current_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -558,9 +983,9 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut guard = cache().lock().await;
             *guard = None;
-            return Ok(None);
+            return (Ok(None), "ok_none");
         }
-        Err(e) => return Err(format!("Failed to read file mtime: {}", e)),
+        Err(e) => return (Err(format!("Failed to read file mtime: {}", e)), "err_io"),
     };
     let mut guard = cache().lock().await;
 
@@ -568,15 +993,26 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         if cached.path == path && cached.file_mtime == current_mtime {
             if token_is_invalidated_at(&path, &cached.tokens.access_token) {
                 *guard = None;
-                return Ok(None);
+                return (Ok(None), "ok_none");
             }
-            return Ok(Some(cached.tokens.clone()));
+            return (Ok(Some(cached.tokens.clone())), "ok_some");
         }
     }
 
     // Cache miss or mtime changed — re-read
     drop(guard);
-    let tokens = read_tokens_from_file()?;
+    let tokens = match read_tokens_from_path(&path) {
+        Ok(tokens) => tokens,
+        Err(TokenReadError::Io(error)) => {
+            return (Err(format!("Failed to read token file: {error}")), "err_io");
+        }
+        Err(TokenReadError::Parse(error)) => {
+            return (
+                Err(format!("Failed to parse token file: {error}")),
+                "err_parse",
+            );
+        }
+    };
     if let Some(ref tokens) = tokens {
         let mut guard = cache().lock().await;
         *guard = Some(CachedTokens {
@@ -588,7 +1024,17 @@ pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
         let mut guard = cache().lock().await;
         *guard = None;
     }
-    Ok(tokens)
+    let result = if tokens.is_some() {
+        "ok_some"
+    } else {
+        "ok_none"
+    };
+    (Ok(tokens), result)
+}
+
+/// Get tokens, using in-memory cache with mtime invalidation.
+pub async fn get_tokens() -> Result<Option<CognitoTokens>, String> {
+    get_tokens_with_read_result().await.0
 }
 
 /// Update both the file and the in-memory cache.
@@ -606,21 +1052,20 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
     Ok(())
 }
 
-/// Publish a refresh result only if the exact token generation it started from
-/// is still the current, usable on-disk generation.
-///
-/// The comparison and atomic token-file replacement share a cross-process
-/// sidecar lock with login, sign-out, and invalidation writes. A newer login or
-/// refresh is returned as `Superseded(Some(tokens))`; sign-out or invalidation
-/// is returned as `Superseded(None)`.
-pub async fn persist_refreshed_tokens_if_current(
+async fn persist_refreshed_tokens_if_current_with_invalidation(
     started_from: &CognitoTokens,
     refreshed: &CognitoTokens,
+    accept_matching_invalidation: bool,
 ) -> Result<RefreshPersistenceOutcome, String> {
     let path = tokens_file_path()?;
     let mut guard = cache().lock().await;
     let _file_lock = lock_token_file_at(&path)?;
-    let outcome = persist_refreshed_tokens_if_current_unlocked(&path, started_from, refreshed)?;
+    let outcome = persist_refreshed_tokens_if_current_unlocked(
+        &path,
+        started_from,
+        refreshed,
+        accept_matching_invalidation,
+    )?;
 
     *guard = match outcome.current_tokens() {
         Some(tokens) => Some(CachedTokens {
@@ -632,6 +1077,20 @@ pub async fn persist_refreshed_tokens_if_current(
     };
     crate::feature_gate::clear_cached_gate();
     Ok(outcome)
+}
+
+/// Publish a refresh result only if the exact token generation it started from
+/// is still the current, usable on-disk generation.
+///
+/// The comparison and atomic token-file replacement share a cross-process
+/// sidecar lock with login, sign-out, and invalidation writes. A newer login or
+/// refresh is returned as `Superseded(Some(tokens))`; sign-out or invalidation
+/// is returned as `Superseded(None)`.
+pub async fn persist_refreshed_tokens_if_current(
+    started_from: &CognitoTokens,
+    refreshed: &CognitoTokens,
+) -> Result<RefreshPersistenceOutcome, String> {
+    persist_refreshed_tokens_if_current_with_invalidation(started_from, refreshed, false).await
 }
 
 /// Mark one rejected token generation unusable without deleting the shared
@@ -793,16 +1252,48 @@ async fn resolve_tokens(
         .map_err(|error| error.message)
 }
 
+async fn get_tokens_for_resolution() -> Result<Option<(CognitoTokens, bool)>, String> {
+    if let Some(tokens) = get_tokens().await? {
+        return Ok(Some((tokens, false)));
+    }
+
+    let path = tokens_file_path()?;
+    let marked = read_tokens_marked_invalidated_from_path(&path).map_err(|error| match error {
+        TokenReadError::Io(error) => format!("Failed to read token file: {error}"),
+        TokenReadError::Parse(error) => format!("Failed to parse token file: {error}"),
+    })?;
+    if let Some(tokens) = marked {
+        // The marker rejects this access-token generation, not necessarily its
+        // refresh token. Verify the stored refresh token before showing sign-in.
+        return Ok(Some((tokens, true)));
+    }
+
+    // A concurrent successful write may have cleared a marker or installed a
+    // newer generation between the first read and the raw marker check.
+    Ok(get_tokens().await?.map(|tokens| (tokens, false)))
+}
+
 async fn resolve_tokens_classified(
     force_refresh: bool,
     cognito_endpoint: &str,
 ) -> Result<CognitoTokens, CognitoTokenResolutionError> {
     for _ in 0..VALID_TOKEN_RESOLUTION_ATTEMPTS {
-        let tokens = get_tokens()
+        let (tokens, matching_invalidation) = get_tokens_for_resolution()
             .await
             .map_err(CognitoTokenResolutionError::plain)?
             .ok_or_else(|| CognitoTokenResolutionError::plain("Not signed in".to_string()))?;
-        if !force_refresh && !is_expired(&tokens) {
+        let path = tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+        if refresh_rejection_recorded_at(&path, &tokens.access_token)
+            .map_err(CognitoTokenResolutionError::plain)?
+        {
+            return Err(CognitoTokenResolutionError::refresh(
+                REAUTH_MESSAGE.to_string(),
+                CognitoRefreshFailureClass::Http4xx,
+                true,
+                "unknown",
+            ));
+        }
+        if !force_refresh && !matching_invalidation && !is_expired(&tokens) {
             return Ok(tokens);
         }
 
@@ -813,20 +1304,49 @@ async fn resolve_tokens_classified(
                 Err(err) => {
                     let failure_class = err.failure_class;
                     let requires_reauth = err.requires_reauth;
+                    if err.error_code.as_deref() == Some("invalid_client") {
+                        return Err(CognitoTokenResolutionError::refresh(
+                            err.message,
+                            failure_class,
+                            false,
+                            err.rejection_class,
+                        ));
+                    }
+                    let error_code = if err.status_code == Some(401)
+                        && !matches!(err.error_code.as_deref(), Some("NotAuthorizedException" | "invalid_grant" | "invalid_client"))
+                    {
+                        Some("HTTP401".to_string())
+                    } else {
+                        err.error_code.clone()
+                    };
                     if err.requires_reauth {
                         invalidate_tokens(&tokens).await.map_err(|message| {
                             CognitoTokenResolutionError::refresh(
                                 message,
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             )
                         })?;
+                        let path =
+                            tokens_file_path().map_err(CognitoTokenResolutionError::plain)?;
+                        record_rejected_refresh_at(&path, &tokens.access_token, error_code.as_deref()).map_err(
+                            |message| {
+                                CognitoTokenResolutionError::refresh(
+                                    message,
+                                    failure_class,
+                                    requires_reauth,
+                                    err.rejection_class,
+                                )
+                            },
+                        )?;
                     }
                     match get_tokens().await.map_err(|message| {
                         CognitoTokenResolutionError::refresh(
                             message,
                             failure_class,
                             requires_reauth,
+                            err.rejection_class,
                         )
                     })? {
                         Some(current) if current != tokens => {
@@ -840,16 +1360,21 @@ async fn resolve_tokens_classified(
                                 REAUTH_MESSAGE.to_string(),
                                 failure_class,
                                 requires_reauth,
+                                err.rejection_class,
                             ))
                         }
                     }
                 }
             };
 
-        match persist_refreshed_tokens_if_current(&tokens, &refreshed)
-            .await
-            .map_err(CognitoTokenResolutionError::plain)?
-            .into_current_tokens()
+        match persist_refreshed_tokens_if_current_with_invalidation(
+            &tokens,
+            &refreshed,
+            matching_invalidation,
+        )
+        .await
+        .map_err(CognitoTokenResolutionError::plain)?
+        .into_current_tokens()
         {
             Some(current) if !is_expired(&current) => return Ok(current),
             Some(_) => continue,
@@ -884,6 +1409,12 @@ pub struct IdTokenClaims {
     pub sub: Option<String>,
     pub email: Option<String>,
     /// Whether Cognito verified the email address on this identity.
+    ///
+    /// ID tokens carry this as a JSON bool. Access tokens minted since the
+    /// hq-pro pre-token-generation change carry it as the string `"true"` /
+    /// `"false"`, so accept both; a strict `bool` here made every
+    /// access-token decode fail and held sign-in receipts forever.
+    #[serde(default, deserialize_with = "deserialize_bool_or_string")]
     pub email_verified: Option<bool>,
     pub name: Option<String>,
     pub given_name: Option<String>,
@@ -1019,6 +1550,31 @@ impl IdTokenClaims {
 
 /// Decode the middle segment of a JWT and parse it as the claims struct.
 /// JWT format: `header.payload.signature` (base64url-encoded segments).
+/// Deserialize a claim that Cognito emits either as a JSON bool or as the
+/// string `"true"` / `"false"` (custom-attribute style). Any other value is a
+/// parse error so a malformed token still fails loudly.
+fn deserialize_bool_or_string<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Bool(flag)) => Ok(Some(flag)),
+        Some(serde_json::Value::String(text)) => match text.trim() {
+            "true" => Ok(Some(true)),
+            "false" => Ok(Some(false)),
+            other => Err(D::Error::custom(format!(
+                "expected \"true\" or \"false\", got {other:?}"
+            ))),
+        },
+        Some(other) => Err(D::Error::custom(format!(
+            "expected bool or bool-string, got {other}"
+        ))),
+    }
+}
+
 pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let payload = id_token
@@ -1087,6 +1643,16 @@ async fn refresh_access_token_classified_at(
     cognito_endpoint: &str,
     refresh_token: &str,
 ) -> Result<CognitoTokens, CognitoRefreshError> {
+    if invalid_client_is_parked(refresh_token) {
+        return Err(CognitoRefreshError {
+            message: "Cognito rejected the configured app client (invalid_client); refresh is parked for 15 minutes.".to_string(),
+            requires_reauth: false,
+            status_code: Some(400),
+            error_code: Some("invalid_client".to_string()),
+            failure_class: CognitoRefreshFailureClass::Http4xx,
+            rejection_class: "unknown",
+        });
+    }
     let client = crate::client_info::build_client();
 
     let body = serde_json::json!({
@@ -1116,11 +1682,13 @@ async fn refresh_access_token_classified_at(
                     message: format!("Cognito refresh request failed: {err}"),
                     requires_reauth: false,
                     status_code: None,
+                    error_code: None,
                     failure_class: if err.is_timeout() {
                         CognitoRefreshFailureClass::Timeout
                     } else {
                         CognitoRefreshFailureClass::Network
                     },
+                    rejection_class: "network",
                 };
                 if attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1136,13 +1704,32 @@ async fn refresh_access_token_classified_at(
                 .text()
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
+            let (error_code, diagnostic) = refresh_diagnostic(status, &body_text, refresh_token);
+            let invalid_client = error_code.as_deref() == Some("invalid_client");
             let (retryable, requires_reauth) = classify_refresh_failure(status, &body_text);
+            eprintln!("{diagnostic}");
             let failure = CognitoRefreshError {
-                message: format!("Cognito refresh failed ({status}): {body_text}"),
+                message: diagnostic,
                 requires_reauth,
                 status_code: Some(status),
+                error_code,
                 failure_class: refresh_failure_class_from_status(status),
+                rejection_class: refresh_rejection_class_tag(
+                    Some(refresh_failure_class_from_status(status)),
+                    Some(status),
+                    cognito_error_code(&body_text).as_deref(),
+                    requires_reauth,
+                ),
             };
+            if invalid_client {
+                eprintln!("Cognito invalid_client: preserving the session and parking refresh for 15 minutes");
+                sentry::capture_message(
+                    "Cognito refresh returned invalid_client; session preserved and refresh parked for 15 minutes",
+                    sentry::Level::Error,
+                );
+                park_invalid_client(refresh_token);
+                return Err(failure);
+            }
             if retryable && attempt + 1 < REFRESH_ATTEMPTS {
                 wait_before_refresh_retry(attempt).await;
                 continue;
@@ -1158,11 +1745,13 @@ async fn refresh_access_token_classified_at(
                     message: format!("Failed to parse Cognito response: {err}"),
                     requires_reauth: false,
                     status_code: None,
+                    error_code: None,
                     failure_class: if timed_out {
                         CognitoRefreshFailureClass::Timeout
                     } else {
                         CognitoRefreshFailureClass::ResponseDecode
                     },
+                    rejection_class: if timed_out { "network" } else { "unknown" },
                 };
                 if timed_out && attempt + 1 < REFRESH_ATTEMPTS {
                     wait_before_refresh_retry(attempt).await;
@@ -1189,7 +1778,9 @@ async fn refresh_access_token_classified_at(
         message: REAUTH_MESSAGE.to_string(),
         requires_reauth: false,
         status_code: None,
+        error_code: None,
         failure_class: CognitoRefreshFailureClass::Unknown,
+        rejection_class: "unknown",
     })
 }
 
@@ -1204,6 +1795,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn refresh_rejection_class_is_closed_and_uses_only_safe_response_metadata() {
+        let cases = [
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("invalid_grant"),
+                true,
+                "invalid_grant",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(400),
+                Some("NotAuthorizedException"),
+                true,
+                "not_authorized",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Http4xx),
+                Some(403),
+                Some("UnlistedException"),
+                true,
+                "other_4xx",
+            ),
+            (
+                Some(CognitoRefreshFailureClass::Network),
+                None,
+                None,
+                false,
+                "network",
+            ),
+            (None, None, None, false, "none"),
+            (
+                Some(CognitoRefreshFailureClass::Http5xx),
+                Some(503),
+                Some("private response text"),
+                false,
+                "unknown",
+            ),
+        ];
+        for (failure, status, code, requires_reauth, expected) in cases {
+            assert_eq!(
+                refresh_rejection_class_tag(failure, status, code, requires_reauth),
+                expected,
+                "response details must collapse to the closed attribution vocabulary"
+            );
+        }
+    }
+
+    #[test]
     fn temporary_refresh_failure_is_not_a_signed_out_startup_verdict() {
         let result = startup_auth_state_result(
             AuthState {
@@ -1212,6 +1852,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::RefreshTemporarilyUnavailable,
         );
@@ -1231,12 +1872,129 @@ mod tests {
                 account_id: None,
                 email: None,
                 display_name: None,
+                startup_token_read_result: None,
             },
             &AuthSessionStatus::CredentialsInvalid,
         )
         .expect("invalid credentials must route to sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn startup_refresh_failure_changes_only_hidden_rejected_token_classification() {
+        let cases = [
+            // The sole change from main: the marker-filtered first read hides
+            // credentials, but the resolver reports a terminal rejection.
+            (
+                false,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            // Preserve main's present-token branch when a failed refresh leaves
+            // no token after resolution.
+            (
+                true,
+                false,
+                false,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            // Preserve main's empty-store result after a classified failure.
+            (
+                false,
+                false,
+                false,
+                false,
+                AuthSessionStatus::CredentialsAbsent,
+            ),
+            // Preserve main's failed-initial-read result after a classified failure.
+            (
+                false,
+                true,
+                false,
+                false,
+                AuthSessionStatus::CredentialsReadError,
+            ),
+            // The absent/read-error arm on main does not adopt a later token read.
+            (
+                false,
+                false,
+                false,
+                true,
+                AuthSessionStatus::CredentialsAbsent,
+            ),
+            (
+                false,
+                true,
+                false,
+                true,
+                AuthSessionStatus::CredentialsReadError,
+            ),
+            // A still-present saved token after a retryable failure is temporary.
+            (
+                true,
+                false,
+                false,
+                true,
+                AuthSessionStatus::RefreshTemporarilyUnavailable,
+            ),
+            // A terminal refresh rejection remains invalid whether or not the
+            // initial read exposed a token.
+            (
+                true,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+            (
+                false,
+                false,
+                true,
+                false,
+                AuthSessionStatus::CredentialsInvalid,
+            ),
+        ];
+
+        for (before, read_failed, reauth, after, expected) in cases {
+            assert_eq!(
+                classify_startup_refresh_failure(before, read_failed, reauth, after),
+                expected,
+                "before={before}, read_failed={read_failed}, requires_reauth={reauth}, after={after}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_token_store_read_error_is_not_classified_as_absent() {
+        assert_eq!(
+            startup_token_store_status(true),
+            AuthSessionStatus::CredentialsReadError
+        );
+        assert_eq!(
+            startup_token_store_status(false),
+            AuthSessionStatus::CredentialsAbsent
+        );
+        assert_eq!(
+            serde_json::to_string(&AuthSessionStatus::CredentialsReadError).unwrap(),
+            "\"credentials_read_error\""
+        );
+        let signed_out = startup_auth_state_result(
+            AuthState {
+                authenticated: false,
+                expires_at: None,
+                account_id: None,
+                email: None,
+                display_name: None,
+                startup_token_read_result: None,
+            },
+            &AuthSessionStatus::CredentialsReadError,
+        )
+        .expect("read errors preserve the existing signed-out startup route");
+        assert!(!signed_out.authenticated);
     }
 
     #[test]
@@ -1297,24 +2055,57 @@ mod tests {
         );
     }
 
-    struct TestHome(Option<std::ffi::OsString>);
+    struct TestHome {
+        previous: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestHome {
         fn set(path: &std::path::Path) -> Self {
+            let lock = HQ_TEST_HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous = std::env::var_os("HQ_TEST_HOME");
             std::env::set_var("HQ_TEST_HOME", path);
-            Self(previous)
+            Self {
+                previous,
+                _lock: lock,
+            }
         }
     }
 
     impl Drop for TestHome {
         fn drop(&mut self) {
-            if let Some(previous) = self.0.take() {
+            if let Some(previous) = self.previous.take() {
                 std::env::set_var("HQ_TEST_HOME", previous);
             } else {
                 std::env::remove_var("HQ_TEST_HOME");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn get_tokens_read_result_uses_typed_path_free_classes() {
+        let home = tempfile::tempdir().expect("temp home");
+        let _test_home = TestHome::set(home.path());
+        let token_dir = home.path().join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token directory");
+        let token_path = token_dir.join("cognito-tokens.json");
+
+        std::fs::write(&token_path, "{").expect("invalid token json");
+        let (parse_result, parse_class) = get_tokens_with_read_result().await;
+        let parse_error = parse_result.expect_err("malformed token json is rejected");
+        assert_eq!(parse_class, "err_parse");
+        assert!(parse_error.starts_with("Failed to parse token file:"));
+        assert!(!parse_error.contains(home.path().to_string_lossy().as_ref()));
+
+        std::fs::remove_file(&token_path).expect("remove malformed token file");
+        std::fs::create_dir(&token_path).expect("directory at token-file path");
+        let (io_result, io_class) = get_tokens_with_read_result().await;
+        let io_error = io_result.expect_err("directory cannot be read as a token file");
+        assert_eq!(io_class, "err_io");
+        assert!(io_error.starts_with("Failed to read token file:"));
+        assert!(!io_error.contains(home.path().to_string_lossy().as_ref()));
     }
 
     fn claims_jwt(payload: serde_json::Value) -> String {
@@ -1341,6 +2132,57 @@ mod tests {
         .expect("valid claims");
 
         assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_true() {
+        // Cognito access tokens (post hq-pro pre-token-generation change)
+        // carry `email_verified` as the string "true", not a JSON bool.
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "true"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.sub.as_deref(), Some("person-a"));
+        assert_eq!(claims.email_verified, Some(true));
+    }
+
+    #[test]
+    fn decode_claims_accepts_access_token_email_verified_string_false() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "false"
+        })))
+        .expect("string-form email_verified must decode");
+
+        assert_eq!(claims.email_verified, Some(false));
+    }
+
+    #[test]
+    fn decode_claims_still_accepts_bool_and_absent_email_verified() {
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": true
+        })))
+        .expect("bool email_verified must decode");
+        assert_eq!(claims.email_verified, Some(true));
+
+        let claims = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a"
+        })))
+        .expect("absent email_verified must decode");
+        assert_eq!(claims.email_verified, None);
+    }
+
+    #[test]
+    fn decode_claims_rejects_non_bool_email_verified() {
+        let error = decode_id_token_claims(&claims_jwt(serde_json::json!({
+            "sub": "person-a",
+            "email_verified": "yes"
+        })))
+        .expect_err("unrecognised email_verified string must fail");
+        assert!(error.contains("claims json parse failed"), "{error}");
     }
 
     #[tokio::test]
@@ -1767,6 +2609,185 @@ mod tests {
     }
 
     #[test]
+    fn refresh_rejection_is_classified_by_cognito_code() {
+        assert_eq!(
+            classify_refresh_failure(400, r#"{"__type":"NotAuthorizedException"}"#),
+            (false, true),
+        );
+        assert_eq!(
+            classify_refresh_failure(400, r#"{"error":"invalid_grant"}"#),
+            (false, true),
+        );
+        assert_eq!(
+            classify_refresh_failure(400, r#"{"__type":"InternalErrorException"}"#),
+            (true, false),
+        );
+        assert_eq!(
+            classify_refresh_failure(400, r#"{"error":"invalid_request"}"#),
+            (true, false),
+        );
+        assert_eq!(classify_refresh_failure(400, r#"{"error":"invalid_client"}"#), (true, false));
+        assert_eq!(classify_refresh_failure(401, r#"{"error":"invalid_client"}"#), (true, false));
+        assert_eq!(classify_refresh_failure(503, "{}"), (true, false));
+    }
+
+    #[test]
+    fn refresh_failure_branches_are_exclusive_and_only_definitive_codes_reauth() {
+        for body in [r#"{"error":"invalid_grant"}"#, r#"{"__type":"NotAuthorizedException"}"#] {
+            assert_eq!(classify_refresh_failure(400, body), (false, true));
+        }
+        assert_eq!(classify_refresh_failure(400, r#"{"error":"invalid_client"}"#), (true, false));
+        assert_eq!(classify_refresh_failure(401, r#"{"error":"unknown"}"#), (false, true));
+        for (status, body) in [
+            (400, r#"{"error":"unknown"}"#),
+            (400, "{}"),
+            (403, r#"{"__type":"ForbiddenException"}"#),
+            (400, r#"{"__type":"TooManyRequestsException"}"#),
+            (400, r#"{"__type":"InternalErrorException"}"#),
+            (500, r#"{"__type":"InternalErrorException"}"#),
+        ] {
+            assert_eq!(classify_refresh_failure(status, body), (true, false));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_client_preserves_session_without_marker_or_short_retry() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let mut tokens = token_generation("invalid-client");
+        tokens.expires_at = 0;
+        set_tokens(&tokens).await.expect("store cached session");
+        let tokens_path = home.path().join(".hq/cognito-tokens.json");
+        let marker = invalidation_path_for_token(&tokens_path, &tokens.access_token);
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "invalid_client",
+                "error_description": "client configuration refused"
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let first = resolve_tokens_classified(true, &cognito.uri()).await
+            .expect_err("invalid_client parks refresh without signing out");
+        assert!(!first.requires_reauth);
+        assert_eq!(get_tokens().await.unwrap(), Some(tokens.clone()));
+        assert!(!marker.exists(), "invalid_client must not write a rejection marker");
+
+        let second = resolve_tokens_classified(true, &cognito.uri()).await
+            .expect_err("parked invalid_client remains a temporary configuration failure");
+        assert!(!second.requires_reauth);
+        assert_eq!(get_tokens().await.unwrap(), Some(tokens));
+        assert!(!marker.exists());
+        cognito.verify().await;
+    }
+
+    #[tokio::test]
+    async fn refresh_diagnostic_includes_status_and_code_but_redacts_tokens_emails_and_ids() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let body = r#"{"__type":"aws#NotAuthorizedException","message":"Refresh rejected for alice@example.com user_id=12345678-1234-1234-1234-123456789012 token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFsaWNlQGV4YW1wbGUuY29tIn0.signature refresh_token: secret-value token secret-value refresh_token=\"quoted-secret\" refresh-secret"}"#;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(400).set_body_raw(body, "application/json"))
+            .mount(&server)
+            .await;
+        let error = refresh_access_token_classified_at(&server.uri(), "refresh-secret")
+            .await
+            .expect_err("the mocked Cognito refusal must be returned");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("status=400"));
+        assert!(diagnostic.contains("NotAuthorizedException"));
+        assert!(!diagnostic.contains("alice@example.com"));
+        assert!(!diagnostic.contains("12345678-1234-1234-1234-123456789012"));
+        assert!(!diagnostic.contains("eyJhbGci"));
+        assert!(!diagnostic.contains("refresh-secret"));
+        assert!(!diagnostic.contains("secret-value"));
+        assert!(!diagnostic.contains("quoted-secret"));
+    }
+
+    #[test]
+    fn stale_lock_reclaimer_leaves_a_replacement_owner_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("cognito-tokens.json.lock");
+        let observed_path = dir.path().join("observed-stale-lock");
+        let stale_owner = u32::MAX - 1;
+        assert!(!lock_owner_is_alive(stale_owner));
+        std::fs::write(&lock_path, stale_owner.to_string()).unwrap();
+        let observed_identity = lock_file_identity(&lock_path).unwrap();
+        std::fs::hard_link(&lock_path, &observed_path).unwrap();
+
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::write(&lock_path, std::process::id().to_string()).unwrap();
+
+        assert!(!remove_stale_lock_if_unchanged(
+            &lock_path,
+            Some(stale_owner),
+            &observed_identity,
+        ));
+        assert_eq!(lock_owner_pid(&lock_path), Some(std::process::id()));
+    }
+
+    #[test]
+    fn token_lock_candidate_preserves_non_utf8_parent_and_uses_restart_nonce() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::{OsStrExt, OsStringExt};
+            let parent = PathBuf::from(std::ffi::OsString::from_vec(vec![b'd', b'-', 0xff]));
+            let lock_path = parent.join("cognito-tokens.json.lock");
+            let first = token_lock_candidate_path(&lock_path, 123, "nonce-a", 0);
+            let second = token_lock_candidate_path(&lock_path, 123, "nonce-b", 0);
+            assert_eq!(first.parent(), Some(parent.as_path()));
+            assert_ne!(first, second);
+            assert!(first.as_os_str().as_bytes().contains(&0xff));
+        }
+    }
+
+    #[test]
+    fn stale_lock_reclamation_failure_is_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens_path = dir.path().join("cognito-tokens.json");
+        std::fs::create_dir(token_file_lock_path(&tokens_path)).unwrap();
+        let started = std::time::Instant::now();
+        let result = lock_token_file_with_timeout(
+            &tokens_path,
+            std::time::Duration::from_millis(100),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn refresh_rejection_marker_accepts_legacy_and_code_formats() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let access = "marker-access";
+        let marker = invalidation_path_for_token(&path, access);
+        record_rejected_refresh_at(&path, access, Some("NotAuthorizedException")).unwrap();
+        assert_eq!(std::fs::read(&marker).unwrap(), b"refresh-rejected:NotAuthorizedException");
+        assert!(refresh_rejection_recorded_at(&path, access).unwrap());
+        std::fs::write(&marker, b"refresh-rejected").unwrap();
+        assert!(refresh_rejection_recorded_at(&path, access).unwrap());
+    }
+
+    #[test]
+    fn marker_kind_maps_legacy_and_reason_suffixed_refresh_rejection_markers() {
+        assert_eq!(marker_kind_from_contents(Some(b"refresh-rejected")), "desktop");
+        assert_eq!(
+            marker_kind_from_contents(Some(b"refresh-rejected:NotAuthorizedException")),
+            "desktop"
+        );
+        assert_eq!(marker_kind_from_contents(Some(b"")), "cli");
+        assert_eq!(marker_kind_from_contents(Some(b"other")), "unknown");
+    }
+
+    #[test]
     fn test_token_invalidation_is_generation_specific() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cognito-tokens.json");
@@ -1805,6 +2826,92 @@ mod tests {
 
         assert!(read_tokens_from_path(&path).unwrap().is_none());
         assert!(has_non_empty_token_at(&path).unwrap());
+
+        std::fs::write(
+            invalidation_path_for_token(&path, &tokens.access_token),
+            b"refresh-rejected",
+        )
+        .unwrap();
+        write_tokens_to_path(&path, &tokens).unwrap();
+        assert!(!invalidation_path_for_token(&path, &tokens.access_token).exists());
+    }
+
+    #[tokio::test]
+    async fn resolve_tokens_refreshes_matching_invalidated_generation_before_sign_in() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let mut cached_tokens = token_generation("marked");
+        cached_tokens.expires_at = i64::MAX;
+        set_tokens(&cached_tokens)
+            .await
+            .expect("store refreshable tokens");
+        let tokens_path = home.path().join(".hq/cognito-tokens.json");
+        invalidate_token_at(&tokens_path, &cached_tokens.access_token).unwrap();
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "AuthenticationResult": {
+                    "AccessToken": "recovered-access",
+                    "ExpiresIn": 3600
+                }
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let result = resolve_tokens_classified(false, &cognito.uri()).await;
+        assert!(
+            result.is_ok(),
+            "a matching access-token marker must try the still-available refresh token"
+        );
+        let resolved = result.unwrap();
+        assert_eq!(resolved.access_token, "recovered-access");
+        assert_eq!(get_tokens().await.unwrap(), Some(resolved));
+        cognito.verify().await;
+    }
+
+    #[tokio::test]
+    async fn resolve_tokens_keeps_rejected_refresh_on_sign_in_after_marker() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let home = tempfile::tempdir().expect("temporary token home");
+        let _test_home = TestHome::set(home.path());
+        let mut cached_tokens = token_generation("rejected");
+        cached_tokens.expires_at = i64::MAX;
+        set_tokens(&cached_tokens)
+            .await
+            .expect("store tokens for rejected refresh");
+        let tokens_path = home.path().join(".hq/cognito-tokens.json");
+        invalidate_token_at(&tokens_path, &cached_tokens.access_token).unwrap();
+
+        let cognito = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "__type": "NotAuthorizedException",
+                "message": "Invalid Refresh Token"
+            })))
+            .expect(1)
+            .mount(&cognito)
+            .await;
+
+        let failure = resolve_tokens_classified(false, &cognito.uri())
+            .await
+            .expect_err("rejected refresh must remain a sign-in condition");
+        assert!(failure.requires_reauth);
+
+        let repeated_failure = resolve_tokens_classified(false, &cognito.uri())
+            .await
+            .expect_err("the rejected token generation must stay signed out");
+        assert!(repeated_failure.requires_reauth);
+        assert!(get_tokens().await.unwrap().is_none());
+        cognito.verify().await;
     }
 
     #[test]
@@ -1883,6 +2990,7 @@ mod tests {
             account_id: Some("sub-a".to_string()),
             email: Some("a@b.c".to_string()),
             display_name: Some("Ada".to_string()),
+            startup_token_read_result: Some("ok_none".to_string()),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":true"));
@@ -1890,6 +2998,7 @@ mod tests {
         assert!(json.contains("\"accountId\":\"sub-a\""));
         assert!(json.contains("\"email\":\"a@b.c\""));
         assert!(json.contains("\"displayName\":\"Ada\""));
+        assert!(json.contains("\"startupTokenReadResult\":\"ok_none\""));
     }
 
     #[test]
@@ -1900,6 +3009,7 @@ mod tests {
             account_id: None,
             email: None,
             display_name: None,
+            startup_token_read_result: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));
@@ -1963,6 +3073,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
         invalidate_token_at(&path, &tokens.access_token).unwrap();
         let marker = invalidation_path_for_token(&path, &tokens.access_token);
+        std::fs::write(&marker, b"refresh-rejected").unwrap();
         assert!(marker.exists());
         assert!(has_non_empty_token_at(&path).unwrap());
 
@@ -2149,6 +3260,132 @@ mod tests {
             read_tokens_from_path(&path).unwrap().is_none(),
             "invalidated generation must stay unusable"
         );
+    }
+
+    #[test]
+    fn rust_token_lock_blocks_node_pid_lock_until_release() {
+        use std::process::{Command, Stdio};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let lock = lock_token_file_at(&path).unwrap();
+        let script = r#"
+const fs=require('fs'), path=process.argv[1], candidate=path+'.candidate.'+process.pid;
+fs.writeFileSync(candidate,String(process.pid),{flag:'wx',mode:0o600});
+const end=Date.now()+1500; let held=false;
+try { while(Date.now()<end) { try { fs.linkSync(candidate,path); held=true; break; } catch(e) { if(e.code!=='EEXIST') throw e; let pid=null; try { pid=Number(fs.readFileSync(path,'utf8').trim()); } catch {} let alive=false; if(Number.isInteger(pid)&&pid>0) { try { process.kill(pid,0); alive=true; } catch(e) { alive=e.code==='EPERM'; } } if(!alive) { try { fs.unlinkSync(path); } catch {} } else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); } } console.log(held?'acquired':'timeout'); } finally { if(held) { try { if(fs.readFileSync(path,'utf8').trim()===String(process.pid)) fs.unlinkSync(path); } catch {} } try { fs.unlinkSync(candidate); } catch {} }
+"#;
+        let mut child = Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .arg(token_file_lock_path(&path))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("node is installed for the desktop app toolchain");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(child.try_wait().unwrap().is_none(), "Node acquired the shared lock while Rust held it");
+        drop(lock);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "acquired");
+    }
+
+    #[test]
+    fn rust_pid_lock_excludes_published_hq_cloud_for_fifty_interleavings() {
+        use std::fs;
+        use std::process::{Command, Stdio};
+
+        fn stamp() -> u128 {
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                * 1_000_000
+        }
+
+        let published_package = std::env::var("HQ_TEST_PUBLISHED_CLOUD_PACKAGE").ok();
+        let mut intervals = Vec::<(&'static str, usize, u128, u128)>::new();
+        for iteration in 0..50 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cognito-tokens.json");
+            let primary_start = stamp();
+            let primary = lock_token_file_at(&path).unwrap();
+
+            let script = r#"
+import fs from 'node:fs';import path from 'node:path';import {pathToFileURL} from 'node:url';
+const state=process.argv[1],pkg=process.argv[2],i=process.argv[3];
+const stamp=()=>String(Date.now()*1000000);
+if(pkg) {
+  process.env.HQ_STATE_DIR=state;
+  const api=await import(pathToFileURL(path.join(pkg,'dist/index.js')));
+  globalThis.fetch=async()=>{fs.writeFileSync(path.join(state,'node-enter-'+i),stamp());await new Promise(r=>setTimeout(r,12));return new Response(JSON.stringify({access_token:'probe-access',id_token:'probe-id',refresh_token:'probe-refresh',expires_in:3600,token_type:'Bearer'}),{status:200,headers:{'Content-Type':'application/json'}})};
+  await api.refreshTokens({region:'us-east-1',userPoolDomain:'fake.invalid',clientId:'probe-client'},'probe-refresh');
+  fs.writeFileSync(path.join(state,'node-exit-'+i),stamp());
+} else {
+  const lock=path.join(state,'cognito-tokens.json.lock'),candidate=lock+'.candidate.'+process.pid+'.'+i;
+  fs.writeFileSync(candidate,String(process.pid),{flag:'wx',mode:0o600});
+  while(true){try{fs.linkSync(candidate,lock);break}catch(e){if(e.code!=='EEXIST')throw e;await new Promise(r=>setTimeout(r,2))}}
+  fs.writeFileSync(path.join(state,'node-enter-'+i),stamp());
+  await new Promise(r=>setTimeout(r,12));
+  fs.writeFileSync(path.join(state,'node-exit-'+i),stamp());
+  fs.unlinkSync(lock);fs.unlinkSync(candidate);
+}
+"#;
+            let node = Command::new("node")
+                .arg("--input-type=module")
+                .arg("-e")
+                .arg(script)
+                .arg(dir.path())
+                .arg(published_package.as_deref().unwrap_or(""))
+                .arg(iteration.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("Node is required for the cross-process refresh lock test");
+
+            let contender_path = path.clone();
+            let (send, receive) = mpsc::channel();
+            let contender = std::thread::spawn(move || {
+                let guard = lock_token_file_at(&contender_path).unwrap();
+                let entered = stamp();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                let exited = stamp();
+                drop(guard);
+                send.send((entered, exited)).unwrap();
+            });
+
+            std::thread::sleep(std::time::Duration::from_millis(4));
+            let primary_exit = stamp();
+            drop(primary);
+            intervals.push(("rust-primary", iteration, primary_start, primary_exit));
+
+            let output = node.wait_with_output().unwrap();
+            assert!(output.status.success(), "Node lock attempt {iteration} failed: {}", String::from_utf8_lossy(&output.stderr));
+            let (rust_enter, rust_exit) = receive.recv().unwrap();
+            contender.join().unwrap();
+            intervals.push(("rust-contender", iteration, rust_enter, rust_exit));
+            let node_enter = fs::read_to_string(dir.path().join(format!("node-enter-{iteration}"))).unwrap().parse::<u128>().unwrap();
+            let node_exit = fs::read_to_string(dir.path().join(format!("node-exit-{iteration}"))).unwrap().parse::<u128>().unwrap();
+            intervals.push(("node-published", iteration, node_enter, node_exit));
+        }
+
+        for (i, (left_name, left_run, left_start, left_end)) in intervals.iter().enumerate() {
+            for (right_name, right_run, right_start, right_end) in intervals.iter().skip(i + 1) {
+                if left_run == right_run {
+                    assert!(
+                        left_end <= right_start || right_end <= left_start,
+                        "critical sections overlapped: {left_name}[{left_run}] {left_start}..{left_end}, {right_name}[{right_run}] {right_start}..{right_end}"
+                    );
+                }
+            }
+        }
+        if let Some(path) = std::env::var_os("HQ_TEST_LOCK_MEASUREMENTS_OUT") {
+            let mut output = String::from("iteration,participant,entry_epoch_ns,exit_epoch_ns\n");
+            for (participant, iteration, entered, exited) in &intervals {
+                output.push_str(&format!("{iteration},{participant},{entered},{exited}\n"));
+            }
+            fs::write(path, output).expect("write critical-section timestamp evidence");
+        }
+        eprintln!("cross-process lock measurement passed 50/50 iterations; {} critical-section intervals recorded", intervals.len());
     }
 
     #[test]

@@ -494,6 +494,51 @@ export function friendlySetupBands(overallPercent: number): FriendlySetupBand[] 
   });
 }
 
+/**
+ * Shorter band names for compact surfaces, such as the welcome flow's corner
+ * install card, which has to hold one width through every step. Same order and
+ * meaning as {@link FRIENDLY_SETUP_BAND_LABELS}; only the third is trimmed.
+ */
+export const COMPACT_SETUP_BAND_LABELS = [
+  'Laying the groundwork',
+  'Building your workspace',
+  'Bringing in your AI workers',
+  'Making it yours',
+  'Syncing across your devices',
+] as const;
+
+export interface SetupStepSummary {
+  /** 1-based band the install is on; equals `total` once everything is done. */
+  step: number;
+  total: number;
+  /** The friendly band label for `step`. */
+  label: string;
+  /** The compact band label for `step`. */
+  compactLabel: string;
+  /** True once every band is done. */
+  done: boolean;
+}
+
+/**
+ * "Step N of 5" for the band the install is on, read from the same
+ * `overallPercent` the band checklist uses, so a one-line surface and the full
+ * checklist can never disagree about where setup is.
+ */
+export function setupStepSummary(overallPercent: number): SetupStepSummary {
+  const bands = friendlySetupBands(overallPercent);
+  const total = bands.length;
+  const index = bands.findIndex((band) => band.status !== 'done');
+  const done = index === -1;
+  const at = done ? total - 1 : index;
+  return {
+    step: at + 1,
+    total,
+    label: FRIENDLY_SETUP_BAND_LABELS[at],
+    compactLabel: COMPACT_SETUP_BAND_LABELS[at],
+    done,
+  };
+}
+
 // ─── Monotonic progress ──────────────────────────────────────────────
 //
 // `setupProgressPercent` is a pure function of the stage list, so anything
@@ -600,6 +645,7 @@ export const STAGE_SKIP_THRESHOLD_MS: Partial<Record<StageId, number>> = {
 };
 
 export const STAGE_TIMEOUT_GRACE_MS = 300_000;
+export const SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS = 10_000;
 export const DEFAULT_STAGE_TIMEOUT_MS =
   DEFAULT_STAGE_SKIP_THRESHOLD_MS + STAGE_TIMEOUT_GRACE_MS;
 
@@ -682,6 +728,26 @@ export function setupAutoRetryDelayMs(retryNumber: number): number {
   );
 }
 
+export function resolveFlagWithTimeout(
+  flag: Promise<boolean>,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    flag.then(
+      (enabled) => finish(enabled === true),
+      () => finish(false),
+    );
+  });
+}
+
 export interface TransientSetupStageFailureInput {
   stageId: StageId;
   message: string | null | undefined;
@@ -729,6 +795,8 @@ export interface SetupStageRecoveryInput {
   stageId: StageId;
   message: string | null | undefined;
   retryCount: number;
+  depsTimeoutRetryEnabled?: boolean;
+  depsTimeoutRetrySuppressed?: boolean;
 }
 
 export function setupStageRecoveryAction(
@@ -737,6 +805,20 @@ export function setupStageRecoveryAction(
   const message =
     input.message?.trim() || 'Stage failed with no detail recorded.';
   if (isHardStageTimeoutMessage(message)) {
+    const nextRetryCount = Math.max(0, Math.floor(input.retryCount)) + 1;
+    if (
+      input.stageId === 'deps' &&
+      input.depsTimeoutRetryEnabled === true &&
+      input.depsTimeoutRetrySuppressed !== true &&
+      nextRetryCount <= stageAutoRetryLimit('deps')
+    ) {
+      return {
+        kind: 'retry',
+        delayMs: setupAutoRetryDelayMs(nextRetryCount),
+        nextRetryCount,
+        message,
+      };
+    }
     return { kind: 'skip', message };
   }
 
@@ -757,6 +839,8 @@ export function setupStageRecoveryAction(
 }
 
 export class StageTimeoutError extends Error {
+  retrySuppressed = false;
+
   constructor(public readonly stageId: StageId, public readonly ms: number) {
     super(`This step took too long (over ${Math.round(ms / 1000)}s) and was skipped.`);
     this.name = 'StageTimeoutError';
@@ -803,6 +887,26 @@ export function withTimeout<T>(
  * subscriber is installed before the timer starts and is always removed when
  * the operation settles or times out.
  */
+function settlesWithin(
+  promise: Promise<unknown>,
+  ms: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), ms);
+    promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
+  });
+}
+
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -810,6 +914,8 @@ export function withProgressTimeout<T>(
   subscribeToProgress: (onProgress: () => void) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
+  awaitTimeoutCancel = false,
+  awaitTimeoutOperationMs = 0,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -833,11 +939,40 @@ export function withProgressTimeout<T>(
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try {
-          void onTimeoutCancel?.();
-        } finally {
-          clear();
-          reject(onTimeout(reachedMaxElapsed ? maxElapsedMs : ms));
+        const timeoutError = onTimeout(reachedMaxElapsed ? maxElapsedMs : ms);
+        if (awaitTimeoutCancel && onTimeoutCancel) {
+          let cancellation: void | Promise<void>;
+          try {
+            cancellation = onTimeoutCancel();
+          } catch {
+            clear();
+            reject(timeoutError);
+            return;
+          }
+          const finishTimeout = async () => {
+            if (awaitTimeoutOperationMs > 0) {
+              const operationSettled = await settlesWithin(
+                promise,
+                awaitTimeoutOperationMs,
+              );
+              if (
+                !operationSettled &&
+                timeoutError instanceof StageTimeoutError
+              ) {
+                timeoutError.retrySuppressed = true;
+              }
+            }
+            clear();
+            reject(timeoutError);
+          };
+          Promise.resolve(cancellation).then(finishTimeout, finishTimeout);
+        } else {
+          try {
+            void onTimeoutCancel?.();
+          } finally {
+            clear();
+            reject(timeoutError);
+          }
         }
       }, timeoutMs);
     };

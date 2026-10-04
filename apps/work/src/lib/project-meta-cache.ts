@@ -31,7 +31,7 @@ export interface CreateProjectMetaCacheOptions {
 }
 
 /** Use the same cache key everywhere the Work shell does. */
-export function projectMetaKey(row: ConversationRow): string | null {
+function projectMetaKey(row: ConversationRow): string | null {
   const key = row.channelId || row.projectId || row.id;
   return key.trim() || null;
 }

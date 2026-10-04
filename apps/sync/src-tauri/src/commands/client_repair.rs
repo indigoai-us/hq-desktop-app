@@ -330,30 +330,37 @@ async fn apply_desktop_update() -> (TerminalReceiptContent, PostAction) {
             log(LOG_TAG, "APPLY_DESKTOP_UPDATE on Windows requires manual action until US-012");
             (manual_action_required(), PostAction::None)
         }
-        DesktopUpdatePlan::UsePlatformUpdater => match check_desktop_update().await {
-            // An update the platform updater attests (its signature is verified
-            // on download) is available: flush a succeeded receipt, then the
-            // post-action installs + restarts.
-            Ok(Some(version)) => (
-                succeeded_with_versions(ClientHealthVersions {
-                    desktop: Some(version),
-                    ..Default::default()
-                }),
-                PostAction::InstallDesktopUpdate,
-            ),
-            // Already current — nothing to install, no restart.
-            Ok(None) => (
-                succeeded_with_versions(ClientHealthVersions {
-                    desktop: read_desktop_version(),
-                    ..Default::default()
-                }),
-                PostAction::None,
-            ),
-            Err(e) => {
-                log(LOG_TAG, &format!("APPLY_DESKTOP_UPDATE check failed: {e}"));
-                (failed(Some(ClientHealthFailureReason::UpdateFailed)), PostAction::None)
+        DesktopUpdatePlan::UsePlatformUpdater => {
+            if support_restart_is_held() {
+                emit_deferred_restart_notice(ClientHealthRepairKind::ApplyDesktopUpdate);
+                record_local_repair("APPLY_DESKTOP_UPDATE deferred while recording");
+                return (deferred_while_recording(), PostAction::InstallDesktopUpdate);
             }
-        },
+            match check_desktop_update().await {
+                // An update the platform updater attests (its signature is verified
+                // on download) is available: flush a succeeded receipt, then the
+                // post-action installs + restarts.
+                Ok(Some(version)) => (
+                    succeeded_with_versions(ClientHealthVersions {
+                        desktop: Some(version),
+                        ..Default::default()
+                    }),
+                    PostAction::InstallDesktopUpdate,
+                ),
+                // Already current — nothing to install, no restart.
+                Ok(None) => (
+                    succeeded_with_versions(ClientHealthVersions {
+                        desktop: read_desktop_version(),
+                        ..Default::default()
+                    }),
+                    PostAction::None,
+                ),
+                Err(e) => {
+                    log(LOG_TAG, &format!("APPLY_DESKTOP_UPDATE check failed: {e}"));
+                    (failed(Some(ClientHealthFailureReason::UpdateFailed)), PostAction::None)
+                }
+            }
+        }
     }
 }
 
@@ -382,6 +389,11 @@ async fn restart_app(command: &ClientHealthDesiredCommand) -> (TerminalReceiptCo
     if !consequence_confirmed(command.required_confirmation) {
         log(LOG_TAG, "RESTART_APP missing consequence confirmation; failing closed");
         return (failed(None), PostAction::None);
+    }
+    if support_restart_is_held() {
+        emit_deferred_restart_notice(ClientHealthRepairKind::RestartApp);
+        record_local_repair("RESTART_APP deferred while recording");
+        return (deferred_while_recording(), PostAction::Restart);
     }
     emit_notice(RepairNotice {
         kind: ClientHealthRepairKind::RestartApp.wire_value().to_string(),
@@ -421,6 +433,28 @@ fn failed(reason: Option<ClientHealthFailureReason>) -> TerminalReceiptContent {
         postcondition: None,
         manual_action_required: None,
     }
+}
+
+/// The server protocol has no deferred terminal state. A recording has not
+/// completed the requested action, so use the closest closed non-success
+/// state rather than emitting a false succeeded receipt.
+fn deferred_while_recording() -> TerminalReceiptContent {
+    failed(Some(ClientHealthFailureReason::UpdateFailed))
+}
+
+fn support_restart_is_held() -> bool {
+    repair_app_handle()
+        .is_some_and(|app| crate::updater::restart_is_held(&app).is_some())
+}
+
+fn emit_deferred_restart_notice(kind: ClientHealthRepairKind) {
+    emit_notice(RepairNotice {
+        kind: kind.wire_value().to_string(),
+        title: "HQ will restart after your recording finishes".to_string(),
+        message: "HQ will wait for your recording to finish before restarting.".to_string(),
+        countdown_seconds: 0,
+        changed_local_setting: false,
+    });
 }
 
 fn manual_action_required() -> TerminalReceiptContent {
@@ -497,7 +531,13 @@ async fn trigger_sync() -> Result<(), SyncTriggerError> {
         // No handle (headless/test): nothing to drive.
         return Ok(());
     };
-    match crate::commands::sync::start_sync(app, None).await {
+    match crate::commands::sync::start_sync_with_trigger(
+        app,
+        None,
+        crate::commands::cdp_mirror::SyncTrigger::Auto,
+    )
+    .await
+    {
         Ok(_) => Ok(()),
         Err(e) => {
             if e == hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE {
@@ -644,6 +684,11 @@ fn spawn_restart_after_flush(countdown_seconds: u64) {
         return;
     };
     tauri::async_runtime::spawn(async move {
+        if crate::updater::restart_is_held(&app).is_some() {
+            log(LOG_TAG, "RESTART_APP deferred until protected activity clears");
+            crate::updater::defer_restart_until_safe(app);
+            return;
+        }
         // The countdown notice is already visible; hold it, then restart. The
         // terminal receipt was flushed before this task was spawned.
         tokio::time::sleep(Duration::from_secs(countdown_seconds)).await;
@@ -658,6 +703,11 @@ fn spawn_install_desktop_update() {
         return;
     };
     tauri::async_runtime::spawn(async move {
+        if crate::updater::restart_is_held(&app).is_some() {
+            log(LOG_TAG, "APPLY_DESKTOP_UPDATE deferred until protected activity clears");
+            crate::updater::defer_install_until_safe(app);
+            return;
+        }
         // The platform updater verifies the signature on download and restarts
         // the app itself. The succeeded receipt was flushed before this ran.
         if let Err(e) = crate::updater::install_update(app).await {
@@ -797,6 +847,13 @@ mod tests {
             content.failure_reason,
             Some(ClientHealthFailureReason::ManualActionRequired)
         );
+    }
+
+    #[test]
+    fn recording_deferral_never_claims_a_succeeded_repair() {
+        let content = deferred_while_recording();
+        assert_eq!(content.state, ClientHealthCommandState::Failed);
+        assert_eq!(content.failure_reason, Some(ClientHealthFailureReason::UpdateFailed));
     }
 
     #[test]

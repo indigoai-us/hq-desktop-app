@@ -18,6 +18,7 @@ import {
   extraParamCompanyKey,
   sessionExtraRequiresCompany,
   historyNeighbor,
+  priorNonLibraryIndex,
   NAVIGATION_HISTORY_CAP,
   type NavigationDestination,
   type NavigationEntry,
@@ -66,6 +67,27 @@ function entry(
     overrides?.scroll,
   );
 }
+
+describe("Library Back history target", () => {
+  it("returns no target when history has no earlier non-Library route", () => {
+    const history = createNavigationHistory();
+    const skills = { kind: "library", tab: "skills" } as const;
+    history.push(entry(skills, { companyUid: "cmp_previous" }));
+    history.push(entry(skills, { companyUid: "cmp_current" }));
+
+    expect(history.snapshot().entries).toHaveLength(2);
+    expect(priorNonLibraryIndex(history.snapshot())).toBeNull();
+  });
+
+  it("skips earlier Library tabs to find the prior app route", () => {
+    const history = createNavigationHistory();
+    history.push(entry({ kind: "messages" }));
+    history.push(entry({ kind: "library", tab: "workers" }));
+    history.push(entry({ kind: "library", tab: "skills" }));
+
+    expect(priorNonLibraryIndex(history.snapshot())).toBe(0);
+  });
+});
 
 function extractDesktopAppFunctions(source: string): string[] {
   const names = new Set<string>();

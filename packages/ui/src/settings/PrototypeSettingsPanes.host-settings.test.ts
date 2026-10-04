@@ -66,7 +66,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
 
     await vi.waitFor(() => {
       expect(
-        host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+        host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
       ).toBe("false");
     });
 
@@ -90,7 +90,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await tick();
 
     expect(
-      host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+      host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
     ).toBe("true");
   });
 
@@ -106,14 +106,14 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]')?.click();
     await tick();
     nativeSettings.resolve(ok({ dockIcon: true }));
     await nativeSettings.promise;
     await tick();
 
     expect(
-      host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+      host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
     ).toBe("false");
     expect(setDockVisible).toHaveBeenCalledWith(false);
   });
@@ -132,11 +132,11 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]')?.click();
     await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledWith(false));
     await vi.waitFor(() => {
       expect(
-        host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+        host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
       ).toBe("false");
     });
     expect(getSettings).toHaveBeenCalledTimes(2);
@@ -145,7 +145,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await tick();
 
     expect(
-      host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+      host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
     ).toBe("true");
   });
 
@@ -167,7 +167,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
     const dock = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Show in Dock"]',
+      '[data-testid="settings-dock-toggle"]',
     );
     expect(dock?.getAttribute("aria-checked")).toBe("true");
     dock?.click();
@@ -202,7 +202,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
     const dock = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Show in Dock"]',
+      '[data-testid="settings-dock-toggle"]',
     );
     dock?.click();
     await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(1));
@@ -236,7 +236,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
     const dock = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Show in Dock"]',
+      '[data-testid="settings-dock-toggle"]',
     );
     expect(dock?.getAttribute("aria-checked")).toBe("false");
     dock?.click();
@@ -260,14 +260,14 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]')?.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]')?.click();
     await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledWith(false));
     dockWrite.resolve(unavailable("desktop-only"));
     await dockWrite.promise;
     await tick();
 
     expect(
-      host.querySelector('[aria-label="Show in Dock"]')?.getAttribute("aria-checked"),
+      host.querySelector('[data-testid="settings-dock-toggle"]')?.getAttribute("aria-checked"),
     ).toBe("false");
   });
 
@@ -290,7 +290,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const dock = host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]');
     dock?.click();
     dock?.click();
     dockWrite.resolve(failure("save-settings"));
@@ -323,7 +323,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const dock = host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]');
     dock?.click();
     dock?.click();
     dock?.click();
@@ -361,7 +361,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const dock = host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]');
     dock?.click();
     dock?.click();
     await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledTimes(2));
@@ -389,7 +389,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const dock = host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]');
     dock?.click();
     await vi.waitFor(() => expect(setDockVisible).toHaveBeenCalledWith(false));
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
@@ -426,7 +426,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     });
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
-    const dock = host.querySelector<HTMLButtonElement>('[aria-label="Show in Dock"]');
+    const dock = host.querySelector<HTMLButtonElement>('[data-testid="settings-dock-toggle"]');
     dock?.click();
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2));
     dock?.click();
@@ -459,7 +459,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
     const dock = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Show in Dock"]',
+      '[data-testid="settings-dock-toggle"]',
     );
     expect(dock?.getAttribute("aria-checked")).toBe("true");
     dock?.click();
@@ -497,7 +497,7 @@ describe("PrototypeSettingsPanes host-backed toggles", () => {
     await vi.waitFor(() => expect(getSettings).toHaveBeenCalledTimes(1));
 
     const dock = host.querySelector<HTMLButtonElement>(
-      '[aria-label="Show in Dock"]',
+      '[data-testid="settings-dock-toggle"]',
     );
     expect(dock?.getAttribute("aria-checked")).toBe("true");
     dock?.click();

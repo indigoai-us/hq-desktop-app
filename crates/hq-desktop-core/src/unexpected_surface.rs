@@ -117,6 +117,7 @@ pub fn auth_session_status_tag(status: &str) -> &'static str {
     match status {
         "active" => "active",
         "credentials_absent" => "credentials_absent",
+        "credentials_read_error" => "credentials_read_error",
         "credentials_invalid" => "credentials_invalid",
         "refresh_temporarily_unavailable" => "refresh_temporarily_unavailable",
         "non_human_principal" => "non_human_principal",
@@ -160,6 +161,9 @@ pub struct StartupLifecycleInputs {
     pub hq_program_kind: Option<ResolvedProgramKind>,
     pub node_program_kind: Option<ResolvedProgramKind>,
     pub require_local_toolchain_demoted: bool,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 fn bool_tag(value: bool) -> &'static str {
@@ -223,11 +227,19 @@ pub struct StartupDiagnosticTags {
     pub require_local_toolchain_demoted: &'static str,
     pub auth_session_status: &'static str,
     pub refresh_failure_class: &'static str,
+    pub invalidation_marker_present: bool,
+    pub marker_kind: &'static str,
+    pub refresh_rejection_class: &'static str,
+    pub first_read_result: &'static str,
+    pub recheck_read_result: &'static str,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 impl StartupDiagnosticTags {
     /// Keep the Sentry keys and values together so tests cover the reporter contract.
-    pub fn as_pairs(self) -> [(&'static str, &'static str); 22] {
+    pub fn as_pairs(self) -> [(&'static str, &'static str); 30] {
         [
             ("session_restore_state", self.session_restore_state),
             ("token_present", self.token_present),
@@ -257,6 +269,17 @@ impl StartupDiagnosticTags {
             ),
             ("auth_session_status", self.auth_session_status),
             ("refresh_failure_class", self.refresh_failure_class),
+            (
+                "invalidation_marker_present",
+                bool_tag(self.invalidation_marker_present),
+            ),
+            ("marker_kind", self.marker_kind),
+            ("refresh_rejection_class", self.refresh_rejection_class),
+            ("first_read_result", self.first_read_result),
+            ("recheck_read_result", self.recheck_read_result),
+            ("hq_candidate_count_bucket", self.hq_candidate_count_bucket),
+            ("managed_hq_package_state", self.managed_hq_package_state),
+            ("bundled_cli_mode", self.bundled_cli_mode),
         ]
     }
 }
@@ -290,6 +313,28 @@ pub fn startup_diagnostic_tags_with_auth_session(
     auth_session_status: &str,
     refresh_failure_class: &str,
 ) -> StartupDiagnosticTags {
+    startup_diagnostic_tags_with_rejection_class(
+        authenticated,
+        token_presence,
+        elapsed_ms,
+        prior_surface,
+        lifecycle,
+        auth_session_status,
+        refresh_failure_class,
+        "none",
+    )
+}
+
+pub fn startup_diagnostic_tags_with_rejection_class(
+    authenticated: bool,
+    token_presence: &str,
+    elapsed_ms: Option<u128>,
+    prior_surface: &str,
+    lifecycle: StartupLifecycleInputs,
+    auth_session_status: &str,
+    refresh_failure_class: &str,
+    refresh_rejection_class: &str,
+) -> StartupDiagnosticTags {
     let inputs = lifecycle.inputs;
     StartupDiagnosticTags {
         session_restore_state: session_restore_state_tag(authenticated, token_presence),
@@ -317,7 +362,91 @@ pub fn startup_diagnostic_tags_with_auth_session(
             auth_session_status,
             refresh_failure_class,
         ),
+        invalidation_marker_present: false,
+        marker_kind: "none",
+        refresh_rejection_class: refresh_rejection_class_tag(refresh_rejection_class),
+        first_read_result: "not_checked",
+        recheck_read_result: "not_checked",
+        hq_candidate_count_bucket: bounded_candidate_count_bucket(
+            lifecycle.hq_candidate_count_bucket,
+        ),
+        managed_hq_package_state: managed_hq_package_state_tag(lifecycle.managed_hq_package_state),
+        bundled_cli_mode: bundled_cli_mode_tag(lifecycle.bundled_cli_mode),
     }
+}
+
+/// Restrict refresh rejection attribution to its allowlisted vocabulary.
+pub fn refresh_rejection_class_tag(class: &str) -> &'static str {
+    match class {
+        "invalid_grant" => "invalid_grant",
+        "not_authorized" => "not_authorized",
+        "other_4xx" => "other_4xx",
+        "network" => "network",
+        "none" => "none",
+        _ => "unknown",
+    }
+}
+
+/// Restrict resolver count labels to the three-value report vocabulary.
+pub fn bounded_candidate_count_bucket(bucket: &str) -> &'static str {
+    match bucket {
+        "0" => "0",
+        "1" => "1",
+        "2_plus" => "2_plus",
+        _ => "unknown",
+    }
+}
+
+/// Restrict managed package state to path-free, low-cardinality values.
+pub fn managed_hq_package_state_tag(state: &str) -> &'static str {
+    match state {
+        "present" => "present",
+        "missing" => "missing",
+        "invalid" => "invalid",
+        "unreadable" => "unreadable",
+        _ => "unknown",
+    }
+}
+
+/// Restrict bundled CLI source to its two supported modes and unknown.
+pub fn bundled_cli_mode_tag(mode: &str) -> &'static str {
+    match mode {
+        "resource" => "resource",
+        "registry_fallback" => "registry_fallback",
+        _ => "unknown",
+    }
+}
+
+/// Apply the production token-store diagnostic gate to an unexpected-surface
+/// snapshot. Callers pass the auth probe's first-read result so this diagnostic
+/// stays paired with the probe that produced the event.
+pub fn apply_startup_token_store_diagnostics(
+    mut tags: StartupDiagnosticTags,
+    surface: &str,
+    token_presence: &str,
+    first_read_result: Option<&str>,
+) -> StartupDiagnosticTags {
+    if surface == "sign-in" && token_presence == "present" {
+        let first_read_result = match first_read_result {
+            Some("ok_some") => "ok_some",
+            Some("ok_none") => "ok_none",
+            Some("err_io") => "err_io",
+            Some("err_parse") => "err_parse",
+            _ => "unknown",
+        };
+        let diagnostics =
+            crate::cognito::startup_token_store_diagnostics_after_first(first_read_result);
+        tags.invalidation_marker_present = diagnostics.invalidation_marker_present;
+        tags.marker_kind = diagnostics.marker_kind;
+        tags.first_read_result = diagnostics.first_read_result;
+        tags.recheck_read_result = diagnostics.recheck_read_result;
+    } else {
+        tags.invalidation_marker_present = false;
+        tags.marker_kind = "none";
+        tags.first_read_result = "not_checked";
+        tags.recheck_read_result = "not_checked";
+    }
+    tags
 }
 
 /// Replace the home directory in a path string with `~` so usernames are
@@ -377,6 +506,121 @@ pub fn build_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resolver_diagnostic_pairs(
+        candidate_count_bucket: &'static str,
+        managed_package_state: &'static str,
+        bundled_cli_mode: &'static str,
+    ) -> Vec<(&'static str, &'static str)> {
+        startup_diagnostic_tags_with_auth_session(
+            false,
+            "absent",
+            None,
+            "loading",
+            StartupLifecycleInputs {
+                inputs: LifecycleInputs {
+                    install_completed: false,
+                    first_run_completed: false,
+                    had_machine_id: false,
+                    config_valid: false,
+                    hq_root_valid: false,
+                    has_auth: false,
+                    install_in_progress: false,
+                    consent_answered: false,
+                    evidence_unreadable: false,
+                },
+                hq_root_probe: None,
+                hq_program_kind: None,
+                node_program_kind: None,
+                require_local_toolchain_demoted: false,
+                hq_candidate_count_bucket: candidate_count_bucket,
+                managed_hq_package_state: managed_package_state,
+                bundled_cli_mode,
+            },
+            "credentials_absent",
+            "none",
+        )
+        .as_pairs()
+        .to_vec()
+    }
+
+    #[test]
+    fn marker_kind_tag_distinguishes_only_known_marker_contents() {
+        for (input, expected) in [
+            (None, "none"),
+            (Some(&b""[..]), "cli"),
+            (Some(&b"refresh-rejected"[..]), "desktop"),
+            (Some(&b"unexpected marker contents"[..]), "unknown"),
+        ] {
+            assert_eq!(
+                crate::cognito::invalidation_marker_kind_tag(input),
+                expected,
+                "marker contents must map only to the bounded marker vocabulary"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_rejection_class_tag_rejects_unbounded_values() {
+        for (input, expected) in [
+            ("invalid_grant", "invalid_grant"),
+            ("not_authorized", "not_authorized"),
+            ("other_4xx", "other_4xx"),
+            ("network", "network"),
+            ("none", "none"),
+            ("private response text", "unknown"),
+        ] {
+            assert_eq!(refresh_rejection_class_tag(input), expected);
+        }
+    }
+
+    #[test]
+    fn emitted_tag_pairs_cover_each_bounded_hq_candidate_count_bucket() {
+        for (input, expected) in [
+            ("0", "0"),
+            ("1", "1"),
+            ("2_plus", "2_plus"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs(input, "unknown", "unknown");
+            assert!(
+                pairs.contains(&("hq_candidate_count_bucket", expected)),
+                "producer output must include the bounded candidate bucket {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn emitted_tag_pairs_cover_each_bounded_managed_package_state() {
+        for (input, expected) in [
+            ("present", "present"),
+            ("missing", "missing"),
+            ("invalid", "invalid"),
+            ("unreadable", "unreadable"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs("0", input, "unknown");
+            assert!(
+                pairs.contains(&("managed_hq_package_state", expected)),
+                "producer output must include the bounded managed-package state {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn emitted_tag_pairs_cover_each_bounded_bundled_cli_mode() {
+        for (input, expected) in [
+            ("resource", "resource"),
+            ("registry_fallback", "registry_fallback"),
+            ("/private/home", "unknown"),
+        ] {
+            let pairs = resolver_diagnostic_pairs("0", "unknown", input);
+            assert!(
+                pairs.contains(&("bundled_cli_mode", expected)),
+                "producer output must include the bounded bundled-CLI mode {expected}"
+            );
+        }
+    }
 
     #[test]
     fn prior_setup_detected_install_completed() {
@@ -582,7 +826,12 @@ mod tests {
 
     #[test]
     fn startup_diagnostic_tags_are_bounded_and_explain_restore_state() {
-        let tags = startup_diagnostic_tags_with_auth_session(
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let isolated_home = tempfile::tempdir().expect("isolated test home");
+        std::env::set_var("HQ_TEST_HOME", isolated_home.path());
+        let tags = startup_diagnostic_tags_with_rejection_class(
             false,
             "present",
             Some(5_000),
@@ -603,9 +852,13 @@ mod tests {
                 hq_program_kind: Some(ResolvedProgramKind::Exe),
                 node_program_kind: Some(ResolvedProgramKind::Exe),
                 require_local_toolchain_demoted: false,
+                hq_candidate_count_bucket: "1",
+                managed_hq_package_state: "present",
+                bundled_cli_mode: "resource",
             },
             "credentials_invalid",
             "http_4xx",
+            "not_authorized",
         );
         assert!(
             tags.as_pairs()
@@ -626,8 +879,8 @@ mod tests {
             "unexpected startup events must identify the bounded refresh failure class"
         );
         assert_eq!(
-            tags.as_pairs(),
-            [
+            tags.as_pairs().to_vec(),
+            vec![
                 ("session_restore_state", "unauthenticated_with_token"),
                 ("token_present", "present"),
                 ("keychain_status", "not_used_token_file"),
@@ -650,6 +903,14 @@ mod tests {
                 ("require_local_toolchain_demoted", "false"),
                 ("auth_session_status", "credentials_invalid"),
                 ("refresh_failure_class", "http_4xx"),
+                ("invalidation_marker_present", "false"),
+                ("marker_kind", "none"),
+                ("refresh_rejection_class", "not_authorized"),
+                ("first_read_result", "not_checked"),
+                ("recheck_read_result", "not_checked"),
+                ("hq_candidate_count_bucket", "1"),
+                ("managed_hq_package_state", "present"),
+                ("bundled_cli_mode", "resource"),
             ]
         );
         assert_eq!(
@@ -657,9 +918,11 @@ mod tests {
             "unknown",
             "free-form identity values must never become tags"
         );
+        std::env::remove_var("HQ_TEST_HOME");
         for (status, tag) in [
             ("active", "active"),
             ("credentials_absent", "credentials_absent"),
+            ("credentials_read_error", "credentials_read_error"),
             ("credentials_invalid", "credentials_invalid"),
             (
                 "refresh_temporarily_unavailable",
@@ -704,6 +967,137 @@ mod tests {
         assert_eq!(KEYCHAIN_STATUS_TAG, "not_used_token_file");
     }
 
+    fn token_store_tags(
+        home: &std::path::Path,
+        surface: &str,
+        token_presence: &str,
+        first_read_result: Option<&str>,
+    ) -> StartupDiagnosticTags {
+        std::env::set_var("HQ_TEST_HOME", home);
+        apply_startup_token_store_diagnostics(
+            startup_diagnostic_tags_with_auth_session(
+                false,
+                token_presence,
+                None,
+                "loading",
+                StartupLifecycleInputs {
+                    inputs: LifecycleInputs {
+                        install_completed: true,
+                        first_run_completed: true,
+                        had_machine_id: true,
+                        config_valid: true,
+                        hq_root_valid: true,
+                        has_auth: false,
+                        install_in_progress: false,
+                        consent_answered: true,
+                        evidence_unreadable: false,
+                    },
+                    hq_root_probe: Some(HqRootProbe::Valid),
+                    hq_program_kind: None,
+                    node_program_kind: None,
+                    require_local_toolchain_demoted: false,
+                    hq_candidate_count_bucket: "0",
+                    managed_hq_package_state: "unknown",
+                    bundled_cli_mode: "unknown",
+                },
+                "credentials_invalid",
+                "http_4xx",
+            ),
+            surface,
+            token_presence,
+            first_read_result,
+        )
+    }
+
+    fn write_token_fixture(home: &std::path::Path, with_marker: bool) {
+        let token_dir = home.join(".hq");
+        std::fs::create_dir_all(&token_dir).expect("token dir");
+        let path = token_dir.join("cognito-tokens.json");
+        let access_token = "test-access-token";
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "accessToken": access_token,
+                "idToken": null,
+                "refreshToken": "test-refresh-token",
+                "expiresAt": 1
+            })
+            .to_string(),
+        )
+        .expect("token fixture");
+        if with_marker {
+            let marker = token_dir.join(format!(
+                "cognito-tokens.json.invalid.{}",
+                crate::cognito::access_token_fingerprint(access_token)
+            ));
+            std::fs::write(marker, "").expect("invalidation marker");
+        }
+    }
+
+    #[test]
+    fn startup_diagnostics_distinguish_invalidated_token_from_readable_token() {
+        let _home_lock = crate::cognito::HQ_TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let invalidated_home = tempfile::tempdir().expect("invalidated temp home");
+        write_token_fixture(invalidated_home.path(), true);
+        let invalidated = token_store_tags(
+            invalidated_home.path(),
+            "sign-in",
+            "present",
+            Some("ok_none"),
+        );
+        assert!(invalidated.invalidation_marker_present);
+        assert_eq!(invalidated.marker_kind, "cli");
+        assert_eq!(invalidated.first_read_result, "ok_none");
+        assert_eq!(invalidated.recheck_read_result, "ok_none");
+
+        let desktop_home = tempfile::tempdir().expect("desktop marker temp home");
+        write_token_fixture(desktop_home.path(), true);
+        let desktop_marker = desktop_home.path().join(".hq").join(format!(
+            "cognito-tokens.json.invalid.{}",
+            crate::cognito::access_token_fingerprint("test-access-token")
+        ));
+        std::fs::write(&desktop_marker, b"refresh-rejected").expect("desktop marker contents");
+        let desktop = token_store_tags(desktop_home.path(), "sign-in", "present", Some("ok_none"));
+        assert!(desktop.invalidation_marker_present);
+        assert_eq!(desktop.marker_kind, "desktop");
+
+        let readable_home = tempfile::tempdir().expect("readable temp home");
+        write_token_fixture(readable_home.path(), false);
+        let readable =
+            token_store_tags(readable_home.path(), "sign-in", "present", Some("ok_some"));
+        assert!(!readable.invalidation_marker_present);
+        assert_eq!(readable.marker_kind, "none");
+        assert_eq!(readable.first_read_result, "ok_some");
+        assert_eq!(readable.recheck_read_result, "ok_some");
+
+        let skipped_home = tempfile::tempdir().expect("skipped temp home");
+        write_token_fixture(skipped_home.path(), true);
+        for (surface, token_presence) in [("loading", "present"), ("sign-in", "absent")] {
+            let skipped = token_store_tags(
+                skipped_home.path(),
+                surface,
+                token_presence,
+                Some("ok_some"),
+            );
+            assert!(!skipped.invalidation_marker_present);
+            assert_eq!(skipped.first_read_result, "not_checked");
+            assert_eq!(skipped.recheck_read_result, "not_checked");
+        }
+
+        let unknown_home = tempfile::tempdir().expect("unknown temp home");
+        let unknown = token_store_tags(
+            unknown_home.path(),
+            "sign-in",
+            "present",
+            Some("unexpected-sensitive-error"),
+        );
+        assert_eq!(unknown.first_read_result, "unknown");
+        assert_eq!(unknown.recheck_read_result, "ok_none");
+        std::env::remove_var("HQ_TEST_HOME");
+    }
+
     #[test]
     fn lifecycle_tags_report_missing_tools_and_unobserved_platforms_truthfully() {
         let tags = startup_diagnostic_tags(
@@ -727,6 +1121,9 @@ mod tests {
                 hq_program_kind: Some(ResolvedProgramKind::NotResolved),
                 node_program_kind: None,
                 require_local_toolchain_demoted: true,
+                hq_candidate_count_bucket: "0",
+                managed_hq_package_state: "unknown",
+                bundled_cli_mode: "registry_fallback",
             },
         );
 
@@ -737,5 +1134,8 @@ mod tests {
         assert!(pairs.contains(&("node_resolved", "not_observed")));
         assert!(pairs.contains(&("node_resolved_program_kind", "not_observed")));
         assert!(pairs.contains(&("require_local_toolchain_demoted", "true")));
+        assert!(pairs.contains(&("hq_candidate_count_bucket", "0")));
+        assert!(pairs.contains(&("managed_hq_package_state", "unknown")));
+        assert!(pairs.contains(&("bundled_cli_mode", "registry_fallback")));
     }
 }

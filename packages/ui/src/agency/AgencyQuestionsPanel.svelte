@@ -8,6 +8,7 @@
    */
   import { agencyStore, submitAnswer } from "../chat/agency-store.svelte";
   import { relativeTime, type AgencyQuestion } from "../chat/agency";
+  import { primaryEnterKeyHint } from "@hq/platform";
 
   let drafts = $state<Record<string, string>>({});
   let busy = $state<Record<string, boolean>>({});
@@ -101,8 +102,8 @@
             <textarea
               rows="2"
               placeholder={q.options.length
-                ? "Or type a custom answer… (⌘↵)"
-                : "Your answer… (⌘↵ to send)"}
+                ? `Or type a custom answer… (${primaryEnterKeyHint()})`
+                : `Your answer… (${primaryEnterKeyHint()} to send)`}
               bind:value={drafts[q.id]}
               onkeydown={(e) => onKey(e, q)}
             ></textarea>

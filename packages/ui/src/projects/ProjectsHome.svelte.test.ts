@@ -19,6 +19,7 @@ let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   localStorage.clear();
   if (component) await unmount(component);
   component = null;
@@ -110,5 +111,13 @@ describe("ProjectsHome", () => {
   it("says so when no company has synced to this Mac", async () => {
     const el = await render({ companies: [COMPANIES[2]] });
     expect(el.querySelector('[data-testid="projects-home-empty"]')).not.toBeNull();
+  });
+
+  it("uses the Windows computer noun in the empty state", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
+    const el = await render({ companies: [COMPANIES[2]] });
+    expect(el.querySelector('[data-testid="projects-home-empty"]')?.textContent).toContain(
+      "No company folders on this PC yet.",
+    );
   });
 });

@@ -108,6 +108,67 @@ export function requireNonIndigoRefreshToken(env = process.env) {
   return token;
 }
 
+/** The desktop app's public Cognito app client (crates/hq-desktop-core/src/oauth.rs). */
+export const SMOKE_COGNITO_CLIENT_ID = "7acei2c8v870enheptb1j5foln";
+export const SMOKE_COGNITO_ENDPOINT = "https://cognito-idp.us-east-1.amazonaws.com/";
+export const REFRESH_PREFLIGHT_TIMEOUT_MS = 15_000;
+
+/**
+ * Exchange the smoke refresh token once before launching the app. Refresh
+ * tokens for this client expire after 30 days; an expired one makes the app
+ * sit on the skeleton until the boot watchdog fires, which reads exactly like
+ * a first-paint regression (v0.10.383). Fail with the real cause instead.
+ * Only a Cognito NotAuthorizedException fails the smoke; a network problem
+ * warns and lets the launch decide.
+ */
+export async function verifySmokeRefreshToken(
+  refreshToken,
+  { fetchImpl = fetch, warn = defaultWarn, timeoutMs = REFRESH_PREFLIGHT_TIMEOUT_MS } = {},
+) {
+  let response;
+  try {
+    response = await fetchImpl(SMOKE_COGNITO_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-amz-json-1.1",
+        "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+      },
+      body: JSON.stringify({
+        AuthFlow: "REFRESH_TOKEN_AUTH",
+        ClientId: SMOKE_COGNITO_CLIENT_ID,
+        AuthParameters: { REFRESH_TOKEN: refreshToken },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    warn(
+      `::warning::macos-artifact-smoke: could not reach Cognito to check ${SMOKE_TOKEN_SECRET} (${
+        error?.name ?? "error"
+      }); launching anyway`,
+    );
+    return { checked: false };
+  }
+  if (response.ok) return { checked: true };
+  let errorType = "";
+  try {
+    const body = await response.json();
+    errorType = String(body?.__type ?? "").split("#").pop();
+  } catch {
+    errorType = "";
+  }
+  if (errorType === "NotAuthorizedException") {
+    throw smokeError(
+      `${SMOKE_TOKEN_SECRET} was rejected by Cognito (NotAuthorizedException: expired or revoked; these refresh tokens last 30 days). This is the smoke identity, not the app: re-mint the secret with the command in docs/RELEASE.md ("Non-Indigo release smoke"), then re-run the job.`,
+    );
+  }
+  warn(
+    `::warning::macos-artifact-smoke: Cognito returned HTTP ${response.status}${
+      errorType ? ` (${errorType})` : ""
+    } while checking ${SMOKE_TOKEN_SECRET}; launching anyway`,
+  );
+  return { checked: false };
+}
+
 export function normalizeVersion(input) {
   const raw = String(input ?? "").trim();
   const stripped = raw.replace(/^v/i, "");
@@ -148,8 +209,6 @@ const SAFE_BOOT_LOG_MESSAGES = new Set([
   "desktop-alt window created",
   "desktop-alt closed by user",
   "desktop-alt webview gone before shell_ready",
-  "shell ready — watchdog cancelled",
-  "watchdog timeout — desktop shell did not report ready",
   "recovery auto-check: no update/rollback available",
   "shell_ready from UI",
   "reset local UI state",
@@ -166,6 +225,12 @@ const SAFE_BOOT_LOG_PATTERNS = [
   new RegExp(`^auto-checking for updates before recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
   new RegExp(`^recovery window opened \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS}), version=v${SAFE_VERSION}\\)$`),
   new RegExp(`^recovery auto-check found v${SAFE_VERSION} — offering as primary action$`),
+  new RegExp(`^shell ready(?: after \\d+\\.\\d+s)? — watchdog cancelled$`),
+  new RegExp(`^shell ready(?: after \\d+\\.\\d+s)? — after watchdog timeout; closing recovery window$`),
+  new RegExp(`^watchdog timeout(?: after \\d+\\.\\d+s)? — desktop shell did not report ready$`),
+  new RegExp(`^watchdog timer woke \\d+\\.\\d+s late — async runtime stalled; granting \\d+s grace before recovery$`),
+  new RegExp(`^async runtime stalled: heartbeat woke \\d+\\.\\d+s late$`),
+  new RegExp(`^shell ready during recovery auto-check; not opening recovery window \\(trigger=(?:${SAFE_RECOVERY_TRIGGERS})\\)$`),
 ];
 
 const CREDENTIAL_SHAPES = [
@@ -624,6 +689,7 @@ export async function runArtifactSmoke({
   mkdtempImpl = mkdtemp,
   removeHomeImpl = removeSmokeHome,
   installHqCliImpl = installSmokeHqCli,
+  verifyRefreshTokenImpl = null,
   warn = defaultWarn,
   diagnostic = (message) => process.stderr.write(`${message}\n`),
 }) {
@@ -644,6 +710,10 @@ export async function runArtifactSmoke({
       );
     }
     return { ok: true, version: bundleVersion, launched: false };
+  }
+
+  if (verifyRefreshTokenImpl) {
+    await verifyRefreshTokenImpl(refreshToken, { warn });
   }
 
   const home = await mkdtempImpl(join(tmpdir(), SMOKE_TEMP_PREFIX));
@@ -800,6 +870,10 @@ export async function runCli(argv = process.argv.slice(2), options = {}) {
     sleep: options.sleep,
     mkdtempImpl: options.mkdtempImpl,
     removeHomeImpl: options.removeHomeImpl,
+    verifyRefreshTokenImpl:
+      options.verifyRefreshTokenImpl === undefined
+        ? (token, opts) => verifySmokeRefreshToken(token, { ...opts, fetchImpl: options.fetchImpl ?? fetch })
+        : options.verifyRefreshTokenImpl,
     warn: options.warn,
     diagnostic: options.diagnostic,
   });

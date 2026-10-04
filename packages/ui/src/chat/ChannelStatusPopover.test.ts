@@ -585,7 +585,7 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     expect(opened!.personUid).toBe("prs_other");
   });
 
-  it("shows remove for an owner and emits onremovemember", async () => {
+  it("shows remove for an owner and emits onremovemember (owner cannot self-leave)", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     let removed: { personUid: string } | null = null;
@@ -601,9 +601,13 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     const removeBtns = host.querySelectorAll(
       '[data-testid="status-member-remove"]',
     );
-    // Owner sees remove on every row (self-leave + owner-removes-others).
-    expect(removeBtns.length).toBe(2);
-    (removeBtns[1] as HTMLButtonElement).click();
+    // Owner: X on other rows only. Owner-self is hidden because the server
+    // rejects owner self-leave (CHANNEL_OWNER_CANNOT_LEAVE) — owners must use
+    // the trash control in the footer instead.
+    expect(removeBtns.length).toBe(1);
+    const selfRow = removeBtns[0].closest('[data-testid="status-member"]');
+    expect(selfRow?.textContent).toContain("Marcus Chen");
+    (removeBtns[0] as HTMLButtonElement).click();
     await tick();
     expect(removed!.personUid).toBe("prs_other");
   });
@@ -629,6 +633,28 @@ describe("ChannelStatusPopover — email, profile-open, and remove", () => {
     expect(removeBtns.length).toBe(1);
     const selfRow = removeBtns[0].closest('[data-testid="status-member"]');
     expect(selfRow?.textContent).toContain("Marcus Chen");
+  });
+
+  it("does not offer self-leave until the caller's channel role is known", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const m = model();
+    // The roster is still hydrating. The server may already know this caller
+    // is the owner, so an unknown role must not be treated as member.
+    m.members[0]!.role = null;
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: m,
+        self: { uid: "prs_me" },
+        onremovemember: () => {},
+      },
+    });
+    await tick();
+
+    expect(
+      host.querySelector('[data-testid="status-member-remove"]'),
+    ).toBeNull();
   });
 });
 
@@ -829,6 +855,139 @@ describe("ChannelStatusPopover — migrate session (US-017B)", () => {
     await tick();
     expect(
       host.querySelector('[data-testid="status-session-migrate"]'),
+    ).toBeNull();
+  });
+});
+
+describe("ChannelStatusPopover — bot removal X", () => {
+  function ownerModelWithBots(): ChannelStatusModel {
+    const m = model();
+    m.members = [
+      {
+        personUid: "prs_me",
+        displayName: "Ada Lovelace",
+        role: "owner",
+        email: null,
+        avatarUrl: null,
+        description: null,
+        statusIcon: "idle",
+        online: false,
+      },
+    ];
+    m.agents = [
+      {
+        personUid: "agt_scout",
+        displayName: "Scout",
+        role: null,
+        email: null,
+        avatarUrl: null,
+        description: null,
+        statusIcon: "idle",
+        online: false,
+      },
+    ];
+    return m;
+  }
+
+  it("renders X on bot rows for the owner when onremovemember is provided", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModelWithBots(),
+        self: { uid: "prs_me" },
+        onremovemember: () => {},
+      },
+    });
+    await tick();
+    const btn = host.querySelector<HTMLButtonElement>(
+      '[data-testid="status-agent-remove"]',
+    );
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute("aria-label")).toBe(
+      "Remove Scout from channel",
+    );
+  });
+
+  it("hides X on bot rows for a non-owner even when onremovemember is provided", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const m = ownerModelWithBots();
+    m.members.push({
+      personUid: "prs_other",
+      displayName: "Marcus Chen",
+      role: "member",
+      email: null,
+      avatarUrl: null,
+      description: null,
+      statusIcon: "idle",
+      online: false,
+    });
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: m,
+        self: { uid: "prs_other" },
+        onremovemember: () => {},
+      },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="status-agent-remove"]'),
+    ).toBeNull();
+  });
+
+  it("hides X on bot rows when no onremovemember is provided", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: { model: ownerModelWithBots(), self: { uid: "prs_me" } },
+    });
+    await tick();
+    expect(
+      host.querySelector('[data-testid="status-agent-remove"]'),
+    ).toBeNull();
+  });
+
+  it("clicking bot X raises onremovemember with the bot's agt_* uid", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    let removed: { personUid: string } | null = null;
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModelWithBots(),
+        self: { uid: "prs_me" },
+        onremovemember: (row: { personUid: string }) => (removed = row),
+      },
+    });
+    await tick();
+    host
+      .querySelector<HTMLButtonElement>(
+        '[data-testid="status-agent-remove"]',
+      )!
+      .click();
+    await tick();
+    expect(removed!.personUid).toBe("agt_scout");
+  });
+
+  it("owner-self hides the leave X on the member row (server rejects owner leave)", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelStatusPopover, {
+      target: host,
+      props: {
+        model: ownerModelWithBots(),
+        self: { uid: "prs_me" },
+        onremovemember: () => {},
+      },
+    });
+    await tick();
+    // The single member row is the owner-self — no leave X.
+    expect(
+      host.querySelector('[data-testid="status-member-remove"]'),
     ).toBeNull();
   });
 });

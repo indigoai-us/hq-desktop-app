@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod banner;
 pub mod bots;
 pub mod calls;
+pub mod cdp_mirror;
 /// US-016 story acceptance tests (test builds only).
 #[cfg(test)]
 mod calls_story_tests;
@@ -94,6 +95,7 @@ pub mod windows_teardown_probe;
 pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
+pub mod uploads_paused;
 pub mod workspaces;
 #[cfg(any(windows, test))]
 mod windows_symlink_fallback;

@@ -14,6 +14,7 @@ import type {
   MarketplaceApi,
   ShellApi,
 } from "@hq/platform";
+import { isRecord } from "../common/is-record.js";
 import type { Workspace } from "../chat/workspaces.js";
 
 /**
@@ -29,10 +30,6 @@ export interface MarketplaceListingAuthor {
   handle: string;
   displayName: string;
   avatarUrl?: string | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

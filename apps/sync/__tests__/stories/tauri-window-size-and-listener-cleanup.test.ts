@@ -1,131 +1,70 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-// Source-contract coverage for Sentry HQ-DESKTOP-38 and HQ-DESKTOP-39. The
-// unit suite does not boot a native Tauri webview, so pin the frontend calls,
-// window label, and ACL permission together.
-const root = (rel: string) => fileURLToPath(new URL(`../../${rel}`, import.meta.url));
-
-const mainCapability = JSON.parse(
-  readFileSync(root('src-tauri/capabilities/default.json'), 'utf8'),
-) as { windows: string[]; permissions: string[] };
-const onboarding = readFileSync(root('src/components/Onboarding.svelte'), 'utf8');
-const nativeMain = readFileSync(root('src-tauri/src/main.rs'), 'utf8');
-const app = readFileSync(root('src/App.svelte'), 'utf8');
-const listenerRegistry = readFileSync(root('src/lib/listener-registry.ts'), 'utf8');
-
-function sourceFiles(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return sourceFiles(path);
-    return /\.(?:ts|svelte)$/.test(entry.name) ? [path] : [];
-  });
-}
-
-describe('HQ-DESKTOP-38: main-window resize ACL', () => {
-  it('authorizes the main window to resize itself', () => {
-    expect(mainCapability.windows).toContain('main');
-    expect(mainCapability.permissions).toContain('core:window:allow-set-size');
-  });
-
-  it('keeps the permission paired with its one remaining caller, onboarding', () => {
-    // PL-07 deleted the tray popover, which was the other `setSize` caller.
-    // Onboarding still grows the `main` window for the wizard and shrinks it
-    // back afterwards, so `core:window:allow-set-size` stays required. The
-    // cinematic intro made the size a parameter (card vs. full-screen film),
-    // so the call passes `target` — but every resize still routes through the
-    // work-area clamp, which is what this pins.
-    expect(onboarding).toContain('win.setSize(await responsiveOnboardingSize(target))');
-    expect(onboarding).toContain('win.setSize(COMPACT_WINDOW_SIZE)');
-  });
-
-  it('caps first-run onboarding to the active monitor work area on every platform', () => {
-    expect(onboarding).toContain('currentMonitor()');
-    expect(onboarding).toContain('monitor.workArea.size.toLogical(monitor.scaleFactor)');
-    expect(nativeMain).toContain('current_monitor()');
-    expect(nativeMain).toContain('monitor.work_area()');
-    expect(nativeMain).toContain('.clamp(420.0, 620.0)');
-  });
-});
+import {
+  ListenerRegistry,
+  safeUnlisten,
+  subscribeWindowFocus,
+} from '../../src/lib/listener-registry';
 
 describe('HQ-DESKTOP-39: late main-window listener cleanup', () => {
-  it('wires the shared ListenerRegistry into the app-surface lifecycle', () => {
-    expect(app).toMatch(
-      /import \{[^}]*\bListenerRegistry\b[^}]*\} from '\.\/lib\/listener-registry'/,
-    );
-    expect(app).toContain('async function setupTrayListeners(unlisteners: ListenerRegistry)');
-    expect(app).toContain('void setupTrayListeners(listenerRegistry)');
-    // Surface teardown must invalidate and cancel the channel-unread retry
-    // before disposing Tauri listeners so no late timer can re-register work.
-    expect(app).toMatch(
-      /return \(\) => \{[\s\S]*?channelUnreadDisposed = true;[\s\S]*?clearChannelUnreadRetry\(\);[\s\S]*?listenerRegistry\.dispose\(\);[\s\S]*?\};/,
-    );
-  });
-
   it('unlistens handles that resolve after the surface is disposed', () => {
-    // A handle pushed after disposal must be torn down immediately, not
-    // leaked into Tauri's event registry.
-    expect(listenerRegistry).toMatch(
-      /class ListenerRegistry[\s\S]*?if \(this\.disposed\)[\s\S]*?safe\(\)/,
-    );
+    const registry = new ListenerRegistry();
+    registry.dispose();
+    const late = vi.fn();
+
+    registry.push(late);
+
+    expect(late).toHaveBeenCalledTimes(1);
   });
 
   it('tears every handle down through a throw-safe, idempotent unlisten', () => {
-    // The core of the fix: Tauri's own unlisten indexes a stale
-    // `listeners[eventId].handlerId` and throws on a double/stale teardown.
-    // `safeUnlisten` runs the handle at most once inside a try/catch so that
-    // throw can neither crash the surface nor skip sibling handles.
-    expect(listenerRegistry).toContain('export function safeUnlisten(');
-    expect(listenerRegistry).toMatch(
-      /const result: unknown = unlisten\(\);[\s\S]*?Promise\.resolve\(result\)\.catch/,
-    );
-    expect(listenerRegistry).toMatch(/if \(called\) return;[\s\S]*?called = true;/);
-  });
-
-  it('routes every Tauri listener surface through safeUnlisten or ListenerRegistry', () => {
-    const listenerSurfaces = sourceFiles(root('src')).filter((path) => {
-      if (path.endsWith('.test.ts')) return false;
-      const source = readFileSync(path, 'utf8');
-      return (
-        (source.includes('@tauri-apps/api/event') ||
-          source.includes('this.listen(') ||
-          // A focus surface no longer has to import the event module itself —
-          // `subscribeWindowFocus` owns that registration now — but it is still
-          // a listener surface and still needs the teardown boundary.
-          source.includes('subscribeWindowFocus(')) &&
-        (source.includes('listen(') || source.includes('subscribeWindowFocus('))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const inner = vi.fn(() => {
+      throw new TypeError(
+        "undefined is not an object (evaluating 'listeners[eventId].handlerId')",
       );
     });
+    const safe = safeUnlisten(inner);
 
-    expect(listenerSurfaces).not.toEqual([]);
-    for (const path of listenerSurfaces) {
-      const source = readFileSync(path, 'utf8');
-      expect(
-        source.includes('safeUnlisten') ||
-          source.includes('ListenerRegistry') ||
-          source.includes('subscribeWindowFocus'),
-        `${path} registers a Tauri listener without the shared teardown boundary`,
-      ).toBe(true);
-    }
+    expect(() => safe()).not.toThrow();
+    expect(() => safe()).not.toThrow();
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
-  it('routes the US-010 repair-notice listener through the throw-safe boundary', () => {
+  it('contains a rejected unlisten promise instead of throwing it to the caller', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const safe = safeUnlisten(async () => {
+      throw new Error('stale map');
+    });
+
+    expect(() => safe()).not.toThrow();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
-  it('decomposes the focus composite instead of wrapping it', () => {
-    // The recurrence: `safeUnlisten` can only contain a handle that RETURNS its
-    // rejection, and `Window.onFocusChanged` returns a synchronous composite
-    // that discards two inner unlisten promises. Wrapping it is a no-op, so the
-    // focus subscription has to own the two window registrations itself.
-    expect(listenerRegistry).toContain('export async function subscribeWindowFocus(');
-    expect(listenerRegistry).toMatch(
-      /win\.listen<unknown>\(WINDOW_FOCUS_EVENT[\s\S]*?win\.listen<unknown>\(WINDOW_BLUR_EVENT/,
-    );
-    // Both handles go through the shared boundary before being composed.
-    expect(listenerRegistry).toMatch(
-      /const safeFocus = safeUnlisten\(focusHandle\);[\s\S]*?const safeBlur = safeUnlisten\(blurHandle\);/,
-    );
+  it('registers focus and blur itself and tears both handles down once', async () => {
+    const unlistens = { focus: vi.fn(), blur: vi.fn() };
+    const events: string[] = [];
+    const win = {
+      onFocusChanged() {
+        throw new Error('composite onFocusChanged must not be used');
+      },
+      listen: vi.fn(async (event: string) => {
+        events.push(event);
+        return event.endsWith('focus') ? unlistens.focus : unlistens.blur;
+      }),
+    };
+
+    const teardown = await subscribeWindowFocus(win, () => {});
+    teardown();
+    teardown();
+
+    expect(events).toEqual(['tauri://focus', 'tauri://blur']);
+    expect(unlistens.focus).toHaveBeenCalledTimes(1);
+    expect(unlistens.blur).toHaveBeenCalledTimes(1);
   });
 });

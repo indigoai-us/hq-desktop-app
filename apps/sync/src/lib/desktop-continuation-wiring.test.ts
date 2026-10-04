@@ -33,7 +33,7 @@ const desktopAltCapability = read('src-tauri/capabilities/desktop-alt.json');
 
 /** The body of a `fn`/`async fn` named `name`, up to its closing brace. */
 function rustFunction(source: string, name: string): string {
-  const start = source.indexOf(`fn ${name}(`);
+  const start = source.search(new RegExp(`fn ${name}(?:<[^\\n]*>)?\\(`));
   expect(start, `fn ${name} is not declared`).toBeGreaterThan(-1);
   const end = source.indexOf('\n}\n', start);
   expect(end, `fn ${name} has no closing brace`).toBeGreaterThan(start);
@@ -122,29 +122,83 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
     expect(prepare).toContain('() => !manualSignInStarted');
   });
 
-  it('starts explicit OAuth without waiting for continuation preparation in either sign-in surface', () => {
-    for (const source of [signInPrompt, onboardingWizard]) {
-      const start = source.indexOf('async function handleSignIn');
-      const handle = source.slice(start, source.indexOf('\n  async function ', start + 1));
-      expect(handle).toContain('manualSignInStarted = true;');
-      expect(handle).not.toContain('await continuationPreparation');
-      expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
-        handle.indexOf("'start_oauth_login'"),
-      );
+  it('starts explicit OAuth without waiting for continuation preparation on the returning-user surface', () => {
+    const start = signInPrompt.indexOf('async function handleSignIn');
+    const handle = signInPrompt.slice(start, signInPrompt.indexOf('\n  async function ', start + 1));
+    expect(handle).toContain('manualSignInStarted = true;');
+    expect(handle).not.toContain('await continuationPreparation');
+    expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
+      handle.indexOf("'start_oauth_login'"),
+    );
+  });
+
+  it('starts explicit OAuth in the first-run wizard with no continuation to wait on or cancel', () => {
+    const start = onboardingWizard.indexOf('async function handleSignIn');
+    const handle = onboardingWizard.slice(
+      start,
+      onboardingWizard.indexOf('\n  async function ', start + 1),
+    );
+    for (const name of [
+      'manualSignInStarted',
+      'continuationPreparation',
+      'stopAutomaticContinuationAttempt',
+      'bridge.cancel',
+    ]) {
+      expect(handle).not.toContain(name);
     }
+    expect(handle.indexOf('loadingProvider = provider;')).toBeLessThan(
+      handle.indexOf("'start_oauth_login'"),
+    );
   });
 });
 
-describe('the first-launch denominator is recorded before rollout evaluation', () => {
-  it('uses the existing durable first-launch gate to enqueue one launch receipt', () => {
-    const prepare = onboardingWizard.slice(
-      onboardingWizard.indexOf('async function prepareContinuation'),
-      onboardingWizard.indexOf('async function handleContinuationConfirm'),
+describe('Microsoft work accounts are not sent to MicrosoftPersonal', () => {
+  it('resolves the Cognito provider through hq-pro instead of a static personal mapping', () => {
+    const start = rustFunction(oauth, 'start_oauth_login');
+    const resolve = rustFunction(oauth, 'resolve_identity_provider');
+    expect(start).toContain('email: Option<String>');
+    expect(start).toContain('resolve_identity_provider');
+    expect(start).not.toContain('MicrosoftPersonal');
+    expect(resolve).toContain('identity_provider_for_sign_in');
+    expect(oauth).not.toContain('cognito_identity_provider');
+  });
+
+  it('asks for an email on both sign-in surfaces before starting Microsoft OAuth', () => {
+    expect(signInPrompt).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(onboardingWizard).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(signInPrompt).toContain('data-testid="microsoft-email"');
+    expect(onboardingWizard).toContain('data-testid="microsoft-email"');
+  });
+});
+
+describe('the first-run wizard never opens the browser on its own', () => {
+  it('imports none of the continuation attempt functions', () => {
+    // The first-run wizard opened the browser on the raw Cognito provider
+    // list before the welcome animation had played. Sign-in there starts only
+    // from a provider click.
+    for (const name of [
+      'beginContinuation',
+      'confirmContinuation',
+      'cancelContinuation',
+      'resolveRollout',
+      'prepareContinuation',
+      'bridge.start',
+    ]) {
+      expect(onboardingWizard).not.toContain(name);
+    }
+  });
+
+  it('still enqueues one launch receipt through the durable first-launch gate', () => {
+    const record = onboardingWizard.slice(
+      onboardingWizard.indexOf('async function recordLaunch'),
+      onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
-    expect(prepare).toContain('onboardingTelemetry.recordFirstLaunch()');
-    expect(prepare).toContain('recordReceipt(deps, launchReceipt(deps))');
-    expect(prepare.indexOf('recordReceipt(deps, launchReceipt(deps))')).toBeLessThan(
-      prepare.indexOf('resolveRollout(deps)'),
+    expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
+    expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
+    expect(record).toContain('flushReceipts(deps)');
+    expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
+    expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
+      record.lastIndexOf('onboardingTelemetry.recordFirstLaunch()'),
     );
   });
 });
@@ -227,6 +281,30 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(desktopAuth).toContain('.bearer_auth(jwt)');
     expect(desktopAuth).toContain('schedule_authenticated_desktop_receipt');
     expect(desktopAuth).toContain('authorized_account_id');
+  });
+
+  it('waits for durable receipt persistence only after resolving the hq-flags gate', () => {
+    const gatedReceipt = rustFunction(desktopAuth, 'record_desktop_login_completed_gated');
+    const receiptQueued = gatedReceipt.indexOf('record_desktop_login_completed(');
+    const flagResolved = gatedReceipt.indexOf('login_receipt_durability_enabled().await');
+    const durableReceipt = gatedReceipt.indexOf('persist_authenticated_receipt_custody().await');
+
+    expect(receiptQueued).toBeGreaterThanOrEqual(0);
+    expect(flagResolved).toBeGreaterThan(receiptQueued);
+    expect(durableReceipt).toBeGreaterThan(flagResolved);
+  });
+
+  it('uses a bounded default-off gate for both manual and continuation sign-ins', () => {
+    const boundedGate = rustFunction(desktopAuth, 'login_receipt_durability_enabled_with_fetch');
+    const manualOauth = rustFunction(oauth, 'oauth_exchange_code');
+    const continuation = rustFunction(desktopAuth, 'desktop_continuation_confirm');
+
+    expect(boundedGate).toContain('tokio::time::timeout');
+    expect(boundedGate).toContain('LOGIN_RECEIPT_FLAG_LOOKUP_BUDGET');
+    expect(desktopAuth).toContain('Duration::from_millis(100)');
+    expect(manualOauth).toContain('record_desktop_login_completed_gated');
+    expect(continuation).toContain('record_desktop_login_completed_gated');
+    expect(desktopAuth).toContain('"desktop.login-receipt-durable-before-return-v1"');
   });
 
   it('reports the company after the person explicitly connects it, without changing provisioning', () => {

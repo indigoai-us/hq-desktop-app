@@ -39,12 +39,15 @@ import {
 import {
   bearerTokenFromHeaders,
   createFeatureFlagGate,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   type FeatureFlagGate,
 } from "../flags.js";
 import {
   retryThrottled,
   type RequestPolicyOptions,
 } from "../request-policy.js";
+import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 
 /** One HTTP attempt: the caller-facing result plus what the policy reads. */
 interface WebAttempt<T> {
@@ -502,7 +505,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
    * byte-for-byte.
    */
   private legacyHasFeature(flag: string): AdapterPromise<boolean> {
-    if (flag === "meetings" || flag === "agents.claude-provider") {
+    if (
+      flag === "meetings" ||
+      flag === "agents.claude-provider" ||
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
+      flag === PERSONAL_TRANSCRIPTS_FLAG
+    ) {
       return Promise.resolve(ok(false));
     }
     return this.get(WEB_PATHS.hasFeature(flag));
@@ -569,24 +577,15 @@ export class WebPlatformAdapter implements PlatformAdapter {
           this.onUnauthorized();
         }
         const text = await res.text();
-        let code = `http-${res.status}`;
-        let message = `${method} ${path} failed`;
-        try {
-          const parsed = text ? JSON.parse(text) : null;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const rec = parsed as Record<string, unknown>;
-            if (typeof rec.code === "string" && rec.code.trim()) {
-              code = rec.code.trim();
-            }
-            if (typeof rec.error === "string" && rec.error.trim()) {
-              message = rec.error.trim();
-            }
-          }
-        } catch {
-          /* keep http-status defaults */
-        }
+        // A plan-limit 402 keeps the server's sentence and upgrade link; it is
+        // an expected refusal, so it is returned, never reported to Sentry.
+        const details = parseHqProErrorBody(
+          res.status,
+          text,
+          `${method} ${path} failed`,
+        );
         return {
-          result: failure(code, message),
+          result: hqProFailure(details),
           status: res.status,
           retryAfter: readRetryAfter(res),
           lambdaInvoke504: method === "GET" && isLambdaInvoke504(res, text),
@@ -638,6 +637,14 @@ export class WebPlatformAdapter implements PlatformAdapter {
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
         : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+    subscribeFeature: (flag, onChange) =>
+      WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
+        ? () => {}
+        : this.flags.subscribe(
+            flag,
+            () => this.legacyHasFeature(flag),
+            onChange,
+          ),
     listWorkspaces: async () => {
       const result = await this.get<Json>(WEB_PATHS.workspaces);
       if (!result.ok) return result;
@@ -736,11 +743,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
     searchMessages: (q, opts) => {
       return this.get(buildWebMessageSearchPath(q, opts));
     },
-    fetchChannel: ({ channelId, limit, cursor, since }) => {
+    fetchChannel: ({ channelId, limit, cursor, since, view }) => {
       const params = new URLSearchParams();
       if (limit != null) params.set("limit", String(limit));
       if (cursor) params.set("cursor", cursor);
       if (since) params.set("since", since);
+      if (view) params.set("view", view);
       const qs = params.toString();
       return this.get(
         `${WEB_PATHS.channelMessages(channelId)}${qs ? `?${qs}` : ""}`,
@@ -775,6 +783,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `/v1/companies/slug-available?slug=${encodeURIComponent(slug)}`,
       ),
+    activateCompanyCloud: (companyUid) =>
+      this.post(
+        `/v1/companies/${encodeURIComponent(companyUid)}/activate-cloud`,
+        {},
+      ),
     getCompanyTab: (companyUid, tab) =>
       this.get(WEB_PATHS.companyTab(companyUid, tab)),
     runCompanyTabAction: (args) =>
@@ -788,10 +801,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
             ? crypto.randomUUID()
             : `tab-${Date.now()}`),
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) => {
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
       const params = new URLSearchParams({ withPersonUid });
       if (limit != null) params.set("limit", String(limit));
       if (since) params.set("since", since);
+      if (cursor) params.set("cursor", cursor);
+      if (view) params.set("view", view);
       return this.get(`/v1/notify/thread?${params.toString()}`);
     },
     sendDm: (toPersonUid, body, extras) =>
@@ -1132,6 +1147,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     startDaemon: async () => DESKTOP_ONLY,
     stopDaemon: async () => DESKTOP_ONLY,
     daemonStatus: async () => DESKTOP_ONLY,
+    daemonSyncStatus: async () => ok(null),
     startSync: async () => DESKTOP_ONLY,
     cancelSync: async () => DESKTOP_ONLY,
     getSyncStatus: async () => DESKTOP_ONLY,

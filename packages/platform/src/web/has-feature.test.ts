@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { WebPlatformAdapter } from "./index.js";
+import {
+  PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
+} from "../flags.js";
 
 interface RecordedCall {
   method: string;
@@ -60,6 +64,48 @@ describe("WebPlatformAdapter hasFeature", () => {
     ).resolves.toEqual({ ok: true, value: false });
     expect(calledFlagsResolve(calls)).toBe(true);
     expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("personal workspace board flag fails closed without a configured registry value", async () => {
+    const { adapter, calls } = makeAdapter({});
+    await expect(
+      adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
+    ).resolves.toEqual({ ok: true, value: false });
+    expect(calledIdentityFeatures(calls)).toBe(false);
+  });
+
+  it("personal transcript flag uses the registry value and fails closed when missing or unreadable", async () => {
+    const enabled = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 2, flags: { [PERSONAL_TRANSCRIPTS_FLAG]: true } },
+      },
+    });
+    await expect(enabled.adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    expect(calledFlagsResolve(enabled.calls)).toBe(true);
+    expect(calledIdentityFeatures(enabled.calls)).toBe(false);
+
+    const missing = makeAdapter({
+      "GET /v1/flags/resolve": {
+        status: 200,
+        body: { version: 2, flags: {} },
+      },
+    });
+    await expect(missing.adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calledIdentityFeatures(missing.calls)).toBe(false);
+
+    const unavailable = makeAdapter({});
+    await expect(unavailable.adapter.identity.hasFeature(PERSONAL_TRANSCRIPTS_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    expect(calledIdentityFeatures(unavailable.calls)).toBe(false);
   });
 
   it("meetings: registry configured true still resolves false and never consults the registry", async () => {

@@ -22,7 +22,7 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Resolve the HQ folder path by reading config.json and menubar.json directly.
-fn resolve_hq_folder_path() -> Result<String, String> {
+pub(crate) fn resolve_hq_folder_path() -> Result<String, String> {
     let menubar_path = paths::menubar_json_path()?;
 
     let menubar_prefs: Option<MenubarPrefs> = if menubar_path.exists() {
@@ -141,10 +141,14 @@ pub async fn get_sync_status() -> Result<SyncStatus, String> {
         }
     };
 
-    Ok(hq_desktop_core::status::merge_engine_sync_at(
+    let mut status = hq_desktop_core::status::merge_engine_sync_at(
         status,
         hq_desktop_core::status::newest_engine_sync_at(),
-    ))
+    );
+    // The live registry is authoritative for the plan-limit upload pause: it
+    // sees notices mid-pass, before the journal is next written (US-019).
+    status.uploads_paused = crate::commands::uploads_paused::snapshot(Some(&hq_folder_path));
+    Ok(status)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

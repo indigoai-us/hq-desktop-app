@@ -97,25 +97,33 @@ struct SetupDiagnosticCollector {
     command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
 }
 
+/// Return the guard after a panic. Callers assign one value, update one map
+/// entry, or clone. A diagnostic tail caught mid-append is still a string.
+fn recover_lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl SetupDiagnosticCollector {
     fn new() -> Self {
         Self { command_failure: Arc::new(Mutex::new(None)) }
     }
 
     fn record(&self, diagnostic: SetupCommandDiagnostic) {
-        *self.command_failure.lock().unwrap() = Some(diagnostic);
+        *recover_lock(&self.command_failure) = Some(diagnostic);
     }
 
     fn take(&self) -> Option<SetupCommandDiagnostic> {
-        self.command_failure.lock().unwrap().take()
+        recover_lock(&self.command_failure).take()
     }
 
     fn current(&self) -> Option<SetupCommandDiagnostic> {
-        self.command_failure.lock().unwrap().clone()
+        recover_lock(&self.command_failure).clone()
     }
 
     fn clear(&self) {
-        let _ = self.command_failure.lock().unwrap().take();
+        let _ = recover_lock(&self.command_failure).take();
     }
 }
 
@@ -264,7 +272,7 @@ impl InstallCancellationCollector {
     }
 
     fn record(&self, cancellation: InstallCancellation) -> bool {
-        let mut slot = self.cancellation.lock().unwrap();
+        let mut slot = recover_lock(&self.cancellation);
         if slot.is_none() {
             *slot = Some(cancellation);
             true
@@ -274,15 +282,15 @@ impl InstallCancellationCollector {
     }
 
     fn take(&self) -> Option<InstallCancellation> {
-        self.cancellation.lock().unwrap().take()
+        recover_lock(&self.cancellation).take()
     }
 
     fn mark_cleanup_failure_reported(&self) {
-        *self.cleanup_failure_reported.lock().unwrap() = true;
+        *recover_lock(&self.cleanup_failure_reported) = true;
     }
 
     fn cleanup_failure_reported(&self) -> bool {
-        *self.cleanup_failure_reported.lock().unwrap()
+        *recover_lock(&self.cleanup_failure_reported)
     }
 }
 
@@ -502,23 +510,18 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, CancelState>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    cancel_registry()
-        .lock()
-        .unwrap()
-        .insert(handle, CancelState::default());
+    recover_lock(cancel_registry()).insert(handle, CancelState::default());
 }
 
 fn is_cancelled(handle: &str) -> bool {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get(handle)
         .map(|state| state.cancelled)
         .unwrap_or(false)
 }
 
 fn deregister_handle(handle: &str) {
-    cancel_registry().lock().unwrap().remove(handle);
+    recover_lock(cancel_registry()).remove(handle);
 }
 
 /// A non-process phase (such as waiting for the CLI update lock) still needs a
@@ -530,7 +533,7 @@ struct InstallCancellationRegistration {
 }
 
 impl InstallCancellationRegistration {
-    fn new(app: &AppHandle) -> Self {
+    fn new<R: tauri::Runtime>(app: &AppHandle<R>) -> Self {
         let handle = Uuid::new_v4().to_string();
         register_cancel_handle(handle.clone());
         emit_install_handle_started(app, &handle);
@@ -553,7 +556,7 @@ impl InstallCancellationRegistration {
         Ok(())
     }
 
-    fn finish(&self, app: &AppHandle, error: Option<&str>) {
+    fn finish<R: tauri::Runtime>(&self, app: &AppHandle<R>, error: Option<&str>) {
         deregister_handle(&self.handle);
         let _ = app.emit(
             "install:progress",
@@ -614,20 +617,20 @@ async fn acquire_cli_install_lock_for_setup_with_budget(
 
 #[cfg(unix)]
 fn register_process_group(handle: &str, pgid: i32) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         state.pgid = Some(pgid);
     }
 }
 
 #[cfg(windows)]
 fn register_job_handle(handle: &str, job: Arc<JobHandle>) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         state.job = Some(job);
     }
 }
 
 fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         // Preserve the first failed cleanup attempt. It is normally SIGTERM;
         // retaining it prevents a later SIGKILL attempt from hiding the
         // original failure that could leave the process tree running.
@@ -638,17 +641,13 @@ fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
 }
 
 fn take_cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get_mut(handle)
         .and_then(|state| state.cleanup_failure.take())
 }
 
 fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.cleanup_failure.clone())
 }
@@ -792,9 +791,7 @@ fn terminate_process_tree(
     handle: &str,
     signal_kind: Signal,
 ) -> Result<(), CancellationCleanupFailure> {
-    let pgid = cancel_registry()
-        .lock()
-        .unwrap()
+    let pgid = recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.pgid);
     let Some(pgid) = pgid else {
@@ -811,9 +808,7 @@ fn terminate_process_tree(
 
 #[cfg(windows)]
 fn terminate_process_tree(handle: &str) -> Result<(), CancellationCleanupFailure> {
-    let job = cancel_registry()
-        .lock()
-        .unwrap()
+    let job = recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.job.clone());
     let Some(job) = job else {
@@ -2164,7 +2159,6 @@ pub fn composed_settings_env_path(
 /// Return `settings_json` with `.env.PATH` set to `new_path`, preserving every
 /// other key. Creates the `env` object when absent. Errors when the document
 /// is not a JSON object.
-#[cfg(not(windows))]
 pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Result<String, String> {
     let mut doc: serde_json::Value = serde_json::from_str(settings_json)
         .map_err(|e| format!("settings.json is not valid JSON: {e}"))?;
@@ -2189,7 +2183,6 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
 
 /// The result of writing the composed managed-toolchain PATH into the winning
 /// `.claude` settings file.
-#[cfg(not(windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsPathWriteOutcome {
     /// Wrote the composed PATH into this settings file.
@@ -2205,24 +2198,24 @@ pub(crate) enum SettingsPathWriteOutcome {
 /// when it defines a non-empty `env.PATH`, else settings.json — resolved through
 /// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
 ///
-/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
-/// already produces the correct managed-first ordering; only the DESTINATION file
-/// was wrong (it was hard-coded to settings.json, which the resolver ignores
-/// whenever settings.local.json defines a non-empty PATH, so the managed-first
-/// value never reached the file the app resolves `hq` through and a stale foreign
-/// copy kept shadowing the managed CLI).
+/// Unix composes the managed dirs, login-shell PATH and existing entries;
+/// Windows composes its managed toolchain dirs with the native `;` separator.
+/// Both paths update only the file selected by the resolver's shared winning-file
+/// rule, so a stale foreign copy cannot continue shadowing the managed CLI.
 ///
 /// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
 /// write is impossible, and canonicalizes the resolved file to require it stay
 /// inside the resolved HQ folder — a symlinked settings file cannot redirect the
 /// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
 /// home (no `AppHandle`).
-#[cfg(not(windows))]
 pub(crate) fn write_managed_toolchain_settings_path(
     hq_root: &Path,
     home: &Path,
     login_path: &str,
 ) -> Result<SettingsPathWriteOutcome, String> {
+    #[cfg(windows)]
+    let _ = (home, login_path);
+
     let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
         hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
         // Base or None both write the generated base file, exactly as before the
@@ -2260,7 +2253,13 @@ pub(crate) fn write_managed_toolchain_settings_path(
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
+    #[cfg(not(windows))]
     let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
+    #[cfg(windows)]
+    let composed = hq_desktop_core::paths::compose_windows_settings_env_path(
+        &hq_desktop_core::paths::managed_toolchain_roots(),
+        existing_env_path.as_deref(),
+    );
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
@@ -2438,7 +2437,7 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// progress), `false` otherwise.
 #[tauri::command]
 pub fn cancel_install(handle: String) -> bool {
-    let mut reg = cancel_registry().lock().unwrap();
+    let mut reg = recover_lock(cancel_registry());
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
@@ -2576,7 +2575,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
-                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
+                        append_setup_diagnostic_tail(&mut recover_lock(&stdout_tail), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -2605,8 +2604,8 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
-                        stderr_lines.lock().unwrap().push(line.clone());
-                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
+                        recover_lock(&stderr_lines).push(line.clone());
+                        append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -2781,9 +2780,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
-        let stdout = stdout_tail.lock().unwrap().clone();
-        let captured = stderr_lines.lock().unwrap().clone();
-        let stderr = stderr_tail.lock().unwrap().clone();
+        let stdout = recover_lock(&stdout_tail).clone();
+        let captured = recover_lock(&stderr_lines).clone();
+        let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
@@ -2903,6 +2902,51 @@ pub fn managed_node_reported_version(node_bin: &std::path::Path) -> Option<Strin
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// macOS setup npm installs must use the Node/npm pair from HQ's pinned
+/// toolchain. A system Node can meet the broad runtime floor while remaining
+/// too old for the system npm that happens to be on PATH.
+#[cfg(not(windows))]
+fn managed_node_toolchain_is_usable(home: &std::path::Path) -> bool {
+    let Some(expected_arch) = node_dist_arch_for(std::env::consts::ARCH) else {
+        return false;
+    };
+    let node = managed_node_bin_in(home).join("node");
+    let npm = managed_node_bin_in(home).join("npm");
+    if !node.is_file()
+        || !managed_node_reported_version(&node)
+            .is_some_and(|version| version.trim() == MANAGED_NODE_VERSION)
+        || !hq_desktop_core::toolchain::node_binary_has_arch(&node, expected_arch)
+        || !npm.is_file()
+    {
+        return false;
+    }
+
+    let mut child = match Command::new(npm)
+        .arg("--version")
+        .env("PATH", extended_search_path_in(Some(home)))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
 /// Install Node.js into HQ's user-local managed toolchain.
 ///
 /// The installer used to require Homebrew here, which stranded fresh Macs
@@ -2916,40 +2960,33 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
     let node_dir = managed_node_dir_in(&home);
     let node_bin = managed_node_bin_in(&home).join("node");
 
-    if node_bin.exists() {
-        // A leftover from a half-finished or corrupted earlier install must not
-        // be trusted just because the file exists: the install matrix's
-        // `stale-toolchain` profile showed the engine adopting a broken node,
-        // then failing qmd/hq-cli with "prerequisite not installed". Only a
-        // node that runs AND reports the pinned version is reused.
-        match managed_node_reported_version(&node_bin) {
-            Some(v) if v.trim() == MANAGED_NODE_VERSION => {
-                emit_preflight_line(
-                    &app,
-                    &format!(
-                        "[node] managed Node {} already present at {}",
-                        v.trim(),
-                        node_bin.display()
-                    ),
-                );
-                return Ok(format!("node already installed at {}", node_bin.display()));
-            }
-            other => {
-                emit_preflight_line(
-                    &app,
-                    &format!(
-                        "[node] managed Node at {} is unusable ({}) — re-provisioning {}",
-                        node_bin.display(),
-                        other.map(|v| format!("reports '{}'", v.trim())).unwrap_or_else(|| "does not run".into()),
-                        MANAGED_NODE_VERSION
-                    ),
-                );
-                if let Err(e) = std::fs::remove_dir_all(&node_dir) {
-                    let msg = format!("[node] failed to remove stale toolchain {}: {e}", node_dir.display());
-                    emit_preflight_line(&app, &msg);
-                    return Err(msg);
-                }
-            }
+    if managed_node_toolchain_is_usable(&home) {
+        emit_preflight_line(
+            &app,
+            &format!(
+                "[node] managed Node {} and bundled npm already present at {}",
+                MANAGED_NODE_VERSION,
+                node_bin.display()
+            ),
+        );
+        return Ok(format!("node already installed at {}", node_bin.display()));
+    }
+    if node_dir.exists() {
+        emit_preflight_line(
+            &app,
+            &format!(
+                "[node] managed Node/npm toolchain at {} is incomplete or unusable — re-provisioning {}",
+                node_dir.display(),
+                MANAGED_NODE_VERSION
+            ),
+        );
+        if let Err(e) = std::fs::remove_dir_all(&node_dir) {
+            let msg = format!(
+                "[node] failed to remove stale toolchain {}: {e}",
+                node_dir.display()
+            );
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
         }
     }
 
@@ -3041,6 +3078,15 @@ async fn install_node_macos<R: tauri::Runtime>(app: AppHandle<R>) -> Result<Stri
         let msg = format!(
             "[node] install completed but node binary was not found at {}",
             staged_bin.display()
+        );
+        emit_preflight_line(&app, &msg);
+        return Err(msg);
+    }
+    if !staged_dir.join("bin").join("npm").is_file() {
+        let _ = std::fs::remove_dir_all(&staged_dir);
+        let msg = format!(
+            "[node] install completed but bundled npm was not found at {}",
+            staged_dir.join("bin").join("npm").display()
         );
         emit_preflight_line(&app, &msg);
         return Err(msg);
@@ -3600,14 +3646,93 @@ pub(crate) fn npm_args_with_public_registry(args: &[String]) -> Vec<String> {
     retry
 }
 
-/// Run one setup-path npm install and apply each setup-specific recovery at
-/// most once. The runner and side effects are injected so the exact retry
-/// ladder can be tested without a Tauri runtime or a real npm registry.
-async fn run_setup_npm_install_with_retries<Run, RunFuture, Cleanup, Preflight, Clear>(
+const NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS: [u64; 3] = [30, 45, 75];
+const NPM_RETRY_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+async fn sleep_for_npm_retry_or_cancelled<CheckCancelled>(
+    delay: Duration,
+    check_cancelled: &mut CheckCancelled,
+) -> Result<(), String>
+where
+    CheckCancelled: FnMut() -> Result<(), String>,
+{
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        check_cancelled()?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(remaining.min(NPM_RETRY_CANCELLATION_POLL_INTERVAL)).await;
+    }
+}
+
+/// Read npm's machine-stable resolution code from its output. The package name
+/// is checked separately so a missing transitive or unrelated package cannot
+/// arm retries for the requested global install.
+fn npm_package_lookup_error_code(detail: &str) -> Option<&'static str> {
+    detail.lines().find_map(|line| {
+        let line = line.to_ascii_lowercase();
+        let tokens = line.split_whitespace().collect::<Vec<_>>();
+        let code = tokens
+            .windows(2)
+            .find_map(|pair| match pair {
+                ["code", "e404"] => Some("E404"),
+                ["code", "etarget"] => Some("ETARGET"),
+                _ => None,
+            });
+        code.or_else(|| {
+            let npm_error_line = line.contains("npm error ") || line.contains("npm err! ");
+            let http_not_found = tokens
+                .windows(2)
+                .any(|pair| pair[0] == "404" && pair[1] == "not");
+            (npm_error_line && http_not_found).then_some("E404")
+        })
+    })
+}
+
+fn npm_error_mentions_package(detail: &str, package_name: &str) -> bool {
+    let normalized = detail
+        .to_ascii_lowercase()
+        .replace("%2f", "/")
+        .replace("%40", "@");
+    let package_name = package_name.to_ascii_lowercase();
+    normalized.match_indices(&package_name).any(|(start, matched)| {
+        let before_is_boundary = normalized[..start]
+            .chars()
+            .next_back()
+            .map(|character| !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '.'))
+            .unwrap_or(true);
+        let after_is_boundary = normalized[start + matched.len()..]
+            .chars()
+            .next()
+            .map(|character| !character.is_ascii_alphanumeric() && !matches!(character, '-' | '_' | '.'))
+            .unwrap_or(true);
+        before_is_boundary && after_is_boundary
+    })
+}
+
+fn is_package_lookup_failure(detail: &str, package_name: &str) -> bool {
+    npm_package_lookup_error_code(detail).is_some()
+        && npm_error_mentions_package(detail, package_name)
+}
+
+/// Run one setup-path npm install and apply its narrowly classified recovery
+/// policy. The runner and side effects are injected so retries can be tested
+/// without a Tauri runtime or a real npm registry.
+async fn run_setup_npm_install_with_retries<
+    Run,
+    RunFuture,
+    Cleanup,
+    Preflight,
+    Clear,
+    CheckCancelled,
+>(
     run: &mut Run,
     cleanup: &mut Cleanup,
     preflight: &mut Preflight,
     clear_failure: &mut Clear,
+    check_cancelled: &mut CheckCancelled,
     prefix: &str,
     windows_layout: bool,
     spec: &str,
@@ -3622,7 +3747,9 @@ where
     Cleanup: FnMut(&Path, &str),
     Preflight: FnMut(String),
     Clear: FnMut(),
+    CheckCancelled: FnMut() -> Result<(), String>,
 {
+    check_cancelled()?;
     let first_error = match run(base_args.clone()).await {
         Ok(output) => return Ok(output),
         Err(error) => error,
@@ -3647,32 +3774,70 @@ where
         });
     }
 
-    if crate::commands::hq_cli_update::is_etarget_failure(&first_error) {
-        preflight(format!(
-            "[{tag}] npm reported ETARGET/notarget; retrying once with --prefer-online to refresh registry metadata"
-        ));
-        clear_failure();
-        let retry = npm_args_with_option(&base_args, spec, "--prefer-online");
-        let second_error = match run(retry).await {
-            Ok(output) => return Ok(output),
-            Err(error) => error,
-        };
-
-        if let Some(public_registry_args) = public_registry_args {
-            preflight(format!(
-                "[{tag}] install via the configured npm registry failed; retrying with the public registry https://registry.npmjs.org/"
-            ));
-            clear_failure();
-            return run(public_registry_args).await.map_err(|third_error| {
-                format!(
-                    "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}\n[{tag}] retry with the public registry also failed: {third_error}"
+    if let Some(code) = npm_package_lookup_error_code(&first_error) {
+        if npm_error_mentions_package(&first_error, package_name) {
+            let mut attempt_errors = vec![first_error.clone()];
+            for (retry_index, delay_seconds) in
+                NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.iter().enumerate()
+            {
+                preflight(format!(
+                    "[{tag}] npm reported {code} while resolving {package_name}; continuing dependency setup and retrying in {delay_seconds}s ({}/{})",
+                    retry_index + 1,
+                    NPM_PACKAGE_LOOKUP_RETRY_BACKOFF_SECONDS.len()
+                ));
+                sleep_for_npm_retry_or_cancelled(
+                    Duration::from_secs(*delay_seconds),
+                    check_cancelled,
                 )
-            });
-        }
+                .await?;
+                check_cancelled()?;
+                clear_failure();
 
-        return Err(format!(
-            "{first_error}\n[{tag}] --prefer-online retry also failed: {second_error}"
-        ));
+                let retry_args = if retry_index == 0 && code == "ETARGET" {
+                    npm_args_with_option(&base_args, spec, "--prefer-online")
+                } else {
+                    base_args.clone()
+                };
+                match run(retry_args).await {
+                    Ok(output) => return Ok(output),
+                    Err(error) => {
+                        if !is_package_lookup_failure(&error, package_name) {
+                            if let Some(public_registry_args) = public_registry_args.clone() {
+                                attempt_errors.push(error);
+                                preflight(format!(
+                                    "[{tag}] npm install retry failed; trying the public registry https://registry.npmjs.org/ once"
+                                ));
+                                clear_failure();
+                                return run(public_registry_args).await.map_err(|fallback_error| {
+                                    format!(
+                                        "{}\n[{tag}] retry with the public registry also failed: {fallback_error}",
+                                        attempt_errors.join("\n")
+                                    )
+                                });
+                            }
+                            return Err(error);
+                        }
+                        attempt_errors.push(error);
+                    }
+                }
+            }
+
+            if let Some(public_registry_args) = public_registry_args.clone() {
+                preflight(format!(
+                    "[{tag}] npm package lookup retries were exhausted; trying the public registry https://registry.npmjs.org/ once"
+                ));
+                clear_failure();
+                return run(public_registry_args).await.map_err(|fallback_error| {
+                    attempt_errors.push(fallback_error.clone());
+                    format!(
+                        "{}\n[{tag}] final public-registry attempt also failed: {fallback_error}",
+                        attempt_errors.join("\n")
+                    )
+                });
+            }
+
+            return Err(attempt_errors.join("\n"));
+        }
     }
 
     if let Some(public_registry_args) = public_registry_args {
@@ -3693,7 +3858,7 @@ where
 }
 
 /// `npm install -g --prefix <managed> <spec>` honouring the user's npm config
-/// first, then retrying with the public registry forced if that fails.
+/// first, then using the existing public-registry fallback when appropriate.
 ///
 /// A `~/.npmrc` pointing at a corporate mirror that does not carry HQ's
 /// packages (or is unreachable off-VPN) made qmd/hq installs die with npm's
@@ -3728,6 +3893,34 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     extra_args: &[&str],
     retry_public_registry: bool,
 ) -> Result<String, String> {
+    let cancellation = InstallCancellationRegistration::new(app);
+    let result = run_managed_npm_install_with_cancellation(
+        app,
+        npm,
+        prefix,
+        spec,
+        package_name,
+        tag,
+        extra_args,
+        retry_public_registry,
+        &cancellation,
+    )
+    .await;
+    cancellation.finish(app, result.as_ref().err().map(String::as_str));
+    result
+}
+
+async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    npm: &str,
+    prefix: &str,
+    spec: &str,
+    package_name: &str,
+    tag: &str,
+    extra_args: &[&str],
+    retry_public_registry: bool,
+    cancellation: &InstallCancellationRegistration,
+) -> Result<String, String> {
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -3748,12 +3941,14 @@ async fn run_managed_npm_install<R: tauri::Runtime>(
     };
     let mut preflight = |line: String| emit_install_line(app, &line);
     let mut clear_failure = || clear_recovered_setup_command_failure();
+    let mut check_cancelled = || cancellation.reject_if_cancelled();
 
     run_setup_npm_install_with_retries(
         &mut run,
         &mut cleanup,
         &mut preflight,
         &mut clear_failure,
+        &mut check_cancelled,
         prefix,
         cfg!(target_os = "windows"),
         spec,
@@ -3789,6 +3984,13 @@ pub const MANAGED_QMD_VERSION: &str = "2.5.3";
 /// Errors if npm is not available.
 #[cfg(not(windows))]
 async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
+    let npm = match npm_bin_or_install_node(&app, "qmd").await {
+        Ok(path) => path,
+        Err(msg) => {
+            emit_preflight_line(&app, &msg);
+            return Err(msg);
+        }
+    };
     let prefix = npm_global_prefix_arg(&app, "qmd")?;
     if clear_unusable_npm_bin(std::path::Path::new(&prefix), "qmd") {
         emit_preflight_line(&app, "[qmd] removed an unusable leftover bin entry before reinstalling");
@@ -3797,13 +3999,6 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     // binary compiled for a previous Node ABI in place. Wipe the package
     // first so the install actually rebuilds native addons.
     remove_managed_qmd_package(std::path::Path::new(&prefix));
-    let npm = match preferred_npm_binary() {
-        Ok(p) => p,
-        Err(msg) => {
-            emit_preflight_line(&app, &msg);
-            return Err(msg);
-        }
-    };
     npm_install_global_managed(
         &app,
         npm.to_str().unwrap_or("npm"),
@@ -3815,22 +4010,19 @@ async fn install_qmd_macos(app: AppHandle) -> Result<String, String> {
     .await
 }
 
-/// Prefer HQ's managed npm so qmd's native addons compile against the same
-/// Node ABI the desktop app puts first on PATH — not a newer nvm Node.
+/// Use only HQ's paired npm so every setup package install runs under the
+/// managed Node whose ABI the desktop app puts first on PATH.
 #[cfg(not(windows))]
 fn preferred_npm_binary() -> Result<PathBuf, String> {
-    if let Some(home) = dirs::home_dir() {
-        let managed = managed_node_bin_in(&home).join("npm");
-        if managed.is_file() {
-            return Ok(managed);
-        }
+    let home = dirs::home_dir().ok_or_else(|| {
+        "[npm] managed Node.js/npm toolchain not found: home directory is unavailable.".to_string()
+    })?;
+    if managed_node_toolchain_is_usable(&home) {
+        return Ok(managed_node_bin_in(&home).join("npm"));
     }
-    which::which_in(
-        "npm",
-        Some(extended_search_path()),
-        std::env::current_dir().unwrap_or_default(),
-    )
-    .map_err(|_| "npm is not installed. Install Node.js first.".to_string())
+    Err(format!(
+        "[npm] managed Node.js {MANAGED_NODE_VERSION}/npm toolchain not found or incomplete; retry setup to provision Node.js before installing npm packages."
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3848,39 +4040,51 @@ const BUNDLED_HQ_CLI_RESOURCE_PATH: &str = "hq-cli/hq-cli.tgz";
 /// escapes the signed application resources directory. Missing resources and
 /// path-resolution failures deliberately preserve the ordinary release path.
 #[cfg(not(windows))]
-fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+fn hq_cli_install_spec_with_mode(resource_dir: Option<&Path>) -> (String, &'static str) {
     let Some(resource_dir) = resource_dir.and_then(|path| path.canonicalize().ok()) else {
-        return HQ_CLI_REGISTRY_SPEC.to_string();
+        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
     };
     let Some(package) = resource_dir
         .join(BUNDLED_HQ_CLI_RESOURCE_PATH)
         .canonicalize()
         .ok()
     else {
-        return HQ_CLI_REGISTRY_SPEC.to_string();
+        return (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback");
     };
 
     if package.is_file() && package.starts_with(&resource_dir) {
-        package
-            .into_os_string()
-            .into_string()
-            .unwrap_or_else(|_| HQ_CLI_REGISTRY_SPEC.to_string())
+        match package.into_os_string().into_string() {
+            Ok(spec) => (spec, "resource"),
+            Err(_) => (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback"),
+        }
     } else {
-        HQ_CLI_REGISTRY_SPEC.to_string()
+        (HQ_CLI_REGISTRY_SPEC.to_string(), "registry_fallback")
     }
+}
+
+#[cfg(not(windows))]
+fn hq_cli_install_spec(resource_dir: Option<&Path>) -> String {
+    hq_cli_install_spec_with_mode(resource_dir).0
 }
 
 /// A test/release bundle can require its own CLI version. Keep the marker
 /// alongside the package inside signed resources; never consult a neighboring kit.
 #[cfg(not(windows))]
 pub fn bundled_hq_cli_ready(app: &AppHandle) -> bool {
+    bundled_hq_cli_diagnostics(app).0
+}
+
+#[cfg(not(windows))]
+pub fn bundled_hq_cli_diagnostics(app: &AppHandle) -> (bool, &'static str) {
     let resource_dir = app.path().resource_dir().ok();
-    let spec = hq_cli_install_spec(resource_dir.as_deref());
-    if spec == HQ_CLI_REGISTRY_SPEC { return true; }
+    let (spec, mode) = hq_cli_install_spec_with_mode(resource_dir.as_deref());
+    if mode == "registry_fallback" {
+        return (true, mode);
+    }
     let expected = Path::new(&spec).parent()
         .and_then(|dir| std::fs::read_to_string(dir.join("version.txt")).ok());
     let actual = check_dep_impl("hq", None).version;
-    bundled_cli_version_matches(expected.as_deref(), actual.as_deref())
+    (bundled_cli_version_matches(expected.as_deref(), actual.as_deref()), mode)
 }
 
 #[cfg(not(windows))]
@@ -3922,33 +4126,31 @@ async fn install_hq_cli_macos(app: AppHandle) -> Result<String, String> {
             || async {
                 cancellation.reject_if_cancelled()?;
                 let prefix = npm_global_prefix_arg(&app, "hq")?;
+                let npm = match npm_bin_or_install_node(&app, "hq").await {
+                    Ok(path) => path,
+                    Err(ref msg) => {
+                        emit_preflight_line(&app, msg);
+                        return Err(msg.clone());
+                    }
+                };
                 if clear_unusable_npm_bin(std::path::Path::new(&prefix), "hq") {
                     emit_preflight_line(&app, "[hq] removed an unusable leftover bin entry before reinstalling");
                 }
-                let npm = match which::which_in(
-                    "npm",
-                    Some(extended_search_path()),
-                    std::env::current_dir().unwrap_or_default(),
-                ) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        let msg = "npm is not installed. Install Node.js first.";
-                        emit_preflight_line(&app, msg);
-                        return Err(msg.to_string());
-                    }
-                };
                 let resource_dir = app.path().resource_dir().ok();
                 let install_spec = hq_cli_install_spec(resource_dir.as_deref());
                 if install_spec != HQ_CLI_REGISTRY_SPEC {
                     emit_preflight_line(&app, "[hq] installing the CLI bundled with this HQ app");
                 }
-                npm_install_global_managed(
+                run_managed_npm_install_with_cancellation(
                     &app,
                     npm.to_str().unwrap_or("npm"),
                     &prefix,
                     &install_spec,
                     "@indigoai-us/hq-cli",
                     "hq",
+                    &[],
+                    true,
+                    &cancellation,
                 )
                 .await
             },
@@ -4050,24 +4252,44 @@ fn emit_session_install_line(app: &AppHandle, msg: &str) {
 }
 
 async fn npm_bin_or_install_node(app: &AppHandle, tag: &str) -> Result<std::path::PathBuf, String> {
-    let lookup = || {
-        which::which_in(
-            "npm",
-            Some(extended_search_path()),
-            std::env::current_dir().unwrap_or_default(),
-        )
-    };
-    if let Ok(path) = lookup() {
-        return Ok(path);
+    #[cfg(not(windows))]
+    {
+        if let Ok(path) = preferred_npm_binary() {
+            return Ok(path);
+        }
+        emit_session_install_line(
+            app,
+            &format!(
+                "[{tag}] HQ's managed Node.js/npm toolchain is missing. Installing Node.js before installing npm packages."
+            ),
+        );
+        install_node(app.clone()).await?;
+        return preferred_npm_binary().map_err(|_| {
+            format!("[{tag}] managed npm was not found after installing Node.js.")
+        });
     }
-    emit_session_install_line(
-        app,
-        &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
-    );
-    install_node(app.clone()).await?;
-    lookup().map_err(|_| {
-        format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
-    })
+
+    #[cfg(windows)]
+    {
+        let lookup = || {
+            which::which_in(
+                "npm",
+                Some(extended_search_path()),
+                std::env::current_dir().unwrap_or_default(),
+            )
+        };
+        if let Ok(path) = lookup() {
+            return Ok(path);
+        }
+        emit_session_install_line(
+            app,
+            &format!("[{tag}] npm is not installed. Installing Node.js first so the agent CLI can be set up in-app."),
+        );
+        install_node(app.clone()).await?;
+        lookup().map_err(|_| {
+            format!("[{tag}] npm was not found after installing Node.js. Open Settings → Agents and try again.")
+        })
+    }
 }
 
 #[cfg(not(windows))]
@@ -5039,7 +5261,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
-                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
+                        append_setup_diagnostic_tail(&mut recover_lock(&stdout_tail), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -5068,8 +5290,8 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
-                        stderr_lines.lock().unwrap().push(line.clone());
-                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
+                        recover_lock(&stderr_lines).push(line.clone());
+                        append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -5234,9 +5456,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
-        let stdout = stdout_tail.lock().unwrap().clone();
-        let captured = stderr_lines.lock().unwrap().clone();
-        let stderr = stderr_tail.lock().unwrap().clone();
+        let stdout = recover_lock(&stdout_tail).clone();
+        let captured = recover_lock(&stderr_lines).clone();
+        let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
@@ -6056,6 +6278,36 @@ where
 }
 
 #[cfg(test)]
+mod poison_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn setup_command_diagnostic_recovers_a_poisoned_mutex() {
+        let collector = SetupDiagnosticCollector::new();
+        let poisoned = collector.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned.command_failure.lock().unwrap();
+            panic!("poison setup command diagnostic");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let diagnostic = SetupCommandDiagnostic {
+            command: "npm install hq".to_string(),
+            exit_code: Some(1),
+            stdout: "out".to_string(),
+            stderr: "err".to_string(),
+            error: "install failed".to_string(),
+        };
+        collector.record(diagnostic.clone());
+        assert_eq!(collector.current(), Some(diagnostic.clone()));
+        assert_eq!(collector.take(), Some(diagnostic));
+        collector.clear();
+        assert_eq!(collector.current(), None);
+    }
+}
+
+#[cfg(test)]
 mod rsync_core_update_rescue_tests {
     use super::*;
     use std::cell::Cell;
@@ -6536,14 +6788,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
     // budget (HQ-DESKTOP-6J) instead of failing the deps stage, off the async
     // worker via spawn_blocking; the guard is held through the streamed install.
     let cancellation = InstallCancellationRegistration::new(&app);
-    let recovery_enabled = crate::commands::hq_pro::feature_flag_enabled(
-        crate::commands::hq_cli_update::WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-    )
-    .await;
-    let lock_wait_budget =
-        hq_desktop_core::cli_update_lock::cli_install_lock_wait_budget_for_recovery(
-            recovery_enabled,
-        );
+    let lock_wait_budget = hq_desktop_core::cli_update_lock::CLI_INSTALL_LOCK_WAIT_BUDGET;
     let lock_wait_handle = cancellation.handle.clone();
     let result = async {
         let _install_lock = acquire_cli_install_lock_for_setup_with_budget(
@@ -6551,15 +6796,13 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
             &cancellation,
             lock_wait_budget,
             move |app, line| {
-                if recovery_enabled {
-                    // Control signal for the named question: is this setup install handle still waiting on the shared CLI lock?
-                    // The frontend uses it only to keep the deps timeout alive; it is not funnel telemetry.
-                    let _ = app.emit_to(
-                        "main",
-                        "setup:cli-install-lock-wait",
-                        lock_wait_handle.clone(),
-                    );
-                }
+                // The frontend uses this signal only to keep the setup deps
+                // timeout alive for this install handle; it is not telemetry.
+                let _ = app.emit_to(
+                    "main",
+                    "setup:cli-install-lock-wait",
+                    lock_wait_handle.clone(),
+                );
                 emit_progress(app, line);
             },
         )
@@ -6573,7 +6816,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                 emit_progress(&app, "Installing @indigoai-us/hq-cli from npmjs.org...");
                 let prefix = managed_npm_prefix();
                 let prefix = prefix.to_string_lossy().into_owned();
-                let result_inner = run_managed_npm_install(
+                let result_inner = run_managed_npm_install_with_cancellation(
                     &app,
                     "npm",
                     &prefix,
@@ -6585,6 +6828,7 @@ async fn install_hq_cli_windows(app: AppHandle) -> Result<String, String> {
                         "--registry=https://registry.npmjs.org/",
                     ],
                     false,
+                    &cancellation,
                 )
                 .await?;
                 append_user_path(&managed_npm_bin())?;
@@ -7493,6 +7737,15 @@ pub fn is_managed_toolchain_path(path: &std::path::Path) -> bool {
 fn dep_is_satisfied(app: &AppHandle, dep: &DepDef) -> bool {
     #[cfg(not(windows))]
     if dep.id == "hq-cli" && !bundled_hq_cli_ready(app) { return false; }
+    // Setup npm installs need the npm bundled with HQ's pinned Node. A system
+    // Node that passes the broad runtime floor can still be too old for the
+    // system npm selected from /usr/local/bin, so it cannot satisfy this dep.
+    #[cfg(not(windows))]
+    if dep.id == "node" {
+        return dirs::home_dir()
+            .as_deref()
+            .is_some_and(managed_node_toolchain_is_usable);
+    }
     let status = check_dep_impl(dep.binary, None);
     if dep.id == "qmd" {
         return qmd_post_install_failure(&status).is_none();
@@ -7830,6 +8083,122 @@ mod install_deps_planner_tests {
         );
 
         assert_eq!(result, Err("PATH persistence failed".to_string()));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn setup_fails_closed_when_only_system_npm_is_available() {
+        const CHILD_ENV: &str = "HQ_SC014_NPM_SELECTION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let error = preferred_npm_binary()
+                .expect_err("system npm must not replace the managed Node/npm pair");
+            assert!(error.contains("managed Node.js"), "unexpected error: {error}");
+            return;
+        }
+
+        // Isolate HOME and PATH in a child test process. The baseline selector
+        // falls through to this fake system npm; the fixed selector reports
+        // that HQ's managed Node/npm toolchain must be provisioned first.
+        let home = tempfile::tempdir().expect("fixture home");
+        let system_bin = tempfile::tempdir().expect("fixture system bin");
+        let system_npm = system_bin.path().join("npm");
+        std::fs::write(&system_npm, "#!/bin/sh\nexit 0\n").expect("write fake system npm");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&system_npm)
+                .expect("stat fake system npm")
+                .permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&system_npm, permissions).expect("make fake npm executable");
+        }
+
+        let test_binary = std::env::current_exe().expect("current test binary");
+        let output = std::process::Command::new(test_binary)
+            .arg("setup_fails_closed_when_only_system_npm_is_available")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .env("HOME", home.path())
+            .env("PATH", system_bin.path())
+            .env("SHELL", "/bin/sh")
+            .output()
+            .expect("run isolated selector test");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("running 1 test"),
+            "child did not run the test:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            output.status.success(),
+            "child rejected the invariant:\n{stdout}\n{stderr}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn managed_node_toolchain_requires_the_pinned_node_and_bundled_npm() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().expect("fixture home");
+        let node_bin = managed_node_bin_in(home.path());
+        std::fs::create_dir_all(&node_bin).expect("create managed node bin");
+        let node = node_bin.join("node");
+        let npm_invoked = home.path().join("npm-invoked-with-managed-node");
+        let expected_arch = node_dist_arch_for(std::env::consts::ARCH)
+            .expect("supported Node distribution architecture");
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo {MANAGED_NODE_VERSION}; elif [ \"$1\" = \"-p\" ] && [ \"$2\" = \"process.arch\" ]; then echo {expected_arch}; else echo \"$2\" > '{}'; echo 11.0.0; fi\n",
+                npm_invoked.display()
+            ),
+        )
+        .expect("write fake managed node");
+        let mut permissions = std::fs::metadata(&node)
+            .expect("stat fake node")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&node, permissions).expect("make fake node executable");
+        let npm = node_bin.join("npm");
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("write bundled npm placeholder");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat fake npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make fake npm executable");
+
+        assert!(managed_node_toolchain_is_usable(home.path()));
+
+        assert_eq!(
+            std::fs::read_to_string(&npm_invoked).expect("managed Node ran npm"),
+            "--version\n"
+        );
+
+        std::fs::write(&npm, "#!/bin/sh\nexit 7\n").expect("write broken npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat broken npm")
+            .permissions();
+        npm_permissions.set_mode(0o755);
+        std::fs::set_permissions(&npm, npm_permissions).expect("make broken npm executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&npm, "#!/usr/bin/env node\n// fake npm entrypoint\n")
+            .expect("restore npm entrypoint");
+        let mut npm_permissions = std::fs::metadata(&npm)
+            .expect("stat non-executable npm")
+            .permissions();
+        npm_permissions.set_mode(0o644);
+        std::fs::set_permissions(&npm, npm_permissions)
+            .expect("make npm non-executable");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::write(&node, "#!/bin/sh\necho v20.8.0\n").expect("write wrong-version node");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
+
+        std::fs::remove_file(&npm).expect("remove bundled npm");
+        assert!(!managed_node_toolchain_is_usable(home.path()));
     }
 
     #[tokio::test]
@@ -10696,6 +11065,10 @@ mod bundled_hq_cli_tests {
             hq_cli_install_spec(Some(&resource_dir)),
             package.canonicalize().unwrap().to_string_lossy()
         );
+        assert_eq!(
+            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
+            "resource"
+        );
     }
 
     #[test]
@@ -10709,6 +11082,11 @@ mod bundled_hq_cli_tests {
             HQ_CLI_REGISTRY_SPEC
         );
         assert_eq!(hq_cli_install_spec(None), HQ_CLI_REGISTRY_SPEC);
+        assert_eq!(
+            hq_cli_install_spec_with_mode(Some(&resource_dir)).1,
+            "registry_fallback"
+        );
+        assert_eq!(hq_cli_install_spec_with_mode(None).1, "registry_fallback");
     }
 
     #[test]
@@ -10799,6 +11177,28 @@ mod npm_setup_recovery_tests {
         outcomes: Vec<Result<String, String>>,
         public_registry_args: Option<Vec<String>>,
     ) -> FakeNpmRun {
+        run_fake_npm_with_cancellation_check(
+            prefix,
+            windows_layout,
+            spec,
+            outcomes,
+            public_registry_args,
+            || Ok(()),
+        )
+        .await
+    }
+
+    async fn run_fake_npm_with_cancellation_check<CheckCancelled>(
+        prefix: &str,
+        windows_layout: bool,
+        spec: &str,
+        outcomes: Vec<Result<String, String>>,
+        public_registry_args: Option<Vec<String>>,
+        mut check_cancelled: CheckCancelled,
+    ) -> FakeNpmRun
+    where
+        CheckCancelled: FnMut() -> Result<(), String>,
+    {
         let attempts = Rc::new(RefCell::new(Vec::new()));
         let cleanup_scopes = Rc::new(RefCell::new(Vec::new()));
         let preflight = Rc::new(RefCell::new(Vec::new()));
@@ -10845,6 +11245,7 @@ mod npm_setup_recovery_tests {
             &mut cleanup,
             &mut emit_preflight,
             &mut clear_failure,
+            &mut check_cancelled,
             prefix,
             windows_layout,
             spec,
@@ -10944,14 +11345,18 @@ mod npm_setup_recovery_tests {
         assert!(run.preflight[0].contains("ENOTEMPTY"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn etarget_retries_once_with_prefer_online() {
+        let started = tokio::time::Instant::now();
         let run = run_fake_npm(
             "/tmp/setup-prefix",
             false,
             "@tobilu/qmd@2.5.3",
             vec![
-                Err("npm error code ETARGET\nnpm error notarget".into()),
+                Err(
+                    "npm error code ETARGET\nnpm error notarget No matching version found for @tobilu/qmd@2.5.3"
+                        .into(),
+                ),
                 Ok("recovered".into()),
             ],
             None,
@@ -10965,10 +11370,270 @@ mod npm_setup_recovery_tests {
         assert!(run.cleanup_scopes.is_empty());
         assert_eq!(run.cleared_failures, 1);
         assert_eq!(run.preflight.len(), 1);
-        assert!(run.preflight[0].contains("prefer-online"));
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(30)
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_twice_then_success() {
+        let started = tokio::time::Instant::now();
+        let missing_tarball = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err(missing_tarball.into()),
+                Err(missing_tarball.into()),
+                Ok("installed after propagation".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed after propagation".into()));
+        assert_eq!(
+            run.attempts.len(),
+            3,
+            "two 404s must be retried before success"
+        );
+        assert_eq!(run.attempts[0], run.attempts[1]);
+        assert_eq!(run.attempts[1], run.attempts[2]);
+        assert_eq!(
+            run.preflight.len(),
+            2,
+            "each retry keeps dependency-stage progress visible"
+        );
+        assert!(run
+            .preflight
+            .iter()
+            .all(|line| line.contains("continuing dependency setup")));
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(75),
+            "the two retries must respect the first two backoff intervals"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_survives_stderr_tail_formatting() {
+        let lines = vec![
+            "npm error code E404".to_string(),
+            "npm stack preamble".to_string(),
+            "npm stack detail".to_string(),
+            "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz".to_string(),
+            "npm error registry response detail".to_string(),
+            "npm error troubleshooting detail".to_string(),
+            "npm error end of report".to_string(),
+        ];
+        let formatted = format_install_error(1, &lines);
+        assert!(!formatted.contains("code E404"), "the formatter must discard the early machine-code line");
+        assert!(formatted.contains("npm error 404 Not Found"));
+
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![
+                Err(formatted.clone()),
+                Err(formatted.clone()),
+                Ok("installed after propagation".into()),
+            ],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed after propagation".into()));
+        assert_eq!(
+            run.attempts.len(),
+            3,
+            "formatted package 404 output must still enter the retry ladder"
+        );
+        assert_eq!(run.preflight.len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_cancellation_during_backoff_stops_retry() {
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel_after_five_seconds = std::sync::Arc::clone(&cancelled);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            cancel_after_five_seconds.store(true, Ordering::SeqCst);
+        });
+
+        let check_cancelled = {
+            let cancelled = std::sync::Arc::clone(&cancelled);
+            move || {
+                if cancelled.load(Ordering::SeqCst) {
+                    Err(InstallCancellation::UserCancelled.user_message())
+                } else {
+                    Ok(())
+                }
+            }
+        };
+        let started = tokio::time::Instant::now();
+        let missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let run = run_fake_npm_with_cancellation_check(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![Err(missing.into()), Ok("must not run after cancellation".into())],
+            None,
+            check_cancelled,
+        )
+        .await;
+
+        assert_eq!(run.result, Err(InstallCancellation::UserCancelled.user_message()));
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "cancellation during backoff must prevent another npm process"
+        );
+        assert_eq!(
+            run.cleared_failures, 0,
+            "cancellation must not clear or replace the failure before returning"
+        );
+        assert!(tokio::time::Instant::now() - started < std::time::Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transitive_package_404_falls_back_to_public_registry_without_backoff() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let transitive_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@another-team%2fother-cli/-/other-cli-1.0.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![Err(transitive_missing.into()), Ok("installed via public registry".into())],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(
+            run.result,
+            Ok("installed via public registry".into()),
+            "an unrelated package lookup failure must retain the existing public-registry fallback"
+        );
+        assert_eq!(run.attempts.len(), 2, "skip backoff and try public registry once");
+        assert_eq!(run.attempts[1], public_registry_args);
+        assert_eq!(run.preflight.len(), 1);
+        assert_eq!(run.cleared_failures, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn package_lookup_retry_non_lookup_failure_falls_back_to_public_registry() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let requested_package_missing = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let retry_failure = "npm error code EACCES\nnpm error syscall mkdir";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![
+                Err(requested_package_missing.into()),
+                Err(retry_failure.into()),
+                Ok("installed via public registry".into()),
+            ],
+            Some(public_registry_args.clone()),
+        )
+        .await;
+
+        assert_eq!(run.result, Ok("installed via public registry".into()));
+        assert_eq!(run.attempts.len(), 3, "a terminal retry error must go to the public registry once");
+        assert_eq!(run.attempts[2], public_registry_args);
+        assert_eq!(run.preflight.len(), 2);
+        assert_eq!(run.cleared_failures, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_unrelated_etarget_fails_fast() {
+        let unrelated = "npm error code ETARGET\nnpm error notarget No matching version found for @another-team/other-cli@latest";
+        let run = run_fake_npm(
+            "/tmp/setup-prefix",
+            false,
+            "@indigoai-us/hq-cli",
+            vec![Err(unrelated.into()), Ok("must not retry".into())],
+            None,
+        )
+        .await;
+
+        assert_eq!(run.result, Err(unrelated.into()));
+        assert_eq!(
+            run.attempts.len(),
+            1,
+            "an ETARGET for a different package is not transient evidence for this install"
+        );
+        assert_eq!(run.cleared_failures, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn setup_npm_package_resolution_404_exhaustion_keeps_exit_category() {
+        let prefix = "/tmp/setup-prefix";
+        let spec = "@indigoai-us/hq-cli";
+        let started = tokio::time::Instant::now();
+        let missing_tarball = "npm error 404 Not Found - GET https://registry.npmjs.org/@indigoai-us%2fhq-cli/-/hq-cli-5.290.0.tgz";
+        let public_registry_args = npm_public_registry_args(prefix, spec, &[]);
+        let run = run_fake_npm(
+            prefix,
+            false,
+            spec,
+            vec![Err(missing_tarball.into()); 5],
+            Some(public_registry_args),
+        )
+        .await;
+
+        let error = run
+            .result
+            .expect_err("all package-resolution attempts must fail");
+        assert!(error.contains("npm error 404 Not Found"));
+        assert_eq!(
+            run.attempts.len(),
+            5,
+            "three retries are followed by the existing public-registry fallback"
+        );
+        assert_eq!(
+            run.attempts[4],
+            npm_public_registry_args(prefix, spec, &[]),
+            "the final attempt preserves the existing public-registry fallback"
+        );
+        assert_eq!(
+            tokio::time::Instant::now() - started,
+            std::time::Duration::from_secs(150),
+            "only the three bounded retries add backoff"
+        );
+        let dependency = dependency_defs()
+            .into_iter()
+            .find(|dependency| dependency.id == "hq-cli")
+            .expect("hq-cli dependency is registered");
+        let result = DepInstallResult {
+            id: dependency.id,
+            label: dependency.label,
+            optional: dependency.optional,
+            status: DepInstallStatus::Failed,
+            error: Some(error.clone()),
+        };
+        let diagnostic = SetupCommandDiagnostic {
+            command: "npm install -g @indigoai-us/hq-cli".into(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: error.clone(),
+            error,
+        };
+        assert_eq!(
+            setup_error_category(&result, Some(&diagnostic)).as_str(),
+            "exit-nonzero",
+            "exhausted 404 retries retain the existing setup failure category"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn etarget_falls_through_to_public_registry_after_prefer_online_fails() {
         let prefix = "/tmp/setup-prefix";
         let spec = "@tobilu/qmd@2.5.3";
@@ -10985,8 +11650,10 @@ mod npm_setup_recovery_tests {
             false,
             spec,
             vec![
-                Err("first ETARGET".into()),
-                Err("prefer-online ETARGET".into()),
+                Err("npm error code ETARGET first for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET second for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET third for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET fourth for @tobilu/qmd@2.5.3".into()),
                 Ok("public registry recovered".into()),
             ],
             Some(public_registry_args.clone()),
@@ -11012,17 +11679,31 @@ mod npm_setup_recovery_tests {
                     "--prefer-online".to_string(),
                     spec.to_string(),
                 ],
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    spec.to_string(),
+                ],
+                vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "--prefix".to_string(),
+                    prefix.to_string(),
+                    spec.to_string(),
+                ],
                 public_registry_args,
             ]
         );
         assert!(run.cleanup_scopes.is_empty());
-        assert_eq!(run.cleared_failures, 2);
-        assert_eq!(run.preflight.len(), 2);
-        assert!(run.preflight[0].contains("prefer-online"));
-        assert!(run.preflight[1].contains("public registry"));
+        assert_eq!(run.cleared_failures, 4);
+        assert_eq!(run.preflight.len(), 4);
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert!(run.preflight[3].contains("public registry"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn etarget_public_registry_failure_preserves_all_attempt_errors() {
         let prefix = "/tmp/setup-prefix";
         let spec = "@tobilu/qmd@2.5.3";
@@ -11039,26 +11720,30 @@ mod npm_setup_recovery_tests {
             false,
             spec,
             vec![
-                Err("first ETARGET".into()),
-                Err("prefer-online ETARGET".into()),
-                Err("public registry ETARGET".into()),
+                Err("npm error code ETARGET first for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET second for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET third for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET fourth for @tobilu/qmd@2.5.3".into()),
+                Err("npm error code ETARGET public registry for @tobilu/qmd@2.5.3".into()),
             ],
             Some(public_registry_args.clone()),
         )
         .await;
 
         let error = run.result.expect_err("all three attempts should fail");
-        assert!(error.contains("first ETARGET"));
-        assert!(error.contains("prefer-online ETARGET"));
-        assert!(error.contains("public registry ETARGET"));
-        assert_eq!(run.attempts.len(), 3);
-        assert_eq!(run.attempts[2], public_registry_args);
+        assert!(error.contains("ETARGET first"));
+        assert!(error.contains("ETARGET second"));
+        assert!(error.contains("ETARGET third"));
+        assert!(error.contains("ETARGET fourth"));
+        assert!(error.contains("ETARGET public registry"));
+        assert_eq!(run.attempts.len(), 5);
+        assert_eq!(run.attempts[4], public_registry_args);
         assert!(run.attempts[1].contains(&"--prefer-online".to_string()));
         assert!(run.cleanup_scopes.is_empty());
-        assert_eq!(run.cleared_failures, 2);
-        assert_eq!(run.preflight.len(), 2);
-        assert!(run.preflight[0].contains("prefer-online"));
-        assert!(run.preflight[1].contains("public registry"));
+        assert_eq!(run.cleared_failures, 4);
+        assert_eq!(run.preflight.len(), 4);
+        assert!(run.preflight[0].contains("retrying in 30s"));
+        assert!(run.preflight[3].contains("public registry"));
     }
 
     #[tokio::test]

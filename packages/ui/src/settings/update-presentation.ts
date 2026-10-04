@@ -14,6 +14,7 @@ import type { UpdateRowStatus } from "./update-orchestration";
  *                 but no bytes have landed yet
  *   downloading — bytes are landing (manual queue or automatic install)
  *   ready       — verified package staged; waiting for "Restart to update"
+ *   deferred    — a recording holds the staged package; restart is scheduled
  *   installing  — install + restart handed to the native host
  *   failed      — download/install failed; the row offers the download again
  */
@@ -22,6 +23,7 @@ export type AppInstallPhase =
   | "queued"
   | "downloading"
   | "ready"
+  | "deferred"
   | "installing"
   | "failed";
 
@@ -39,6 +41,8 @@ export function appRowStatusLabel(input: {
       return "QUEUED";
     case "ready":
       return "RESTART TO UPDATE";
+    case "deferred":
+      return "WAITING TO RESTART";
     case "installing":
       return "INSTALLING";
     case "failed":
@@ -80,6 +84,15 @@ export function appRowActions(input: {
       (input.installPhase === "idle" || input.installPhase === "failed"),
     showRestart: input.installPhase === "ready",
   };
+}
+
+/**
+ * True when the host deferred a requested restart because protected work is
+ * running (a recording, its transcript, or an HQ Core update). The message
+ * itself names the reason, so surfaces show it as-is.
+ */
+export function isRecordingRestartDeferral(message?: string | null): boolean {
+  return (message ?? "").startsWith("HQ will restart to update after");
 }
 
 export function isInstallAlreadyInProgress(message?: string | null): boolean {

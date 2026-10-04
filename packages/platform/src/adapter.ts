@@ -37,6 +37,12 @@ export interface AdapterFailure {
   code?: string;
   /** Human-readable detail, safe to surface in dev tooling. */
   message?: string;
+  /**
+   * Server-selected upgrade link carried by a plan-limit refusal, already
+   * checked against the hosts hq-pro returns (see `plan-limit.ts`). Absent on
+   * every other failure.
+   */
+  upgradeUrl?: string;
 }
 
 export function ok<T>(value: T): AdapterResult<T> {
@@ -55,6 +61,17 @@ export function failure(code?: string, message?: string): AdapterFailure {
 export type Json = Record<string, unknown>;
 
 export type AdapterPromise<T = Json> = Promise<AdapterResult<T>>;
+
+/**
+ * Live-subscription seam for `IdentityApi.subscribeFeature`. Emits fresh
+ * resolved values when the underlying flag snapshot changes; the returned
+ * function unsubscribes. Callers MUST still do an initial `hasFeature`
+ * read at mount — an adapter without a live channel returns a no-op.
+ */
+export type FeatureSubscribeFn = (
+  flag: string,
+  onChange: (result: AdapterResult<boolean>) => void,
+) => () => void;
 
 // ---------------------------------------------------------------------------
 // Named payload interfaces for the obvious shapes
@@ -175,6 +192,23 @@ export interface DaemonStatus {
   startedAt?: string | null;
   watchPath?: string | null;
   source?: string;
+}
+
+export interface DaemonSyncStatus {
+  running: boolean;
+  paused: boolean;
+  syncOwner: string;
+  owner: string | null;
+  lastHeartbeat: string | null;
+  lastPassResult: {
+    status?: string;
+    completedAt?: string;
+    errors?: number;
+    [key: string]: unknown;
+  } | null;
+  unitStatus: string;
+  reason: string | null;
+  logPath: string;
 }
 
 export interface VersionInfo {
@@ -303,8 +337,25 @@ export interface SelectAgentAvatarResult {
 
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
+  /** Native auth envelope; accountId is the Cognito subject used by local writers. */
+  getAuthSession?(): AdapterPromise<{
+    accountId: string | null;
+    generation: number;
+    status: string;
+    reason: string | null;
+  }>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
+  /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
+  refreshFeatureFlags?(): Promise<void>;
+  /**
+   * Optional live subscription to a feature flag. When the underlying flag
+   * registry publishes a fresh snapshot, `onChange` fires with the resolved
+   * value. Returns an unsubscribe function. Adapters without a live channel
+   * may return a no-op unsubscribe and never call the callback — callers
+   * MUST also do an initial `hasFeature` read at mount.
+   */
+  subscribeFeature?: FeatureSubscribeFn;
   /** Workspace memberships (companies + roles) for the signed-in person. */
   listWorkspaces(): AdapterPromise<Json[]>;
   /** GET /v1/profile — the caller's editable global member profile. */
@@ -365,6 +416,13 @@ export interface ListChannelsOptions {
   /** Include project channels even when the caller is not a member. */
   includeCompanyProjects?: boolean;
 }
+
+/**
+ * Filtered view of a message history route (`view` query parameter on
+ * GET /v1/notify/channels/{id}/messages and GET /v1/notify/thread). `human`
+ * is the only value the server accepts; any other value is a 400.
+ */
+export type HistoryView = "human";
 
 /** Reply-thread partition. Distinct from GET /v1/notify/thread (1:1 DM list). */
 export type ReplyThreadScope = "dm" | "channel";
@@ -635,13 +693,24 @@ export interface MessagingApi {
     q: string,
     opts?: MessageSearchOptions,
   ): AdapterPromise<Json[]>;
-  /** Channel detail + newest-first message page (windowed timeline). */
+  /**
+   * Channel detail + newest-first message page (windowed timeline).
+   *
+   * `view: "human"` asks the server to filter the page to the human view and
+   * page on its side. A server that applied it echoes `view: "human"` in the
+   * response and may add `viewScanTruncated: true` (always with a
+   * `nextCursor`). An older server ignores the parameter and returns an
+   * ordinary unfiltered page with no `view` field, so callers must check the
+   * echo before trusting the page as filtered. Omit it for the unfiltered
+   * route.
+   */
   fetchChannel(args: {
     channelId: string;
     limit?: number;
     cursor?: string | null;
     /** Exclusive ISO8601 lower bound — only messages after this instant. */
     since?: string | null;
+    view?: HistoryView;
   }): AdapterPromise<Json>;
   /** GET /v1/notify/channels/{id}/members — owner/creator + invitees. */
   listChannelMembers(channelId: string): AdapterPromise<Json>;
@@ -671,6 +740,12 @@ export interface MessagingApi {
    * omits it and the step falls back to submit-time validation.
    */
   checkCompanySlug?(slug: string): AdapterPromise<Json>;
+  /**
+   * POST activate-cloud for a company: owner-only, idempotent cloud vault
+   * provisioning (bucket, KMS, owner grants). Optional: a host without the
+   * route omits it.
+   */
+  activateCompanyCloud?(companyUid: string): AdapterPromise<Json>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
@@ -703,11 +778,16 @@ export interface MessagingApi {
       }>;
     },
   ): AdapterPromise<Json>;
-  /** Newest-first DM thread page with `withPersonUid`. */
+  /**
+   * Newest-first DM thread page with `withPersonUid`. `cursor` is the
+   * `nextCursor` of the previous page. `view` works as on `fetchChannel`.
+   */
   fetchDmThread(args: {
     withPersonUid: string;
     limit?: number;
     since?: string | null;
+    cursor?: string | null;
+    view?: HistoryView;
   }): AdapterPromise<Json>;
   sendDm(
     toPersonUid: string,
@@ -987,6 +1067,8 @@ export interface VaultApi {
     targets: string[],
   ): AdapterPromise<VaultNoteLinks>;
   readNote(path: string): AdapterPromise<VaultNotePreview>;
+  /** Bounded frontmatter-only read for list surfaces that need note metadata. */
+  readFrontmatter(path: string): AdapterPromise<string>;
 }
 
 export interface FilesApi {
@@ -1138,6 +1220,7 @@ export interface SyncApi {
   startDaemon(): AdapterPromise<void>;
   stopDaemon(): AdapterPromise<void>;
   daemonStatus(): AdapterPromise<DaemonStatus>;
+  daemonSyncStatus(): AdapterPromise<DaemonSyncStatus | null>;
   startSync(slug?: string): AdapterPromise<void>;
   cancelSync(): AdapterPromise<void>;
   getSyncStatus(): AdapterPromise<SyncStatus>;
@@ -1538,6 +1621,12 @@ export interface SettingsApi {
    * hosts without a native settings store have nothing to record.
    */
   markWelcomeSetupComplete?(): AdapterPromise<void>;
+  /**
+   * The desktop window's first-run guided tour started showing on this
+   * machine. Optional: hosts without a native settings store fall back to
+   * local storage.
+   */
+  markWelcomeTourShown?(): AdapterPromise<void>;
   getTelemetryConsent(): AdapterPromise<boolean | null>;
 }
 

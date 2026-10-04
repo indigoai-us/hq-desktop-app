@@ -18,7 +18,7 @@ import {
   botStoppedReasonFor,
   botStoppedRemedy,
   botsNotHere,
-  BOT_RUNS_IN_CLOUD_NOT_HERE,
+  botRunsInCloudNotHereLine,
   classifyRemoteBotFailure,
   isNotRunnableHereReason,
   remoteBotNotRunnableReason,
@@ -406,14 +406,23 @@ describe("a refusal the CLI named is not 'please try again'", () => {
 
   it("says a refused bot stays in HQ Cloud, whichever way the CLI marked it", () => {
     expect(botRestoreRowLine(row({ name: "cobot", action: "failed", reason: "not-runnable-here" }))).toBe(
-      "cobot runs in HQ Cloud, so there is nothing to bring back to this Mac.",
+      "cobot runs in HQ Cloud, so there is nothing to bring back to this computer.",
     );
     // An older CLI puts the same thing in its failure document.
     expect(
       botRestoreRowLine(row({ name: "cobot", action: "skipped", detail: '{"ok":false,"reason":"company-bot"}' })),
-    ).toBe("cobot runs in HQ Cloud, so there is nothing to bring back to this Mac.");
+    ).toBe("cobot runs in HQ Cloud, so there is nothing to bring back to this computer.");
     // And an ordinary skip is untouched.
     expect(botRestoreRowLine(row({ name: "scout", action: "skipped" }))).toBe("scout was already set up here.");
+  });
+
+  it("uses the PC noun in cloud-only restore messages on Windows", () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
+    expect(botRunsInCloudNotHereLine()).toBe("This bot runs in HQ Cloud, not on this PC.");
+    expect(botRestoreRowLine(row({ name: "cobot", action: "failed", reason: "not-runnable-here" }))).toBe(
+      "cobot runs in HQ Cloud, so there is nothing to bring back to this PC.",
+    );
+    Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   });
 });
 
@@ -426,7 +435,7 @@ describe("the one sentence under a stopped bot", () => {
     const reason = botStoppedReasonFor(true, cobot);
     expect(reason).toBe("not-runnable-here");
     const sentence = botStoppedRemedy(reason, "Claude Code");
-    expect(sentence).toContain(BOT_RUNS_IN_CLOUD_NOT_HERE);
+    expect(sentence).toContain(botRunsInCloudNotHereLine());
     expect(sentence).not.toContain("signed in");
   });
 

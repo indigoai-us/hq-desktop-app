@@ -27,6 +27,7 @@ import {
   setupCompletionResult,
   setupProgressPercent,
   setupStageRecoveryAction,
+  resolveFlagWithTimeout,
   setupSubStatus,
   stageAutoRetryLimit,
   stageCreepAt,
@@ -540,6 +541,47 @@ describe('automatic setup recovery', () => {
       }),
     ).toEqual({ kind: 'skip', message: hardTimeout });
   });
+
+  it('retries dependency hard timeouts only when enabled and while retry is available', () => {
+    const hardTimeout = 'This step took too long (over 540s) and was skipped.';
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({
+      kind: 'retry',
+      delayMs: 1000,
+      nextRetryCount: 1,
+      message: hardTimeout,
+    });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 1,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'content',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+  });
 });
 
 describe('stage timeouts', () => {
@@ -606,6 +648,105 @@ describe('stage timeouts', () => {
     await vi.advanceTimersByTimeAsync(90_000);
     await assertion;
     expect(onTimeoutCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not return from an enabled dependency timeout until late cancellation finishes', async () => {
+    const hung = new Promise<void>(() => {});
+    let finishCancellation: (() => void) | undefined;
+    let retryStarted = false;
+    const guarded = withProgressTimeout(
+      hung,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () =>
+        new Promise<void>((resolve) => {
+          finishCancellation = resolve;
+        }),
+      undefined,
+      true,
+    ).catch(() => {
+      retryStarted = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(finishCancellation).toBeDefined();
+    expect(retryStarted).toBe(false);
+    finishCancellation?.();
+    await guarded;
+    expect(retryStarted).toBe(true);
+  });
+
+  it('waits for the enabled deps invocation to settle after cancellation before retrying', async () => {
+    let settleNativeInvocation: (() => void) | undefined;
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>((resolve) => {
+      settleNativeInvocation = resolve;
+    });
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.resolve();
+    expect(recovery).toBeUndefined();
+
+    settleNativeInvocation?.();
+    await guarded;
+    expect(recovery?.kind).toBe('retry');
+  });
+
+  it('skips instead of retrying when the enabled deps invocation exceeds the settle bound', async () => {
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>(() => {});
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await guarded;
+    expect(recovery?.kind).toBe('skip');
+  });
+
+  it('fails closed when the setup flag lookup is slow or unavailable', async () => {
+    const unavailable = Promise.reject<boolean>(new Error('unreachable'));
+    await expect(resolveFlagWithTimeout(unavailable, 2_000)).resolves.toBe(false);
+
+    const slow = new Promise<boolean>(() => {});
+    const bounded = resolveFlagWithTimeout(slow, 2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(bounded).resolves.toBe(false);
   });
 
   it('renews the initial-sync inactivity timeout when the native push reports progress', async () => {
@@ -1043,5 +1184,35 @@ describe('auto-retry sub-status', () => {
     expect(
       setupSubStatus({ stageId: 'content', elapsedMs: 45_000, retry: null }).text,
     ).toBe('Checking everything arrived…');
+  });
+});
+
+describe('setup step summary', () => {
+  it('names the band the install is on as Step N of 5', async () => {
+    const { setupStepSummary, friendlySetupBands } = await import('./onboarding-setup');
+    expect(setupStepSummary(0)).toMatchObject({ step: 1, total: 5, done: false });
+    expect(setupStepSummary(41)).toMatchObject({
+      step: 3,
+      label: 'Bringing in your AI workers and workflows',
+      compactLabel: 'Bringing in your AI workers',
+      done: false,
+    });
+    // It agrees with the band checklist at every percent.
+    for (let percent = 0; percent <= 100; percent += 1) {
+      const summary = setupStepSummary(percent);
+      const bands = friendlySetupBands(percent);
+      if (summary.done) {
+        expect(bands.every((band) => band.status === 'done')).toBe(true);
+      } else {
+        expect(bands[summary.step - 1]?.status).not.toBe('done');
+        expect(bands.slice(0, summary.step - 1).every((band) => band.status === 'done')).toBe(true);
+      }
+    }
+  });
+
+  it('reports done only once every band is done', async () => {
+    const { setupStepSummary } = await import('./onboarding-setup');
+    expect(setupStepSummary(99).done).toBe(false);
+    expect(setupStepSummary(100)).toMatchObject({ step: 5, total: 5, done: true });
   });
 });

@@ -1,0 +1,1880 @@
+/* ---------------------------------------------------------------------------
+   HQ welcome flow. Ported from the designer prototype
+   (workspace/prototypes/hq-welcome-flow: index.html + shared.css).
+
+   Plain CSS rather than a Svelte <style> block on purpose: the motion engines
+   (./engines.ts) add classes such as .on, .in, .open, .dock and .lit at run
+   time, which Svelte's scoped-CSS pass cannot see and would strip as unused.
+   Everything is namespaced under .hq-welcome so none of it leaks into the rest
+   of the app.
+
+   The window fills the monitor's work area (src-tauri welcome_window.rs) and
+   the backdrop is the person's own desktop wallpaper (.wallpaper), which the
+   veil blurs and dims as the prototype's did. When the wallpaper cannot be
+   read the window stays transparent over a native blur of whatever is behind
+   it, and .veil only dims.
+   --------------------------------------------------------------------------- */
+
+@font-face {
+  font-family: 'Fraunces';
+  src: url('../../../assets/fonts/fraunces-variable-latin.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+.hq-welcome {
+  --w-font-sans: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --w-font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
+  --w-font-mono: ui-monospace, 'SF Mono', Menlo, Monaco, monospace;
+  --w-veil-bg: rgba(0, 0, 0, 0.72);
+  --w-text: #fff;
+  --w-muted: rgba(255, 255, 255, 0.62);
+  --w-faint: rgba(255, 255, 255, 0.38);
+  --w-btn-bg: #fff;
+  --w-btn-fg: #000;
+  --w-btn2-bg: rgba(255, 255, 255, 0.14);
+  --w-btn2-fg: #fff;
+  --w-choose-bg: rgba(255, 255, 255, 0.12);
+  --w-choose-border: rgba(255, 255, 255, 0.22);
+  --w-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --w-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --w-radius-button: 8px;
+
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  color: var(--w-text);
+  font-family: var(--w-font-sans);
+  font-size: 16px;
+  line-height: 24px;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
+  background: transparent;
+
+  /* Child components styled with the app's design-system tokens (the
+     connector import step) read these, so they are dark here whatever the
+     system appearance. */
+  --c-text: #fff;
+  --c-muted: rgba(255, 255, 255, 0.62);
+  --c-btn-bg: #fff;
+  --c-btn-fg: #000;
+  --c-btn2-bg: rgba(255, 255, 255, 0.14);
+  --c-btn2-fg: #fff;
+  --c-focus-ring: #fff;
+  --c-focus-offset: 2px;
+}
+.hq-welcome *,
+.hq-welcome *::before,
+.hq-welcome *::after {
+  box-sizing: border-box;
+}
+.hq-welcome button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.hq-welcome .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The film opens on the person's own desktop, undimmed. The veil then settles
+   over it and is fully down well before the mark's caption lands. Once down it
+   stays down for every screen. Over the wallpaper the veil also blurs it
+   (backdrop-filter, as in the prototype); without one the blur is native,
+   behind the window, and the veil only dims. */
+.hq-welcome.has-wallpaper {
+  background: #000;
+}
+.hq-welcome .wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+.hq-welcome .veil {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(0, 0, 0, 0);
+  transition: background 1.8s var(--w-ease-in-out);
+}
+.hq-welcome .veil.on {
+  background: var(--w-veil-bg);
+}
+.hq-welcome.has-wallpaper .veil {
+  -webkit-backdrop-filter: blur(0) saturate(100%);
+  backdrop-filter: blur(0) saturate(100%);
+  transition:
+    background 1.8s var(--w-ease-in-out),
+    -webkit-backdrop-filter 1.8s var(--w-ease-in-out),
+    backdrop-filter 1.8s var(--w-ease-in-out);
+}
+.hq-welcome.has-wallpaper .veil.on {
+  -webkit-backdrop-filter: blur(34px) saturate(125%);
+  backdrop-filter: blur(34px) saturate(125%);
+}
+
+.hq-welcome .titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  z-index: 50;
+  -webkit-app-region: drag;
+}
+
+.hq-welcome .scene {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  /* Laid out to fit the window; on a very short display a screen scrolls
+     rather than cutting off its button. */
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.7s var(--w-ease-in-out), visibility 0s 0.7s;
+}
+.hq-welcome .scene.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.7s var(--w-ease-in-out), visibility 0s;
+}
+.hq-welcome .scene::-webkit-scrollbar {
+  display: none;
+}
+.hq-welcome .scene canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ---- type: Fraunces 300 with WONK for titles, Geist for the line under ---- */
+.hq-welcome .h {
+  font-family: var(--w-font-display);
+  color: var(--w-text);
+  font-weight: 300;
+  font-optical-sizing: auto;
+  font-variation-settings: 'wght' 300, 'SOFT' 0, 'WONK' 1;
+  letter-spacing: -0.04em;
+  line-height: 1.04;
+  margin: 0;
+}
+.hq-welcome .h:focus {
+  outline: none;
+}
+.hq-welcome .h-lg {
+  font-size: 56px;
+}
+.hq-welcome .h-md {
+  font-size: 34px;
+}
+.hq-welcome .body {
+  color: var(--w-muted);
+  font-family: var(--w-font-sans);
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 400;
+  margin: 0;
+}
+
+/* shared copy block */
+.hq-welcome .copy {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  width: min(880px, 92vw);
+  z-index: 4;
+}
+.hq-welcome .h,
+.hq-welcome .body,
+.hq-welcome .tree,
+.hq-welcome .rail-row {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.9s var(--w-ease-out), transform 0.9s var(--w-ease-out);
+}
+.hq-welcome .on .h {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.18s;
+}
+.hq-welcome .on .body {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.32s;
+}
+.hq-welcome .copy .body {
+  margin: 14px auto 0;
+  max-width: none;
+}
+
+/* ---- buttons: OnboardingWizard .btn geometry ---------------------------- */
+.hq-welcome .btn {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  padding: 9px 18px;
+  border-radius: var(--w-radius-button);
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.hq-welcome .btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.hq-welcome .btn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.hq-welcome .btn-primary {
+  background: var(--w-btn-bg);
+  color: var(--w-btn-fg);
+}
+.hq-welcome .btn-secondary {
+  background: var(--w-btn2-bg);
+  color: var(--w-btn2-fg);
+}
+.hq-welcome .btn-ghost {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.62);
+  border: none;
+  opacity: 1;
+}
+.hq-welcome .btn-ghost:hover:not(:disabled) {
+  color: #fff;
+}
+.hq-welcome .btn:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.hq-welcome .btn:disabled:hover {
+  opacity: 0.45;
+}
+.hq-welcome .btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hq-welcome .btns.split {
+  justify-content: space-between;
+}
+
+/* ---- chrome: ticks + Skip top-right, Next under each screen, Back bottom-left */
+.hq-welcome .topbar {
+  position: absolute;
+  top: 26px;
+  right: 22px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s, visibility 0s 0.8s;
+  -webkit-app-region: no-drag;
+}
+.hq-welcome .topbar.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.8s, visibility 0s;
+}
+.hq-welcome .ticks {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.hq-welcome .tick {
+  width: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.22);
+  overflow: hidden;
+  position: relative;
+  transition: width 0.5s var(--w-ease-out), background 0.4s;
+}
+.hq-welcome .tick.cur {
+  width: 34px;
+}
+.hq-welcome .tick .fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: #fff;
+  border-radius: 2px;
+}
+.hq-welcome .tick.done {
+  background: rgba(255, 255, 255, 0.6);
+}
+.hq-welcome .skip {
+  font-size: 13px;
+  line-height: 16px;
+  padding: 4px 2px;
+}
+
+.hq-welcome .nav {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s 0.4s, visibility 0s 1.2s;
+}
+.hq-welcome .nav.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.8s 0.4s, visibility 0s;
+}
+/* A scene that is not on show keeps its button hidden, so it never lingers
+   or slides to the next screen's position. */
+.hq-welcome .scene:not(.on) .nav {
+  transition: none;
+}
+
+.hq-welcome .back {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  z-index: 40;
+  padding: 6px 10px;
+  gap: 6px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s, visibility 0s 0.8s, color 0.15s;
+}
+.hq-welcome .back.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.8s, visibility 0s;
+}
+.hq-welcome .back .barrow {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  transition: transform 0.15s var(--w-ease-out);
+}
+.hq-welcome .back:hover .barrow {
+  transform: translateX(-2px);
+}
+
+/* ---- 0 · overture: constellation forms the mark ------------------------- */
+.hq-welcome .s-welcome .cap {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translate(-50%, 10px);
+  margin: 0;
+  width: max-content;
+  max-width: 92vw;
+  text-align: center;
+  text-wrap: balance;
+  font-family: var(--w-font-display);
+  font-weight: 300;
+  font-optical-sizing: auto;
+  font-variation-settings: 'wght' 300, 'SOFT' 0, 'WONK' 1;
+  font-size: clamp(40px, 5.2vw, 72px);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 1.2s var(--w-ease-out), transform 1.2s var(--w-ease-out);
+}
+.hq-welcome .s-welcome .cap:focus {
+  outline: none;
+}
+.hq-welcome .s-welcome .cap.on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.hq-welcome .signin {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: min(560px, 92vw);
+  text-align: center;
+  z-index: 4;
+}
+.hq-welcome .signin .body,
+.hq-welcome .signin .btns-slot,
+.hq-welcome .signin .status {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.9s var(--w-ease-out), transform 0.9s var(--w-ease-out);
+}
+.hq-welcome .signin.on .body {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.1s;
+}
+.hq-welcome .signin.on .btns-slot {
+  opacity: 1;
+  transform: none;
+  transition-delay: 0.7s;
+}
+.hq-welcome .signin .body {
+  margin: 0 auto 34px;
+  max-width: none;
+}
+.hq-welcome .signin .btns-slot {
+  min-height: 38px;
+}
+.hq-welcome .signin .btns {
+  justify-content: center;
+}
+.hq-welcome .signin .btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.hq-welcome .signin .status {
+  margin: 16px auto 0;
+  min-height: 18px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+  transform: none;
+  transition: opacity 0.6s;
+}
+.hq-welcome .signin.on .status {
+  opacity: 1;
+}
+.hq-welcome .signin .status.error {
+  color: #fff;
+}
+.hq-welcome .signin-inner.busy .btns {
+  opacity: 0.35;
+  pointer-events: none;
+}
+.hq-welcome .signin .microsoft-email {
+  display: grid;
+  gap: 8px;
+  margin: 16px auto 0;
+  max-width: 320px;
+  text-align: left;
+}
+.hq-welcome .signin .microsoft-email label {
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .signin .microsoft-email input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid var(--w-choose-border);
+  border-radius: var(--w-radius-button);
+  background: var(--w-choose-bg);
+  color: var(--w-text);
+  font: inherit;
+  font-size: 14px;
+}
+.hq-welcome .signin .microsoft-email input:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .signin .microsoft-email input:disabled {
+  opacity: 0.6;
+}
+.hq-welcome.replay .signin .body {
+  margin-bottom: 0;
+}
+
+/* ---- grain: film grain over the folder and ready screens ---------------- */
+.hq-welcome .grain {
+  position: absolute;
+  inset: -50%;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  mix-blend-mode: overlay;
+  transition: opacity 0.7s var(--w-ease-in-out);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.9 0'/></filter><rect width='240' height='240' filter='url(%23n)' opacity='0.7'/></svg>");
+}
+.hq-welcome .grain.on {
+  opacity: 0.5;
+  animation: hq-welcome-grain 1.2s steps(6) infinite;
+}
+@keyframes hq-welcome-grain {
+  0% { transform: translate(0, 0); }
+  20% { transform: translate(-3%, 2%); }
+  40% { transform: translate(4%, -2%); }
+  60% { transform: translate(-2%, -3%); }
+  80% { transform: translate(3%, 3%); }
+  100% { transform: translate(0, 0); }
+}
+
+/* ---- 1 · it's a folder: the folder opens and the tree writes in --------- */
+.hq-welcome .s-folder .copy {
+  top: 64px;
+}
+.hq-welcome .folder {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 176px;
+  height: 136px;
+  z-index: 5;
+  opacity: 0;
+  transform: translate(-50%, -50%) translateY(10px) scale(0.96);
+  transition: opacity 0.9s var(--w-ease-out), transform 1s var(--w-ease-out);
+  pointer-events: none;
+}
+.hq-welcome .folder.in {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+/* after opening it shrinks and travels to sit beside HQ/ as the root's icon */
+.hq-welcome .folder.dock {
+  transform: translate(-50%, -50%) translate(var(--dx), var(--dy)) scale(0.36);
+  transition: transform 1.05s var(--w-ease-in-out);
+}
+.hq-welcome .folder.dock .fbloom {
+  opacity: 0;
+}
+.hq-welcome .fscene {
+  position: absolute;
+  inset: 0;
+  perspective: 900px;
+}
+.hq-welcome .fbloom {
+  position: absolute;
+  left: 50%;
+  top: 60%;
+  width: 300px;
+  height: 300px;
+  transform: translate(-50%, -50%) scale(0.6);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.06) 40%, rgba(255, 255, 255, 0) 68%);
+  filter: blur(18px);
+  opacity: 0;
+  transition: opacity 1.2s var(--w-ease-out), transform 1.4s var(--w-ease-out);
+}
+.hq-welcome .folder.open .fbloom {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.hq-welcome .fback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 16px 36px rgba(0, 0, 0, 0.32));
+}
+.hq-welcome .fback path {
+  fill: url(#hq-welcome-fbackfill);
+}
+.hq-welcome .fsheets {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -60px;
+  bottom: 0;
+  overflow: hidden;
+  border-radius: 0 0 13px 13px;
+  pointer-events: none;
+}
+.hq-welcome .fsheet {
+  position: absolute;
+  left: 28px;
+  width: 120px;
+  height: 100px;
+  top: 94px;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  transition: transform 1.15s cubic-bezier(0.34, 1.28, 0.64, 1);
+}
+.hq-welcome .fsheet::before {
+  content: '';
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 16px;
+  height: 40px;
+  background: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.1) 0 2px, transparent 2px 11px);
+}
+.hq-welcome .fsheet.s2 {
+  left: 34px;
+  top: 100px;
+  transform: rotate(2deg);
+  background: #eef1f4;
+  box-shadow: none;
+}
+.hq-welcome .folder.open .fsheet.s1 {
+  transform: translateY(-30px) rotate(-4deg);
+  transition-delay: 0.08s;
+}
+.hq-welcome .folder.open .fsheet.s2 {
+  transform: translateY(-18px) rotate(4deg);
+}
+.hq-welcome .ffront {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 96px;
+  border-radius: 13px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #8fc8fa 0%, #7dbdf7 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 -10px 18px rgba(0, 40, 110, 0.05),
+    0 18px 40px rgba(0, 0, 0, 0.32);
+  transform-origin: 50% 100%;
+  transform: rotateX(0deg);
+  will-change: transform;
+  transition: transform 1.15s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.hq-welcome .ffront .fsheen {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 40%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0));
+}
+.hq-welcome .folder.open .ffront {
+  transform: rotateX(-62deg);
+}
+
+/* In a short window the folder screen closes up its spacing so the skyline
+   keeps a readable band under Install here: engines.ts sets --fold-k from 0
+   (the prototype's spacing) to 1 (tightest) on the copy and the tree. */
+.hq-welcome .s-folder .copy .body {
+  margin-top: calc(14px - 6px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .troot {
+  margin-bottom: calc(14px - 6px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .trow {
+  padding-top: calc(7px - 3px * var(--fold-k, 0));
+  padding-bottom: calc(7px - 3px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc {
+  margin-top: calc(22px - 10px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc .lcap {
+  margin-bottom: calc(10px - 4px * var(--fold-k, 0));
+}
+.hq-welcome .s-folder .loc .lrow {
+  padding-top: calc(9px - 3px * var(--fold-k, 0));
+  padding-bottom: calc(9px - 3px * var(--fold-k, 0));
+}
+
+/* the tree that replaces the folder */
+.hq-welcome .tree {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: min(620px, 88vw);
+  z-index: 4;
+  text-align: left;
+  font-family: var(--w-font-mono);
+  font-size: 13px;
+  line-height: 20px;
+  opacity: 1;
+}
+.hq-welcome .troot,
+.hq-welcome .trow {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.7s var(--w-ease-out), transform 0.7s var(--w-ease-out);
+}
+.hq-welcome .troot.on,
+.hq-welcome .trow.on {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .troot {
+  color: #fff;
+  display: flex;
+  align-items: center;
+  min-height: 50px;
+  padding-left: 72px;
+  margin-bottom: 14px;
+}
+.hq-welcome .trow {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 16px;
+  padding: 7px 0 7px 18px;
+  border-left: 1px solid rgba(255, 255, 255, 0.16);
+}
+.hq-welcome .trow .tname {
+  color: #fff;
+}
+.hq-welcome .trow .tmeaning {
+  font-family: var(--w-font-sans);
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+/* where it lives: the location row closes the tree */
+.hq-welcome .loc {
+  margin-top: 22px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.7s var(--w-ease-out), transform 0.7s var(--w-ease-out);
+}
+.hq-welcome .loc.on {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .loc .lcap {
+  font-family: var(--w-font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+  margin: 0 0 10px;
+}
+.hq-welcome .loc .lrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 10px 9px 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.hq-welcome .loc .lname {
+  font-family: var(--w-font-mono);
+  font-size: 13px;
+  color: #fff;
+}
+.hq-welcome .loc .lpath {
+  font-family: var(--w-font-mono);
+  font-size: 13px;
+  color: var(--w-muted);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hq-welcome .loc .btn {
+  font-size: 13px;
+  line-height: 18px;
+  padding: 6px 12px;
+}
+.hq-welcome .loc .notice {
+  margin: 10px 0 0;
+  font-family: var(--w-font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+}
+.hq-welcome .loc .notice.error,
+.hq-welcome .loc .notice.warning {
+  color: #fff;
+}
+
+/* ---- 2 · local folder, cloud team: the orbit ---------------------------- */
+.hq-welcome .rings {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.hq-welcome .rings ellipse {
+  fill: none;
+  stroke: #fff;
+  stroke-opacity: 0.14;
+  stroke-width: 1;
+  opacity: 0;
+  transform-origin: center;
+  transform: scale(0.6);
+  transition: opacity 1.4s var(--w-ease-out), transform 1.6s var(--w-ease-out);
+}
+.hq-welcome .rings.on ellipse {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .rings.on ellipse:nth-child(2) {
+  transition-delay: 0.15s;
+}
+.hq-welcome .core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 120px;
+  transform: translate(-50%, -50%) scale(0.85);
+  opacity: 0;
+  fill: #fff;
+  transition: opacity 1.2s var(--w-ease-out), transform 1.6s var(--w-ease-out);
+  filter: drop-shadow(0 8px 30px rgba(0, 0, 0, 0.18));
+}
+.hq-welcome .core.on {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+.hq-welcome .corelabel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, 0);
+  margin-top: 46px;
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.8s;
+}
+/* the pill, verbatim from constellation/orbit */
+.hq-welcome .pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.1);
+  will-change: transform, opacity;
+  opacity: 0;
+  transition: opacity 0.8s;
+}
+.hq-welcome .pill.tool {
+  background: #fff;
+  color: #000;
+}
+.hq-welcome .rail {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 112px;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  max-width: 96vw;
+  z-index: 4;
+}
+.hq-welcome .rail-row {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: left;
+  padding: 14px 14px 15px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.hq-welcome .rail-row.on {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .rail-row .ri {
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: var(--w-muted);
+  margin-bottom: 12px;
+}
+/* One line each, as in the prototype: in a window too narrow for five cards
+   at full width the cards shrink together and the subtitle ellipsizes. */
+.hq-welcome .rail-row .rn {
+  display: block;
+  font-family: var(--w-font-sans);
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 18px;
+  color: #fff;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hq-welcome .rail-row .rn::first-letter {
+  text-transform: uppercase;
+}
+.hq-welcome .rail-row .rm {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 3 · one shortcut: the board draws in, then the chord lights -------- */
+.hq-welcome .s-shortcut .glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 70vmax;
+  height: 70vmax;
+  transform: translate(-50%, -50%) scale(0.6);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 0%, rgba(255, 255, 255, 0.035) 30%, transparent 62%);
+  opacity: 0;
+  transition: opacity 1.6s var(--w-ease-out), transform 2.4s var(--w-ease-out);
+}
+.hq-welcome .s-shortcut .glow.on {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.hq-welcome .keyboard {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--kgap);
+  --u: 44px;
+  --kgap: 6px;
+  width: calc(var(--u) * 15 + var(--kgap) * 14 + 28px);
+  padding: 14px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 24px 60px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateX(-50%) translateY(22px);
+  transition: opacity 0.9s var(--w-ease-out), transform 1.1s var(--w-ease-out);
+}
+.hq-welcome .keyboard.in {
+  opacity: 1;
+  transform: translateX(-50%);
+}
+.hq-welcome .krow {
+  display: flex;
+  gap: var(--kgap);
+  justify-content: flex-start;
+}
+.hq-welcome .key {
+  position: relative;
+  flex-grow: var(--w);
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-width: 0;
+  height: calc(var(--u) * 0.9);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.09);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  line-height: 12px;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.6s var(--w-ease-out) var(--kd), transform 0.6s var(--w-ease-out) var(--kd),
+    background 0.35s, color 0.35s, box-shadow 0.35s;
+}
+.hq-welcome .keyboard.on .key {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .key .kglyph {
+  font-size: 13px;
+  line-height: 14px;
+}
+.hq-welcome .key.mod .klabel {
+  font-size: 8.5px;
+  opacity: 0.8;
+}
+/* a lit key is a white plate with its glyphs cut out, so the letters show the
+   glass through them instead of sitting as black on white */
+.hq-welcome .key.lit {
+  animation: hq-welcome-press 0.5s var(--w-ease-out);
+}
+.hq-welcome .key.lit .kglyph,
+.hq-welcome .key.lit .klabel {
+  opacity: 0;
+}
+.hq-welcome .key .ko {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.hq-welcome .key.lit .ko {
+  opacity: 1;
+}
+.hq-welcome .key .ko text {
+  font-family: var(--w-font-sans);
+  letter-spacing: 0.02em;
+}
+@keyframes hq-welcome-press {
+  0% { transform: translateY(0) scale(1); }
+  35% { transform: translateY(2px) scale(0.96); }
+  100% { transform: none; }
+}
+.hq-welcome .chordline {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translate(-50%, 0);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  margin: 0;
+  opacity: 0;
+  transition: opacity 0.9s var(--w-ease-out);
+}
+.hq-welcome .chordline.on {
+  opacity: 1;
+}
+.hq-welcome .chordline kbd {
+  font-family: var(--w-font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  min-width: 26px;
+  text-align: center;
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.hq-welcome .chordline .chordcap {
+  margin-left: 8px;
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* ---- the install card: one quiet line, bottom-right, screens 2-4 -------- */
+.hq-welcome .setup {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  z-index: 41;
+  width: auto;
+  max-width: calc(100% - 44px);
+  padding: 12px 14px 14px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 10px;
+  align-items: start;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity 0.7s, transform 0.7s var(--w-ease-out), visibility 0s 0.7s;
+}
+.hq-welcome .setup.on {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.7s, transform 0.7s var(--w-ease-out), visibility 0s;
+}
+/* a turning ring while it works, a check once it's done */
+.hq-welcome .setup .spin {
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.6px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #fff;
+  animation: hq-welcome-spin 0.9s linear infinite;
+}
+.hq-welcome .setup.done .spin,
+.hq-welcome .prog.done .pi {
+  animation: none;
+  border-color: #fff;
+  background: #fff
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 8.5l2.6 2.5L12 5.5' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/></svg>")
+    center/12px no-repeat;
+}
+/* Waiting on an automatic retry: the ring slows and dims; the line says so. */
+.hq-welcome .setup.retrying .spin {
+  animation-duration: 1.8s;
+  border-top-color: rgba(255, 255, 255, 0.7);
+}
+.hq-welcome .setup .st {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: #fff;
+  font-weight: 500;
+}
+.hq-welcome .setup .ss {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hq-welcome .setup .ss-stack {
+  display: grid;
+}
+/* Every step line sits in the same cell, invisible, so the card takes the
+   width of the longest one and holds it through every step (the prototype's
+   fit()). */
+.hq-welcome .setup .ss-stack > .ss {
+  grid-area: 1 / 1;
+}
+.hq-welcome .setup .ss.ghost {
+  visibility: hidden;
+}
+.hq-welcome .setup .bar,
+.hq-welcome .prog .pbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+.hq-welcome .setup .bar i,
+.hq-welcome .prog .pbar b {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: #fff;
+  transition: width 0.6s linear;
+}
+@keyframes hq-welcome-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---- 4 · help make HQ better -------------------------------------------- */
+.hq-welcome .s-consent .copy {
+  top: 64px;
+}
+.hq-welcome .form {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: min(560px, 92vw);
+  z-index: 4;
+  text-align: left;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.hq-welcome .choice-wrap {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.7s var(--w-ease-out), transform 0.7s var(--w-ease-out);
+}
+.hq-welcome .choice-wrap + .choice-wrap {
+  margin-top: 8px;
+}
+.hq-welcome .choice-wrap.on {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #fff;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hq-welcome .choice:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+.hq-welcome .choice.selected {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+.hq-welcome .choice:has(input:focus-visible) {
+  outline: 1.5px solid #fff;
+  outline-offset: 2px;
+}
+/* the radio is drawn by hand; the native control stays for keyboard + AT */
+.hq-welcome .choice input {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  border-radius: 50%;
+  border: 1.4px solid rgba(255, 255, 255, 0.55);
+  position: relative;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.hq-welcome .choice input:focus {
+  outline: none;
+}
+.hq-welcome .choice input:checked {
+  border-color: #fff;
+}
+.hq-welcome .choice input:checked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #fff;
+}
+.hq-welcome .choice .ct {
+  display: block;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 500;
+}
+.hq-welcome .choice .cd {
+  display: block;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+  margin-top: 2px;
+}
+.hq-welcome .fine {
+  margin: 18px 0 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--w-muted);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.8s 0.3s;
+}
+.hq-welcome .fine.on {
+  opacity: 1;
+}
+.hq-welcome .fine p {
+  margin: 0;
+}
+.hq-welcome .fine p + p {
+  margin-top: 4px;
+}
+.hq-welcome .fine .label {
+  color: #fff;
+}
+.hq-welcome .consent-link {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  color: #fff;
+  font-size: 13px;
+  line-height: 19px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.4);
+  transition: text-decoration-color 0.15s;
+}
+.hq-welcome .consent-link:hover {
+  text-decoration-color: #fff;
+}
+.hq-welcome .consent-link:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+.hq-welcome .consent-link:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.hq-welcome .consent-link-error {
+  margin-left: 8px;
+}
+
+/* honest failure notes (consent, finishing) */
+.hq-welcome .note {
+  margin: 14px 0 0;
+  padding: 11px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  line-height: 18px;
+  color: #fff;
+  text-align: left;
+}
+.hq-welcome .note p {
+  margin: 0;
+}
+.hq-welcome .note .note-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.hq-welcome .note .btn {
+  font-size: 13px;
+  line-height: 18px;
+  padding: 6px 12px;
+}
+.hq-welcome .link {
+  padding: 0;
+  font: inherit;
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.4);
+  transition: text-decoration-color 0.15s;
+}
+.hq-welcome .link:hover:not(:disabled) {
+  text-decoration-color: #fff;
+}
+.hq-welcome .link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.hq-welcome .link:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ---- 5 · ready: the skyline returns to close the loop ------------------- */
+.hq-welcome .s-ready .copy {
+  top: 64px;
+}
+.hq-welcome .prog {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  width: max-content;
+  max-width: 90vw;
+  opacity: 0;
+  transition: opacity 0.7s var(--w-ease-out);
+}
+.hq-welcome .prog.on {
+  opacity: 1;
+}
+.hq-welcome .prog .pwrap {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 16px 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+.hq-welcome .prog .pl {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+  white-space: nowrap;
+}
+.hq-welcome .prog .pi {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1.5px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #fff;
+  animation: hq-welcome-spin 0.9s linear infinite;
+}
+.hq-welcome .prog.done .pi {
+  background-size: 10px;
+}
+.hq-welcome .prog.done .pl {
+  color: #fff;
+}
+.hq-welcome .prog .pbar {
+  transition: opacity 0.4s;
+}
+.hq-welcome .prog.done .pbar {
+  opacity: 0;
+}
+/* under the row of options: the Advanced folder tools and the usage-data
+   line */
+.hq-welcome .alt-block {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: min(600px, 92vw);
+  text-align: center;
+}
+.hq-welcome .alt {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--w-muted);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.8s var(--w-ease-out), visibility 0s 0.8s;
+}
+.hq-welcome .alt.on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.8s var(--w-ease-out) 0.9s, visibility 0s;
+}
+.hq-welcome .substatus {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+}
+.hq-welcome .substatus .elapsed {
+  margin-left: 8px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+.hq-welcome .ready-notes {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-muted);
+}
+.hq-welcome .ready-notes p {
+  margin: 0;
+}
+.hq-welcome .ready-notes strong {
+  color: #fff;
+  font-weight: 500;
+}
+.hq-welcome .completion-mark {
+  display: inline-flex;
+}
+
+/* The ready screen's options: HQ Desktop, the primary one, as a large white
+   card; under it, the installed tools as smaller dark pill buttons, centred
+   whether there are one or two. */
+.hq-welcome .ready-options {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: min(600px, 92vw);
+}
+.hq-welcome .ready-options .tool-card-desktop {
+  width: min(320px, 100%);
+}
+.hq-welcome .tool-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.hq-welcome .tool-pills.tool-pills-status.ai-tools-status-stack {
+  flex-direction: column;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+.hq-welcome .ai-tools-checking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13.5px;
+  line-height: 18px;
+}
+.hq-welcome .ai-tools-checking.failed {
+  color: rgba(255, 255, 255, 0.62);
+}
+.hq-welcome .ai-tools-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 1.4px solid rgba(255, 255, 255, 0.25);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  border-radius: 50%;
+  animation: hq-ai-tools-spin 0.8s linear infinite;
+}
+@keyframes hq-ai-tools-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hq-welcome .ai-tools-spinner {
+    animation: none;
+  }
+}
+.hq-welcome .tool-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 170px;
+  height: 38px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 13.5px;
+  line-height: 18px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.hq-welcome .tool-pill:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.hq-welcome .tool-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hq-welcome .tool-pill:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+}
+.hq-welcome .tool-pill .tp-icon {
+  display: inline-flex;
+}
+.hq-welcome .tool-pill .tp-icon svg {
+  width: 16px;
+  height: 16px;
+}
+.hq-welcome .tool-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 76px;
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    opacity 0.15s,
+    transform 0.15s var(--w-ease-out);
+}
+.hq-welcome .tool-card:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.hq-welcome .tool-card:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.hq-welcome .tool-card:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.hq-welcome .tool-card:focus-visible {
+  outline: 1.5px solid #fff;
+  outline-offset: 3px;
+}
+.hq-welcome .tool-card .tc-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.hq-welcome .tool-card .tc-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.hq-welcome .tool-card .tc-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.hq-welcome .tool-card .tc-name {
+  font-size: 16px;
+  line-height: 21px;
+  font-weight: 500;
+  color: #fff;
+}
+.hq-welcome .tool-card .tc-line {
+  font-size: 12.5px;
+  line-height: 17px;
+  color: var(--w-muted);
+}
+/* HQ Desktop: the primary option, white fill and dark text */
+.hq-welcome .tool-card.tool-card-desktop {
+  border-color: transparent;
+  background: var(--w-btn-bg);
+  color: var(--w-btn-fg);
+}
+.hq-welcome .tool-card.tool-card-desktop:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--w-btn-bg);
+  opacity: 0.9;
+}
+.hq-welcome .tool-card.tool-card-desktop .tc-icon {
+  background: rgba(0, 0, 0, 0.08);
+}
+.hq-welcome .tool-card.tool-card-desktop .tc-name {
+  color: var(--w-btn-fg);
+}
+.hq-welcome .tool-card.tool-card-desktop .tc-line {
+  color: rgba(0, 0, 0, 0.6);
+}
+/* usage data: one quiet line */
+.hq-welcome .ready-consent {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-faint);
+}
+.hq-welcome .ready-consent .rc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.hq-welcome .ready-consent input[type='checkbox'] {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+.hq-welcome .ready-consent input[type='checkbox']:disabled {
+  cursor: default;
+}
+.hq-welcome .ready-consent .consent-link {
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--w-faint);
+  text-decoration-color: rgba(255, 255, 255, 0.25);
+}
+.hq-welcome .ready-consent .consent-link:hover {
+  color: var(--w-muted);
+}
+
+/* ---- panels off the story strip: connector import, tutorial steps ------- */
+.hq-welcome .panel-block {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  width: min(560px, 92vw);
+  z-index: 4;
+  text-align: center;
+}
+.hq-welcome .panel-block .h,
+.hq-welcome .panel-block .body {
+  opacity: 1;
+  transform: none;
+}
+.hq-welcome .panel-block .body {
+  margin: 14px auto 0;
+}
+.hq-welcome .panel-block .btns {
+  justify-content: center;
+  margin-top: 28px;
+}
+.hq-welcome .panel-block .btns.split {
+  justify-content: space-between;
+}
+.hq-welcome .panel-block .graphic {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 32px;
+}
+/* The connector step's own markup (ConnectorImportStep.svelte). */
+.hq-welcome .s-connectors .h {
+  font-size: 34px;
+}
+.hq-welcome .s-connectors .spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(0, 0, 0, 0.2);
+  border-top-color: #000;
+  animation: hq-welcome-spin 0.9s linear infinite;
+}
+/* The optional follow-on steps offered from the ready screen: first-folder
+   sync and the teammate invite. Same geometry as the connector import. */
+.hq-welcome .s-follow-on .h {
+  font-size: 34px;
+}
+.hq-welcome .s-follow-on .note {
+  text-align: center;
+}
+.hq-welcome .invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, 100%);
+  margin: 24px auto 0;
+  text-align: left;
+}
+.hq-welcome .invite-form label {
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .invite-form input,
+.hq-welcome .invite-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid var(--w-choose-border);
+  border-radius: var(--w-radius-button);
+  background: var(--w-choose-bg);
+  color: var(--w-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+.hq-welcome .invite-form textarea {
+  resize: vertical;
+}
+.hq-welcome .invite-form input::placeholder,
+.hq-welcome .invite-form textarea::placeholder {
+  color: var(--w-muted);
+  opacity: 1;
+}
+.hq-welcome .invite-form input:focus-visible,
+.hq-welcome .invite-form textarea:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .invite-form input:disabled,
+.hq-welcome .invite-form textarea:disabled {
+  opacity: 0.6;
+}
+.hq-welcome .invite-form .btns {
+  margin-top: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hq-welcome *,
+  .hq-welcome *::before,
+  .hq-welcome *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0s !important;
+  }
+  .hq-welcome .grain.on {
+    animation: none;
+  }
+}
+
+/* A launch that could not happen: the honest next step, never a red dump.
+   Open and neutral, with a small outline cue rather than a warning colour. */
+.hq-welcome .setup-caution {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--w-muted);
+  text-align: left;
+}
+.hq-welcome .setup-caution-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  margin-top: 1px;
+  fill: none;
+  stroke: var(--w-muted);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.hq-welcome .setup-caution-icon circle {
+  fill: var(--w-muted);
+  stroke: none;
+}
+.hq-welcome .setup-caution-copy strong {
+  color: #fff;
+  font-weight: 500;
+}
+.hq-welcome .setup-caution-copy span {
+  color: var(--w-muted);
+}
+
+/* A screen's motion failed (a canvas or layout error): show everything in its
+   settled state so setup is never blocked by decoration. */
+.hq-welcome.motion-failed .scene.on :is(.h, .body, .cap, .troot, .trow, .loc, .rail-row, .choice-wrap, .fine, .prog, .keyboard, .key, .chordline, .signin .body, .signin .btns-slot, .signin .status) {
+  opacity: 1 !important;
+  transform: none !important;
+}
+.hq-welcome.motion-failed .scene.on .folder {
+  display: none;
+}

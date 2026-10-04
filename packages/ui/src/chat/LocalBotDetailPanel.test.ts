@@ -12,7 +12,7 @@ function bot(patch: Partial<LocalBotRow> = {}): LocalBotRow {
     agentUid: "agt_LOCAL000000000000000000001",
     ownerUid: "prs_me",
     runtime: "claude",
-    model: "opus",
+    model: "claude-opus-5-5",
     state: "running",
     pid: 42,
     processAlive: true,
@@ -40,6 +40,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -102,7 +103,7 @@ describe("LocalBotDetailPanel", () => {
     expect(presence?.textContent).toContain("checked in 12s ago");
     expect(q('[data-testid="local-bot-detail-notice"]')).toBeNull();
     expect(q('[data-testid="local-bot-detail-runtime"]')?.textContent).toBe("Claude Code");
-    expect(q('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus · thinking Medium");
+    expect(q('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus 5.5 · thinking Medium");
     expect(q('[data-testid="local-bot-detail-worker"]')?.textContent).toBe("iris-cx · indigo");
     expect(q('[data-testid="local-bot-detail-memory"]')?.textContent).toBe(
       "personal/workers/assistant/memory",
@@ -233,11 +234,55 @@ describe("LocalBotDetailPanel — model and thinking", () => {
     const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
     const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
     expect(model.value).toBe("");
-    expect(Array.from(model.options).map((o) => o.textContent)).toEqual(["Claude Code's default", "Opus", "Sonnet", "Haiku"]);
+    expect(Array.from(model.options).map((o) => o.textContent)).toEqual([
+      "Claude Code's default",
+      "Opus 5.5",
+      "Opus 5",
+      "Sonnet 5",
+      "Haiku 4.5",
+    ]);
+    expect(Array.from(model.options).map((o) => o.value)).toEqual([
+      "",
+      "claude-opus-5-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5-20251001",
+    ]);
+    expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
     expect(effort.value).toBe("medium");
     expect(Array.from(effort.options).map((o) => o.value)).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(Array.from(effort.options).find((o) => o.value === "medium")?.textContent).toBe("Medium (default)");
     expect(host.querySelector<HTMLButtonElement>('[data-testid="local-bot-detail-settings-save"]')!.disabled).toBe(true);
+  });
+
+  it("a bot saved with a legacy alias shows its friendly label, and the alias is not offered otherwise", async () => {
+    mountPanel({ bot: bot({ model: "opus", effort: "medium" }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
+    await tick();
+    expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe(
+      "Opus (latest in Claude Code) · thinking Medium",
+    );
+    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    expect(model.value).toBe("opus");
+    const labels = Array.from(model.options).map((o) => o.textContent);
+    expect(labels).toContain("Opus (latest in Claude Code)");
+    expect(labels).not.toContain("Sonnet (latest in Claude Code)");
+  });
+
+  it("explains that a specific model may need a newer coding tool, only when one is chosen", async () => {
+    mountPanel({ bot: bot({ model: undefined }), bots: botsApi({ configure: vi.fn(async () => ok({})) }) });
+    await tick();
+    const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
+    expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
+    model.value = "claude-opus-5-5";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')?.textContent).toBe(
+      "If a bot can't start with this model, update Claude Code.",
+    );
+    model.value = "";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    expect(host.querySelector('[data-testid="local-bot-detail-model-hint"]')).toBeNull();
   });
 
   it("offers each runtime's own thinking levels and keeps a custom model it already uses", async () => {
@@ -256,7 +301,7 @@ describe("LocalBotDetailPanel — model and thinking", () => {
   it("Save sends only what changed; picking the default level or model resets it; then refreshes", async () => {
     const configure = vi.fn(async () => ok({}));
     const onchanged = vi.fn();
-    mountPanel({ bot: bot({ model: "opus", effort: "high" }), bots: botsApi({ configure }), onchanged });
+    mountPanel({ bot: bot({ model: "claude-opus-5-5", effort: "high" }), bots: botsApi({ configure }), onchanged });
     await tick();
     const model = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-model-select"]')!;
     const effort = host.querySelector<HTMLSelectElement>('[data-testid="local-bot-detail-effort-select"]')!;
@@ -298,7 +343,7 @@ describe("LocalBotDetailPanel — model and thinking", () => {
   it("hosts without configure show the line but no controls", async () => {
     mountPanel({ bot: bot({ effort: "high" }), bots: botsApi() });
     await tick();
-    expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus · thinking High");
+    expect(host.querySelector('[data-testid="local-bot-detail-model"]')?.textContent).toBe("Opus 5.5 · thinking High");
     expect(host.querySelector('[data-testid="local-bot-detail-settings"]')).toBeNull();
   });
 });
@@ -306,11 +351,13 @@ describe("LocalBotDetailPanel — model and thinking", () => {
 
 describe("bot kinds (personal vs company)", () => {
   it("shows Personal · acts as you and no promote control for a personal bot", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
     mountPanel({ bot: bot({ kind: "personal" }), bots: botsApi({ promote: vi.fn() }), companies: [{ uid: "cmp_TEST", name: "Test" }] });
     await tick();
     expect(q('[data-testid="local-bot-detail-kind"]')?.textContent).toBe("Personal · acts as you");
     expect(q('[data-testid="local-bot-promotion"]')).toBeNull();
-    expect(q('[data-testid="local-bot-promotion-personal"]')?.textContent).toContain("Personal bots stay on this Mac");
+    expect(q('[data-testid="local-bot-promotion-personal"]')?.textContent).toContain("Personal bots stay on this PC");
+    Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   });
 
   it("shows Company · slugs and offers promotion for a company bot", async () => {
@@ -443,5 +490,5 @@ it("explains a blocked file transfer beside promotion without exposing paths as 
   await vi.waitFor(() => expect(host.textContent).toContain("This requires an HQ update"));
   expect(q('[data-testid="local-bot-promotion-error"] details')?.hasAttribute("open")).toBe(false);
   expect(q('[data-testid="local-bot-detail-actions"]')?.textContent).not.toContain("unsafe or private path");
-  expect(host.textContent).toContain("files are still on this Mac");
+  expect(host.textContent).toContain("files are still on this computer");
 });

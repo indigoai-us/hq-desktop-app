@@ -2,6 +2,7 @@ pub use super::cognito::AuthSessionStatus;
 use super::cognito::{self, AuthState, CognitoRefreshFailureClass, CognitoTokens};
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tauri::{AppHandle, Emitter};
 
 pub const AUTH_SESSION_CHANGED_EVENT: &str = "auth:session-changed";
@@ -32,16 +33,35 @@ pub struct AuthSessionEnvelope {
 }
 
 static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
-static AUTH_SESSION_DIAGNOSTIC: OnceLock<
-    Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
-> = OnceLock::new();
+type AuthSessionDiagnostic = (
+    AuthSessionStatus,
+    Option<CognitoRefreshFailureClass>,
+    &'static str,
+);
+
+static AUTH_SESSION_DIAGNOSTIC: OnceLock<Mutex<Option<AuthSessionDiagnostic>>> = OnceLock::new();
+static LAST_AUTH_TRANSITION: OnceLock<Mutex<Option<(&'static str, SystemTime)>>> = OnceLock::new();
+
+fn record_last_auth_transition(class: &'static str) {
+    let cell = LAST_AUTH_TRANSITION.get_or_init(|| Mutex::new(None));
+    *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((class, SystemTime::now()));
+}
+
+pub(crate) fn last_auth_transition_diagnostic() -> (&'static str, u64) {
+    let cell = LAST_AUTH_TRANSITION.get_or_init(|| Mutex::new(None));
+    cell.lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|(class, at)| (*class, at.elapsed().unwrap_or_default().as_secs()))
+        .unwrap_or(("none", 0))
+}
 
 fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
 }
 
-fn auth_session_diagnostic_cell(
-) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>> {
+fn auth_session_diagnostic_cell() -> &'static Mutex<Option<AuthSessionDiagnostic>> {
     AUTH_SESSION_DIAGNOSTIC.get_or_init(|| Mutex::new(None))
 }
 
@@ -49,6 +69,7 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
     match status {
         AuthSessionStatus::Active => "active",
         AuthSessionStatus::CredentialsAbsent => "credentials_absent",
+        AuthSessionStatus::CredentialsReadError => "credentials_read_error",
         AuthSessionStatus::CredentialsInvalid => "credentials_invalid",
         AuthSessionStatus::RefreshTemporarilyUnavailable => "refresh_temporarily_unavailable",
         AuthSessionStatus::NonHumanPrincipal => "non_human_principal",
@@ -58,25 +79,30 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
 fn set_auth_session_diagnostic(
     status: AuthSessionStatus,
     refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    rejection_class: &'static str,
 ) {
     let mut guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some((status, refresh_failure_class));
+    *guard = Some((status, refresh_failure_class, rejection_class));
 }
 
 /// Bounded startup diagnostic labels; this snapshot contains no account
 /// identity, token material, email, or free-form error detail.
-pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str) {
+pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str, &'static str) {
     let guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_ref() {
-        Some((status, Some(failure_class))) => {
-            (auth_session_status_tag(status), failure_class.as_tag())
+        Some((status, Some(failure_class), rejection_class)) => (
+            auth_session_status_tag(status),
+            failure_class.as_tag(),
+            *rejection_class,
+        ),
+        Some((status, None, rejection_class)) => {
+            (auth_session_status_tag(status), "none", *rejection_class)
         }
-        Some((status, None)) => (auth_session_status_tag(status), "none"),
-        None => ("unknown", "none"),
+        None => ("unknown", "none", "none"),
     }
 }
 
@@ -148,7 +174,7 @@ pub(crate) fn publish_auth_session(
         *guard = Some(current.clone());
         (current, changed)
     };
-    set_auth_session_diagnostic(current.0.status.clone(), None);
+    set_auth_session_diagnostic(current.0.status.clone(), None, "none");
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -260,6 +286,7 @@ pub(crate) fn authenticated_state_from_tokens(tokens: &CognitoTokens) -> AuthSta
         account_id: Some(notification_identity_from_tokens(tokens)),
         email,
         display_name,
+        startup_token_read_result: None,
     }
 }
 
@@ -299,6 +326,7 @@ pub(crate) async fn complete_auth_session(
     }
 
     crate::commands::dm_notify::replace_notification_credentials(app, tokens).await?;
+    record_last_auth_transition("sign_in");
 
     let state = authenticated_state_from_tokens(tokens);
     publish_auth_session(
@@ -388,6 +416,7 @@ fn signed_out_state() -> AuthState {
         account_id: None,
         email: None,
         display_name: None,
+        startup_token_read_result: None,
     }
 }
 
@@ -404,10 +433,18 @@ fn startup_auth_state_result(
 /// refresh is observed after Cognito has invalidated its file and becomes a
 /// fail-closed signed-out state.
 async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, AuthSessionEnvelope) {
-    let before = cognito::get_tokens().await.ok().flatten();
+    let (first_token_read, first_token_read_result) = cognito::get_tokens_with_read_result().await;
+    let first_token_read_failed = first_token_read.is_err();
+    if first_token_read_failed {
+        eprintln!(
+            "[auth] startup token-store read failed; auth_session_status=credentials_read_error"
+        );
+    }
+    let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
-    let (state, status, account_id, reason, refresh_failure_class) = match outcome {
+    let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome
+    {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
         // machine credentials, so usable tokens are not evidence of a human
@@ -418,66 +455,106 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
         // The tokens are deliberately left on disk. They may belong to an agent
         // that is legitimately running on this machine, and deleting another
         // process's credentials to fix our own display is not ours to do.
-        Ok((tokens, _)) => match cognito::non_human_principal_from_tokens(&tokens) {
-            Some(principal) => (
-                signed_out_state(),
-                AuthSessionStatus::NonHumanPrincipal,
-                Some(notification_identity_from_tokens(&tokens)),
-                Some(match principal {
-                    cognito::NonHumanPrincipal::Outpost => {
-                        "The HQ credentials saved on this device belong to an outpost, not to a person."
-                    }
-                    cognito::NonHumanPrincipal::Agent => {
-                        "The HQ credentials saved on this device belong to a fleet agent, not to a person."
-                    }
-                }),
-                None,
-            ),
-            None => {
-                set_sentry_user_from_tokens(&tokens);
-                let state = authenticated_state_from_tokens(&tokens);
-                (
-                    state,
-                    AuthSessionStatus::Active,
-                    Some(notification_identity_from_tokens(&tokens)),
-                    None,
-                    None,
-                )
+        Ok((tokens, _)) => {
+            if before
+                .as_ref()
+                .is_some_and(|previous| previous.access_token != tokens.access_token)
+            {
+                record_last_auth_transition("refresh_ok");
             }
-        },
-        Err(error) if before.is_none() => (
-            signed_out_state(),
-            AuthSessionStatus::CredentialsAbsent,
-            None,
-            Some("No HQ Work credentials are saved on this device."),
-            error.refresh_failure_class,
-        ),
+            match cognito::non_human_principal_from_tokens(&tokens) {
+                Some(principal) => (
+                    signed_out_state(),
+                    AuthSessionStatus::NonHumanPrincipal,
+                    Some(notification_identity_from_tokens(&tokens)),
+                    Some(match principal {
+                        cognito::NonHumanPrincipal::Outpost => {
+                            "The HQ credentials saved on this device belong to an outpost, not to a person."
+                        }
+                        cognito::NonHumanPrincipal::Agent => {
+                            "The HQ credentials saved on this device belong to a fleet agent, not to a person."
+                        }
+                    }),
+                    None,
+                    "none",
+                ),
+                None => {
+                    set_sentry_user_from_tokens(&tokens);
+                    let state = authenticated_state_from_tokens(&tokens);
+                    (
+                        state,
+                        AuthSessionStatus::Active,
+                        Some(notification_identity_from_tokens(&tokens)),
+                        None,
+                        None,
+                        "none",
+                    )
+                }
+            }
+        }
+        Err(error) if before.is_none() && (!error.requires_reauth || first_token_read_failed) => {
+            let status = cognito::classify_startup_refresh_failure(
+                false,
+                first_token_read_failed,
+                error.requires_reauth,
+                false,
+            );
+            let reason = if first_token_read_failed {
+                "HQ Work could not read saved credentials."
+            } else {
+                "No HQ Work credentials are saved on this device."
+            };
+            (
+                signed_out_state(),
+                status,
+                None,
+                Some(reason),
+                error.refresh_failure_class,
+                error.rejection_class,
+            )
+        }
         Err(error) => {
+            if error.requires_reauth {
+                record_last_auth_transition("refresh_rejected_requires_reauth");
+            }
             let after = cognito::get_tokens().await.ok().flatten();
             let refresh_failure_class = error.refresh_failure_class;
             let preserved_account = before
                 .as_ref()
                 .or(after.as_ref())
                 .map(notification_identity_from_tokens);
-            if error.requires_reauth || after.is_none() {
+            let status = cognito::classify_startup_refresh_failure(
+                before.is_some(),
+                first_token_read_failed,
+                error.requires_reauth,
+                after.is_some(),
+            );
+            if status == AuthSessionStatus::CredentialsInvalid {
                 (
                     signed_out_state(),
                     AuthSessionStatus::CredentialsInvalid,
                     preserved_account,
                     Some("Your saved HQ Work credentials are no longer valid."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             } else {
                 (
-                    signed_out_state(),
+                    after
+                        .as_ref()
+                        .map(authenticated_state_from_tokens)
+                        .unwrap_or_else(signed_out_state),
                     AuthSessionStatus::RefreshTemporarilyUnavailable,
                     preserved_account,
                     Some("HQ Work could not refresh credentials while offline or unavailable."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             }
         }
     };
+    let mut state = state;
+    state.startup_token_read_result = Some(first_token_read_result.to_string());
     if !state.authenticated {
         clear_sentry_user();
     }
@@ -490,7 +567,11 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             reason: reason.map(str::to_string),
         },
     );
-    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class);
+    set_auth_session_diagnostic(
+        envelope.status.clone(),
+        refresh_failure_class,
+        rejection_class,
+    );
     (state, envelope)
 }
 
@@ -502,6 +583,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
         crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+        crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
     }
     startup_auth_state_result(state, &envelope.status)
 }
@@ -545,9 +627,12 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     crate::commands::desktop_auth::note_auth_transition(
         hq_desktop_core::session_continuation::AttemptEnd::SignedOut,
     );
+    record_last_auth_transition("sign_out");
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
     crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
+    // The next account must not inherit this one's plan-limit upload pause.
+    crate::commands::uploads_paused::clear(&app);
     publish_auth_session(
         &app,
         AuthSessionEnvelope {
@@ -563,6 +648,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn refresh_tokens(app: AppHandle) -> Result<AuthState, String> {
     let current_tokens = crate::commands::dm_notify::refresh_notification_credentials(&app).await?;
+    record_last_auth_transition("refresh_ok");
     set_sentry_user_from_tokens(&current_tokens);
     let state = authenticated_state_from_tokens(&current_tokens);
     publish_auth_session(
@@ -604,12 +690,37 @@ mod tests {
     }
 
     #[test]
+    fn temporary_refresh_failure_keeps_a_stored_session_authenticated() {
+        let tokens = cognito::CognitoTokens {
+            access_token: "expired-access".to_string(),
+            id_token: None,
+            refresh_token: "refresh".to_string(),
+            expires_at: 0,
+        };
+        let state = authenticated_state_from_tokens(&tokens);
+        assert!(state.authenticated);
+        assert!(startup_auth_state_result(
+            state,
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        )
+        .is_err(), "the renderer gets the temporary-retry surface while the session stays authenticated");
+    }
+
+    #[test]
     fn startup_command_still_concludes_signed_out_for_invalid_credentials() {
         let result =
             startup_auth_state_result(signed_out_state(), &AuthSessionStatus::CredentialsInvalid)
                 .expect("definitively invalid credentials should allow sign-in");
 
         assert!(!result.authenticated);
+    }
+
+    #[test]
+    fn token_store_read_error_uses_a_distinct_diagnostic_tag() {
+        assert_eq!(
+            auth_session_status_tag(&AuthSessionStatus::CredentialsReadError),
+            "credentials_read_error"
+        );
     }
 
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

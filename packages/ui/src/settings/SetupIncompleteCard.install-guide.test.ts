@@ -87,8 +87,8 @@ describe("SetupIncompleteCard - guided install path (US-005)", () => {
     expect(guide).toBeTruthy();
     // The dead-end launches are still visible as a secondary option, but the
     // guided path is the primary way through.
-    expect(host.querySelector('[data-testid="setup-install-guide-primary"]')?.textContent).toContain(
-      "Install Claude Code",
+    expect(host.querySelector('[data-testid="setup-install-guide-primary"]')?.textContent).toBe(
+      "Install Claude",
     );
   });
 
@@ -104,13 +104,13 @@ describe("SetupIncompleteCard - guided install path (US-005)", () => {
     expect(host.querySelector('[data-testid="setup-install-guide"]')).toBeNull();
   });
 
-  it("routes a click on Install through the caller's oninstall - HQ never asks for the password itself", async () => {
+  it("routes a click on Install through the caller's oninstall, then the caller's onsignin - HQ never asks for the password itself", async () => {
     const { oninstall, onsignin } = await render({ claudeInstalled: false });
     const primary = host.querySelector<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
     primary.click();
-    await settle();
+    await vi.waitFor(() => expect(onsignin).toHaveBeenCalledTimes(1));
     expect(oninstall).toHaveBeenCalledWith("claude");
-    // Sign-in has not run yet - the guide is a two-step flow.
-    expect(onsignin).not.toHaveBeenCalled();
+    // Install and sign-in are one step: the sign-in follows with no second click.
+    expect(onsignin.mock.calls[0]?.[0]).toBe("claude");
   });
 });

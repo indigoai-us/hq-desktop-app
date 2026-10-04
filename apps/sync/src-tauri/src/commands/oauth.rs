@@ -35,13 +35,16 @@
 //   Errors that the UI should show a friendly, specific message for are
 //   returned as a JSON string `{"code": "...", "message": "..."}` rather than
 //   a plain string, so the frontend can pattern-match on `code` instead of
-//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`.
+//   sniffing English text. Currently: `OAUTH_PORT_IN_USE`, `OAUTH_PROVIDER_ERROR`,
+//   `MICROSOFT_EMAIL_REQUIRED`, `MICROSOFT_ENABLEMENT_REQUIRED`,
+//   `MICROSOFT_RESOLVE_FAILED`.
 
 use super::cognito::{AuthState, CognitoTokens};
+use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
-    cognito_identity_provider, cognito_token_url, compute_code_challenge, generate_code_verifier,
-    parse_callback, AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
+    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -76,9 +79,31 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingPkce {
+    state: String,
     verifier: String,
     identity_provider: Option<String>,
     redirect_uri: String,
+    referral_nonce: Option<String>,
+}
+
+struct ReferralFailureCleanup(Option<String>);
+
+impl ReferralFailureCleanup {
+    fn new(nonce: Option<String>) -> Self {
+        Self(nonce)
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for ReferralFailureCleanup {
+    fn drop(&mut self) {
+        if let Some(nonce) = self.0.take() {
+            crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(nonce);
+        }
+    }
 }
 
 static PKCE_VERIFIER: OnceLock<Mutex<Option<PendingPkce>>> = OnceLock::new();
@@ -276,7 +301,7 @@ fn cancel_pending_listener(expected_state: Option<&str>) -> Result<bool, String>
     let pending = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if expected_state.map_or(true, |state| pending.state == state) => {
                 guard.take()
@@ -413,16 +438,51 @@ fn write_response(stream: &mut TcpStream, status: &str, body: &str) {
 /// It also surfaces a port-in-use conflict immediately, instead of after
 /// the user has already been sent to the provider's sign-in page.
 #[tauri::command]
-pub async fn start_oauth_login(app: AppHandle, provider: String) -> Result<OAuthFlowInit, String> {
-    let identity_provider = cognito_identity_provider(&provider)?;
+pub async fn start_oauth_login(
+    app: AppHandle,
+    provider: String,
+    email: Option<String>,
+) -> Result<OAuthFlowInit, String> {
+    let identity_provider = resolve_identity_provider(&provider, email.as_deref()).await?;
     // Explicit identity_provider tells Cognito Hosted UI to skip its own
     // username/password form and redirect straight to the selected provider.
     // No nonce: this path has no confirmation step to bind a token back to.
-    let armed = arm_oauth_flow(&app, Some(identity_provider), None)?;
+    let armed = arm_oauth_flow(&app, Some(&identity_provider), None)?;
+    let (authorize_url, referral_nonce) =
+        match crate::commands::desktop_auth::prepare_desktop_referral_start_url(
+            &armed.authorize_url,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(()) => {
+                let _ = oauth_cancel_listen(Some(armed.state.clone()));
+                return Err(structured_error(
+                    "OAUTH_REFERRAL_PERSIST_FAILED",
+                    "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+                ));
+            }
+        };
+    if let Err(_error) = set_pending_referral_nonce(&armed.state, &referral_nonce) {
+        crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(referral_nonce);
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "OAUTH_REFERRAL_PERSIST_FAILED",
+            "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+        ));
+    }
     Ok(OAuthFlowInit {
-        authorize_url: armed.authorize_url,
+        authorize_url,
         state: armed.state,
     })
+}
+
+async fn resolve_identity_provider(provider: &str, email: Option<&str>) -> Result<String, String> {
+    let client = hq_desktop_core::client_info::build_client();
+    let api_base = hq_desktop_core::continuation_endpoints::api_base();
+    identity_provider_for_sign_in(provider, email, &client, &api_base)
+        .await
+        .map_err(|err| structured_error(err.code(), &err.message()))
 }
 
 /// An armed loopback listener and the values that identify its attempt.
@@ -434,6 +494,7 @@ pub(crate) struct ArmedOAuthFlow {
 pub(crate) struct ExchangedOAuthCode {
     pub tokens: CognitoTokens,
     pub identity_provider: Option<String>,
+    pub referral_nonce: Option<String>,
 }
 
 /// Bind the loopback listener, stash a fresh PKCE verifier, and build the
@@ -467,6 +528,15 @@ pub(crate) fn arm_oauth_flow(
     // listener thread to relinquish its sockets before binding the next
     // registered callback port.
     cancel_pending_listener(None)?;
+    let superseded_referral_nonce = {
+        let mut guard = pkce_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.take().and_then(|pending| pending.referral_nonce)
+    };
+    if let Some(nonce) = superseded_referral_nonce {
+        crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(nonce);
+    }
     // Clear until bind succeeds — a port-in-use failure must not leave the
     // blur-hide suppressor stuck on from the previous attempt.
     set_oauth_flow_active(false);
@@ -492,7 +562,7 @@ pub(crate) fn arm_oauth_flow(
     {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(start_loopback_listener(listeners, state.clone()));
     }
     set_oauth_flow_active(true);
@@ -503,11 +573,13 @@ pub(crate) fn arm_oauth_flow(
     {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = Some(PendingPkce {
+            state: state.clone(),
             verifier,
             identity_provider: selected_identity_provider,
             redirect_uri: redirect_uri.clone(),
+            referral_nonce: None,
         });
     }
 
@@ -527,16 +599,42 @@ pub(crate) fn arm_oauth_flow(
     })
 }
 
+pub(crate) fn set_pending_referral_nonce(state: &str, referral_nonce: &str) -> Result<(), String> {
+    let mut guard = pkce_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pending = guard
+        .as_mut()
+        .ok_or_else(|| "No PKCE verifier found for referral binding.".to_string())?;
+    if pending.state != state {
+        return Err("PKCE state does not match the referral binding attempt.".to_string());
+    }
+    pending.referral_nonce = Some(referral_nonce.to_string());
+    Ok(())
+}
+
 /// Cancel an in-flight OAuth attempt, wait for its listener thread to release
 /// both loopback sockets, and clear the one-shot PKCE verifier.
 #[tauri::command]
 pub fn oauth_cancel_listen(state: Option<String>) -> Result<(), String> {
     let cancelled = cancel_pending_listener(state.as_deref())?;
-    if cancelled || state.is_none() {
-        if let Ok(mut guard) = pkce_store().lock() {
-            *guard = None;
-        }
+    let mut guard = pkce_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let matching_pkce = state.as_deref().map_or(true, |expected| {
+        guard
+            .as_ref()
+            .is_some_and(|pending| pending.state == expected)
+    });
+    let referral_nonce = if cancelled || matching_pkce {
+        let nonce = guard.take().and_then(|pending| pending.referral_nonce);
         set_oauth_flow_active(false);
+        nonce
+    } else {
+        None
+    };
+    if let Some(nonce) = referral_nonce {
+        crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(nonce);
     }
     eprintln!("[oauth] sign-in cancelled");
     Ok(())
@@ -554,17 +652,20 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
     let pending_pkce = {
         let mut guard = pkce_store()
             .lock()
-            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .take()
             .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
     };
 
     let PendingPkce {
+        state: _state,
         verifier,
         identity_provider,
         redirect_uri,
+        referral_nonce,
     } = pending_pkce;
+    let mut referral_cleanup = ReferralFailureCleanup::new(referral_nonce.clone());
 
     let client = crate::util::client_info::build_client();
 
@@ -619,9 +720,11 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         expires_at,
     };
 
+    referral_cleanup.disarm();
     Ok(ExchangedOAuthCode {
         tokens,
         identity_provider,
+        referral_nonce,
     })
 }
 
@@ -635,6 +738,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     let exchanged = exchange_code_for_tokens(&code).await?;
     let tokens = exchanged.tokens;
     let identity_provider = exchanged.identity_provider;
+    let referral_nonce = exchanged.referral_nonce;
 
     // The person just chose an account with a provider button. Any continuation
     // still waiting for confirmation is about a different account and a question
@@ -645,20 +749,47 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     crate::commands::desktop_auth::note_auth_transition(
         hq_desktop_core::session_continuation::AttemptEnd::Superseded,
     );
+    if let Some(nonce) = referral_nonce.as_deref() {
+        crate::commands::desktop_auth::authorize_desktop_referral_for_tokens(&tokens, nonce)
+            .await
+            .map_err(|error| {
+                eprintln!("[desktop-referral] OAuth binding failed: {error}");
+                crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(
+                    nonce.to_string(),
+                );
+                structured_error(
+                    "OAUTH_REFERRAL_PERSIST_FAILED",
+                    "Sign-in could not secure the browser handoff. Retry in a moment.",
+                )
+            })?;
+    }
     // Persist, publish, announce — the shared completion browser continuation
     // also ends on, so there is exactly one definition of "signed in".
-    let state = crate::commands::auth::complete_auth_session(&app, &tokens).await?;
+    let state = match crate::commands::auth::complete_auth_session(&app, &tokens).await {
+        Ok(state) => state,
+        Err(error) => {
+            // Completion is ambiguous because credentials are written before
+            // the final session-ready event is emitted. Never discard a bound
+            // referral here; a matching durable session may already exist.
+            if referral_nonce.is_some() {
+                crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
+            }
+            return Err(error);
+        }
+    };
+    crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
     // The control cohort needs the same durable login-completed edge as the
-    // continuation cohort. Persist before background delivery so a transient
-    // telemetry failure cannot make its completed sign-in disappear.
+    // continuation cohort. The flag-gated path waits for its local queue write
+    // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
-        let _ = crate::commands::desktop_auth::record_desktop_login_completed(
+        crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
             "manual_oauth",
             "control",
             identity_provider.as_deref(),
-        );
+        )
+        .await;
     } else {
         eprintln!("[desktop-onboarding] login_completed receipt not queued without an authenticated account");
     }
@@ -685,7 +816,7 @@ pub(crate) async fn oauth_listen_for_code_internal(
     let state = {
         let guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         guard
             .as_ref()
             .ok_or_else(|| "No pending sign-in listener.".to_string())?
@@ -708,7 +839,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let receiver = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let pending = guard.as_mut().ok_or_else(|| {
             "No pending sign-in listener — was start_oauth_login called?".to_string()
         })?;
@@ -732,7 +863,7 @@ pub async fn oauth_listen_for_code(app: AppHandle, state: String) -> Result<OAut
     let thread = {
         let mut guard = listener_store()
             .lock()
-            .map_err(|e| format!("Listener lock poisoned: {e}"))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match guard.as_ref() {
             Some(pending) if pending.state == state && pending.result.is_none() => {
                 guard.take().and_then(|mut pending| pending.thread.take())
@@ -792,9 +923,11 @@ mod tests {
         {
             let mut guard = pkce_store().lock().unwrap();
             *guard = Some(PendingPkce {
+                state: "state".to_string(),
                 verifier: "test-verifier".to_string(),
                 identity_provider: Some("Google".to_string()),
                 redirect_uri: REDIRECT_URI.to_string(),
+                referral_nonce: None,
             });
         }
         {
@@ -803,9 +936,11 @@ mod tests {
             assert_eq!(
                 taken,
                 Some(PendingPkce {
+                    state: "state".to_string(),
                     verifier: "test-verifier".to_string(),
                     identity_provider: Some("Google".to_string()),
                     redirect_uri: REDIRECT_URI.to_string(),
+                    referral_nonce: None,
                 })
             );
         }
@@ -860,6 +995,24 @@ mod tests {
             let guard = listener_store().lock().unwrap();
             assert!(guard.is_none());
         }
+    }
+
+    #[test]
+    fn cancel_pending_listener_recovers_a_poisoned_store() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        *listener_store()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+
+        let panic = std::thread::spawn(|| {
+            let _guard = listener_store().lock().unwrap();
+            panic!("poison pending OAuth listener store");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        assert_eq!(cancel_pending_listener(None), Ok(false));
+        listener_store().clear_poison();
     }
 
     #[test]
@@ -991,5 +1144,63 @@ mod tests {
         assert!(response.contains("Cache-Control: no-store\r\n"));
         assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(!response.contains("test-code"));
+    }
+
+    #[test]
+    fn provider_oauth_wiring_fails_closed_then_wakes_detached_delivery() {
+        let source = include_str!("oauth.rs");
+        let exchange = source
+            .split("pub async fn oauth_exchange_code(")
+            .nth(1)
+            .expect("provider OAuth completion")
+            .split("pub async fn oauth_listen_for_code")
+            .next()
+            .expect("provider OAuth body");
+        let bind = exchange
+            .find("authorize_desktop_referral_for_tokens")
+            .expect("referral binding");
+        let persist = exchange
+            .find("crate::commands::auth::complete_auth_session(&app, &tokens).await")
+            .expect("credential persistence");
+        let detached = exchange
+            .find("flush_pending_desktop_referrals(&app)")
+            .expect("detached referral wake");
+        assert!(bind < persist && persist < detached);
+        assert!(exchange[bind..persist].contains("?;"));
+        let ambiguous_failure = exchange[persist..]
+            .split("return Err(error);")
+            .next()
+            .expect("ambiguous completion failure branch");
+        assert!(ambiguous_failure.contains("Err(error) =>"));
+        assert!(ambiguous_failure.contains("flush_pending_desktop_referrals(&app)"));
+        assert!(!ambiguous_failure.contains("discard_unbound_desktop_referral_nonce"));
+        assert!(!exchange.contains("access_token),"));
+
+        let cancel = source
+            .split("pub fn oauth_cancel_listen(")
+            .nth(1)
+            .expect("OAuth cancellation")
+            .split("pub(crate) async fn exchange_code_for_tokens")
+            .next()
+            .expect("OAuth cancellation body");
+        assert!(cancel.contains("pending.referral_nonce"));
+        assert!(cancel.contains("discard_unbound_desktop_referral_nonce(nonce)"));
+        assert!(source.contains("ReferralFailureCleanup"));
+
+        let arm = source
+            .split("pub(crate) fn arm_oauth_flow(")
+            .nth(1)
+            .expect("OAuth arming")
+            .split("pub(crate) fn set_pending_referral_nonce")
+            .next()
+            .expect("OAuth arming body");
+        assert!(arm.contains("guard.take().and_then(|pending| pending.referral_nonce)"));
+        assert!(
+            arm.find("discard_unbound_desktop_referral_nonce(nonce)")
+                .expect("superseded referral cleanup")
+                < arm
+                    .find("*guard = Some(PendingPkce")
+                    .expect("PKCE replacement")
+        );
     }
 }

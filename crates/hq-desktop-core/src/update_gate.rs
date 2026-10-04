@@ -28,6 +28,20 @@ pub enum HoldReason {
     Custom(String),
 }
 
+impl HoldReason {
+    /// Holds that must stop any process restart, including one a person asked
+    /// for. `UploadInFlight` is excluded: sync is nearly always running, and
+    /// an interrupted upload resumes after the restart.
+    pub fn blocks_restart(&self) -> bool {
+        !matches!(self, Self::UploadInFlight)
+    }
+
+    /// Holds that come from a meeting recording or its transcript.
+    pub fn is_recording(&self) -> bool {
+        matches!(self, Self::MeetingRecording | Self::TranscriptFinishing)
+    }
+}
+
 impl std::fmt::Display for HoldReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -69,6 +83,18 @@ impl UpdateHolds {
             if *n == 0 {
                 counts.remove(&reason);
             }
+        }
+    }
+
+    /// Set a probe-owned hold idempotently. Event-owned holds continue to use
+    /// acquire/release so nested lifetimes retain their reference counts; a
+    /// repeatedly-polled external signal must never accumulate counts.
+    pub fn set(&self, reason: HoldReason, active: bool) {
+        let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if active {
+            counts.insert(reason, 1);
+        } else {
+            counts.remove(&reason);
         }
     }
 
@@ -117,7 +143,18 @@ pub enum UpdateDecision {
 
 /// Core decision function. Pure — takes inputs, returns a decision.
 pub fn decide(trigger: UpdateTrigger, focus: AppFocus, holds: &UpdateHolds) -> UpdateDecision {
-    let active = holds.active();
+    let active: Vec<HoldReason> = match trigger {
+        UpdateTrigger::Automatic => holds.active(),
+        // A person asked for this update. Sync runs continuously for most
+        // people, so an in-flight upload must not block a manual install; the
+        // restart would otherwise be refused indefinitely. Recording,
+        // transcript and Core update holds still apply.
+        UpdateTrigger::Manual => holds
+            .active()
+            .into_iter()
+            .filter(HoldReason::blocks_restart)
+            .collect(),
+    };
     if !active.is_empty() {
         return UpdateDecision::Defer {
             reason: DeferReason::Held { reasons: active },
@@ -277,6 +314,48 @@ mod tests {
         let h = UpdateHolds::new();
         h.release(HoldReason::UploadInFlight); // never acquired
         assert_eq!(h.active().len(), 0);
+    }
+
+    #[test]
+    fn manual_install_is_not_blocked_by_an_in_flight_upload() {
+        let holds = with_hold(HoldReason::UploadInFlight);
+        assert_eq!(
+            decide(UpdateTrigger::Manual, AppFocus::Focused, &holds),
+            UpdateDecision::InstallNow
+        );
+        // The automatic installer still waits for a sync gap.
+        assert!(matches!(
+            decide(UpdateTrigger::Automatic, AppFocus::Unfocused, &holds),
+            UpdateDecision::Defer { .. }
+        ));
+    }
+
+    #[test]
+    fn manual_install_still_waits_for_recording_transcript_and_core() {
+        for reason in [
+            HoldReason::MeetingRecording,
+            HoldReason::TranscriptFinishing,
+            HoldReason::CoreUpdateInProgress,
+        ] {
+            let holds = with_hold(reason.clone());
+            holds.acquire(HoldReason::UploadInFlight);
+            assert_eq!(
+                decide(UpdateTrigger::Manual, AppFocus::Focused, &holds),
+                UpdateDecision::Defer {
+                    reason: DeferReason::Held { reasons: vec![reason] }
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn setting_a_probe_hold_repeatedly_does_not_leak_a_reference_count() {
+        let h = UpdateHolds::new();
+        h.set(HoldReason::UploadInFlight, true);
+        h.set(HoldReason::UploadInFlight, true);
+        assert_eq!(h.active(), vec![HoldReason::UploadInFlight]);
+        h.set(HoldReason::UploadInFlight, false);
+        assert!(h.active().is_empty());
     }
 
     #[test]

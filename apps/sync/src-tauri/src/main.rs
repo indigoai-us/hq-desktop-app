@@ -51,6 +51,7 @@ mod fd_limit;
 #[cfg(target_os = "macos")]
 mod glass;
 mod intro_window;
+mod welcome_window;
 mod recovery;
 mod titlebar_layout;
 mod tray;
@@ -195,22 +196,44 @@ fn setup_notification_producers(app: &tauri::AppHandle) {
     });
 }
 
+fn prepare_first_run_welcome_window(app: &tauri::AppHandle, first_run: bool) {
+    if !first_run {
+        return;
+    }
+
+    welcome_window::set_welcome_window_active(true);
+    if let Some(window) = app.get_webview_window("main") {
+        // Set the full-screen welcome geometry before showing the initially
+        // hidden window. Lifecycle probes and the bundled-asset cache gate can
+        // continue after the user has a visible startup surface.
+        welcome_window::apply_window_controls(&window, true);
+        let _ = window.set_shadow(false);
+        hq_platform::window_effects::clear_popover_vibrancy(&window);
+        if !welcome_window::fit_to_work_area(&window) {
+            let _ = window.set_size(tauri::LogicalSize::new(1024.0, 700.0));
+            let _ = window.center();
+        }
+    }
+    tray::show_window_centered(app);
+    util::logfile::log("app", "first-run launch: early welcome window shown");
+}
+
 fn setup_startup_surfaces(
     app: &tauri::AppHandle,
     first_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tray::setup_tray(app)?;
     crate::recovery::on_startup(app);
-
-    if first_run {
-        tray::show_window_centered(app);
-        util::logfile::log("app", "first-run launch: centered onboarding card");
-    }
+    crate::recovery::spawn_runtime_stall_sentinel();
 
     // macOS: the menu-bar item lives in a separate native helper process
     // (tao parks an in-process status item off-screen on Tahoe).
     #[cfg(target_os = "macos")]
     tray_helper::spawn_and_poll(app);
+
+    // hard-stop-readiness US-019: a plan-limit upload pause recorded in the
+    // journal by the previous run reaches the menu bar before the next pass.
+    commands::uploads_paused::publish_current(app);
 
     register_global_shortcuts(app);
     Ok(())
@@ -716,6 +739,7 @@ fn main() {
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,
+            commands::first_run::desktop_install_attempt_id,
             commands::first_run::should_show_auto_sync_notice,
             commands::first_run::mark_first_run_complete,
             commands::window_material::window_material_capability,
@@ -724,11 +748,16 @@ fn main() {
             commands::first_run::mark_auto_sync_notice_shown,
             commands::first_run::set_main_window_vibrancy,
             intro_window::set_intro_fullscreen,
+            welcome_window::set_welcome_backdrop,
+            welcome_window::set_welcome_window,
+            welcome_window::get_welcome_window_active,
+            welcome_window::get_desktop_wallpaper,
             commands::first_run::show_main_window_at_tray,
             commands::lifecycle::get_lifecycle_state,
             commands::lifecycle::get_startup_setup_evidence,
             commands::lifecycle::get_setup_status,
             commands::lifecycle::mark_welcome_setup_complete,
+            commands::lifecycle::mark_welcome_tour_shown,
             commands::lifecycle::report_unexpected_startup_surface,
             commands::session_end_observer::session_end_observer_status,
             commands::windows_teardown_probe::session_end_teardown_probe_status,
@@ -819,6 +848,7 @@ fn main() {
             commands::daemon::start_daemon,
             commands::daemon::stop_daemon,
             commands::daemon::daemon_status,
+            commands::daemon::daemon_sync_status,
             tray::set_tray_state,
             tray::finish_replay_intro,
             updater::check_for_updates,
@@ -899,10 +929,12 @@ fn main() {
             commands::agency::list_agency_chat,
             commands::agency::send_agency_message,
             commands::meetings::meetings_feature_enabled,
+            commands::meetings::meetings_personal_transcripts_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::set_desktop_active_company,
             commands::desktop_alt::get_desktop_active_company,
+            commands::cdp_mirror::web_visitor_anon_id,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::ensure_company_home_channel,
@@ -925,6 +957,7 @@ fn main() {
             commands::vault_explorer::vault_search,
             commands::vault_explorer::vault_note_links,
             commands::vault_explorer::read_vault_note,
+            commands::vault_explorer::read_vault_note_frontmatter,
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,
@@ -1031,6 +1064,7 @@ fn main() {
             commands::messages::send_channel_message,
             commands::messages::run_card_action,
             commands::messages::check_company_slug,
+            commands::messages::activate_company_cloud,
             commands::messages::get_company_tab,
             commands::messages::run_company_tab_action,
             crate::deep_link::take_pending_setup_target,
@@ -1145,8 +1179,20 @@ fn main() {
             // for a machine that is plainly set up, and the launch kind must
             // read the repaired file — otherwise a lost marker still opens the
             // setup card and sends the Dock click to the popover.
+            // Paint a genuinely fresh install's welcome window before local
+            // lifecycle probes or release cache eviction can delay startup.
+            // This is only a hint: lifecycle may backfill a lost completion
+            // marker for older installations before the final surface verdict.
+            let early_first_run = commands::first_run::early_launch_hint()
+                == commands::first_run::LaunchKind::FirstRun;
+            prepare_first_run_welcome_window(app.handle(), early_first_run);
+
             commands::lifecycle::setup_lifecycle(app.handle());
             let launch_kind = commands::first_run::classify_launch(app.handle());
+            commands::cdp_mirror::init(
+                app.handle(),
+                launch_kind == hq_desktop_core::first_run::LaunchKind::FirstRun,
+            );
 
             // US-104: cold-start hqwork:// on argv (if the OS delivered one).
             // Not an OS-scheme registration — only handle what we were given.
@@ -1256,35 +1302,32 @@ fn main() {
                 commands::first_run::should_autoshow_on_launch(launch_kind),
                 commands::lifecycle::current_lifecycle_state(app.handle()),
             );
+            if early_first_run && !first_run {
+                // Lifecycle repaired an older install's missing marker. Close
+                // the provisional splash so that existing users keep their
+                // tray-only startup behavior.
+                welcome_window::set_welcome_window_active(false);
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                    hq_platform::window_effects::apply_popover_vibrancy(&window);
+                }
+            } else if first_run && !early_first_run {
+                // A normal launch can still need setup when lifecycle finds
+                // missing local installation evidence. Apply the same welcome
+                // surface after that final verdict.
+                prepare_first_run_welcome_window(app.handle(), true);
+            }
 
-            // The very first launch opens the onboarding FLOATING CARD (transparent,
-            // centered, no frosted popover material, no native window shadow) rather
-            // than the compact popover. Apply that window state BEFORE the window is
-            // shown so it paints correctly framed from the first frame — no flash of
-            // the small frosted popover shell before onboarding resizes it.
+            // The very first launch opens the welcome flow, which fills the
+            // work area of the current monitor (no rounded card, no native
+            // window shadow, no frosted popover material) rather than the
+            // compact popover. Apply that window state BEFORE the window is
+            // shown so it paints correctly framed from the first frame — no
+            // flash of the small frosted popover shell before onboarding
+            // takes the window over (`welcome_window::set_welcome_window`).
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            if let Some(window) = app.get_webview_window("main") {
-                if first_run {
-                    let onboarding_size = window
-                        .current_monitor()
-                        .ok()
-                        .flatten()
-                        .map(|monitor| {
-                            let work_area = monitor.work_area();
-                            let scale = monitor.scale_factor();
-                            tauri::LogicalSize::new(
-                                ((work_area.size.width as f64 / scale) - 32.0)
-                                    .clamp(360.0, 780.0),
-                                ((work_area.size.height as f64 / scale) - 32.0)
-                                    .clamp(420.0, 620.0),
-                            )
-                        })
-                        .unwrap_or_else(|| tauri::LogicalSize::new(780.0, 620.0));
-                    let _ = window.set_size(onboarding_size);
-                    let _ = window.set_shadow(false);
-                    hq_platform::window_effects::clear_popover_vibrancy(&window);
-                    let _ = window.center();
-                } else {
+            if !first_run {
+                if let Some(window) = app.get_webview_window("main") {
                     hq_platform::window_effects::apply_popover_vibrancy(&window);
                     #[cfg(target_os = "windows")]
                     if let Ok(h) = window.hwnd() {
@@ -1605,6 +1648,9 @@ fn main() {
                     _app_handle,
                     commands::calls::DISPOSE_WAIT,
                 );
+                // Funnel mirror: queue setup_abandoned when quitting before
+                // sign-in/install and give the sender a bounded window.
+                commands::cdp_mirror::on_exit_requested(_app_handle);
                 commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
             }
 

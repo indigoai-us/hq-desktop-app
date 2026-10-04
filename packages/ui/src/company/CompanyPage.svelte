@@ -1,5 +1,11 @@
 <script lang="ts">
-  import type { PlatformAdapter } from "@hq/platform";
+  import {
+    PERSONAL_WORKSPACE_BOARD_FLAG,
+    approvedPlanUpgradeUrl,
+    hostComputerNoun,
+    isPlanLimitCode,
+    type PlatformAdapter,
+  } from "@hq/platform";
   import type { Workspace } from "../chat/workspaces";
   import { buildClaudeCodeUrl } from "../projects/claude-code-link";
   import { companyInviteUrl, companySettingsUrl } from "../common/hq-console";
@@ -96,22 +102,59 @@
     code?: string;
     message?: string;
   }): string {
+    // A plan-limit refusal already carries a readable sentence; prefixing the
+    // machine code would put PLAN_LIMIT_EXCEEDED in front of the user.
+    if (isPlanLimitCode(res.code) && res.message) return res.message;
     const parts = [res.code, res.message].filter(Boolean);
     return parts.join(": ") || res.reason;
   }
 
   let actionError = $state<string | null>(null);
+  /** Upgrade link beside a plan-limit `actionError` (hard-stop US-018). */
+  let actionUpgradeUrl = $state<string | null>(null);
   let actionNotice = $state<string | null>(null);
   let newProjectBusy = $state(false);
   let connectBusy = $state(false);
   let inviteBusy = $state(false);
   let inviteOpening = $state(false);
 
+  let personalWorkspaceBoardEnabled = $state(false);
+
+  // Personal workspaces do not have a membership status. Keep their remote
+  // board path behind an explicit, default-off hq-flags value and require the
+  // server-resolved personal-vault UID before querying board resources.
+  $effect(() => {
+    if (company.state !== "personal" || !company.cloudUid) {
+      personalWorkspaceBoardEnabled = false;
+      return;
+    }
+
+    let active = true;
+    void adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG).then(
+      (result) => {
+        if (active) {
+          personalWorkspaceBoardEnabled = result.ok && result.value;
+        }
+      },
+      (error: unknown) => {
+        console.error("Personal workspace board flag lookup failed:", error);
+        if (active) personalWorkspaceBoardEnabled = false;
+      },
+    );
+
+    return () => {
+      active = false;
+    };
+  });
+
   // Connectivity (vault/membership) — independent of the local Off toggle.
   const cloudBacked = $derived(
     company.state === "synced" ||
       (company.state === "cloud-only" &&
-        company.membershipStatus !== "pending"),
+        company.membershipStatus !== "pending") ||
+      (company.state === "personal" &&
+        Boolean(company.cloudUid) &&
+        personalWorkspaceBoardEnabled),
   );
   const connectionIssue = $derived(company.state === "broken");
   // Local runner pause — suppress resource polling without rewriting connectivity.
@@ -141,6 +184,7 @@
     if (inviteOpening) return;
     inviteOpening = true;
     actionError = null;
+    actionUpgradeUrl = null;
     actionNotice = null;
     try {
       await openExternal(companyInviteUrl(company.slug));
@@ -158,6 +202,7 @@
   // links / callers that still open console settings by slug.
   function openCompanySettings() {
     actionError = null;
+    actionUpgradeUrl = null;
     actionNotice = null;
     void openExternal(companySettingsUrl(company.slug));
   }
@@ -165,6 +210,7 @@
   async function handleConnect() {
     if (connectBusy || !connectable || !cloudReachable) return;
     actionError = null;
+    actionUpgradeUrl = null;
     actionNotice = null;
     connectBusy = true;
     try {
@@ -183,16 +229,29 @@
   async function handleAcceptPendingInvite() {
     if (inviteBusy) return;
     actionError = null;
+    actionUpgradeUrl = null;
     actionNotice = null;
     inviteBusy = true;
     try {
       const claim = await adapter.company.claimPendingInvite(company.slug);
-      if (!claim.ok) throw new Error(failureMessage(claim));
+      if (!claim.ok) {
+        actionUpgradeUrl = approvedPlanUpgradeUrl(claim.upgradeUrl);
+        throw new Error(failureMessage(claim));
+      }
       const result = claim.value as {
         ok?: boolean;
         claimedSlugs?: string[];
         message?: string;
+        upgradeUrl?: string;
       };
+      // The desktop claim resolves a refusal (e.g. the company is at its
+      // member limit) as `ok: false` with a readable sentence, never raw JSON.
+      if (result.ok === false) {
+        actionUpgradeUrl = approvedPlanUpgradeUrl(result.upgradeUrl);
+        actionError =
+          result.message?.trim() || "Could not accept invite. Try again or run Sync.";
+        return;
+      }
       actionNotice =
         result.message || "Invite accepted. Sync to pull the company.";
       onworkspaceschanged?.();
@@ -219,6 +278,7 @@
   async function startNewProject() {
     if (newProjectBusy) return;
     actionError = null;
+    actionUpgradeUrl = null;
     actionNotice = null;
     newProjectBusy = true;
     onopenprojects?.();
@@ -327,7 +387,21 @@
   </header>
 
   {#if actionError}
-    <p class="company-action-error" role="status">{actionError}</p>
+    <p class="company-action-error" role="status">
+      {actionError}
+      {#if actionUpgradeUrl}
+        <button
+          type="button"
+          class="company-action-upgrade"
+          data-testid="company-action-upgrade"
+          onclick={() => {
+            if (actionUpgradeUrl) void openExternal(actionUpgradeUrl);
+          }}
+        >
+          Upgrade plan
+        </button>
+      {/if}
+    </p>
   {/if}
   {#if actionNotice}
     <p class="company-action-notice" role="status">{actionNotice}</p>
@@ -343,7 +417,7 @@
       <h2 id="pending-invite-title">Join {company.displayName}</h2>
       <p>
         Accept before HQ loads this company’s projects, goals, files, activity,
-        members, or settings on this Mac.
+        members, or settings on this {hostComputerNoun()}.
       </p>
       <dl>
         {#if company.invitedBy}
@@ -514,6 +588,17 @@
     color: var(--v4-text-2);
     font-size: var(--text-base);
     line-height: 1.3;
+  }
+
+  .company-action-upgrade {
+    margin-left: 6px;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--v4-accent, currentColor);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
   }
 
   .company-action-notice {

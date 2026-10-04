@@ -3,11 +3,19 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
-  INVITE_TEAMMATE_STEP_FLAG,
+  LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
-  SETUP_STAGE_TIMEOUT_FIX_FLAG,
+  PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -42,6 +50,11 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("maps company name prefill to its hq-flags key", () => {
+    expect(COMPANY_NAME_PREFILL_FLAG).toBe("desktop.company-name-prefill-v1");
+    expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
+  });
+
   it("maps the meetings and Claude provider registry flags", () => {
     expect(registryKeyFor("meetings")).toBe(MEETINGS_REGISTRY_KEY);
     expect(registryKeyFor(MEETINGS_LEGACY_FLAG)).toBe("desktop.meetings");
@@ -50,9 +63,36 @@ describe("registry key mapping", () => {
     expect(registryKeyFor("anything-else")).toBeUndefined();
   });
 
-  it("maps the setup directory fallback to its hq-flags registry key", () => {
-    expect(registryKeyFor("desktop.setup-directory-parent-fallback")).toBe(
-      "desktop.setup-directory-parent-fallback",
+  it("registers the first-launch join-key rollout through the default-off hq-flags mapping", () => {
+    expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
+    expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
+      FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
+  });
+
+
+  it("maps the personal workspace board through the default-off hq-flags gate", () => {
+    expect(PERSONAL_WORKSPACE_BOARD_FLAG).toBe(
+      "desktop.personal-workspace-board-v1",
+    );
+    expect(registryKeyFor(PERSONAL_WORKSPACE_BOARD_FLAG)).toBe(
+      PERSONAL_WORKSPACE_BOARD_FLAG,
+    );
+  });
+
+  it("maps personal meeting transcripts to the hq-flags registry", () => {
+    expect(PERSONAL_TRANSCRIPTS_FLAG).toBe(
+      "desktop.meetings-personal-transcripts",
+    );
+    expect(registryKeyFor(PERSONAL_TRANSCRIPTS_FLAG)).toBe(
+      PERSONAL_TRANSCRIPTS_FLAG,
+    );
+  });
+
+  it("registers desktop limit status push as a default-off hq-flags key", () => {
+    expect(DESKTOP_LIMIT_STATUS_PUSH_FLAG).toBe("desktop.limit-status-push");
+    expect(registryKeyFor(DESKTOP_LIMIT_STATUS_PUSH_FLAG)).toBe(
+      DESKTOP_LIMIT_STATUS_PUSH_FLAG,
     );
   });
 
@@ -62,38 +102,166 @@ describe("registry key mapping", () => {
     expect(registryKeyFor(key)).toBe(key);
   });
 
-  it("maps the invite-teammate onboarding flag through the registry", () => {
-    expect(INVITE_TEAMMATE_STEP_FLAG).toBe("desktop.invite-teammate-step-v1");
-    expect(registryKeyFor(INVITE_TEAMMATE_STEP_FLAG)).toBe(INVITE_TEAMMATE_STEP_FLAG);
-  });
-
-  it("maps setup stage timeout mitigation through the registry", () => {
-    expect(SETUP_STAGE_TIMEOUT_FIX_FLAG).toBe(
-      "desktop.setup-stage-timeout-fix-v1",
+  it("maps the company-route lookup retry through its hq-flags registry key", () => {
+    expect(COMPANY_ROUTE_LOOKUP_RETRY_FLAG).toBe(
+      "desktop.company-route-lookup-retry-v1",
     );
-    expect(registryKeyFor(SETUP_STAGE_TIMEOUT_FIX_FLAG)).toBe(
-      SETUP_STAGE_TIMEOUT_FIX_FLAG,
+    expect(registryKeyFor(COMPANY_ROUTE_LOOKUP_RETRY_FLAG)).toBe(
+      COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     );
   });
-});
 
-describe("createFeatureFlagGate", () => {
-  it("uses the setup timeout registry override when it is explicitly enabled", async () => {
+
+
+  it("maps receipt durability through the hq-flags registry", () => {
+    expect(LOGIN_RECEIPT_DURABILITY_FLAG).toBe(
+      "desktop.login-receipt-durable-before-return-v1",
+    );
+    expect(registryKeyFor(LOGIN_RECEIPT_DURABILITY_FLAG)).toBe(
+      LOGIN_RECEIPT_DURABILITY_FLAG,
+    );
+  });
+
+  it("maps post-ready action telemetry through its default-off hq-flags key", () => {
+    expect(POST_READY_ACTION_TELEMETRY_FLAG).toBe("desktop.post-ready-action-telemetry-v1");
+    expect(registryKeyFor(POST_READY_ACTION_TELEMETRY_FLAG)).toBe(POST_READY_ACTION_TELEMETRY_FLAG);
+  });
+
+  it("maps the ready first action through its default-off hq-flags key", () => {
+    expect(READY_FIRST_ACTION_FLAG).toBe("desktop.ready-first-action-v1");
+    expect(registryKeyFor(READY_FIRST_ACTION_FLAG)).toBe(READY_FIRST_ACTION_FLAG);
+  });
+
+  it("maps dependency setup timeout retries through the default-off hq-flags key", () => {
+    expect(SETUP_DEPS_TIMEOUT_RETRY_FLAG).toBe(
+      "desktop.setup-deps-timeout-retry-v1",
+    );
+    expect(registryKeyFor(SETUP_DEPS_TIMEOUT_RETRY_FLAG)).toBe(
+      SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+    );
+  });
+
+  it("keeps dependency setup timeout retries off unless hq-flags enables them", async () => {
     const isEnabled = vi.fn(() => true);
     const adapter = createSyncPlatformAdapter({
       invoke: vi.fn(async () => undefined),
       createFlagClient: () =>
         fakeClient({
           ready: async () => {},
-          snapshot: () => ({ version: 1, flags: { [SETUP_STAGE_TIMEOUT_FIX_FLAG]: true } }),
+          snapshot: () => ({ version: 1, flags: {} }),
           isEnabled,
         }),
     });
 
-    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
-      ok(true),
-    );
-    expect(isEnabled).toHaveBeenCalledExactlyOnceWith(SETUP_STAGE_TIMEOUT_FIX_FLAG);
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the dependency setup timeout retry flag cannot be read", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {
+            throw new Error("registry unavailable");
+          },
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicitly enabled dependency setup timeout retry flag", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({
+            version: 1,
+            flags: { [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: true },
+          }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
+    ).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledWith(SETUP_DEPS_TIMEOUT_RETRY_FLAG);
+  });
+
+  it("keeps the ready first action off until hq-flags configures it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(READY_FIRST_ACTION_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps post-ready action telemetry off until hq-flags configures it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps login receipt durability off when the registry is unavailable", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({ ready: async () => {}, snapshot: () => null, isEnabled }),
+    });
+    await expect(
+      adapter.identity.hasFeature(LOGIN_RECEIPT_DURABILITY_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+});
+
+describe("createFeatureFlagGate", () => {
+
+  it("keeps personal workspace board reads off when hq-flags has no configured value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(
+      adapter.identity.hasFeature(PERSONAL_WORKSPACE_BOARD_FLAG),
+    ).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
   });
 
   it("uses the first-folder registry override when it is explicitly enabled", async () => {
@@ -130,77 +298,9 @@ describe("createFeatureFlagGate", () => {
     expect(isEnabled).not.toHaveBeenCalled();
   });
 
-  it("keeps invite-teammate off when the flag registry is unavailable", async () => {
-    const isEnabled = vi.fn(() => true);
-    const adapter = createSyncPlatformAdapter({
-      invoke: vi.fn(async () => undefined),
-      createFlagClient: () =>
-        fakeClient({
-          ready: async () => {},
-          snapshot: () => null,
-          isEnabled,
-        }),
-    });
 
-    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
-      ok(false),
-    );
-    expect(isEnabled).not.toHaveBeenCalled();
-  });
 
-  it("keeps setup stage timeout mitigation off when the registry is unavailable", async () => {
-    const isEnabled = vi.fn(() => true);
-    const adapter = createSyncPlatformAdapter({
-      invoke: vi.fn(async () => undefined),
-      createFlagClient: () =>
-        fakeClient({
-          ready: async () => {},
-          snapshot: () => null,
-          isEnabled,
-        }),
-    });
 
-    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
-      ok(false),
-    );
-    expect(isEnabled).not.toHaveBeenCalled();
-  });
-
-  it("keeps setup stage timeout mitigation off when the registry has no configured value", async () => {
-    const isEnabled = vi.fn(() => true);
-    const adapter = createSyncPlatformAdapter({
-      invoke: vi.fn(async () => undefined),
-      createFlagClient: () =>
-        fakeClient({
-          ready: async () => {},
-          snapshot: () => ({ version: 1, flags: {} }),
-          isEnabled,
-        }),
-    });
-
-    await expect(adapter.identity.hasFeature(SETUP_STAGE_TIMEOUT_FIX_FLAG)).resolves.toEqual(
-      ok(false),
-    );
-    expect(isEnabled).not.toHaveBeenCalled();
-  });
-
-  it("keeps invite-teammate off when the registry has no configured value", async () => {
-    const isEnabled = vi.fn(() => true);
-    const adapter = createSyncPlatformAdapter({
-      invoke: vi.fn(async () => undefined),
-      createFlagClient: () =>
-        fakeClient({
-          ready: async () => {},
-          snapshot: () => ({ version: 1, flags: {} }),
-          isEnabled,
-        }),
-    });
-
-    await expect(adapter.identity.hasFeature(INVITE_TEAMMATE_STEP_FLAG)).resolves.toEqual(
-      ok(false),
-    );
-    expect(isEnabled).not.toHaveBeenCalled();
-  });
 
   it("snapshot missing → legacy path used", async () => {
     const isEnabled = vi.fn(() => false);

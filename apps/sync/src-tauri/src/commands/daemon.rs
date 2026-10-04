@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -46,55 +47,23 @@ use hq_desktop_core::runner_error_shape::{
 };
 use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::sync_outcome::{
-    DeferredSessionEndOutcome,
-    MemoryExhaustionEvidence,
-    RUNNER_PHASE_PRE_PROTOCOL,
-    RunnerErrorClass,
-    RunnerFatalClass,
-    SESSION_END_GRACE_MS,
-    SessionEndLatchReading,
-    SpawnFailureCapturePolicy,
-    SyncCancelCause,
-    TeardownLogReading,
-    TeardownShuttingDown,
-    TerminationHost,
-    WINDOWS_SESSION_TERMINATE_EXIT,
-    WatcherExitCapturePolicy,
-    WindowsTeardownProbeReading,
-    WindowsTeardownVerdict,
-    WindowsTermination,
-    WindowsTerminatorAttribution,
-    classify_runner_fatal_signature,
-    classify_windows_exit_status,
-    current_termination_host,
-    deferred_session_end_confirmed,
-    deferred_session_end_outcome,
-    describe_exit,
-    is_crash_signal,
-    is_windows_console_control_exit,
-    is_windows_fault_exit,
-    normalized_abort_description,
-    resolved_session_end_attribution,
-    runner_assertion_for_class,
-    runner_fault_is_disk_exhaustion_content,
-    runner_fault_is_file_lock_content,
-    runner_phase_elapsed_bucket,
-    runner_phase_from_event,
-    runner_stack_shape,
-    runner_stack_shape_for_exit,
-    session_end_grace_waited_bucket,
-    should_capture_watcher_exit,
-    spawn_failure_capture_policy,
-    spawn_failure_fingerprint_token,
-    termination_fingerprint_token,
-    termination_fingerprint_token_for_host,
-    watcher_exit_attributed_to_app_teardown,
-    watcher_exit_capture_policy,
-    watcher_exit_capture_policy_with_attribution,
-    watcher_exit_signal_class,
-    windows_exit_status_hex,
-    windows_fault_symbol,
-    windows_teardown_verdict,
+    classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
+    deferred_session_end_confirmed, deferred_session_end_outcome, describe_exit, is_crash_signal,
+    is_windows_console_control_exit, is_windows_fault_exit, normalized_abort_description,
+    resolved_session_end_attribution, runner_assertion_for_class,
+    runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
+    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape,
+    runner_stack_shape_for_exit, session_end_grace_waited_bucket, should_capture_watcher_exit,
+    spawn_failure_capture_policy, spawn_failure_fingerprint_token, termination_fingerprint_token,
+    termination_fingerprint_token_for_host, watcher_exit_attributed_to_app_teardown,
+    watcher_exit_capture_policy, watcher_exit_capture_policy_with_attribution,
+    watcher_exit_signal_class, windows_exit_status_hex, windows_fault_symbol,
+    windows_teardown_verdict, DeferredSessionEndOutcome, MemoryExhaustionEvidence,
+    RunnerErrorClass, RunnerFatalClass, SessionEndLatchReading, SpawnFailureCapturePolicy,
+    SyncCancelCause, TeardownLogReading, TeardownShuttingDown, TerminationHost,
+    WatcherExitCapturePolicy, WindowsTeardownProbeReading, WindowsTeardownVerdict,
+    WindowsTermination, WindowsTerminatorAttribution, RUNNER_PHASE_PRE_PROTOCOL,
+    SESSION_END_GRACE_MS, WINDOWS_SESSION_TERMINATE_EXIT,
 };
 use hq_desktop_core::watcher_fault::{
     UnmatchedStderrShapeRollup, WatcherFaultProvenance, WatcherFaultReadCounters,
@@ -111,8 +80,8 @@ use windows::Win32::System::Threading::{
 
 #[allow(unused_imports)]
 pub use hq_desktop_core::daemon::{
-    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled,
-    is_pid_alive, is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
+    build_watch_runner_args, is_autostart_enabled, is_instant_sync_enabled, is_pid_alive,
+    is_realtime_sync_enabled, read_daemon_json, read_menubar_bool, read_pid_file,
     resolve_hq_folder_path, should_cancel_stalled_daemon, should_event_push,
     should_force_clear_stalled_start, should_respawn_daemon, should_respawn_daemon_gated,
     DaemonFailureCategory, DaemonJson, DaemonStatus, WatchDaemonState,
@@ -134,6 +103,16 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// wedged indefinitely.
 const DAEMON_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const DAEMON_HEARTBEAT_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const WATCHER_FIRST_PASS_START_DEADLINE: Duration = Duration::from_secs(30 * 60);
+const OPERATION_LOCKED_EXIT: i32 = 17;
+
+fn should_restart_watcher_before_first_pass(first_pass_started: bool, spawn_age: Duration) -> bool {
+    !first_pass_started && spawn_age >= WATCHER_FIRST_PASS_START_DEADLINE
+}
+
+fn is_operation_lock_timeout_exit(code: Option<i32>, signal: Option<i32>) -> bool {
+    signal.is_none() && code == Some(OPERATION_LOCKED_EXIT)
+}
 
 /// Multiple of [`DAEMON_HEARTBEAT_TIMEOUT`] at which the heartbeat is judged on
 /// plain wall time regardless of throttling. Bounds the CPU-bound-wedge case
@@ -326,6 +305,24 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     phase_context: &Mutex<WatcherPhaseContext>,
     line: &str,
 ) -> bool {
+    if let Some(status) = parse_watch_runner_status(line) {
+        {
+            let mut context = phase_context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            observe_watcher_status_protocol(&mut context);
+            if status.state == "running" {
+                context.first_pass_started = true;
+                note_operation_lock_recovered();
+            }
+            context.protocol_status = Some(status.clone());
+        }
+        crate::commands::client_health::set_watcher_waiting_for_lock(
+            status.state == "waiting-for-lock",
+        );
+        emit_watcher_status_to_windows(app, status);
+        return true;
+    }
     // Shared tolerant parse seam — blank, malformed, and unknown-type lines
     // (e.g. the runner's additive `manifest-upload` event) are skipped rather
     // than killing the watcher. See `events::parse_sync_line`.
@@ -335,7 +332,7 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     observe_watcher_phase_from_event(phase_context, &event);
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.accumulate(&event);
+        crate::commands::sync::accumulate_runner_event_for_health(&mut t, &event, line);
     }
     // Record each per-file transfer into the session activity log (Recent
     // Changes window). The watch daemon is the primary instant-sync path, so
@@ -351,22 +348,32 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     if let SyncEvent::Conflict(payload) = &event {
         let _ = app.emit(EVENT_SYNC_CONFLICT, payload.clone());
     }
+    // hard-stop-readiness US-019: the registry behind the status header and
+    // the menu bar records the notice before the desktop window hears it.
     if let SyncEvent::PlanLimit(payload) = &event {
+        crate::commands::uploads_paused::record_plan_limit(app, hq_folder, payload);
         if let Err(error) = app.emit_to(
             crate::commands::desktop_alt::WINDOW_LABEL,
             EVENT_SYNC_PLAN_LIMIT,
             payload.clone(),
         ) {
-            log("daemon", &format!("failed to emit plan-limit notice: {error}"));
+            log(
+                "daemon",
+                &format!("failed to emit plan-limit notice: {error}"),
+            );
         }
     }
     if let SyncEvent::AllComplete(payload) = &event {
-        let conflicts = {
+        let (conflicts, uploads_pass) = {
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());
-            t.conflicts
+            (t.conflicts, t.uploads_pass.clone())
         };
         let now_iso = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let journal = journal_for_daemon_sync_complete(&now_iso, conflicts);
+        let mut journal = journal_for_daemon_sync_complete(&now_iso, conflicts);
+        // A pass whose uploads a plan limit refused is not a clean sync:
+        // persist which companies are paused (US-019).
+        journal.uploads_paused =
+            crate::commands::uploads_paused::settle_pass(app, hq_folder, &uploads_pass);
         if let Err(e) = write_journal(hq_folder, &journal) {
             log("daemon", &format!("failed to write journal: {e}"));
         }
@@ -393,14 +400,121 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
     true
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct WatcherProtocolStatus {
+    state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    holder_command: Option<String>,
+}
+
+fn safe_lock_holder_label(command: &str) -> Option<String> {
+    let mut words = command.split_whitespace();
+    let binary = std::path::Path::new(words.next()?).file_name()?.to_str()?;
+    let binary = binary.strip_suffix(".exe").unwrap_or(binary).to_string();
+    let safe_token = |value: &str| {
+        (!value.is_empty()
+            && value.len() <= 48
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)))
+        .then(|| value.to_string())
+    };
+    let binary = safe_token(&binary)?;
+    let subcommand = words
+        .next()
+        .filter(|word| !word.starts_with('-'))
+        .and_then(|word| {
+            let leaf = std::path::Path::new(word).file_name()?.to_str()?;
+            let leaf = leaf.strip_suffix(".js").unwrap_or(leaf);
+            safe_token(leaf)
+        });
+    Some(match subcommand {
+        Some(subcommand) => format!("{binary} {subcommand}"),
+        None => binary,
+    })
+}
+
+fn parse_watch_runner_status(line: &str) -> Option<WatcherProtocolStatus> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("type")?.as_str()? != "status" {
+        return None;
+    }
+    let state = value.get("state")?.as_str()?;
+    if !matches!(
+        state,
+        "starting" | "running" | "waiting-for-lock" | "stopping" | "stopped"
+    ) {
+        return None;
+    }
+    let holder_command = (state == "waiting-for-lock")
+        .then(|| value.get("holder")?.get("command")?.as_str())
+        .flatten()
+        .and_then(safe_lock_holder_label);
+    Some(WatcherProtocolStatus {
+        state: state.to_string(),
+        holder_command,
+    })
+}
+
+fn emit_watcher_status_to_windows<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    status: WatcherProtocolStatus,
+) {
+    for window in ["main", "desktop-alt"] {
+        if let Err(error) = app.emit_to(
+            window,
+            crate::events::EVENT_SYNC_WATCHER_STATUS,
+            status.clone(),
+        ) {
+            log(
+                "daemon",
+                &format!("failed to emit watcher status to {window}: {error}"),
+            );
+        }
+    }
+}
+
 fn start_daemon_heartbeat_watchdog(
     generation: u64,
     last_heartbeat: Arc<Mutex<hq_desktop_core::cpu_throttle::RunnableMark>>,
     finished: Arc<AtomicBool>,
+    phase_context: Arc<Mutex<WatcherPhaseContext>>,
 ) {
     thread::spawn(move || loop {
         thread::sleep(DAEMON_HEARTBEAT_CHECK_INTERVAL);
         if finished.load(Ordering::Acquire) {
+            return;
+        }
+        let (first_pass_started, spawn_age, last_status) = {
+            let context = phase_context
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                context.first_pass_started,
+                context.spawned_at.elapsed(),
+                context.protocol_status.as_ref().map(|status| {
+                    match status.holder_command.as_deref() {
+                        Some(holder) => format!("{} ({holder})", status.state),
+                        None => status.state.clone(),
+                    }
+                }),
+            )
+        };
+        if should_restart_watcher_before_first_pass(first_pass_started, spawn_age) {
+            log(
+                "daemon.watchdog",
+                &format!(
+                    "watcher-stalled: no pass started within {}s; last protocol status: {}",
+                    WATCHER_FIRST_PASS_START_DEADLINE.as_secs(),
+                    last_status.as_deref().unwrap_or("none")
+                ),
+            );
+            HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(true, Ordering::Release);
+            if !terminate_daemon_generation_once(generation, DaemonFailureCategory::HeartbeatStall)
+            {
+                HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+            }
             return;
         }
         // The watch daemon runs under HQ's CPU ceiling, so wall time since the
@@ -460,6 +574,34 @@ fn current_lifecycle_state() -> WatchDaemonState {
     *lifecycle_state_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
+}
+
+/// Watch-daemon state as the install stage's personal-vault handoff gate
+/// (`personal::DaemonHandoffProbe`) sees it. The gate lets the running sync
+/// daemon upload the personal vault instead of the install walking and
+/// uploading the same files, so it needs a live process, not just a label.
+///
+/// The recorded lifecycle only moves `Starting` → `Running` on the
+/// supervisor's next tick (up to `SUPERVISOR_INTERVAL`), so a runner spawned a
+/// few seconds ago still reads `Starting`. This combines the recorded state
+/// with the same liveness check the supervisor uses to promote it
+/// (`observe_daemon_liveness`). See `handoff_lifecycle` for the mapping.
+pub(crate) fn watch_daemon_handoff_lifecycle() -> WatchDaemonState {
+    let (_, _, alive, _) = observe_daemon_liveness();
+    handoff_lifecycle(current_lifecycle_state(), alive)
+}
+
+/// - `Starting`/`Running` with a live runner process → `Running`.
+/// - `Starting` with no live process yet (preflight still running) → `Starting`.
+/// - `Running` whose process is gone (crash not yet noticed) → `Backoff`.
+/// - `Backoff`/`Stopped` → unchanged.
+fn handoff_lifecycle(recorded: WatchDaemonState, process_alive: bool) -> WatchDaemonState {
+    match (recorded, process_alive) {
+        (WatchDaemonState::Running | WatchDaemonState::Starting, true) => WatchDaemonState::Running,
+        (WatchDaemonState::Starting, false) => WatchDaemonState::Starting,
+        (WatchDaemonState::Running, false) => WatchDaemonState::Backoff,
+        (other, _) => other,
+    }
 }
 
 /// The reason for the most recent lifecycle transition, RETAINED so a stopped
@@ -737,7 +879,10 @@ mod watcher_stop_attribution_tests {
         );
         let supervisor = exit_stop_attribution(generation, None, false, false, "unavailable");
         assert_eq!(supervisor.reason, "heartbeat_stall");
-        assert_eq!(supervisor.initiator, WatcherStopInitiator::WatcherSupervisor);
+        assert_eq!(
+            supervisor.initiator,
+            WatcherStopInitiator::WatcherSupervisor
+        );
 
         let app = exit_stop_attribution(0, None, true, false, "none");
         assert_eq!(app.reason, "app_quit");
@@ -1024,7 +1169,7 @@ pub fn start_daemon_for_app_launch<R: tauri::Runtime>(app: AppHandle<R>) -> Resu
     start_daemon_with_origin(app, WatcherLaunchOrigin::AppLaunch)
 }
 
-fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
+pub(crate) fn start_daemon_for_supervisor_respawn<R: tauri::Runtime>(
     app: AppHandle<R>,
 ) -> Result<String, String> {
     start_daemon_with_origin(app, WatcherLaunchOrigin::SupervisorRespawn)
@@ -1044,6 +1189,16 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
             return Err("Background sync is still starting".to_string());
         }
         crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
+    if let Ok(hq_root) = resolve_hq_folder_path() {
+        if hq_daemon_owns_live_watch(&hq_root) {
+            set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
+            log(
+                "daemon",
+                "hq-daemon owns the live watch lease; desktop sync remains read-only",
+            );
+            return Ok("hq-daemon owns sync; desktop is read-only".to_string());
+        }
     }
     // Spawn preflight for all three watch-daemon origins (renderer request,
     // app-launch autostart, supervisor respawn), which all funnel through this
@@ -1205,13 +1360,25 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     // exit records `report_not_requested`. The exit reader recomputes the SAME path
     // from `daemon_generation`.
     let report_dir = ensure_runner_report_dir("watcher", daemon_generation);
-    let spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
+    let mut spawn_args = hq_desktop_core::daemon::build_watch_runner_args_for_target(
         &hq_folder_path,
         &runner_spawn_target,
         report_dir.as_deref(),
     );
     let runner_hq_cloud_version =
         hq_desktop_core::runner_target::runner_hq_cloud_version(&runner_spawn_target);
+    hq_desktop_core::watch_owner::append_desktop_owner_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
+    hq_desktop_core::watch_owner::append_desktop_exit_with_parent_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
+    hq_desktop_core::watch_owner::append_desktop_watch_parent_pid_argument(
+        &mut spawn_args.args,
+        &runner_hq_cloud_version,
+    );
     // Whether this spawn ALSO mirrors the report flags into argv — true only on the
     // bare-`node` local-runner path. Both production routes (npx/cmd_shim) deliver
     // through NODE_OPTIONS only, so this is the one bit distinguishing `env_escaped`
@@ -1222,15 +1389,16 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     );
 
     log("daemon", "spawn: hq-sync-runner --watch");
-    // Stamp the spawn so the Exit handler can tell a fast crash-loop failure
-    // from a watcher that ran healthily and then died (HQ-SYNC-4).
-    note_watcher_spawned();
-
     // Per-pass totals. Watch mode emits a full Complete/AllComplete cycle on
     // every chokidar tick + every 15-second poll, so we reset on each
     // AllComplete instead of accumulating forever.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let watcher_phase = Arc::new(Mutex::new(WatcherPhaseContext::default()));
+    // Stamp the spawn so the exit handler resets crash-loop state, then share the
+    // same phase snapshot with the independent memory supervisor. This lets a
+    // pre-emption identify scan/pull/push without retaining raw runner output.
+    note_watcher_spawned();
+    set_watcher_phase_context(watcher_phase.clone());
     let hq_folder = hq_folder_path.clone();
     let last_heartbeat = Arc::new(Mutex::new(
         hq_desktop_core::cpu_throttle::RunnableMark::now(),
@@ -1254,6 +1422,7 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         daemon_generation,
         last_heartbeat.clone(),
         daemon_finished.clone(),
+        watcher_phase.clone(),
     );
 
     thread::spawn(move || {
@@ -1267,6 +1436,8 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
         // emitted, mirroring the manual route, so the exit capture can tell
         // "died before any protocol" from "died mid-work".
         let mut watcher_stdout_line_count = 0_u32;
+        #[cfg(test)]
+        crate::commands::process::record_sync_runner_spawn_attempt();
         let result = run_process_impl_for_generation(
             DAEMON_HANDLE,
             daemon_generation,
@@ -1367,6 +1538,73 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // (HQ-DESKTOP-3J / HQ-DESKTOP-4D).
                         let cancelled =
                             is_cancelled_for_generation(DAEMON_HANDLE, daemon_generation);
+                        let watch_owner_inspection =
+                            if signal.is_none() && matches!(code, Some(20 | 21)) {
+                                match inspect_watch_owner(&hq_folder) {
+                                    Ok(inspection) => inspection,
+                                    Err(error) => {
+                                        log(
+                                            "daemon",
+                                            &format!("watch-owner inspection failed: {error}"),
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                        let mut watch_owner_exit = if signal.is_none()
+                            && matches!(code, Some(20 | 21))
+                        {
+                            Some(hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
+                                    code,
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .map(|inspection| &inspection.status),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_live_runner),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_child_of_app),
+                                    watch_owner_inspection
+                                        .as_ref()
+                                        .is_some_and(|inspection| inspection.is_unknown_desktop_orphan),
+                                ))
+                        } else {
+                            None
+                        };
+                        if let (Some(plan), Some(inspection)) =
+                            (watch_owner_exit.as_mut(), watch_owner_inspection.as_ref())
+                        {
+                            if plan.take_over_orphan {
+                                match terminate_external_watch_runner(
+                                    &hq_folder,
+                                    &inspection.status,
+                                ) {
+                                    Ok(true) => {
+                                        ORPHAN_TAKEOVER_PENDING.store(true, Ordering::Release);
+                                        log("daemon", "watch-owner orphan stopped; requesting one watcher respawn");
+                                    }
+                                    Ok(false) => {
+                                        plan.classification = "orphan_termination_failed";
+                                        plan.record_failure = true;
+                                        plan.respawn_once = false;
+                                    }
+                                    Err(error) => {
+                                        log(
+                                            "daemon",
+                                            &format!(
+                                                "watch-owner orphan termination failed: {error}"
+                                            ),
+                                        );
+                                        plan.classification = "orphan_termination_failed";
+                                        plan.record_failure = true;
+                                        plan.respawn_once = false;
+                                    }
+                                }
+                            }
+                        }
                         // Read the durable cancellation record for this exact
                         // generation too. It survives the deregistration that can
                         // lose the ephemeral `cancelled` flag before this terminal
@@ -1387,7 +1625,12 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // RunTotals; deliberate stops (our cancel, bare SIGTERM at
                         // quit/logout) carry no health signal and must not persist
                         // a failure across an ordinary shutdown.
-                        if watch_exit_should_record_health(cancelled, signal) {
+                        if watch_exit_should_record_health(cancelled, signal)
+                            && should_record_watcher_exit_health(code, signal)
+                            && watch_owner_exit
+                                .as_ref()
+                                .is_none_or(|plan| plan.record_failure)
+                        {
                             let final_totals =
                                 totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                             crate::commands::client_health::record_auto_sync_watch_exited(
@@ -1469,17 +1712,15 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                         // exists AND the user set no `--report-*` of their own), and it
                         // is handed to the deferred fault worker below to read OFF the
                         // exit path. Otherwise the seed records why none will be read.
-                        let generation_report_dir =
-                            hq_desktop_core::daemon::runner_report_dir(
-                                "watcher",
-                                daemon_generation,
-                            )
-                            .filter(|dir| dir.exists());
-                        let report_request =
-                            hq_desktop_core::daemon::resolve_runner_report_request(
-                                std::env::var("NODE_OPTIONS").ok().as_deref(),
-                                generation_report_dir.as_deref(),
-                            );
+                        let generation_report_dir = hq_desktop_core::daemon::runner_report_dir(
+                            "watcher",
+                            daemon_generation,
+                        )
+                        .filter(|dir| dir.exists());
+                        let report_request = hq_desktop_core::daemon::resolve_runner_report_request(
+                            std::env::var("NODE_OPTIONS").ok().as_deref(),
+                            generation_report_dir.as_deref(),
+                        );
                         exit_context.runner_report_read =
                             report_request.seed_read_token().to_string();
                         // Delivery provenance (HQ-DESKTOP-5W): the SAME request, crossed
@@ -1559,15 +1800,60 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                             }
                         }
                         let last_stderr = stderr_tail.last().map(String::as_str);
-                        let report_dir_disposition = handle_watcher_exit(
-                            code,
-                            signal,
-                            success,
-                            cancelled,
-                            &watcher_command,
-                            last_stderr,
-                            &exit_context,
-                        );
+                        let report_dir_disposition = if let Some(plan) = watch_owner_exit.as_ref() {
+                            sentry::with_scope(
+                                |scope| {
+                                    scope.set_tag("watch_owner", &plan.owner_label);
+                                    scope.set_tag("watch_owner_action", plan.classification);
+                                    scope.set_extra(
+                                        "watch_owner_exit_code",
+                                        code.map(|value| {
+                                            sentry::protocol::Value::Number(value.into())
+                                        })
+                                        .unwrap_or(sentry::protocol::Value::Null),
+                                    );
+                                },
+                                || {
+                                    if plan.record_failure {
+                                        handle_watcher_exit_for_app(
+                                            &app,
+                                            code,
+                                            signal,
+                                            success,
+                                            cancelled,
+                                            &watcher_command,
+                                            last_stderr,
+                                            &exit_context,
+                                        )
+                                    } else {
+                                        if plan.defer_to_daemon
+                                            || plan.classification == "live_owner_deferral"
+                                        {
+                                            set_lifecycle_state(
+                                                WatchDaemonState::Running,
+                                                DaemonFailureCategory::None,
+                                            );
+                                        }
+                                        sentry::capture_message(
+                                            "auto-sync watcher exited with a live watch-owner lease",
+                                            sentry::Level::Warning,
+                                        );
+                                        RunnerReportDirDisposition::DeleteOnExitPath
+                                    }
+                                },
+                            )
+                        } else {
+                            handle_watcher_exit_for_app(
+                                &app,
+                                code,
+                                signal,
+                                success,
+                                cancelled,
+                                &watcher_command,
+                                last_stderr,
+                                &exit_context,
+                            )
+                        };
                         // Clean up this generation's report directory unless a deferred
                         // worker (the Windows-fault worker OR the non-fault report worker)
                         // owns it and deletes it after reading. Covers the clean-exit,
@@ -2041,9 +2327,10 @@ impl Default for WatcherExitCaptureContext {
             // No live-PID query has run by default (non-Windows, or a clean exit):
             // survivors are unknown, so the honest token is `unavailable` and the
             // count is withheld — never `none`, which would assert an empty tree.
-            watcher_job_survivors: hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
-                .token()
-                .to_string(),
+            watcher_job_survivors:
+                hq_desktop_core::watcher_fault::WatcherJobSurvivors::unavailable()
+                    .token()
+                    .to_string(),
             watcher_job_survivor_count: None,
             runner_report_deferred_dir: None,
         }
@@ -2054,6 +2341,9 @@ impl Default for WatcherExitCaptureContext {
 pub(crate) struct WatcherPhaseContext {
     phase: &'static str,
     observed_at: Instant,
+    protocol_status: Option<WatcherProtocolStatus>,
+    spawned_at: Instant,
+    first_pass_started: bool,
 }
 
 impl Default for WatcherPhaseContext {
@@ -2063,8 +2353,31 @@ impl Default for WatcherPhaseContext {
             // generation starts here until the runner emits a protocol event.
             phase: RUNNER_PHASE_PRE_PROTOCOL,
             observed_at: Instant::now(),
+            protocol_status: None,
+            spawned_at: Instant::now(),
+            first_pass_started: false,
         }
     }
+}
+
+/// Read the live watcher phase for a memory pre-emption from the shared context.
+/// Both outputs use the same fixed vocabularies as ordinary watcher-exit telemetry.
+fn supervisor_preempt_phase_context() -> (Option<String>, Option<String>) {
+    let phase_context = crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .watcher_phase_context
+        .clone();
+    let Some(phase_context) = phase_context else {
+        return (None, None);
+    };
+    let context = phase_context
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (
+        Some(context.phase.to_string()),
+        Some(runner_phase_elapsed_bucket(context.observed_at.elapsed()).to_string()),
+    )
 }
 
 fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, event: &SyncEvent) {
@@ -2088,6 +2401,13 @@ fn observe_watcher_phase_from_event(phase_context: &Mutex<WatcherPhaseContext>, 
                 context.observed_at = now;
             }
         }
+    }
+}
+
+fn observe_watcher_status_protocol(context: &mut WatcherPhaseContext) {
+    if context.phase == RUNNER_PHASE_PRE_PROTOCOL {
+        context.phase = "unknown";
+        context.observed_at = Instant::now();
     }
 }
 
@@ -2136,7 +2456,8 @@ fn watcher_exit_capture_context(
     );
     let app_quitting = crate::commands::process::app_initiated_exit();
     let updater_installing = crate::updater::update_install_in_progress();
-    let lifecycle = crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
+    let lifecycle =
+        crate::commands::watcher_exit_lifecycle::current_watcher_exit_lifecycle_evidence();
     let stop = exit_stop_attribution(
         process_generation,
         cancellation_record,
@@ -2289,9 +2610,7 @@ fn node_fatal_stderr_lines(stderr_tail: &[String]) -> Vec<String> {
     const MAX_INPUT_BYTES: usize = 1_024;
     stderr_tail
         .iter()
-        .filter(|line| {
-            classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal
-        })
+        .filter(|line| classify_runner_fatal_signature(line).class == RunnerFatalClass::NodeFatal)
         .take(MAX_LINES)
         .map(|line| {
             let line = line.split(['\r', '\n']).next().unwrap_or_default();
@@ -2535,12 +2854,7 @@ fn resolve_deferred_decision(
     let verdict = windows_teardown_verdict(teardown);
     let outcome = reading
         .map(|reading| {
-            deferred_session_end_outcome(
-                reading.attribution,
-                verdict,
-                latch,
-                unconfirmed_run_count,
-            )
+            deferred_session_end_outcome(reading.attribution, verdict, latch, unconfirmed_run_count)
         })
         // Fail closed: an observer that cannot be consulted never suppresses on
         // its own. A contemporaneous latch is still positive evidence even when
@@ -3166,6 +3480,20 @@ fn apply_report_to_fault_tags(
     report: &hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport,
 ) {
     set_payload_tag(tags, "runner_report_read", report.read.as_str().to_string());
+    set_payload_tag(tags, "node_error_code", report.node_error_code.clone());
+    set_payload_tag(tags, "node_error_name", report.node_error_name.clone());
+    set_payload_tag(tags, "node_top_frame", report.node_top_frame.clone());
+    let current_producer = tags
+        .iter()
+        .find(|(key, _)| key == "exit_producer")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("unknown");
+    if report.exit_producer != "unknown"
+        && (current_producer == "unknown"
+            || (current_producer == "launcher" && report.exit_producer == "runner"))
+    {
+        set_payload_tag(tags, "exit_producer", report.exit_producer.clone());
+    }
     let current_class = tags
         .iter()
         .find(|(key, _)| key == "runner_fatal_class")
@@ -3591,6 +3919,7 @@ fn set_payload_string_extra(
 /// without writing real Sentry events or mutating the global supervisor state.
 trait WatcherProcessEffects {
     fn note_watcher_crashed(&mut self) -> u32;
+    fn note_operation_lock_timeout(&mut self) -> u32;
     fn note_watcher_capture_policy_streak(
         &mut self,
         policy: WatcherExitCapturePolicy,
@@ -3658,6 +3987,10 @@ struct ProductionWatcherProcessEffects;
 impl WatcherProcessEffects for ProductionWatcherProcessEffects {
     fn note_watcher_crashed(&mut self) -> u32 {
         note_watcher_crashed()
+    }
+
+    fn note_operation_lock_timeout(&mut self) -> u32 {
+        note_operation_lock_timeout()
     }
 
     fn note_watcher_capture_policy_streak(
@@ -3862,6 +4195,7 @@ fn handle_watcher_exit(
     context: &WatcherExitCaptureContext,
 ) -> RunnerReportDirDisposition {
     let mut effects = ProductionWatcherProcessEffects;
+    crate::commands::client_health::set_watcher_waiting_for_lock(false);
     handle_watcher_exit_with_effects(
         &mut effects,
         code,
@@ -3873,6 +4207,68 @@ fn handle_watcher_exit(
         current_termination_host(),
         context,
     )
+}
+
+fn handle_watcher_exit_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+    context: &WatcherExitCaptureContext,
+) -> RunnerReportDirDisposition {
+    let mut effects = ProductionWatcherProcessEffects;
+    handle_watcher_exit_with_app(
+        app,
+        &mut effects,
+        code,
+        signal,
+        success,
+        cancelled,
+        watcher_command,
+        last_stderr,
+        current_termination_host(),
+        context,
+    )
+}
+
+fn handle_watcher_exit_with_app<R: tauri::Runtime, E: WatcherProcessEffects>(
+    app: &AppHandle<R>,
+    effects: &mut E,
+    code: Option<i32>,
+    signal: Option<i32>,
+    success: bool,
+    cancelled: bool,
+    watcher_command: &str,
+    last_stderr: Option<&str>,
+    host: TerminationHost,
+    context: &WatcherExitCaptureContext,
+) -> RunnerReportDirDisposition {
+    crate::commands::client_health::set_watcher_waiting_for_lock(false);
+    emit_watcher_status_to_windows(
+        app,
+        WatcherProtocolStatus {
+            state: "stopped".to_string(),
+            holder_command: None,
+        },
+    );
+    handle_watcher_exit_with_effects(
+        effects,
+        code,
+        signal,
+        success,
+        cancelled,
+        watcher_command,
+        last_stderr,
+        host,
+        context,
+    )
+}
+
+fn should_record_watcher_exit_health(code: Option<i32>, signal: Option<i32>) -> bool {
+    !is_operation_lock_timeout_exit(code, signal)
 }
 
 fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
@@ -3900,6 +4296,17 @@ fn handle_watcher_exit_with_effects<E: WatcherProcessEffects>(
         // recorded the lifecycle transition, so this is not a new event, not a
         // lifecycle change, and never references the stall in-flight flag.
         effects.reset_exec_not_runnable_failure_streak();
+        return RunnerReportDirDisposition::DeleteOnExitPath;
+    }
+
+    if is_operation_lock_timeout_exit(code, signal) {
+        effects.reset_exec_not_runnable_failure_streak();
+        let retry = effects.note_operation_lock_timeout();
+        effects.set_lifecycle_state(WatchDaemonState::Backoff, DaemonFailureCategory::None);
+        effects.log(
+            "daemon",
+            &format!("watch runner timed out waiting for the operation lock; retry #{retry} after backoff"),
+        );
         return RunnerReportDirDisposition::DeleteOnExitPath;
     }
 
@@ -4286,6 +4693,27 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ),
     };
     let runner_fatal_class_seen = runner_fatal_class != "none";
+    let (stderr_cause, owner_result, stderr_producer) =
+        watcher_exit_stderr_diagnostics(last_stderr);
+    let stderr_cause = if stderr_cause == "other" && context.runner_fatal_class != "none" {
+        context.runner_fatal_class.as_str()
+    } else {
+        stderr_cause
+    };
+    let exit_producer = if stderr_producer == "runner" || context.runner_stdout_line_count > 0 {
+        "runner"
+    } else if stderr_producer == "launcher" {
+        "launcher"
+    } else {
+        "unknown"
+    };
+    let watch_owner_result = if owner_result != "unknown" {
+        owner_result
+    } else if context.runner_stdout_line_count > 0 {
+        "acquired"
+    } else {
+        "unknown"
+    };
 
     // Assertion identity (HQ-DESKTOP-50), derived from the SAME source as the
     // fatal class above so all four describe one line: prefer the last actual
@@ -4314,6 +4742,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ("exit_class", exit_class.to_string()),
         ("runner_fatal_class", runner_fatal_class),
         ("sync_route", "watcher".to_string()),
+        ("exit_producer", exit_producer.to_string()),
+        ("watch_owner_result", watch_owner_result.to_string()),
+        // These values come from the closed runner phase and elapsed-bucket helpers.
+        ("runner_phase", context.runner_phase.clone()),
+        (
+            "runner_phase_elapsed_bucket",
+            context.runner_phase_elapsed_bucket.clone(),
+        ),
+        ("stderr_cause", stderr_cause.to_string()),
+        ("node_error_code", "unknown".to_string()),
+        ("node_error_name", "unknown".to_string()),
+        ("node_top_frame", "unknown".to_string()),
         ("app_quitting", context.app_quitting.to_string()),
         ("updater_installing", context.updater_installing.to_string()),
         ("session_ending", context.session_ending.clone()),
@@ -4341,7 +4781,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // seeded from the request and upgraded by the deferred worker. Both diagnostic-only.
     tags.push((
         "runner_fatal_source",
-        if runner_fatal_class_seen { "stderr" } else { "none" }.to_string(),
+        if runner_fatal_class_seen {
+            "stderr"
+        } else {
+            "none"
+        }
+        .to_string(),
     ));
     tags.push(("runner_report_read", context.runner_report_read.clone()));
     // Report-directory delivery provenance (HQ-DESKTOP-5W): how the per-generation
@@ -4541,10 +4986,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 "runner_fatal_line_count",
                 sentry::protocol::Value::Number(lines.lines().count().into()),
             ));
-            extras.push((
-                "runner_fatal_lines",
-                sentry::protocol::Value::String(lines),
-            ));
+            extras.push(("runner_fatal_lines", sentry::protocol::Value::String(lines)));
         }
     }
     // Carry the bare terminating signal integer alongside its content-safe class
@@ -4667,6 +5109,23 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // No report was requested for this exit, so no deferred reader owns a directory;
     // the exit callback removes any (user-disabled) directory it finds.
     RunnerReportDirDisposition::DeleteOnExitPath
+}
+
+/// Reduce the last observed stderr line to fixed diagnostic tokens. The runner's
+/// lease messages are checked before the generic fatal classifier so expected
+/// owner outcomes remain distinguishable without changing crash handling.
+fn watcher_exit_stderr_diagnostics(
+    stderr: Option<&str>,
+) -> (&'static str, &'static str, &'static str) {
+    let Some(line) = stderr else {
+        return ("other", "unknown", "unknown");
+    };
+    let signature = classify_runner_fatal_signature(line);
+    (
+        signature.stderr_cause,
+        signature.watch_owner_result,
+        signature.exit_producer,
+    )
 }
 
 /// Context is constructed from the core's closed-vocabulary rollup. Keep this
@@ -5319,6 +5778,8 @@ struct WatcherCrashState {
     /// Consecutive fast failures (crash-loop length). Reset once a watcher
     /// survives `FAST_FAIL_WINDOW`.
     consecutive: u32,
+    /// Lock timeout retries have separate backoff and are not crash failures.
+    operation_lock_timeout_consecutive: u32,
     /// Consecutive exec-not-runnable (126/127) exits. This stays separate from
     /// `consecutive`: unrelated fast exits must never turn one 126/127 blip
     /// into an escalated capture.
@@ -5358,6 +5819,10 @@ struct WatcherCrashState {
     /// decision so a single spike never pre-empts a healthy pull. Reset on a fresh
     /// spawn and once a generation is confirmed recovered.
     footprint_over_ceiling_streak: u32,
+    /// Live phase context shared with the stdout observer. The supervisor's memory
+    /// pre-emption runs on a separate thread, so it must read this shared snapshot
+    /// rather than the generation-local observer directly.
+    watcher_phase_context: Option<Arc<Mutex<WatcherPhaseContext>>>,
     /// Count of UNCONFIRMED `DBG_TERMINATE_PROCESS` (0x40010004) watcher exits that
     /// have resolved in a row within this app run — i.e. session-terminate exits
     /// the grace could not attribute to a real session end. The first per run is
@@ -5379,6 +5844,7 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 /// Record that a watcher was just spawned (called from `start_daemon`).
 fn note_watcher_spawned() {
     let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    st.watcher_phase_context = None;
     st.spawn_at = Some(Instant::now());
     // A spawn proves the runtime resolved, so the preflight failure streak is
     // over and a future episode gets a fresh first alert.
@@ -5390,6 +5856,13 @@ fn note_watcher_spawned() {
     st.last_rss_kind = None;
     st.footprint_over_ceiling_streak = 0;
     HEARTBEAT_STALL_TERMINATION_IN_FLIGHT.store(false, Ordering::Release);
+}
+
+fn set_watcher_phase_context(phase_context: Arc<Mutex<WatcherPhaseContext>>) {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .watcher_phase_context = Some(phase_context);
 }
 
 /// Record an alertable preflight refusal and return the consecutive count so
@@ -5435,6 +5908,22 @@ fn note_watcher_crashed() -> u32 {
         Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF),
     );
     consecutive
+}
+
+fn note_operation_lock_timeout() -> u32 {
+    let mut st = crash_state().lock().unwrap_or_else(|e| e.into_inner());
+    st.operation_lock_timeout_consecutive = st.operation_lock_timeout_consecutive.saturating_add(1);
+    let retries = st.operation_lock_timeout_consecutive;
+    st.backoff_until =
+        Some(Instant::now() + respawn_backoff(retries, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF));
+    retries
+}
+
+fn note_operation_lock_recovered() {
+    crash_state()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .operation_lock_timeout_consecutive = 0;
 }
 
 /// Return the streak relevant to the selected capture policy. The global
@@ -5557,9 +6046,9 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
     // --max-old-space-size above the default) is never throttled below the heap it
     // was granted.
     let heap_ceiling_mb = hq_desktop_core::daemon::effective_runner_heap_ceiling().mb;
-    let ceiling_kb = u64::from(
-        hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb),
-    ) * 1024;
+    let ceiling_kb =
+        u64::from(hq_desktop_core::daemon::effective_watcher_footprint_ceiling_mb(heap_ceiling_mb))
+            * 1024;
     // The declared V8 old-space ceiling gates the rate-aware projection: it may only
     // fire once the footprint exceeds this, so a cold heap-bounded ramp is never
     // projected away (the 2,776 MB-against-3,584 MB false kill, HQ-DESKTOP-60).
@@ -5622,6 +6111,10 @@ fn note_watcher_footprint_and_decide(sample: ScopedRssSample) -> FootprintDecisi
 /// `None` degrades to a content-safe `unknown`/empty sentinel, never a guess.
 struct SupervisorPreemptEvidence {
     footprint_kb: u64,
+    /// Fixed-vocabulary phase evidence shared from the live watcher. Missing only
+    /// when the generation context is unavailable; no phase is inferred.
+    runner_phase: Option<String>,
+    runner_phase_elapsed_bucket: Option<String>,
     tree_pid_count: Option<u32>,
     tree_largest_member_kb: Option<u64>,
     prev_sample_kb: Option<u64>,
@@ -5700,9 +6193,9 @@ fn read_fresh_memory_class_within(
         }
 
         if !array_buffers_done {
-            if let Some(path) = array_buffers_path.filter(|p| {
-                file_is_fresh(p, array_buffers_before)
-            }) {
+            if let Some(path) =
+                array_buffers_path.filter(|p| file_is_fresh(p, array_buffers_before))
+            {
                 if let Ok(bytes) = std::fs::read(path) {
                     let parsed = parse_runner_report_memory_class(&bytes);
                     if let Some(value) = parsed.array_buffers_mb {
@@ -5808,12 +6301,11 @@ fn resolve_memory_class_from_report(
         sample.tree_largest_child_member_kb,
         sample.tree_largest_child_kind,
     ) {
-        (
-            RssSampleKind::Tree,
-            Some(root_kb),
-            Some(child_kb),
-            Some(kind),
-        ) if child_kb > root_kb && kind != WatcherProcessKind::Node => Some(child_kb / 1024),
+        (RssSampleKind::Tree, Some(root_kb), Some(child_kb), Some(kind))
+            if child_kb > root_kb && kind != WatcherProcessKind::Node =>
+        {
+            Some(child_kb / 1024)
+        }
         _ => None,
     };
     if largest_child_mb.is_some_and(|child| child > largest_report_component) {
@@ -6082,13 +6574,16 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             evidence.projection_arm_reason.as_str().to_string(),
         ),
     ];
+    if let Some(phase) = evidence.runner_phase.as_ref() {
+        tags.push(("runner_phase", phase.clone()));
+    }
     if matches!(evidence.tree_pid_count, Some(count) if count > 1) {
         let child_kind = evidence
             .largest_child_kind
             .unwrap_or(WatcherProcessKind::Unknown);
         tags.push(("largest_child_kind", child_kind.as_str().to_string()));
     }
-    let extras = [
+    let mut extras = vec![
         ("runner_heap_ceiling_mb", num(u64::from(heap_ceiling.mb))),
         ("watcher_tree_rss_mb", num(footprint_mb)),
         (
@@ -6117,6 +6612,12 @@ fn record_supervisor_memory_preempt(evidence: SupervisorPreemptEvidence) {
             opt_int(mc.libuv_active_handles),
         ),
     ];
+    if let Some(bucket) = evidence.runner_phase_elapsed_bucket.as_ref() {
+        extras.push((
+            "runner_phase_elapsed_bucket",
+            sentry::protocol::Value::String(bucket.clone()),
+        ));
+    }
     // The RunnerMemory lifecycle transition (which retains the category so the app
     // can state background sync stopped and why) is owned by the terminate call
     // that immediately follows this — set here it would only double the breadcrumb.
@@ -6158,6 +6659,9 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
     let Some(generation) = generation_for_handle(DAEMON_HANDLE) else {
         return (false, footprint.next_sample_delay_secs);
     };
+    // Snapshot the phase at the decision boundary, before the best-effort report
+    // read can spend up to its bounded wait window.
+    let (runner_phase, runner_phase_elapsed_bucket) = supervisor_preempt_phase_context();
     log(
         "daemon.supervisor",
         "watcher footprint over declared ceiling — pre-empting (runner_memory)",
@@ -6171,6 +6675,8 @@ fn watch_watcher_footprint_slice(sample_pid: Option<u32>) -> (bool, u64) {
     // otherwise emit no event and leave the runaway to be hot-respawned every ~60s.
     record_supervisor_memory_preempt(SupervisorPreemptEvidence {
         footprint_kb: sample.kb,
+        runner_phase,
+        runner_phase_elapsed_bucket,
         tree_pid_count: sample.tree_pid_count,
         tree_largest_member_kb: sample.tree_largest_member_kb,
         prev_sample_kb: footprint.prev_comparable_sample_kb,
@@ -6676,6 +7182,191 @@ fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
 /// `start_daemon` run first) and the interval between checks thereafter.
 const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
+const WATCH_OWNER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+static ORPHAN_TAKEOVER_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug)]
+struct InspectedWatchOwner {
+    status: hq_desktop_core::watch_owner::WatchOwnerStatus,
+    is_live_runner: bool,
+    is_child_of_app: bool,
+    is_unknown_desktop_orphan: bool,
+}
+
+fn watch_owner_status_path(hq_root: &str) -> PathBuf {
+    hq_desktop_core::watch_owner::watch_owner_status_path(
+        Path::new(hq_root),
+        &hq_desktop_core::journal::state_dir(),
+    )
+}
+
+fn process_info(pid: u32) -> Result<Option<(u32, String)>, String> {
+    hq_desktop_core::watch_owner::process_info(pid)
+}
+
+fn is_sync_runner_command(command: &str, hq_root: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    (lower.contains("sync-runner.js")
+        || lower.contains("hq-sync-runner")
+        || lower.contains("hq-sync-runner.cmd"))
+        && hq_desktop_core::watch_owner::command_matches_hq_root(command, Path::new(hq_root))
+}
+
+fn inspect_watch_owner(hq_root: &str) -> Result<Option<InspectedWatchOwner>, String> {
+    let path = watch_owner_status_path(hq_root);
+    let Some(status) = hq_desktop_core::watch_owner::read_watch_owner_status(&path)? else {
+        return Ok(None);
+    };
+    let Some((first_parent, command)) = process_info(status.pid)? else {
+        return Ok(Some(InspectedWatchOwner {
+            status,
+            is_live_runner: false,
+            is_child_of_app: false,
+            is_unknown_desktop_orphan: false,
+        }));
+    };
+    let is_live_runner = is_sync_runner_command(&command, hq_root);
+    let mut parent = first_parent;
+    let mut is_child_of_app = false;
+    for _ in 0..64 {
+        if parent == std::process::id() {
+            is_child_of_app = true;
+            break;
+        }
+        if parent == 0 || parent == status.pid {
+            break;
+        }
+        let Some((next_parent, _)) = process_info(parent)? else {
+            break;
+        };
+        if next_parent == parent || next_parent == 0 {
+            break;
+        }
+        parent = next_parent;
+    }
+    let is_unknown_desktop_orphan = hq_desktop_core::runner_target::runner_spawn_target()
+        .attribution_npx_cache_dir()
+        .is_some_and(|npx_cache_dir| {
+            hq_desktop_core::watch_owner::unknown_owner_is_desktop_orphan(
+                &status.owner,
+                status.pid,
+                std::process::id(),
+                Path::new(hq_root),
+                &npx_cache_dir,
+                |pid| process_info(pid).ok().flatten(),
+            )
+        });
+    Ok(Some(InspectedWatchOwner {
+        status,
+        is_live_runner,
+        is_child_of_app,
+        is_unknown_desktop_orphan,
+    }))
+}
+
+fn hq_daemon_owns_live_watch(hq_root: &str) -> bool {
+    match inspect_watch_owner(hq_root) {
+        Ok(Some(owner)) => {
+            owner.is_live_runner && owner.status.owner == "hq-daemon" && !owner.is_child_of_app
+        }
+        Ok(None) => false,
+        Err(error) => {
+            log(
+                "daemon",
+                &format!("watch-owner preflight unavailable: {error}"),
+            );
+            false
+        }
+    }
+}
+
+fn live_watch_owner_defers_supervisor(hq_root: &str) -> Result<Option<String>, String> {
+    let Some(owner) = inspect_watch_owner(hq_root)? else {
+        return Ok(None);
+    };
+    let plan = hq_desktop_core::watch_owner::plan_busy_watch_exit_with_unknown_orphan(
+        Some(20),
+        Some(&owner.status),
+        owner.is_live_runner,
+        owner.is_child_of_app,
+        owner.is_unknown_desktop_orphan,
+    );
+    if hq_desktop_core::watch_owner::supervisor_should_defer_for_live_owner(
+        &plan,
+        owner.is_live_runner,
+    ) {
+        Ok(Some(owner.status.owner))
+    } else {
+        Ok(None)
+    }
+}
+
+fn terminate_external_watch_runner(
+    hq_root: &str,
+    expected: &hq_desktop_core::watch_owner::WatchOwnerStatus,
+) -> Result<bool, String> {
+    let pid = expected.pid;
+    let Some(current) = inspect_watch_owner(hq_root)? else {
+        return Ok(false);
+    };
+    if current.status.pid != expected.pid
+        || current.status.owner != expected.owner
+        || current.status.started_at != expected.started_at
+        || !current.is_live_runner
+        || current.is_child_of_app
+    {
+        return Ok(false);
+    }
+    #[cfg(unix)]
+    let graceful = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    );
+    #[cfg(target_os = "windows")]
+    let graceful = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .output()
+        .map_err(|error| format!("request graceful watch-runner stop: {error}"))
+        .map(|output| output.status.success());
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let graceful: Result<(), nix::errno::Errno> = Err(nix::errno::Errno::ENOSYS);
+
+    if let Err(error) = graceful {
+        log(
+            "daemon",
+            &format!("graceful stop for orphan watch runner {pid} failed: {error}"),
+        );
+    }
+    if hq_desktop_core::watch_owner::wait_for_process_to_exit(
+        pid,
+        WATCH_OWNER_TERMINATION_GRACE,
+        |command| is_sync_runner_command(command, hq_root),
+    )? {
+        return Ok(true);
+    }
+
+    #[cfg(unix)]
+    let forced = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .map_err(|error| format!("force stop orphan watch runner {pid}: {error}"));
+    #[cfg(target_os = "windows")]
+    let forced = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output()
+        .map_err(|error| format!("force stop orphan watch runner {pid}: {error}"))
+        .map(|output| output.status.success());
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let forced: Result<bool, String> = Err("unsupported process termination platform".to_string());
+
+    if let Err(error) = forced {
+        return Err(error);
+    }
+    hq_desktop_core::watch_owner::wait_for_process_to_exit(pid, Duration::from_secs(1), |command| {
+        is_sync_runner_command(command, hq_root)
+    })
+}
 
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
@@ -6702,6 +7393,72 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
             }
             let (app_owned, registered_child_alive, daemon_alive, sample_pid) =
                 observe_daemon_liveness();
+            let owner_preflight = hq_desktop_core::watch_owner::inspect_owner_before_respawn(
+                daemon_alive,
+                || {
+                    should_respawn_daemon_gated(
+                        is_realtime_sync_enabled(),
+                        is_autostart_enabled(),
+                        daemon_alive,
+                        hq_desktop_core::daemon::is_cloud_paused(),
+                    )
+                },
+                || {
+                    let Ok(hq_root) = resolve_hq_folder_path() else {
+                        return Ok(None);
+                    };
+                    live_watch_owner_defers_supervisor(&hq_root)
+                },
+            );
+            match owner_preflight {
+                Ok(Some(owner_label)) => {
+                    set_lifecycle_state(WatchDaemonState::Running, DaemonFailureCategory::None);
+                    log(
+                        "daemon.supervisor",
+                        &format!(
+                            "live watch owner {owner_label} retains the lease; rechecking in {} seconds",
+                            SUPERVISOR_INTERVAL.as_secs()
+                        ),
+                    );
+                    thread::sleep(SUPERVISOR_INTERVAL);
+                    continue;
+                }
+                Ok(None) => {}
+                Err(error) => log(
+                    "daemon.supervisor",
+                    &format!("watch-owner preflight unavailable: {error}"),
+                ),
+            }
+            if ORPHAN_TAKEOVER_PENDING.swap(false, Ordering::AcqRel) {
+                let should_respawn = hq_desktop_core::watch_owner::takeover_respawn_should_run(
+                    is_realtime_sync_enabled(),
+                    is_autostart_enabled(),
+                    daemon_alive,
+                    hq_desktop_core::daemon::is_cloud_paused(),
+                );
+                if should_respawn {
+                    log(
+                        "daemon.supervisor",
+                        "performing the single respawn after watch-owner orphan takeover",
+                    );
+                    SUPERVISOR_RESPAWN_IN_FLIGHT.store(true, Ordering::Release);
+                    let respawn = start_daemon_for_supervisor_respawn(handle.clone());
+                    SUPERVISOR_RESPAWN_IN_FLIGHT.store(false, Ordering::Release);
+                    if let Err(error) = respawn {
+                        log(
+                            "daemon.supervisor",
+                            &format!("orphan-takeover respawn failed: {error}"),
+                        );
+                    }
+                } else {
+                    log(
+                        "daemon.supervisor",
+                        "orphan takeover complete; auto-sync gates suppress the replacement watcher",
+                    );
+                }
+                thread::sleep(SUPERVISOR_INTERVAL);
+                continue;
+            }
             let within_backoff = within_respawn_backoff();
             let pid_file_alive = resolve_hq_folder_path()
                 .ok()
@@ -6813,10 +7570,25 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
 /// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
-    if crate::commands::hq_daemon_host::daemon_mode_active() {
-        return crate::commands::hq_daemon_host::set_sync_enabled(false);
+    stop_daemon_for_phase(
+        crate::commands::hq_daemon_host::current_phase(),
+        || crate::commands::hq_daemon_host::set_sync_enabled(false),
+        stop_watch_runner,
+    )
+}
+
+fn stop_daemon_for_phase(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    stop_hosted: impl FnOnce() -> Result<bool, String>,
+    stop_legacy: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    if phase == crate::commands::hq_daemon_host::HostPhase::Daemon {
+        stop_hosted()
+    } else {
+        // Pending retains the old legacy fallthrough while the launch gate is
+        // unresolved; flag-off users must still be able to stop Auto-sync.
+        stop_legacy()
     }
-    stop_watch_runner()
 }
 
 /// Stop the app's own watch runner, including one left by an earlier session.
@@ -6917,6 +7689,25 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
     })
 }
 
+/// Read daemon ownership, health, last pass, and the associated log path.
+#[tauri::command]
+pub async fn daemon_sync_status(
+) -> Result<Option<crate::commands::hq_daemon_host::DaemonSyncStatusDetails>, String> {
+    if !crate::commands::hq_daemon_host::daemon_mode_active() {
+        return Ok(None);
+    }
+    tokio::task::spawn_blocking(crate::commands::hq_daemon_host::hosted_daemon_sync_status)
+        .await
+        .map_err(|error| {
+            log(
+                "hq-daemon-host",
+                &format!("daemon sync status task failed: {error}"),
+            );
+            "HQ daemon status could not be read. Tap to retry.".to_string()
+        })?
+        .map(Some)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6927,6 +7718,26 @@ mod tests {
     use crate::commands::process::{deregister_process, try_register_handle};
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use tempfile::TempDir;
+
+    #[test]
+    fn stopping_while_host_selection_is_pending_uses_the_legacy_stop_path() {
+        let mut hosted_called = false;
+        let mut legacy_called = false;
+        let result = stop_daemon_for_phase(
+            crate::commands::hq_daemon_host::HostPhase::Pending,
+            || {
+                hosted_called = true;
+                Ok(false)
+            },
+            || {
+                legacy_called = true;
+                Ok(true)
+            },
+        );
+        assert_eq!(result, Ok(true));
+        assert!(!hosted_called);
+        assert!(legacy_called);
+    }
 
     /// Terminal watch exits must reach the client-health recorder for every
     /// genuine death (auth-expiry exit 0, crashes, fault signals), and for
@@ -6953,7 +7764,8 @@ mod tests {
             RUNNER_HEAP_CEILING_DEFAULT_MB, WATCHER_FOOTPRINT_CEILING_CONSECUTIVE,
             WATCHER_FOOTPRINT_CEILING_MB, WATCHER_FOOTPRINT_HARD_CEILING_GROWTH_MB_PER_SEC,
             WATCHER_FOOTPRINT_HARD_CEILING_MB, WATCHER_FOOTPRINT_MIN_WATCH_SECS,
-            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB, WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
+            WATCHER_FOOTPRINT_OVERSHOOT_BUDGET_MB,
+            WATCHER_FOOTPRINT_WORST_OBSERVED_GROWTH_MB_PER_SEC,
         };
 
         // Pin the deliberate split: the ordinary backstop remains anti-spike,
@@ -7080,6 +7892,356 @@ mod tests {
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
     }
 
+    #[test]
+    fn watcher_status_accepts_unknown_fields_and_scrubs_lock_holder_arguments() {
+        let status = parse_watch_runner_status(
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"pid":42,"command":"/Users/alice/.local/bin/hq sync --token secret"},"future":true}"#,
+        )
+        .expect("known status with additive fields parses");
+        assert_eq!(status.state, "waiting-for-lock");
+        assert_eq!(status.holder_command.as_deref(), Some("hq sync"));
+        assert_eq!(
+            parse_watch_runner_status(
+                r#"{"type":"status","state":"waiting-for-lock","holder":{"command":"/Users/alice/email@example.com/run --token abc"}}"#,
+            )
+            .expect("holder with path and options still has a bounded label")
+            .holder_command
+            .as_deref(),
+            Some("run"),
+            "do not skip options to expose a later argument"
+        );
+    }
+
+    #[test]
+    fn waiting_for_lock_status_updates_watcher_state_and_emits_safe_app_detail() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        window.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"pid":42,"command":"/Users/alice/.local/bin/hq sync --token secret"}}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+
+        assert_eq!(
+            phase
+                .lock()
+                .unwrap()
+                .protocol_status
+                .as_ref()
+                .unwrap()
+                .state,
+            "waiting-for-lock"
+        );
+        assert!(!phase.lock().unwrap().first_pass_started);
+        let seen_lock = seen.lock().unwrap();
+        assert_eq!(seen_lock.len(), 1);
+        assert_eq!(seen_lock[0]["state"], "waiting-for-lock");
+        assert_eq!(seen_lock[0]["holderCommand"], "hq sync");
+        drop(seen_lock);
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"running","passId":"pass-1"}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(phase.lock().unwrap().first_pass_started);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1]["state"], "running");
+    }
+
+    #[test]
+    fn status_lines_mark_the_watcher_protocol_as_observed() {
+        let app = tauri::test::mock_app();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+
+        assert_eq!(phase.lock().unwrap().phase, RUNNER_PHASE_PRE_PROTOCOL);
+        assert!(handle_watch_stdout_line(
+            app.handle(),
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            r#"{"type":"status","state":"waiting-for-lock"}"#,
+        ));
+
+        assert_eq!(phase.lock().unwrap().phase, "unknown");
+    }
+
+    #[test]
+    fn waiting_for_lock_status_reaches_the_visible_desktop_window() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let desktop = tauri::WebviewWindowBuilder::new(&app, "desktop-alt", Default::default())
+            .build()
+            .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        desktop.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        assert!(handle_watch_stdout_line(
+            &handle,
+            TempDir::new().unwrap().path().to_str().unwrap(),
+            &Mutex::new(RunTotals::default()),
+            &Mutex::new(WatcherPhaseContext::default()),
+            r#"{"type":"status","state":"waiting-for-lock","holder":{"command":"hq sync"}}"#,
+        ));
+        std::thread::sleep(Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["state"], "waiting-for-lock");
+        assert_eq!(seen[0]["holderCommand"], "hq sync");
+    }
+
+    #[test]
+    fn operation_lock_timeouts_are_excluded_from_client_health_failures() {
+        assert!(!should_record_watcher_exit_health(
+            Some(OPERATION_LOCKED_EXIT),
+            None
+        ));
+        assert!(should_record_watcher_exit_health(Some(1), None));
+        assert!(should_record_watcher_exit_health(None, None));
+    }
+
+    #[test]
+    fn watcher_exit_publishes_lock_clear_to_main_and_visible_desktop() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let desktop = tauri::WebviewWindowBuilder::new(&app, "desktop-alt", Default::default())
+            .build()
+            .unwrap();
+        let observed = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        for window in [&main, &desktop] {
+            let observed = observed.clone();
+            window.listen(crate::events::EVENT_SYNC_WATCHER_STATUS, move |event| {
+                observed
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            });
+        }
+        let mut effects = RecordingWatcherEffects::default();
+
+        handle_watcher_exit_with_app(
+            &handle,
+            &mut effects,
+            Some(0),
+            None,
+            true,
+            false,
+            "hq sync watch",
+            None,
+            TerminationHost::Posix,
+            &WatcherExitCaptureContext::default(),
+        );
+        std::thread::sleep(Duration::from_millis(30));
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert!(observed.iter().all(|status| status["state"] == "stopped"));
+    }
+
+    #[test]
+    fn operation_lock_timeout_is_retried_without_counting_as_a_crash() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(OPERATION_LOCKED_EXIT),
+            None,
+            false,
+            false,
+            "npx",
+            Some("operation lock timed out"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+        assert_eq!(effects.lock_timeouts, 1);
+        assert_eq!(effects.consecutive, 0, "a lock timeout is not a crash");
+        assert!(effects.in_backoff, "retry must wait for a backoff window");
+        assert!(
+            effects.captures.is_empty(),
+            "lock timeout is not a crash report"
+        );
+        assert_eq!(
+            effects.lifecycle,
+            vec![(WatchDaemonState::Backoff, DaemonFailureCategory::None)]
+        );
+    }
+
+    #[test]
+    fn only_the_operation_locked_exit_code_takes_the_lock_retry_path() {
+        assert!(is_operation_lock_timeout_exit(Some(17), None));
+        assert!(!is_operation_lock_timeout_exit(Some(17), Some(9)));
+        assert!(!is_operation_lock_timeout_exit(Some(1), None));
+    }
+
+    #[test]
+    fn first_pass_stall_deadline_ignores_long_passes_that_have_started() {
+        assert!(should_restart_watcher_before_first_pass(
+            false,
+            WATCHER_FIRST_PASS_START_DEADLINE
+        ));
+        assert!(!should_restart_watcher_before_first_pass(
+            false,
+            WATCHER_FIRST_PASS_START_DEADLINE - Duration::from_secs(1)
+        ));
+        assert!(!should_restart_watcher_before_first_pass(
+            true,
+            WATCHER_FIRST_PASS_START_DEADLINE * 4
+        ));
+    }
+
+    /// hard-stop-readiness US-019 e2e: given a company over storage, when the
+    /// desktop app finishes an auto-sync pass, the desktop window hears the
+    /// notice and the paused set, the menu bar is handed the paused set with
+    /// the upgrade link, and the journal persists it instead of recording a
+    /// clean sync.
+    #[test]
+    fn a_pass_with_plan_limit_skips_reports_uploads_paused_everywhere() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        static TRAY_SNAPSHOTS: Mutex<Vec<Vec<hq_desktop_core::uploads_paused::UploadsPaused>>> =
+            Mutex::new(Vec::new());
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir_all(home.path().join(".hq")).unwrap();
+        let _home = scoped_home(home.path());
+        // Stands in for the tray module, which registers at setup.
+        crate::commands::uploads_paused::set_tray_sink(|companies| {
+            TRAY_SNAPSHOTS.lock().unwrap().push(companies);
+        });
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let folder = hq_folder.path().to_str().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+        let company = "Acme US-019 daemon";
+        let upgrade_url = "https://hq.computer/companies/acme/billing?upgrade=1";
+
+        let plan_limit = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let plan_limit_w = plan_limit.clone();
+        handle.listen_any(EVENT_SYNC_PLAN_LIMIT, move |event| {
+            plan_limit_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+        let paused = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let paused_w = paused.clone();
+        handle.listen_any(
+            crate::commands::uploads_paused::EVENT_SYNC_UPLOADS_PAUSED,
+            move |event| {
+                paused_w
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(event.payload()).unwrap());
+            },
+        );
+
+        let lines = [
+            format!(r#"{{"type":"plan-limit","company":"{company}","upgradeUrl":"{upgrade_url}"}}"#),
+            format!(
+                r#"{{"type":"complete","company":"{company}","filesDownloaded":0,"bytesDownloaded":0,"filesSkipped":4,"conflicts":0,"aborted":false}}"#
+            ),
+            r#"{"type":"all-complete","companiesAttempted":1,"filesDownloaded":0,"bytesDownloaded":0,"errors":[]}"#
+                .to_string(),
+        ];
+        for line in &lines {
+            assert!(handle_watch_stdout_line(
+                &handle, folder, &totals, &phase, line
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // The desktop window hears the notice.
+        let plan_limit = plan_limit.lock().unwrap();
+        assert_eq!(plan_limit.len(), 1);
+        assert_eq!(plan_limit[0]["company"], company);
+        assert_eq!(plan_limit[0]["upgradeUrl"], upgrade_url);
+
+        // The menu bar is handed the paused set, with the link.
+        assert!(TRAY_SNAPSHOTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(
+                |snapshot| snapshot.iter().any(|entry| entry.company == company
+                    && entry.upgrade_url.as_deref() == Some(upgrade_url))
+            ));
+
+        // The desktop window hears the paused set, with the link.
+        let paused = paused.lock().unwrap();
+        let last = paused.last().expect("uploads-paused was announced");
+        let row = last["companies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["company"] == company)
+            .expect("the over-storage company is paused");
+        assert_eq!(row["upgradeUrl"], upgrade_url);
+        assert!(crate::commands::uploads_paused::snapshot(Some(folder))
+            .iter()
+            .any(|entry| entry.company == company));
+        assert_eq!(
+            crate::commands::uploads_paused::upgrade_url_for(company).as_deref(),
+            Some(upgrade_url)
+        );
+
+        // The journal records the pause, so status reads say "paused", not synced.
+        let journal =
+            std::fs::read_to_string(hq_folder.path().join(".hq-sync-journal.json")).unwrap();
+        let journal: serde_json::Value = serde_json::from_str(&journal).unwrap();
+        assert!(journal["uploadsPaused"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["company"] == company && row["upgradeUrl"] == upgrade_url));
+    }
+
     // ── Double-start prevention ──────────────────────────────────────────
 
     #[test]
@@ -7165,6 +8327,21 @@ mod tests {
 
         // Clear the process-global sample so adjacent tests cannot observe it.
         note_watcher_spawned();
+    }
+
+    #[test]
+    fn handoff_lifecycle_requires_a_live_runner_process() {
+        use WatchDaemonState::*;
+        // Spawned and alive, even before the supervisor promotes the label.
+        assert_eq!(handoff_lifecycle(Starting, true), Running);
+        assert_eq!(handoff_lifecycle(Running, true), Running);
+        // Preflight still running: nothing to hand off to yet.
+        assert_eq!(handoff_lifecycle(Starting, false), Starting);
+        // Recorded as running but the process is gone.
+        assert_eq!(handoff_lifecycle(Running, false), Backoff);
+        assert_eq!(handoff_lifecycle(Backoff, true), Backoff);
+        assert_eq!(handoff_lifecycle(Stopped, true), Stopped);
+        assert_eq!(handoff_lifecycle(Stopped, false), Stopped);
     }
 
     #[test]
@@ -7671,6 +8848,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingWatcherEffects {
         consecutive: u32,
+        lock_timeouts: u32,
         /// Mirrors the production episode streak: grows on every exit regardless
         /// of the fast/slow arm.
         slow_death_consecutive: u32,
@@ -7711,6 +8889,12 @@ mod tests {
             }
             self.in_backoff = true;
             self.consecutive
+        }
+
+        fn note_operation_lock_timeout(&mut self) -> u32 {
+            self.lock_timeouts = self.lock_timeouts.saturating_add(1);
+            self.in_backoff = true;
+            self.lock_timeouts
         }
 
         fn note_watcher_capture_policy_streak(
@@ -7819,8 +9003,12 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.clone()))
                 .collect();
-            self.deferred_runner_report
-                .push(recorded_capture(message, fingerprint, &applied_refs, extras));
+            self.deferred_runner_report.push(recorded_capture(
+                message,
+                fingerprint,
+                &applied_refs,
+                extras,
+            ));
         }
     }
 
@@ -7952,6 +9140,36 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_watcher_exit_21_capture_has_phase_tags() {
+        let mut effects = RecordingWatcherEffects::default();
+        let context = WatcherExitCaptureContext {
+            runner_phase: "pull".to_string(),
+            runner_phase_elapsed_bucket: "5m_to_30m".to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("runner stopped after lease loss"),
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        let capture = &effects.captures[0];
+        assert_eq!(recorded_tag(capture, "runner_phase"), "pull");
+        assert_eq!(
+            recorded_tag(capture, "runner_phase_elapsed_bucket"),
+            "5m_to_30m"
+        );
+    }
+
+    #[test]
     fn sighup_watcher_exit_is_named_and_classified() {
         // HQ-DESKTOP-5Y: a macOS SIGHUP (code=None, signal=Some(1)) with none of
         // the self-teardown discriminators set is captured — but must now be named
@@ -8050,7 +9268,8 @@ mod tests {
         // SIGKILL is `fault`, a plain exit 221 is `none` — so it can never be absent
         // or wrong on a captured termination.
         let host = current_termination_host();
-        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")] {
+        for (code, signal, expected_class) in [(None, Some(9), "fault"), (Some(221), None, "none")]
+        {
             let mut effects = RecordingWatcherEffects::default();
             handle_watcher_exit_with_effects(
                 &mut effects,
@@ -8896,7 +10115,10 @@ mod tests {
             ("runner_stack_shape".to_string(), "all_redacted".to_string()),
             ("runner_stack_signature".to_string(), "unknown".to_string()),
             ("runner_fatal_source".to_string(), "none".to_string()),
-            ("runner_report_read".to_string(), "report_absent".to_string()),
+            (
+                "runner_report_read".to_string(),
+                "report_absent".to_string(),
+            ),
         ]
     }
 
@@ -8950,7 +10172,10 @@ mod tests {
         apply_report_to_fault_tags(&mut tags, &report);
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "libuv_assert");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "stderr");
-        assert_eq!(report_tag_of(&tags, "runner_stack_shape"), "node_check_abort>v8_abort");
+        assert_eq!(
+            report_tag_of(&tags, "runner_stack_shape"),
+            "node_check_abort>v8_abort"
+        );
         // Only the read provenance is recorded.
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_read");
     }
@@ -8965,6 +10190,114 @@ mod tests {
         assert_eq!(report_tag_of(&tags, "runner_fatal_class"), "none");
         assert_eq!(report_tag_of(&tags, "runner_fatal_source"), "none");
         assert_eq!(report_tag_of(&tags, "runner_report_read"), "report_absent");
+    }
+
+    #[test]
+    fn watcher_busy_exit_identifies_runner_and_owner_lease_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(20),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=fixture, pid=123); exiting."),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture")));
+        assert!(capture.tags.iter().all(|(_, value)| !value.contains("123")));
+    }
+
+    #[test]
+    fn watcher_lease_lost_exit_identifies_runner_and_lost_result() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] watch-owner lease lost; stopping watch runner: fixture detail"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "owner_lease_lost");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "lost");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture
+            .tags
+            .iter()
+            .all(|(_, value)| !value.contains("fixture detail")));
+    }
+
+    #[test]
+    fn watcher_node_report_exposes_only_safe_error_identity_and_frame() {
+        let report = hq_desktop_core::runner_diagnostic_report::parse_runner_diagnostic_report(
+            serde_json::json!({
+                "header": {
+                    "trigger": "Exception",
+                    "event": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "commandLine": [
+                        "/opt/node/bin/node",
+                        "/Users/alice/.npm/_npx/private/node_modules/@indigoai-us/hq-cloud/dist/bin/sync-runner.js",
+                        "--watch"
+                    ]
+                },
+                "javascriptStack": {
+                    "message": "Uncaught Error [ERR_MODULE_NOT_FOUND]: PRIVATE_MESSAGE_MARKER",
+                    "stack": [{
+                        "functionName": "privateFunction",
+                        "scriptName": "/Users/alice/hq/secrets/private-file.js",
+                        "lineNumber": 23,
+                        "column": 17
+                    }]
+                },
+                "nativeStack": []
+            })
+            .to_string()
+            .as_bytes(),
+        );
+        let mut tags = report_tags_with_class("none");
+        set_payload_tag(&mut tags, "exit_producer", "unknown".to_string());
+        apply_report_to_fault_tags(&mut tags, &report);
+
+        assert_eq!(
+            report_tag_of(&tags, "node_error_code"),
+            "ERR_MODULE_NOT_FOUND"
+        );
+        assert_eq!(report_tag_of(&tags, "node_error_name"), "Error");
+        // A frame outside our packages and node: internals reports only
+        // "external", so a user's file name never leaves the machine.
+        assert_eq!(report_tag_of(&tags, "node_top_frame"), "external");
+        assert!(!rendered_contains_private_file(&tags));
+        assert_eq!(report_tag_of(&tags, "exit_producer"), "runner");
+        let rendered = tags
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!rendered.contains("PRIVATE_MESSAGE_MARKER"));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('/'));
+        assert!(!report_tag_of(&tags, "node_top_frame").contains('\\'));
+        assert!(!rendered.contains("/Users/alice"));
+    }
+
+    fn rendered_contains_private_file(tags: &[(String, String)]) -> bool {
+        tags.iter()
+            .any(|(_, value)| value.contains("private-file") || value.contains("privateFunction"))
     }
 
     #[test]
@@ -8983,7 +10316,10 @@ mod tests {
         );
         assert_eq!(report.fatal_class.as_str(), "heap_oom");
         // The reader removed the directory after reading, bounding disk.
-        assert!(!dir.exists(), "report directory must be removed after the read");
+        assert!(
+            !dir.exists(),
+            "report directory must be removed after the read"
+        );
     }
 
     #[test]
@@ -9078,7 +10414,10 @@ mod tests {
             disposition,
             RunnerReportDirDisposition::OwnedByDeferredReader
         );
-        assert!(!dir.exists(), "the report directory is removed after the read");
+        assert!(
+            !dir.exists(),
+            "the report directory is removed after the read"
+        );
     }
 
     #[test]
@@ -9231,7 +10570,10 @@ mod tests {
         );
         let event = effects.captures.first().expect("immediate capture");
         assert_eq!(recorded_tag(event, "watcher_job_survivors"), "node_exe");
-        assert_eq!(recorded_number_extra(event, "watcher_job_survivor_count"), 2);
+        assert_eq!(
+            recorded_number_extra(event, "watcher_job_survivor_count"),
+            2
+        );
     }
 
     #[test]
@@ -9360,10 +10702,7 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &[
-                    "sync-watcher-exit",
-                    "stack_buffer_overrun",
-                ],
+                &["sync-watcher-exit", "stack_buffer_overrun"],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -9407,10 +10746,7 @@ mod tests {
         let make = || {
             DeferredWatcherFaultCapture::new(
                 "auto-sync watcher exited unexpectedly",
-                &[
-                    "sync-watcher-exit",
-                    "stack_buffer_overrun",
-                ],
+                &["sync-watcher-exit", "stack_buffer_overrun"],
                 &[("watcher_fault_provenance", "deferred".to_string())],
                 &[],
                 WatcherFaultDeferredRead {
@@ -9451,14 +10787,14 @@ mod tests {
         };
         let base = DeferredWatcherFaultCapture::new(
             "auto-sync watcher exited unexpectedly",
-            &[
-                "sync-watcher-exit",
-                "stack_buffer_overrun",
-            ],
+            &["sync-watcher-exit", "stack_buffer_overrun"],
             &[
                 ("watcher_fault_provenance", "deferred".to_string()),
                 ("watcher_fault_faulting_image", "unavailable".to_string()),
-                ("watcher_fault_read", "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string()),
+                (
+                    "watcher_fault_read",
+                    "seen:0,parsed:0,stale:0,rej_win:0,rej_code:0,sweeps:0,ms:0".to_string(),
+                ),
             ],
             &[],
             WatcherFaultDeferredRead {
@@ -10113,10 +11449,7 @@ mod tests {
         );
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("external SIGKILL event remains sendable");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "sigkill"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         assert_eq!(event.tags["runner_fatal_class"], "none");
         assert_eq!(
             event.extra["watcher_cancelled"],
@@ -10363,10 +11696,7 @@ mod tests {
         );
         let event = hq_telemetry::before_send(captures.into_iter().next().expect("capture"))
             .expect("external SIGKILL event remains sendable");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "sigkill"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         assert_eq!(
             event.extra["cancellation_record_present"],
             sentry::protocol::Value::String("true".to_string())
@@ -10806,10 +12136,7 @@ mod tests {
             recorded_string_extra(event, "runner_error_scope"),
             "company:0,file:0,local_state:1"
         );
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "minus_one"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "minus_one"]);
     }
 
     #[test]
@@ -11631,7 +12958,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(deferred.deferred.len(), 1, "the session-terminate still defers");
+        assert_eq!(
+            deferred.deferred.len(),
+            1,
+            "the session-terminate still defers"
+        );
         assert_eq!(
             deferred.consecutive, 0,
             "an OS-supplied termination must not advance the consecutive-failure streak"
@@ -12237,10 +13568,7 @@ mod tests {
         );
         let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
         assert!(!serialized.contains(private_path));
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "other"]);
     }
 
     #[test]
@@ -12404,10 +13732,7 @@ mod tests {
             "{}",
             first.message
         );
-        assert_eq!(
-            first.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(first.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(first, "runner_exec_resolution"),
             "npx_cache"
@@ -12430,10 +13755,7 @@ mod tests {
             "{}",
             fifth.message
         );
-        assert_eq!(
-            fifth.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(fifth.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(recorded_number_extra(fifth, "exec_not_runnable_streak"), 4);
         assert_eq!(
             recorded_string_extra(fifth, "runner_exec_target_exists"),
@@ -12446,10 +13768,7 @@ mod tests {
             "{}",
             ninth.message
         );
-        assert_eq!(
-            ninth.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(ninth.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(recorded_number_extra(ninth, "exec_not_runnable_streak"), 8);
     }
 
@@ -12516,10 +13835,7 @@ mod tests {
         // Grouping is stable: every captured SIGKILL keeps the signal:9 Capture
         // fingerprint, byte-identical across the episode.
         for capture in &effects.captures {
-            assert_eq!(
-                capture.fingerprint,
-                vec!["sync-watcher-exit", "sigkill"]
-            );
+            assert_eq!(capture.fingerprint, vec!["sync-watcher-exit", "sigkill"]);
         }
     }
 
@@ -12763,10 +14079,7 @@ mod tests {
             .captures
             .first()
             .expect("a 190 launcher fast-fail captures at #1");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(event, "runner_exec_resolution"),
             "npx_cache"
@@ -12804,10 +14117,7 @@ mod tests {
             &probed,
         );
         let direct_event = direct.captures.first().expect("still captured at #1");
-        assert_eq!(
-            direct_event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(direct_event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert!(
             !direct_event
                 .extras
@@ -12861,10 +14171,7 @@ mod tests {
             &post_protocol,
         );
         let exec_event = exec.captures.first().expect("127 captures at streak 4");
-        assert_eq!(
-            exec_event.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(exec_event.fingerprint, vec!["sync-watcher-exit", "other"]);
         assert_eq!(
             recorded_string_extra(exec_event, "runner_exec_target_exists"),
             "false"
@@ -13698,7 +15005,10 @@ mod tests {
         );
         assert_eq!(data_source, Src::ReportNeverCompleted);
         assert_eq!(report_source, Src::ReportNeverCompleted);
-        assert!(start.elapsed() < Duration::from_secs(2), "must not block past the deadline");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "must not block past the deadline"
+        );
 
         // 4) Mid-write on first observation, complete before the deadline -> report_read.
         std::fs::write(&path, &complete.as_bytes()[..complete.len() / 2]).unwrap();
@@ -13718,7 +15028,11 @@ mod tests {
             Instant::now() + Duration::from_secs(2),
         );
         writer.join().unwrap();
-        assert_eq!(data_source, Src::ReportRead, "a mid-write report that completes must resolve to report_read");
+        assert_eq!(
+            data_source,
+            Src::ReportRead,
+            "a mid-write report that completes must resolve to report_read"
+        );
         assert_eq!(report_source, Src::ReportRead);
         assert_eq!(mc.js_heap_total_mb, Some(3584));
 
@@ -13802,7 +15116,10 @@ mod tests {
             report.array_buffers_mb.unwrap_or(0) >= 16,
             "process.memoryUsage().arrayBuffers should include the retained Buffer"
         );
-        assert!(report_path.is_file(), "Node's signal report still gets written");
+        assert!(
+            report_path.is_file(),
+            "Node's signal report still gets written"
+        );
     }
 
     #[cfg(unix)]
@@ -13849,6 +15166,7 @@ mod tests {
         let phase_context = Mutex::new(WatcherPhaseContext {
             phase: "pull",
             observed_at: Instant::now(),
+            ..WatcherPhaseContext::default()
         });
         // An EMPTY tail proves the class-scoped shape comes from the retained
         // evidence, not from the generic tail path.
@@ -13977,10 +15295,7 @@ mod tests {
         // Grouping is message-independent: the fingerprint is byte-identical with
         // and without heap evidence (the retitled RSS/heap lines cannot regroup).
         assert_eq!(heap_capture.fingerprint, base_capture.fingerprint);
-        assert_eq!(
-            heap_capture.fingerprint,
-            vec!["sync-watcher-exit", "other"]
-        );
+        assert_eq!(heap_capture.fingerprint, vec!["sync-watcher-exit", "other"]);
     }
 
     fn assert_signed_out_entry_point_records_origin(
@@ -14201,6 +15516,7 @@ mod tests {
         let phase_context = Mutex::new(WatcherPhaseContext {
             phase: "scan",
             observed_at: Instant::now(),
+            ..WatcherPhaseContext::default()
         });
         let context = watcher_exit_capture_context(
             &Mutex::new(RunTotals::default()),
@@ -14314,6 +15630,7 @@ mod tests {
             &Mutex::new(WatcherPhaseContext {
                 phase: "idle",
                 observed_at: Instant::now(),
+                ..WatcherPhaseContext::default()
             }),
             &generation,
             0,
@@ -14404,9 +15721,7 @@ mod tests {
         let private_path = "/Users/ada/private/workspace/cache";
         let context = WatcherExitCaptureContext {
             runner_fatal_class: "node_fatal".to_string(),
-            runner_fatal_lines: vec![format!(
-                "FATAL ERROR: Reached heap limit at {private_path}"
-            )],
+            runner_fatal_lines: vec![format!("FATAL ERROR: Reached heap limit at {private_path}")],
             ..WatcherExitCaptureContext::default()
         };
         let mut effects = RecordingWatcherEffects::default();
@@ -14423,11 +15738,11 @@ mod tests {
             &context,
         );
 
-        let event = effects.captures.first().expect("Node fatal remains visible");
-        assert_eq!(
-            event.fingerprint,
-            vec!["sync-watcher-exit", "node_fatal"]
-        );
+        let event = effects
+            .captures
+            .first()
+            .expect("Node fatal remains visible");
+        assert_eq!(event.fingerprint, vec!["sync-watcher-exit", "node_fatal"]);
         assert_eq!(recorded_tag(event, "exit_class"), "node_fatal");
         assert_eq!(recorded_number_extra(event, "runner_fatal_line_count"), 1);
         let fatal_lines = recorded_string_extra(event, "runner_fatal_lines");

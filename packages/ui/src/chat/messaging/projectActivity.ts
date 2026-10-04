@@ -28,7 +28,7 @@ import {
 } from "./workSessionEvent";
 
 /** Default burst window: consecutive same-actor/same-kind events inside 5 min. */
-export const BURST_WINDOW_MS = 5 * 60 * 1000;
+const BURST_WINDOW_MS = 5 * 60 * 1000;
 
 /** Synthetic event-id prefix, so activity rows can never collide with chat. */
 export const ACTIVITY_EVENT_PREFIX = "wm:";
@@ -232,6 +232,7 @@ export function activityTimelineMessages(
     body: activityBody(activity),
     createdAt: activity.at ?? new Date(0).toISOString(),
     direction: "in" as const,
+    isMeshEvent: true as const,
   }));
 }
 

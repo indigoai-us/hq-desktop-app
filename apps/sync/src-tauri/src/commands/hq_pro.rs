@@ -172,22 +172,82 @@ where
     Fetch: FnOnce() -> FetchFuture,
     FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
 {
-    match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
+    feature_flag_value_with_fetch(flag, fetch)
+        .await
+        .unwrap_or(false)
+}
+
+/// Resolve a hq-flags value and report whether it was configured at all.
+///
+/// `Some(value)` only when the registry answered and carries a boolean for
+/// `flag`; `None` for a missing row, an unreadable response, a transport
+/// failure, or a timeout. Kill switches whose default is ON use this so an
+/// operator's explicit `false` turns the behaviour off while a registry
+/// outage keeps the shipped default.
+pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
+    feature_flag_value_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
+
+/// Resolve one flag without collapsing an unreadable response into a real
+/// off value. `Ok(None)` means hq-flags answered successfully without this
+/// key; `Err(())` means the request or response could not be trusted.
+pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
+    feature_flag_read_with_fetch(flag, || {
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+    })
+    .await
+}
+
+async fn feature_flag_read_with_fetch<Fetch, FetchFuture>(
+    flag: &str,
+    fetch: Fetch,
+) -> Result<Option<bool>, ()>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    feature_flag_read_with_fetch_and_timeout(flag, fetch, FLAG_REQUEST_TIMEOUT).await
+}
+
+async fn feature_flag_read_with_fetch_and_timeout<Fetch, FetchFuture>(
+    flag: &str,
+    fetch: Fetch,
+    timeout: Duration,
+) -> Result<Option<bool>, ()>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    match tokio::time::timeout(timeout, fetch()).await {
         Ok(Ok(response)) => match parse_feature_flag_response(response.status, &response.body) {
-            Some(values) => values.get(flag).copied().unwrap_or(false),
+            Some(values) => Ok(values.get(flag).copied()),
             None => {
                 if response.status == 200 {
                     log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
                 }
-                false
+                Err(())
             }
         },
-        Ok(Err(_)) => false,
+        Ok(Err(_)) => Err(()),
         Err(_) => {
             log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
-            false
+            Err(())
         }
     }
+}
+
+async fn feature_flag_value_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> Option<bool>
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    feature_flag_read_with_fetch(flag, fetch)
+        .await
+        .ok()
+        .flatten()
 }
 
 fn parse_configured_feature_flags(body: &str) -> Option<HashMap<String, bool>> {
@@ -341,6 +401,94 @@ mod tests {
         })
         .await;
         assert!(valid);
+    }
+
+    #[tokio::test]
+    async fn feature_flag_value_distinguishes_configured_false_from_unknown() {
+        let flag = "desktop.test-kill-switch";
+        let configured_false = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(configured_false, Some(false));
+
+        let configured_true = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(configured_true, Some(true));
+
+        let unconfigured = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: r#"{"version":1,"flags":{}}"#.to_string(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(unconfigured, None);
+
+        let outage = feature_flag_value_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 503,
+                body: String::new(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(outage, None);
+
+        let transport = feature_flag_value_with_fetch(flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(transport, None);
+    }
+
+    #[tokio::test]
+    async fn feature_flag_read_keeps_auth_network_and_timeout_failures_distinct_from_off() {
+        let flag = "desktop.hq-daemon";
+        let auth = feature_flag_read_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 401,
+                body: String::new(),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(auth, Err(()));
+
+        let network = feature_flag_read_with_fetch(flag, || async {
+            Err::<HqProHttpResponse, String>("offline".to_string())
+        })
+        .await;
+        assert_eq!(network, Err(()));
+
+        let timeout = feature_flag_read_with_fetch_and_timeout(
+            flag,
+            || std::future::pending::<Result<HqProHttpResponse, String>>(),
+            Duration::from_millis(1),
+        )
+        .await;
+        assert_eq!(timeout, Err(()));
+
+        let off = feature_flag_read_with_fetch(flag, || async {
+            Ok(HqProHttpResponse {
+                status: 200,
+                body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                retry_after: None,
+            })
+        })
+        .await;
+        assert_eq!(off, Ok(Some(false)));
     }
 
     #[test]

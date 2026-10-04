@@ -139,6 +139,14 @@
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
     notificationWakeSeq?: number;
+    /**
+     * Host-owned session-local notification rows (paused uploads). They join
+     * the feed beside channel wakes; ack and read-all are handed back.
+     */
+    hostNotifications?: Record<string, unknown>[];
+    onackhostnotification?: (id: string) => void;
+    onreadallhostnotifications?: () => void;
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Native hosts can bound first paint without replacing DesktopApp's default. */
     bootTimeoutMs?: number;
     /** Native hosts receive DesktopApp's first successful shell-paint signal. */
@@ -166,6 +174,10 @@
           }
         | null,
     ) => void;
+    /** QA-075: company whose pane is open; null on personal pages. */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    postReadyActionReady?: boolean;
     /** Native host-only full-column surfaces, forwarded to DesktopApp. */
     extraPages?: Record<
       string,
@@ -223,6 +235,11 @@
       tool: "claude" | "codex",
     ) => Promise<{ ok: boolean; reason?: string }>;
     /**
+     * Ask the host to (re-)probe `detect_ai_tools`. Called lazily by the
+     * New bot wizard on mount so the probe never runs at app boot (#1152).
+     */
+    onrequestaitools?: () => void;
+    /**
      * Backoff between failed company-roster fetches (tests shorten it). The
      * default is bounded; a roster that keeps failing stops retrying.
      */
@@ -251,6 +268,10 @@
     uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
+    hostNotifications = [],
+    onackhostnotification,
+    onreadallhostnotifications,
+    onopenhostnotification,
     bootTimeoutMs,
     onShellReady,
     onOpenConsole: hostOnOpenConsole,
@@ -258,6 +279,8 @@
     callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
+    onactivecompanychange,
+    postReadyActionReady = false,
     extraPages,
     rowExtrasLoading = false,
     rowExtrasError = false,
@@ -266,6 +289,7 @@
     aiTools = null,
     onopenassistant,
     onassistedinstall,
+    onrequestaitools,
     rosterRetryDelaysMs,
   }: WorkShellProps = $props();
 
@@ -341,8 +365,12 @@
   let localNotificationRows = $state<Record<string, unknown>[]>([]);
   const pendingNotificationLookups = new Set<{ id: string; acknowledged: boolean; row?: Record<string, unknown> }>();
   const baseNotificationsApi = createNotificationsApi(adapter, {
-    localNotifications: () => localNotificationRows,
+    localNotifications: () => [...hostNotifications, ...localNotificationRows],
     ackLocalNotification: (id) => {
+      if (hostNotifications.some((row) => row.id === id)) {
+        onackhostnotification?.(id);
+        return;
+      }
       for (const lookup of pendingNotificationLookups) {
         if (lookup.id === id) lookup.acknowledged = true;
       }
@@ -363,6 +391,7 @@
       const lookups = [...pendingNotificationLookups];
       await baseNotificationsApi.readAllNotifications();
       if (account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration) return;
+      onreadallhostnotifications?.();
       for (const lookup of lookups) {
         lookup.acknowledged = true;
         if (lookup.row) rows.add(lookup.row);
@@ -976,6 +1005,7 @@
       mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
       coreFixtures={false}
       onopenurl={hostOpenUrl ?? openUrl}
+      {onopenhostnotification}
       {wakes}
       {companies}
       onhomechannelresolved={handleHomeChannelResolved}
@@ -1006,6 +1036,8 @@
       {refreshAppVersion}
       {uiVersion}
       {onactivethreadchange}
+      {onactivecompanychange}
+      readyFirstActionReady={postReadyActionReady}
       {extraPages}
       {rowExtrasLoading}
       {rowExtrasError}
@@ -1014,6 +1046,7 @@
       {aiTools}
       {onopenassistant}
       {onassistedinstall}
+      {onrequestaitools}
     />
   {/key}
   {#if externalLinkError}

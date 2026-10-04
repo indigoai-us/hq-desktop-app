@@ -178,7 +178,7 @@ const MAC_GLYPHS: Record<string, string> = {
 
 const KEY_GLYPHS: Record<string, string> = {
   escape: "Esc",
-  enter: "↩",
+  enter: "↵",
   backspace: "⌫",
   delete: "⌦",
   arrowup: "↑",

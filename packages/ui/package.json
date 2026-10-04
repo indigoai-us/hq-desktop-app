@@ -10,10 +10,12 @@
       "default": "./src/index.ts"
     },
     "./board/thread-model": "./src/board/thread-model.ts",
+    "./meetings/past-meetings": "./src/meetings/past-meetings.ts",
     "./emoji-shortcodes": {
       "svelte": "./src/common/emojiShortcodes.ts",
       "default": "./src/common/emojiShortcodes.ts"
     },
+    "./settings/appearance-seam": "./src/settings/appearance-seam.ts",
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"

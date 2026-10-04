@@ -69,7 +69,8 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('InstallTrigger::Forced');
     expect(appUpdater).toContain('InstallTrigger::Manual');
-    expect(appUpdater).toContain('pause_new_sync_cycles()');
+    expect(appUpdater).toContain('pause_cycles_drain_then_install(');
+    expect(appUpdater).toContain('crate::commands::process::pause_new_sync_cycles,');
     expect(appUpdater).toContain(
       'crate::windows_update::install_verified_update(app, update).await',
     );
@@ -613,7 +614,7 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
     expect(appCli).toContain('windows_busy_install_target_retry_rung(retry_number)');
     expect(appCli).toContain(
-      'windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)',
+      'windows_busy_install_target_retry_delay(retry_number)',
     );
     expect(appCli).toContain('tokio::time::sleep(delay).await');
     expect(appCli).toContain('WindowsBusyRetryOutcome::DeferredUserCli');
@@ -694,6 +695,18 @@ describe('installs the CLI when the machine has none', () => {
     const body = cliUpdateCore.slice(fallbackStart, fallbackEnd);
     expect(body).not.toContain('is_pnpm_global_shim');
     expect(body).not.toContain('is_bun_global_shim');
+  });
+
+  it('preserves an already-restored install when a later rollback step fails', () => {
+    const restoreStart = cliUpdate.indexOf('fn restore(&mut self) -> Result<(), String> {');
+    const restoreEnd = cliUpdate.indexOf('\n    }', restoreStart);
+    const restore = normalize(cliUpdate.slice(restoreStart, restoreEnd));
+
+    // A prior restore may consume the package backup before a later shim rename
+    // fails. A retry must only remove the target when its backup still exists.
+    expect(restore).toContain(
+      'if path_entry_exists(saved) { remove_install_path(target)?; std::fs::rename(saved, target)',
+    );
   });
 
   it('provisions HQ managed Node when a first install has no npm to run', () => {

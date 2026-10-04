@@ -209,6 +209,22 @@ pub fn welcome_setup_owed(menubar: &Map<String, Value>, hq_root_valid: bool) -> 
     }
 }
 
+/// menubar.json key recording that the desktop window's first-run guided
+/// tour has been shown on this machine.
+pub const WELCOME_TOUR_SHOWN_KEY: &str = "welcomeTourShown";
+
+/// Has the first-run guided tour already been shown on this machine?
+///
+/// Written `true` (by `mark_welcome_tour_shown`) as soon as the tour starts
+/// showing, so a crash or quit mid-tour does not replay it on every launch.
+/// Absent or any non-boolean value reads as not shown.
+pub fn welcome_tour_shown(menubar: &Map<String, Value>) -> bool {
+    menubar
+        .get(WELCOME_TOUR_SHOWN_KEY)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// Should finishing the installer (re)arm `welcomeSetupPending`?
 ///
 /// A brand-new install owes the welcome channel's guided run. Re-running the
@@ -370,22 +386,32 @@ fn probe_hq_root_for_startup_with(
 
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
+    let has_app_local_setup_marker =
+        inputs.install_completed || inputs.first_run_completed || inputs.had_machine_id;
+
     // An install is recognized from what is actually on disk: a valid HQ root
     // plus evidence the machine has been set up before — an explicit
-    // completion marker, a prior machineId, a valid config.json, OR usable
-    // Cognito auth tokens.
+    // completion marker, a prior machineId, a valid config.json, or usable
+    // Cognito auth tokens. On a readable fresh app install, the reusable HQ
+    // root and auth/config alone do not prove that this app installation
+    // completed setup.
     //
     // `config.json` is deliberately NOT required. The onboarding flow does not
     // reliably write `~/.hq/config.json` (the personal-vault first-push
     // short-circuits when the vault already exists), so gating on it sent a
     // fully set-up user back through the entire onboarding wizard on the next
-    // launch/restart. The rule is now "valid HQ folder + (prior setup OR auth
-    // on disk) => installed, show the menu bar".
-    let has_prior_setup = inputs.install_completed
-        || inputs.first_run_completed
-        || inputs.had_machine_id
-        || inputs.config_valid;
-    let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
+    // launch/restart. The ordinary rule is "valid HQ folder + (prior setup OR
+    // auth on disk) => installed, show the menu bar"; the narrow readable,
+    // unmarked reinstall case below overrides it while consent is unanswered.
+    let has_prior_setup = has_app_local_setup_marker || inputs.config_valid;
+    let reinstall_still_owes_full_setup = inputs.hq_root_valid
+        && !has_app_local_setup_marker
+        && !inputs.consent_answered
+        && !inputs.evidence_unreadable
+        && (inputs.has_auth || inputs.config_valid);
+    let is_installed = inputs.hq_root_valid
+        && (has_prior_setup || inputs.has_auth)
+        && !reinstall_still_owes_full_setup;
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
     // Installed and consent answered: setup is done whatever the markers say.
@@ -976,15 +1002,16 @@ mod tests {
 
     #[test]
     fn valid_hq_root_plus_auth_alone_is_installed() {
-        // "hq path + cognito login on disk => show the menu bar": a valid HQ
-        // root plus usable auth is enough, even with no menubar markers.
+        // Reinstall report: a reusable HQ root and auth do not prove that this
+        // app install completed setup. With consent unanswered and no app-local
+        // completion marker, route through full setup.
         let verdict = classify_lifecycle(LifecycleInputs {
             hq_root_valid: true,
             has_auth: true,
             ..input()
         });
 
-        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]
@@ -1052,6 +1079,36 @@ mod tests {
         assert_eq!(steady_state.state, LifecycleState::SteadyState);
         assert!(!first_run.needs_install_backfill);
         assert!(!steady_state.needs_install_backfill);
+    }
+
+    #[test]
+    fn welcome_tour_is_not_shown_until_the_flag_is_written() {
+        assert!(!welcome_tour_shown(&map(json!({}))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": false }))));
+        assert!(!welcome_tour_shown(&map(json!({ "welcomeTourShown": "yes" }))));
+        assert!(welcome_tour_shown(&map(json!({ "welcomeTourShown": true }))));
+    }
+
+    #[test]
+    fn marking_the_welcome_tour_shown_merges_into_menubar_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("menubar.json");
+        std::fs::write(
+            &path,
+            r#"{"machineId":"abc","welcomeSetupPending":true}"#,
+        )
+        .unwrap();
+        crate::first_run::merge_menubar_flags(
+            &path,
+            &[(WELCOME_TOUR_SHOWN_KEY, Value::Bool(true))],
+        )
+        .unwrap();
+        let obj = crate::first_run::read_menubar_obj(&path);
+        assert!(welcome_tour_shown(&obj));
+        // Existing keys survive the merge, and the tour flag does not settle
+        // the guided setup.
+        assert_eq!(obj.get("machineId").and_then(Value::as_str), Some("abc"));
+        assert!(welcome_setup_owed(&obj, true));
     }
 
     #[test]

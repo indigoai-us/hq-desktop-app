@@ -27,6 +27,8 @@ import {
   stopChild,
   tagLatestJsonUrl,
   verifyPublishedLatestJson,
+  verifySmokeRefreshToken,
+  SMOKE_COGNITO_CLIENT_ID,
   writeSmokeHome,
 } from "./macos-artifact-smoke.mjs";
 
@@ -235,6 +237,14 @@ describe("smoke boot diagnostics", () => {
       "^recovery auto-check found v" +
         safeVersionPlaceholder +
         " — offering as primary action$",
+      "^shell ready(?: after \\\\d+\\\\.\\\\d+s)? — watchdog cancelled$",
+      "^shell ready(?: after \\\\d+\\\\.\\\\d+s)? — after watchdog timeout; closing recovery window$",
+      "^watchdog timeout(?: after \\\\d+\\\\.\\\\d+s)? — desktop shell did not report ready$",
+      "^watchdog timer woke \\\\d+\\\\.\\\\d+s late — async runtime stalled; granting \\\\d+s grace before recovery$",
+      "^async runtime stalled: heartbeat woke \\\\d+\\\\.\\\\d+s late$",
+      "^shell ready during recovery auto-check; not opening recovery window \\\\(trigger=(?:" +
+        recoveryTriggersPlaceholder +
+        ")\\\\)$",
     ]);
 
     const recoveryPatternMessages = [
@@ -242,6 +252,12 @@ describe("smoke boot diagnostics", () => {
       "auto-checking for updates before recovery window (trigger={})",
       "recovery window opened (trigger={}, version=v{})",
       "recovery auto-check found v{} — offering as primary action",
+      "shell ready{} — watchdog cancelled",
+      "shell ready{} — after watchdog timeout; closing recovery window",
+      "watchdog timeout{} — desktop shell did not report ready",
+      "watchdog timer woke {:.1}s late — async runtime stalled; granting {}s grace before recovery",
+      "async runtime stalled: heartbeat woke {:.1}s late",
+      "shell ready during recovery auto-check; not opening recovery window (trigger={})",
     ];
     for (const message of recoveryPatternMessages) {
       expect(recoverySource).toContain(JSON.stringify(message));
@@ -867,5 +883,67 @@ describe("CLI", () => {
     }
     expect(chunks.join("")).toContain("HQ_0.10.179_universal.app.tar.gz");
     expect(resolve(here, "macos-artifact-smoke.mjs")).toContain("macos-artifact-smoke.mjs");
+  });
+});
+
+describe("smoke refresh-token preflight (v0.10.383)", () => {
+  const rejected = async () =>
+    new Response(
+      JSON.stringify({ __type: "NotAuthorizedException", message: "Refresh Token has expired" }),
+      { status: 400 },
+    );
+
+  it("names an expired smoke identity instead of a skeleton boot", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      calls.push({ url, init });
+      return rejected();
+    }) as unknown as typeof fetch;
+    const error = await verifySmokeRefreshToken("expired-token-value", { fetchImpl }).catch((e) => e);
+    expect(String(error?.message)).toMatch(/rejected by Cognito \(NotAuthorizedException/);
+    expect(String(error?.message)).toContain(SMOKE_TOKEN_SECRET);
+    expect(String(error?.message)).toContain("re-mint");
+    expect(String(error?.message)).not.toContain("expired-token-value");
+    expect(String(error?.message)).not.toMatch(/skeleton/);
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(String(calls[0].init.body));
+    expect(body).toMatchObject({ AuthFlow: "REFRESH_TOKEN_AUTH", ClientId: SMOKE_COGNITO_CLIENT_ID });
+  });
+
+  it("passes a token Cognito accepts", async () => {
+    const fetchImpl = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+    await expect(verifySmokeRefreshToken("good", { fetchImpl })).resolves.toEqual({ checked: true });
+  });
+
+  it("warns and continues when Cognito cannot be reached or fails for another reason", async () => {
+    const warnings: string[] = [];
+    const warn = (m: string) => warnings.push(m);
+    const offline = (async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(verifySmokeRefreshToken("t", { fetchImpl: offline, warn })).resolves.toEqual({ checked: false });
+    const throttled = (async () =>
+      new Response(JSON.stringify({ __type: "TooManyRequestsException" }), { status: 400 })) as unknown as typeof fetch;
+    await expect(verifySmokeRefreshToken("t", { fetchImpl: throttled, warn })).resolves.toEqual({ checked: false });
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toContain("TooManyRequestsException");
+  });
+
+  it("stops before launching the app when the CLI preflight rejects the token", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "smoke-preflight-"));
+    const app = join(dir, "HQ.app");
+    await mkdir(join(app, "Contents"), { recursive: true });
+    await writeFile(join(app, "Contents", "Info.plist"), plist("0.10.384"));
+    let launched = false;
+    const error = await runCli(["--app", app, "--version", "0.10.384", "--launch"], {
+      env: { [SMOKE_TOKEN_SECRET]: "expired" },
+      fetchImpl: (async () => rejected()) as unknown as typeof fetch,
+      mkdtempImpl: async () => {
+        launched = true;
+        return dir;
+      },
+    }).catch((e) => e);
+    expect(String(error?.message)).toMatch(/rejected by Cognito/);
+    expect(launched).toBe(false);
   });
 });

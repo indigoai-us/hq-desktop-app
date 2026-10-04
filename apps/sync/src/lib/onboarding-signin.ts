@@ -19,6 +19,10 @@ function parseStructuredOAuthError(
 export function mapSignInError(message: string, provider?: SignInProvider): string {
   const structured = parseStructuredOAuthError(message);
 
+  if (structured?.code === 'OAUTH_REFERRAL_PERSIST_FAILED') {
+    return 'We couldn’t finish preparing sign-in. Please try again.';
+  }
+
   if (structured?.code === 'OAUTH_PORT_IN_USE') {
     return (
       structured.message ||
@@ -28,6 +32,17 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
 
   if (structured?.code === 'OAUTH_PROVIDER_ERROR') {
     return structured.message || 'Sign-in was cancelled or denied. Retry when you are ready.';
+  }
+
+  if (
+    structured?.code === 'MICROSOFT_EMAIL_REQUIRED' ||
+    structured?.code === 'MICROSOFT_ENABLEMENT_REQUIRED' ||
+    structured?.code === 'MICROSOFT_RESOLVE_FAILED'
+  ) {
+    return (
+      structured.message ||
+      'We could not identify your Microsoft account. Check your connection and retry.'
+    );
   }
 
   if (/state (mismatch|does not match)/i.test(message)) {

@@ -86,7 +86,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       msg ? `Error: ${msg}` : 'No error message was surfaced in the UI.',
       '',
-      `Please investigate using \`/diagnose\` if the error is non-deterministic, or \`/investigate\` for a reproducible failure. Start by reading \`~/.hq/logs/hq-sync.log\` (last 200 lines) and \`~/.hq/sync-journal.${company || '<slug>'}.json\` to see what the runner attempted. Then propose a fix or a retry strategy before re-running \`hq sync\`.`,
+      `Please investigate using \`/diagnose\` if the error is non-deterministic, or \`/investigate\` for a reproducible failure. When HQ daemon owns sync, read \`~/.hq/daemon/logs/sync.log\` (last 200 lines) for the current run and use \`~/.hq/logs/hq-sync.log\` for earlier runner history. When the daemon is not active, read \`~/.hq/logs/hq-sync.log\` as the current log. Also read \`~/.hq/sync-journal.${company || '<slug>'}.json\` to see what the runner attempted. Then propose a fix or a retry strategy before re-running \`hq sync\`.`,
     ].join('\n');
   },
 

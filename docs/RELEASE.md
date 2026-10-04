@@ -104,6 +104,7 @@ layout in `apps/sync/scripts/dmg/`.
 | `dmg/background.html` | Source artwork, implementing Figma "Installer" node `3133:57` |
 | `dmg/background.tiff` | The committed render, `@1x` + `@2x` in one file |
 | `dmg/render-background.sh` | Re-renders the TIFF from the HTML |
+| `dmg/verify_ds_store.py` | Mounts-and-checks step: fails the build if the finished image's background would not show |
 
 Change the artwork by editing `background.html`, then:
 
@@ -122,6 +123,19 @@ CI. dmgbuild writes the `.DS_Store` directly and never talks to Finder.
 `tell application "Finder"` reappears in the packaging path, if the layout
 drifts from the coordinates the artwork was drawn for, or if the background
 loses either representation.
+
+**Keep dmgbuild at 1.6.7 or newer.** Up to 1.6.6, dmgbuild wrote a `pBBk`
+background bookmark into the volume's `.DS_Store`. From macOS 26.2, Finder
+shows a blank window when that record is present: the icons sit in the right
+places on plain white and the artwork never appears
+([dmgbuild#273](https://github.com/dmgbuild/dmgbuild/issues/273)). HQ shipped
+that way while the script pinned 1.6.5. The script now always runs the pinned
+version from its own virtualenv (never a `dmgbuild` from `PATH`, and a reused
+venv on any other version is rebuilt), needs Python 3.10+ for it, and mounts
+every finished image to run `verify_ds_store.py`, which fails the build if a
+`pBBk` record is present or the background alias does not point at a file on
+the volume. The contract test fails if the pin drops below 1.6.7 or the check
+is removed.
 
 ## Cut a Release
 
@@ -414,21 +428,21 @@ The dedicated identity (provisioned 2026-09-03, no browser):
 
 Refresh tokens from this client last **30 days**. Re-mint before expiry, or as soon as the macOS release job fails closed on a Cognito `NotAuthorizedException`. Do **not** chat in other channels on this account; extra conversations would stop the smoke from representing the v0.10.178 empty-inbox failure.
 
-Re-mint (never prints the token; pipes Cognito stdout into `gh secret set`):
+Re-mint (never prints the token; pipes Cognito stdout into `gh secret set`).
+Run it from a shell where `gh` is signed in with your own account (`gh auth
+status`); that login needs admin on `indigoai-us/hq-desktop-app` to set secrets
+and variables. Do not export a vault GitHub token as `GH_TOKEN` for this.
+`initiate-auth` with `USER_PASSWORD_AUTH` is an unauthenticated Cognito call, so
+it runs with `--no-sign-request` and needs no AWS keys:
 
 ```bash
 hq secrets exec --company indigo --only \
-  AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID,AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY,AWS_INDIGO_ALT_AWS_DEFAULT_REGION,RELEASE_SMOKE_NON_INDIGO_EMAIL,RELEASE_SMOKE_NON_INDIGO_PASSWORD,INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN \
+  RELEASE_SMOKE_NON_INDIGO_EMAIL,RELEASE_SMOKE_NON_INDIGO_PASSWORD \
   -- sh -c '
     set -euo pipefail
-    export AWS_ACCESS_KEY_ID="$AWS_INDIGO_ALT_AWS_ACCESS_KEY_ID"
-    export AWS_SECRET_ACCESS_KEY="$AWS_INDIGO_ALT_AWS_SECRET_ACCESS_KEY"
-    unset AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_PROFILE AWS_PAGER
-    export AWS_DEFAULT_REGION="${AWS_INDIGO_ALT_AWS_DEFAULT_REGION:-us-east-1}"
-    export AWS_REGION="$AWS_DEFAULT_REGION"
-    export GH_TOKEN="$INDIGO_GTM_HQ_PRODUCTION_GITHUB_TOKEN"
     aws cognito-idp initiate-auth \
-      --region "$AWS_REGION" \
+      --no-sign-request \
+      --region us-east-1 \
       --client-id 7acei2c8v870enheptb1j5foln \
       --auth-flow USER_PASSWORD_AUTH \
       --auth-parameters "USERNAME=${RELEASE_SMOKE_NON_INDIGO_EMAIL},PASSWORD=${RELEASE_SMOKE_NON_INDIGO_PASSWORD}" \
@@ -436,8 +450,18 @@ hq secrets exec --company indigo --only \
       --output text \
     | gh secret set HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO \
         -R indigoai-us/hq-desktop-app --app actions
+    gh variable set HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT \
+      -R indigoai-us/hq-desktop-app \
+      --body "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   '
 ```
+
+The `Release smoke token age` workflow (`.github/workflows/smoke-token-age.yml`)
+runs daily. It fails and opens a "Release smoke token needs re-minting" issue
+from day 25 of `HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT`, when the variable is
+missing or unreadable, or when Cognito rejects the token. Re-mint with the
+command above, then close the issue once the next check passes. If you update
+the secret any other way, set the variable to the same UTC time.
 
 If the password itself needs rotating, `admin-set-user-password --permanent` against `vault-users-hq-prod`, then `hq secrets set RELEASE_SMOKE_NON_INDIGO_PASSWORD --company indigo --from-stdin`, then re-mint. Confirm `GET https://hqapi.hq.computer/v1/notify/channels` still returns only `setup` before the next release train.
 
