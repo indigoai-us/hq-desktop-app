@@ -528,16 +528,19 @@ describe("DesktopApp: the Slack card opens the Connect Slack modal", () => {
     expect(hiddenNotices(w)).toHaveLength(0);
   });
 
-  it("shows the blocked sentence at once, with nothing to press but Close, to a member who may not read the bot's status", async () => {
+  it("offers no Connect button to a member who may not read the bot's status: the card says to ask a company admin", async () => {
+    // I16. Before, the card offered Connect Slack and its modal then said
+    // only an owner or admin can connect a bot. The card now says who can,
+    // in place of a button that could only end in that refusal.
     const w = world();
     w.getStatus.mockResolvedValue({ ok: false, reason: "error", code: "http-404", message: "Not found" });
     // With no status there is no company to list connections for.
     await mountNewBotDm(w, "status");
+    await vi.waitFor(() => expect(card("slack").textContent).toContain("Ask a company admin to connect Nova to Slack."));
     expect(card("slack").dataset.state).toBe("offered");
-    await openModal();
-    expect(stage()).toBe("blocked");
-    expect(dialog()!.textContent).toContain("Only a company owner or admin can connect a bot to Slack.");
-    expect(inModal("slack-connect-start")).toBeNull();
+    expect(card("slack").querySelector('[data-testid="connection-card-primary"]')).toBeNull();
+    expect(card("slack").querySelector('[data-testid="connection-card-decline"]')).toBeNull();
+    expect(dialog()).toBeNull();
     await settle();
     expect(w.attachSlack).not.toHaveBeenCalled();
   });
