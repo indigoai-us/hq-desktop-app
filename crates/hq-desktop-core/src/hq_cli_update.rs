@@ -6264,8 +6264,9 @@ impl NodeCrashClassification {
     };
 }
 
-/// Recognize only known Node crash statuses paired with stable Node/V8 stderr
-/// signatures. Arbitrary exit codes and unrecognized text remain `none`.
+/// Recognize known Node crash statuses paired with stable Node/V8 stderr
+/// signatures. Windows access violations are also identifiable by status alone
+/// when the process produced no stderr. Arbitrary exit codes remain `none`.
 fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassification {
     const NODE_ABORT: i32 = 134;
     const STATUS_BREAKPOINT: i32 = -2_147_483_645;
@@ -6284,6 +6285,15 @@ fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassificat
             | -1
     ) {
         return NodeCrashClassification::NONE;
+    }
+
+    // Windows can terminate Node with STATUS_ACCESS_VIOLATION before writing
+    // any stderr. The exit status itself is the stable evidence for this case.
+    if code == STATUS_ACCESS_VIOLATION && stderr.trim().is_empty() {
+        return NodeCrashClassification {
+            kind: NodeCrashKind::AccessViolation,
+            evidence: "exit_status_access_violation",
+        };
     }
 
     // npm's own marker proves this is not the pre-logger failure class, and
@@ -6577,13 +6587,9 @@ fn install_failure_signature_with_exit_code(
     prefix: Option<&str>,
     env: &InstallEnvironment,
 ) -> String {
-    if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
-        if profile.origin == STDERR_ORIGIN_NON_NPM {
-            let crash = node_crash_kind(exit_code, detail);
-            if crash.kind != NodeCrashKind::None {
-                return format!("node-crash:{}", crash.kind.tag_value());
-            }
-        }
+    let crash = node_crash_kind(exit_code, detail);
+    if kind == InstallFailureKind::Unexpected && crash.kind != NodeCrashKind::None {
+        return format!("node-crash:{}", crash.kind.tag_value());
     }
     install_failure_signature_with_environment(kind, detail, prefix, env)
 }
@@ -7985,11 +7991,11 @@ pub fn report_install_failure_with_environment(
     // `Some` only for the attributed subclass, so every other event's tags and the
     // diagnostics extra stay byte-identical to today.
     let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
-    let crash_kind = unattributed_profile
-        .as_ref()
-        .filter(|profile| profile.origin == STDERR_ORIGIN_NON_NPM)
-        .map(|_| node_crash_kind(exit_code, detail))
-        .unwrap_or(NodeCrashClassification::NONE);
+    let crash_kind = if kind == InstallFailureKind::Unexpected {
+        node_crash_kind(exit_code, detail)
+    } else {
+        NodeCrashClassification::NONE
+    };
     let crash_diag_suffix = if crash_kind.kind == NodeCrashKind::None {
         String::new()
     } else {
@@ -8403,21 +8409,16 @@ pub fn install_failure_episode_key_with_environment(
         // the key and Sentry signature; other profiles keep `(origin, dominant shape)`.
         // `|managed` matches the other shapes so a managed-retry event never collides
         // with its user-path predecessor.
+        let crash = node_crash_kind(exit_code, detail);
+        if crash.kind != NodeCrashKind::None {
+            let key = format!("{latest}|node-crash|{}", crash.kind.tag_value());
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
         if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
-            if profile.origin == STDERR_ORIGIN_NON_NPM {
-                let crash = node_crash_kind(exit_code, detail);
-                if crash.kind != NodeCrashKind::None {
-                    let key = format!(
-                        "{latest}|node-crash|{}",
-                        crash.kind.tag_value()
-                    );
-                    return Some(if env.managed_toolchain_retry {
-                        format!("{key}|managed")
-                    } else {
-                        key
-                    });
-                }
-            }
             let key = format!(
                 "{latest}|unattributed|{}|{}",
                 profile.origin, profile.dominant_shape
@@ -19219,6 +19220,9 @@ mod tests {
             assert_eq!(actual.kind.tag_value(), expected_kind);
             assert_eq!(actual.evidence, expected_evidence);
         }
+        let empty_access_violation = node_crash_kind(Some(-1_073_741_819), "");
+        assert_eq!(empty_access_violation.kind.tag_value(), "access_violation");
+        assert_eq!(empty_access_violation.evidence, "exit_status_access_violation");
         // The command boundary decodes captured stderr lossily and trims it
         // before calling the core classifier; stable ASCII crash markers survive
         // that production transform.
@@ -19300,6 +19304,40 @@ mod tests {
             )
             .as_deref(),
             Some("[hq-cli-update] install failed (node-crash:v8_heap_oom)")
+        );
+
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(-1_073_741_819),
+                InstallFailureKind::Unexpected,
+                "",
+                None,
+                &env,
+            ),
+            "node-crash:access_violation"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|node-crash|access_violation")
+        );
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            )
+            .as_deref(),
+            Some("[hq-cli-update] install failed (node-crash:access_violation)")
         );
 
         let npm_error = "npm error code ENOTEMPTY";
