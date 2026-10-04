@@ -910,30 +910,14 @@ export interface ConversationConnectionCards {
 
 // ── Asking for the cards again ───────────────────────────────────────────
 //
-// The cards sit under the bot's first message, which scrolls away. So the
-// row of suggested replies under the bot's newest message gets one more
-// button from the app. Pressing it sends an ordinary message from the person,
-// and the app draws the cards again under the bot's answer. Nothing is
-// stored: which answers carry the cards is read from the conversation.
+// The cards sit under the bot's first message, which scrolls away. The
+// person can ask for them again by writing "Connect more tools" (the app adds
+// no button for it: suggestions under a bot message are the bot's own). The
+// app draws the cards again under the bot's answer. Nothing is stored: which
+// answers carry the cards is read from the conversation.
 
-/** What the "Connect more" button sends, as the person's own visible message. */
+/** The request for the cards, as the person's own visible message. */
 export const CONNECT_MORE_REQUEST = "Connect more tools";
-
-/** The button once Slack or a tool is connected (or while that is unknown). */
-export const CONNECT_MORE_LABEL = "Connect more";
-
-/** The button while nothing is connected yet: no Slack, no tool the bot can use. */
-export const CONNECT_FIRST_LABEL = "Connect Slack or tools";
-
-/**
- * The words on the app's extra button. "Nothing connected" has to be known
- * for both: when either answer is missing the button says "Connect more".
- */
-export function connectMoreLabel(slack: SlackFacts | null | undefined, tools: ToolFacts | null | undefined): string {
-  if (!slack || !tools) return CONNECT_MORE_LABEL;
-  const anything = slack.state === "connected" || tools.usable.length > 0;
-  return anything ? CONNECT_MORE_LABEL : CONNECT_FIRST_LABEL;
-}
 
 /**
  * Whether a message is the request for the cards: exactly the phrase, in any
@@ -950,26 +934,6 @@ interface ConversationMessageLike {
   fromPersonUid?: string | null;
   body?: string | null;
   richContent?: unknown;
-}
-
-/**
- * The bot's newest message, if the newest thing to read in the conversation
- * is the bot's: the message the suggested replies sit under. Null once the
- * person has written after it. `messages` is the timeline, oldest first.
- */
-export function newestBotMessage<M extends ConversationMessageLike>(
-  messages: ReadonlyArray<M>,
-  botUid: string,
-  hasVisibleContent: (message: M) => boolean,
-): M | null {
-  const uid = botUid.trim();
-  if (!uid) return null;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i]!;
-    if ((message.fromPersonUid ?? "").trim() !== uid) return null;
-    if (hasVisibleContent(message)) return message;
-  }
-  return null;
 }
 
 /**

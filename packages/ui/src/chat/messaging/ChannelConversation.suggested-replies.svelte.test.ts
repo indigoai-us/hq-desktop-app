@@ -157,20 +157,49 @@ describe("ChannelConversation suggested replies", () => {
     expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
   });
 
-  it("merges a suggestions block the host attached with the message's own, each item once", async () => {
-    const own = message(BOT, "Quite a lot already." + suggestions(["List our open projects", "Connect more tools"]), "q1");
+  it("draws only the bot's own suggestions: a suggestions block the host attached is not drawn", async () => {
+    // Owner, live walkthrough 2026-10-03: the app's "Connect more tools" chip
+    // under every message was noise. Chips show only when the bot suggests.
+    const own = message(BOT, "Quite a lot already." + suggestions(["List our open projects", "Summarize our files"]), "q1");
     const extra: RichBlock[] = [{ kind: "suggestions", items: ["Connect more tools"] }];
     const { root, state } = await mountWith({ messages: [own], extraBlocksByEventId: { q1: extra } });
-    expect(labels(messageEl(root, "q1"))).toEqual(["List our open projects", "Connect more tools"]);
-    // A message with nothing of its own gets just the host's.
+    expect(labels(messageEl(root, "q1"))).toEqual(["List our open projects", "Summarize our files"]);
+    expect(messageEl(root, "q1").textContent).not.toContain("Connect more tools");
+    // A message with no suggestions of its own draws no row at all.
     state.messages = [message(BOT, "Quite a lot already.", "q2")];
     state.extraBlocksByEventId = { q2: extra };
     flushSync();
     await tick();
-    expect(labels(messageEl(root, "q2"))).toEqual(["Connect more tools"]);
+    expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
+    expect(root.querySelector('[data-testid="suggested-reply-other"]')).toBeNull();
+    expect(root.textContent).not.toContain("Connect more tools");
   });
 
-  it("always offers Something else, which sends nothing and puts the cursor in the composer to type", async () => {
+  it("draws the bot's own 'Connect more tools' suggestion like any other", async () => {
+    const { root } = await mountWith({ messages: [message(BOT, "Done." + suggestions(["Connect more tools", "List our open projects"]), "q")] });
+    expect(labels(messageEl(root, "q"))).toEqual(["Connect more tools", "List our open projects"]);
+  });
+
+  it("offers Something else only with two or more suggestions, never with one, never alone", async () => {
+    const { root, state } = await mountWith({ messages: [message(BOT, "Want a summary?" + suggestions(["Yes please"]), "q1")] });
+    expect(labels(messageEl(root, "q1"))).toEqual(["Yes please"]);
+    expect(root.querySelector('[data-testid="suggested-reply-other"]')).toBeNull();
+    // No suggestions: no row, and no lone Something else.
+    state.messages = [message(BOT, "Noted.", "q2")];
+    flushSync();
+    await tick();
+    expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
+    expect(root.querySelector('[data-testid="suggested-reply-other"]')).toBeNull();
+    // Two: the list is not exhaustive, so Something else is the last chip.
+    state.messages = [message(BOT, "Which tool?" + suggestions(["ClickUp", "Asana"]), "q3")];
+    flushSync();
+    await tick();
+    const row = messageEl(root, "q3").querySelector<HTMLElement>('[data-testid="suggested-replies"]')!;
+    const chips = [...row.querySelectorAll("button")].map((b) => b.textContent?.trim());
+    expect(chips).toEqual(["ClickUp", "Asana", "Something else"]);
+  });
+
+  it("with two or more suggestions offers Something else, which sends nothing and puts the cursor in the composer to type", async () => {
     // Test Mac 2026-09-27: ClickUp / Asana / Notion / Monday read as the only
     // choices. The last chip says other answers are fine.
     const onsend = vi.fn(async () => {});

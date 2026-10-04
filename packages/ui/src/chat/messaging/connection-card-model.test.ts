@@ -4,13 +4,9 @@ import {
   BOT_CONNECTION_CARDS_STORAGE_KEY,
   CARD_MODAL_TARGETS,
   CONNECTING_TIMEOUT_MS,
-  CONNECT_FIRST_LABEL,
-  CONNECT_MORE_LABEL,
   CONNECT_MORE_REQUEST,
   connectMoreAnswerIds,
-  connectMoreLabel,
   isConnectMoreRequest,
-  newestBotMessage,
   MAX_BOT_CONNECTION_RECORDS,
   MAX_WAITING_ROWS,
   SLACK_TIMEOUT_NOTE,
@@ -944,28 +940,6 @@ describe("a card whose main button opens a modal", () => {
 });
 
 describe("asking for the cards again", () => {
-  const facts = (connections: unknown[]) => toolFacts(list(connections), null);
-  const usable = connection({ id: "acct_open", access: { mode: "everyone", grantCount: 0 } });
-  const waiting = connection({ id: "acct_mine", access: { mode: "private", grantCount: 0 } });
-
-  it("words the button for nothing connected yet", () => {
-    expect(CONNECT_FIRST_LABEL).toBe("Connect Slack or tools");
-    expect(connectMoreLabel({ state: "none" }, facts([]))).toBe("Connect Slack or tools");
-    // Slack set up but not working, and a connection the bot may not use yet: still nothing connected.
-    expect(connectMoreLabel({ state: "pending", stage: "approve" }, facts([waiting]))).toBe("Connect Slack or tools");
-  });
-
-  it("words the button for something connected, or not known yet", () => {
-    expect(CONNECT_MORE_LABEL).toBe("Connect more");
-    expect(connectMoreLabel({ state: "connected" }, facts([]))).toBe("Connect more");
-    expect(connectMoreLabel({ state: "none" }, facts([usable]))).toBe("Connect more");
-    expect(connectMoreLabel({ state: "connected" }, facts([usable]))).toBe("Connect more");
-    // Either answer missing: it does not claim that nothing is connected.
-    expect(connectMoreLabel(null, facts([]))).toBe("Connect more");
-    expect(connectMoreLabel({ state: "none" }, null)).toBe("Connect more");
-    expect(connectMoreLabel(undefined, undefined)).toBe("Connect more");
-  });
-
   it("recognises the request whatever its case, spaces or full stop", () => {
     expect(CONNECT_MORE_REQUEST).toBe("Connect more tools");
     for (const text of ["Connect more tools", "connect more tools", "CONNECT MORE TOOLS", "  Connect more tools  ", "Connect more tools.", "connect more tools . ", "\nConnect more tools\n"]) {
@@ -993,17 +967,6 @@ describe("asking for the cards again", () => {
   const bot = (eventId: string, body: string, connect = false): Msg => ({ eventId, fromPersonUid: BOT, body, connect });
   const me = (eventId: string, body: string): Msg => ({ eventId, fromPersonUid: "prs_me", body });
   const is = { visible: (m: Msg) => m.body.trim() !== "", ownCards: (m: Msg) => m.connect === true };
-
-  it("finds the bot's newest message only while nobody has written after it", () => {
-    const visible = is.visible;
-    expect(newestBotMessage([bot("b1", "Hello")], BOT, visible)?.eventId).toBe("b1");
-    expect(newestBotMessage([bot("b1", "Hello"), me("p1", "Hi"), bot("b2", "Sure")], BOT, visible)?.eventId).toBe("b2");
-    // A bot row with nothing to read is skipped.
-    expect(newestBotMessage([bot("b1", "Hello"), bot("b2", "  ")], BOT, visible)?.eventId).toBe("b1");
-    expect(newestBotMessage([bot("b1", "Hello"), me("p1", "Hi")], BOT, visible)).toBeNull();
-    expect(newestBotMessage([], BOT, visible)).toBeNull();
-    expect(newestBotMessage([bot("b1", "Hello")], " ", visible)).toBeNull();
-  });
 
   it("attaches the cards to the bot's first answer after each request", () => {
     const timeline = [

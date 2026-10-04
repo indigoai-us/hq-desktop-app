@@ -836,16 +836,17 @@
 
   /**
    * The suggestions a message draws under its bubble: every `suggestions`
-   * block's items, in order, each once. None when the message carries a
-   * `connect` block, its own or one the host attached: the cards are the
-   * decision, and a row of chips next to them is decision overload (owner,
-   * live walkthrough 2026-10-03).
+   * block's items from the message's own blocks, in order, each once. A
+   * suggestions block the host attaches is not drawn: the chips are the
+   * bot's own, shown only when it has something to suggest (owner, live
+   * walkthrough 2026-10-03). None when the message carries a `connect` block,
+   * its own or one the host attached: the cards are the decision, and a row
+   * of chips next to them is decision overload.
    */
-  function suggestionsIn(rich: ExtractedRichContent): string[] {
-    const blocks = rich.rich?.blocks ?? [];
-    if (blocks.some((block) => block.kind === "connect")) return [];
+  function suggestionsIn(msg: ConversationMessageWire): string[] {
+    if ((richForMessage(msg).rich?.blocks ?? []).some((block) => block.kind === "connect")) return [];
     const out: string[] = [];
-    for (const block of blocks) {
+    for (const block of richContentForMessage(msg).rich?.blocks ?? []) {
       if (block.kind !== "suggestions") continue;
       for (const item of block.items) if (!out.includes(item)) out.push(item);
     }
@@ -873,7 +874,7 @@
     const id = suggestionsEventId;
     if (!id) return [];
     const msg = timeline.find((candidate) => candidate.eventId === id);
-    return msg ? suggestionsIn(richForMessage(msg)) : [];
+    return msg ? suggestionsIn(msg) : [];
   });
   // A clicked suggestion hides its set at once, before the reply reaches the
   // timeline, so a second click cannot send it twice. A new set shows again.
@@ -890,18 +891,22 @@
     if (!suggestionKey && untrack(() => usedSuggestionKey) !== null) usedSuggestionKey = null;
   });
 
-  // Suggested replies are a shortcut, not the only answers: the last chip says
-  // so, and pressing it puts the cursor in the composer with a prompt to type.
+  // When the bot offers a list of choices (two or more), a last chip says the
+  // list is not the only answer, and pressing it puts the cursor in the
+  // composer with a prompt to type. A single suggestion is not a list, so it
+  // gets no such chip, and the chip never shows on its own.
   const SUGGESTION_OTHER_LABEL = "Something else";
   const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
+  const SUGGESTION_OTHER_MIN = 2;
+  const showSuggestionOther = $derived(visibleSuggestions.length >= SUGGESTION_OTHER_MIN);
   let otherForKey = $state<string | null>(null);
   const composerPlaceholder = $derived(
-    otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
+    otherForKey !== null && otherForKey === suggestionKey && showSuggestionOther
       ? SUGGESTION_OTHER_PLACEHOLDER
       : placeholder,
   );
   function chooseOtherSuggestion(): void {
-    if (composerLocked) return;
+    if (composerLocked || !showSuggestionOther) return;
     otherForKey = suggestionKey;
     replyInputEl?.focus();
   }
@@ -1936,8 +1941,9 @@
                   <!--
                     The bot's suggested replies: part of this message, under
                     its bubble, only for the bot's newest message. A click
-                    sends the text as the person's reply. The last chip says
-                    other answers are fine and puts the cursor in the box.
+                    sends the text as the person's reply. With two or more,
+                    a last chip says other answers are fine and puts the
+                    cursor in the box. Only the bot's own suggestions show.
                   -->
                   <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
                     {#each visibleSuggestions as label (label)}
@@ -1948,12 +1954,14 @@
                         onclick={() => void sendSuggestion(label)}
                       >{label}</button>
                     {/each}
-                    <button
-                      type="button"
-                      class="suggested-reply suggested-reply-other"
-                      data-testid="suggested-reply-other"
-                      onclick={chooseOtherSuggestion}
-                    >{SUGGESTION_OTHER_LABEL}</button>
+                    {#if showSuggestionOther}
+                      <button
+                        type="button"
+                        class="suggested-reply suggested-reply-other"
+                        data-testid="suggested-reply-other"
+                        onclick={chooseOtherSuggestion}
+                      >{SUGGESTION_OTHER_LABEL}</button>
+                    {/if}
                   </div>
                 {/if}
                 {#if (msg.replyCount ?? 0) > 0}

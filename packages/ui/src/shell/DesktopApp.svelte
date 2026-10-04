@@ -84,10 +84,8 @@
     type RichBlock,
   } from "../chat/messaging/richMessageContent.js";
   import {
-    CONNECT_MORE_REQUEST,
     CONNECTING_TIMEOUT_MS,
     connectMoreAnswerIds,
-    newestBotMessage,
     companyUidFromStatus,
     connectionActionKey,
     connectionCardView,
@@ -5417,75 +5415,6 @@
   }
 
   /**
-   * When the person last pressed one of this bot's cards, from the device's
-   * record: Slack or tools connecting or declined, an app card, a connection
-   * they let the bot use. Null when they never pressed one here.
-   */
-  function lastCardActionAt(record: BotConnectionRecord | null | undefined): number | null {
-    const times = [
-      record?.slack?.since,
-      record?.tools?.since,
-      ...Object.values(record?.apps ?? {}).map((entry) => entry.since),
-      ...Object.values(record?.granted ?? {}).map((entry) => entry.at),
-    ].filter((time): time is number => typeof time === "number" && Number.isFinite(time));
-    return times.length > 0 ? Math.max(...times) : null;
-  }
-  /**
-   * Every card on screen for the open bot is connected or declined. A card
-   * still offered, still connecting, or still being looked up is a decision
-   * the person has not made yet; the app adds nothing next to it.
-   */
-  const cloudBotCardsResolved = $derived.by((): boolean => {
-    const uid = dmCloudBotUid;
-    const cards = cloudBotConnections;
-    if (!uid || !cards) return true;
-    const extra = cloudBotExtraCards;
-    for (const message of timeline) {
-      if ((message.fromPersonUid ?? "").trim() !== uid) continue;
-      const blocks = [...(richContentForMessage(message).rich?.blocks ?? []), ...(extra?.[message.eventId] ?? [])];
-      const items = blocks.flatMap((block) => (block.kind === "connect" ? block.items : []));
-      if (items.length === 0) continue;
-      const set = cards.cardsFor(message);
-      if (set.rowReady && !set.rowReady(items)) return false;
-      for (const item of items) {
-        const view = item.app ? (set.views[item.app] ?? null) : item.domain ? (set.integration?.({ domain: item.domain }) ?? null) : null;
-        if (view && view.state !== "connected" && view.state !== "declined") return false;
-      }
-    }
-    return true;
-  });
-  /**
-   * The bot's newest message gets one suggested reply from the app, "Connect
-   * more tools": a way to get the connection cards back without scrolling up
-   * to the first message. It is drawn as part of that message, with the bot's
-   * own suggestions, through the same path as the cards. Only while the
-   * person has not written after it; never on a message that carries cards
-   * (the bot's own block or the app's: the cards are the decision); and only
-   * once the cards so far are all connected or declined, or the person
-   * pressed a card after the hello. Before this the chip sat next to open
-   * cards in every conversation, which was decision overload (owner, live
-   * walkthrough 2026-10-03).
-   */
-  const cloudBotConnectMoreChipAt = $derived.by((): string | null => {
-    const uid = dmCloudBotUid;
-    if (!uid) return null;
-    const newest = newestBotMessage(timeline, uid, messageHasVisibleContent);
-    if (!newest || messageHasConnectBlock(newest) || cloudBotExtraCards?.[newest.eventId]) return null;
-    if (cloudBotCardsResolved) return newest.eventId;
-    const record = connectionRecords[uid];
-    const hello = record?.helloEventId ? timeline.find((message) => message.eventId === record.helloEventId) : null;
-    const helloAt = Date.parse(hello?.createdAt ?? "");
-    const actedAt = lastCardActionAt(record);
-    return actedAt !== null && Number.isFinite(helloAt) && actedAt > helloAt ? newest.eventId : null;
-  });
-  /** The blocks the app attaches, by message: the connection cards, and the app's suggested reply. */
-  const cloudBotExtraBlocks = $derived.by((): Record<string, RichBlock[]> | null => {
-    const cards = cloudBotExtraCards;
-    const at = cloudBotConnectMoreChipAt;
-    if (!at) return cards;
-    return { ...(cards ?? {}), [at]: [...(cards?.[at] ?? []), { kind: "suggestions", items: [CONNECT_MORE_REQUEST] }] };
-  });
-  /**
    * One line in the app's file log per hello saying whose picks its cards
    * show: the bot's, when its envelope parsed, else the app's fallback
    * (`appChosenItems`). Written when the picture changes, so a later
@@ -8957,7 +8886,7 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
-        // "Connect more tools" to a cloud bot (the chip or typed): the bot
+        // "Connect more tools" typed to a cloud bot: the bot
         // also gets one hidden request with the company's apps, so its
         // visible answer can carry the cards it chose.
         if (dmCloudBotUid && row.personUid === dmCloudBotUid && isConnectMoreRequest(body)) {
@@ -11172,7 +11101,7 @@
                   aboveMessages={botSyncStrip}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
-                  extraBlocksByEventId={cloudBotExtraBlocks}
+                  extraBlocksByEventId={cloudBotExtraCards}
                   draftKey={selectedRow.id}
                   draftStorage={tenantStorage}
                 />

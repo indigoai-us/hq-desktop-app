@@ -520,13 +520,11 @@ describe("DesktopApp suggested replies from a cloud bot", () => {
     const w = world({ thread: thread(NOVA, SUGGESTIONS), slackCapability: "ok" });
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await vi.waitFor(() =>
-      expect(chips().map((chip) => chip.textContent?.trim())).toEqual(
-        expect.arrayContaining(["Summarize our company files", "List our open projects"]),
-      ),
+      expect(chips().map((chip) => chip.textContent?.trim())).toEqual(["Summarize our company files", "List our open projects"]),
     );
     expect(threadText()).not.toContain("hq-block");
-    // Part of the message, in the thread.
-    expect(messageEl("e2").querySelectorAll('[data-testid="suggested-reply"]').length).toBeGreaterThanOrEqual(2);
+    // Part of the message, in the thread. Only the bot's own: the app adds none.
+    expect(messageEl("e2").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(2);
     chips()
       .find((chip) => chip.textContent?.trim() === "List our open projects")!
       .click();
@@ -557,10 +555,8 @@ describe("DesktopApp suggested replies from a cloud bot", () => {
     await vi.waitFor(() => expect(hiddenNotices(w)).toHaveLength(1));
     await settle();
     // The notice is not the person writing: the buttons stay under the bot's newest message.
-    expect(chips().map((chip) => chip.textContent?.trim())).toEqual(
-      expect.arrayContaining(["Summarize our company files", "List our open projects"]),
-    );
-    expect(messageEl("e4").querySelectorAll('[data-testid="suggested-reply"]').length).toBeGreaterThanOrEqual(2);
+    expect(chips().map((chip) => chip.textContent?.trim())).toEqual(["Summarize our company files", "List our open projects"]);
+    expect(messageEl("e4").querySelectorAll('[data-testid="suggested-reply"]')).toHaveLength(2);
   });
 });
 
