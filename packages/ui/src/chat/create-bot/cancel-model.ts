@@ -161,20 +161,61 @@ export function readBotRemovalAnswer(result: unknown): BotRemovalAnswer {
 }
 
 export interface BotRemovalRunOptions {
-  /** Test seam. Production waits on a timer. */
-  sleep?: (ms: number) => Promise<void>;
+  /** Test seam. Production waits on a timer that ends early when the run is stopped. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   retryMs?: number;
   maxRequests?: number;
   /** How many "still removing" answers to sit through. */
   maxWorkingRequests?: number;
   maxFailures?: number;
+  /**
+   * Stops the run. Nothing more is asked once it is aborted, and the run
+   * resolves "stopped". The sidebar aborts it when it goes away; the removal
+   * is picked up again from what was written down.
+   */
+  signal?: AbortSignal;
+  /**
+   * Test seam. Resolves once the window can be seen. Production waits for the
+   * document to stop being hidden: nothing is asked while nobody can see
+   * the answer.
+   */
+  whenVisible?: (signal?: AbortSignal) => Promise<void>;
 }
 
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish);
+  });
+}
+
+/** Resolves at once when the window can be seen, else when it next can, or when the run is stopped. */
+function whenDocumentVisible(signal?: AbortSignal): Promise<void> {
+  if (typeof document === "undefined" || !document.hidden || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (document.hidden && !signal?.aborted) return;
+      document.removeEventListener("visibilitychange", check);
+      signal?.removeEventListener("abort", check);
+      resolve();
+    };
+    document.addEventListener("visibilitychange", check);
+    signal?.addEventListener("abort", check);
+  });
 }
 
 export type BotRemovalOutcome = "removed" | BotRemovalProblem;
+/** How a removal run ended. "stopped": it was told to stop, and decided nothing. */
+export type BotRemovalRun = BotRemovalOutcome | "stopped";
 
 /**
  * Ask the server to remove a bot and keep asking until it says the bot is
@@ -184,15 +225,20 @@ export type BotRemovalOutcome = "removed" | BotRemovalProblem;
  * A removal the server accepted and is still carrying out is not a failure.
  * Those answers have their own, longer allowance, and a run that outlasts it
  * resolves "still-removing", never "error".
+ *
+ * The run asks nothing while the window is hidden, and nothing more once
+ * its `signal` is aborted.
  */
 export async function runBotRemoval(
   agentUid: string,
   remove: RemoveBotRequest,
   options: BotRemovalRunOptions = {},
-): Promise<BotRemovalOutcome> {
+): Promise<BotRemovalRun> {
   const uid = agentUid.trim();
   if (!uid) return "unknown-bot";
   const sleep = options.sleep ?? defaultSleep;
+  const whenVisible = options.whenVisible ?? whenDocumentVisible;
+  const signal = options.signal;
   const retryMs = options.retryMs ?? BOT_REMOVAL_RETRY_MS;
   const maxRequests = Math.max(1, options.maxRequests ?? BOT_REMOVAL_MAX_REQUESTS);
   const maxWorking = Math.max(1, options.maxWorkingRequests ?? BOT_REMOVAL_MAX_WORKING_REQUESTS);
@@ -203,6 +249,8 @@ export async function runBotRemoval(
   let asked = 0;
   let working = 0;
   while (asked < maxRequests) {
+    await whenVisible(signal);
+    if (signal?.aborted) return "stopped";
     let answer: BotRemovalAnswer;
     try {
       answer = readBotRemovalAnswer(
@@ -211,14 +259,16 @@ export async function runBotRemoval(
     } catch {
       answer = { kind: "failed" };
     }
+    // What the server said stands, whether or not anyone still waits for it.
     if (answer.kind === "removed") return "removed";
+    if (signal?.aborted) return "stopped";
     if (answer.kind === "refused") return answer.problem;
     if (answer.kind === "working") {
       // The server took the removal and is carrying it out.
       failures = 0;
       working += 1;
       if (working >= maxWorking) return "still-removing";
-      await sleep(retryMs);
+      await (signal ? sleep(retryMs, signal) : sleep(retryMs));
       continue;
     }
     asked += 1;
@@ -234,9 +284,34 @@ export async function runBotRemoval(
     } else {
       failures = 0;
     }
-    await sleep(retryMs);
+    await (signal ? sleep(retryMs, signal) : sleep(retryMs));
   }
   return "error";
+}
+
+/** The removal runs that are asking the server right now, by bot. */
+const liveRemovalRuns = new Map<string, AbortController>();
+
+/**
+ * Start a removal run for a bot, and hand back the way to stop it.
+ *
+ * There is never more than one run per bot: starting one stops the run that
+ * was already going for the same bot (a sidebar that was rebuilt starts its
+ * own, and the old sidebar's must not go on beside it).
+ */
+export function startBotRemoval(
+  agentUid: string,
+  remove: RemoveBotRequest,
+  options: Omit<BotRemovalRunOptions, "signal"> = {},
+): { done: Promise<BotRemovalRun>; stop: () => void } {
+  const uid = agentUid.trim();
+  liveRemovalRuns.get(uid)?.abort();
+  const controller = new AbortController();
+  if (uid) liveRemovalRuns.set(uid, controller);
+  const done = runBotRemoval(uid, remove, { ...options, signal: controller.signal }).finally(() => {
+    if (liveRemovalRuns.get(uid) === controller) liveRemovalRuns.delete(uid);
+  });
+  return { done, stop: () => controller.abort() };
 }
 
 /** The one line the person reads about a cancelled bot. */

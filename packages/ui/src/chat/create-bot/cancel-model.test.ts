@@ -16,6 +16,7 @@ import {
   resolveCancelledCreate,
   runBotRemoval,
   saveOpenBotRemovals,
+  startBotRemoval,
   type BotRemoval,
   type BotRemovalPhase,
   type CancelledCreateAnswer,
@@ -210,6 +211,130 @@ describe("runBotRemoval", () => {
     const remove = vi.fn();
     await expect(runBotRemoval("  ", remove, { sleep: noWait })).resolves.toBe("unknown-bot");
     expect(remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("a removal run that must not outlive its sidebar (review item 3)", () => {
+  const WORKING = { ok: true, value: { setupState: { phase: "deprovisioning" } } };
+  const GONE = { ok: true, value: { terminal: true } };
+
+  it("asks nothing more once it is stopped, and decides nothing", async () => {
+    const controller = new AbortController();
+    const remove = vi.fn(async () => {
+      if (remove.mock.calls.length === 2) controller.abort();
+      return WORKING;
+    });
+    const outcome = await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal });
+
+    expect(outcome).toBe("stopped");
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends no request at all when it is stopped before it starts", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const remove = vi.fn(async () => WORKING);
+    expect(await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal })).toBe("stopped");
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("still reports removed when the server says so as the run is stopped", async () => {
+    const controller = new AbortController();
+    const remove = vi.fn(async () => {
+      controller.abort();
+      return GONE;
+    });
+    expect(await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal })).toBe("removed");
+  });
+
+  it("ends its wait at once when stopped, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const remove = vi.fn(async () => WORKING);
+      const run = runBotRemoval("agt_nova", remove, { retryMs: 5_000, signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      controller.abort();
+      expect(await run).toBe("stopped");
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(remove).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks nothing while the window is hidden, and goes on when it can be seen", async () => {
+    let show!: () => void;
+    let hidden = false;
+    const whenVisible = vi.fn(() => (hidden ? new Promise<void>((resolve) => { show = resolve; }) : Promise.resolve()));
+    const remove = vi.fn(async () => {
+      if (remove.mock.calls.length === 1) hidden = true;
+      return remove.mock.calls.length >= 3 ? GONE : WORKING;
+    });
+    const run = runBotRemoval("agt_nova", remove, { sleep: noWait, whenVisible });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // One request went out before the window was hidden. None since.
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    hidden = false;
+    show();
+    expect(await run).toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(3);
+  });
+
+  it("waits on the document by default: hidden holds the run, visible lets it go on", async () => {
+    const page = Object.assign(new EventTarget(), { hidden: true });
+    vi.stubGlobal("document", page);
+    try {
+      const remove = vi.fn(async () => GONE);
+      const run = runBotRemoval("agt_nova", remove, { sleep: noWait });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(remove).not.toHaveBeenCalled();
+
+      page.hidden = false;
+      page.dispatchEvent(new Event("visibilitychange"));
+      expect(await run).toBe("removed");
+      expect(remove).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps one run per bot: starting a second stops the first", async () => {
+    const releases: Array<(answer: unknown) => void> = [];
+    const remove = vi.fn(() => new Promise<unknown>((resolve) => { releases.push(resolve); }));
+    const first = startBotRemoval("agt_nova", remove, { sleep: noWait });
+    await Promise.resolve();
+    const second = startBotRemoval(" agt_nova ", remove, { sleep: noWait });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(remove).toHaveBeenCalledTimes(2);
+
+    // The first run's request comes back "still working": it asks no more.
+    releases[0]!(WORKING);
+    expect(await first.done).toBe("stopped");
+    releases[1]!(WORKING);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(remove).toHaveBeenCalledTimes(3);
+    releases[2]!(GONE);
+    expect(await second.done).toBe("removed");
+    // A run for another bot is not touched.
+    const other = startBotRemoval("agt_vega", async () => GONE, { sleep: noWait });
+    expect(await other.done).toBe("removed");
+  });
+
+  it("stops when asked to", async () => {
+    const remove = vi.fn(async () => WORKING);
+    const run = startBotRemoval("agt_nova", remove, { sleep: noWait });
+    run.stop();
+    expect(await run.done).toBe("stopped");
+    const asked = remove.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(remove.mock.calls.length).toBe(asked);
+    expect(asked).toBeLessThanOrEqual(1);
   });
 });
 

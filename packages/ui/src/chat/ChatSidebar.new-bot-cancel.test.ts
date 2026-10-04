@@ -1408,6 +1408,98 @@ describe("More than one bot starting (review A-I1)", () => {
   });
 });
 
+describe("A removal that is still going when the sidebar goes away (review item 3)", () => {
+  const WORKING = { ok: true, value: { setupState: { phase: "deprovisioning" } } };
+
+  function seedRemoval(): void {
+    window.localStorage.setItem(
+      storageKey(OPEN_BOT_REMOVALS_STORAGE_KEY),
+      JSON.stringify([
+        { name: "Nova", companyUid: "cmp_indigo", agentUid: "agt_nova", channelId: "", phase: "removing", hadRow: true, startedAt: 1, problem: null },
+      ]),
+    );
+  }
+
+  async function wait(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  it("stops asking when the sidebar is destroyed, and keeps the removal written down", async () => {
+    seedRemoval();
+    const removeAgent = vi.fn(async () => WORKING);
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), removeAgent, botRemovalRetryMs: 5 });
+    await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThanOrEqual(3));
+
+    await unmount(component!);
+    component = null;
+    const asked = removeAgent.mock.calls.length;
+    await wait(60);
+
+    // Not one more request from a sidebar that is gone.
+    expect(removeAgent.mock.calls.length).toBeLessThanOrEqual(asked + 1);
+    const settledAt = removeAgent.mock.calls.length;
+    await wait(60);
+    expect(removeAgent.mock.calls.length).toBe(settledAt);
+    // The removal is still under way: the next sidebar picks it up.
+    expect(stored(OPEN_BOT_REMOVALS_STORAGE_KEY)).toMatchObject([{ agentUid: "agt_nova", phase: "removing" }]);
+  });
+
+  it("runs one loop per bot after the sidebar is rebuilt, not one per rebuild", async () => {
+    seedRemoval();
+    let asking = 0;
+    let mostAtOnce = 0;
+    const removeAgent = vi.fn(async () => {
+      asking += 1;
+      mostAtOnce = Math.max(mostAtOnce, asking);
+      await wait(3);
+      asking -= 1;
+      return WORKING;
+    });
+    for (let rebuild = 0; rebuild < 4; rebuild += 1) {
+      if (component) await unmount(component);
+      resetWakingSessionStores();
+      mountSidebar({ oncreatenewbot: async () => created("agt_other"), removeAgent, botRemovalRetryMs: 5 });
+      await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThanOrEqual(rebuild + 1));
+      await wait(12);
+    }
+
+    // The last sidebar's loop is the only one asking. Four loops would
+    // overlap and ask about four times as often.
+    const before = removeAgent.mock.calls.length;
+    await wait(80);
+    const perLoop = removeAgent.mock.calls.length - before;
+    expect(perLoop).toBeGreaterThan(0);
+    expect(perLoop).toBeLessThanOrEqual(12);
+    expect(mostAtOnce).toBeLessThanOrEqual(2);
+  });
+
+  it("asks nothing while the window is hidden, and goes on when it is shown again", async () => {
+    seedRemoval();
+    const original = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
+    let hidden = false;
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    try {
+      const removeAgent = vi.fn(async () => WORKING);
+      mountSidebar({ oncreatenewbot: async () => created("agt_other"), removeAgent, botRemovalRetryMs: 5 });
+      await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+      hidden = true;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await wait(20);
+      const whileHidden = removeAgent.mock.calls.length;
+      await wait(60);
+      expect(removeAgent.mock.calls.length).toBe(whileHidden);
+
+      hidden = false;
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThan(whileHidden));
+    } finally {
+      delete (document as unknown as Record<string, unknown>).hidden;
+      if (original) Object.defineProperty(Document.prototype, "hidden", original);
+    }
+  });
+});
+
 describe("A removal the app was in the middle of", () => {
   it("is asked again when the app starts", async () => {
     window.localStorage.setItem(

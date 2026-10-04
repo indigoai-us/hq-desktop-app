@@ -18,7 +18,7 @@
    * persisted cursor survives restarts. Cursor catch-up on MQTT connect/focus
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
-  import { onMount, tick, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
@@ -208,9 +208,10 @@
     CANCELLED_CREATE_LOOKUP_DELAYS_MS,
     readCancelledCreate,
     resolveCancelledCreate,
-    runBotRemoval,
     saveOpenBotRemovals,
+    startBotRemoval,
     type BotRemoval,
+    type BotRemovalRun,
     type RemoveBotRequest,
   } from "./create-bot/cancel-model.js";
   import { createDraftSignature, releaseCreateKey, takeCreateKey } from "./create-bot/create-key.js";
@@ -2332,25 +2333,38 @@
     void runRemoval(removal.id);
   }
 
-  /** Removals this window is asking the server about right now. */
-  const removalsRunning = new Set<string>();
+  /**
+   * Removals this sidebar is asking the server about right now, and the way
+   * to stop each. A run asks every few seconds for up to twenty minutes, so
+   * it must not outlive the sidebar that started it: the sidebar that
+   * replaces this one picks the removal up from what was written down.
+   */
+  const removalStops = new Map<string, () => void>();
+  onDestroy(() => {
+    for (const stop of removalStops.values()) stop();
+    removalStops.clear();
+  });
 
   async function runRemoval(id: string): Promise<void> {
     const removal = botRemovals.find((candidate) => candidate.id === id);
-    if (!removal || !removal.agentUid || removalsRunning.has(id)) return;
+    if (!removal || !removal.agentUid || removalStops.has(id)) return;
     if (!removeAgent) {
       patchBotRemoval(id, { phase: "failed", problem: "error" });
       return;
     }
-    removalsRunning.add(id);
     patchBotRemoval(id, { phase: "removing", problem: null });
     const agentUid = removal.agentUid;
-    let outcome: Awaited<ReturnType<typeof runBotRemoval>> = "error";
+    const run = startBotRemoval(agentUid, removeAgent, { retryMs: botRemovalRetryMs });
+    removalStops.set(id, run.stop);
+    let outcome: BotRemovalRun = "error";
     try {
-      outcome = await runBotRemoval(agentUid, removeAgent, { retryMs: botRemovalRetryMs });
+      outcome = await run.done;
     } finally {
-      removalsRunning.delete(id);
+      if (removalStops.get(id) === run.stop) removalStops.delete(id);
     }
+    // Stopped with this sidebar, or by the run that took over for the same
+    // bot: nothing was decided. The removal stays written down as under way.
+    if (outcome === "stopped") return;
     if (outcome !== "removed") {
       patchBotRemoval(id, { phase: "failed", problem: outcome });
       return;
