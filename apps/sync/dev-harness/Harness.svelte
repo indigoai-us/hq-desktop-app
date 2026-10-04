@@ -244,7 +244,10 @@
        2 cloud with the install running, 5 ready with the Claude Code / Codex
        options and the usage-data checkbox; 3 lands on ready too); the shortcut
        screen is Next from 2. ?mode=replay previews the menu-bar "Replay
-       welcome intro" (the story screens only). In the app the window is
+       welcome intro" (the story screens only). &company=create answers as a
+       brand-new person, so Next, Next from step 2 reaches the company step
+       inside the real welcome window (&companyDelay=<ms> slows its card
+       fetch like a real network). In the app the window is
        transparent over a native blur of the desktop; a browser cannot do that,
        so the harness paints a stand-in desktop behind it. -->
   <div class="fake-desktop" aria-hidden="true"></div>
