@@ -82,7 +82,7 @@ test('the company step comes after the setup explainers and before "Open HQ Desk
 
   await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
   await page.getByTestId('onboarding-company-create').click();
-  await page.getByTestId('onboarding-plan-continue').click();
+  await page.getByTestId('onboarding-plan-choose-starter').click();
   // Then the ready screen, with the install still running.
   await expect(page.locator('.scene[data-scene="ready"]')).toHaveClass(/\bon\b/);
 });
@@ -117,17 +117,32 @@ for (const size of SIZES) {
     );
 
     await page.getByTestId('onboarding-company-create').click();
-    await page.getByTestId('onboarding-plan-continue').waitFor();
+    await page.getByTestId('onboarding-plan-choose-starter').waitFor();
     await expectCentred(
       page,
-      [
-        '.scene.on [data-scene-heading]',
-        '.scene.on .follow-on > .body',
-        '[data-testid="onboarding-plan-options"]',
-        '[data-testid="onboarding-plan-continue"]',
-      ],
-      '[data-testid="onboarding-plan-continue"]',
+      ['.scene.on [data-scene-heading]', '.scene.on .follow-on > .body', '[data-testid="onboarding-plan-options"]', '.plan-custom'],
+      '.plan-custom',
     );
+    // Both cards side by side at the welcome window's sizes, equal in height,
+    // with their CTAs on one baseline.
+    const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
+    const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
+    expect(starter.right).toBeLessThan(workforce.left);
+    expect(Math.abs(starter.top - workforce.top)).toBeLessThanOrEqual(1);
+    expect(Math.abs(starter.bottom - workforce.bottom)).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(
+        (await box(page, '[data-testid="onboarding-plan-choose-starter"]')).top -
+          (await box(page, '[data-testid="onboarding-plan-choose-workforce"]')).top,
+      ),
+    ).toBeLessThanOrEqual(1);
+    // It fits: the scene does not scroll.
+    expect(
+      await page.evaluate(() => {
+        const scene = document.querySelector('.scene.on')!;
+        return scene.scrollHeight - scene.clientHeight;
+      }),
+    ).toBeLessThanOrEqual(0);
   });
 }
 
@@ -148,4 +163,22 @@ test('stays centred when the welcome window is resized on the company step', asy
       '[data-testid="onboarding-company-actions"]',
     );
   }
+});
+
+test('stacks the plan cards in a narrow window and scrolls to the second one', async ({ page }) => {
+  await page.setViewportSize({ width: 560, height: 720 });
+  await page.goto(flow);
+  await next(page);
+  await next(page);
+  await page.getByTestId('onboarding-company-field-name').fill('Acme Studio');
+  await page.getByTestId('onboarding-company-create').click();
+  await page.getByTestId('onboarding-plan-choose-starter').waitFor();
+  const starter = await box(page, '[data-testid="onboarding-plan-card-starter"]');
+  const workforce = await box(page, '[data-testid="onboarding-plan-card-workforce"]');
+  expect(workforce.top).toBeGreaterThan(starter.bottom);
+  expect(Math.abs(centre(starter) - 280)).toBeLessThanOrEqual(1);
+  // The Workforce CTA is below the fold: the scene scrolls to it, the root does not.
+  await page.getByTestId('onboarding-plan-choose-workforce').scrollIntoViewIfNeeded();
+  await expect(page.getByTestId('onboarding-plan-choose-workforce')).toBeInViewport();
+  expect(await rootScroll(page)).toEqual({ top: 0, left: 0 });
 });

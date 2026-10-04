@@ -4,7 +4,7 @@
    * ?scenario=create (default) | join | paused | existing | other-email |
    * expired | slow | provisioning-failed | resume | other-account | plan-limit.
    * ?plan=starter|workforce acts as a plan already picked on the website (the
-   * "Choose a plan" screen is skipped). Uses its own in-page answers
+   * "Choose how your HQ runs." plan screen is skipped). Uses its own in-page answers
    * for the server so every screen of the step can be reached in a browser:
    * name the company, pick a plan, open checkout, and the checkout return
    * (the harness emits `messages:open-setup` for "Simulate checkout return").
