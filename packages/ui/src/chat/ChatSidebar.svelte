@@ -53,7 +53,14 @@
     type ChatWakeBus,
   } from "./chat-api";
   import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
-  import { beginWakingSession, type WakingBotSession } from "./create-bot/waking-model.js";
+  import { beginWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
+  import {
+    upsertWakingSession,
+    wakingSessionKey,
+    wakingSessionStore,
+    withoutWakingSession,
+  } from "./create-bot/waking-sessions.js";
+  import { agentChatReadiness } from "./agent-channel.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -574,6 +581,16 @@
     typeof window !== "undefined" ? window.localStorage : null,
     { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
   );
+  /**
+   * Kept for the account, whatever company the sidebar is scoped to. This
+   * sidebar is rebuilt on a company switch, and what a rebuilt sidebar must
+   * still have (the bots that are starting) cannot live in a per-company
+   * partition. Each entry names its own company.
+   */
+  const accountStorage = createTenantStorage(
+    typeof window !== "undefined" ? window.localStorage : null,
+    { accountId: tenantAccountId, companyId: "all" },
+  );
 
   function readShowScopeLabels(): boolean {
     try {
@@ -1029,7 +1046,17 @@
     agentCompanies.map((company) => company.companyUid).join("\n"),
   );
 
-  let wakingBot = $state<WakingBotSession | null>(null);
+  /**
+   * Bots made in the New Bot flow that are still starting, one entry per
+   * bot. The list belongs to the account, not to this sidebar: it is shared
+   * with whichever sidebar replaces this one and it is written to storage,
+   * so a company switch, a collapsed sidebar or a restart loses none of
+   * them (waking-sessions.ts).
+   */
+  const wakingStore = wakingSessionStore(tenantAccountId, accountStorage);
+  let wakingBots = $state<WakingBotSession[]>(wakingStore.get());
+  /** The bot whose waiting screen the takeover shows. Null: the create screen. */
+  let openWakingKey = $state<string | null>(null);
   let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
   /** Cancelled bots: what is being removed, what was removed, what was not. */
   let botRemovals = $state<BotRemoval[]>(loadOpenBotRemovals(storage));
@@ -1043,10 +1070,26 @@
    * broadcast clutter the agent-stub rule exists to remove, so they stay on
    * the rail whether or not they have messaged.
    */
+  /**
+   * The starting bots this sidebar shows: all of them, or when the sidebar
+   * is scoped to one company, that company's. A bot being removed has its
+   * own row and is not shown as starting.
+   */
+  const shownWakingBots = $derived(
+    wakingBots.filter((session) => {
+      const scoped = (tenantCompanyId ?? "").trim();
+      if (scoped && scoped !== "all" && session.companyUid && session.companyUid !== scoped) return false;
+      return !botIsCancelled(session.agentUid);
+    }),
+  );
+  /** The session the takeover is showing, as it stands now. */
+  const openWakingBot = $derived(
+    openWakingKey ? wakingBots.find((session) => wakingSessionKey(session) === openWakingKey) ?? null : null,
+  );
   const ownAgentUids = $derived([
     ...(localBots ?? []).map((bot) => bot.agentUid),
     ...(ownedLocalBotUids ?? []),
-    ...(wakingBot?.agentUid ? [wakingBot.agentUid] : []),
+    ...shownWakingBots.map((session) => session.agentUid).filter((uid) => uid.length > 0),
   ]);
 
   // Synthetic #setup support channel (deduped against a real server `setup`
@@ -1108,15 +1151,19 @@
 
   const allRows = $derived(
     withCancelledBotRows(
-      withWakingBotRow(withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
-        pinnedIds: pinsWithSetup,
-        dmDots,
-        recentDms,
-        engagedAgentUids: engagedAgents,
-        ownAgentUids,
-        homeChannelIdByUid,
-        companyDisplayNamesByUid,
-      }), botSetupChannels), wakingBot),
+      // Each bot that is starting keeps a row of its own.
+      shownWakingBots.reduce<ConversationRow[]>(
+        (rows, bot) => withWakingBotRow(rows, bot),
+        withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+          pinnedIds: pinsWithSetup,
+          dmDots,
+          recentDms,
+          engagedAgentUids: engagedAgents,
+          ownAgentUids,
+          homeChannelIdByUid,
+          companyDisplayNamesByUid,
+        }), botSetupChannels),
+      ),
       botRemovals,
       removedBotUids,
     ),
@@ -1539,6 +1586,11 @@
       if (row.wakingBot || row.removingBot) {
         // A bot that is starting, or a cancelled bot that still exists: its
         // state lives in the new bot screen, and it has no conversation yet.
+        // A starting bot opens on its own waiting screen; a cancelled one
+        // opens on the create screen, where its removal is reported.
+        openWakingKey = row.wakingBot
+          ? row.wakingBot.agentUid || (row.channelId ? `ch:${row.channelId}` : null)
+          : null;
         newBotOpen = true;
         return;
       }
@@ -1768,12 +1820,20 @@
       : newBotCompanies,
   );
   $effect(() => {
-    if (!newBotOpen) newBotCompaniesAtOpen = null;
+    if (newBotOpen) return;
+    newBotCompaniesAtOpen = null;
+    openWakingKey = null;
   });
 
+  /**
+   * "New bot" always opens the create screen. Bots that are starting are
+   * reached from their own rows; none of them stands in the way of making
+   * another one.
+   */
   function openNewBotTakeover(): void {
     createOpen = false;
     newBotCompaniesAtOpen = newBotCompanies;
+    openWakingKey = null;
     newBotOpen = true;
   }
 
@@ -1786,18 +1846,75 @@
     untrack(() => onagentcompanies?.(key ? key.split("\n") : []));
   });
 
+  /** Change the account's list of starting bots. Every sidebar for the account hears of it. */
+  function changeWakingBots(change: (sessions: WakingBotSession[]) => WakingBotSession[]): void {
+    wakingBots = wakingStore.update(change);
+  }
+
+  // A sidebar that was replaced can still finish a create, and it writes the
+  // new bot to the shared list. This one hears of it here.
+  onMount(() =>
+    wakingStore.subscribe(() => {
+      wakingBots = wakingStore.get();
+    }),
+  );
+
   function beginWakingBot(session: WakingBotSession): void {
     if (botIsCancelled(session.agentUid)) return;
-    wakingBot = session;
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
     if (session.agentUid && session.channelId) {
       botSetupChannels = rememberBotSetupChannel(botSetupChannels, session.channelId, storage);
     }
   }
 
-  function updateWakingBot(session: WakingBotSession | null): void {
-    if (session && botIsCancelled(session.agentUid)) return;
-    wakingBot = session;
+  function updateWakingBot(session: WakingBotSession): void {
+    if (botIsCancelled(session.agentUid)) return;
+    // A bot that is live, removed or out of reach is no longer waited for.
+    if (session.phase === "ready" || wakingBotGone(session)) {
+      endWakingBot(session);
+      return;
+    }
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
   }
+
+  /** The wait for this bot is over: it has no entry and no "starting" row any more. */
+  function endWakingBot(session: Pick<WakingBotSession, "agentUid" | "channelId">): void {
+    const key = wakingSessionKey(session);
+    if (!key) return;
+    changeWakingBots((sessions) => withoutWakingSession(sessions, key));
+  }
+
+  /**
+   * A restart can outlast a bot. Ask the server once about each bot read
+   * back from storage: one that is gone, or that can chat and was already
+   * asked for its first message, is no longer shown as starting.
+   */
+  onMount(() => {
+    const readStatus = loadAgentStatus;
+    if (!readStatus) return;
+    for (const agentUid of wakingStore.takeRestored()) {
+      const session = wakingStore.get().find((candidate) => candidate.agentUid === agentUid);
+      if (!session) continue;
+      void readStatus(agentUid, session.brain ?? undefined)
+        .then((result) => {
+          const answer = result as { ok?: unknown; value?: unknown } | null;
+          if (answer?.ok === true) {
+            const phase = String(
+              (answer.value as { setupState?: { phase?: unknown } } | null)?.setupState?.phase ?? "",
+            ).toLowerCase();
+            const gone = phase === "deprovisioning" || phase === "deprovisioned";
+            const live = agentChatReadiness(answer.value).chatReady && session.helloAskedAt != null;
+            if (gone || live) endWakingBot(session);
+            return;
+          }
+          const stop = wakingStopFromFailure(result);
+          if (stop === "removed" || stop === "no-access") endWakingBot(session);
+        })
+        .catch(() => {
+          // Not known: the bot keeps its row, and its screen asks again.
+        });
+    }
+  });
 
   // ── Cancel in the new bot flow ───────────────────────────────────────────
   // Cancel stops the create and removes what it made. The sidebar holds the
@@ -1851,9 +1968,29 @@
     } finally {
       if (createInFlight === attempt) createInFlight = null;
     }
-    if (!attempt.cancelled && result) return result;
+    if (!attempt.cancelled && result) {
+      rememberCreatedBot(companyUid, draft, result);
+      return result;
+    }
     settleCancelledCreate(attempt.removalId, result);
     return { ok: false, blocked: false, reason: "", cancelled: true };
+  }
+
+  /**
+   * The create answered with a bot. Put it on the list of starting bots
+   * here, where the answer arrives, and not only when the takeover shows its
+   * waiting screen: the takeover, and this sidebar, may be gone by now (a
+   * company switch, a collapsed sidebar), and the bot must still get its row.
+   */
+  function rememberCreatedBot(companyUid: string, draft: CloudBotDraft, result: EntryPointResult): void {
+    // A card in the answer means nothing was created.
+    if (!result.ok || result.target.cardId) return;
+    const agentUid = result.target.agentUid?.trim() ?? "";
+    const channelId = result.target.channelId?.trim() ?? "";
+    if (!agentUid && !channelId) return;
+    beginWakingBot(
+      beginWakingSession({ agentUid, channelId, companyUid, name: draft.name, brain: draft.runtime ?? null }),
+    );
   }
 
   /** Cancel while the create request is out. Its answer decides what there is to remove. */
@@ -1907,7 +2044,8 @@
   /** The person confirmed that a bot that is starting should be removed. */
   function cancelWakingBot(session: WakingBotSession): void {
     const agentUid = session.agentUid.trim();
-    if (wakingBot && (wakingBot.agentUid === session.agentUid || !agentUid)) wakingBot = null;
+    endWakingBot(session);
+    openWakingKey = null;
     const removal = beginBotRemoval({
       name: session.name,
       companyUid: session.companyUid,
@@ -1950,7 +2088,7 @@
     // Gone on the server: forget the bot here, and keep its conversation off
     // the list, because the server leaves the thread behind.
     removedBotUids = rememberRemovedBot(removedBotUids, agentUid, storage);
-    if (wakingBot?.agentUid === agentUid) wakingBot = null;
+    endWakingBot({ agentUid, channelId: "" });
     patchBotRemoval(id, { phase: "removed", problem: null });
     onbotremoved?.(agentUid);
   }
@@ -1966,13 +2104,14 @@
     if (!removal || removal.phase !== "failed") return;
     setBotRemovals(botRemovals.filter((candidate) => candidate.id !== id));
     if (!removal.agentUid || removal.problem === "still-removing") return;
-    wakingBot = beginWakingSession({
+    const session = beginWakingSession({
       agentUid: removal.agentUid,
       channelId: removal.channelId,
       companyUid: removal.companyUid,
       name: removal.name,
       brain: removal.brain,
     });
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
   }
 
   // A removal the app was in the middle of when it last closed is asked again.
@@ -4255,10 +4394,10 @@
       {openExternal}
       sendHello={sendBotHello}
       checkHello={checkBotHello}
-      wakingSession={wakingBot}
+      wakingSession={openWakingBot}
       onwaking={beginWakingBot}
       onwakingchange={updateWakingBot}
-      onwakingdone={() => updateWakingBot(null)}
+      onwakingdone={endWakingBot}
       canRemoveBot={canRemoveBotIn}
       onopenchat={openWakingBotChat}
       onclosewaking={() => { newBotOpen = false; }}

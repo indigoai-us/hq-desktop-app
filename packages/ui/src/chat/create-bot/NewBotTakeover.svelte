@@ -5,6 +5,7 @@
   import roadSunrise from "./assets/new-bot-wallpapers/road-sunrise.jpg";
   import { onDestroy, onMount } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
+  import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
   import NewBotCreateScreen, { type NewBotCreated, type NewBotUpgradeTarget } from "./NewBotCreateScreen.svelte";
@@ -125,6 +126,12 @@
   const wallpaper = $derived(wallpapers[Math.abs(wallpaperIndex) % wallpapers.length] ?? glassWhiteboard);
 
   let dialogEl = $state<HTMLDivElement | null>(null);
+
+  // The takeover is a modal dialog over the whole window, and it owns the
+  // keyboard while it is open: none of the app's shortcuts fires under it,
+  // from a key or from the menu. One of them used to close or rebuild the
+  // sidebar in the middle of a create (CardModal holds them the same way).
+  onMount(() => suspendShortcuts());
 
   /**
    * Claude is offered only once the host says the provider is on. A read

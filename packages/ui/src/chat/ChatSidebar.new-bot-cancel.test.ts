@@ -21,6 +21,9 @@ import {
 } from "./create-bot/cancel-model.js";
 import { BOT_SETUP_CHANNELS_STORAGE_KEY } from "./sidebar-model.js";
 import { tenantStorageKey } from "../identity/tenant-storage.js";
+import { resetWakingSessionStores, WAKING_BOTS_STORAGE_KEY } from "./create-bot/waking-sessions.js";
+import { registerShortcuts, runShortcut, shortcutsSuspended } from "../common/keyboard-shortcuts.js";
+import { isMac } from "../common/platform.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -171,6 +174,7 @@ async function removalSettled(check: () => void): Promise<void> {
 
 beforeEach(() => {
   window.localStorage?.clear?.();
+  resetWakingSessionStores();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
   document.body.appendChild(host);
@@ -562,35 +566,281 @@ describe("Leaving the waiting screen", () => {
   });
 });
 
-describe("A create that finishes after the takeover was closed without Cancel", () => {
-  it("keeps the bot starting in the sidebar and leaves an open create screen alone", async () => {
+describe("The app's shortcuts while the takeover is open (review A-C2)", () => {
+  // This block replaces "A create that finishes after the takeover was closed
+  // without Cancel", which asserted that a global shortcut closes the
+  // takeover in the middle of a create. The review asked for the opposite:
+  // the takeover is a modal dialog and holds the app's shortcuts while it is
+  // open. What that test protected (the bot keeps its row when its answer
+  // arrives late) is covered below, in "Bots that are starting outlive the
+  // sidebar".
+  it("holds every shortcut, in the middle of a create too, so none can close it", async () => {
+    const newChat = vi.fn();
+    const unregister = registerShortcuts([
+      { id: "test.new-chat", keys: "Mod+N", label: "New chat", group: "Test", allowInInput: true, run: newChat },
+    ]);
+    try {
+      let finishCreate!: (result: EntryPointResult) => void;
+      const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
+      mountSidebar({ oncreatenewbot, removeAgent: vi.fn(async () => REMOVED) });
+      await settle();
+      expect(shortcutsSuspended()).toBe(false);
+      expect(runShortcut("test.new-chat")).toBe(true);
+      newChat.mockClear();
+
+      await openTakeover();
+      await pressCreate("Nova");
+      expect(q('[data-testid="new-bot-creating"]')).toBeTruthy();
+
+      // From the keyboard, and from the menu: nothing fires.
+      expect(shortcutsSuspended()).toBe(true);
+      const mac = isMac();
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "n", code: "KeyN", metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }),
+      );
+      expect(runShortcut("test.new-chat")).toBe(false);
+      // The sidebar's own shortcut is held with the rest.
+      expect(runShortcut("scope.personal")).toBe(false);
+      await settle();
+      expect(newChat).not.toHaveBeenCalled();
+      expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+      expect(q('[data-testid="new-bot-creating"]')).toBeTruthy();
+
+      // The create answers into a takeover that is still there.
+      finishCreate(created("agt_nova"));
+      await settle(12);
+      expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+
+      // Closing the takeover lets the shortcuts go.
+      click('[data-testid="new-bot-waking-close"]');
+      await settle();
+      expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+      expect(shortcutsSuspended()).toBe(false);
+      expect(runShortcut("test.new-chat")).toBe(true);
+      expect(newChat).toHaveBeenCalledTimes(1);
+    } finally {
+      unregister();
+    }
+  });
+});
+
+describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
+  // The waiting screen is the only way to a new bot's brain sign-in. Its
+  // session lived in the sidebar's memory, and the sidebar is rebuilt on a
+  // company switch, when it is collapsed, and on restart.
+  const APPROVAL_STATUS = {
+    ok: true,
+    value: {
+      agent: { provider: "codex" },
+      setupState: { phase: "waiting", steps: [{ name: "runtime", status: "done" }, { name: "codex-auth", status: "waiting" }] },
+      pairing: { url: "https://auth.openai.com/codex/device", code: "TEST-CODE" },
+    },
+  };
+
+  function wakingStored(): Array<Record<string, unknown>> {
+    return stored(WAKING_BOTS_STORAGE_KEY) as Array<Record<string, unknown>>;
+  }
+
+  async function remount(props: Record<string, unknown>): Promise<void> {
+    if (component) await unmount(component);
+    component = null;
+    mountSidebar(props);
+    await settle();
+  }
+
+  it("gives a bot its row when its create answers after the sidebar was rebuilt", async () => {
+    // "Mid-create the answer lands in a destroyed component: bot exists with
+    // no row."
     let finishCreate!: (result: EntryPointResult) => void;
     const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
-    const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreatenewbot, removeAgent });
+    mountSidebar({ oncreatenewbot, removeAgent: vi.fn(async () => REMOVED) });
     await settle();
     await openTakeover();
     await pressCreate("Nova");
 
-    // The "+" list opens over the flow (a keyboard shortcut does this). That
-    // closes the takeover. It is not Cancel.
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-    await settle();
+    // The company scope changes: the host rebuilds the sidebar for it.
+    await remount({ oncreatenewbot, tenantCompanyId: "cmp_indigo", scopeUid: "cmp_indigo" });
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    click('[data-testid="chat-create-new-bot"]');
-    await settle();
-    await typeName("Second");
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
 
     finishCreate(created("agt_nova"));
     await settle(12);
 
-    // The person keeps the screen they are on.
-    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
-    expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Second");
-    // The bot was not cancelled: it keeps starting and has its row.
-    expect(removeAgent).not.toHaveBeenCalled();
     expect(q('[data-conversation-id="dm:agt_nova"]')?.textContent).toContain("Nova");
-    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(wakingStored()).toMatchObject([{ agentUid: "agt_nova", name: "Nova", companyUid: "cmp_indigo", phase: "waking" }]);
+
+    // Its row leads to its waiting screen.
+    click('[data-conversation-id="dm:agt_nova"]');
+    await settle();
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+  });
+
+  it("restores the row after a restart, and its screen reopens on the sign-in", async () => {
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), loadAgentStatus: async () => APPROVAL_STATUS });
+    await settle();
+    await startBot("Nova");
+    expect(q('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+
+    // The sign-in code and link are never written down.
+    const everything = JSON.stringify({ ...window.localStorage });
+    expect(everything).toContain("agt_nova");
+    expect(everything).not.toContain("TEST-CODE");
+    expect(everything).not.toContain("auth.openai.com");
+
+    // Quit and start again: nothing is left in memory.
+    if (component) await unmount(component);
+    component = null;
+    resetWakingSessionStores();
+    const loadAgentStatus = vi.fn(async () => APPROVAL_STATUS);
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), loadAgentStatus });
+    await settle();
+
+    const row = q<HTMLButtonElement>('[data-conversation-id="dm:agt_nova"]')!;
+    expect(row.textContent).toContain("Nova");
+    expect(row.querySelector('[data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    // The server was asked once about the bot read back from storage.
+    expect(loadAgentStatus).toHaveBeenCalledTimes(1);
+    expect(loadAgentStatus).toHaveBeenCalledWith("agt_nova", "codex");
+
+    row.click();
+    await settle();
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+    expect(q('[data-testid="new-bot-approval"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
+    expect(q('[data-testid="new-bot-approval-open"]')?.textContent).toBe("Continue with Codex");
+  });
+
+  function seedWaking(entries: Array<Record<string, unknown>>): void {
+    resetWakingSessionStores();
+    window.localStorage.setItem(storageKey(WAKING_BOTS_STORAGE_KEY), JSON.stringify(entries));
+  }
+  const SEEDED = { agentUid: "agt_nova", channelId: "", companyUid: "cmp_indigo", name: "Nova", brain: "codex", estimateMs: 180_000, phase: "waking" };
+
+  it.each([
+    ["was removed", { ok: false, reason: "error", code: "http-404", status: 404 }],
+    ["is out of reach for this person", { ok: false, reason: "error", code: "FORBIDDEN", status: 403 }],
+    ["is being removed", { ok: true, value: { setupState: { phase: "deprovisioning" } } }],
+  ])("forgets a bot read back from storage that %s", async (_label, answer) => {
+    seedWaking([{ ...SEEDED, startedAt: Date.now() - 60_000 }]);
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), loadAgentStatus: async () => answer });
+    await settle(12);
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
+    expect(wakingStored()).toEqual([]);
+  });
+
+  it("forgets a bot that can chat and was already asked for its first message, and keeps one that was not asked yet", async () => {
+    const CHAT_READY = { ok: true, value: { setupState: { phase: "ready", steps: [] } } };
+    seedWaking([
+      { ...SEEDED, startedAt: Date.now() - 60_000, chatReadyAt: Date.now() - 30_000, helloAskedAt: Date.now() - 29_000 },
+      { ...SEEDED, agentUid: "agt_later", name: "Later", startedAt: Date.now() - 60_000 },
+    ]);
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), loadAgentStatus: async () => CHAT_READY });
+    await settle(12);
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
+    // Not asked for its hello yet: opening its screen is what asks.
+    expect(q('[data-conversation-id="dm:agt_later"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(wakingStored().map((entry) => entry.agentUid)).toEqual(["agt_later"]);
+  });
+
+  it("keeps a bot whose status could not be read, and forgets one that has been starting for a day", async () => {
+    seedWaking([
+      { ...SEEDED, startedAt: Date.now() - 60_000 },
+      { ...SEEDED, agentUid: "agt_old", name: "Old", startedAt: Date.now() - 25 * 60 * 60_000 },
+    ]);
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      loadAgentStatus: async () => ({ ok: false, reason: "error", code: "http-503" }),
+    });
+    await settle(12);
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(q('[data-conversation-id="dm:agt_old"]')).toBeNull();
+  });
+
+  it("shows a starting bot only in its own company when the sidebar is scoped to one", async () => {
+    seedWaking([{ ...SEEDED, startedAt: Date.now() - 60_000 }]);
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), tenantCompanyId: "cmp_elsewhere", scopeUid: "cmp_elsewhere" });
+    await settle(12);
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
+
+    await remount({ oncreatenewbot: async () => created("agt_other"), tenantCompanyId: "cmp_indigo", scopeUid: "cmp_indigo" });
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    // Still on the account's list while the other company was in view.
+    expect(wakingStored().map((entry) => entry.agentUid)).toEqual(["agt_nova"]);
+  });
+});
+
+describe("More than one bot starting (review A-I1)", () => {
+  const byName = async (_companyUid: string, draft: { name: string }): Promise<EntryPointResult> =>
+    created(draft.name === "Nova" ? "agt_nova" : "agt_second");
+
+  it("New bot opens the create screen, not the bot that is starting, and Cancel there removes nothing", async () => {
+    // "New bot" used to open the starting bot's screen, where the header
+    // Cancel removed that bot.
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot: byName, removeAgent });
+    await settle();
+    await startBot("Nova");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+
+    await openTakeover();
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("");
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-cancel-confirm"]')).toBeNull();
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+  });
+
+  it("keeps a row for each bot, and each row opens its own bot", async () => {
+    // One slot held "the" starting bot, so a second create replaced the first.
+    mountSidebar({ oncreatenewbot: byName, removeAgent: vi.fn(async () => REMOVED) });
+    await settle();
+    await startBot("Nova");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    await startBot("Second");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(q('[data-conversation-id="dm:agt_second"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect((stored(WAKING_BOTS_STORAGE_KEY) as Array<{ agentUid: string }>).map((entry) => entry.agentUid).sort()).toEqual([
+      "agt_nova",
+      "agt_second",
+    ]);
+
+    click('[data-conversation-id="dm:agt_nova"]');
+    await settle();
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    click('[data-conversation-id="dm:agt_second"]');
+    await settle();
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Second");
+  });
+
+  it("removes only the bot whose screen Cancel was pressed on", async () => {
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot: byName, removeAgent });
+    await settle();
+    await startBot("Nova");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    await startBot("Second");
+    await cancelAndConfirm();
+    await removalSettled(() => expect(notice()).toBe("Second was removed."));
+
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(removeAgent).toHaveBeenCalledWith("agt_second", undefined);
+    expect(q('[data-conversation-id="dm:agt_second"]')).toBeNull();
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
   });
 });
 
