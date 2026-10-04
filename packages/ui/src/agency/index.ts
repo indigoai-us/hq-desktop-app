@@ -1,9 +1,9 @@
 /**
  * Agency (Mission Control) area barrel.
  *
- * AgencyChatPanel lives in ../chat (wave-1 port) alongside the shared
- * agency-store singleton; these panels reuse that store rather than
- * re-porting it.
+ * AgencyChatPanel lives in ../chat alongside the shared agency-store.
+ * The questions and teams panels had no importer outside this barrel
+ * and were removed. This file stays because packages/ui/src/index.ts
+ * re-exports it.
  */
-export { default as AgencyQuestionsPanel } from "./AgencyQuestionsPanel.svelte";
-export { default as AgencyTeamsPanel } from "./AgencyTeamsPanel.svelte";
+export {};

@@ -145,6 +145,39 @@ describe('buildPrompt', () => {
       expect(out).toContain('code 3');
     });
 
+    it('gives a disk-full recovery path with bounded capacity values', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: {
+          exitCode: 1,
+          logTail: 'error: insufficient free space for safety snapshot (need 17189273600 bytes, have 5473566720).\nHQ_RESCUE_FAILURE_KIND=disk_full',
+          logPath: '/private/install/hq-sync.log',
+        },
+      });
+      expect(out).toContain(
+        'My HQ menubar update stopped before changing anything because there was not enough free space for the safety snapshot.',
+      );
+      expect(out).toContain('The snapshot needs 16.1 GiB free; 5.0 GiB is available.');
+      expect(out).toContain(
+        'Please free at least 11.0 GiB more, then retry the update with `/update-hq`.',
+      );
+      expect(out).not.toContain('/private/install/hq-sync.log');
+      expect(out).not.toContain('Last log lines:');
+    });
+
+    it('uses no-number guidance when available space already meets the requirement', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: {
+          exitCode: 1,
+          logTail: 'error: insufficient free space for safety snapshot (need 2147483648 bytes, have 3221225472).\nHQ_RESCUE_FAILURE_KIND=disk_full',
+        },
+      });
+
+      expect(out).toContain('Please free some space, then retry the update with `/update-hq`.');
+      expect(out).not.toContain('GiB');
+    });
+
     it('handles the staging channel variant', () => {
       const out = buildPrompt({
         kind: 'hq-core-update-failed',
