@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   beginBotRemoval,
   botRemovalDismissLabel,
+  botRemovalKeepsBot,
   botRemovalLine,
+  botRemovalRetryLabel,
   canRetryBotRemoval,
   cancelBotConfirmCopy,
   loadOpenBotRemovals,
@@ -60,9 +62,31 @@ describe("readBotRemovalAnswer", () => {
     ).toEqual({ kind: "refused", problem: "plan-bot" });
   });
 
-  it("treats everything else as a failure, including a bot the server cannot find", () => {
-    expect(readBotRemovalAnswer({ ok: false, code: "http-404" })).toEqual({ kind: "failed" });
+  it("reads a 403 that carries a code of its own as not allowed (review A-I9)", () => {
+    // A refusal whose body has a code arrives under that code, not "http-403".
+    // It used to read as a plain failure: three tries, then "It still exists".
+    expect(readBotRemovalAnswer({ ok: false, code: "FORBIDDEN", status: 403 })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "SOME_NEW_CODE", status: 403 })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "FORBIDDEN" })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "REMOVE_NOT_ALLOWED" })).toEqual({ kind: "refused", problem: "not-allowed" });
+    // The refusals with a meaning of their own keep it, whatever their status.
+    expect(readBotRemovalAnswer({ ok: false, code: "TEAM_SETUP_AGENT_PROTECTED", status: 403 })).toEqual({ kind: "refused", problem: "plan-bot" });
+    expect(readBotRemovalAnswer({ ok: false, code: "STEP_ALREADY_IN_PROGRESS", status: 409 })).toEqual({ kind: "busy" });
+  });
+
+  it("reads a bot the server no longer has as removed (review A-I9)", () => {
+    // This test used to assert the opposite: a 404 counted as a failure, so a
+    // bot that was already gone read "We couldn't remove Nova. It still
+    // exists." That is the behaviour the review asked to change.
+    expect(readBotRemovalAnswer({ ok: false, code: "http-404" })).toEqual({ kind: "removed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "AGENT_NOT_FOUND", status: 404 })).toEqual({ kind: "removed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "AGENT_NOT_FOUND" })).toEqual({ kind: "removed" });
+  });
+
+  it("treats everything else as a failure", () => {
     expect(readBotRemovalAnswer({ ok: false, code: "http-502" })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "http-500", status: 500 })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "network" })).toEqual({ kind: "failed" });
     expect(readBotRemovalAnswer(null)).toEqual({ kind: "failed" });
     expect(readBotRemovalAnswer(undefined)).toEqual({ kind: "failed" });
   });
@@ -126,12 +150,46 @@ describe("runBotRemoval", () => {
     expect(remove).toHaveBeenCalledTimes(3);
   });
 
-  it("does not report removed when the server never finishes", async () => {
-    const remove = vi.fn(async () => ({ ok: true, value: { terminal: false } }));
+  it("does not report removed, or failed, when the server never finishes (review A-I9)", async () => {
+    // This test used to expect "error" after `maxRequests` answers of "still
+    // removing". A removal the server accepted is not a failure, so those
+    // answers now have their own allowance and their own outcome.
+    const remove = vi.fn(async () => ({ ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }));
     await expect(
-      runBotRemoval("agt_nova", remove, { sleep: noWait, maxRequests: 5 }),
-    ).resolves.toBe("error");
-    expect(remove).toHaveBeenCalledTimes(5);
+      runBotRemoval("agt_nova", remove, { sleep: noWait, maxRequests: 5, maxWorkingRequests: 9 }),
+    ).resolves.toBe("still-removing");
+    expect(remove).toHaveBeenCalledTimes(9);
+  });
+
+  it("sits through a teardown longer than three minutes and then says removed", async () => {
+    // 36 answers at 5 seconds was the whole allowance. A computer that takes
+    // longer to go was reported as "We couldn't remove Nova. It still exists."
+    let calls = 0;
+    const remove = vi.fn(async () => {
+      calls += 1;
+      return calls <= 60
+        ? { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }
+        : { ok: true, value: { terminal: true, setupState: { phase: "deprovisioned" } } };
+    });
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(61);
+  });
+
+  it("still gives up on a server that stays busy, and counts those apart from a teardown under way", async () => {
+    const answers: unknown[] = [
+      { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } },
+      { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } },
+    ];
+    const remove = vi.fn(async () => answers.shift() ?? { ok: false, code: "STEP_ALREADY_IN_PROGRESS" });
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait, maxRequests: 4 })).resolves.toBe("error");
+    // Two "still removing" answers, then the four busy ones the run allows.
+    expect(remove).toHaveBeenCalledTimes(6);
+  });
+
+  it("says removed when the server no longer has the bot", async () => {
+    const remove = vi.fn(async () => ({ ok: false, reason: "error", code: "http-404", status: 404 }));
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 
   it("does not keep asking when the server will not remove the bot for this person", async () => {
@@ -161,6 +219,7 @@ describe("what the person reads", () => {
     ["failed", "not-allowed"],
     ["failed", "plan-bot"],
     ["failed", "unknown-bot"],
+    ["failed", "still-removing"],
   ];
 
   it("names the bot on every line, in plain words", () => {
@@ -180,6 +239,20 @@ describe("what the person reads", () => {
     expect(botRemovalLine({ name: "Nova", phase: "failed", problem: "error" })).toBe(
       "We couldn't remove Nova. It still exists.",
     );
+  });
+
+  it("says a bot the server is still taking down is on its way out, and never offers to keep it (review A-I9)", () => {
+    const stillRemoving = { name: "Nova", agentUid: "agt_nova", phase: "failed" as const, problem: "still-removing" as const };
+    expect(botRemovalLine(stillRemoving)).toBe("Nova is still being removed. This is taking longer than usual.");
+    expect(canRetryBotRemoval(stillRemoving)).toBe(true);
+    expect(botRemovalRetryLabel(stillRemoving)).toBe("Check again");
+    expect(botRemovalRetryLabel({ problem: "error" })).toBe("Try again");
+    // "Keep Nova" used to be offered here, and it started a waiting screen
+    // for a bot that was being taken down.
+    expect(botRemovalDismissLabel(stillRemoving)).toBe("OK");
+    expect(botRemovalKeepsBot(stillRemoving)).toBe(false);
+    expect(botRemovalKeepsBot({ ...stillRemoving, problem: "error" })).toBe(true);
+    expect(botRemovalKeepsBot({ ...stillRemoving, problem: "not-allowed" })).toBe(false);
   });
 
   it("offers Try again only when asking again can help", () => {

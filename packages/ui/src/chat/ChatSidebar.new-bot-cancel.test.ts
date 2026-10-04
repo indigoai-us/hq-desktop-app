@@ -422,6 +422,65 @@ describe("Cancel for a bot that is starting", () => {
     expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
   });
 
+  it("says removed when the server no longer has the bot (review A-I9)", async () => {
+    // A 404 used to count as a failed request: three tries, then "We couldn't
+    // remove Nova. It still exists." for a bot that was already gone.
+    const removeAgent = vi.fn(async () => ({ ok: false, reason: "error", code: "http-404", status: 404 }));
+    const onbotremoved = vi.fn();
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved });
+    await settle();
+    await startBot("Nova");
+    await cancelAndConfirm();
+    await removalSettled(() => expect(notice()).toBe("Nova was removed."));
+
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(onbotremoved).toHaveBeenCalledWith("agt_nova");
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
+    expect(stored(REMOVED_BOTS_STORAGE_KEY)).toEqual(["agt_nova"]);
+  });
+
+  it("reads a 403 with a code of its own as not allowed, after one request (review A-I9)", async () => {
+    const removeAgent = vi.fn(async () => ({ ok: false, reason: "error", code: "FORBIDDEN", status: 403 }));
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
+    await settle();
+    await startBot("Nova");
+    await cancelAndConfirm();
+    await removalSettled(() => expect(notice()).toContain("Nova was not removed."));
+
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(notice()).toBe(
+      "Nova was not removed. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova. OK",
+    );
+  });
+
+  it("does not call a removal the server is still carrying out a failure, and never restarts that bot (review A-I9)", async () => {
+    // A teardown that outlasted the wait was reported as "It still exists",
+    // and "Keep Nova" then started a waiting screen for a bot on its way out.
+    const removeAgent = vi.fn(async () => ({ ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }));
+    const onbotremoved = vi.fn();
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved });
+    await settle();
+    await startBot("Nova");
+    await cancelAndConfirm();
+    await vi.waitFor(async () => {
+      await settle(2);
+      expect(notice()).toContain("Nova is still being removed.");
+    }, { timeout: 10_000, interval: 20 });
+
+    expect(notice()).toBe("Nova is still being removed. This is taking longer than usual. Check again OK");
+    expect(notice()).not.toContain("still exists");
+    expect(q('[data-testid="new-bot-cancel-dismiss"]')?.textContent?.trim()).toBe("OK");
+    expect(onbotremoved).not.toHaveBeenCalled();
+    expect(stored(OPEN_BOT_REMOVALS_STORAGE_KEY)).toMatchObject([{ agentUid: "agt_nova", phase: "failed", problem: "still-removing" }]);
+
+    // Put away: the bot is not handed a waiting screen or a "waking" row.
+    click('[data-testid="new-bot-cancel-dismiss"]');
+    await settle();
+    expect(q('[data-testid="new-bot-cancel-notice"]')).toBeNull();
+    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+  }, 15_000);
+
   it("clears a finished cancel when the takeover closes", async () => {
     const removeAgent = vi.fn(async () => REMOVED);
     mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });

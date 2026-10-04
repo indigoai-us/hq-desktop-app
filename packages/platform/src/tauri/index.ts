@@ -618,8 +618,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     start: (agentUid) => this.hqProJson("POST", AGENT_PATHS.start(agentUid)),
     retryProvisioning: (agentUid) =>
       this.hqProJson("POST", AGENT_PATHS.retryProvisioning(agentUid)),
+    // A refusal keeps its HTTP status: Cancel in the New Bot flow tells
+    // "already gone" (404) and "not yours to remove" (403) from a failure.
     deprovision: (agentUid, options) =>
-      this.hqProJson(
+      this.hqProRequestWithStatus(
         "DELETE",
         AGENT_PATHS.deprovision(agentUid, options?.confirmDestroyInstanceId),
       ),

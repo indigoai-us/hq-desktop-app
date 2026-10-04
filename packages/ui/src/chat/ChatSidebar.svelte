@@ -1943,13 +1943,14 @@
   /**
    * Put a failed removal away. The bot was not removed, so it goes back to
    * being a bot that is starting: its row and its waiting screen return, and
-   * it hands off to chat when it is ready.
+   * it hands off to chat when it is ready. A bot the server is still taking
+   * down gets no waiting screen back: it is on its way out.
    */
   function keepCancelledBot(id: string): void {
     const removal = botRemovals.find((candidate) => candidate.id === id);
     if (!removal || removal.phase !== "failed") return;
     setBotRemovals(botRemovals.filter((candidate) => candidate.id !== id));
-    if (!removal.agentUid) return;
+    if (!removal.agentUid || removal.problem === "still-removing") return;
     wakingBot = beginWakingSession({
       agentUid: removal.agentUid,
       channelId: removal.channelId,

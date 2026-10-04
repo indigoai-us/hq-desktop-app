@@ -13,6 +13,7 @@
   import {
     botRemovalDismissLabel,
     botRemovalLine,
+    botRemovalRetryLabel,
     canRetryBotRemoval,
     cancelBotConfirmCopy,
     type BotRemoval,
@@ -445,7 +446,7 @@
               class="new-bot-cancel-retry"
               data-testid="new-bot-cancel-retry"
               onclick={() => onretryremoval?.(removal.id)}
-            >Try again</button>
+            >{botRemovalRetryLabel(removal)}</button>
           {/if}
           {#if removal.phase === "failed" && ondismissremoval}
             <button

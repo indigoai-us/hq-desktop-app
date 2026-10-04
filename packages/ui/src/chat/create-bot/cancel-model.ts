@@ -47,8 +47,14 @@ export interface BotRemoval {
 export type BotRemovalBrain = "codex" | "claude" | "grok";
 
 export type BotRemovalProblem =
-  /** The request failed or the server kept working past the wait. Worth another try. */
+  /** The request failed, or the server stayed busy past the wait. Worth another try. */
   | "error"
+  /**
+   * The server accepted the removal and was still taking the bot down when
+   * this window stopped asking. The bot is on its way out: it is not kept,
+   * and it is not shown as a bot that is starting.
+   */
+  | "still-removing"
   /** The server allows only an owner or admin of the company to remove a bot. */
   | "not-allowed"
   /** The bot is the one that comes with the company's plan. The server keeps it while the plan is active. */
@@ -70,13 +76,27 @@ export type RemoveBotRequest = (
 export const REMOVAL_NEEDS_MACHINE_CODE = "AGENTS_V2_BOX_PROTECTED";
 export const REMOVAL_BUSY_CODE = "STEP_ALREADY_IN_PROGRESS";
 export const REMOVAL_PLAN_BOT_CODE = "TEAM_SETUP_AGENT_PROTECTED";
-/** The server's refusal for a caller who is not an owner or admin carries no code of its own. */
+/**
+ * The server's refusal for a caller who is not an owner or admin: an HTTP 403.
+ * A host that keeps the server's own code instead (`FORBIDDEN`) is read by
+ * `status`, or by the shape of the code (see `readBotRemovalAnswer`).
+ */
 export const REMOVAL_NOT_ALLOWED_CODE = "http-403";
 
 /** How long to wait before asking again while the server is still working. */
 export const BOT_REMOVAL_RETRY_MS = 5_000;
-/** Requests one removal run may make before it reports a failure. */
+/**
+ * Requests one removal run may make that the server did not accept (busy,
+ * a machine to name) before it reports a failure.
+ */
 export const BOT_REMOVAL_MAX_REQUESTS = 36;
+/**
+ * Times the server may answer "still removing" before this window stops
+ * asking. Taking a bot's computer down can run well past three minutes, and
+ * a removal the server accepted is not a failure: 240 answers at 5 seconds
+ * is 20 minutes.
+ */
+export const BOT_REMOVAL_MAX_WORKING_REQUESTS = 240;
 /** Failed requests in a row before the run reports a failure. */
 export const BOT_REMOVAL_MAX_FAILURES = 3;
 
@@ -115,12 +135,22 @@ export function readBotRemovalAnswer(result: unknown): BotRemovalAnswer {
     return { kind: "working" };
   }
   const code = text(answer.code);
+  // The HTTP status of the refusal, from the host when it keeps one, else
+  // from an `http-403` style code. A refusal with a code of its own
+  // (`FORBIDDEN`) has no `http-` code, which is why the status is read too.
+  const status =
+    typeof answer.status === "number" ? answer.status : Number(code.match(/^http-(\d{3})$/i)?.[1] ?? NaN);
   if (code === REMOVAL_BUSY_CODE) return { kind: "busy" };
-  if (code === REMOVAL_NOT_ALLOWED_CODE) return { kind: "refused", problem: "not-allowed" };
   if (code === REMOVAL_PLAN_BOT_CODE) return { kind: "refused", problem: "plan-bot" };
   const instanceId = text(answer.instanceId);
   if (code === REMOVAL_NEEDS_MACHINE_CODE && instanceId) {
     return { kind: "name-machine", instanceId };
+  }
+  // The server no longer has the bot. That is what the person asked for, so
+  // it is not reported as a removal that failed.
+  if (status === 404 || /(^|_)NOT_FOUND$/i.test(code)) return { kind: "removed" };
+  if (status === 403 || code === REMOVAL_NOT_ALLOWED_CODE || /(^|_)(FORBIDDEN|NOT_ALLOWED)$/i.test(code)) {
+    return { kind: "refused", problem: "not-allowed" };
   }
   return { kind: "failed" };
 }
@@ -130,6 +160,8 @@ export interface BotRemovalRunOptions {
   sleep?: (ms: number) => Promise<void>;
   retryMs?: number;
   maxRequests?: number;
+  /** How many "still removing" answers to sit through. */
+  maxWorkingRequests?: number;
   maxFailures?: number;
 }
 
@@ -142,7 +174,11 @@ export type BotRemovalOutcome = "removed" | BotRemovalProblem;
 /**
  * Ask the server to remove a bot and keep asking until it says the bot is
  * gone, or until the run gives up. Resolves "removed" only on the server's
- * word. Never throws.
+ * word (which includes a server that no longer has the bot). Never throws.
+ *
+ * A removal the server accepted and is still carrying out is not a failure.
+ * Those answers have their own, longer allowance, and a run that outlasts it
+ * resolves "still-removing", never "error".
  */
 export async function runBotRemoval(
   agentUid: string,
@@ -154,10 +190,14 @@ export async function runBotRemoval(
   const sleep = options.sleep ?? defaultSleep;
   const retryMs = options.retryMs ?? BOT_REMOVAL_RETRY_MS;
   const maxRequests = Math.max(1, options.maxRequests ?? BOT_REMOVAL_MAX_REQUESTS);
+  const maxWorking = Math.max(1, options.maxWorkingRequests ?? BOT_REMOVAL_MAX_WORKING_REQUESTS);
   const maxFailures = Math.max(1, options.maxFailures ?? BOT_REMOVAL_MAX_FAILURES);
   let machine: string | null = null;
   let failures = 0;
-  for (let request = 0; request < maxRequests; request += 1) {
+  /** Requests the server did not accept. A "still removing" answer is not one of them. */
+  let asked = 0;
+  let working = 0;
+  while (asked < maxRequests) {
     let answer: BotRemovalAnswer;
     try {
       answer = readBotRemovalAnswer(
@@ -168,6 +208,15 @@ export async function runBotRemoval(
     }
     if (answer.kind === "removed") return "removed";
     if (answer.kind === "refused") return answer.problem;
+    if (answer.kind === "working") {
+      // The server took the removal and is carrying it out.
+      failures = 0;
+      working += 1;
+      if (working >= maxWorking) return "still-removing";
+      await sleep(retryMs);
+      continue;
+    }
+    asked += 1;
     if (answer.kind === "name-machine") {
       // The same machine refused twice: naming it did not help.
       if (machine === answer.instanceId) return "error";
@@ -207,25 +256,43 @@ export function botRemovalLine(removal: Pick<BotRemoval, "name" | "phase" | "pro
       if (removal.problem === "unknown-bot") {
         return `We couldn't remove ${name}. It still exists. Remove it from Settings, under Bots.`;
       }
+      if (removal.problem === "still-removing") {
+        return `${name} is still being removed. This is taking longer than usual.`;
+      }
       return `We couldn't remove ${name}. It still exists.`;
   }
 }
 
-/** Asking again can help only when the request itself failed. */
+/** Asking again can help when the request itself failed, or the server had not finished. */
 export function canRetryBotRemoval(removal: Pick<BotRemoval, "phase" | "agentUid" | "problem">): boolean {
+  const problem = removal.problem ?? "error";
   return (
     removal.phase === "failed" &&
     removal.agentUid.trim().length > 0 &&
-    (removal.problem ?? "error") === "error"
+    (problem === "error" || problem === "still-removing")
   );
 }
 
+/** What Try again says for this removal: asking a server that is still at it is a check. */
+export function botRemovalRetryLabel(removal: Pick<BotRemoval, "problem">): string {
+  return removal.problem === "still-removing" ? "Check again" : "Try again";
+}
+
 /**
- * What the person presses to put a failed removal away. The bot stays either
- * way. When asking again could still remove it, the button says the bot is kept.
+ * True when putting a failed removal away leaves a bot that goes on starting.
+ * Not so for a bot the server is in the middle of taking down: that one is
+ * on its way out, and it must not get a waiting screen back.
+ */
+export function botRemovalKeepsBot(removal: Pick<BotRemoval, "phase" | "agentUid" | "problem">): boolean {
+  return canRetryBotRemoval(removal) && removal.problem !== "still-removing";
+}
+
+/**
+ * What the person presses to put a failed removal away. When asking again
+ * could still remove a bot that is otherwise kept, the button says so.
  */
 export function botRemovalDismissLabel(removal: Pick<BotRemoval, "name" | "phase" | "agentUid" | "problem">): string {
-  return canRetryBotRemoval(removal) ? `Keep ${removal.name.trim() || "it"}` : "OK";
+  return botRemovalKeepsBot(removal) ? `Keep ${removal.name.trim() || "it"}` : "OK";
 }
 
 /** True while the bot may still exist on the server. */
@@ -282,7 +349,7 @@ export function cancelBotConfirmCopy(input: { name: string; companyLabel?: strin
 export const OPEN_BOT_REMOVALS_STORAGE_KEY = "hq.chat.botRemovals.v1";
 export const REMOVED_BOTS_STORAGE_KEY = "hq.chat.removedBots.v1";
 
-const PROBLEMS: readonly BotRemovalProblem[] = ["error", "not-allowed", "plan-bot", "unknown-bot"];
+const PROBLEMS: readonly BotRemovalProblem[] = ["error", "still-removing", "not-allowed", "plan-bot", "unknown-bot"];
 
 /**
  * Cancelled bots that still exist, kept across restarts so a removal the app

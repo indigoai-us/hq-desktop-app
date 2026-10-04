@@ -201,3 +201,19 @@ describe("a refused agent status read keeps its HTTP status (review A-I4)", () =
     await expect(sync.agents.getStatus("agt_1")).resolves.toEqual({ ok: true, value: { setupState: { phase: "ready" } } });
   });
 });
+
+describe("a refused bot removal keeps its HTTP status (review A-I9)", () => {
+  // Cancel in the New Bot flow reads "already gone" (404) and "not yours to
+  // remove" (403) from the status. A 403 whose body has a code of its own
+  // arrives under that code, so the code alone could not say 403.
+  it.each([
+    [404, '{"error":"Not found"}', "http-404"],
+    [403, '{"error":"Forbidden","code":"FORBIDDEN"}', "FORBIDDEN"],
+  ])("on %i with body %s", async (status, body, code) => {
+    const invoke = async () => ({ status, body });
+    const sync = createSyncPlatformAdapter({ invoke, requestPolicy: { throttle: null } });
+    await expect(sync.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
+    const tauri = new TauriPlatformAdapter({ invoke });
+    await expect(tauri.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
+  });
+});
