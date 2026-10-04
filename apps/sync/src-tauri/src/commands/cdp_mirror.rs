@@ -717,10 +717,11 @@ pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize>
     }
 }
 
-async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
+pub(crate) async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
     use std::sync::atomic::Ordering;
-    // The access-token resolver follows current HOME, so leave rows in place
-    // rather than sending them under a different profile's identity.
+    // Leave the rows when this file is no longer the current install. The
+    // post reads the token beside `path`, so a resolver home that has moved
+    // cannot deliver or clear them under another profile.
     if !flush_path_matches_current_home(&path) {
         return 0;
     }
@@ -734,7 +735,7 @@ async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
         let Some(key) = row.get("idempotencyKey").and_then(Value::as_str) else {
             continue;
         };
-        if super::telemetry::post_held_auth_row(&row).await.is_err() {
+        if super::telemetry::post_held_auth_row(&row, &path).await.is_err() {
             crate::util::logfile::log("cdp", "WARN auth_held send_failed_held_for_retry");
             break;
         }

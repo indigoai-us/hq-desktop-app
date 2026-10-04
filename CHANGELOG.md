@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Held sign-in receipts now read the sign-in token from the same home directory they were held in, so a session in another home directory can no longer send or drop them.
 - First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
 - Desktop setup failure records now show whether a dependency timeout retry ran and how it ended, using a bounded dependency label.
 
