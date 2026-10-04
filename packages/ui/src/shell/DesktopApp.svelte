@@ -4457,7 +4457,10 @@
    * answers show in line, whether or not it posted them as thread replies.
    */
   function timelineDisplayFor(row: ConversationRow | null | undefined): TimelineDisplayOptions {
-    return { inlineReplies: row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_") };
+    // The viewer's uid goes with it: a row with no audience counts as the
+    // app's own hidden request only when this person sent it (live-messages.ts,
+    // `isAppRequestRow`). A bot's row is never hidden, whatever it says.
+    return { inlineReplies: row?.kind === "dm" && (row.personUid ?? "").startsWith("agt_"), selfUid: self?.uid ?? null };
   }
 
   /** Same messages (by reference) in the same order — nothing to repaint. */
@@ -4814,7 +4817,7 @@
     // One flat exchange with a bot: whichever path put a row on the timeline
     // (a fetched page, the host's stored thread, a live update), replies show
     // in line and rows written for the bot only are left out.
-    if (timelineDisplayFor(selectedRow).inlineReplies) return inlineReplyRows(rows);
+    if (timelineDisplayFor(selectedRow).inlineReplies) return inlineReplyRows(rows, { selfUid: self?.uid ?? null });
     if (Object.keys(replyCountOverride).length === 0) return rows;
     return rows.map((msg) =>
       replyCountOverride[msg.eventId] != null
