@@ -721,6 +721,31 @@ describe("only macOS-specific work runs on a macOS runner", () => {
   });
 });
 
+describe("Rust macOS path scope preserves the required check", () => {
+  it("fails open and keeps full coverage on main and edited PR events", () => {
+    const scope = jobBody(ciWorkflow, "rust-macos-scope");
+    const macos = jobConfig(ciWorkflow, "rust-macos");
+
+    expect(scope).toContain(
+      "if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}",
+    );
+    expect(scope).toContain("fetch-depth: 0");
+    expect(scope).toContain("EVENT_ACTION: ${{ github.event.action }}");
+    expect(scope).toContain('if [ "$EVENT_ACTION" = "edited" ]; then');
+    expect(scope).toContain('echo "relevant=true" >>"$GITHUB_OUTPUT"');
+    expect(scope).toContain("git diff --name-only");
+    expect(scope).toContain("scripts/macos-check-relevant.mjs");
+    expect(scope).toContain("could not diff pull request — running the Rust macOS gate");
+
+    expect(macos).toContain("needs: [rust-macos-scope]");
+    expect(macos).toContain("always()");
+    expect(macos).toContain("needs.rust-macos-scope.result != 'success'");
+    expect(macos).toContain("needs.rust-macos-scope.outputs.relevant != 'false'");
+    expect(macos).toContain("github.event_name != 'pull_request'");
+    expect(macos).toContain("name: Rust tests (macOS)");
+  });
+});
+
 describe("the shell boot matrix is a cheap required PR gate", () => {
   // v0.10.178 froze every signed-in non-Indigo user with an empty inbox on
   // an infinite conversation skeleton. The matrix mounts HqWorkWorkShell

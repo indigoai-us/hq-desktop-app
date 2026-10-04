@@ -12,7 +12,7 @@ use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -506,15 +506,23 @@ fn process_registry() -> &'static Arc<Mutex<ProcessRegistry>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(ProcessRegistry::default())))
 }
 
+/// Recover a mutex after a panic in an earlier critical section.
+///
+/// `into_inner` leaves the poison flag set. Every remaining production caller
+/// of these bookkeeping mutexes goes through this helper, so a later lock
+/// recovers instead of panicking. Callers only read, or they finish a HashMap
+/// insert or remove or a complete field assignment before releasing the guard.
+fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Take a registry whose data is still a valid map after the previous holder
 /// panicked. Callers use this only for a read or a single insert, remove, or
 /// flag write.
 fn recover_registry(
     registry: &Mutex<ProcessRegistry>,
 ) -> std::sync::MutexGuard<'_, ProcessRegistry> {
-    registry
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock_recover(registry)
 }
 
 fn cancellation_records() -> &'static Arc<(Mutex<CancellationRecordsState>, Condvar)> {
@@ -533,11 +541,34 @@ pub fn cancellation_record_for_generation(
     handle: &str,
     generation: u64,
 ) -> Option<CancellationRecord> {
-    let key = (handle.to_string(), generation);
     let (records, publication_completed) = &**cancellation_records();
-    let state = records.lock().unwrap();
+    cancellation_record_for_generation_in(
+        records,
+        publication_completed,
+        handle,
+        generation,
+        CANCELLATION_PUBLICATION_TIMEOUT,
+    )
+}
+
+fn cancellation_record_for_generation_in(
+    records: &Mutex<CancellationRecordsState>,
+    publication_completed: &Condvar,
+    handle: &str,
+    generation: u64,
+    timeout: Duration,
+) -> Option<CancellationRecord> {
+    let key = (handle.to_string(), generation);
+    let state = lock_recover(records);
+    // `into_inner` leaves the poison flag set. `wait_timeout_while` returns
+    // that flag as soon as it actually waits, which would abandon this loop
+    // before the predicate or the timeout. The maps are already consistent
+    // here (every writer finishes a HashMap insert or remove), so clear the
+    // flag and keep the wait unchanged. A panic while this wait has released
+    // the guard poisons the mutex again, and the Result below still reports it.
+    records.clear_poison();
     let (state, timeout) = publication_completed
-        .wait_timeout_while(state, CANCELLATION_PUBLICATION_TIMEOUT, |state| {
+        .wait_timeout_while(state, timeout, |state| {
             state.pending_publications.contains(&key)
         })
         .unwrap();
@@ -557,9 +588,18 @@ pub fn cancellation_record_for_generation(
 }
 
 fn clear_cancellation_record(handle: &str, generation: u64) {
-    let key = (handle.to_string(), generation);
     let (records, publication_completed) = &**cancellation_records();
-    let mut state = records.lock().unwrap();
+    clear_cancellation_record_in(records, publication_completed, handle, generation);
+}
+
+fn clear_cancellation_record_in(
+    records: &Mutex<CancellationRecordsState>,
+    publication_completed: &Condvar,
+    handle: &str,
+    generation: u64,
+) {
+    let key = (handle.to_string(), generation);
+    let mut state = lock_recover(records);
     state.records.remove(&key);
     state.pending_publications.remove(&key);
     publication_completed.notify_all();
@@ -573,9 +613,18 @@ fn begin_cancellation_publication(
     generation: u64,
     cause: Option<SyncCancelCause>,
 ) -> (bool, bool) {
-    let key = (handle.to_string(), generation);
     let (records, _) = &**cancellation_records();
-    let mut state = records.lock().unwrap();
+    begin_cancellation_publication_in(records, handle, generation, cause)
+}
+
+fn begin_cancellation_publication_in(
+    records: &Mutex<CancellationRecordsState>,
+    handle: &str,
+    generation: u64,
+    cause: Option<SyncCancelCause>,
+) -> (bool, bool) {
+    let key = (handle.to_string(), generation);
+    let mut state = lock_recover(records);
     let created = !state.records.contains_key(&key);
     // Claim the publication cycle first. Only the actor that owns it may stamp a
     // cause: a concurrent non-owner (e.g. the heartbeat watchdog racing an
@@ -594,9 +643,25 @@ fn begin_cancellation_publication(
 }
 
 fn complete_cancellation_publication(handle: &str, generation: u64, observed_effect: bool) -> bool {
-    let key = (handle.to_string(), generation);
     let (records, publication_completed) = &**cancellation_records();
-    let mut state = records.lock().unwrap();
+    complete_cancellation_publication_in(
+        records,
+        publication_completed,
+        handle,
+        generation,
+        observed_effect,
+    )
+}
+
+fn complete_cancellation_publication_in(
+    records: &Mutex<CancellationRecordsState>,
+    publication_completed: &Condvar,
+    handle: &str,
+    generation: u64,
+    observed_effect: bool,
+) -> bool {
+    let key = (handle.to_string(), generation);
+    let mut state = lock_recover(records);
     if let Some(record) = state.records.get_mut(&key) {
         record.termination_effected |= observed_effect;
     }
@@ -610,9 +675,25 @@ fn complete_cancellation_publication(handle: &str, generation: u64, observed_eff
 }
 
 fn abandon_cancellation_publication(handle: &str, generation: u64, remove_record: bool) {
-    let key = (handle.to_string(), generation);
     let (records, publication_completed) = &**cancellation_records();
-    let mut state = records.lock().unwrap();
+    abandon_cancellation_publication_in(
+        records,
+        publication_completed,
+        handle,
+        generation,
+        remove_record,
+    );
+}
+
+fn abandon_cancellation_publication_in(
+    records: &Mutex<CancellationRecordsState>,
+    publication_completed: &Condvar,
+    handle: &str,
+    generation: u64,
+    remove_record: bool,
+) {
+    let key = (handle.to_string(), generation);
+    let mut state = lock_recover(records);
     state.pending_publications.remove(&key);
     if remove_record {
         state.records.remove(&key);
@@ -713,19 +794,19 @@ pub fn try_register_handle_gen(handle: &str) -> Option<u64> {
     try_register_handle_gen_in(process_registry(), handle)
 }
 
-/// Reserve a generation. A poisoned registry still panics here.
+/// Reserve a generation. A poisoned registry is recovered here.
 ///
-/// `spawn_process` reserves, then `Command::spawn`s, then attaches. Attach
-/// writes the pid and then either the cancelled flag or a job handle.
-/// `deregister_generation` moves that entry between the active and retired
-/// maps. Those steps are not single updates, so recovering them could continue
-/// from a half-written entry. Recovering only this reservation is worse: the
-/// child is already alive when attach panics, Unix `Child`'s drop neither
-/// kills nor reaps it, and the reservation stays registered. Panicking before
-/// the spawn is the same behavior as main.
+/// The only write under the lock is one vacant insert of a complete
+/// `ProcessEntry`. The generation counter bumps before that insert; a panic
+/// between the two burns a generation and leaves no entry. No child exists
+/// yet. Attach and deregister recover the same way: each write is a field
+/// assignment or one map insert or remove, so a panic cannot leave a
+/// half-updated map. A panic after `active.remove` and before `retired.insert`
+/// drops that local entry; both maps stay consistent and the value cannot be
+/// reconstructed.
 fn try_register_handle_gen_in(registry: &Mutex<ProcessRegistry>, handle: &str) -> Option<u64> {
     use std::collections::hash_map::Entry;
-    let mut reg = registry.lock().unwrap();
+    let mut reg = lock_recover(registry);
     if UPDATE_QUIESCE_REQUESTED.load(Ordering::Acquire) {
         return None;
     }
@@ -779,7 +860,7 @@ fn register_process_gen_with_containment(
 ) -> u64 {
     #[cfg(target_os = "windows")]
     let process_start_time = windows_process_creation_time(pid);
-    let mut reg = process_registry().lock().unwrap();
+    let mut reg = lock_recover(process_registry());
     if let Some(entry) = reg.active.get_mut(handle) {
         entry.pid = Some(pid);
         #[cfg(target_os = "windows")]
@@ -846,7 +927,7 @@ fn register_process_for_generation_with_containment_in(
 ) -> ProcessAttachOutcome {
     #[cfg(target_os = "windows")]
     let process_start_time = windows_process_creation_time(pid);
-    let mut registry = registry.lock().unwrap();
+    let mut registry = lock_recover(registry);
     let Some(entry) = registry
         .active
         .get_mut(handle)
@@ -1001,7 +1082,7 @@ fn deregister_generation_in(
     generation: u64,
 ) -> bool {
     let (removed, matched) = {
-        let mut reg = registry.lock().unwrap();
+        let mut reg = lock_recover(registry);
         let active_matches = reg
             .active
             .get(handle)
@@ -3363,7 +3444,7 @@ fn kill_registered_child_directly_or_confirm_exited(
     match child.kill() {
         Ok(()) => Ok(false),
         Err(kill_error) => {
-            let mut registry = process_registry().lock().unwrap();
+            let mut registry = lock_recover(process_registry());
             match child.try_wait() {
                 Ok(Some(_)) => {
                     if let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation)
@@ -3609,7 +3690,7 @@ fn wait_for_terminal_status(
             );
             loop {
                 let still_running = {
-                    let mut registry = process_registry().lock().unwrap();
+                    let mut registry = lock_recover(process_registry());
                     match child.try_wait() {
                         Ok(None) => {
                             run_test_degraded_wait_hook(handle);
@@ -4204,7 +4285,7 @@ fn dispatch_signal_checked_with<F>(
 where
     F: FnOnce(Pid, Signal) -> Result<(), nix::errno::Errno>,
 {
-    let mut registry = process_registry().lock().unwrap();
+    let mut registry = lock_recover(process_registry());
     let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation) else {
         return SignalDispatch::RefusedStale;
     };
@@ -4221,7 +4302,7 @@ fn dispatch_cancelled_checked(
     pid: u32,
     signal_to_send: Signal,
 ) -> SignalDispatch {
-    let mut registry = process_registry().lock().unwrap();
+    let mut registry = lock_recover(process_registry());
     let Some(entry) = entry_for_generation_mut(&mut registry, handle, generation) else {
         return SignalDispatch::RefusedStale;
     };
@@ -4335,7 +4416,7 @@ fn cancel_registered_generation(
 fn cancel_generation_os(handle: &str, generation: u64, sigkill_delay: Duration) -> Option<bool> {
     #[cfg(target_os = "windows")]
     {
-        let mut registry = process_registry().lock().unwrap();
+        let mut registry = lock_recover(process_registry());
         let entry = entry_for_generation_mut(&mut registry, handle, generation)?;
         if entry.signal_authority_revoked {
             return None;
@@ -4376,7 +4457,7 @@ fn cancel_generation_os(handle: &str, generation: u64, sigkill_delay: Duration) 
         // one registry lock. Releasing the lock before dispatch would let the
         // wait owner reap and free this numeric process-group identity first.
         let (pid, outcome) = {
-            let mut registry = process_registry().lock().unwrap();
+            let mut registry = lock_recover(process_registry());
             let entry = registry
                 .active
                 .get_mut(handle)
@@ -8375,6 +8456,7 @@ mod process_output_backpressure_tests;
 mod lock_poison_recovery_tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::time::Duration;
 
     fn poison_mutex<T>(mutex: &Mutex<T>) {
         let panicked = catch_unwind(AssertUnwindSafe(|| {
@@ -8430,44 +8512,163 @@ mod lock_poison_recovery_tests {
         assert!(!cancellation_record_present(&records, handle, generation));
     }
 
+    /// The reservation used to panic and wedge every later spawn. It now
+    /// returns, and this path still does not call `Command::spawn`: it only
+    /// checks the registry bookkeeping around that reservation.
     #[test]
-    fn poisoned_reserve_does_not_spawn_or_leave_a_registration() {
+    fn poisoned_reserve_recovers_without_spawning() {
         let registry = Mutex::new(ProcessRegistry::default());
         let handle = "poison-spawn";
         poison_mutex(&registry);
 
-        let mut spawned = false;
-        let panicked = catch_unwind(AssertUnwindSafe(|| {
-            let Some(generation) = try_register_handle_gen_in(&registry, handle) else {
-                return;
-            };
-            spawned = true;
-            let mut containment = ChildContainment::default();
-            let _attached = register_process_for_generation_with_containment_in(
+        let generation = try_register_handle_gen_in(&registry, handle)
+            .expect("reservation returns after a poisoned registry");
+        assert!(is_registered_in(&registry, handle));
+        assert_eq!(lookup_pid_in(&registry, handle), None);
+
+        let mut containment = ChildContainment::default();
+        assert_eq!(
+            register_process_for_generation_with_containment_in(
                 &registry,
                 handle,
                 generation,
                 1,
                 &mut containment,
-            );
-            let _removed = deregister_generation_in(&registry, handle, generation);
-        }));
+            ),
+            ProcessAttachOutcome::Attached
+        );
+        assert!(deregister_generation_in(&registry, handle, generation));
+        assert!(!is_registered_in(&registry, handle));
+        assert!(
+            registered_processes_including_retired_in(&registry)
+                .iter()
+                .any(|process| process.handle == handle && process.generation == generation),
+            "an attached generation with live signal authority stays retired"
+        );
+    }
+
+    #[test]
+    fn try_register_handle_gen_and_spawn_register_survive_poison() {
+        let registry = Mutex::new(ProcessRegistry::default());
+        let handle = "poison-spawn-recover";
+        poison_mutex(&registry);
+
+        let generation = try_register_handle_gen_in(&registry, handle)
+            .expect("try_register_handle_gen returns after a poisoned registry");
+        assert!(is_registered_in(&registry, handle));
+        assert_eq!(lookup_pid_in(&registry, handle), None);
+        assert_eq!(
+            generation_for_handle_in(&registry, handle),
+            Some(generation)
+        );
+
+        let mut containment = ChildContainment::default();
+        let attached = register_process_for_generation_with_containment_in(
+            &registry,
+            handle,
+            generation,
+            4242,
+            &mut containment,
+        );
+        assert_eq!(attached, ProcessAttachOutcome::Attached);
+        assert_eq!(lookup_pid_in(&registry, handle), Some(4242));
 
         assert!(
-            panicked.is_err(),
-            "reserve must panic while attach and cleanup still refuse a poisoned registry"
+            deregister_generation_in(&registry, handle, generation),
+            "deregister returns after a poisoned registry"
         );
-        assert!(!spawned, "no child is spawned when the reservation panics");
-        let guard = registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(!is_registered_in(&registry, handle));
         assert!(
-            !guard.active.contains_key(handle),
-            "a panicked reservation must not leave an active entry"
+            registered_processes_including_retired_in(&registry)
+                .iter()
+                .any(|process| process.handle == handle && process.generation == generation),
+            "the attached generation stays retired until signal authority is revoked"
         );
+    }
+
+    #[test]
+    fn cancellation_publication_survives_a_poisoned_record_mutex() {
+        let records = Mutex::new(CancellationRecordsState::default());
+        let publication_completed = Condvar::new();
+        let handle = "poison-cancel";
+        let generation = 9001;
+        poison_mutex(&records);
+
+        let (owns_publication, created) = begin_cancellation_publication_in(
+            &records,
+            handle,
+            generation,
+            Some(SyncCancelCause::UserStop),
+        );
+        assert!(owns_publication && created);
+
+        assert!(complete_cancellation_publication_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            true,
+        ));
+        let record = cancellation_record_for_generation_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            CANCELLATION_PUBLICATION_TIMEOUT,
+        )
+        .expect("published record is readable after poison");
+        assert_eq!(record.cause, Some(SyncCancelCause::UserStop));
+        assert!(record.termination_effected);
+
+        clear_cancellation_record_in(&records, &publication_completed, handle, generation);
+        assert!(cancellation_record_for_generation_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            CANCELLATION_PUBLICATION_TIMEOUT,
+        )
+        .is_none());
+
+        poison_mutex(&records);
+        begin_cancellation_publication_in(&records, handle, generation, None);
+        abandon_cancellation_publication_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            true,
+        );
+        assert!(cancellation_record_for_generation_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            CANCELLATION_PUBLICATION_TIMEOUT,
+        )
+        .is_none());
+
+        // Pending is still set, so the reader has to wait. On a poisoned
+        // mutex that wait used to return the poison error and panic.
+        poison_mutex(&records);
+        begin_cancellation_publication_in(
+            &records,
+            handle,
+            generation,
+            Some(SyncCancelCause::UserStop),
+        );
+        let in_flight = cancellation_record_for_generation_in(
+            &records,
+            &publication_completed,
+            handle,
+            generation,
+            Duration::from_millis(20),
+        )
+        .expect("an in-flight publication is readable after the wait");
+        assert_eq!(in_flight.cause, Some(SyncCancelCause::UserStop));
         assert!(
-            guard.retired.is_empty(),
-            "a panicked reservation must not leave a retired entry"
+            !in_flight.termination_effected,
+            "a timed-out in-flight publication stays non-effective"
         );
     }
 }

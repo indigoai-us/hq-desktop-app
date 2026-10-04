@@ -124,8 +124,8 @@ The fork's `cfg(windows)` runtime behavior was ported and the mac path gated `cf
   popover taskbar anchoring, Action-Center notifications). CI proves compile, not behavior.
 - [ ] **Delete `imports/hq-sync-win/`** — keep it as the Windows reference until the
   device smoke test confirms the runtime impls; it is safely recoverable from the
-  original repo and git history when removed. (`imports/hq-installer-react/` stays — it
-  is the source for the later React→Svelte onboarding port.)
+  original repo and git history when removed. The React installer port source was
+  removed after its readers moved into apps/sync.
 - [ ] **Stricter Windows CI** — enable clippy `-D warnings` + `cargo test` in
   `windows-check.yml` once the existing warnings are cleared (would be red today).
 

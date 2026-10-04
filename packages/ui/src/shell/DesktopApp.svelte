@@ -847,13 +847,6 @@
     self?: SelfIdentity | null;
     /** Native account partition for renderer persistence and async guards. */
     tenantAccountId?: string | null;
-    /**
-     * Agents the user has a real conversation with. Creating an agent
-     * announces it to the whole company, so an `agt_*` rail row stays hidden
-     * until it messages the user; a host with its own record of past agent
-     * conversations seeds it here.
-     */
-    engagedAgentUids?: readonly string[] | null;
     /** Monotonic native auth-session generation. A new value remounts the host. */
     tenantGeneration?: number;
     /**
@@ -1096,7 +1089,6 @@
     onsignin,
     self = null,
     tenantAccountId = null,
-    engagedAgentUids = null,
     tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
@@ -7233,7 +7225,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -7251,7 +7243,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchDmThread(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -11162,7 +11154,6 @@
           selectedId={selectedRow?.id ?? null}
           scopeUid={tenantCompanyId}
           {tenantAccountId}
-          {engagedAgentUids}
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
