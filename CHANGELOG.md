@@ -14,6 +14,8 @@ The release moves it under the version it ships in.
 - First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
 - Desktop setup failure records now show whether a dependency timeout retry ran and how it ended, using a bounded dependency label.
 
+- An updater restart with a previously completed install and temporarily unresolved local tools now resumes setup repair instead of reopening first-run onboarding.
+
 ## [0.10.387] — 2026-10-04
 
 - Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping. (This fix was listed under 0.10.386 by mistake; it ships in this release.)
