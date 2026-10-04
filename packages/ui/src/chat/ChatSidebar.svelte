@@ -71,7 +71,7 @@
   import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
-  import { botHandle, type BotRuntime } from "./create-bot/create-bot-model.js";
+  import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
@@ -1063,6 +1063,27 @@
         )
       : [],
   );
+  /**
+   * The one company the sidebar is showing, or "" when it shows all of them
+   * (or the person's own space).
+   */
+  const scopedCompanyUid = $derived(scope === "all" || scope === "personal" ? "" : scope.trim());
+  /**
+   * The companies "New bot" opens the full-window flow for, from where the
+   * person stands. Scoped to one company, that company alone and only when
+   * it has the flag: a person looking at a company without it gets the "+"
+   * window's own flow, and is never sent to make a bot in another company.
+   * With no single company in view, every company that has the flag.
+   */
+  const newBotTargets = $derived<ScopeCompany[]>(
+    scopedCompanyUid
+      ? newBotCompanies.filter((company) => company.companyUid === scopedCompanyUid)
+      : newBotCompanies,
+  );
+  /** True when the person belongs to more than one company. The takeover then names its target. */
+  const inSeveralCompanies = $derived(
+    new Set([...agentCompanies, ...scopeCompanies].map((company) => company.companyUid)).size > 1,
+  );
   /** A string, so the report below runs when the list changes and not on every recompute. */
   const agentCompanyKey = $derived(
     agentCompanies.map((company) => company.companyUid).join("\n"),
@@ -1840,7 +1861,22 @@
   const takeoverCompanies = $derived(
     newBotOpen && newBotCompaniesAtOpen?.length
       ? newBotCompaniesAtOpen
-      : newBotCompanies,
+      : newBotTargets,
+  );
+  /**
+   * What the takeover's second button says. It opens the "+" window's bot
+   * step: local bots, and cloud bots in the companies the takeover does not
+   * list.
+   */
+  const takeoverOtherWayLabel = $derived(
+    newBotOtherWayLabel({
+      local: !!oncreatebot,
+      otherCompanies:
+        !!oncreateagent &&
+        agentCompanies.some(
+          (company) => !takeoverCompanies.some((offered) => offered.companyUid === company.companyUid),
+        ),
+    }),
   );
   $effect(() => {
     if (newBotOpen) return;
@@ -1855,7 +1891,7 @@
    */
   function openNewBotTakeover(): void {
     createOpen = false;
-    newBotCompaniesAtOpen = newBotCompanies;
+    newBotCompaniesAtOpen = newBotTargets;
     openWakingKey = null;
     newBotOpen = true;
   }
@@ -4503,7 +4539,7 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
-      onnewcloudbot={newBotCompanies.length > 0 ? openNewBotTakeover : null}
+      onnewcloudbot={newBotTargets.length > 0 ? openNewBotTakeover : null}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {agentCompanies}
@@ -4532,9 +4568,11 @@
     <NewBotTakeover
       canCreateLocalBot={!!oncreatebot}
       oncancel={cancelNewBotTakeover}
-      onopenlocal={oncreatebot ? openLocalBotFromTakeover : null}
+      onopenlocal={takeoverOtherWayLabel ? openLocalBotFromTakeover : null}
+      otherWayLabel={takeoverOtherWayLabel}
+      nameCompany={inSeveralCompanies}
       companies={takeoverCompanies}
-      currentCompanyUid={scopeUid}
+      currentCompanyUid={scopedCompanyUid || null}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
       {loadClaudeProviderFlag}

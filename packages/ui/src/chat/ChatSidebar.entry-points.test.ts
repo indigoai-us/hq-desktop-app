@@ -1193,3 +1193,239 @@ describe("ChatSidebar company switcher — in-modal company creation", () => {
     expect(oncreatecompany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Review G-1: "New bot" follows where the person stands.
+ *
+ * One company with the flag used to send "New bot" to the takeover for every
+ * company. A person in Indigo (flag on) and Acme (flag off), looking at
+ * Acme, got the takeover, which listed Indigo alone, skipped the company
+ * step without naming it, and made a billed bot in Indigo.
+ */
+describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)", () => {
+  const GLOBEX = workspace("globex", "Globex", "cmp_globex");
+  const created = async (): Promise<EntryPointResult> => ({
+    ok: true,
+    target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_nova" },
+  });
+  const STATUS = async () => ({ ok: true, value: { setupState: { phase: "creating" } } });
+
+  /** Press "+" then "New bot". */
+  async function pressNewBot(): Promise<void> {
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+  }
+
+  async function nameTakeoverBot(name: string): Promise<void> {
+    const field = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    field.value = name;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+  }
+
+  function targetLine(): string {
+    return q('[data-testid="new-bot-target-company"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  }
+
+  it("looking at a company without the flag, New bot never creates in the company that has it", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      scopeUid: "cmp_acme",
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+
+    // Whatever opened, go through it the way a person would: name, then create.
+    if (q('[data-testid="new-bot-name"]')) {
+      await nameTakeoverBot("Nova");
+      q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.click();
+      await settle(10);
+    }
+    // No bot was made in Indigo, the company the person was not looking at.
+    expect(oncreatenewbot.mock.calls.map((call) => call[0])).toEqual([]);
+
+    // What opened is the "+" window's own flow, as on main.
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+
+    // And its Cloud create carries the company the person picks there.
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledTimes(1);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ runtime: "codex" }));
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+  });
+
+  it("looking at a company with the flag, opens the takeover for that company and names it before Create", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      // Globex has the flag too, and is not the company in view.
+      companies: [INDIGO, ACME, GLOBEX],
+      scopeUid: "cmp_indigo",
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo", "cmp_globex"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    // The way to another company, or to a bot on this computer, says what it is for.
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create in another company");
+
+    await nameTakeoverBot("Nova");
+    // One target, so nothing to pick. It is named where Create is pressed.
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+    expect(oncreateagent).not.toHaveBeenCalled();
+  });
+
+  it("with all companies in view and one with the flag, the takeover names that company and offers the way to the others", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      oncreatebot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Another company or a local bot");
+
+    await nameTakeoverBot("Nova");
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+    expect(oncreateagent).not.toHaveBeenCalled();
+  });
+
+  it("the way to the others opens the '+' window's bot step, where Acme can be chosen", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await pressNewBot();
+    click('[data-testid="new-bot-takeover-local"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ runtime: "codex" }));
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+  });
+
+  it("with all companies in view and several with the flag, the company is chosen and named on the last step", async () => {
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME, GLOBEX],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo", "cmp_globex"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    await nameTakeoverBot("Nova");
+    click('[data-testid="new-bot-continue-brain"]');
+    await settle();
+
+    // Only the companies with the flag are listed, and the line follows the pick.
+    expect(q('[data-testid="new-bot-company-grid"]')?.textContent).not.toContain("Acme");
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-company-uid="cmp_globex"]');
+    await settle();
+    expect(targetLine()).toBe("Nova will be created in Globex.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_globex", expect.objectContaining({ name: "Nova" }));
+  });
+
+  it("a person with one company in total is not asked or told which company", async () => {
+    const oncreatenewbot = vi.fn(created);
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot,
+      oncreatebot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    // No other company to send them to: the button is about a local bot only.
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create a local bot instead");
+    await nameTakeoverBot("Nova");
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(q('[data-testid="new-bot-target-company"]')).toBeNull();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+  });
+
+  it("follows the company in view when the person changes it", async () => {
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: vi.fn(created),
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    // The sidebar starts on all companies, where New bot would open the
+    // takeover. The person switches it to Acme, which has no flag.
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    const acme = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="chat-scope-menu"] [role="menuitemradio"]')).find(
+      (option) => option.textContent?.includes("Acme"),
+    );
+    expect(acme).toBeTruthy();
+    acme!.click();
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  });
+});

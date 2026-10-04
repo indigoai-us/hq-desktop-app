@@ -14,6 +14,8 @@
     cloudNameIssue,
     firstSignedInCloudRuntime,
     handleIssue,
+    NEW_BOT_LOCAL_LABEL,
+    newBotTargetLine,
     provisionOptionsProblem,
     provisionOptionsProblemLine,
     type BotRuntime,
@@ -37,6 +39,18 @@
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
     oncomplete: (created: NewBotCreated) => void;
     onopenlocal?: (() => void) | null;
+    /**
+     * What the button for `onopenlocal` says. It opens the "+" window's bot
+     * step, which also makes cloud bots in companies this screen does not
+     * list, and the label says so when there are any.
+     */
+    otherWayLabel?: string;
+    /**
+     * True when the person belongs to more than one company. The last step
+     * then names the company the bot will be created in, whether it was
+     * picked here or is the only one this screen offers.
+     */
+    nameCompany?: boolean;
     /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
   }
@@ -49,8 +63,11 @@
     oncreate,
     oncomplete,
     onopenlocal = null,
+    otherWayLabel = "",
+    nameCompany = false,
     onupgrade = null,
   }: Props = $props();
+  const otherWay = $derived(otherWayLabel.trim() || NEW_BOT_LOCAL_LABEL);
 
   // A company that sent the person to a card instead of making a bot: where
   // that card lives. Usually the upgrade card (the plan cannot host a cloud
@@ -184,6 +201,8 @@
     quoteStatus === "error" && companyUid ? provisionOptionsProblemLine(quoteProblem ?? { kind: "load", askNames: [] }, selectedCompanyLabel) : "",
   );
   function reloadOptions(): void { quoteReload += 1; }
+  /** Where the bot will be made, said on the last step to a person with more than one company. */
+  const targetLine = $derived(nameCompany && selectedCompanyLabel ? newBotTargetLine(name, selectedCompanyLabel) : "");
   $effect(() => { focusStep(); });
   // The sun starts low and creeps while the create request is in flight; the
   // Waking up screen takes over from the same low position. One state change,
@@ -264,7 +283,7 @@
   {/if}
   <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}>{upgradeIsPlan ? "See upgrade options" : "Open the channel"}</button>
   <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}>{singleCompany ? "Back" : "Choose another company"}</button>
-  {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}
+  {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>{otherWay}</button>{/if}
 </section>
 {:else}
 <div class="new-bot-create" data-testid="new-bot-create-screen" role="group" onkeydown={onKeydown}>
@@ -296,7 +315,7 @@
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblem?.kind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}>Try again</button>
     {/if}
-    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
+    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
   </footer>
 </div>
 {/if}

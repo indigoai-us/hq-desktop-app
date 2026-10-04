@@ -680,3 +680,23 @@ export function provisionOptionsProblemLine(problem: ProvisionOptionsProblem, co
   }
   return `We couldn't load the price for ${company}. Check your connection and try again.`;
 }
+
+/** What the New Bot screen's second way out is called when it leads only to a local bot. */
+export const NEW_BOT_LOCAL_LABEL = "Create a local bot instead";
+
+/**
+ * The label of the New Bot screen's second way out, the button that opens
+ * the "+" window's own bot step. That step makes local bots, and cloud bots
+ * in the companies this screen does not offer, so the label says which of
+ * the two a person can reach through it. Empty when it leads nowhere.
+ */
+export function newBotOtherWayLabel(input: { local: boolean; otherCompanies: boolean }): string {
+  if (input.local && input.otherCompanies) return "Another company or a local bot";
+  if (input.otherCompanies) return "Create in another company";
+  return input.local ? NEW_BOT_LOCAL_LABEL : "";
+}
+
+/** The line on the last step that says where the bot will be made. */
+export function newBotTargetLine(name: string, companyLabel: string): string {
+  return `${name.trim() || "This bot"} will be created in ${companyLabel.trim()}.`;
+}

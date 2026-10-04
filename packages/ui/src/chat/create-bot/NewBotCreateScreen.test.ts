@@ -705,3 +705,60 @@ describe("NewBotCreateScreen", () => {
     expect(oncreate).toHaveBeenCalledWith("cmp_3", expect.anything());
   });
 });
+
+describe("NewBotCreateScreen: which company the bot is created in (review G-1)", () => {
+  const line = (): string =>
+    document.querySelector("[data-testid='new-bot-target-company']")?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+
+  it("names the only company it offers on the last step, for a person with more than one company", async () => {
+    const { oncreate } = render({
+      companies: [{ companyUid: "cmp_current", label: "Current company" }],
+      nameCompany: true,
+    });
+    await settle();
+    await advanceName();
+    // One company on the list: no picker, and the brain step is the last one.
+    expect(document.querySelector("[data-testid='new-bot-company-grid']")).toBeNull();
+    expect(line()).toBe("Polar will be created in Current company.");
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith("cmp_current", expect.objectContaining({ name: "Polar" }));
+  });
+
+  it("names the picked company on the last step, and follows the pick", async () => {
+    render({ nameCompany: true });
+    await settle();
+    await advanceName();
+    // Not on the brain step: the company is chosen on the next one.
+    expect(line()).toBe("");
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
+    await settle();
+    expect(line()).toBe("Polar will be created in Current company.");
+    document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")!.click();
+    await settle();
+    expect(line()).toBe("Polar will be created in Other company.");
+  });
+
+  it("says nothing about the company to a person who has only one", async () => {
+    render({ companies: [{ companyUid: "cmp_current", label: "Current company" }] });
+    await settle();
+    await advanceName();
+    expect(document.querySelector("[data-testid='new-bot-target-company']")).toBeNull();
+  });
+
+  it("labels the second way out as the host says, and keeps the local label without one", async () => {
+    render({ onopenlocal: () => {}, otherWayLabel: "Another company or a local bot" });
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-takeover-local']")?.textContent?.trim()).toBe(
+      "Another company or a local bot",
+    );
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    render({ onopenlocal: () => {} });
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-takeover-local']")?.textContent?.trim()).toBe(
+      "Create a local bot instead",
+    );
+  });
+});

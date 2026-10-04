@@ -26,6 +26,10 @@
     canCreateLocalBot?: boolean;
     oncancel: () => void;
     onopenlocal?: (() => void) | null;
+    /** What the button for `onopenlocal` says on the create screen (see NewBotCreateScreen). */
+    otherWayLabel?: string;
+    /** True when the person belongs to more than one company: the last step names the target. */
+    nameCompany?: boolean;
     companies?: ReadonlyArray<{ companyUid: string; label: string }>;
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
@@ -81,6 +85,8 @@
     canCreateLocalBot = false,
     oncancel,
     onopenlocal = null,
+    otherWayLabel = "",
+    nameCompany = false,
     companies = [],
     currentCompanyUid = null,
     runtimeReady = null,
@@ -475,7 +481,9 @@
           oncreate={createBot}
           oncomplete={startWaking}
           {onupgrade}
-          onopenlocal={canCreateLocalBot ? onopenlocal : null}
+          onopenlocal={canCreateLocalBot || otherWayLabel ? onopenlocal : null}
+          {otherWayLabel}
+          {nameCompany}
         />
         {/key}
       {:else}

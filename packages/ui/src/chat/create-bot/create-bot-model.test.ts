@@ -35,6 +35,9 @@ import {
   toCreateInput,
   type CreateBotContext,
   type CreateBotDraft,
+  NEW_BOT_LOCAL_LABEL,
+  newBotOtherWayLabel,
+  newBotTargetLine,
 } from "./create-bot-model.js";
 
 const WORKERS: LocalBotWorkerOption[] = [
@@ -526,5 +529,21 @@ describe("toCreateInput", () => {
     expect(thinksWithLine(draft(), c)).toBe("thinks with Claude Code");
     expect(thinksWithLine(draft({ runtime: "grok", model: "grok-4" }), c)).toBe("thinks with Grok · grok-4");
     expect(thinksWithLine(draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe("hosted by Acme");
+  });
+});
+
+describe("the New Bot screen's words about companies (review G-1)", () => {
+  it("labels the second way out by what it leads to", () => {
+    expect(newBotOtherWayLabel({ local: true, otherCompanies: true })).toBe("Another company or a local bot");
+    expect(newBotOtherWayLabel({ local: false, otherCompanies: true })).toBe("Create in another company");
+    expect(newBotOtherWayLabel({ local: true, otherCompanies: false })).toBe("Create a local bot instead");
+    expect(NEW_BOT_LOCAL_LABEL).toBe("Create a local bot instead");
+    // It leads nowhere: no button.
+    expect(newBotOtherWayLabel({ local: false, otherCompanies: false })).toBe("");
+  });
+
+  it("says where the bot will be created", () => {
+    expect(newBotTargetLine(" Nova ", "Indigo")).toBe("Nova will be created in Indigo.");
+    expect(newBotTargetLine("", "Indigo")).toBe("This bot will be created in Indigo.");
   });
 });
