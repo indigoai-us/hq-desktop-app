@@ -17,6 +17,7 @@
     NEW_BOT_LOCAL_LABEL,
     newBotCheckingLine,
     newBotTargetLine,
+    provisionOptionsPriced,
     provisionOptionsProblem,
     provisionOptionsProblemLine,
     type BotRuntime,
@@ -205,8 +206,19 @@
     };
   });
   const selectedCompanyLabel = $derived(companies.find((company) => company.companyUid === companyUid)?.label ?? "");
+  // The options loaded and none of them can be priced: Create bot is off
+  // just as it is when they do not load, so it gets a reason and a retry too.
+  const unpriced = $derived(quoteStatus === "ready" && !provisionOptionsPriced(options));
+  const quoteProblemKind = $derived<ProvisionOptionsProblem["kind"] | null>(
+    quoteStatus === "error" ? (quoteProblem?.kind ?? "load") : unpriced ? "unpriced" : null,
+  );
   const quoteProblemLine = $derived(
-    quoteStatus === "error" && companyUid ? provisionOptionsProblemLine(quoteProblem ?? { kind: "load", askNames: [] }, selectedCompanyLabel) : "",
+    quoteProblemKind && companyUid
+      ? provisionOptionsProblemLine(
+          quoteProblemKind === "unpriced" ? { kind: "unpriced", askNames: [] } : (quoteProblem ?? { kind: "load", askNames: [] }),
+          selectedCompanyLabel,
+        )
+      : "",
   );
   function reloadOptions(): void { quoteReload += 1; }
   /** Where the bot will be made, said on the last step to a person with more than one company. */
@@ -320,7 +332,7 @@
     {#if quoteProblemLine && step === finalStep}
       <!-- Create bot is off because the company's options did not load. Say
            which of the two reasons it is, and offer another try. -->
-      <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblem?.kind ?? "load"}>{quoteProblemLine}</p>
+      <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}>Try again</button>
     {/if}
     {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}

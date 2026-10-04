@@ -627,10 +627,12 @@ export const STEP_TITLES: Record<CreateBotStep, string> = {
 /**
  * Why the company's bot options could not be loaded. "permission": the
  * server says this person may not add bots there. "load": the read failed
- * for any other reason, and asking again may work.
+ * for any other reason, and asking again may work. "unpriced": the options
+ * came back, and not one of them has a price this company could be charged,
+ * so there is nothing Create bot could ask for.
  */
 export interface ProvisionOptionsProblem {
-  kind: "permission" | "load";
+  kind: "permission" | "load" | "unpriced";
   /** People who can add a bot or allow it, as the server named them. At most three. */
   askNames: string[];
 }
@@ -678,7 +680,20 @@ export function provisionOptionsProblemLine(problem: ProvisionOptionsProblem, co
     const ask = problem.askNames.length ? oneOf(problem.askNames) : "an owner or admin";
     return `You don't have permission to add bots in ${company}. Ask ${ask}.`;
   }
+  if (problem.kind === "unpriced") {
+    return `We don't have a price for a bot in ${company} right now. Try again in a moment.`;
+  }
   return `We couldn't load the price for ${company}. Check your connection and try again.`;
+}
+
+/**
+ * True when a bot can be created from these options: at least one size the
+ * person may pick has a price.
+ */
+export function provisionOptionsPriced(options: { options?: ReadonlyArray<{ selectable?: boolean; netMonthlyCents?: number | null }> } | null | undefined): boolean {
+  return (options?.options ?? []).some(
+    (option) => option.selectable === true && typeof option.netMonthlyCents === "number",
+  );
 }
 
 /** What the New Bot screen's second way out is called when it leads only to a local bot. */

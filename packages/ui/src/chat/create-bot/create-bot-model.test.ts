@@ -36,6 +36,7 @@ import {
   type CreateBotContext,
   type CreateBotDraft,
   NEW_BOT_LOCAL_LABEL,
+  provisionOptionsPriced,
   newBotCheckingLine,
   newBotOtherWayLabel,
   newBotTargetLine,
@@ -553,5 +554,22 @@ describe("what the New Bot screen says while a lost create is looked for (review
   it("names the bot", () => {
     expect(newBotCheckingLine(" Nova ")).toBe("Checking whether Nova was created...");
     expect(newBotCheckingLine("")).toBe("Checking whether your bot was created...");
+  });
+});
+
+describe("options that load with no price (review item 7)", () => {
+  it("knows when a bot can be priced", () => {
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: 1200 }] })).toBe(true);
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: 0 }] })).toBe(true);
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: null }] })).toBe(false);
+    expect(provisionOptionsPriced({ options: [{ selectable: false, netMonthlyCents: 1200 }] })).toBe(false);
+    expect(provisionOptionsPriced({ options: [] })).toBe(false);
+    expect(provisionOptionsPriced(null)).toBe(false);
+  });
+
+  it("says so in one plain line", () => {
+    expect(provisionOptionsProblemLine({ kind: "unpriced", askNames: [] }, "Indigo")).toBe(
+      "We don't have a price for a bot in Indigo right now. Try again in a moment.",
+    );
   });
 });

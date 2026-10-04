@@ -211,6 +211,65 @@ describe("NewBotCreateScreen", () => {
       expect(retry()).toBeTruthy();
     });
 
+    it("says there is no price when the options load and none of them is priced, and offers Try again (review item 7)", async () => {
+      // The read succeeded, so nothing said why Create bot was off.
+      const unpriced = {
+        ...options,
+        options: options.options.map((option) => ({ ...option, netMonthlyCents: null, unavailableReason: "per-agent-rung-reprice-unshipped" })),
+      };
+      const loadProvisionOptions = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, value: unpriced })
+        .mockResolvedValueOnce({ ok: true, value: options });
+      const { oncreate } = render({ ...ONE_COMPANY, loadProvisionOptions });
+      await settle();
+      await advanceName();
+
+      expect(createButton().disabled).toBe(true);
+      expect(problem()?.getAttribute("role")).toBe("alert");
+      expect(problem()?.dataset.kind).toBe("unpriced");
+      expect(problem()?.textContent).toBe("We don't have a price for a bot in Only company right now. Try again in a moment.");
+      // The server's own word for why is not shown to the person.
+      expect(problem()?.textContent).not.toContain("reprice");
+      expect(retry()?.textContent).toBe("Try again");
+
+      retry()!.click();
+      await settle();
+      expect(loadProvisionOptions).toHaveBeenCalledTimes(2);
+      expect(problem()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+      createButton().click();
+      await settle();
+      expect(oncreate).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["has no options at all", []],
+      ["has a priced size the person may not pick", [{ ...options.options[0]!, selectable: false }]],
+    ])("says there is no price when the list %s", async (_label, list) => {
+      render({ ...ONE_COMPANY, loadProvisionOptions: async () => ({ ok: true as const, value: { ...options, options: list } }) });
+      await settle();
+      await advanceName();
+      expect(createButton().disabled).toBe(true);
+      expect(problem()?.dataset.kind).toBe("unpriced");
+      expect(retry()).toBeTruthy();
+    });
+
+    it("shows no such line while the options are loading or once one size is priced", async () => {
+      let answer!: (value: unknown) => void;
+      render({ ...ONE_COMPANY, loadProvisionOptions: () => new Promise((resolve) => { answer = resolve; }) });
+      await settle();
+      await advanceName();
+      expect(problem()).toBeNull();
+      answer({
+        ok: true,
+        value: { ...options, options: [{ ...options.options[0]!, key: "power", netMonthlyCents: null }, options.options[0]!] },
+      });
+      await settle();
+      expect(problem()).toBeNull();
+      expect(createButton().disabled).toBe(false);
+    });
+
     it("shows the reason on the step that holds Create bot, for the company picked there", async () => {
       const loadProvisionOptions = vi.fn(async (companyUid: string) =>
         companyUid === "cmp_other"
