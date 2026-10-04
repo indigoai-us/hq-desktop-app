@@ -35,6 +35,7 @@ export function messageSearchQueryProblem(query: string): MessageSearchQueryProb
 export interface ContactsResponse {
   contacts: DmContactInput[];
 }
+export type ProjectMemberAddResult = "added" | "not-enabled";
 export interface ChannelsResponse {
   channels?: Channel[];
 }

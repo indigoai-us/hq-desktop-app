@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 
 - First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
