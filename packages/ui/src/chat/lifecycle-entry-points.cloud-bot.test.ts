@@ -3,395 +3,696 @@
 /**
  * The headless cloud-bot entry point.
  *
- * Creating a company-hosted bot exists on the server as the Team tab's
- * `add_agent` action plus the `create_agent` card. The server keeps one such
- * card per company channel and updates it in place, so the driver never reads
- * it: it asks where the card lives and answers it once with everything the
- * person chose.
+ * Creating a company-hosted bot exists on the server only as the Team tab's
+ * `add_agent` action plus the `create_agent` card's turns. That card is no
+ * longer rendered anywhere, so this driver runs the same actions its buttons
+ * ran and answers with the minted agent channel — no card, no focus.
  */
 import { describe, expect, it, vi } from "vitest";
 
 import {
   claudeSubscriptionSignInUrl,
-  CLOUD_BOT_NAME_INVALID_REASON,
-  CLOUD_BOT_NAME_TAKEN_REASON,
   CLOUD_BOT_NEEDS_MORE_REASON,
   CLOUD_BOT_NO_NEXT_STEP_REASON,
-  CLOUD_BOT_SERVER_FAILED_REASON,
+  cloudBotStaleCardReason,
   runCreateCloudBotEntry,
-  type CloudBotDraft,
   type CloudBotEntryApi,
 } from "./lifecycle-entry-points.js";
 
-const DRAFT: CloudBotDraft = {
-  name: "Polar",
-  handle: "ice-bear",
-  runtime: "codex",
-  size: "basic",
-};
+/** What the New bot flow collected: the name typed, and the handle shown beside it. */
+const DRAFT = { name: "Polar", handle: "ice-bear" };
 const CHANNEL = "chn_acme";
 const AGENT_CHANNEL = "chn_polar";
 
-/** What production answers for `team:spend/add_agent` on a paid company. */
-const OPENED = {
-  cardId: "team:spend",
-  actionId: "add_agent",
-  state: "open",
-  navigateTo: "chat" as const,
-  focusCardId: "create_agent",
-  channelId: CHANNEL,
-};
-
-function harness(over: {
-  opened?: Record<string, unknown> | Error;
-  created?: Record<string, unknown> | Error;
-} = {}) {
-  const opened = over.opened ?? OPENED;
-  const created = over.created ?? {
-    cardId: "create_agent",
-    actionId: "create",
-    state: "done",
-    agentChannelId: AGENT_CHANNEL,
-    agentUid: "agt_polar",
+function card(
+  cardId: string,
+  fields: Array<Record<string, unknown>>,
+  actionId: string,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    v: 1,
+    type: "lifecycle_card",
+    cardId,
+    kind: "create_agent",
+    companyUid: "cmp_acme",
+    state: "open",
+    title: "Create an agent",
+    fields,
+    actions: [{ id: actionId, label: "Next", style: "primary" }],
+    viewer: { canAct: true },
+    ...over,
   };
-  const runCompanyTabAction = vi.fn(async (_args: Record<string, unknown>) => {
-    if (opened instanceof Error) throw opened;
-    return opened;
-  });
-  const runCardAction = vi.fn(async (_args: Record<string, unknown>) => {
-    if (created instanceof Error) throw created;
-    return created;
-  });
-  const logToFile = vi.fn(async (_tag: string, _message: string) => undefined);
-  const api = {
-    runCompanyTabAction,
-    runCardAction,
-    logToFile,
-  } as unknown as CloudBotEntryApi;
-  return { api, runCompanyTabAction, runCardAction, logToFile };
 }
+
+/**
+ * One wire row. `age` is how many minutes back it sits, so a page written
+ * newest-first carries descending timestamps, the way a real one does.
+ */
+function message(card: Record<string, unknown>, age = 0) {
+  const at = new Date(Date.parse("2026-09-15T12:00:00.000Z") - age * 60_000).toISOString();
+  return {
+    eventId: `evt_${card.cardId}`,
+    fromDisplayName: "HQ",
+    body: "Create an agent",
+    createdAt: at,
+    direction: "in",
+    messageKind: "system",
+    systemEvent: card,
+  };
+}
+
+/**
+ * A `fetch_channel` page, in the order the wire really delivers one: NEWEST
+ * first (crates/hq-desktop-core/src/messages.rs, `ChannelDetail`). Fixtures
+ * hand this the cards in the order the turns happened, so what the driver
+ * reads is always the reverse of what the server posted — exactly like
+ * production.
+ */
+function wirePage(oldestFirst: ReadonlyArray<Record<string, unknown>>) {
+  const newestFirst = [...oldestFirst].reverse();
+  return { messages: newestFirst.map((row, i) => message(row, i)), nextCursor: null };
+}
+
+const TURN_1 = card(
+  "card_create_agent_1",
+  [
+    { id: "name", label: "Agent name", control: "text", required: true, value: "" },
+    { id: "handle", label: "Handle", control: "text", required: true, value: "" },
+  ],
+  "next",
+);
+const TURN_2 = card(
+  "card_create_agent_2",
+  [
+    {
+      id: "runtime",
+      label: "Runtime",
+      control: "radio",
+      required: true,
+      value: "codex",
+      options: [{ id: "codex", label: "Codex" }],
+    },
+  ],
+  "next",
+);
+const TURN_3 = card(
+  "card_create_agent_3",
+  [
+    {
+      id: "size",
+      label: "Size",
+      control: "radio",
+      required: true,
+      value: "basic",
+      options: [{ id: "basic", label: "Basic" }],
+    },
+  ],
+  "create",
+);
+
+/** A server that posts each turn only once its predecessor is submitted. */
+function server(turns = [TURN_1, TURN_2, TURN_3]) {
+  let posted = turns.length ? [turns[0]!] : [];
+  const runCardAction = vi.fn(async (args: { cardId: string; actionId: string; values: Record<string, string> }) => {
+    const index = turns.findIndex((turn) => turn.cardId === args.cardId);
+    if (index === turns.length - 1) {
+      return {
+        cardId: args.cardId,
+        actionId: args.actionId,
+        state: "done",
+        agentChannelId: AGENT_CHANNEL,
+        agentUid: "agt_polar",
+      };
+    }
+    posted = [...posted, turns[index + 1]!];
+    return { cardId: args.cardId, actionId: args.actionId, state: "done" };
+  });
+  const fetchChannel = vi.fn(async () => wirePage(posted));
+  const runCompanyTabAction = vi.fn(async () => ({
+    cardId: turns[0]?.cardId ?? "",
+    actionId: "add_agent",
+    state: "open",
+    channelId: CHANNEL,
+  }));
+  return {
+    api: { runCardAction, fetchChannel, runCompanyTabAction } as unknown as CloudBotEntryApi,
+    runCardAction,
+    fetchChannel,
+    runCompanyTabAction,
+  };
+}
+
+const fast = { sleep: async () => {}, pollMs: 0 };
 
 describe("runCreateCloudBotEntry", () => {
   it("opens the console authorization page only for Claude subscription auth", () => {
-    expect(
-      claudeSubscriptionSignInUrl(
-        { runtime: "claude", authMode: "subscription" },
-        "agt_123",
-      ),
-    ).toBe("https://hq.getindigo.ai/resolve/agents/agt_123");
-    expect(
-      claudeSubscriptionSignInUrl(
-        { runtime: "claude", authMode: "apiKey" },
-        "agt_123",
-      ),
-    ).toBeNull();
-    expect(
-      claudeSubscriptionSignInUrl(
-        { runtime: "grok", authMode: "subscription" },
-        "agt_123",
-      ),
-    ).toBeNull();
-    expect(
-      claudeSubscriptionSignInUrl(
-        { runtime: "claude", authMode: "subscription" },
-        "  ",
-      ),
-    ).toBeNull();
+    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "subscription" }, "agt_123")).toBe(
+      "https://hq.getindigo.ai/resolve/agents/agt_123",
+    );
+    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "apiKey" }, "agt_123")).toBeNull();
+    expect(claudeSubscriptionSignInUrl({ runtime: "grok", authMode: "subscription" }, "agt_123")).toBeNull();
+    expect(claudeSubscriptionSignInUrl({ runtime: "claude", authMode: "subscription" }, "  ")).toBeNull();
   });
 
-  it("creates the bot with one complete action when the server answers the tab row id in cardId and the card in focusCardId", async () => {
-    // Regression: production answers `cardId: "team:spend"` with the lifecycle
-    // card in `focusCardId`. Reading only `cardId` ended every attempt with
-    // "The server didn't send the next step" before anything was created.
-    const { api, runCompanyTabAction, runCardAction, logToFile } = harness();
-    const result = await runCreateCloudBotEntry(api, " cmp_acme ", DRAFT, {
-      idempotencyKey: "idem-1",
+  it("carries the chosen runtime and write-only API-key auth on the final create action", async () => {
+    const { api, runCardAction, fetchChannel } = server();
+    const apiKey = "sk-test-cloud-api-key";
+
+    await runCreateCloudBotEntry(
+      api,
+      "cmp_acme",
+      {
+        ...DRAFT,
+        runtime: "claude",
+        size: "power",
+        authMode: "apiKey",
+        apiKey,
+      },
+      fast,
+    );
+
+    expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      values: { runtime: "claude" },
+    }));
+    expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      values: { size: "power", authMode: "apiKey", apiKey },
+    }));
+    expect(runCardAction.mock.calls[0]?.[0].values).not.toHaveProperty("apiKey");
+    expect(runCardAction.mock.calls[1]?.[0].values).not.toHaveProperty("apiKey");
+    expect(JSON.stringify(await fetchChannel())).not.toContain(apiKey);
+  });
+
+  it("runs the whole server sequence and lands in the new bot's channel", async () => {
+    const { api, runCardAction, runCompanyTabAction } = server();
+
+    const result = await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast);
+
+    expect(runCompanyTabAction).toHaveBeenCalledWith(
+      expect.objectContaining({ companyUid: "cmp_acme", tab: "team", cardId: "team:spend", actionId: "add_agent" }),
+    );
+    // Turn 1 carries the name AND the handle the person chose in the New bot
+    // flow — the two things the card's own form used to ask them for. The
+    // handle is theirs, not a slug of the name they happened to type.
+    expect(runCardAction).toHaveBeenNthCalledWith(1, {
+      channelId: CHANNEL,
+      cardId: "card_create_agent_1",
+      actionId: "next",
+      values: { name: "Polar", handle: "ice-bear" },
     });
+    // Later turns keep whatever the server pre-filled.
+    expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ values: { runtime: "codex" } }));
+    expect(runCardAction).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      actionId: "create",
+      values: { size: "basic", authMode: "subscription" },
+    }));
+    // Nothing is focused: no card was ever drawn. The new bot's uid rides
+    // back with the target: no turn asked for the draft's title, so the
+    // caller writes it onto that agent's profile.
     expect(result).toEqual({
       ok: true,
-      target: {
-        channelId: AGENT_CHANNEL,
-        cardId: null,
-        cardKind: null,
-        agentUid: "agt_polar",
-      },
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
     });
-    expect(runCompanyTabAction).toHaveBeenCalledTimes(1);
-    expect(runCompanyTabAction).toHaveBeenCalledWith({
-      companyUid: "cmp_acme",
-      tab: "team",
+  });
+
+  it("never sends the title to a card — no turn of the sequence has a field for it", async () => {
+    const { api, runCardAction } = server();
+
+    const result = await runCreateCloudBotEntry(
+      api,
+      "cmp_acme",
+      { ...DRAFT, title: "Ad account analyst" },
+      fast,
+    );
+
+    for (const call of runCardAction.mock.calls) {
+      expect(call[0]!.values).not.toHaveProperty("title");
+    }
+    expect(runCardAction).toHaveBeenNthCalledWith(1, {
+      channelId: CHANNEL,
+      cardId: "card_create_agent_1",
+      actionId: "next",
+      values: { name: "Polar", handle: "ice-bear" },
+    });
+    // The uid the caller needs to save that title instead.
+    expect(result).toEqual({
+      ok: true,
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
+    });
+  });
+
+
+  it("reports the server's own refusal without running a turn", async () => {
+    const runCompanyTabAction = vi.fn(async () => ({
       cardId: "team:spend",
       actionId: "add_agent",
-      values: {},
-      idempotencyKey: "idem-1",
-    });
-    expect(runCardAction).toHaveBeenCalledTimes(1);
-    expect(runCardAction).toHaveBeenCalledWith({
-      channelId: CHANNEL,
-      cardId: "create_agent",
-      actionId: "create",
-      values: {
-        name: "Polar",
-        handle: "ice-bear",
-        runtime: "codex",
-        size: "basic",
-        authMode: "subscription",
-        deferChannels: "true",
-        conversation: "dm",
-        surface: "desktop_new_bot",
-      },
-    });
-    expect(logToFile).not.toHaveBeenCalled();
-  });
+      state: "blocked",
+      reason: "Only owners can add agents to Acme.",
+    }));
+    const runCardAction = vi.fn();
+    const api = { runCompanyTabAction, runCardAction, fetchChannel: vi.fn() } as unknown as CloudBotEntryApi;
 
-  it("never reads the channel: the stored card cannot decide what is created", async () => {
-    const { api } = harness();
-    const fetchChannel = vi.fn();
-    (api as unknown as { fetchChannel: unknown }).fetchChannel = fetchChannel;
-    await runCreateCloudBotEntry(api, "cmp_acme", DRAFT);
-    expect(fetchChannel).not.toHaveBeenCalled();
-  });
-
-  it("carries the chosen runtime and write-only API-key auth on the create action only", async () => {
-    const { api, runCardAction, runCompanyTabAction } = harness();
-    await runCreateCloudBotEntry(api, "cmp_acme", {
-      ...DRAFT,
-      runtime: "claude",
-      authMode: "apiKey",
-      apiKey: "sk-test-not-a-real-key",
-    });
-    expect(runCardAction.mock.calls[0]![0]).toMatchObject({
-      values: {
-        runtime: "claude",
-        authMode: "apiKey",
-        apiKey: "sk-test-not-a-real-key",
-      },
-    });
-    expect(JSON.stringify(runCompanyTabAction.mock.calls)).not.toContain("sk-test");
-  });
-
-  it("never sends the title: the card has no field for it", async () => {
-    const { api, runCardAction } = harness();
-    await runCreateCloudBotEntry(api, "cmp_acme", { ...DRAFT, title: "Analyst" });
-    const sent = runCardAction.mock.calls[0]![0] as { values: Record<string, string> };
-    expect(Object.keys(sent.values).sort()).toEqual(
-      ["authMode", "conversation", "deferChannels", "handle", "name", "runtime", "size", "surface"].sort(),
-    );
-  });
-
-  it("accepts a server that answers the lifecycle card directly in cardId", async () => {
-    const { api, runCardAction } = harness({
-      opened: { cardId: "create_agent", state: "open", channelId: CHANNEL },
-    });
-    const result = await runCreateCloudBotEntry(api, "cmp_acme", DRAFT);
-    expect(result.ok).toBe(true);
-    expect(runCardAction).toHaveBeenCalledTimes(1);
-  });
-
-  it("succeeds when the server made no channel for the bot: the conversation is the direct message", async () => {
-    // Owner, 2026-10-02: a new bot must not come with a team channel.
-    const h = harness({
-      created: { cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_polar" },
-    });
-    const result = await runCreateCloudBotEntry(h.api, "cmp_acme", DRAFT);
-    expect(result).toEqual({
-      ok: true,
-      target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_polar" },
-    });
-  });
-
-  it("reports and logs when the server names no channel or card", async () => {
-    const { api, runCardAction, logToFile } = harness({
-      opened: { cardId: "team:spend", state: "open" },
-    });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
       ok: false,
-      reason: CLOUD_BOT_NO_NEXT_STEP_REASON,
-      blocked: false,
-    });
-    expect(runCardAction).not.toHaveBeenCalled();
-    expect(logToFile).toHaveBeenCalledWith(
-      "cloud-bot",
-      expect.stringContaining("exit=open-no-target"),
-    );
-  });
-
-  it("reports the server's own refusal of add_agent without creating anything", async () => {
-    const { api, runCardAction } = harness({
-      opened: {
-        cardId: "team:spend",
-        state: "blocked",
-        fields: [
-          { id: "blocked_reason", value: "permission" },
-          { id: "owner", value: "Corey" },
-        ],
-      },
-    });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
-      ok: false,
-      reason: "You don't have permission to add bots here. Ask Corey.",
+      reason: "Only owners can add agents to Acme.",
       blocked: true,
     });
     expect(runCardAction).not.toHaveBeenCalled();
   });
 
   it("lands on the upgrade card when the company's plan cannot host a bot", async () => {
-    const { api, runCardAction } = harness({
-      opened: { ...OPENED, focusCardId: "upgrade_plan" },
-    });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
+    const upgrade = {
+      ...card("card_upgrade_plan_1", [], "checkout"),
+      kind: "upgrade_plan",
+    };
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_upgrade_plan_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn();
+    const api = {
+      runCompanyTabAction,
+      runCardAction,
+      fetchChannel: async () => wirePage([upgrade]),
+    } as unknown as CloudBotEntryApi;
+
+    // That card still renders, so it is a destination, not a failure — and
+    // the driver must not start submitting turns on it.
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
       ok: true,
-      target: { channelId: CHANNEL, cardId: "upgrade_plan", cardKind: null },
+      target: { channelId: CHANNEL, cardId: "card_upgrade_plan_1", cardKind: null },
     });
     expect(runCardAction).not.toHaveBeenCalled();
   });
 
-  it("reports a plan refusal from the create action in plain words", async () => {
-    const { api, logToFile } = harness({
-      created: {
-        cardId: "create_agent",
-        state: "blocked",
-        fields: [{ id: "blocked_reason", value: "plan" }],
-      },
-    });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
-      ok: false,
-      reason: "This company's plan doesn't include cloud bots yet.",
-      blocked: true,
-      upgrade: { channelId: CHANNEL, cardId: "upgrade_plan" },
-    });
-    expect(logToFile).toHaveBeenCalledWith(
-      "cloud-bot",
-      expect.stringContaining("exit=create-blocked why=plan"),
+  it("stops with a plain reason when a turn asks for something it cannot fill in", async () => {
+    const unknownTurn = card(
+      "card_create_agent_1",
+      [{ id: "budget", label: "Budget", control: "text", required: true, value: "" }],
+      "next",
     );
-  });
+    const { api, runCardAction } = server([unknownTurn]);
 
-  it.each([
-    ["This handle is already taken", CLOUD_BOT_NAME_TAKEN_REASON],
-    ["Use lowercase letters, numbers and dashes", CLOUD_BOT_NAME_INVALID_REASON],
-  ])(
-    "speaks about the name, not the hidden handle, when the server says %j",
-    async (error, reason) => {
-      const { api } = harness({
-        created: {
-          cardId: "create_agent",
-          state: "open",
-          fields: [
-            { id: "name", value: "Polar" },
-            { id: "handle", value: "ice-bear", error },
-          ],
-        },
-      });
-      expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
-        ok: false,
-        reason,
-        blocked: false,
-      });
-    },
-  );
-
-  it("says the server is not ready when it moves the card a turn instead of creating", async () => {
-    const { api, logToFile } = harness({
-      created: {
-        cardId: "create_agent",
-        state: "open",
-        fields: [
-          { id: "turn", value: "2" },
-          { id: "name", value: "Someone else" },
-        ],
-      },
-    });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
       ok: false,
       reason: CLOUD_BOT_NEEDS_MORE_REASON,
       blocked: false,
     });
-    const line = String(logToFile.mock.calls[0]![1]);
-    expect(line).toContain("exit=create-no-agent state=open turn=2");
-    // Ids and states only: nothing a person typed reaches the log.
-    expect(line).not.toContain("Someone else");
-    expect(line).not.toContain("Polar");
-  });
-
-  it("offers no upgrade path for a permission refusal", async () => {
-    const { api } = harness({
-      created: {
-        cardId: "create_agent",
-        state: "blocked",
-        fields: [
-          { id: "blocked_reason", value: "permission" },
-          { id: "owner", value: "Corey" },
-        ],
-      },
-    });
-    const result = await runCreateCloudBotEntry(api, "cmp_acme", DRAFT);
-    expect(result).toEqual({
-      ok: false,
-      reason: "You don't have permission to add bots here. Ask Corey.",
-      blocked: true,
-    });
-  });
-
-  it("stops before any server call when the draft is missing a size or brain", async () => {
-    const { api, runCardAction } = harness();
-    expect(
-      await runCreateCloudBotEntry(api, "cmp_acme", { name: "Polar", handle: "ice-bear" }),
-    ).toEqual({ ok: false, reason: CLOUD_BOT_NEEDS_MORE_REASON, blocked: false });
     expect(runCardAction).not.toHaveBeenCalled();
   });
 
-  it("reports a transport failure of the create action and flags permission errors", async () => {
-    const plain = harness({ created: new Error("[run_card_action] network down") });
-    expect(await runCreateCloudBotEntry(plain.api, "cmp_acme", DRAFT)).toEqual({
+  it("gives up instead of looping when the server never posts the next turn", async () => {
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "next",
+      state: "done",
+    }));
+    const fetchChannel = vi.fn(async () => wirePage([TURN_1]));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    expect(
+      await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, { ...fast, pollAttempts: 2 }),
+    ).toEqual({ ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false });
+    expect(runCardAction).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * A server that behaves like the real one where it matters: `add_agent`
+ * RESURFACES any live create_agent card instead of posting a second one, turn
+ * 1 refuses a handle that is already taken, and each turn posts the next only
+ * once its predecessor is answered. The refusal is the shape the dev harness
+ * (and the server) uses: the card goes `blocked`, keeps its reason, and offers
+ * its own "Try another handle".
+ */
+function liveServer(options: { taken?: readonly string[]; dismissable?: boolean } = {}) {
+  const taken = new Set(options.taken ?? []);
+  const cards: Array<Record<string, unknown>> = [];
+  const extra = options.dismissable ? [{ id: "dismiss", label: "Never mind", style: "secondary" }] : [];
+  let created: { name: string; handle: string } | null = null;
+  let seq = 0;
+
+  const isLive = (row: Record<string, unknown>) =>
+    row.state === "open" || row.state === "pending" || row.state === "blocked";
+  const at = (cardId: string) => cards.find((row) => row.cardId === cardId);
+
+  function turn(n: 1 | 2 | 3, suffix: string): Record<string, unknown> {
+    const fields =
+      n === 1
+        ? [
+            { id: "name", label: "Agent name", control: "text", required: true, value: "polar" },
+            { id: "handle", label: "Handle", control: "text", required: true, value: "polar" },
+          ]
+        : n === 2
+          ? [{ id: "runtime", label: "Runtime", control: "radio", required: true, value: "codex", options: [{ id: "codex", label: "Codex" }] }]
+          : [{ id: "size", label: "Size", control: "radio", required: true, value: "basic", options: [{ id: "basic", label: "Basic" }] }];
+    return {
+      v: 1,
+      type: "lifecycle_card",
+      cardId: `card_create_agent_${n}${suffix}`,
+      kind: "create_agent",
+      companyUid: "cmp_acme",
+      state: "open",
+      title: "Create an agent",
+      fields,
+      actions: [{ id: n === 3 ? "create" : "next", label: "Next", style: "primary" }, ...extra],
+      viewer: { canAct: true },
+    };
+  }
+
+  const runCompanyTabAction = vi.fn(async () => {
+    const existing = [...cards].reverse().find((row) => row.kind === "create_agent" && isLive(row));
+    if (existing) {
+      return { cardId: existing.cardId as string, actionId: "add_agent", state: "open", channelId: CHANNEL };
+    }
+    seq += 1;
+    const posted = turn(1, cards.length ? `_${seq}` : "");
+    cards.push(posted);
+    return { cardId: posted.cardId as string, actionId: "add_agent", state: "open", channelId: CHANNEL };
+  });
+
+  const runCardAction = vi.fn(
+    async (args: { cardId: string; actionId: string; values: Record<string, string> }) => {
+      const row = at(args.cardId);
+      if (!row) throw new Error("Request failed (status 404)");
+      if (args.actionId === "dismiss") {
+        row.state = "skipped";
+        return { cardId: args.cardId, actionId: args.actionId, state: "skipped" };
+      }
+      const suffix = args.cardId.replace(/^card_create_agent_[123]/, "");
+      if (args.cardId.startsWith("card_create_agent_1")) {
+        const handle = (args.values.handle ?? "").trim();
+        if (taken.has(handle)) {
+          row.state = "blocked";
+          row.statusLabel = "Blocked";
+          row.reason = `@${handle} is already taken in Acme.`;
+          row.actions = [{ id: "retry", label: "Try another handle", style: "primary" }, ...extra];
+          return { cardId: args.cardId, actionId: args.actionId, state: "blocked" };
+        }
+        created = { name: args.values.name ?? "", handle };
+        row.state = "done";
+        row.statusLabel = `@${handle}`;
+        row.actions = [];
+        cards.push(turn(2, suffix));
+        return { cardId: args.cardId, actionId: args.actionId, state: "done" };
+      }
+      if (args.cardId.startsWith("card_create_agent_2")) {
+        row.state = "done";
+        row.actions = [];
+        cards.push(turn(3, suffix));
+        return { cardId: args.cardId, actionId: args.actionId, state: "done" };
+      }
+      row.state = "done";
+      row.actions = [];
+      return {
+        cardId: args.cardId,
+        actionId: args.actionId,
+        state: "done",
+        agentChannelId: AGENT_CHANNEL,
+        agentUid: "agt_polar",
+      };
+    },
+  );
+
+  const fetchChannel = vi.fn(async () => wirePage(cards));
+
+  return {
+    api: { runCardAction, fetchChannel, runCompanyTabAction } as unknown as CloudBotEntryApi,
+    runCardAction,
+    runCompanyTabAction,
+    cards,
+    stateOf: (cardId: string) => at(cardId)?.state ?? null,
+    get created() {
+      return created;
+    },
+  };
+}
+
+describe("runCreateCloudBotEntry — the card nobody can see", () => {
+  it("answers a refusal left from an earlier attempt instead of returning it forever", async () => {
+    const server = liveServer({ taken: ["acme"] });
+
+    const refused = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Acme", handle: "acme" },
+      fast,
+    );
+    expect(refused).toEqual({
       ok: false,
-      reason: "network down",
-      blocked: false,
-    });
-    const denied = harness({ created: new Error("403 forbidden") });
-    expect(await runCreateCloudBotEntry(denied.api, "cmp_acme", DRAFT)).toMatchObject({
-      ok: false,
+      reason: "@acme is already taken in Acme.",
       blocked: true,
     });
+    // The refused card stays live and invisible, so `add_agent` hands it back
+    // to the next attempt. That attempt is a NEW attempt: the driver runs the
+    // card's own "try again" with the values this person just chose.
+    expect(server.stateOf("card_create_agent_1")).toBe("blocked");
+
+    const retried = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Polar", handle: "polar" },
+      fast,
+    );
+    expect(retried).toEqual({
+      ok: true,
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
+    });
+    expect(server.created).toEqual({ name: "Polar", handle: "polar" });
+    expect(server.runCardAction).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: "retry", values: { name: "Polar", handle: "polar" } }),
+    );
   });
 
-  it("never shows a raw backend error: a plain line on screen, the detail in the support log", async () => {
-    // Regression (owner walkthrough 2026-10-02): a missing cloud permission
-    // put the full "User: arn:aws:sts::... is not authorized to perform:
-    // dynamodb:Scan on resource: arn:aws:dynamodb:..." text on the screen.
-    const denial =
-      "User: arn:aws:sts::000000000000:assumed-role/fn-role/fn is not authorized to perform: dynamodb:Scan on resource: arn:aws:dynamodb:us-east-1:000000000000:table/entities because no identity-based policy allows the dynamodb:Scan action";
-    const { api, logToFile } = harness({ created: new Error(denial) });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toEqual({
-      ok: false,
-      reason: CLOUD_BOT_SERVER_FAILED_REASON,
-      // The word "authorized" must not make this read as the person's refusal.
-      blocked: false,
-    });
-    const line = String(logToFile.mock.calls[0]![1]);
-    expect(line).toContain("exit=create-failed");
-    expect(line).toContain("dynamodb:Scan");
-    expect(line).not.toContain("Polar");
+  it("puts a refused card away when the server offers a way to", async () => {
+    const server = liveServer({ taken: ["acme"], dismissable: true });
+
+    await runCreateCloudBotEntry(server.api, "cmp_acme", { name: "Acme", handle: "acme" }, fast);
+    // Nobody can see this card, so nobody else can clear it.
+    expect(server.stateOf("card_create_agent_1")).toBe("skipped");
+
+    const retried = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Polar", handle: "polar" },
+      fast,
+    );
+    expect(retried.ok).toBe(true);
+    expect(server.created).toEqual({ name: "Polar", handle: "polar" });
+    // A fresh sequence, not the dismissed one: a second opening card was
+    // posted and answered.
+    const openings = server.cards.filter((row) => String(row.cardId).startsWith("card_create_agent_1"));
+    expect(openings.map((row) => row.state)).toEqual(["skipped", "done"]);
   });
 
-  it.each([
-    'agent create returned status 409: {"statusCode":409,"body":"{}"}',
-    "AgentsFunction Unhandled: TypeError: x is not a function at handler (/var/task/bundle.js:1:1)",
-    "x".repeat(200),
-  ])("replaces backend text %j with the plain line", async (text) => {
-    const { api } = harness({ created: new Error(text) });
-    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT)).toMatchObject({
-      ok: false,
-      reason: CLOUD_BOT_SERVER_FAILED_REASON,
-    });
+  it("never finishes a sequence that was opened for a different bot", async () => {
+    const server = liveServer();
+    // An attempt that dies after turn 1 leaves a live turn-2 card. Its
+    // recorded name is @polar's, and turn 2 has no name field to correct.
+    const died = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Polar", handle: "polar" },
+      { ...fast, maxTurns: 1 },
+    );
+    expect(died).toEqual({ ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false });
+    expect(server.stateOf("card_create_agent_2")).toBe("open");
+
+    const other = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Scout", handle: "scout" },
+      fast,
+    );
+    expect(other).toEqual({ ok: false, reason: cloudBotStaleCardReason("polar"), blocked: false });
+    // Nothing was submitted into it: no bot exists under the wrong name.
+    expect(server.runCardAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ cardId: "card_create_agent_2" }),
+    );
   });
 
-  it("asks for a company before doing anything", async () => {
-    const { api, runCompanyTabAction } = harness();
-    expect(await runCreateCloudBotEntry(api, "  ", DRAFT)).toEqual({
-      ok: false,
-      reason: "Pick a company first",
-      blocked: false,
+  it("resumes a sequence it opened under this very handle", async () => {
+    const server = liveServer();
+    await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Polar", handle: "polar" },
+      { ...fast, maxTurns: 1 },
+    );
+
+    // The same person, the same bot: finishing what they started is exactly
+    // what they asked for.
+    const finished = await runCreateCloudBotEntry(
+      server.api,
+      "cmp_acme",
+      { name: "Polar", handle: "polar" },
+      fast,
+    );
+    expect(finished).toEqual({
+      ok: true,
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null, agentUid: "agt_polar" },
     });
-    expect(runCompanyTabAction).not.toHaveBeenCalled();
+    expect(server.created).toEqual({ name: "Polar", handle: "polar" });
+  });
+
+  it("waits for an opening card the server posts asynchronously", async () => {
+    let posted = false;
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "next",
+      state: "done",
+      agentChannelId: AGENT_CHANNEL,
+    }));
+    // The first read-back is empty: the card lands a beat later, the same way
+    // every later turn does.
+    const fetchChannel = vi.fn(async () => {
+      const page = wirePage(posted ? [TURN_1] : []);
+      posted = true;
+      return page;
+    });
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    // No uid in the answer, so none is passed on: the caller has nothing to
+    // write a profile onto, rather than a uid it made up.
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
+      ok: true,
+      target: { channelId: AGENT_CHANNEL, cardId: null, cardKind: null },
+    });
+    expect(runCardAction).toHaveBeenCalledOnce();
+  });
+
+  it("follows the newest matching card, not an older one still open", async () => {
+    const stale = card(
+      "card_create_agent_dead",
+      [
+        { id: "runtime", label: "Runtime", control: "radio", required: true, value: "claude", options: [{ id: "claude", label: "Claude" }] },
+      ],
+      "next",
+    );
+    // Written the way the wire really answers — NEWEST first — and by hand,
+    // not through `wirePage`, so this test states the order itself: the
+    // leftover open card is the OLDEST row, behind the turn just posted.
+    let wire: Array<Record<string, unknown>> = [TURN_1, stale];
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn(async (args: { cardId: string }) => {
+      if (args.cardId === "card_create_agent_1") {
+        wire = [TURN_3, { ...TURN_1, state: "done" }, stale];
+        return { cardId: args.cardId, actionId: "next", state: "done" };
+      }
+      return {
+        cardId: args.cardId,
+        actionId: "create",
+        state: "done",
+        agentChannelId: AGENT_CHANNEL,
+      };
+    });
+    const fetchChannel = vi.fn(async () => ({
+      messages: wire.map((row, i) => message(row, i)),
+      nextCursor: null,
+    }));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    expect((await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).ok).toBe(true);
+    expect(runCardAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ cardId: "card_create_agent_3" }));
+  });
+
+  it("reads a newest-first page: the newer open card wins and the stale guard sees it", async () => {
+    // One page, two live cards: an opening turn finished for @polar, and the
+    // turn-2 card it left behind. On the wire the turn-2 card is the NEWEST
+    // row and the opening turn sits behind it — the shape that made a driver
+    // reading the page backwards submit @polar's sequence for someone else.
+    const openedForPolar = card(
+      "card_create_agent_1",
+      [
+        { id: "name", label: "Agent name", control: "text", required: true, value: "polar" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "polar" },
+      ],
+      "next",
+      { state: "done", statusLabel: "@polar", actions: [] },
+    );
+    const leftBehind = card(
+      "card_create_agent_2",
+      [
+        { id: "runtime", label: "Runtime", control: "radio", required: true, value: "codex", options: [{ id: "codex", label: "Codex" }] },
+      ],
+      "next",
+    );
+    const runCompanyTabAction = vi.fn(async () => ({
+      // `add_agent` resurfaces the live card, exactly as the server does.
+      cardId: "card_create_agent_2",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn(async (args: { cardId: string }) => ({
+      cardId: args.cardId,
+      actionId: "next",
+      state: "done",
+    }));
+    const fetchChannel = vi.fn(async () => ({
+      // NEWEST first: [turn 2, the opening turn behind it].
+      messages: [message(leftBehind, 0), message(openedForPolar, 1)],
+      nextCursor: null,
+    }));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    // Someone else's draft: the guard must find the opening turn that is
+    // OLDER than the card it was handed, read @polar off it, and refuse.
+    expect(
+      await runCreateCloudBotEntry(api, "cmp_acme", { name: "Scout", handle: "scout" }, fast),
+    ).toEqual({ ok: false, reason: cloudBotStaleCardReason("polar"), blocked: false });
+    // Nothing was submitted: no bot made under the previous draft's handle.
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps the server's own refusal when its 'try again' asks for something it cannot fill", async () => {
+    // The refusal re-renders with a field this draft has no value for, so
+    // the recovery cannot be run. That does not turn a refusal into a miss.
+    const refused = card(
+      "card_create_agent_1",
+      [
+        { id: "name", label: "Agent name", control: "text", required: true, value: "acme" },
+        { id: "handle", label: "Handle", control: "text", required: true, value: "acme" },
+        { id: "budget", label: "Monthly budget", control: "text", required: true, value: "" },
+      ],
+      "retry",
+      { state: "blocked", statusLabel: "Blocked", reason: "@acme is already taken in Acme." },
+    );
+    const runCompanyTabAction = vi.fn(async () => ({
+      cardId: "card_create_agent_1",
+      actionId: "add_agent",
+      state: "open",
+      channelId: CHANNEL,
+    }));
+    const runCardAction = vi.fn();
+    const fetchChannel = vi.fn(async () => wirePage([refused]));
+    const api = { runCompanyTabAction, runCardAction, fetchChannel } as unknown as CloudBotEntryApi;
+
+    expect(await runCreateCloudBotEntry(api, "cmp_acme", DRAFT, fast)).toEqual({
+      ok: false,
+      // The server's words, in plain language, and still flagged a refusal.
+      reason: "@acme is already taken in Acme.",
+      blocked: true,
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
   });
 });

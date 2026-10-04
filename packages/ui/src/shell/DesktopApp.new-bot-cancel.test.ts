@@ -86,6 +86,8 @@ function adapter(
       listAvatarPacks: async () => ok({ packs: [], expiresAt: Date.now() + 60_000 }),
       updateAgentProfile: async () => ok({}),
       hasFeature: async () => ok(false),
+      // Acme has the New Bot flag, so "New bot" opens the takeover.
+      hasCompanyFeature: async () => true,
     },
     agents: {
       getProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),

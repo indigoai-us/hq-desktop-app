@@ -25,6 +25,7 @@
    */
   import {
     CLAUDE_PROVIDER_FLAG,
+    DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
     failure,
@@ -177,13 +178,16 @@
     type SetupBotStart,
   } from "../chat/setup-bot.js";
   import {
+    claudeSubscriptionSignInUrl,
     findLifecycleCardElement,
     runCreateCloudBotEntry,
+    runCreateCloudBotOneShotEntry,
     runCreateCompanyEntry,
     type EntryPointResult,
     type EntryPointTarget,
     type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
+  import { createNewBotCompanyFlags } from "../chat/create-bot/new-bot-companies.js";
   import {
     openCreateCompanyDraft,
     submitCreateCompany,
@@ -4043,13 +4047,23 @@
     chosenItemsByBot.delete(uid);
   }
   /**
+   * True for a bot made in the full-window New Bot flow on this device. Its
+   * connection record is written when that flow's create answers and stays
+   * for as long as the bot does. A bot made in the "+" modal has neither.
+   */
+  function madeInNewBotFlow(agentUid: string): boolean {
+    return Boolean(connectionRecords[agentUid]) || newCloudBotUids.includes(agentUid);
+  }
+  /**
    * Ask a new cloud bot to write its first message. The request travels on
    * the bot-only lane of the direct message, so the person sees the bot's
    * hello and never the request. One request per bot, however often asked.
+   * Only a bot made in the New Bot flow is asked: the first message is that
+   * flow's hand-off, and no other bot expects the request.
    */
   async function sendCloudBotHello(session: { agentUid: string; name: string }): Promise<boolean> {
     const uid = session.agentUid.trim();
-    if (!uid) return false;
+    if (!uid || !madeInNewBotFlow(uid)) return false;
     // The bot's status, then the company's connections for the bot to choose
     // cards from: one list call, the person as the caller. A list that
     // cannot be read means no apps section (cloud-bot-hello.ts).
@@ -4067,7 +4081,7 @@
   }
   async function cloudBotHelloArrived(session: { agentUid: string; helloAskedAt?: number | null }): Promise<boolean> {
     const uid = session.agentUid.trim();
-    if (!uid) return false;
+    if (!uid || !madeInNewBotFlow(uid)) return false;
     const result = await adapter.messaging.fetchDmThread({ withPersonUid: uid, limit: 30 });
     if (!result.ok) return false;
     const rows = normalizeConversationMessages(result.value);
@@ -7303,12 +7317,54 @@
    * so it takes the same route it takes for a Local bot: a PATCH onto the
    * agent profile once the bot has a uid. A retried create carries the draft
    * again, title included, because the flow still holds it.
+   *
+   * This is the "+" modal's create: the one for every company WITHOUT the
+   * `agents.desktop-agent-creation` flag, and for the modal's Cloud option in
+   * any company. It registers nothing for the full-window New Bot flow: the
+   * bot is not added to `newCloudBotUids`, gets no connection record, and is
+   * never asked for a first message. Those belong to
+   * `createCloudBotFromTakeover`.
    */
   async function createCloudBotEntry(
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
-    const result = await runCreateCloudBotEntry(
+    const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
+    if (result.ok) {
+      const title = draft.title?.trim() ?? "";
+      const agentUid = result.target.agentUid?.trim() ?? "";
+      if (title && agentUid) {
+        void saveNewBotProfile(agentUid, { title });
+      } else if (title) {
+        // The bot exists; only its subtitle is missing, and nothing here
+        // names the profile to write it to.
+        console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
+      }
+      navigateToEntryTarget(result.target, companyUid);
+      const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+      if (signInUrl) onopenurl?.(signInUrl);
+    }
+    return result;
+  }
+
+  /**
+   * New bot → Cloud, from the full-window New Bot takeover. One `create`
+   * that names the takeover as its surface and asks for a direct-message bot.
+   * The server runs that setup order only for a company with the
+   * `agents.desktop-agent-creation` flag, and the sidebar offers the takeover
+   * for no other company (`newBotCompanyUids`).
+   *
+   * The takeover owns what happens next (the waking screen, the hand-off to
+   * the direct message), so nothing is navigated here. The bot is remembered
+   * as made in the new flow on this device: that is what its sync strip's
+   * first-download reading, its connection cards and its first message key
+   * on.
+   */
+  async function createCloudBotFromTakeover(
+    companyUid: string,
+    draft: CloudBotDraft,
+  ): Promise<EntryPointResult> {
+    const result = await runCreateCloudBotOneShotEntry(
       {
         ...conversationApi,
         // The driver names its own failed exit in the support log. Without
@@ -7335,6 +7391,84 @@
     }
     return result;
   }
+
+  // ── Which companies get the full-window New Bot flow ─────────────────────
+  //
+  // The server runs the flow's setup order only for a company with the
+  // `agents.desktop-agent-creation` flag. `identity.hasFeature` is read per
+  // person with no company, so it cannot answer this; each company is read
+  // on its own, by uid. The sidebar says which companies a cloud bot can be
+  // made in; the answers are kept in memory for five minutes, one read per
+  // company, shared while it is out (new-bot-companies.ts).
+  //
+  // Empty until an answer arrives and empty when none could be had. While it
+  // is empty "New bot" opens the "+" modal's own flow, as it always did.
+  const newBotCompanyFlags = createNewBotCompanyFlags((companyUid) =>
+    adapter.identity.hasCompanyFeature
+      ? adapter.identity.hasCompanyFeature(DESKTOP_AGENT_CREATION_FLAG, companyUid)
+      : Promise.resolve(false),
+  );
+  let newBotCompanyUids = $state<string[]>([]);
+  /** The list the sidebar last named. A later list supersedes an answer to an earlier one. */
+  let newBotCandidateUids: string[] = [];
+  /** The signed-in account and session the answers in memory belong to. */
+  let newBotFlagsAccountKey: string | null = null;
+  function setNewBotCompanyUids(next: string[]): void {
+    if (next.length === newBotCompanyUids.length && next.every((uid, i) => uid === newBotCompanyUids[i])) return;
+    newBotCompanyUids = next;
+  }
+  /**
+   * Another account's answers are not this account's. When the account or
+   * its session (`tenantGeneration`) is not the one the answers were read
+   * for, forget them all and disown any read still out. True when it did.
+   *
+   * A company switch inside the account is not a reason to forget: the
+   * answers are per company, for the same person, so the re-keyed sidebar
+   * gets them back from memory with no new read.
+   */
+  function forgetOtherAccountNewBotFlags(): boolean {
+    const accountKey = `${tenantAccountId ?? ""}:${tenantGeneration}`;
+    if (newBotFlagsAccountKey === accountKey) return false;
+    const first = newBotFlagsAccountKey === null;
+    newBotFlagsAccountKey = accountKey;
+    if (first) return false;
+    newBotCompanyFlags.clear();
+    newBotCandidateUids = [];
+    setNewBotCompanyUids([]);
+    return true;
+  }
+  function resolveNewBotCompanies(companyUids: string[]): void {
+    forgetOtherAccountNewBotFlags();
+    newBotCandidateUids = companyUids;
+    if (!canCreateCloudBots || companyUids.length === 0) {
+      setNewBotCompanyUids([]);
+      return;
+    }
+    // What is already known applies at once; a read that is due follows.
+    setNewBotCompanyUids(newBotCompanyFlags.peek(companyUids));
+    void newBotCompanyFlags.resolve(companyUids).then((enabled) => {
+      // null: the account changed while the read was out.
+      if (enabled === null || newBotCandidateUids !== companyUids) return;
+      setNewBotCompanyUids(enabled);
+    });
+  }
+  // The account or its session changed. Whichever runs first, this or the
+  // sidebar naming the new account's companies, forgets the old answers; the
+  // other finds it already done.
+  $effect(() => {
+    void tenantAccountId;
+    void tenantGeneration;
+    untrack(() => {
+      const named = newBotCandidateUids;
+      const hadAccount = (newBotFlagsAccountKey ?? ":").split(":")[0] !== "";
+      if (!forgetOtherAccountNewBotFlags()) return;
+      // Sign-in finishing, not a switch between two accounts: the companies
+      // already named are this person's, and a read made before the session
+      // existed could only have failed. Read them again now. After a real
+      // switch the sidebar names the new account's companies itself.
+      if (!hadAccount && named.length > 0) resolveNewBotCompanies(named);
+    });
+  });
 
   const cardActionKeys: CardActionIdempotencyStore = new Map();
 
@@ -10590,6 +10724,9 @@
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
           oncreateagent={canCreateCloudBots ? createCloudBotEntry : null}
+          oncreatenewbot={canCreateCloudBots ? createCloudBotFromTakeover : null}
+          {newBotCompanyUids}
+          onagentcompanies={resolveNewBotCompanies}
           loadAgentStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
           removeAgent={(agentUid, options) => adapter.agents.deprovision(agentUid, options)}

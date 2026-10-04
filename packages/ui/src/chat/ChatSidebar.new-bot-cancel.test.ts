@@ -93,6 +93,13 @@ function mountSidebar(props: Record<string, unknown>): void {
       api: createFixtureChatSidebarApi(),
       seedDirectory: [],
       companies: [INDIGO],
+      // The host read the New Bot flag as on for Indigo, so "New bot" opens
+      // the takeover. The takeover creates through `oncreatenewbot`; the "+"
+      // modal's own create is a different function and is never used here.
+      newBotCompanyUids: ["cmp_indigo"],
+      oncreateagent: async (): Promise<EntryPointResult> => {
+        throw new Error("the takeover must not use the modal's create");
+      },
       loadClaudeProviderFlag: async () => ok(false),
       loadCloudProvisionOptions: async () => ok(OPTIONS),
       loadAgentStatus: async () => ({ ok: true, value: { setupState: { phase: "provisioning" } } }),
@@ -183,10 +190,10 @@ describe("Cancel while the create request is out", () => {
     // me back to 'Name' then I entered a diff name and before I could continue
     // it quickly took me back to the one I tried to Cancel."
     let finishCreate!: (result: EntryPointResult) => void;
-    const oncreateagent = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
+    const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
     const removeAgent = vi.fn(async () => REMOVED);
     const onbotremoved = vi.fn();
-    mountSidebar({ oncreateagent, removeAgent, onbotremoved });
+    mountSidebar({ oncreatenewbot, removeAgent, onbotremoved });
     await settle();
     await openTakeover();
     await pressCreate("Woah");
@@ -229,9 +236,9 @@ describe("Cancel while the create request is out", () => {
 
   it("says nothing was created when the cancelled request made no bot", async () => {
     let finishCreate!: (result: EntryPointResult) => void;
-    const oncreateagent = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
+    const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreateagent, removeAgent });
+    mountSidebar({ oncreatenewbot, removeAgent });
     await settle();
     await openTakeover();
     await pressCreate("Woah");
@@ -250,9 +257,9 @@ describe("Cancel while the create request is out", () => {
 
   it("lets the person start another bot at once while the first is removed", async () => {
     const finishers: Array<(result: EntryPointResult) => void> = [];
-    const oncreateagent = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishers.push(resolve); }));
+    const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishers.push(resolve); }));
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreateagent, removeAgent });
+    mountSidebar({ oncreatenewbot, removeAgent });
     await settle();
     await openTakeover();
     await pressCreate("Woah");
@@ -279,7 +286,7 @@ describe("Cancel for a bot that is starting", () => {
     let finishRemoval!: (answer: unknown) => void;
     const removeAgent = vi.fn(() => new Promise<unknown>((resolve) => { finishRemoval = resolve; }));
     const onbotremoved = vi.fn();
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent, onbotremoved });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved });
     await settle();
     await startBot("Nova");
     expect(q('[data-testid="chat-waking-bot-ring"]')).toBeTruthy();
@@ -320,7 +327,7 @@ describe("Cancel for a bot that is starting", () => {
       { ok: true, value: { terminal: true, setupState: { phase: "deprovisioned" } } },
     ];
     const removeAgent = vi.fn(async () => answers.shift());
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
     await settle();
     await startBot("Nova");
     await cancelAndConfirm();
@@ -337,7 +344,7 @@ describe("Cancel for a bot that is starting", () => {
   it("says removal failed and offers Try again, and never shows the bot as removed", async () => {
     const removeAgent = vi.fn(async (): Promise<unknown> => ({ ok: false, reason: "error", code: "http-502" }));
     const onbotremoved = vi.fn();
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent, onbotremoved });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved });
     await settle();
     await startBot("Nova");
     await cancelAndConfirm();
@@ -363,7 +370,7 @@ describe("Cancel for a bot that is starting", () => {
 
   it("keeps a bot that was not removed on the list after the takeover closes, and its row reopens the status", async () => {
     const removeAgent = vi.fn(async () => ({ ok: false, reason: "error", code: "http-403" }));
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
     await settle();
     await startBot("Nova");
     await cancelAndConfirm();
@@ -391,7 +398,7 @@ describe("Cancel for a bot that is starting", () => {
   it("puts a bot that was not removed back as a bot that is starting once the person accepts that", async () => {
     const removeAgent = vi.fn(async () => ({ ok: false, reason: "error", code: "http-403" }));
     const onbotremoved = vi.fn();
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent, onbotremoved });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved });
     await settle();
     await startBot("Nova");
     await cancelAndConfirm();
@@ -417,7 +424,7 @@ describe("Cancel for a bot that is starting", () => {
 
   it("clears a finished cancel when the takeover closes", async () => {
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
     await settle();
     await startBot("Nova");
     await cancelAndConfirm();
@@ -436,7 +443,7 @@ describe("Cancel for a bot that is starting", () => {
 describe("Leaving the waiting screen", () => {
   it("sends no removal and the bot keeps its sidebar row", async () => {
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreateagent: async () => created("agt_nova"), removeAgent });
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
     await settle();
     await startBot("Nova");
 
@@ -461,9 +468,9 @@ describe("Leaving the waiting screen", () => {
 describe("A create that finishes after the takeover was closed without Cancel", () => {
   it("keeps the bot starting in the sidebar and leaves an open create screen alone", async () => {
     let finishCreate!: (result: EntryPointResult) => void;
-    const oncreateagent = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
+    const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreateagent, removeAgent });
+    mountSidebar({ oncreatenewbot, removeAgent });
     await settle();
     await openTakeover();
     await pressCreate("Nova");
@@ -500,7 +507,7 @@ describe("A removal the app was in the middle of", () => {
     );
     const removeAgent = vi.fn(async () => REMOVED);
     const onbotremoved = vi.fn();
-    mountSidebar({ oncreateagent: async () => created("agt_other"), removeAgent, onbotremoved });
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), removeAgent, onbotremoved });
     await removalSettled(() => expect(onbotremoved).toHaveBeenCalledWith("agt_nova"));
 
     expect(removeAgent).toHaveBeenCalledWith("agt_nova", undefined);

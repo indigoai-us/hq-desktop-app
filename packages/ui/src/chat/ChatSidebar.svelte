@@ -295,12 +295,39 @@
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     /** In-modal company creation (name → details + invites → create). */
     companyCreate?: CompanyCreateSeam | null;
+    /**
+     * The "+" modal's Cloud option: the host walks the server's create-agent
+     * card and opens the new bot's channel. Works for every company.
+     */
     oncreateagent?:
       | ((
           companyUid: string,
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /**
+     * The full-window New Bot flow's create. Separate from `oncreateagent` on
+     * purpose: it asks the server for the chat-first setup order, which the
+     * server runs only for a company in `newBotCompanyUids`.
+     */
+    oncreatenewbot?:
+      | ((
+          companyUid: string,
+          draft: CloudBotDraft,
+        ) => Promise<EntryPointResult>)
+      | null;
+    /**
+     * Companies the full-window New Bot flow is offered for: those the host
+     * read the `agents.desktop-agent-creation` flag as on for. Empty until
+     * the host has an answer, and empty when it could not get one. While it
+     * is empty "New bot" opens the "+" modal's own flow, with no takeover.
+     */
+    newBotCompanyUids?: readonly string[];
+    /**
+     * Tells the host which companies a cloud bot can be made in, so it can
+     * read their flag: when the list changes, and when the "+" modal opens.
+     */
+    onagentcompanies?: ((companyUids: string[]) => void) | null;
     /** Polls a just-created cloud bot while its waking screen is open. */
     loadAgentStatus?: ((agentUid: string, brain?: "grok" | "codex" | "claude") => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
@@ -478,6 +505,9 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    oncreatenewbot = null,
+    newBotCompanyUids = [],
+    onagentcompanies = null,
     loadAgentStatus = null,
     retryAgent = null,
     removeAgent = null,
@@ -981,6 +1011,23 @@
     }
     return [...out.values()];
   });
+
+  /**
+   * Companies the full-window New Bot flow may create in: the ones a cloud
+   * bot can be added to AND the host read the flag as on for. The server
+   * runs that flow's setup order for no other company.
+   */
+  const newBotCompanies = $derived<ScopeCompany[]>(
+    oncreatenewbot && newBotCompanyUids.length > 0
+      ? agentCompanies.filter((company) =>
+          newBotCompanyUids.includes(company.companyUid),
+        )
+      : [],
+  );
+  /** A string, so the report below runs when the list changes and not on every recompute. */
+  const agentCompanyKey = $derived(
+    agentCompanies.map((company) => company.companyUid).join("\n"),
+  );
 
   let wakingBot = $state<WakingBotSession | null>(null);
   let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
@@ -1702,13 +1749,42 @@
   let createKind = $state<"channel" | "project">("channel");
   /** Which step the create modal opens on — "company" for New company. */
   let createStep = $state<"find" | "company" | "bot">("find");
-  /** Cloud creation starts in the dedicated full-window takeover. */
+  /**
+   * The full-window New Bot takeover. "New bot" opens it only when the host
+   * read the flag as on for at least one company (`newBotCompanies`), and it
+   * lists only those. Otherwise "New bot" opens the "+" modal's own flow.
+   */
   let newBotOpen = $state(false);
+  /**
+   * The companies the takeover was opened with. The host reads each flag
+   * again every five minutes, and a read that fails counts as off; a person
+   * part-way through the takeover keeps the list they started with instead
+   * of having the screen taken away under them.
+   */
+  let newBotCompaniesAtOpen = $state<ScopeCompany[] | null>(null);
+  const takeoverCompanies = $derived(
+    newBotOpen && newBotCompaniesAtOpen?.length
+      ? newBotCompaniesAtOpen
+      : newBotCompanies,
+  );
+  $effect(() => {
+    if (!newBotOpen) newBotCompaniesAtOpen = null;
+  });
 
   function openNewBotTakeover(): void {
     createOpen = false;
+    newBotCompaniesAtOpen = newBotCompanies;
     newBotOpen = true;
   }
+
+  // The host reads the flag per company. Tell it the list when it changes,
+  // and again when the "+" modal opens so an answer older than the host's
+  // five minutes is read again before the person reaches "New bot".
+  $effect(() => {
+    const key = agentCompanyKey;
+    void createOpen;
+    untrack(() => onagentcompanies?.(key ? key.split("\n") : []));
+  });
 
   function beginWakingBot(session: WakingBotSession): void {
     if (botIsCancelled(session.agentUid)) return;
@@ -1758,7 +1834,7 @@
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
-    if (!oncreateagent) return { ok: false, blocked: false, reason: "" };
+    if (!oncreatenewbot) return { ok: false, blocked: false, reason: "" };
     const attempt = {
       cancelled: false,
       name: draft.name,
@@ -1769,7 +1845,7 @@
     createInFlight = attempt;
     let result: EntryPointResult | null = null;
     try {
-      result = await oncreateagent(companyUid, draft);
+      result = await oncreatenewbot(companyUid, draft);
     } catch (err) {
       if (!attempt.cancelled) throw err;
     } finally {
@@ -4115,7 +4191,7 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
-      onnewcloudbot={openNewBotTakeover}
+      onnewcloudbot={newBotCompanies.length > 0 ? openNewBotTakeover : null}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {agentCompanies}
@@ -4145,11 +4221,11 @@
       canCreateLocalBot={!!oncreatebot}
       oncancel={cancelNewBotTakeover}
       onopenlocal={oncreatebot ? openLocalBotFromTakeover : null}
-      companies={agentCompanies}
+      companies={takeoverCompanies}
       currentCompanyUid={scopeUid}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
-      oncreate={oncreateagent ? createAgentFromTakeover : null}
+      oncreate={oncreatenewbot ? createAgentFromTakeover : null}
       oncancelcreate={cancelCreateInFlight}
       oncancelbot={removeAgent ? cancelWakingBot : null}
       removals={botRemovals}
