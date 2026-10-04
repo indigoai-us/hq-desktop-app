@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   AGENT_HELLO_REQUEST_LEAD,
-  buildAgentConnectMoreRequest,
   buildAgentHelloRequest,
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
@@ -31,7 +30,6 @@ describe("isHiddenRequestHit", () => {
   it("leaves out every request the app writes to a bot, from this person's side", () => {
     const requests = [
       HELLO,
-      buildAgentConnectMoreRequest({ personName: "Ada" }),
       buildAgentToolConnectedNotice({ personName: "Ada", name: "Linear", connectionId: "con_1" }),
       buildAgentSlackConnectedNotice({ personName: "Ada", botName: "nova" }),
     ];
