@@ -1,40 +1,82 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { EntryPointResult, EntryPointTarget, CloudBotDraft } from "../lifecycle-entry-points.js";
-  import { botHandle, cloudNameIssue, firstSignedInCloudRuntime, type BotRuntime } from "./create-bot-model.js";
+  import { botHandle, cloudBrainChoices, cloudNameIssue, firstSignedInCloudRuntime, type BotRuntime } from "./create-bot-model.js";
   import NewBotDawn from "./NewBotDawn.svelte";
 
   type Company = { companyUid: string; label: string };
   export interface NewBotCreated { name: string; companyUid: string; brain: BotRuntime; target: EntryPointTarget; }
   export interface NewBotUpgradeTarget { companyUid: string; channelId: string; cardId: string; }
   interface Props {
-    companies: readonly Company[]; currentCompanyUid?: string | null; runtimeReady?: Record<string, boolean> | null;
+    companies: readonly Company[];
+    currentCompanyUid?: string | null;
+    runtimeReady?: Record<string, boolean> | null;
+    /**
+     * True once the host read the Claude provider flag as on. Claude is
+     * offered only then: the server refuses a Claude bot for everyone else.
+     */
+    claudeEnabled?: boolean;
     loadProvisionOptions: (companyUid: string) => AdapterPromise<AgentProvisionOptionsView>;
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
-    oncomplete: (created: NewBotCreated) => void; onopenlocal?: (() => void) | null;
+    oncomplete: (created: NewBotCreated) => void;
+    onopenlocal?: (() => void) | null;
     /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
   }
-  let { companies, currentCompanyUid = null, runtimeReady = null, loadProvisionOptions, oncreate, oncomplete, onopenlocal = null, onupgrade = null }: Props = $props();
+  let {
+    companies,
+    currentCompanyUid = null,
+    runtimeReady = null,
+    claudeEnabled = false,
+    loadProvisionOptions,
+    oncreate,
+    oncomplete,
+    onopenlocal = null,
+    onupgrade = null,
+  }: Props = $props();
+
   // A company whose plan cannot host a cloud bot: where its upgrade card lives.
   let upgrade = $state<NewBotUpgradeTarget | null>(null);
   const upgradeCompany = $derived(companies.find((company) => company.companyUid === upgrade?.companyUid)?.label ?? "This company");
   const initialCompany = (companies.find((company) => company.companyUid === currentCompanyUid) ?? companies[0])?.companyUid ?? "";
-  let companyUid = $state(initialCompany); let name = $state(""); let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady));
-  let options = $state<AgentProvisionOptionsView | null>(null); let quoteStatus = $state<"loading" | "ready" | "error">("loading");
-  let selectedSize = $state<"basic" | "power" | "dev" | "">(""); let runtimeChosen = $state(false); let moreOptions = $state(false);
-  let attempted = $state(false); let busy = $state(false); let refusal = $state<string | null>(null); let step = $state<1 | 2 | 3>(1); let quoteGeneration = 0;
-  let companyFilter = $state(""); let companyFocusUid = $state(initialCompany);
-  const singleCompany = $derived(companies.length === 1); const finalStep = $derived(singleCompany ? 2 : 3);
+  let companyUid = $state(initialCompany);
+  let name = $state("");
+  /** The brains this screen shows. A brain that is not here is never selected. */
+  const brainChoices = $derived(cloudBrainChoices(claudeEnabled));
+  let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady, cloudBrainChoices(claudeEnabled)));
+  let options = $state<AgentProvisionOptionsView | null>(null);
+  let quoteStatus = $state<"loading" | "ready" | "error">("loading");
+  let selectedSize = $state<"basic" | "power" | "dev" | "">("");
+  let runtimeChosen = $state(false);
+  let moreOptions = $state(false);
+  let attempted = $state(false);
+  let busy = $state(false);
+  let refusal = $state<string | null>(null);
+  let step = $state<1 | 2 | 3>(1);
+  let quoteGeneration = 0;
+  let companyFilter = $state("");
+  let companyFocusUid = $state(initialCompany);
+  const singleCompany = $derived(companies.length === 1);
+  const finalStep = $derived(singleCompany ? 2 : 3);
   const filteredCompanies = $derived(companies.filter((company) => company.label.toLocaleLowerCase().includes(companyFilter.trim().toLocaleLowerCase())));
-  const derivedHandle = $derived(botHandle({ name, handle: "" })); const nameIssue = $derived(cloudNameIssue(name));
+  const derivedHandle = $derived(botHandle({ name, handle: "" }));
+  const nameIssue = $derived(cloudNameIssue(name));
   const selectedOption = $derived(options?.options.find((option) => option.key === selectedSize) ?? null);
   const defaultOption = $derived(options?.options.find((option) => option.default && option.selectable && option.netMonthlyCents !== null) ?? null);
-  const canSubmit = $derived(!busy && !!companyUid && !!selectedOption?.selectable && selectedOption.netMonthlyCents !== null && quoteStatus === "ready");
+  const canSubmit = $derived(
+    !busy &&
+      !!companyUid &&
+      brainChoices.includes(runtime) &&
+      !!selectedOption?.selectable &&
+      selectedOption.netMonthlyCents !== null &&
+      quoteStatus === "ready",
+  );
   const canCreate = $derived(canSubmit && !nameIssue);
+
   function monthly(cents: number): string { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
   function optionPrice(option: AgentProvisionOptionsView["options"][number]): string { return option.notBilled || option.netMonthlyCents === 0 ? "Included for your company" : option.netMonthlyCents === null ? "Price unavailable" : `${monthly(option.netMonthlyCents)}/month`; }
+  function brainLabel(choice: BotRuntime): string { return choice === "codex" ? "Codex" : choice === "claude" ? "Claude" : "Grok"; }
   function focusStep(): void { void tick().then(() => document.querySelector<HTMLElement>(`[data-testid="new-bot-step-${step}"] input:not([disabled]), [data-testid="new-bot-step-${step}"] button:not([disabled])`)?.focus()); }
   function go(next: 1 | 2 | 3): void { refusal = null; step = next; focusStep(); }
   function continueName(): void { attempted = true; if (!nameIssue) go(2); }
@@ -56,7 +98,20 @@
     if (next === null) return;
     event.preventDefault(); focusCompanyAt(next);
   }
-  $effect(() => { if (!runtimeChosen) runtime = firstSignedInCloudRuntime(runtimeReady); });
+
+  // The preselected brain follows what is signed in on this computer, among
+  // the brains this screen offers. A brain the person picked stays, unless it
+  // stops being offered (the Claude answer arrived and it is off): then the
+  // pick is dropped and the preselection takes over again.
+  $effect(() => {
+    const offered = brainChoices;
+    const ready = runtimeReady;
+    untrack(() => {
+      if (runtimeChosen && offered.includes(runtime)) return;
+      runtimeChosen = false;
+      runtime = firstSignedInCloudRuntime(ready, offered);
+    });
+  });
   $effect(() => { const uid = companyUid.trim(); const generation = ++quoteGeneration; options = null; quoteStatus = uid ? "loading" : "error"; if (!uid) return; let active = true; void loadProvisionOptions(uid).then((result) => { if (!active || generation !== quoteGeneration || !result.ok || !Array.isArray(result.value.options)) { if (active && generation === quoteGeneration) quoteStatus = "error"; return; } options = result.value; quoteStatus = "ready"; chooseSizeAfterLoad(result.value); }).catch(() => { if (active && generation === quoteGeneration) quoteStatus = "error"; }); return () => { active = false; }; });
   $effect(() => { focusStep(); });
   // The sun starts low and creeps while the create request is in flight; the
@@ -66,7 +121,13 @@
   const CREATING_FROM = 2; const CREATING_TO = 8;
   let creatingProgress = $state(CREATING_FROM);
   $effect(() => { creatingProgress = busy ? CREATING_TO : CREATING_FROM; });
-  async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." }));
+
+  async function submit(): Promise<void> {
+    attempted = true;
+    refusal = null;
+    if (!canCreate || busy) return;
+    busy = true;
+    const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." }));
     // Cancel was pressed while this request was out. The person has moved on:
     // no waiting screen, no message, nothing of this attempt left on screen.
     if (!result.ok && result.cancelled) return;
@@ -76,7 +137,8 @@
     if (result.ok && result.target.cardId) { if (onupgrade) upgrade = { companyUid, channelId: result.target.channelId, cardId: result.target.cardId }; else refusal = "This company's plan doesn't include cloud bots yet."; return; }
     if (result.ok) { oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target }); return; }
     if (result.upgrade && onupgrade) { upgrade = { companyUid, ...result.upgrade }; return; }
-    const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message; }
+    const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message;
+  }
   function onKeydown(event: KeyboardEvent): void { if (event.key !== "Enter" || busy) return; const target = event.target as HTMLElement; if (target.tagName === "BUTTON") return; event.preventDefault(); if (step === 1) continueName(); else if (step < finalStep) go((step + 1) as 2 | 3); else void submit(); }
 </script>
 
@@ -115,7 +177,7 @@
     {#if step === 1}
       <section class="new-bot-step" data-testid="new-bot-step-1"><p class="new-bot-create-copy">This is how your new teammate will appear in HQ.</p><label class="new-bot-create-label" for="new-bot-name">Name</label><input id="new-bot-name" class="new-bot-create-input" data-testid="new-bot-name" value={name} aria-invalid={attempted && nameIssue ? "true" : undefined} aria-describedby="new-bot-create-issue" autocomplete="off" oninput={(event) => { name = (event.currentTarget as HTMLInputElement).value; }} /></section>
     {:else if step === 2}
-      <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each (["codex", "claude", "grok"] as const) as choice}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{choice === "codex" ? "Codex" : choice === "claude" ? "Claude" : "Grok"}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this Mac</small>{/if}</label>{/each}</fieldset></section>
+      <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each brainChoices as choice (choice)}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{brainLabel(choice)}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this Mac</small>{/if}</label>{/each}</fieldset></section>
     {:else}
       <section class="new-bot-step" data-testid="new-bot-step-3"><p class="new-bot-create-copy">Your bot will work with this company from the start.</p>{#if companies.length > 12}<label class="new-bot-filter-label" for="new-bot-company-filter">Find a company</label><input id="new-bot-company-filter" class="new-bot-create-input" data-testid="new-bot-company-filter" value={companyFilter} autocomplete="off" oninput={(event) => { companyFilter = (event.currentTarget as HTMLInputElement).value; }} />{/if}<div class="new-bot-companies" data-testid="new-bot-company-grid" role="radiogroup" aria-label="Company" onkeydown={onCompanyKeydown}>{#each filteredCompanies as company (company.companyUid)}<button type="button" class:selected={companyUid === company.companyUid} class="new-bot-company" role="radio" aria-checked={companyUid === company.companyUid} aria-label={company.label} title={company.label} data-company-uid={company.companyUid} tabindex={companyFocusUid === company.companyUid ? 0 : -1} disabled={busy} onclick={() => selectCompany(company.companyUid)} onfocus={() => (companyFocusUid = company.companyUid)}><span class="new-bot-company-monogram" aria-hidden="true">{company.label.trim().slice(0, 1).toLocaleUpperCase()}</span><span class="new-bot-company-label">{company.label}</span>{#if companyUid === company.companyUid}<svg class="new-bot-company-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>{/if}</button>{:else}<p class="new-bot-company-empty">No company matches that.</p>{/each}</div>{#if moreOptions}<fieldset class="new-bot-sizes" disabled={busy || quoteStatus !== "ready"}><legend class="new-bot-create-label">Machine size</legend>{#each options?.options ?? [] as option (option.key)}<label class:selected={selectedSize === option.key} class="new-bot-size"><input type="radio" name="new-bot-size" value={option.key} checked={selectedSize === option.key} disabled={!option.selectable || option.netMonthlyCents === null} onchange={() => (selectedSize = option.key)} /><span>{option.productName} · {optionPrice(option)}</span></label>{:else}<span class="new-bot-muted">{quoteStatus === "loading" ? "Loading server options..." : "Server options could not be loaded."}</span>{/each}</fieldset>{/if}</section>
     {/if}

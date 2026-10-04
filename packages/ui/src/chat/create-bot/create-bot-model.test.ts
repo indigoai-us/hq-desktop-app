@@ -7,6 +7,7 @@ import {
   canCreate,
   cloudNameIssue,
   companyTemplates,
+  cloudBrainChoices,
   firstBlockingStep,
   firstReadyRuntime,
   firstSignedInCloudRuntime,
@@ -136,6 +137,20 @@ describe("firstSignedInCloudRuntime", () => {
     expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true })).toBe("claude");
     expect(firstSignedInCloudRuntime({ claude: false, codex: false, grok: false })).toBe("codex");
     expect(firstSignedInCloudRuntime(null)).toBe("codex");
+  });
+
+  it("never answers a brain the caller does not offer (review A-C1)", () => {
+    // Claude signed in on this computer, but the company does not have the
+    // Claude provider: the New Bot flow offers Codex and Grok only.
+    const offered = cloudBrainChoices(false);
+    expect(offered).toEqual(["codex", "grok"]);
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, offered)).toBe("codex");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: true }, offered)).toBe("grok");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: false }, offered)).toBe("codex");
+    expect(firstSignedInCloudRuntime(null, offered)).toBe("codex");
+    // With the provider on, Claude is offered and a signed-in Claude leads.
+    expect(cloudBrainChoices(true)).toEqual(["codex", "claude", "grok"]);
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, cloudBrainChoices(true))).toBe("claude");
   });
 });
 

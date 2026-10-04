@@ -3,6 +3,7 @@
   import glassWhiteboard from "./assets/new-bot-wallpapers/glass-whiteboard.jpg";
   import nodeConstellation from "./assets/new-bot-wallpapers/node-constellation.jpg";
   import roadSunrise from "./assets/new-bot-wallpapers/road-sunrise.jpg";
+  import { onMount } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
@@ -27,6 +28,12 @@
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
     loadProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /**
+     * Whether the Claude provider is on. The same reader the "+" modal's
+     * create uses, so both flows agree. Without it, or until it answers yes,
+     * Claude is not offered.
+     */
+    loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
     getStatus?: ((agentUid: string, brain?: BrainProvider) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
@@ -66,6 +73,7 @@
     currentCompanyUid = null,
     runtimeReady = null,
     loadProvisionOptions = null,
+    loadClaudeProviderFlag = null,
     oncreate = null,
     getStatus = null,
     retryAgent = null,
@@ -92,6 +100,27 @@
   const wallpaper = $derived(wallpapers[Math.abs(wallpaperIndex) % wallpapers.length] ?? glassWhiteboard);
 
   let dialogEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Claude is offered only once the host says the provider is on. A read
+   * that fails, or no reader at all, leaves it off: the server answers a
+   * Claude create with a refusal for everyone who does not have it.
+   */
+  let claudeEnabled = $state(false);
+  onMount(() => {
+    if (!loadClaudeProviderFlag) return;
+    let active = true;
+    void loadClaudeProviderFlag()
+      .then((result) => {
+        if (active) claudeEnabled = result.ok && result.value === true;
+      })
+      .catch(() => {
+        if (active) claudeEnabled = false;
+      });
+    return () => {
+      active = false;
+    };
+  });
   let localWakingSession = $state<WakingBotSession | null>(null);
   /**
    * The host's session is shown only when the takeover opens on it (the
@@ -334,6 +363,7 @@
           {companies}
           {currentCompanyUid}
           {runtimeReady}
+          {claudeEnabled}
           loadProvisionOptions={loadProvisionOptions}
           oncreate={createBot}
           oncomplete={startWaking}

@@ -4225,6 +4225,7 @@
       currentCompanyUid={scopeUid}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
+      {loadClaudeProviderFlag}
       oncreate={oncreatenewbot ? createAgentFromTakeover : null}
       oncancelcreate={cancelCreateInFlight}
       oncancelbot={removeAgent ? cancelWakingBot : null}

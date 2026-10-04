@@ -183,6 +183,65 @@ describe("NewBotTakeover", () => {
     );
   });
 
+  describe("the Claude provider flag (review A-C1)", () => {
+    const BASIC = {
+      key: "basic" as const,
+      productName: "Basic",
+      instanceType: "t4g.medium",
+      listCents: 5000,
+      default: true,
+      selectable: true,
+      netMonthlyCents: 5000,
+      deltaCents: 5000,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 1,
+      workers: 1,
+    };
+    async function brainsOffered(props: Record<string, unknown>): Promise<string[]> {
+      render({
+        companies: [{ companyUid: "cmp_acme", label: "Acme" }],
+        currentCompanyUid: "cmp_acme",
+        // Claude is the brain signed in on this computer.
+        runtimeReady: { claude: true, codex: false, grok: false },
+        loadProvisionOptions: async () => ({
+          ok: true as const,
+          value: { defaultInstanceType: "t4g.medium", catalogVersion: "test", options: [BASIC] },
+        }),
+        oncreate: async () => ({ ok: false as const, blocked: false, reason: "" }),
+        ...props,
+      });
+      await settle();
+      const input = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      input.value = "Nova";
+      input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await settle();
+      document.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+      await settle();
+      return [...document.querySelectorAll<HTMLInputElement>("input[name='new-bot-brain']")].map(
+        (brain) => `${brain.value}${brain.checked ? "*" : ""}`,
+      );
+    }
+
+    it("offers Claude when the host says the provider is on", async () => {
+      const loadClaudeProviderFlag = vi.fn(async () => ({ ok: true as const, value: true }));
+      expect(await brainsOffered({ loadClaudeProviderFlag })).toEqual(["codex", "claude*", "grok"]);
+      expect(loadClaudeProviderFlag).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["says it is off", async () => ({ ok: true as const, value: false })],
+      ["could not be read", async () => ({ ok: false as const, reason: "error" as const, code: "http-500" })],
+      ["threw", async () => { throw new Error("offline"); }],
+    ])("leaves Claude out when the flag %s", async (_label, loadClaudeProviderFlag) => {
+      expect(await brainsOffered({ loadClaudeProviderFlag })).toEqual(["codex*", "grok"]);
+    });
+
+    it("leaves Claude out when the host has no flag reader", async () => {
+      expect(await brainsOffered({})).toEqual(["codex*", "grok"]);
+    });
+  });
+
   it("shows that the bot is live before opening chat once the status says ready", async () => {
     vi.useFakeTimers();
     const onopenchat = vi.fn();

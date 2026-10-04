@@ -169,13 +169,30 @@ export function firstReadyRuntime(ready: Record<string, boolean> | null | undefi
 }
 
 /**
+ * The brains the full-window New Bot flow offers. Claude is offered only when
+ * the host read the Claude provider flag as on: the server refuses a Claude
+ * bot for everyone else (403 CLAUDE_PROVIDER_NOT_ENABLED), so a brain that is
+ * not offered must never be shown or preselected.
+ */
+export function cloudBrainChoices(claudeEnabled: boolean): BotRuntime[] {
+  return claudeEnabled ? ["codex", "claude", "grok"] : ["codex", "grok"];
+}
+
+/**
  * Cloud creation is subscription-only. Prefer the provider already signed in
  * on this Mac, but make Codex the predictable first choice when none are.
+ * `offered` narrows the answer to the brains the caller shows: a signed-in
+ * brain that is not offered is never the answer.
  */
 export function firstSignedInCloudRuntime(
   ready: Record<string, boolean> | null | undefined,
+  offered?: readonly BotRuntime[],
 ): BotRuntime {
-  return LOCAL_BOT_RUNTIMES.find((runtime) => ready?.[runtime.id] === true)?.id ?? "codex";
+  const candidates = offered
+    ? LOCAL_BOT_RUNTIMES.filter((runtime) => offered.includes(runtime.id))
+    : LOCAL_BOT_RUNTIMES;
+  const fallback = !offered || offered.includes("codex") ? "codex" : candidates[0]?.id ?? "codex";
+  return candidates.find((runtime) => ready?.[runtime.id] === true)?.id ?? fallback;
 }
 
 export function runtimeIsReady(ready: Record<string, boolean> | null | undefined, id: string): boolean {
