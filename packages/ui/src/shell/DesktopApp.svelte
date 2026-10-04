@@ -7144,7 +7144,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -7162,7 +7162,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchDmThread(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),

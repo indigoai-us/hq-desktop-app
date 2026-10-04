@@ -2978,6 +2978,10 @@ enum ChannelDeliveryKind {
     Added,
 }
 
+fn channel_message_is_banner_eligible(message: &hq_desktop_core::messages::ChannelMessage) -> bool {
+    !is_agent_audience(message.audience.as_deref())
+}
+
 #[derive(Clone)]
 struct MentionDelivery {
     channel_id: String,
@@ -3124,6 +3128,11 @@ async fn detect_and_deliver_mentions(
                     &person_uid,
                     &cognito_sub,
                 ) {
+                    continue;
+                }
+                // Explicit agent-lane messages are not reader-facing. Keep
+                // channel banners aligned with the DM notification filter.
+                if !channel_message_is_banner_eligible(message) {
                     continue;
                 }
                 let mentioned = is_mention_of_me(message, &person_uid, &cognito_sub);
@@ -4609,6 +4618,16 @@ mod tests {
             }}"#
         ))
         .expect("mention message")
+    }
+
+    #[test]
+    fn agent_lane_channel_messages_do_not_qualify_for_banners() {
+        let mut message = mention_of("prs_stefan");
+        message.audience = Some("agent".to_string());
+        assert!(!channel_message_is_banner_eligible(&message));
+
+        message.audience = Some("human".to_string());
+        assert!(channel_message_is_banner_eligible(&message));
     }
 
     #[test]
