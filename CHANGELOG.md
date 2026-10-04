@@ -14,6 +14,7 @@ The release moves it under the version it ships in.
 - While a bot works on an answer in its direct message, the "working" row shows what the bot is doing, and it goes away when the answer arrives.
 - App logos on connection cards are the app's own brand mark, shipped inside HQ. An app HQ has no mark for shows a plain app icon. No logo is loaded from another site.
 - Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
+- First-launch telemetry can record whether sign-in was reached or which setup, update, or app-exit path diverted it; the measurement is off by default.
 - Updater restarts now carry a short-lived, version-checked marker through the GUI restart fallback when start-at-login is disabled.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.

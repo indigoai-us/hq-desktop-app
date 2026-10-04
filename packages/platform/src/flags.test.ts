@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
+import { FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG } from "./index.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
@@ -50,6 +52,12 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("exports first-launch sign-in reach through the public platform entrypoint", () => {
+    expect(PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
+      "desktop.first-launch-signin-reach-telemetry-v1",
+    );
+  });
+
   it("maps company name prefill to its hq-flags key", () => {
     expect(COMPANY_NAME_PREFILL_FLAG).toBe("desktop.company-name-prefill-v1");
     expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
@@ -67,6 +75,15 @@ describe("registry key mapping", () => {
     expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
     expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
       FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
+  });
+
+  it("registers first-launch sign-in reach as an hq-flags rollout key", () => {
+    expect(FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
+      "desktop.first-launch-signin-reach-telemetry-v1",
+    );
+    expect(registryKeyFor(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).toBe(
+      FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     );
   });
 

@@ -37,6 +37,11 @@ import {
 } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
 import type { CompanyNamePrefillStatus } from './company-name-prefill';
+import {
+  FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES,
+  normalizeFirstLaunchSignInReachOutcome,
+  type FirstLaunchSignInReachOutcome,
+} from './first-launch-signin-reach-telemetry';
 
 const SCHEMA_VERSION = 4;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
@@ -195,7 +200,10 @@ export interface OnboardingStepTelemetry {
     properties: Pick<OnboardingStepProperties, 'retryAttempted' | 'retryResult'>,
   ): void;
   /** Returns whether this call recorded the installation's first launch. */
-  recordFirstLaunch(): boolean;
+  recordFirstLaunch(
+    outcome?: FirstLaunchSignInReachOutcome,
+    installAttemptId?: string,
+  ): boolean;
   /** Retry records that could not be delivered before authentication existed. */
   flush(): Promise<void>;
   /**
@@ -237,9 +245,12 @@ export function createOnboardingStepTelemetry(
     }
   }
 
-  function record({ properties, occurredAt }: RecordOnboardingStep): void {
+  function recordWithSessionId(
+    { properties, occurredAt }: RecordOnboardingStep,
+    sessionId: string,
+  ): void {
     const event: OnboardingStepEvent = {
-      sessionId: state.sessionId,
+      sessionId,
       occurredAt: occurredAt ?? now().toISOString(),
       properties: {
         ...properties,
@@ -252,6 +263,10 @@ export function createOnboardingStepTelemetry(
     persist();
     fireInstallerPings(event);
     void flush().catch((error) => console.warn('[onboarding] telemetry flush failed', error));
+  }
+
+  function record(record: RecordOnboardingStep): void {
+    recordWithSessionId(record, state.sessionId);
   }
 
   function fireInstallerPings(event: OnboardingStepEvent): void {
@@ -389,16 +404,23 @@ export function createOnboardingStepTelemetry(
       state = { ...state, sessionId: installAttemptId };
       persist();
     },
-    recordFirstLaunch() {
+    recordFirstLaunch(
+      outcome?: FirstLaunchSignInReachOutcome,
+      installAttemptId?: string,
+    ) {
       if (state.firstLaunchRecorded) return false;
       state.firstLaunchRecorded = true;
-      record({
+      const eventSessionId = installAttemptId && INSTALL_ATTEMPT_ID_RE.test(installAttemptId)
+        ? installAttemptId
+        : state.sessionId;
+      recordWithSessionId({
         properties: {
           step: 'welcome-signin',
-          action: 'entered',
+          action: outcome && outcome !== 'reached-signin' ? 'skipped' : 'entered',
           flow: 'first_launch',
+          ...(outcome ? { outcome } : {}),
         },
-      });
+      }, eventSessionId);
       persist();
       return true;
     },
@@ -417,7 +439,6 @@ export function desktopPropertiesForOnboardingStep(
   for (const key of [
     'component',
     'flow',
-    'outcome',
     'provider',
     'appVersion',
     'durationMs',
@@ -428,6 +449,19 @@ export function desktopPropertiesForOnboardingStep(
   ] as const) {
     const value = event.properties[key];
     if (value !== undefined) properties[key] = value;
+  }
+  const outcome = event.properties.outcome;
+  if (event.properties.step === 'welcome-signin' && event.properties.flow === 'first_launch') {
+    const reachOutcome = normalizeFirstLaunchSignInReachOutcome(outcome);
+    const actionMatchesOutcome = reachOutcome === 'reached-signin'
+      ? event.properties.action === 'entered'
+      : reachOutcome !== undefined && event.properties.action === 'skipped';
+    if (reachOutcome !== undefined && actionMatchesOutcome) properties.outcome = reachOutcome;
+  } else if (
+    outcome !== undefined &&
+    !FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES.includes(outcome as FirstLaunchSignInReachOutcome)
+  ) {
+    properties.outcome = outcome;
   }
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;

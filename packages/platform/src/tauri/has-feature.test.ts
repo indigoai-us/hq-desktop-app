@@ -2,11 +2,31 @@ import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
-import { COMPANY_NAME_PREFILL_FLAG, PERSONAL_TRANSCRIPTS_FLAG } from "../flags.js";
+import {
+  COMPANY_NAME_PREFILL_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
+  registryKeyFor,
+} from "../flags.js";
 
 interface Invocation {
   cmd: string;
   args?: Record<string, unknown>;
+}
+
+function makeFlagClient(
+  overrides: Pick<FlagClient, "ready" | "snapshot" | "isEnabled"> &
+    Partial<Pick<FlagClient, "refresh">>,
+): FlagClient {
+  return {
+    explain: () => ({ value: false, source: "fallback" }),
+    refresh: async () => {},
+    observeVersion: () => {},
+    onSnapshotChange: () => () => {},
+    version: () => overrides.snapshot()?.version ?? null,
+    close: () => {},
+    ...overrides,
+  };
 }
 
 describe("TauriPlatformAdapter hasFeature", () => {
@@ -105,6 +125,46 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
+  it('honors the first-launch sign-in reach flag and fails closed without a snapshot', async () => {
+    expect(registryKeyFor(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).toBe(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+    const enabledSnapshot = vi.fn(() => ({ version: 1, flags: { [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: true } }));
+    const enabledCheck = vi.fn(() => true);
+    const enabled = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
+        throw new Error(`unexpected ${cmd}`);
+      },
+      createFlagClient: () => makeFlagClient({
+        ready: async () => {},
+        snapshot: enabledSnapshot,
+        isEnabled: enabledCheck,
+      }),
+    });
+    const enabledResult = await enabled.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+    expect(enabledSnapshot).toHaveBeenCalled();
+    expect(enabledCheck).toHaveBeenCalledWith(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+    expect(enabledResult).toEqual({
+      ok: true,
+      value: true,
+    });
+
+    const unavailable = createSyncPlatformAdapter({
+      invoke: async (cmd) => {
+        if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
+        throw new Error(`unexpected ${cmd}`);
+      },
+      createFlagClient: () => makeFlagClient({
+        ready: async () => { throw new Error('offline'); },
+        snapshot: () => null,
+        isEnabled: () => true,
+      }),
+    });
+    await expect(unavailable.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+  });
+
   it('force-refreshes the hq-flags client for identity-scoped route resolution', async () => {
     const refresh = vi.fn(async () => {});
     const adapter = createSyncPlatformAdapter({

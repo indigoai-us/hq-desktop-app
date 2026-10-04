@@ -78,6 +78,8 @@ export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
 export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
+export const FIRST_LAUNCH_SIGNIN_REACH_FLAG =
+  "desktop.first-launch-signin-reach-telemetry-v1";
 export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
   "desktop.company-route-lookup-retry-v1";
 export const COMPANY_NAME_PREFILL_FLAG = "desktop.company-name-prefill-v1";
@@ -111,6 +113,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
+  [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [COMPANY_NAME_PREFILL_FLAG]: COMPANY_NAME_PREFILL_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
