@@ -416,6 +416,14 @@ export interface IdentityApi {
   }>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
+  /**
+   * One company's value for a flag, for the signed-in person. `hasFeature` is
+   * read per person with no company, so it cannot answer for a company flag.
+   * Total: resolves `false` for an unreadable, missing or malformed answer and
+   * never rejects. Not cached: the caller owns how often it asks. Hosts with
+   * no company flag source (web) resolve `false`.
+   */
+  hasCompanyFeature?(flag: string, companyUid: string): Promise<boolean>;
   /** Status-aware flag read for telemetry that distinguishes explicit-off from missing/unreadable. */
   resolveFeatureFlagStatus?(flag: string): AdapterPromise<{
     enabled: boolean;

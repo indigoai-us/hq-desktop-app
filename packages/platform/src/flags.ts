@@ -67,6 +67,7 @@
 
 import {
   createFlagClient,
+  isFlagSnapshot,
   type FlagClient,
   type FlagClientOptions,
   type FlagSnapshot,
@@ -121,6 +122,15 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };
+
+/**
+ * The full-window New Bot flow. A COMPANY flag: the server runs the chat-first
+ * setup order only for a company that has it. It is deliberately NOT in
+ * `LEGACY_TO_REGISTRY`: that table is read per person, with no company, and a
+ * per-person answer says nothing about the company the bot is created in.
+ * Read it with `resolveCompanyFeature` and the company's uid.
+ */
+export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
@@ -356,4 +366,61 @@ export function createFeatureFlagGate(
     },
   };
   return gate;
+}
+
+/** How long one company flag read may take before it counts as off. */
+export const COMPANY_FEATURE_TIMEOUT_MS = 10_000;
+
+export interface CompanyFeatureOptions {
+  /** Test seam. Production uses `COMPANY_FEATURE_TIMEOUT_MS`. */
+  timeoutMs?: number;
+}
+
+/**
+ * One company's value for one flag, as hq-flags resolves it for the signed-in
+ * person: a single `GET /v1/flags/resolve?companyUid=<uid>`. The route checks
+ * the caller's membership and applies the company override.
+ *
+ * Fail closed and total: true only when the answer is a valid snapshot (the
+ * same `isFlagSnapshot` shape the registry client accepts) whose flags map
+ * holds the key as exactly `true`. Any other status, a missing key, a
+ * malformed body, a timeout or a throw is `false`, and no rejection escapes.
+ *
+ * Nothing is cached here. The caller owns how often it asks.
+ */
+export async function resolveCompanyFeature(
+  fetchFn: typeof fetch,
+  flag: string,
+  companyUid: string,
+  options: CompanyFeatureOptions = {},
+): Promise<boolean> {
+  const key = flag.trim();
+  const uid = companyUid.trim();
+  if (!key || !uid) return false;
+  const read = async (): Promise<boolean> => {
+    try {
+      const res = await fetchFn(
+        `/v1/flags/resolve?companyUid=${encodeURIComponent(uid)}`,
+        { method: "GET" },
+      );
+      if (res.status !== 200) return false;
+      const body: unknown = await res.json();
+      if (!isFlagSnapshot(body)) return false;
+      return Object.hasOwn(body.flags, key) && body.flags[key] === true;
+    } catch {
+      return false;
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<boolean>((resolve) => {
+    timer = setTimeout(
+      () => resolve(false),
+      options.timeoutMs ?? COMPANY_FEATURE_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([read(), deadline]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }

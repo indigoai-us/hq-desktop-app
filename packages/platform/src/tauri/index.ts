@@ -48,6 +48,7 @@ import {
   PERSONAL_TRANSCRIPTS_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
+  resolveCompanyFeature,
   type FeatureFlagGate,
 } from "../flags.js";
 
@@ -277,6 +278,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
+    hasCompanyFeature: (flag, companyUid) =>
+      resolveCompanyFeature(
+        createHqProFlagFetch(this.invokeFn),
+        flag,
+        companyUid,
+      ),
     subscribeFeature: (flag, onChange) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? () => {}
