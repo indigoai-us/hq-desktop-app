@@ -1258,6 +1258,19 @@ export function suggestionsForMessage(message: { body?: string | null; richConte
   return block ? [...block.items] : [];
 }
 
+/**
+ * What a suggested reply sends: the host's own text for that label when it
+ * has one, else the label itself. The label is the bot's, so it is looked up
+ * as an own key only: a label like "constructor" or "toString" is on every
+ * object, and would otherwise send whatever the language keeps under that
+ * name in place of the words the person pressed.
+ */
+export function replyForSuggestion(label: string, texts: Readonly<Record<string, string>> | null | undefined): string {
+  if (!texts || !Object.prototype.hasOwnProperty.call(texts, label)) return label;
+  const text = texts[label];
+  return typeof text === "string" ? text : label;
+}
+
 /** True when this message carries a `connect` block of its own. */
 export function messageHasConnectBlock(message: { body?: string | null; richContent?: unknown }): boolean {
   return richContentForMessage(message).rich?.blocks.some((block) => block.kind === "connect") ?? false;

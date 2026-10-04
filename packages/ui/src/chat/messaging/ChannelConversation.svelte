@@ -81,12 +81,17 @@
   import RichMessageContent from "./RichMessageContent.svelte";
   import {
     messageHasVisibleContent,
+    replyForSuggestion,
     richContentForMessage,
     withExtraBlocks,
     type ExtractedRichContent,
     type RichBlock,
   } from "./richMessageContent";
-  import type { ConversationConnectionCards } from "./connection-card-model.js";
+  import {
+    messageMayDrawCards,
+    type ConnectionCards,
+    type ConversationConnectionCards,
+  } from "./connection-card-model.js";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
@@ -401,6 +406,18 @@
     const extra = extraBlocksByEventId?.[msg.eventId];
     if (!extra) return own;
     return { text: own.text, rich: withExtraBlocks(own.rich, extra) };
+  }
+
+  /**
+   * The connection cards a message may draw: the host's, for a message the
+   * bot of this direct message sent. Never for the person's own message: a
+   * `connect` block they typed or pasted is their text, not the bot's offer.
+   */
+  function cardsForMessage(msg: ConversationMessageWire): ConnectionCards | null {
+    if (!connections) return null;
+    const botUid = connections.botUid ?? suggestionsFrom;
+    if (!messageMayDrawCards(msg, { botUid, selfUid: selfPersonUid })) return null;
+    return connections.cardsFor(msg);
   }
 
   /** Presence-store online flag for an actor in this conversation's company. */
@@ -1021,7 +1038,7 @@
     // to the timeline at once, which already changes the key.
     if (composerLocked || !visibleSuggestions.includes(label)) return;
     usedSuggestionKey = suggestionKey;
-    const text = suggestedReplyText?.[label] ?? label;
+    const text = replyForSuggestion(label, suggestedReplyText);
     if (replyInputEl) replyInputEl.value = text;
     replyText = text;
     await send();
@@ -2032,9 +2049,7 @@
                       ondecision={handleDecision}
                       {answeredQuestionIds}
                       {answeredChoices}
-                      connections={connections
-                        ? connections.cardsFor(msg)
-                        : null}
+                      connections={cardsForMessage(msg)}
                     />
                   {/if}
                   {#if msg.details?.trim()}

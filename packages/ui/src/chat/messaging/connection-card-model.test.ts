@@ -20,6 +20,7 @@ import {
   loadConnectionRecords,
   markConnecting,
   markDeclined,
+  messageMayDrawCards,
   markSlackAnnounced,
   markToolAnnounced,
   pendingAnnouncements,
@@ -998,6 +999,41 @@ describe("a card whose main button opens a modal", () => {
     expect(connectionCardView("slack", input({ modalTargets: slackOnly, inFlight: opening })).primaryPending).toBe(true);
     // The same press does not hold a card that connects.
     expect(connectionCardView("slack", input({ modalTargets: none, inFlight: opening })).primaryPending).toBe(false);
+  });
+});
+
+describe("messageMayDrawCards: only the bot of this direct message", () => {
+  const from = (uid: string | null | undefined) => ({ fromPersonUid: uid });
+
+  it("draws cards for the bot's message when the host names the bot", () => {
+    const who = { botUid: "agt_nova", selfUid: "prs_me" };
+    expect(messageMayDrawCards(from("agt_nova"), who)).toBe(true);
+    expect(messageMayDrawCards(from(" agt_nova "), who)).toBe(true);
+    // The person's own, and anyone else's.
+    expect(messageMayDrawCards(from("prs_me"), who)).toBe(false);
+    expect(messageMayDrawCards(from("prs_teammate"), who)).toBe(false);
+    expect(messageMayDrawCards(from("agt_other"), who)).toBe(false);
+  });
+
+  it("never draws cards for the person's own message, whatever the host says the bot is", () => {
+    expect(messageMayDrawCards(from("prs_me"), { botUid: "prs_me", selfUid: "prs_me" })).toBe(false);
+    expect(messageMayDrawCards(from("prs_me"), { selfUid: "prs_me" })).toBe(false);
+    expect(messageMayDrawCards(from("prs_me"), { botUid: null, selfUid: " prs_me " })).toBe(false);
+  });
+
+  it("without the bot's uid, draws for a sender who is known not to be the person", () => {
+    expect(messageMayDrawCards(from("agt_nova"), { selfUid: "prs_me" })).toBe(true);
+    expect(messageMayDrawCards(from("agt_nova"), { botUid: "  ", selfUid: "prs_me" })).toBe(true);
+  });
+
+  it("draws none when nobody can say who sent it", () => {
+    expect(messageMayDrawCards(from("agt_nova"), {})).toBe(false);
+    expect(messageMayDrawCards(from("agt_nova"), { botUid: null, selfUid: null })).toBe(false);
+    for (const unknown of [null, undefined, "", "   "]) {
+      expect(messageMayDrawCards(from(unknown), { botUid: "agt_nova", selfUid: "prs_me" })).toBe(false);
+      expect(messageMayDrawCards(from(unknown), { selfUid: "prs_me" })).toBe(false);
+    }
+    expect(messageMayDrawCards({}, { botUid: "agt_nova" })).toBe(false);
   });
 });
 
