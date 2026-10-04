@@ -112,6 +112,7 @@ The release moves it under the version it ships in.
 ## [0.10.384] — 2026-10-03
 
 - Release builds: the macOS release check now confirms its test sign-in is still valid before it opens the app. An expired test sign-in failed v0.10.383 with a message that looked like the app was stuck loading; it now says the test sign-in expired and how to renew it.
+- The updater now refuses a beta or alpha build unless you chose that release channel in Settings. People on the stable channel stay on stable releases even if a test build is ever published by mistake.
 - Desktop onboarding step telemetry now includes the install-attempt identifier so sign-in progress can be joined to that installation’s first launch.
 
 - If the desktop cannot read the HQ daemon flag at startup, it uses the last successfully read value and retries with bounded backoff. After a failed startup read, a later successful on value can recover from the Legacy host to daemon sync without relaunching the app. Turning the flag off while the daemon is running sync takes effect on the next launch. Sign-in also triggers a retry.
