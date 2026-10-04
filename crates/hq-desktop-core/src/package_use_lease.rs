@@ -35,6 +35,87 @@ struct LeaseRecord {
     hq_version: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveHolderCountBucket {
+    Zero,
+    One,
+    TwoToThree,
+    FourPlus,
+}
+
+impl LiveHolderCountBucket {
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            Self::Zero => "0",
+            Self::One => "1",
+            Self::TwoToThree => "2-3",
+            Self::FourPlus => "4+",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderVersionBucket {
+    Pre53424,
+    Current,
+    Mixed,
+    Unknown,
+}
+
+impl HolderVersionBucket {
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            Self::Pre53424 => "pre_5_342_4",
+            Self::Current => "current",
+            Self::Mixed => "mixed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderAgeBucket {
+    Under10m,
+    From10mTo1h,
+    From1hTo24h,
+    Over24h,
+    Unknown,
+}
+
+impl HolderAgeBucket {
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            Self::Under10m => "<10m",
+            Self::From10mTo1h => "10m-1h",
+            Self::From1hTo24h => "1h-24h",
+            Self::Over24h => ">24h",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackageUseLeaseTimeoutSummary {
+    pub live_holder_count: LiveHolderCountBucket,
+    pub holder_version: HolderVersionBucket,
+    pub oldest_holder_age: HolderAgeBucket,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PackageUseLeaseWaitError {
+    Timeout(PackageUseLeaseTimeoutSummary),
+    Other(String),
+}
+
+impl std::fmt::Display for PackageUseLeaseWaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Timeout(_) => f.write_str(PACKAGE_USE_LEASE_TIMEOUT_ERROR),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+
 fn normalized_prefix(prefix: &Path) -> Result<String, String> {
     let canonical = canonicalize_allow_missing(prefix).map_err(|error| {
         format!(
@@ -90,6 +171,86 @@ fn error_label(error: &io::Error) -> String {
         .raw_os_error()
         .map(|code| format!("os-error-{code}"))
         .unwrap_or_else(|| format!("{:?}", error.kind()))
+}
+
+fn live_holder_count_bucket(count: usize) -> LiveHolderCountBucket {
+    match count {
+        0 => LiveHolderCountBucket::Zero,
+        1 => LiveHolderCountBucket::One,
+        2..=3 => LiveHolderCountBucket::TwoToThree,
+        _ => LiveHolderCountBucket::FourPlus,
+    }
+}
+
+fn classify_holder_version_bucket<'a>(
+    versions: impl IntoIterator<Item = Option<&'a str>>,
+) -> HolderVersionBucket {
+    let threshold = semver::Version::new(5, 342, 4);
+    let mut has_pre = false;
+    let mut has_current = false;
+    let mut found = false;
+
+    for version in versions {
+        found = true;
+        let Some(version) = version.and_then(|value| semver::Version::parse(value).ok()) else {
+            return HolderVersionBucket::Unknown;
+        };
+        if version < threshold {
+            has_pre = true;
+        } else {
+            has_current = true;
+        }
+    }
+
+    match (found, has_pre, has_current) {
+        (false, _, _) => HolderVersionBucket::Unknown,
+        (_, true, true) => HolderVersionBucket::Mixed,
+        (_, true, false) => HolderVersionBucket::Pre53424,
+        (_, false, true) => HolderVersionBucket::Current,
+        _ => HolderVersionBucket::Unknown,
+    }
+}
+
+fn holder_age_bucket(age_ms: Option<u64>) -> HolderAgeBucket {
+    match age_ms {
+        Some(age) if age < 10 * 60 * 1000 => HolderAgeBucket::Under10m,
+        Some(age) if age < 60 * 60 * 1000 => HolderAgeBucket::From10mTo1h,
+        Some(age) if age <= 24 * 60 * 60 * 1000 => HolderAgeBucket::From1hTo24h,
+        Some(_) => HolderAgeBucket::Over24h,
+        None => HolderAgeBucket::Unknown,
+    }
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeoutSummary {
+    let versions = records
+        .iter()
+        .map(|record| (!record.hq_version.is_empty()).then_some(record.hq_version.as_str()));
+    let mut oldest_age_ms = None;
+    let mut age_unknown = records.is_empty();
+    for record in records {
+        match now_ms.checked_sub(record.start_time_ms) {
+            Some(age) => {
+                oldest_age_ms = Some(oldest_age_ms.map_or(age, |oldest: u64| oldest.max(age)))
+            }
+            None => age_unknown = true,
+        }
+    }
+    PackageUseLeaseTimeoutSummary {
+        live_holder_count: live_holder_count_bucket(records.len()),
+        holder_version: classify_holder_version_bucket(versions),
+        oldest_holder_age: if age_unknown {
+            HolderAgeBucket::Unknown
+        } else {
+            holder_age_bucket(oldest_age_ms)
+        },
+    }
 }
 
 fn lease_paths(prefix: &Path, state_directory: &Path) -> Result<PackageUseLeasePaths, String> {
@@ -302,14 +463,16 @@ impl PackageUseUpdateRequest {
 
     /// Clear stale reader records under the caller's exclusive updater lock;
     /// return `None` while at least one PID/start-time identity is live.
-    pub fn try_acquire(&mut self) -> Result<Option<PackageUseUpdateGuard>, String> {
+    fn try_acquire_with_live_records(
+        &mut self,
+    ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
         let entries = fs::read_dir(&self.paths.lease_directory).map_err(|error| {
             format!(
                 "Could not inspect HQ CLI package-use leases ({})",
                 error_label(&error)
             )
         })?;
-        let mut live = false;
+        let mut live_records = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|error| {
                 format!(
@@ -339,7 +502,7 @@ impl PackageUseUpdateRequest {
             if process_start_time_ms(record.pid)
                 .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
             {
-                live = true;
+                live_records.push(record);
             } else {
                 match fs::remove_file(&path) {
                     Ok(()) => {}
@@ -353,23 +516,49 @@ impl PackageUseUpdateRequest {
                 }
             }
         }
-        if live {
-            return Ok(None);
+        if !live_records.is_empty() {
+            return Ok((None, live_records));
         }
         self.owns_request = false;
-        Ok(Some(PackageUseUpdateGuard {
-            request_path: self.paths.update_request_path.clone(),
-        }))
+        Ok((
+            Some(PackageUseUpdateGuard {
+                request_path: self.paths.update_request_path.clone(),
+            }),
+            live_records,
+        ))
     }
 
-    pub async fn wait(mut self, timeout: Duration) -> Result<PackageUseUpdateGuard, String> {
+    /// Clear stale leases and report whether any live holder still blocks the update.
+    pub fn try_acquire(&mut self) -> Result<Option<PackageUseUpdateGuard>, String> {
+        self.try_acquire_with_live_records()
+            .map(|(guard, _live_records)| guard)
+    }
+
+    pub async fn wait(self, timeout: Duration) -> Result<PackageUseUpdateGuard, String> {
+        self.wait_with_summary(timeout)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Wait as before, retaining a bounded snapshot of live records only if the
+    /// existing timeout expires.
+    pub async fn wait_with_summary(
+        mut self,
+        timeout: Duration,
+    ) -> Result<PackageUseUpdateGuard, PackageUseLeaseWaitError> {
         let started = tokio::time::Instant::now();
         loop {
-            if let Some(guard) = self.try_acquire()? {
+            let (guard, live_records) = self
+                .try_acquire_with_live_records()
+                .map_err(PackageUseLeaseWaitError::Other)?;
+            if let Some(guard) = guard {
                 return Ok(guard);
             }
             if started.elapsed() >= timeout {
-                return Err(PACKAGE_USE_LEASE_TIMEOUT_ERROR.to_string());
+                return Err(PackageUseLeaseWaitError::Timeout(timeout_summary(
+                    &live_records,
+                    now_epoch_ms(),
+                )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -577,6 +766,123 @@ mod tests {
             hq_version: "5.304.0".to_string(),
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn record_with_version(path: &Path, pid: u32, start_time_ms: u64, hq_version: &str) {
+        let value = LeaseRecord {
+            pid,
+            start_time_ms,
+            hq_version: hq_version.to_string(),
+        };
+        fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn holder_version_bucket_uses_the_5342_4_boundary_and_closed_values() {
+        assert_eq!(
+            classify_holder_version_bucket([Some("5.342.3")]),
+            HolderVersionBucket::Pre53424
+        );
+        assert_eq!(
+            classify_holder_version_bucket([Some("5.342.4")]),
+            HolderVersionBucket::Current
+        );
+        assert_eq!(
+            classify_holder_version_bucket([Some("5.343.0")]),
+            HolderVersionBucket::Current
+        );
+        assert_eq!(
+            classify_holder_version_bucket([Some("5.342.4-rc.1")]),
+            HolderVersionBucket::Pre53424
+        );
+        assert_eq!(
+            classify_holder_version_bucket([Some("5.342.3"), Some("5.342.4")]),
+            HolderVersionBucket::Mixed
+        );
+        assert_eq!(
+            classify_holder_version_bucket([Some("not-semver")]),
+            HolderVersionBucket::Unknown
+        );
+        assert_eq!(
+            classify_holder_version_bucket([None]),
+            HolderVersionBucket::Unknown
+        );
+    }
+
+    #[test]
+    fn holder_age_bucket_covers_each_boundary() {
+        assert_eq!(holder_age_bucket(Some(599_999)), HolderAgeBucket::Under10m);
+        assert_eq!(
+            holder_age_bucket(Some(600_000)),
+            HolderAgeBucket::From10mTo1h
+        );
+        assert_eq!(
+            holder_age_bucket(Some(3_599_999)),
+            HolderAgeBucket::From10mTo1h
+        );
+        assert_eq!(
+            holder_age_bucket(Some(3_600_000)),
+            HolderAgeBucket::From1hTo24h
+        );
+        assert_eq!(
+            holder_age_bucket(Some(86_400_000)),
+            HolderAgeBucket::From1hTo24h
+        );
+        assert_eq!(
+            holder_age_bucket(Some(86_400_001)),
+            HolderAgeBucket::Over24h
+        );
+        assert_eq!(holder_age_bucket(None), HolderAgeBucket::Unknown);
+    }
+
+    #[test]
+    fn live_holder_count_bucket_is_bounded() {
+        assert_eq!(live_holder_count_bucket(0), LiveHolderCountBucket::Zero);
+        assert_eq!(live_holder_count_bucket(1), LiveHolderCountBucket::One);
+        assert_eq!(
+            live_holder_count_bucket(2),
+            LiveHolderCountBucket::TwoToThree
+        );
+        assert_eq!(
+            live_holder_count_bucket(3),
+            LiveHolderCountBucket::TwoToThree
+        );
+        assert_eq!(live_holder_count_bucket(4), LiveHolderCountBucket::FourPlus);
+        assert_eq!(
+            live_holder_count_bucket(100),
+            LiveHolderCountBucket::FourPlus
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_wait_summarizes_the_live_holder_in_its_fixture_directory() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_version(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            "5.342.3",
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let error = match request.wait_with_summary(Duration::ZERO).await {
+            Err(error) => error,
+            Ok(_guard) => panic!("expected a timeout while a live holder remains"),
+        };
+
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("expected a timeout summary for a live lease");
+        };
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+        assert_eq!(summary.holder_version, HolderVersionBucket::Pre53424);
+        assert_eq!(
+            summary.oldest_holder_age,
+            holder_age_bucket(Some(now_epoch_ms().saturating_sub(start)))
+        );
     }
 
     #[test]
