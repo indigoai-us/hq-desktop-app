@@ -14,11 +14,16 @@ import {
   SLACK_TOKEN_RETRY_SENTENCE,
   SLACK_TOKEN_SHAPE_SENTENCE,
   SLACK_TOKEN_SCOPE,
+  SLACK_APP_TOKEN_SHAPE,
+  SLACK_ATTACH_SETTLE_MS,
+  SLACK_ATTACH_STILL_WORKING_SENTENCE,
   checkSlackAppToken,
   isWholeSlackAppToken,
   readSlackAttachAnswer,
   readSlackTokenAnswer,
+  shouldAutoSubmitSlackToken,
   slackAccessPendingSentence,
+  slackAttachMayRetry,
   slackBlockedCopy,
   slackConnectTitle,
   slackConnectView,
@@ -544,17 +549,42 @@ describe("readSlackAttachAnswer", () => {
   });
 
   it("can be tried again when Slack did not answer", () => {
-    const retry = { kind: "retry", sentence: "Slack did not answer. Try again." };
-    expect(readSlackAttachAnswer(refused("SLACK_FACTORY_ROTATE_UNAVAILABLE", 409))).toEqual(retry);
-    expect(readSlackAttachAnswer(refused("CHANNEL_ATTACH_FAILED", 502))).toEqual(retry);
-    expect(readSlackAttachAnswer({ ...refused("CHANNEL_ATTACH_FAILED", 502), upstreamCode: "invalid_auth" })).toEqual(retry);
-    expect(readSlackAttachAnswer(refused("network"))).toEqual(retry);
-    expect(readSlackAttachAnswer(refused("invoke"))).toEqual(retry);
-    // A failure this version does not know, a request that threw, an unreadable answer.
-    expect(readSlackAttachAnswer(refused("http-500", 500))).toEqual(retry);
-    expect(readSlackAttachAnswer(refused("SOMETHING_NEW", 400))).toEqual(retry);
-    for (const junk of [null, undefined, "x", 3, []]) expect(readSlackAttachAnswer(junk)).toEqual(retry);
+    const sentence = "Slack did not answer. Try again.";
+    // The server's own word that the setup failed: nothing is under way, a retry may go at once.
+    const failed = { kind: "retry", sentence, unanswered: false };
+    expect(readSlackAttachAnswer(refused("SLACK_FACTORY_ROTATE_UNAVAILABLE", 409))).toEqual(failed);
+    expect(readSlackAttachAnswer(refused("CHANNEL_ATTACH_FAILED", 502))).toEqual(failed);
+    expect(readSlackAttachAnswer({ ...refused("CHANNEL_ATTACH_FAILED", 502), upstreamCode: "invalid_auth" })).toEqual(failed);
+    // A refusal this version does not know, but a refusal: a 4xx starts nothing.
+    expect(readSlackAttachAnswer(refused("SOMETHING_NEW", 400))).toEqual(failed);
+    expect(readSlackAttachAnswer(refused("http-429", 429))).toEqual(failed);
+    // No answer of the server's own: the network, a gateway, a request that threw, an unreadable answer.
+    // The server may still be working on the request.
+    const unanswered = { kind: "retry", sentence, unanswered: true };
+    expect(readSlackAttachAnswer(refused("network"))).toEqual(unanswered);
+    expect(readSlackAttachAnswer(refused("invoke"))).toEqual(unanswered);
+    expect(readSlackAttachAnswer(refused("timeout"))).toEqual(unanswered);
+    expect(readSlackAttachAnswer(refused("http-500", 500))).toEqual(unanswered);
+    expect(readSlackAttachAnswer(refused("http-502", 502))).toEqual(unanswered);
+    expect(readSlackAttachAnswer(refused("http-504", 504))).toEqual(unanswered);
+    for (const junk of [null, undefined, "x", 3, []]) expect(readSlackAttachAnswer(junk)).toEqual(unanswered);
     expect(SLACK_ATTACH_RETRY_SENTENCE).toBe("Slack did not answer. Try again.");
+  });
+
+  it("holds a second setup request back while the first, unanswered, may still be running", () => {
+    const NOW = Date.parse("2026-10-02T15:00:00.000Z");
+    expect(SLACK_ATTACH_SETTLE_MS).toBe(120_000);
+    // Nothing unanswered: a request may go.
+    expect(slackAttachMayRetry(null, NOW)).toBe(true);
+    expect(slackAttachMayRetry(undefined, NOW)).toBe(true);
+    expect(slackAttachMayRetry(Number.NaN, NOW)).toBe(true);
+    // One went unanswered a moment ago: not yet.
+    expect(slackAttachMayRetry(NOW, NOW)).toBe(false);
+    expect(slackAttachMayRetry(NOW - 30_000, NOW)).toBe(false);
+    expect(slackAttachMayRetry(NOW - SLACK_ATTACH_SETTLE_MS + 1, NOW)).toBe(false);
+    // The wait has passed and the status still shows nothing: it did not land.
+    expect(slackAttachMayRetry(NOW - SLACK_ATTACH_SETTLE_MS, NOW)).toBe(true);
+    expect(SLACK_ATTACH_STILL_WORKING_SENTENCE).toBe("Slack may still be setting this up. Wait a minute, then try again.");
   });
 
   it("is blocked for a person who is not an owner or admin", () => {
@@ -700,13 +730,59 @@ describe("the words of the flow", () => {
   });
 
   it("knows a whole pasted token from anything that still needs Connect", () => {
-    // Obviously fake values, long enough to count as whole.
-    for (const whole of ["xapp-test-0000-aaaa-bbbb", " xapp-test-0000-aaaa-bbbb ", "xapp-0000000000"]) {
-      expect(isWholeSlackAppToken(whole)).toBe(true);
+    // Obviously fake values in the exact shape Slack writes: xapp-, a digit, the app id, a number, 64 hex digits.
+    // Put together here so no token-shaped text sits in the source.
+    const fake = (hex: string, app = "A0FAKE0TEST") => ["xapp", "1", app, "0000000000000", hex.repeat(64)].join("-");
+    for (const whole of [fake("0"), ` ${fake("a")} `, `${fake("f")}\n`, fake("3", "A1"), ["xapp", "2", "A0FAKE0TEST", "7", "b".repeat(64)].join("-")]) {
+      expect(isWholeSlackAppToken(whole), "a whole token").toBe(true);
     }
-    for (const notYet of ["", "xapp-", "xapp-short", TOKEN, "xapp-test 0000-aaaa", "other-test-0000-aaaa-bbbb", "xapp-test_0000-aaaa", "Xapp-test-0000-aaaa-bbbb"]) {
-      expect(isWholeSlackAppToken(notYet)).toBe(false);
+    const notWhole = [
+      "",
+      "xapp-",
+      "xapp-short",
+      TOKEN,
+      // What the looser rule used to send by itself.
+      "xapp-test-0000-aaaa-bbbb",
+      "xapp-0000000000",
+      // One hex digit short, one too many, capitals in the hex, a letter that is not hex.
+      fake("0").slice(0, -1),
+      `${fake("0")}0`,
+      fake("A"),
+      fake("g"),
+      // The app id in lower case, a missing part, a space, another prefix.
+      fake("0", "a0fake0test"),
+      ["xapp", "1", "A0FAKE0TEST", "0".repeat(64)].join("-"),
+      ["xapp", "A0FAKE0TEST", "0000000000000", "0".repeat(64)].join("-"),
+      fake("0").replace("-A0", " A0"),
+      fake("0").replace("xapp", "xoxb"),
+      fake("0").replace("xapp", "Xapp"),
+      `${fake("0")} trailing words`,
+    ];
+    for (const value of notWhole) expect(isWholeSlackAppToken(value), `not whole: ${value.length} characters`).toBe(false);
+    expect(SLACK_APP_TOKEN_SHAPE.source).toBe("^xapp-\\d-[A-Z0-9]+-\\d+-[a-f0-9]{64}$");
+  });
+
+  it("sends by itself only a whole token that was pasted, once per value, and never anything typed", () => {
+    const whole = ["xapp", "1", "A0FAKE0TEST", "0000000000000", "0".repeat(64)].join("-");
+    expect(shouldAutoSubmitSlackToken({ value: whole, pasted: true, alreadySent: null })).toBe(true);
+    expect(shouldAutoSubmitSlackToken({ value: `  ${whole} `, pasted: true, alreadySent: null })).toBe(true);
+    // Typed, even when it ends up whole: Connect sends it.
+    expect(shouldAutoSubmitSlackToken({ value: whole, pasted: false, alreadySent: null })).toBe(false);
+    // Typed and still on its way to being whole: the old rule sent this, got a refusal, and cleared the field under the person.
+    for (const typing of ["xapp-1-A0FAKE0TE", "xapp-1-A0FAKE0TEST-0000", whole.slice(0, -1)]) {
+      expect(shouldAutoSubmitSlackToken({ value: typing, pasted: false, alreadySent: null })).toBe(false);
+      expect(shouldAutoSubmitSlackToken({ value: typing, pasted: true, alreadySent: null })).toBe(false);
     }
+    // Pasted, but not a whole token.
+    for (const partial of ["xapp-", TOKEN, "xapp-test-0000-aaaa-bbbb", `${whole} and more`]) {
+      expect(shouldAutoSubmitSlackToken({ value: partial, pasted: true, alreadySent: null })).toBe(false);
+    }
+    // The same value this modal already sent by itself goes through Connect.
+    expect(shouldAutoSubmitSlackToken({ value: whole, pasted: true, alreadySent: whole })).toBe(false);
+    expect(shouldAutoSubmitSlackToken({ value: whole, pasted: true, alreadySent: whole.replace(/0$/, "1") })).toBe(true);
+    // Connect still takes any value that starts with xapp-.
+    expect(checkSlackAppToken("xapp-test-0000")).toEqual({ ok: true, token: "xapp-test-0000" });
+    expect(checkSlackAppToken(whole)).toEqual({ ok: true, token: whole });
   });
 
   it("says the wait for access, the end, and the title", () => {
@@ -730,6 +806,7 @@ describe("the words of the flow", () => {
       slackFinishingSentence("Nova", true),
       slackConnectedSentence("Nova"),
       SLACK_ATTACH_RETRY_SENTENCE,
+      SLACK_ATTACH_STILL_WORKING_SENTENCE,
       SLACK_TOKEN_REJECTED_SENTENCE,
       SLACK_TOKEN_RETRY_SENTENCE,
       SLACK_TOKEN_SHAPE_SENTENCE,

@@ -23,8 +23,12 @@
      * already says what it is.
      */
     labelHidden?: boolean;
-    /** Something was typed or pasted. Called with what the field holds now. */
-    oninput?: (value: string) => void;
+    /**
+     * Something was typed or pasted. Called with what the field holds now,
+     * and whether this change was a paste (the browser says so on the input
+     * event, or a paste event came right before it).
+     */
+    oninput?: (value: string, change: { pasted: boolean }) => void;
     /** Enter was pressed in the field. */
     onsubmit?: (value: string) => void;
   }
@@ -48,6 +52,15 @@
   const inputId = `card-modal-field-${uid}`;
   const noteId = `card-modal-field-note-${uid}`;
   const autofocusMark = $derived(autofocus ? { [CARD_MODAL_AUTOFOCUS]: "" } : {});
+
+  // A paste event comes before the input event it causes. Not every webview
+  // names the input type, so the paste itself is remembered for one change.
+  let pasteComing = false;
+  function changed(event: Event & { currentTarget: HTMLInputElement }): void {
+    const pasted = pasteComing || (event as unknown as InputEvent).inputType === "insertFromPaste";
+    pasteComing = false;
+    oninput?.(event.currentTarget.value, { pasted });
+  }
 </script>
 
 <div class="card-modal-field" data-testid="card-modal-field" data-invalid={error ? "true" : "false"}>
@@ -64,7 +77,10 @@
     aria-invalid={error ? "true" : undefined}
     aria-describedby={error || hint ? noteId : undefined}
     bind:value
-    oninput={(event) => oninput?.(event.currentTarget.value)}
+    onpaste={() => {
+      pasteComing = true;
+    }}
+    oninput={changed}
     onkeydown={(event) => {
       if (event.key === "Enter" && !event.isComposing) {
         event.preventDefault();

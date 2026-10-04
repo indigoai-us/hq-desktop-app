@@ -528,10 +528,38 @@ describe("the pieces a flow is built from", () => {
     field.value = "acme.slack.com";
     field.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
-    expect(oninput).toHaveBeenLastCalledWith("acme.slack.com");
+    expect(oninput).toHaveBeenLastCalledWith("acme.slack.com", { pasted: false });
     field.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(onsubmit).toHaveBeenCalledWith("acme.slack.com");
     expect(field.hasAttribute(CARD_MODAL_AUTOFOCUS)).toBe(false);
+  });
+
+  it("a text field says whether a change was a paste, by the input type or by the paste event before it", () => {
+    const oninput = vi.fn();
+    const root = mountPiece(CardModalField, { label: "Token", oninput });
+    const field = root.querySelector<HTMLInputElement>("input")!;
+    const change = (value: string, init: InputEventInit = {}): void => {
+      field.value = value;
+      field.dispatchEvent(new InputEvent("input", { bubbles: true, ...init }));
+      flushSync();
+    };
+    // Typing: one character at a time, never a paste.
+    change("a", { inputType: "insertText", data: "a" });
+    expect(oninput).toHaveBeenLastCalledWith("a", { pasted: false });
+    change("", { inputType: "deleteContentBackward" });
+    expect(oninput).toHaveBeenLastCalledWith("", { pasted: false });
+    // The browser names the paste on the input event.
+    change("pasted", { inputType: "insertFromPaste" });
+    expect(oninput).toHaveBeenLastCalledWith("pasted", { pasted: true });
+    // A webview that does not: the paste event right before it says so, for that one change.
+    field.dispatchEvent(new Event("paste", { bubbles: true }));
+    change("pasted again");
+    expect(oninput).toHaveBeenLastCalledWith("pasted again", { pasted: true });
+    change("pasted again!", { inputType: "insertText", data: "!" });
+    expect(oninput).toHaveBeenLastCalledWith("pasted again!", { pasted: false });
+    // A drop is not a paste.
+    change("dropped", { inputType: "insertFromDrop" });
+    expect(oninput).toHaveBeenLastCalledWith("dropped", { pasted: false });
   });
 
   it("a text field with an error is marked invalid and says what is wrong", () => {

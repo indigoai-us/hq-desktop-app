@@ -233,9 +233,11 @@ export interface ConnectItem {
  * A bot's offer to connect apps, drawn as one card per item inside the
  * message. Data-only and deliberately bare: an item carries a built-in card
  * name or a website domain, and an optional sanitized reason. The bot never
- * supplies a link, a label, a logo or a style. The app writes every word on a
- * card and builds every link and every logo URL itself, so nothing an agent
- * emits can send a person to a page of the agent's choosing. A press does NOT
+ * supplies a link, a label, a logo or a style. The app writes every sentence
+ * a card states, builds every link itself and draws every logo from its own
+ * bundled marks, so nothing an agent emits can send a person, or the app, to
+ * an address of the agent's choosing. The reason is shown under the app's
+ * own sentence with the bot's name on it, never in its place. A press does NOT
  * run agent code; it goes to the host through {@link RichMessageContent}'s
  * `connections.onaction`. The old form `targets: ["slack", "tools"]` is still
  * read and becomes items.
@@ -1256,6 +1258,19 @@ export function suggestionsForMessage(message: { body?: string | null; richConte
     (b): b is SuggestionsBlock => b.kind === "suggestions",
   );
   return block ? [...block.items] : [];
+}
+
+/**
+ * What a suggested reply sends: the host's own text for that label when it
+ * has one, else the label itself. The label is the bot's, so it is looked up
+ * as an own key only: a label like "constructor" or "toString" is on every
+ * object, and would otherwise send whatever the language keeps under that
+ * name in place of the words the person pressed.
+ */
+export function replyForSuggestion(label: string, texts: Readonly<Record<string, string>> | null | undefined): string {
+  if (!texts || !Object.prototype.hasOwnProperty.call(texts, label)) return label;
+  const text = texts[label];
+  return typeof text === "string" ? text : label;
 }
 
 /** True when this message carries a `connect` block of its own. */

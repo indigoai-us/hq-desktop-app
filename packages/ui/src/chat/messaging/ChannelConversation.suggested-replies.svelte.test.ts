@@ -241,6 +241,24 @@ describe("ChannelConversation suggested replies", () => {
     expect(root.querySelector('[data-testid="suggested-replies"]')).toBeNull();
   });
 
+  it("sends the label itself for a suggestion named like something every object has", async () => {
+    // The label is the bot's. A plain lookup of "constructor" in the host's
+    // texts finds the Object function, and the composer sent its source.
+    const onsend = vi.fn(async () => {});
+    const { root } = await mountWith({
+      onsend,
+      messages: [message(BOT, "Pick one." + suggestions(["constructor", "toString"]), "q")],
+      suggestedReplyText: { "Connect more": "Connect more tools" },
+    });
+    expect(labels(root)).toEqual(["constructor", "toString"]);
+    buttons(root)[0].click();
+    await tick();
+    await tick();
+    flushSync();
+    expect(onsend).toHaveBeenCalledTimes(1);
+    expect((onsend.mock.calls[0] as unknown[])[0]).toBe("constructor");
+  });
+
   it("shows the same button again under a later message, once the first set was put away", async () => {
     const onsend = vi.fn(async () => {});
     const first = message(BOT, "Here you go." + suggestions(["Connect more tools"]), "q1");

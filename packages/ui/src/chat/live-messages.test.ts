@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { isHumanMessage } from "@hq/platform";
 
 import {
   collectTimelineRoots,
   inlineReplyRows,
+  isAppRequestRow,
   isReplyMessage,
   mergeFetchedTimeline,
   mergeTimelineMessages,
@@ -584,5 +586,144 @@ describe("timelinePageFromPayload: server human view fields", () => {
     expect("view" in other).toBe(false);
     const noEcho = timelinePageFromPayload({ messages: [], viewScanTruncated: true });
     expect("viewScanTruncated" in noEcho).toBe(false);
+  });
+});
+
+describe("the app's own requests to a bot: which rows are left out", () => {
+  const LEAD = "Automatic message from HQ:";
+  const BOT = "agt_nova";
+  const ME = "prs_me";
+  const at = (n: number): string => `2026-10-02T13:5${n}:00.000Z`;
+  const ids = (rows: Array<{ eventId: string }>): string[] => rows.map((row) => row.eventId);
+
+  it("never hides a row the bot sent, even one that starts with the app's opening words", () => {
+    // Second review, 2026-10-04: a bot that quoted the opening words at the
+    // start of its answer had the answer hidden. The "working" row then ran
+    // out and the person read "stopped responding".
+    const page = {
+      messages: [
+        { eventId: "b3", fromPersonUid: BOT, body: `${LEAD} is how my setup request began. Here is what I did.`, createdAt: at(3), audience: "agent", rootEventId: "p1" },
+        { eventId: "b2", fromPersonUid: BOT, body: `${LEAD} your setup has just finished`, createdAt: at(2), audience: "both", rootEventId: "p1" },
+        { eventId: "b1", fromPersonUid: BOT, body: `${LEAD} quoted with no lane on the row`, createdAt: at(1) },
+        { eventId: "p1", fromPersonUid: ME, body: "What did the app tell you?", createdAt: at(0), audience: "both", replyCount: 2 },
+      ],
+    };
+    for (const options of [{ inlineReplies: true }, { inlineReplies: true, selfUid: ME }]) {
+      expect(ids(messagesForDisplay(page, options))).toEqual(["p1", "b1", "b2", "b3"]);
+    }
+    for (const row of normalizeConversationMessages(page, { keepAudience: true })) {
+      if (row.fromPersonUid === BOT) {
+        expect(isAppRequestRow(row), row.eventId).toBe(false);
+        expect(isAppRequestRow(row, { selfUid: ME }), row.eventId).toBe(false);
+        // Even when the host is wrong about who is looking.
+        expect(isAppRequestRow(row, { selfUid: BOT }), row.eventId).toBe(false);
+      }
+    }
+  });
+
+  it("hides a row on the bot-only lane that the person's app sent", () => {
+    const rows = normalizeConversationMessages(
+      { messages: [{ eventId: "r1", fromPersonUid: ME, body: "anything at all", createdAt: at(1), audience: "agent" }] },
+      { keepAudience: true },
+    );
+    expect(isAppRequestRow(rows[0]!)).toBe(true);
+    expect(isAppRequestRow(rows[0]!, { selfUid: ME })).toBe(true);
+    expect(isAppRequestRow({ ...rows[0]!, audience: " Agent " })).toBe(true);
+    expect(inlineReplyRows(rows)).toEqual([]);
+  });
+
+  it("shows a message the person typed themselves that starts with the opening words", () => {
+    // The server returns the audience on every read: a typed message is for
+    // the person as much as for the bot. Hiding it made the person's own
+    // message vanish while the bot still acted on it.
+    const page = {
+      messages: [
+        { eventId: "b1", fromPersonUid: BOT, body: "No, that is the app's own wording.", createdAt: at(2), audience: "both", rootEventId: "p1" },
+        { eventId: "p1", fromPersonUid: ME, body: `${LEAD} is that what you get sent?`, createdAt: at(1), audience: "both", replyCount: 1 },
+      ],
+    };
+    for (const options of [{ inlineReplies: true }, { inlineReplies: true, selfUid: ME }]) {
+      expect(ids(messagesForDisplay(page, options))).toEqual(["p1", "b1"]);
+    }
+    for (const audience of ["both", "human", "everyone"]) {
+      expect(isAppRequestRow({ eventId: "p1", fromPersonUid: ME, body: `${LEAD} typed`, audience }, { selfUid: ME }), audience).toBe(false);
+    }
+  });
+
+  it("shows the person's message while it is on its way out, before the server has it", () => {
+    // The row the composer adds at once carries no audience yet.
+    const sending = { eventId: "local-send-7", fromPersonUid: ME, body: `${LEAD} is that what you get sent?`, createdAt: at(1), direction: "out" };
+    expect(isAppRequestRow(sending)).toBe(false);
+    expect(isAppRequestRow(sending, { selfUid: ME })).toBe(false);
+    const timeline = [sending];
+    expect(inlineReplyRows(timeline)).toBe(timeline);
+    expect(inlineReplyRows(timeline, { selfUid: ME })).toBe(timeline);
+  });
+
+  it("hides the request copied from the host's stored thread, which keeps no lane, only when the person sent it", () => {
+    const stored = { eventId: "e1", fromPersonUid: ME, body: `${LEAD} your setup has just finished`, createdAt: at(1) };
+    // The host says who is looking: the sender must be that person.
+    expect(isAppRequestRow(stored, { selfUid: ME })).toBe(true);
+    expect(isAppRequestRow({ ...stored, fromPersonUid: "prs_teammate" }, { selfUid: ME })).toBe(false);
+    expect(inlineReplyRows([{ ...stored, fromPersonUid: "prs_teammate" }], { selfUid: ME })).toHaveLength(1);
+    // The host does not say: any sender that is not a bot, which in a
+    // one-to-one conversation with a bot is the person.
+    expect(isAppRequestRow(stored)).toBe(true);
+    expect(isAppRequestRow({ ...stored, fromPersonUid: null })).toBe(false);
+    expect(isAppRequestRow({ ...stored, fromPersonUid: BOT })).toBe(false);
+    // The words alone are not enough: they must open the message.
+    expect(isAppRequestRow({ ...stored, body: `About "${LEAD}": what is it?` }, { selfUid: ME })).toBe(false);
+    expect(isAppRequestRow({ ...stored, body: null }, { selfUid: ME })).toBe(false);
+  });
+
+  it("shows the person's typed message again once the server's row replaces the stored copy", () => {
+    const typed = `${LEAD} is that what you get sent?`;
+    const stored = [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1) }];
+    const page = { messages: [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1), audience: "both" }] };
+    const merged = mergeFetchedTimeline(stored, page, { inlineReplies: true, selfUid: ME });
+    expect(ids(merged)).toEqual(["p1"]);
+    // And the app's request stays out when the server's row says it is the bot's alone.
+    const request = { messages: [{ eventId: "p1", fromPersonUid: ME, body: typed, createdAt: at(1), audience: "agent" }] };
+    expect(mergeFetchedTimeline(stored, request, { inlineReplies: true, selfUid: ME })).toEqual([]);
+  });
+});
+
+describe("audience on rows: only the flat exchange with a bot reads it", () => {
+  // A conversation between two people, as the server returns it: every row
+  // carries an audience, and one is tagged for a bot.
+  const PEOPLE = {
+    messages: [
+      { eventId: "m3", fromPersonUid: "prs_sam", body: "Sounds good.", createdAt: "2026-10-02T13:55:00.000Z", audience: "both" },
+      { eventId: "m2", fromPersonUid: "prs_me", body: "Automatic message from HQ: is a funny way to start a note", createdAt: "2026-10-02T13:54:00.000Z", audience: "agent" },
+      { eventId: "m1", fromPersonUid: "prs_sam", body: "Posted by a script.", createdAt: "2026-10-02T13:53:00.000Z", audience: "bot" },
+    ],
+  };
+
+  it("keeps a conversation between people exactly as it was: no audience on any row", () => {
+    // Before the bot exchange, rows were normalized without the field. The
+    // human-only view reads it, so carrying it would hide m1 and m2 there.
+    for (const rows of [normalizeConversationMessages(PEOPLE), messagesForDisplay(PEOPLE), mergeFetchedTimeline([], PEOPLE)]) {
+      expect(rows.map((row) => row.eventId).sort()).toEqual(["m1", "m2", "m3"]);
+      for (const row of rows) {
+        expect("audience" in row, row.eventId).toBe(false);
+        // What the human-only view asks of each row (ChannelConversation, `hiddenInHumanOnly`).
+        expect(isHumanMessage(row, { inferFromUid: false }), row.eventId).toBe(true);
+      }
+    }
+    expect(messagesForDisplay(PEOPLE, { inlineReplies: false }).some((row) => "audience" in row)).toBe(false);
+  });
+
+  it("carries the audience in a one-to-one conversation with a bot, where the app's requests are left out by it", () => {
+    const kept = normalizeConversationMessages(PEOPLE, { keepAudience: true });
+    expect(kept.map((row) => row.audience)).toEqual(["both", "agent", "bot"]);
+    const BOT_DM = {
+      messages: [
+        { eventId: "e2", fromPersonUid: "agt_nova", body: "Hi, I'm Nova.", createdAt: "2026-10-02T13:54:20.000Z", audience: "both", rootEventId: "e1" },
+        { eventId: "e1", fromPersonUid: "prs_me", body: "Automatic message from HQ: your setup has just finished", createdAt: "2026-10-02T13:53:50.000Z", audience: "agent", replyCount: 1 },
+      ],
+    };
+    const rows = messagesForDisplay(BOT_DM, { inlineReplies: true });
+    expect(rows.map((row) => row.eventId)).toEqual(["e2"]);
+    expect(rows[0]!.audience).toBe("both");
   });
 });

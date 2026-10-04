@@ -12,6 +12,7 @@ import {
   MAX_ENVELOPE_SCAN_CHARS,
   normalizeConnectDomain,
   parseRichContent,
+  replyForSuggestion,
   richContentForMessage,
   richContentMemoSize,
   suggestionsForMessage,
@@ -357,5 +358,32 @@ describe("the cost of reading a body", () => {
     // The first hundred were dropped: asking again computes a fresh answer and keeps the size.
     richContentForMessage({ eventId: "evt_0", body: "message 0" });
     expect(richContentMemoSize()).toBe(600);
+  });
+});
+
+describe("replyForSuggestion: what a pressed suggestion sends", () => {
+  const texts = { "Connect more tools": "Connect more tools", Yes: "Yes, go ahead." };
+
+  it("sends the host's text for a label it has, else the label itself", () => {
+    expect(replyForSuggestion("Yes", texts)).toBe("Yes, go ahead.");
+    expect(replyForSuggestion("No", texts)).toBe("No");
+    expect(replyForSuggestion("Yes", null)).toBe("Yes");
+    expect(replyForSuggestion("Yes", undefined)).toBe("Yes");
+  });
+
+  it("sends the label, never what an object keeps under a built-in name", () => {
+    // The label is the bot's. Every object has these names on it.
+    for (const label of ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__", "isPrototypeOf", "toLocaleString"]) {
+      const sent = replyForSuggestion(label, texts);
+      expect(sent, label).toBe(label);
+      expect(typeof sent).toBe("string");
+      expect(replyForSuggestion(label, {})).toBe(label);
+    }
+  });
+
+  it("sends the label when the host's entry is not text", () => {
+    expect(replyForSuggestion("Yes", { Yes: 3 as unknown as string })).toBe("Yes");
+    // An own key named like a built-in is the host's own and is used.
+    expect(replyForSuggestion("constructor", { constructor: "Build it" } as Record<string, string>)).toBe("Build it");
   });
 });

@@ -937,6 +937,36 @@ export interface ConnectionCards {
  */
 export interface ConversationConnectionCards {
   cardsFor: (message: { eventId: string; createdAt?: string | null }) => ConnectionCards;
+  /**
+   * The bot whose direct message this is. Only its messages draw cards (see
+   * {@link messageMayDrawCards}). A host that leaves it out is asked for cards
+   * for every message that is not the person's own.
+   */
+  botUid?: string | null;
+}
+
+/**
+ * Whether a message may draw connection cards: only one the bot of this
+ * direct message sent, never the person's own. A `connect` block is an offer
+ * from the bot. The same block in something the person typed or pasted (an
+ * example, a quote of the bot) is text they wrote, and must not put live
+ * Connect buttons under their own name.
+ *
+ * With the bot's uid known, the sender must be that bot. Without it, the
+ * sender must be known and must not be the person, whose uid must be known
+ * too. When nobody can say who sent it, it draws none.
+ */
+export function messageMayDrawCards(
+  message: { fromPersonUid?: string | null },
+  who: { botUid?: string | null; selfUid?: string | null },
+): boolean {
+  const from = (message.fromPersonUid ?? "").trim();
+  if (!from) return false;
+  const self = (who.selfUid ?? "").trim();
+  if (self && from === self) return false;
+  const bot = (who.botUid ?? "").trim();
+  if (bot) return from === bot;
+  return self !== "";
 }
 
 // ── Asking for the cards again ───────────────────────────────────────────
