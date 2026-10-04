@@ -1459,6 +1459,96 @@ describe("The app's shortcuts while the takeover is open (review A-C2)", () => {
   });
 });
 
+describe("The app's shortcuts are let go on every way out of the takeover (review A-C2)", () => {
+  const CHAT_READY = { ok: true, value: { setupState: { phase: "ready", steps: [] } } };
+
+  it("when Cancel is pressed on the create screen", async () => {
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova") });
+    await settle();
+    await openTakeover();
+    expect(shortcutsSuspended()).toBe(true);
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("when Escape leaves the create screen", async () => {
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova") });
+    await settle();
+    await openTakeover();
+    expect(shortcutsSuspended()).toBe(true);
+
+    q('[data-testid="new-bot-takeover"]')!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+    );
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("when the waiting screen is closed with the bot still starting", async () => {
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova") });
+    await settle();
+    await startBot("Nova");
+    expect(shortcutsSuspended()).toBe(true);
+
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("when the bot is ready and the person is handed to its conversation", async () => {
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_nova"),
+      loadAgentStatus: async () => CHAT_READY,
+      sendBotHello: async () => true,
+      checkBotHello: async () => true,
+    });
+    await settle();
+    await openTakeover();
+    await pressCreate("Nova");
+    expect(shortcutsSuspended()).toBe(true);
+
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-takeover"]')).toBeNull(), { timeout: 15_000, interval: 50 });
+    expect(shortcutsSuspended()).toBe(false);
+  }, 30_000);
+
+  it("when the sidebar is destroyed with the takeover open, in the middle of a create too", async () => {
+    mountSidebar({ oncreatenewbot: () => new Promise<EntryPointResult>(() => {}) });
+    await settle();
+    await openTakeover();
+    await pressCreate("Nova");
+    expect(shortcutsSuspended()).toBe(true);
+
+    await unmount(component!);
+    component = null;
+    expect(shortcutsSuspended()).toBe(false);
+  });
+
+  it("and they stay held while a cancelled bot is being removed and the create screen is still open", async () => {
+    let finishRemoval!: (answer: unknown) => void;
+    const removeAgent = vi.fn(() => new Promise<unknown>((resolve) => { finishRemoval = resolve; }));
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), removeAgent });
+    await settle();
+    await startBot("Nova");
+    await cancelAndConfirm();
+
+    // The takeover is back on its create screen: still a modal, still held.
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(shortcutsSuspended()).toBe(true);
+    finishRemoval(REMOVED);
+    await removalSettled(() => expect(notice()).toBe("Nova was removed."));
+    expect(shortcutsSuspended()).toBe(true);
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(shortcutsSuspended()).toBe(false);
+  });
+});
+
 describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
   // The waiting screen is the only way to a new bot's brain sign-in. Its
   // session lived in the sidebar's memory, and the sidebar is rebuilt on a
@@ -1509,6 +1599,38 @@ describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
     click('[data-conversation-id="dm:agt_nova"]');
     await settle();
     expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+  });
+
+  it("a late answer leaves a second, open create screen alone, and nothing is removed", async () => {
+    // What the test this block replaced protected: a create whose answer
+    // arrives after its screen is gone, while the person is part-way through
+    // another bot. They keep the screen they are on, and the first bot is
+    // not treated as cancelled.
+    let finishCreate!: (result: EntryPointResult) => void;
+    const oncreatenewbot = vi.fn(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }));
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot, removeAgent });
+    await settle();
+    await openTakeover();
+    await pressCreate("Nova");
+
+    // The sidebar is rebuilt in the middle of the create. That is not Cancel.
+    await remount({ oncreatenewbot, removeAgent });
+    await openTakeover();
+    await typeName("Second");
+
+    finishCreate(created("agt_nova"));
+    await settle(12);
+
+    // The person keeps the screen they are on.
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Second");
+    // The bot was not cancelled: it keeps starting and has its row.
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(q('[data-testid="new-bot-cancel-notice"]')).toBeNull();
+    expect(q('[data-conversation-id="dm:agt_nova"]')?.textContent).toContain("Nova");
+    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeTruthy();
   });
 
   it("restores the row after a restart, and its screen reopens on the sign-in", async () => {
