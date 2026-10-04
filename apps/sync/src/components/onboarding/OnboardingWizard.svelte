@@ -2338,6 +2338,7 @@
             timedOut: result.err instanceof StageTimeoutError,
             retrySuppressed:
               result.err instanceof StageTimeoutError && result.err.retrySuppressed,
+            retryScheduled: false,
           },
         };
       }
@@ -2550,7 +2551,10 @@
         if (result.depsFailure) {
           const failure = result.depsFailure;
           failure.retryScheduled = false;
-          failure.telemetryId = recordDeferredSetupFailure(failure, skippedRetryResult(failure));
+          failure.telemetryId = recordDeferredSetupFailure(failure, {
+            retryAttempted: false,
+            retryResult: skippedRetryResult(failure),
+          });
           pendingDepsFailures.push(failure);
         }
         const action = result.recovery;
