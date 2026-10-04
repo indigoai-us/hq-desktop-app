@@ -8613,15 +8613,15 @@ pub fn report_npm_cache_setup_failure(category: &'static str) {
     );
 }
 
-/// Report a bounded timeout while waiting for active HQ CLI processes to
-/// release the package-use lease. The fixed message, tag, and fingerprint
-/// intentionally exclude local paths and process details.
+/// Why an automatic HQ CLI update attempt failed, for retry scheduling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutoUpdateFailureKind {
     PackageUseLeaseTimeout,
     Other,
 }
 
+/// A package-use lease timeout earns up to three retries ten minutes apart;
+/// every other failure waits for the regular check.
 pub fn auto_update_retry_delay(
     failure: AutoUpdateFailureKind,
     retries_scheduled: u8,
@@ -8639,6 +8639,9 @@ pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
     }
 }
 
+/// Report a bounded timeout while waiting for active HQ CLI processes to
+/// release the package-use lease. The fixed message, tag, and fingerprint
+/// intentionally exclude local paths and process details.
 pub fn report_package_use_lease_timeout(
     summary: &crate::package_use_lease::PackageUseLeaseTimeoutSummary,
     retry_attempt: u8,
