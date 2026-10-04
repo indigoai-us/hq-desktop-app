@@ -233,9 +233,11 @@ export interface ConnectItem {
  * A bot's offer to connect apps, drawn as one card per item inside the
  * message. Data-only and deliberately bare: an item carries a built-in card
  * name or a website domain, and an optional sanitized reason. The bot never
- * supplies a link, a label, a logo or a style. The app writes every word on a
- * card and builds every link and every logo URL itself, so nothing an agent
- * emits can send a person to a page of the agent's choosing. A press does NOT
+ * supplies a link, a label, a logo or a style. The app writes every sentence
+ * a card states, builds every link itself and draws every logo from its own
+ * bundled marks, so nothing an agent emits can send a person, or the app, to
+ * an address of the agent's choosing. The reason is shown under the app's
+ * own sentence with the bot's name on it, never in its place. A press does NOT
  * run agent code; it goes to the host through {@link RichMessageContent}'s
  * `connections.onaction`. The old form `targets: ["slack", "tools"]` is still
  * read and becomes items.

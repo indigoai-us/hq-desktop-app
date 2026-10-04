@@ -617,7 +617,7 @@ describe("ChannelConversation with connection cards", () => {
     ];
     for (const [index, named] of hosts.entries()) {
       for (const suggestionsFrom of index === 0 ? [null] : ["agt_nova", null]) {
-        const cardsFor = vi.fn(() => ({ views: views(), integration: () => null, onaction: () => {} }));
+        const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), integration: () => null, onaction: () => {} }));
         const root = mountConversation({ messages: [HELLO, OFFER, MINE], connections: { cardsFor, ...named }, suggestionsFrom });
         // The bot's own offer draws its card.
         expect(cards(message(root, "evt_offer")).map((el) => el.dataset.target)).toEqual(["slack"]);
@@ -626,7 +626,7 @@ describe("ChannelConversation with connection cards", () => {
         expect(cards(mine)).toEqual([]);
         expect(mine.querySelector("button[data-testid='connection-card-primary']")).toBeNull();
         expect(mine.textContent).toContain("Is this the block you mean?");
-        expect(cardsFor.mock.calls.map(([msg]) => (msg as { eventId: string }).eventId)).not.toContain("evt_mine");
+        expect(cardsFor.mock.calls.map(([msg]) => msg.eventId)).not.toContain("evt_mine");
         void unmount(component!);
         component = null;
         host?.remove();
@@ -635,15 +635,15 @@ describe("ChannelConversation with connection cards", () => {
   });
 
   it("draws cards only under the bot of this direct message when the host names it", () => {
-    const cardsFor = vi.fn(() => ({ views: views(), onaction: () => {} }));
+    const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), onaction: () => {} }));
     const root = mountConversation({ messages: [HELLO, OFFER, OTHER], connections: { cardsFor, botUid: "agt_nova" } });
     expect(cards(message(root, "evt_offer")).map((el) => el.dataset.target)).toEqual(["slack"]);
     expect(cards(message(root, "evt_other"))).toEqual([]);
-    expect(cardsFor.mock.calls.map(([msg]) => (msg as { eventId: string }).eventId)).not.toContain("evt_other");
+    expect(cardsFor.mock.calls.map(([msg]) => msg.eventId)).not.toContain("evt_other");
   });
 
   it("draws no card at all when nobody can say who sent a message", () => {
-    const cardsFor = vi.fn(() => ({ views: views(), onaction: () => {} }));
+    const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), onaction: () => {} }));
     const root = mountConversation({ messages: [HELLO, OFFER, MINE], connections: { cardsFor }, selfPersonUid: null });
     expect(cards(root)).toEqual([]);
     expect(cardsFor).not.toHaveBeenCalled();
