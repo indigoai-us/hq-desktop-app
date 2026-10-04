@@ -304,8 +304,13 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     with_materialization_lock(run_materialization_payload)?
 }
 
+pub fn hq_cloud_npm_cache_path() -> Option<std::path::PathBuf> {
+    paths::home_dir().map(|home| home.join(".hq").join("npm-cache"))
+}
+
 fn rescue_npm_cache_dir() -> Result<std::path::PathBuf, String> {
-    let cache = paths::hq_config_dir()?.join("npm-cache");
+    let cache = hq_cloud_npm_cache_path()
+        .ok_or_else(|| "Cannot determine home directory for the HQ npm cache".to_string())?;
     std::fs::create_dir_all(&cache).map_err(|_| {
         "HQ Sync cannot prepare its app-owned npm cache. Check permissions for the HQ configuration directory, then try Sync again."
             .to_string()

@@ -590,6 +590,9 @@ pub(crate) fn rescue_command() -> (
     let npx = paths::resolve_bin_with_kind("npx");
     let npx_resolution = npx_telemetry_resolution(&npx);
     let mut cmd = paths::tokio_spawn_command(&npx.path, &[]);
+    if let Some(cache) = hq_desktop_core::prewarm::hq_cloud_npm_cache_path() {
+        cmd.env("NPM_CONFIG_CACHE", cache);
+    }
     cmd.arg("-y")
         .arg(format!(
             "--package={}@{}",
@@ -1214,6 +1217,15 @@ mod tests {
                     .as_ref()
             )
         );
+        assert_eq!(
+            env.get("NPM_CONFIG_CACHE").map(String::as_str),
+            Some(
+                home.path()
+                    .join(".hq/npm-cache")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
     }
 
     #[cfg(not(windows))]
@@ -1237,6 +1249,10 @@ mod tests {
         assert!(
             !env_names.iter().any(|name| name == "GIT_TEMPLATE_DIR"),
             "a system git must keep its own template configuration: {env_names:?}"
+        );
+        assert!(
+            env_names.iter().any(|name| name == "NPM_CONFIG_CACHE"),
+            "rescue npx must use the HQ-owned cache: {env_names:?}"
         );
     }
 
