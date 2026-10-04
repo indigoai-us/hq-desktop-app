@@ -281,7 +281,7 @@ describe("botSyncView", () => {
       botSyncView({ state: "done", startedAt: null, endedAt: NOW, filesDone: 1, filesTotal: 1 }, { now: NOW }),
       botSyncView({ state: "failed", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null }, { now: NOW }),
     ];
-    for (const view of all) expect(`${view.title} ${view.detail}`).not.toMatch(/[–—]/);
+    for (const view of all) expect(`${view.title} ${view.detail}`).not.toMatch(/[\u2013\u2014]/);
   });
 
   it("needs a clock only while time changes what it shows", () => {

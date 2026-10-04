@@ -1353,7 +1353,7 @@ export interface AgentsApi {
   stop(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/start — resume a stopped box. */
   start(agentUid: string): AdapterPromise<Json>;
-  /** POST /v1/agents/{uid}/retry — resume a failed provisioning attempt. */
+  /** POST /v1/agents/{uid}/retry: resume a failed provisioning attempt. */
   retryProvisioning(agentUid: string): AdapterPromise<Json>;
   /**
    * DELETE /v1/agents/{uid}: reverse deprovision / remove. Safe to repeat:
