@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04

@@ -8664,6 +8664,10 @@ pub fn report_package_use_lease_timeout(
                 "oldest_holder_age_bucket",
                 summary.oldest_holder_age.as_tag(),
             );
+            scope.set_tag(
+                "oldest_holder_purpose",
+                summary.oldest_holder_purpose.as_tag(),
+            );
             scope.set_fingerprint(Some(&[
                 "hq-cli-update",
                 "install-failed",
@@ -9628,7 +9632,7 @@ mod tests {
     #[test]
     fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
         use crate::package_use_lease::{
-            HolderAgeBucket, HolderVersionBucket, LiveHolderCountBucket,
+            HolderAgeBucket, HolderPurposeBucket, HolderVersionBucket, LiveHolderCountBucket,
             PackageUseLeaseTimeoutSummary,
         };
 
@@ -9636,10 +9640,10 @@ mod tests {
             live_holder_count: LiveHolderCountBucket::TwoToThree,
             holder_version: HolderVersionBucket::Pre53424,
             oldest_holder_age: HolderAgeBucket::From1hTo24h,
+            oldest_holder_purpose: HolderPurposeBucket::Daemon,
         };
-        let events = sentry::test::with_captured_events(|| {
-            report_package_use_lease_timeout(&summary, 0)
-        });
+        let events =
+            sentry::test::with_captured_events(|| report_package_use_lease_timeout(&summary, 0));
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error);
@@ -9656,6 +9660,7 @@ mod tests {
         assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
+        assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
         assert_eq!(
             fingerprint,
