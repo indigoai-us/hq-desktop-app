@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS,
   activeCompanyUids,
   approvedCheckoutUrl,
   CHECKOUT_DISABLED_REASON,
@@ -9,8 +10,12 @@ import {
   isProvisionedCompanyEntity,
   readCompanyProvisioned,
   parseInviteEmails,
+  planLimitFromCardError,
+  requestCompanyProvisioning,
   resolveFirstRunCompanyPath,
+  resolveFirstRunCompanyRoute,
   startWorkforceCheckout,
+  waitForProvisioning,
   workforceCheckoutBody,
   type InvokeFn,
 } from './first-run-company';
@@ -55,58 +60,302 @@ describe('activeCompanyUids', () => {
 });
 
 describe('resolveFirstRunCompanyPath', () => {
-  it('skips the step for a returning member', async () => {
+  it('selects a company the person already joined', async () => {
     const invoke = vi.fn();
     const path = await resolveFirstRunCompanyPath({
-      hqProJson: async () => ({ memberships: [{ companyUid: 'cmp_a', status: 'active' }] }),
+      hqProJson: async () => ({ memberships: [{ companyUid: 'cmp_a', status: 'active', role: 'member' }] }),
       invoke: invoke as unknown as InvokeFn,
     });
-    expect(path).toEqual({ kind: 'existing', companyUids: ['cmp_a'] });
+    expect(path).toMatchObject({ kind: 'skip', decision: 'joined_existing', company: { companyUid: 'cmp_a' } });
     expect(invoke).not.toHaveBeenCalled();
   });
 
   it('offers to join when a person with no company has a pending invite', async () => {
     const invoke = vi.fn(async () => ({ workspaces: [pendingWorkspace('acme', 'Acme')] }));
     const path = await resolveFirstRunCompanyPath({
-      hqProJson: async () => ({ memberships: [] }),
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
       invoke: invoke as unknown as InvokeFn,
     });
     expect(invoke).toHaveBeenCalledWith('list_syncable_workspaces');
-    expect(path).toEqual({ kind: 'join', invites: [{ slug: 'acme', displayName: 'Acme' }] });
+    expect(path).toMatchObject({
+      kind: 'join',
+      decision: 'join_invite',
+      invites: [{ slug: 'acme', name: 'Acme', companyUid: 'cmp_acme' }],
+    });
+  });
+
+  it('merges pending-by-email rows with workspace names, once per company', async () => {
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) =>
+        url === '/membership/me'
+          ? { memberships: [] }
+          : { invites: [{ companyUid: 'cmp_acme', invitedBy: 'prs_owner', inviterName: 'Pat' }] },
+      invoke: (async () => ({ workspaces: [pendingWorkspace('acme', 'Acme')] })) as unknown as InvokeFn,
+    });
+    if (result === null || !('route' in result)) throw new Error('Expected the invite route to resolve.');
+    expect(result.route).toMatchObject({ kind: 'join', invites: [{ companyUid: 'cmp_acme', name: 'Acme', inviter: 'Pat' }] });
+    expect(result.summary).toEqual({ existingCompanies: 0, paidCompany: false, pendingInvites: 1, decision: 'join_invite' });
   });
 
   it('asks a brand-new person to name a company', async () => {
     const path = await resolveFirstRunCompanyPath({
-      hqProJson: async () => ({ memberships: [] }),
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
       invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
     });
-    expect(path).toEqual({ kind: 'create' });
+    expect(path).toEqual({ kind: 'create', decision: 'create' });
   });
 
-  it('still offers create when the invite lookup fails', async () => {
+  it('still offers create when the invite lookups fail', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const path = await resolveFirstRunCompanyPath({
-      hqProJson: async () => ({ memberships: [] }),
+      hqProJson: async (_method, url) => {
+        if (url === '/membership/me') return { memberships: [] };
+        throw new Error('offline');
+      },
       invoke: (async () => {
         throw new Error('offline');
       }) as unknown as InvokeFn,
     });
-    expect(path).toEqual({ kind: 'create' });
-    expect(warn).toHaveBeenCalled();
+    expect(path).toEqual({ kind: 'create', decision: 'create' });
     warn.mockRestore();
   });
 
-  it('skips the step when membership cannot be read', async () => {
+  it('returns null when membership cannot be read, so nothing is created', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const path = await resolveFirstRunCompanyPath({
       hqProJson: async () => {
-        throw new Error('hq-pro request failed with status 500');
+        throw new Error('500');
       },
       invoke: vi.fn() as unknown as InvokeFn,
     });
     expect(path).toBeNull();
-    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('retries one failed membership read and resolves the route when it recovers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sleep = vi.fn(async () => {});
+    let membershipReads = 0;
+    const hqProJson = vi.fn(async (_method: 'GET' | 'POST', url: string) => {
+      if (url === '/membership/me') {
+        membershipReads += 1;
+        if (membershipReads === 1) throw new Error('temporary lookup failure');
+        return { memberships: [] };
+      }
+      return { invites: [] };
+    });
+    const invoke = vi.fn(async () => ({ workspaces: [] }));
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: invoke as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep,
+    });
+
+    expect(hqProJson.mock.calls.filter(([, url]) => url === '/membership/me')).toHaveLength(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS);
+    expect(result).toMatchObject({ route: { kind: 'create', decision: 'create' } });
+    expect(invoke).not.toHaveBeenCalledWith('create_company', expect.anything());
+    warn.mockRestore();
+  });
+
+  it('bypasses a cached malformed membership response on retry and resolves the recovered company route', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let cachedMembershipRead: Promise<Record<string, unknown>> | null = null;
+    let requestCount = 0;
+    const hqProJson = vi.fn(() => {
+      if (!cachedMembershipRead) {
+        requestCount += 1;
+        cachedMembershipRead = Promise.resolve(
+          requestCount === 1
+            ? {}
+            : { memberships: [{ companyUid: 'cmp_recovered', status: 'active', role: 'member' }] },
+        );
+      }
+      return cachedMembershipRead;
+    });
+    const invalidateMembershipMeRead = vi.fn(() => {
+      cachedMembershipRead = null;
+    });
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: vi.fn() as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep: async () => {},
+      invalidateMembershipMeRead,
+    });
+
+    expect(requestCount).toBe(2);
+    expect(invalidateMembershipMeRead).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ route: { kind: 'skip', decision: 'joined_existing', company: { companyUid: 'cmp_recovered' } } });
+    warn.mockRestore();
+  });
+
+  it('returns lookup_failed after two failed reads without creating a company', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sleep = vi.fn(async () => {});
+    const hqProJson = vi.fn(async () => {
+      throw new Error('membership lookup unavailable');
+    });
+    const invoke = vi.fn();
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: invoke as unknown as InvokeFn,
+      enableMembershipLookupRetry: true,
+      sleep,
+    });
+
+    expect(hqProJson).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(COMPANY_ROUTE_LOOKUP_RETRY_DELAY_MS);
+    expect(result).toEqual({ kind: 'lookup_failed' });
+    expect(invoke).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('keeps the original single-read null result when lookup retry is disabled', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const hqProJson = vi.fn(async () => {
+      throw new Error('membership lookup unavailable');
+    });
+
+    const result = await resolveFirstRunCompanyRoute({
+      hqProJson,
+      invoke: vi.fn() as unknown as InvokeFn,
+      enableMembershipLookupRetry: false,
+    });
+
+    expect(result).toBeNull();
+    expect(hqProJson).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it('resumes an owned company whose entity is still provisioning', async () => {
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'hq_pro_fetch' && args?.url === '/entity/cmp_half') {
+        return { status: 200, body: JSON.stringify({ entity: { uid: 'cmp_half', status: 'provisioning' } }) };
+      }
+      return { workspaces: [] };
+    });
+    const path = await resolveFirstRunCompanyPath({
+      hqProJson: async () => ({ memberships: [{ companyUid: 'cmp_half', status: 'active', role: 'owner' }] }),
+      invoke: invoke as unknown as InvokeFn,
+    });
+    expect(path).toMatchObject({ kind: 'resume', state: 'pending', company: { companyUid: 'cmp_half' } });
+  });
+
+  it('does not treat an unreadable entity as half-finished', async () => {
+    const invoke = vi.fn(async () => ({ status: 200, body: '{}' }));
+    const path = await resolveFirstRunCompanyPath({
+      hqProJson: async () => ({ memberships: [{ companyUid: 'cmp_a', status: 'active', role: 'owner' }] }),
+      invoke: invoke as unknown as InvokeFn,
+    });
+    expect(path).toMatchObject({ kind: 'existing', decision: 'offer_existing' });
+  });
+
+  it('asks hq-pro about the website visitor only when there is no company', async () => {
+    const urls: string[] = [];
+    const path = await resolveFirstRunCompanyPath({
+      hqProJson: async (_method, url) => {
+        urls.push(url);
+        if (url === '/membership/me') return { memberships: [] };
+        if (url.startsWith('/membership/me?anonId=')) {
+          return { webIdentity: { email: 'casey@acme.com', companyName: 'Acme' } };
+        }
+        return { invites: [] };
+      },
+      invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
+      signedInEmail: 'casey@gmail.com',
+      anonId: 'vyg-1',
+    });
+    expect(urls).toContain('/membership/me?anonId=vyg-1');
+    expect(path).toMatchObject({ kind: 'other-identity', other: { maskedEmail: 'c•••@acme.com', companyName: 'Acme' } });
+  });
+});
+
+describe('provisioning', () => {
+  function entityInvoke(answers: Array<Record<string, unknown> | number>): InvokeFn {
+    let i = 0;
+    return (async () => {
+      const answer = answers[Math.min(i, answers.length - 1)];
+      i += 1;
+      if (typeof answer === 'number') return { status: answer, body: '' };
+      return { status: 200, body: JSON.stringify({ entity: answer }) };
+    }) as unknown as InvokeFn;
+  }
+
+  it('polls through pending (and a 404) until ready', async () => {
+    const polls: string[] = [];
+    const state = await waitForProvisioning({
+      invoke: entityInvoke([404, { uid: 'cmp_a', status: 'provisioning' }, { uid: 'cmp_a', status: 'active', bucketName: 'b' }]),
+      companyUid: 'cmp_a',
+      sleep: async () => {},
+      onPoll: (s) => polls.push(s.status),
+    });
+    expect(state).toEqual({ status: 'ready', bucketName: 'b' });
+    expect(polls).toEqual(['pending', 'pending', 'ready']);
+  });
+
+  it('stops on an explicit failed status with the step', async () => {
+    const state = await waitForProvisioning({
+      invoke: entityInvoke([{ uid: 'cmp_a', provisioningStatus: 'failed', provisioningFailedStep: 'acl-seed:owner-resolve' }]),
+      companyUid: 'cmp_a',
+      sleep: async () => {},
+    });
+    expect(state).toEqual({ status: 'failed', step: 'acl-seed:owner-resolve' });
+  });
+
+  it('times out as failed step "timeout"', async () => {
+    let now = 0;
+    const state = await waitForProvisioning({
+      invoke: entityInvoke([{ uid: 'cmp_a', status: 'provisioning' }]),
+      companyUid: 'cmp_a',
+      timeoutMs: 5_000,
+      intervalMs: 2_000,
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    });
+    expect(state).toEqual({ status: 'failed', step: 'timeout' });
+  });
+
+  it('provisions through activate-cloud and names a failed attempt', async () => {
+    const invoke = vi.fn(async () => ({ bucketName: 'b' }));
+    await expect(requestCompanyProvisioning(invoke as unknown as InvokeFn, 'cmp_a')).resolves.toEqual({
+      status: 'ready',
+      bucketName: 'b',
+    });
+    expect(invoke).toHaveBeenCalledWith('activate_company_cloud', { companyUid: 'cmp_a' });
+    const accepted = vi.fn(async () => ({ activated: true }));
+    await expect(requestCompanyProvisioning(accepted as unknown as InvokeFn, 'cmp_a')).resolves.toEqual({ status: 'pending' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failing = vi.fn(async () => {
+      throw new Error('[forbidden] Only an owner can do that');
+    });
+    await expect(requestCompanyProvisioning(failing as unknown as InvokeFn, 'cmp_a')).resolves.toEqual({
+      status: 'failed',
+      step: 'activate-cloud:forbidden',
+    });
+    warn.mockRestore();
+  });
+});
+
+describe('planLimitFromCardError', () => {
+  it('reads the native plan-limit tag', () => {
+    expect(
+      planLimitFromCardError(new Error('[plan-limit url=https://hq.computer/billing/upgrade] Starter includes one company.')),
+    ).toEqual({ message: 'Starter includes one company.', upgradeUrl: 'https://hq.computer/billing/upgrade' });
+  });
+
+  it('drops an upgrade link to another host and ignores other errors', () => {
+    expect(planLimitFromCardError('[plan-limit url=https://evil.example/x] Limit.')).toEqual({
+      message: 'Limit.',
+      upgradeUrl: null,
+    });
+    expect(planLimitFromCardError(new Error('[forbidden] nope'))).toBeNull();
   });
 });
 

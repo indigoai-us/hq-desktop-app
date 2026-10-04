@@ -32,6 +32,7 @@ import {
   CLAUDE_PROVIDER_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
+  PERSONAL_TRANSCRIPTS_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   type FeatureFlagGate,
@@ -204,7 +205,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         ? // Pinned per release; the registry cannot turn it off.
           Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
         : this.flags.resolve(flag, () =>
-            flag === CLAUDE_PROVIDER_FLAG
+            flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
@@ -214,7 +215,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.flags.subscribe(
             flag,
             () =>
-              flag === CLAUDE_PROVIDER_FLAG
+              flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
                 ? Promise.resolve(ok(false))
                 : this.call("has_feature", { flag }),
             onChange,
@@ -338,6 +339,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         idempotencyKey: args.idempotencyKey ?? null,
       }),
     checkCompanySlug: (slug) => this.call("check_company_slug", { slug }),
+    activateCompanyCloud: (companyUid) =>
+      this.call("activate_company_cloud", { companyUid }),
     getCompanyTab: (companyUid, tab) =>
       this.call("get_company_tab", { companyUid, tab }),
     runCompanyTabAction: (args) =>

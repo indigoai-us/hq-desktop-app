@@ -4,6 +4,7 @@ import {
   classifyDelivery,
   continuationDeps,
   loadContinuationContext,
+  loadInstallAttemptId,
   type ContinuationContext,
   type ContinuationTauriOptions,
   type InvokeFn,
@@ -13,6 +14,7 @@ const CONTEXT: ContinuationContext = {
   installAttemptId: '11111111-1111-4111-8111-111111111111',
   appVersion: '1.4.2',
   apiBase: 'http://127.0.0.1:1',
+  suppressFirstLaunchTelemetry: false,
 };
 
 /**
@@ -67,6 +69,23 @@ describe('loading the native context', () => {
   ])('refuses %s rather than half-using it', async (_label, body) => {
     const invoke = vi.fn(async () => body);
     await expect(loadContinuationContext(options({ invoke }))).resolves.toBeNull();
+  });
+});
+
+describe('loading the persisted install attempt id', () => {
+  it('reads the native id command and accepts its stable UUID', async () => {
+    const invoke = vi.fn(async () => '11111111-1111-4111-8111-111111111111');
+
+    await expect(loadInstallAttemptId(options({ invoke }))).resolves.toBe(
+      '11111111-1111-4111-8111-111111111111',
+    );
+    expect(invoke).toHaveBeenCalledWith('desktop_install_attempt_id');
+  });
+
+  it.each([null, '', 'not-an-install-id'])('fails closed for an unusable id: %s', async (id) => {
+    const invoke = vi.fn(async () => id);
+
+    await expect(loadInstallAttemptId(options({ invoke }))).resolves.toBeNull();
   });
 });
 

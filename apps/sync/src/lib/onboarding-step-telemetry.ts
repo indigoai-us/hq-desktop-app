@@ -32,6 +32,7 @@ import {
   type StageId,
 } from './onboarding-setup';
 import type { WizardStepId } from './onboarding-wizard';
+import type { CompanyNamePrefillStatus } from './company-name-prefill';
 
 const SCHEMA_VERSION = 3;
 const STORAGE_KEY = `hq-sync:onboarding-step-telemetry:v${SCHEMA_VERSION}`;
@@ -82,7 +83,44 @@ export interface OnboardingStepProperties {
   setupRunId?: string;
   /** Company scope for the invite and company steps; never attach invitee data here. */
   companyUid?: string;
+  /** Explicitly marks an invite-step event whose company context was unavailable. */
+  companyUidMissing?: boolean;
+  /** Count of invitations successfully sent from the invite step, bounded to 0..20. */
+  invitesSent?: number;
+  /** Company step route decision (look before create). Counts only, never names. */
+  existingCompanies?: number;
+  /** Bounded status for the optional name suggestion; never the name itself. */
+  namePrefill?: CompanyNamePrefillStatus;
+  paidCompany?: boolean;
+  pendingInvites?: number;
+  decision?: string;
+  /** hq-pro provisioning step that failed or is being waited on. */
+  provisioningStep?: string;
+  /** Missing-bucket self-heal during the first sync. */
+  selfHeal?: 'triggered' | 'succeeded' | 'failed';
 }
+
+export const COMPANY_ROUTE_DECISIONS = [
+  'resume_setup',
+  'company_other_account',
+  'paid_existing',
+  'joined_existing',
+  'offer_existing',
+  'join_invite',
+  'invite_other_email',
+  'invite_expired',
+  'create',
+  'joined_invite',
+  'used_existing',
+  'created_another',
+  'lookup_failed',
+] as const;
+const SELF_HEAL_VALUES = ['triggered', 'succeeded', 'failed'] as const;
+const COMPANY_NAME_PREFILL_VALUES: readonly CompanyNamePrefillStatus[] = [
+  'offered_kept',
+  'offered_edited',
+  'not_offered',
+];
 
 export interface OnboardingStepEvent {
   sessionId: string;
@@ -282,12 +320,56 @@ export function desktopPropertiesForOnboardingStep(
   if (event.properties.setupRunId !== undefined) {
     properties.setupRunId = event.properties.setupRunId;
   }
+  for (const key of ['existingCompanies', 'pendingInvites'] as const) {
+    const value = event.properties[key];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1_000) {
+      properties[key] = value;
+    }
+  }
+  if (typeof event.properties.paidCompany === 'boolean') properties.paidCompany = event.properties.paidCompany;
   if (
-    (event.properties.step === 'invite-teammate' || event.properties.step === 'company') &&
+    event.properties.namePrefill !== undefined &&
+    COMPANY_NAME_PREFILL_VALUES.includes(event.properties.namePrefill)
+  ) {
+    properties.namePrefill = event.properties.namePrefill;
+  }
+  if (event.properties.decision !== undefined) {
+    properties.decision = (COMPANY_ROUTE_DECISIONS as readonly string[]).includes(event.properties.decision)
+      ? event.properties.decision
+      : 'unknown';
+  }
+  if (typeof event.properties.provisioningStep === 'string') {
+    properties.provisioningStep = /^[a-z0-9:_-]{1,64}$/.test(event.properties.provisioningStep)
+      ? event.properties.provisioningStep
+      : 'unknown';
+  }
+  if (
+    event.properties.selfHeal !== undefined &&
+    (SELF_HEAL_VALUES as readonly string[]).includes(event.properties.selfHeal)
+  ) {
+    properties.selfHeal = event.properties.selfHeal;
+  }
+  if (
+    (event.properties.step === 'invite-teammate' ||
+      event.properties.step === 'company' ||
+      event.properties.selfHeal !== undefined) &&
     typeof event.properties.companyUid === 'string' &&
     event.properties.companyUid.startsWith('cmp_')
   ) {
     properties.companyUid = event.properties.companyUid;
+  }
+  if (event.properties.step === 'invite-teammate') {
+    if (event.properties.companyUidMissing === true) properties.companyUidMissing = true;
+    const invitesSent = event.properties.invitesSent;
+    if (
+      event.properties.action === 'completed' &&
+      typeof invitesSent === 'number' &&
+      Number.isInteger(invitesSent) &&
+      invitesSent >= 0 &&
+      invitesSent <= 20
+    ) {
+      properties.invitesSent = invitesSent;
+    }
   }
   if (event.properties.step === 'connector-import') {
     if (event.properties.outcome !== undefined) {
@@ -301,6 +383,14 @@ export function desktopPropertiesForOnboardingStep(
   }
   if (event.properties.action === 'failed') {
     properties.errorCategory = normalizeErrorCategory(event.properties.errorCategory);
+    if (event.properties.step === 'setup') {
+      const failureStage = normalizeFailedStageIds([
+        event.properties.failureStage,
+        event.properties.component,
+      ])[0];
+      if (failureStage) properties.failureStage = failureStage;
+      else delete properties.failureStage;
+    }
     if (event.properties.step === 'invite-teammate') {
       properties.errorKind = normalizeInviteErrorKind(event.properties.errorKind);
       const statusCode = normalizeHttpStatus(event.properties.statusCode);

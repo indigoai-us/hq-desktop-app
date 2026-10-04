@@ -43,8 +43,8 @@ use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 use crate::util::release_channel::{
-    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
-    should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
+    channel_accepts_version, effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
+    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
     UpdateFeedPolicy,
 };
 use hq_desktop_core::update_gate::{
@@ -293,6 +293,8 @@ pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
 /// the normal automatic waiter is re-armed after the protected work finishes.
 pub(crate) const UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY: &str =
     "HQ will restart to update after your recording finishes";
+pub(crate) const UPDATE_DEFERRED_DURING_CORE_UPDATE: &str =
+    "HQ will restart to update after the HQ Core update finishes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
@@ -443,6 +445,7 @@ fn install_failure_is_transient_deferral(error: &str) -> bool {
 
 fn automatic_install_should_retry(error: &str) -> bool {
     error == UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        || error == UPDATE_DEFERRED_DURING_CORE_UPDATE
         || install_failure_is_transient_deferral(error)
 }
 
@@ -787,16 +790,14 @@ fn sync_probed_holds_with_sync_state(
     holds: &crate::commands::update_gate::UpdateHoldsState,
     sync_is_active: bool,
 ) {
-    if crate::commands::hq_core_state::is_core_update_in_progress() {
-        holds.0.acquire(HoldReason::CoreUpdateInProgress);
-    } else {
-        holds.0.release(HoldReason::CoreUpdateInProgress);
-    }
-    if sync_is_active {
-        holds.0.acquire(HoldReason::UploadInFlight);
-    } else {
-        holds.0.release(HoldReason::UploadInFlight);
-    }
+    // Probe-owned holds are set, not reference-counted: this runs on every
+    // poll, and repeated acquires would leave a hold active after the probe
+    // reports idle.
+    holds.0.set(
+        HoldReason::CoreUpdateInProgress,
+        crate::commands::hq_core_state::is_core_update_in_progress(),
+    );
+    holds.0.set(HoldReason::UploadInFlight, sync_is_active);
 }
 
 /// Synchronise external probes and return active protected work. Every update
@@ -810,9 +811,24 @@ pub(crate) fn protected_update_holds(app: &AppHandle) -> Vec<HoldReason> {
     holds.0.active()
 }
 
+/// Holds that stop a process restart. An in-flight upload does not: sync runs
+/// nearly continuously, and the automatic installer already waits for a sync
+/// gap (with a cap) before it gets here.
 pub(crate) fn restart_is_held(app: &AppHandle) -> Option<Vec<HoldReason>> {
-    let reasons = protected_update_holds(app);
+    let reasons: Vec<HoldReason> = protected_update_holds(app)
+        .into_iter()
+        .filter(HoldReason::blocks_restart)
+        .collect();
     (!reasons.is_empty()).then_some(reasons)
+}
+
+/// The message a person sees when a restart they asked for has to wait.
+pub(crate) fn deferred_restart_message(reasons: &[HoldReason]) -> &'static str {
+    if reasons.iter().any(HoldReason::is_recording) {
+        UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+    } else {
+        UPDATE_DEFERRED_DURING_CORE_UPDATE
+    }
 }
 
 fn gate_staged_install(app: &AppHandle, trigger: UpdateTrigger) -> Result<(), String> {
@@ -829,7 +845,11 @@ fn gate_staged_install(app: &AppHandle, trigger: UpdateTrigger) -> Result<(), St
         if matches!(trigger, UpdateTrigger::Manual) {
             spawn_auto_install_waiter(app.clone());
         }
-        return Err(UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY.to_string());
+        let message = match &reason {
+            DeferReason::Held { reasons } => deferred_restart_message(reasons),
+            DeferReason::Focused => UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY,
+        };
+        return Err(message.to_string());
     }
     Ok(())
 }
@@ -1113,9 +1133,21 @@ async fn channel_aware_updater_with_mode(
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| format!("updater_builder.endpoints: {e}"))?
-        .version_comparator(move |current, release| match mode {
-            UpdateOfferMode::Reinstall => should_reinstall_feed_target(&current, &release.version),
-            UpdateOfferMode::Standard => should_offer_update(&current, &release.version, &policy),
+        .version_comparator(move |current, release| {
+            // A feed target from a channel the user did not choose is never
+            // installed, even on Reinstall: a Stable user is never moved onto
+            // a beta or alpha build by a mis-flagged release.
+            if !channel_accepts_version(channel, &release.version) {
+                return false;
+            }
+            match mode {
+                UpdateOfferMode::Reinstall => {
+                    should_reinstall_feed_target(&current, &release.version)
+                }
+                UpdateOfferMode::Standard => {
+                    should_offer_update(&current, &release.version, &policy)
+                }
+            }
         })
         .build()
         .map_err(|e| format!("updater_builder.build: {e}"))?;
@@ -2978,6 +3010,33 @@ mod tests {
         assert!(!install_failure_is_transient_deferral(
             "Windows update helper did not become ready"
         ));
+    }
+
+    #[test]
+    fn deferred_restart_message_names_the_actual_reason() {
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::MeetingRecording]),
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        );
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::TranscriptFinishing]),
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        );
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::CoreUpdateInProgress]),
+            UPDATE_DEFERRED_DURING_CORE_UPDATE
+        );
+        assert!(automatic_install_should_retry(UPDATE_DEFERRED_DURING_CORE_UPDATE));
+    }
+
+    #[test]
+    fn repeated_sync_probes_do_not_leave_the_upload_hold_active() {
+        let holds = crate::commands::update_gate::UpdateHoldsState::default();
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, false);
+        assert!(!holds.0.active().contains(&HoldReason::UploadInFlight));
     }
 
     #[test]

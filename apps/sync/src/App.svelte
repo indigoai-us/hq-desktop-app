@@ -822,7 +822,7 @@
       const message = err instanceof Error ? err.message : String(err);
       // The main window owns update UI. Relay a recording deferral there so a
       // notification action never degrades into a console-only failure.
-      if (message.includes('HQ will restart to update after your recording finishes')) {
+      if (message.startsWith('HQ will restart to update after')) {
         void invoke('update_gate_status')
           .then((status) => emit('update-gate://deferred', status))
           .catch(() => {});

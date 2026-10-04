@@ -95,11 +95,19 @@ describe('watcher stall-teardown attribution — source contracts', () => {
     // deregister_generation retains the generation privately while its wait
     // owner still holds signal authority, so the terminal callback can observe
     // cancellation for exactly this process generation.
-    const deregisterGeneration = sliceBetween(
+    // The public entry point delegates to the registry-parameterized body.
+    const publicEntry = sliceBetween(
       processSource,
       'pub fn deregister_generation(handle: &str, generation: u64) -> bool {',
       '\n}\n',
       'deregister_generation',
+    );
+    expect(publicEntry).toContain('deregister_generation_in(process_registry(), handle, generation)');
+    const deregisterGeneration = sliceBetween(
+      processSource,
+      'fn deregister_generation_in(',
+      '\n}\n',
+      'deregister_generation_in',
     );
     expect(deregisterGeneration).toContain('entry.pid.is_some() && !entry.signal_authority_revoked');
     expect(deregisterGeneration).toContain('reg.retired.insert(');

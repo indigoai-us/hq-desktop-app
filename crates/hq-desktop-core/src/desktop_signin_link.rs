@@ -81,6 +81,10 @@ pub fn signin_start_url(
     {
         let mut pairs = url.query_pairs_mut();
         pairs.append_pair("link", link);
+        pairs.append_pair(
+            "referralProtocol",
+            crate::desktop_referral::REFERRAL_PROTOCOL_VERSION,
+        );
         if let Some(install) = install_id.map(str::trim).filter(|id| !id.is_empty()) {
             pairs.append_pair("install", install);
         }
@@ -194,6 +198,13 @@ mod tests {
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "link").unwrap().1,
             "nonce-value"
+        );
+        assert_eq!(
+            url.query_pairs()
+                .find(|(k, _)| k == "referralProtocol")
+                .unwrap()
+                .1,
+            "1"
         );
         assert_eq!(
             url.query_pairs().find(|(k, _)| k == "authorize").unwrap().1,

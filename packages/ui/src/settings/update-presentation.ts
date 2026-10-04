@@ -42,7 +42,7 @@ export function appRowStatusLabel(input: {
     case "ready":
       return "RESTART TO UPDATE";
     case "deferred":
-      return "WILL RESTART AFTER RECORDING";
+      return "WAITING TO RESTART";
     case "installing":
       return "INSTALLING";
     case "failed":
@@ -86,10 +86,13 @@ export function appRowActions(input: {
   };
 }
 
+/**
+ * True when the host deferred a requested restart because protected work is
+ * running (a recording, its transcript, or an HQ Core update). The message
+ * itself names the reason, so surfaces show it as-is.
+ */
 export function isRecordingRestartDeferral(message?: string | null): boolean {
-  return (message ?? "").includes(
-    "HQ will restart to update after your recording finishes",
-  );
+  return (message ?? "").startsWith("HQ will restart to update after");
 }
 
 export function isInstallAlreadyInProgress(message?: string | null): boolean {

@@ -60,12 +60,16 @@
   import {
     continuationDeps,
     loadContinuationContext,
+    loadInstallAttemptId,
+    type ContinuationContext,
   } from '../../lib/desktop-continuation-tauri';
+  import { resolveFirstLaunchJoinKey } from '../../lib/desktop-first-launch-join-key';
   import {
     classifyContinuationError,
     flushReceipts,
     launchReceipt,
     recordReceipt,
+    shouldSendFirstLaunchReceipt,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -121,7 +125,13 @@
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
   import { postOptIn, markConsentRepromptShown } from '../../lib/onboarding-telemetry';
-  import { emitDesktopOperationalTelemetry } from '../../lib/desktop-telemetry';
+  import {
+    emitDesktopAuthFailure,
+    emitDesktopAuthProgress,
+    emitDesktopOperationalTelemetry,
+    type DesktopAuthProgressStep,
+  } from '../../lib/desktop-telemetry';
+  import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
     type OnboardingAction,
@@ -153,12 +163,22 @@
   import ConnectorImportStep from './ConnectorImportStep.svelte';
   import CompanyStep, { type CompanyStepEvent, type CompanyStepResult } from './CompanyStep.svelte';
   import {
-    resolveFirstRunCompanyPath,
+    companyUidFromMissingBucket,
+    isMissingBucketMessage,
+    type CompanyRouteSummary,
+  } from '../../lib/onboarding-company-route';
+  import {
+    requestCompanyProvisioning,
+    resolveFirstRunCompanyRoute,
+    waitForProvisioning,
     type FirstRunCompanyPath,
   } from '../../lib/first-run-company';
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    COMPANY_NAME_PREFILL_FLAG,
+    FIRST_LAUNCH_JOIN_KEY_FLAG,
+    COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
@@ -268,6 +288,22 @@
   const onboardingFeatureFlags = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
   });
+  let onboardingIdentityPromise:
+    | Promise<{
+        context: ContinuationContext | null;
+        firstLaunchReceiptRecorded: boolean;
+      }>
+    | null = null;
+  let onboardingIdentityPrepared = false;
+  let firstLaunchStatusKnown: boolean | null = null;
+  let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
+  const queuedOnboardingStepRecords: Array<{
+    step: number;
+    action: OnboardingAction;
+    occurredAt: string;
+    record: () => void;
+  }> = [];
 
   let activeInitialStep = $state<number | null>(null);
   let router = $state(createWizardRouter());
@@ -383,6 +419,19 @@
    * `existing` or null (lookup failed) to skip it.
    */
   let companyPath = $state<FirstRunCompanyPath | null>(null);
+  let companyNamePrefillEnabled = $state(false);
+  /** Signed-in email, read once for the signed-in-as notice and invite matching. */
+  let signedInEmail = $state<string | null>(null);
+  /** A session already on this machine when onboarding opened (old ~/.hq). */
+  let existingSessionEmail = $state<string | null>(null);
+  let switchingAccount = $state(false);
+  let resumeAfterAccountSwitch = false;
+  /** First-sync self-heal: "Finishing setup…" while hq-pro provisions a bucket. */
+  let firstFolderSelfHealing = $state(false);
+  let firstFolderMissingBucketUids = new Set<string>();
+  let firstFolderSelfHealAttempted = false;
+  const firstFolderSelfHealTimeoutMs = 90_000;
+  const firstFolderSelfHealIntervalMs = 2_000;
   let companyStepVisited = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
@@ -490,6 +539,34 @@
     flow?: OnboardingFlow,
   ): void {
     if (consentOnly || replay) return;
+    // Hold records only until first-launch eligibility is known. A disabled
+    // flag or a non-first launch drains them without waiting for native context.
+    if (
+      !onboardingIdentityPrepared &&
+      firstLaunchStatusKnown !== false &&
+      firstLaunchJoinKeyEnabled !== false
+    ) {
+      const queuedDetails = { ...details };
+      const occurredAt = new Date().toISOString();
+      queuedOnboardingStepRecords.push({
+        step,
+        action,
+        occurredAt,
+        record: () => recordStepNow(step, action, queuedDetails, flow, occurredAt),
+      });
+      return;
+    }
+    recordStepNow(step, action, details, flow);
+  }
+
+  function recordStepNow(
+    step: number,
+    action: OnboardingAction,
+    details: StepTelemetryDetails = {},
+    flow?: OnboardingFlow,
+    occurredAt?: string,
+  ): void {
+    if (consentOnly || replay) return;
     const stepId = stepIdFor(step);
     const companyUid =
       stepId === 'invite-teammate'
@@ -503,9 +580,11 @@
         action,
         ...details,
         ...(companyUid ? { companyUid } : {}),
+        ...(stepId === 'invite-teammate' && !companyUid ? { companyUidMissing: true } : {}),
         appVersion: onboardingAppVersion,
         flow: flow ?? onboardingFlow,
       },
+      ...(occurredAt ? { occurredAt } : {}),
     });
   }
 
@@ -523,11 +602,27 @@
   }
 
   function recordOnboardingAbandonment(): void {
+    if (!consentOnly && !replay) flushQueuedOnboardingStepRecords();
     if (consentOnly || replay || finishing || finishInProgress || onboardingCompleted || onboardingAbandoned) return;
     const durationMs = Date.now() - currentStepVisibleAt;
     if (durationMs < MIN_VISIBLE_MS_FOR_ABANDON) return;
     onboardingAbandoned = true;
     recordStep(currentStep, 'abandoned', { durationMs });
+  }
+
+  function flushQueuedOnboardingStepRecords(suppressFirstLaunchWelcomeEntry = false): void {
+    onboardingIdentityPrepared = true;
+    for (const queued of queuedOnboardingStepRecords.splice(0)) {
+      if (
+        suppressFirstLaunchWelcomeEntry &&
+        firstLaunchJoinKeyEnabled === true &&
+        queued.step === WELCOME_SIGNIN_STEP_INDEX &&
+        queued.action === 'entered'
+      ) {
+        continue;
+      }
+      queued.record();
+    }
   }
 
   /**
@@ -739,6 +834,7 @@
     window.addEventListener('pagehide', recordOnboardingAbandonment);
 
     if (!consentOnly && !replay) {
+      void prepareOnboardingTelemetryIdentity();
       // Every visible panel has an entry event. A resumed, non-initial panel
       // records both its ordinary entry and the resume signal used for drop-off
       // analysis.
@@ -760,6 +856,7 @@
           }
         })
         .catch(() => {});
+      if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -815,8 +912,11 @@
         firstFolderSyncObservedFailure = true;
       }
     });
-    subscribeFirstFolderSyncEvent('sync:error', () => {
-      if (firstFolderSyncAwaitingCompletion) firstFolderSyncObservedFailure = true;
+    subscribeFirstFolderSyncEvent<{ message?: unknown }>('sync:error', (payload) => {
+      if (!firstFolderSyncAwaitingCompletion) return;
+      const uid = companyUidFromMissingBucket(payload?.message);
+      if (uid) firstFolderMissingBucketUids.add(uid);
+      else firstFolderSyncObservedFailure = true;
     });
     subscribeFirstFolderSyncEvent('sync:auth-error', handleFirstFolderSyncAuthError);
 
@@ -888,10 +988,13 @@
       return;
     }
 
+    existingSessionEmail = null;
     const call = ++currentSignInCall;
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
@@ -908,12 +1011,16 @@
         throw new Error('The desktop shell cannot open a browser in this environment.');
       }
       await openExternal(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const { code } = await invokeCommand<{ code: string }>(
         'oauth_listen_for_code',
         { state },
       );
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
@@ -924,8 +1031,15 @@
       if (!isCurrentSignInCall(call)) return;
 
       if (result.authenticated) {
+        authStep = 'token_exchange_ok';
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
         await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
+        void emitDesktopAuthFailure({
+          provider: telemetryProvider,
+          step: authStep,
+          error: 'authentication rejected',
+        });
         signInError = 'Authentication failed. Please try again.';
         recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
           provider: telemetryProvider,
@@ -934,6 +1048,7 @@
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
+      void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
       const errorKind = classifyContinuationError(err);
       if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
@@ -960,12 +1075,8 @@
    * and never starts a browser session continuation.
    */
   async function recordLaunch(): Promise<void> {
-    const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
-    const context = await loadContinuationContext();
-    if (!context) {
-      if (firstLaunch) onboardingTelemetry.recordFirstLaunch();
-      return;
-    }
+    const { context, firstLaunchReceiptRecorded } = await prepareOnboardingTelemetryIdentity();
+    if (!context) return;
     // The anonymous launch receipt and later authenticated desktop auth events
     // share this opaque id. Use it as the onboarding session join key too.
     onboardingTelemetry.setInstallAttemptId(context.installAttemptId);
@@ -974,9 +1085,109 @@
     // `firstLaunchRecorded` is the existing durable first-installation gate.
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
-    if (firstLaunch && onboardingTelemetry.recordFirstLaunch()) {
+    if (firstLaunchReceiptRecorded) {
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
+  }
+
+  function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
+    if (!firstLaunchJoinKeyFlagPromise) {
+      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_JOIN_KEY_FLAG).then(
+        (result) => {
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-launch join-key flag unavailable; leaving fallback off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag failed; leaving fallback off',
+            error,
+          );
+          return false;
+        },
+      );
+      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
+        (enabled) => {
+          firstLaunchJoinKeyEnabled = enabled;
+          if (!enabled) flushQueuedOnboardingStepRecords();
+          return enabled;
+        },
+        (error) => {
+          console.warn(
+            'onboarding: first-launch join-key flag resolution failed; leaving fallback off',
+            error,
+          );
+          firstLaunchJoinKeyEnabled = false;
+          flushQueuedOnboardingStepRecords();
+          return false;
+        },
+      );
+    }
+    return firstLaunchJoinKeyFlagPromise;
+  }
+
+  function prepareOnboardingTelemetryIdentity(): Promise<{
+    context: ContinuationContext | null;
+    firstLaunchReceiptRecorded: boolean;
+  }> {
+    if (!onboardingIdentityPromise) {
+      onboardingIdentityPromise = (async () => {
+        const firstLaunchPromise = invokeCommand<boolean>('is_first_run')
+          .catch(() => false)
+          .then((firstLaunch) => {
+            firstLaunchStatusKnown = firstLaunch;
+            if (!firstLaunch) flushQueuedOnboardingStepRecords();
+            return firstLaunch;
+          });
+        const contextPromise = loadContinuationContext();
+        const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
+          firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
+        );
+        const [firstLaunch, context, joinKeyEnabled] = await Promise.all([
+          firstLaunchPromise,
+          contextPromise,
+          firstLaunchJoinKeyEnabledPromise,
+        ]);
+        const installAttemptId = await resolveFirstLaunchJoinKey({
+          firstLaunch,
+          continuationInstallAttemptId: context?.installAttemptId ?? null,
+          isEnabled: async () => joinKeyEnabled,
+          readNativeId: loadInstallAttemptId,
+        });
+        if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
+        const firstLaunchReceiptRecorded = context
+          ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
+            onboardingTelemetry.recordFirstLaunch()
+          : firstLaunch && onboardingTelemetry.recordFirstLaunch();
+        return { context, firstLaunchReceiptRecorded, installAttemptId };
+      })()
+        .catch((error) => {
+          console.warn(
+            'onboarding: telemetry identity preparation failed; using the local session id',
+            error,
+          );
+          return {
+            context: null,
+            firstLaunchReceiptRecorded: false,
+          };
+        })
+        .then((result) => {
+          flushQueuedOnboardingStepRecords(
+            result.firstLaunchReceiptRecorded &&
+              firstLaunchJoinKeyEnabled === true &&
+              'installAttemptId' in result &&
+              Boolean(result.installAttemptId),
+          );
+          return result;
+        });
+    }
+    return onboardingIdentityPromise;
   }
 
   /**
@@ -995,6 +1206,13 @@
     void resolveInstallerPersonUid();
     await refocusWindow();
     if (!isCurrentSignInCall(call)) return;
+    if (resumeAfterAccountSwitch && setupCompleted) {
+      // Setup already ran on this machine; look again for the new account.
+      resumeAfterAccountSwitch = false;
+      advanceTo(READY_STEP_INDEX, 'completed', { ...details, outcome: 'authenticated' }, 'ready');
+      void resolvePostSetupSteps(() => mounted);
+      return;
+    }
     // The consent question is asked later as its own step after setup.
     // Operational setup telemetry is emitted independently; skill usage
     // remains governed by that choice.
@@ -1058,6 +1276,50 @@
     return firstFolderSyncFlagResolution;
   }
 
+  async function resolveCompanyRouteLookupRetryFlag(): Promise<boolean> {
+    try {
+      const result = await onboardingFeatureFlags.identity.hasFeature(
+        COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+      );
+      if (!result.ok) {
+        console.warn(
+          'onboarding: company route lookup retry flag unavailable; leaving retry off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn(
+        'onboarding: company route lookup retry flag failed; leaving retry off',
+        error,
+      );
+      return false;
+    }
+  }
+
+  async function resolveCompanyNamePrefillFlag(): Promise<boolean> {
+    try {
+      // A create route can follow an account switch. Refresh before reading so
+      // this suggestion uses the newly authenticated person's flag snapshot.
+      await onboardingFeatureFlags.identity.refreshFeatureFlags?.();
+      const result = await onboardingFeatureFlags.identity.hasFeature(COMPANY_NAME_PREFILL_FLAG);
+      if (!result.ok) {
+        console.warn(
+          'onboarding: company name prefill flag unavailable; leaving prefill off',
+          result.reason,
+          result.code,
+        );
+        return false;
+      }
+      return result.value === true;
+    } catch (error) {
+      console.warn('onboarding: company name prefill flag failed; leaving prefill off', error);
+      return false;
+    }
+  }
+
   function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
@@ -1111,6 +1373,68 @@
       membershipMeRead.catch(() => (membershipMeRead = null));
     }
     return membershipMeRead;
+  }
+
+  /** The signed-in account's email (from the local token), or null. */
+  async function resolveSignedInEmail(): Promise<string | null> {
+    try {
+      const auth = await invokeCommand<{ authenticated?: boolean; email?: string | null }>('get_auth_state');
+      const email = auth?.authenticated && typeof auth.email === 'string' && auth.email.trim() ? auth.email.trim() : null;
+      signedInEmail = email;
+      return email;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Signed-in-as guard: a token already on this machine when onboarding opens
+   * (a reinstall over an old ~/.hq) may be someone else's. Show it on the
+   * sign-in screen before anything is created.
+   */
+  async function checkExistingSession(): Promise<void> {
+    try {
+      const firstLaunch = await invokeCommand<boolean>('is_first_run').catch(() => false);
+      if (!firstLaunch) return;
+      const email = await resolveSignedInEmail();
+      if (email && currentStep === WELCOME_SIGNIN_STEP_INDEX) {
+        existingSessionEmail = email;
+        recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_shown' });
+      }
+    } catch (error) {
+      console.warn('onboarding: existing session check failed', error);
+    }
+  }
+
+  /** Keep the session that was already here. */
+  function continueExistingSession(): void {
+    if (!existingSessionEmail) return;
+    existingSessionEmail = null;
+    void completeAuthenticatedSignIn(++currentSignInCall, { outcome: 'existing_session_continued' });
+  }
+
+  /** Sign out and go back to the sign-in buttons. Used by the guard and by the invite mismatch. */
+  async function switchAccount(from: 'welcome' | 'company'): Promise<void> {
+    if (switchingAccount) return;
+    switchingAccount = true;
+    try {
+      await invokeCommand('sign_out');
+    } catch (error) {
+      console.warn('onboarding: sign out for account switch failed', error);
+    } finally {
+      switchingAccount = false;
+    }
+    existingSessionEmail = null;
+    signedInEmail = null;
+    if (from === 'company') {
+      companyPath = null;
+      companyStepVisited = false;
+      postSetupStepsResolved = false;
+      resumeAfterAccountSwitch = true;
+      advanceTo(WELCOME_SIGNIN_STEP_INDEX, 'completed', { outcome: 'switch_account' }, 'welcome');
+    } else {
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { outcome: 'existing_session_switched' });
+    }
   }
 
   function companyStepHqProJson(
@@ -1184,6 +1508,7 @@
 
   function recordInviteFailure(failure: InviteFailure): void {
     inviteErrorKind = failure.kind;
+    void emitDesktopOperationalTelemetry(inviteFailedEvent(failure.kind));
     recordStep(INVITE_TEAMMATE_STEP_INDEX, 'failed', {
       errorKind: failure.kind,
       errorCategory: failure.kind === 'network' ? 'network' : 'unknown',
@@ -1241,8 +1566,10 @@
       }
       inviteSent = true;
       inviteResent = alreadyInvited;
+      void emitDesktopOperationalTelemetry(inviteSentEvent());
       recordStep(INVITE_TEAMMATE_STEP_INDEX, 'completed', {
         outcome: alreadyInvited ? 'resent' : 'ok',
+        invitesSent: 1,
       });
     } catch (error) {
       console.warn('onboarding: invite teammate request failed', error);
@@ -1966,13 +2293,19 @@
   function handleFirstFolderSyncComplete(payload: unknown): void {
     if (!firstFolderSyncAwaitingCompletion || firstFolderSyncCompleted) return;
     const result = payload as { errors?: unknown } | null;
-    if (
-      !result ||
-      !Array.isArray(result.errors) ||
-      result.errors.length > 0 ||
-      firstFolderSyncObservedFailure
-    ) {
+    const errors = result && Array.isArray(result.errors) ? result.errors : null;
+    const otherErrors = (errors ?? []).filter((entry) => {
+      const message = isRecord(entry) ? entry.message : entry;
+      const uid = companyUidFromMissingBucket(message);
+      if (uid) firstFolderMissingBucketUids.add(uid);
+      return !isMissingBucketMessage(message) || !uid;
+    });
+    if (!errors || otherErrors.length > 0 || firstFolderSyncObservedFailure) {
       failFirstFolderSyncAttempt();
+      return;
+    }
+    if (firstFolderMissingBucketUids.size > 0) {
+      void selfHealMissingBuckets([...firstFolderMissingBucketUids]);
       return;
     }
 
@@ -1992,8 +2325,60 @@
     failFirstFolderSyncAttempt();
   }
 
-  async function startFirstFolderSync(): Promise<void> {
+  /**
+   * Self-heal: the first sync found a company with no bucket ("has no bucket
+   * provisioned"). Ask hq-pro to finish provisioning, show "Finishing setup…",
+   * then sync again. Once per attempt; "Try again" starts a fresh attempt.
+   */
+  async function selfHealMissingBuckets(uids: string[]): Promise<void> {
+    if (firstFolderSelfHealAttempted) {
+      failFirstFolderSyncAttempt();
+      return;
+    }
+    firstFolderSelfHealAttempted = true;
+    firstFolderSelfHealing = true;
+    firstFolderSyncBusy = true;
+    let failedStep: string | null = null;
+    for (const companyUid of uids) {
+      recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started', { selfHeal: 'triggered', companyUid });
+      let state = await requestCompanyProvisioning(invokeCommand, companyUid);
+      if (state.status === 'pending') {
+        state = await waitForProvisioning({
+          invoke: invokeCommand,
+          companyUid,
+          timeoutMs: firstFolderSelfHealTimeoutMs,
+          intervalMs: firstFolderSelfHealIntervalMs,
+          cancelled: () => !mounted,
+        });
+      }
+      if (!mounted) return;
+      if (state.status !== 'ready') {
+        failedStep = state.status === 'failed' ? state.step : 'timeout';
+        recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'failed', {
+          selfHeal: 'failed',
+          companyUid,
+          provisioningStep: failedStep,
+        });
+        break;
+      }
+      recordStep(FIRST_FOLDER_SYNC_STEP_INDEX, 'started', { selfHeal: 'succeeded', companyUid });
+    }
+    firstFolderSelfHealing = false;
+    firstFolderMissingBucketUids.clear();
+    if (failedStep !== null) {
+      failFirstFolderSyncAttempt();
+      return;
+    }
+    firstFolderSyncBusy = false;
+    firstFolderSyncAwaitingCompletion = false;
+    firstFolderSyncStarted = false;
+    await startFirstFolderSync(true);
+  }
+
+  async function startFirstFolderSync(fromSelfHeal = false): Promise<void> {
     if (firstFolderSyncBusy || firstFolderSyncStarted || firstFolderSyncCompleted) return;
+    if (!fromSelfHeal) firstFolderSelfHealAttempted = false;
+    firstFolderMissingBucketUids.clear();
     firstFolderSyncStarted = true;
     firstFolderSyncAwaitingCompletion = true;
     firstFolderSyncObservedFailure = false;
@@ -2086,18 +2471,57 @@
       });
       // Both follow-on steps are optional. The invite path appears only for a
       // company with one active member; every membership lookup fails closed.
-      const [firstFolderEnabled, inviteContext, firstRunCompanyPath] = await Promise.all([
-        resolveFirstFolderSyncStepFlag(),
-        resolveInviteTeammateContext(),
-        resolveFirstRunCompanyPath({ hqProJson: companyStepHqProJson, invoke: invokeCommand }),
-      ]);
-      if (!isCurrentRun(runId) || !mounted) return;
-      companyPath = firstRunCompanyPath;
-      showFirstFolderSyncStep = firstFolderEnabled;
-      inviteTeammateContext = inviteContext;
-      showInviteTeammateStep = inviteContext !== null;
-      postSetupStepsResolved = true;
+      await resolvePostSetupSteps(() => isCurrentRun(runId) && mounted);
     }
+  }
+
+  /** The optional follow-on steps after setup; re-run after an account switch. */
+  async function resolvePostSetupSteps(stillCurrent: () => boolean): Promise<void> {
+    const retryCompanyLookup = resolveCompanyRouteLookupRetryFlag();
+    const [email, anonId] = await Promise.all([
+      resolveSignedInEmail(),
+      invokeCommand<string | null>('web_visitor_anon_id').catch(() => null),
+    ]);
+    const firstRunCompanyPathPromise = resolveFirstRunCompanyRoute({
+      hqProJson: companyStepHqProJson,
+      invoke: invokeCommand,
+      signedInEmail: email,
+      anonId,
+      enableMembershipLookupRetry: retryCompanyLookup,
+      invalidateMembershipMeRead: () => {
+        membershipMeRead = null;
+      },
+    });
+    const companyNamePrefillPromise = firstRunCompanyPathPromise.then((resolved) => {
+      if (!resolved || !('route' in resolved) || resolved.route.kind !== 'create') return false;
+      return resolveCompanyNamePrefillFlag();
+    });
+    const [firstFolderEnabled, firstRunCompanyPath, namePrefillEnabled] = await Promise.all([
+      resolveFirstFolderSyncStepFlag(),
+      firstRunCompanyPathPromise,
+      companyNamePrefillPromise,
+    ]);
+    // Resolve invite eligibility after the company route has completed its
+    // retry so it can use the recovered shared membership response.
+    const inviteContext =
+      firstRunCompanyPath !== null && 'route' in firstRunCompanyPath
+        ? await resolveInviteTeammateContext()
+        : null;
+    if (!stillCurrent()) return;
+    if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
+      companyPath = firstRunCompanyPath.route;
+      companyNamePrefillEnabled =
+        namePrefillEnabled && firstRunCompanyPath.route.kind === 'create';
+      recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
+    } else {
+      companyPath = null;
+      companyNamePrefillEnabled = false;
+      if (firstRunCompanyPath?.kind === 'lookup_failed') recordCompanyRouteLookupFailed();
+    }
+    showFirstFolderSyncStep = firstFolderEnabled;
+    inviteTeammateContext = inviteContext;
+    showInviteTeammateStep = inviteContext !== null;
+    postSetupStepsResolved = true;
   }
 
   interface SetupCompletionMetrics {
@@ -2984,7 +3408,7 @@
   $effect(() => {
     if (consentOnly || replay || !setupCompleted || !postSetupStepsResolved) return;
     if (currentStep !== READY_STEP_INDEX) return;
-    if (companyPath && companyPath.kind !== 'existing' && !companyStepVisited) {
+    if (companyPath && companyPath.kind !== 'skip' && !companyStepVisited) {
       advanceTo(COMPANY_STEP_INDEX, null);
       return;
     }
@@ -3003,31 +3427,84 @@
   /** Telemetry for the company step. Never carries names, handles or emails. */
   function recordCompanyStep(event: CompanyStepEvent): void {
     if ('companyUid' in event) companyStepCompanyUid = event.companyUid;
+    if (event.action === 'plan_chosen') void emitDesktopOperationalTelemetry(planSelectedEvent(event.plan));
     const failed =
       event.action === 'company_create_failed' ||
       event.action === 'invite_join_failed' ||
-      event.action === 'checkout_failed';
+      event.action === 'checkout_failed' ||
+      event.action === 'provisioning_failed';
     const outcome =
       event.action === 'plan_chosen'
         ? `plan_${event.plan}`
         : event.action === 'company_created' && event.inviteQueuedCount > 0
           ? 'company_created_invites_queued'
-          : event.action;
-    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', { outcome });
+          : event.action === 'provisioning_wait' && event.retry
+            ? 'provisioning_retry'
+            : event.action;
+    const details: StepTelemetryDetails = { outcome };
+    if (event.action === 'company_created') details.namePrefill = event.namePrefill;
+    if (event.action === 'provisioning_failed') details.provisioningStep = event.step;
+    if (event.action === 'provisioning_ready') details.attemptCount = event.attemptCount;
+    if (event.action === 'create_another') details.decision = 'created_another';
+    if (event.action === 'existing_used') details.decision = 'used_existing';
+    recordStep(COMPANY_STEP_INDEX, failed ? 'failed' : 'started', details);
   }
 
-  /** Leave the company step: made, joined, or skipped. Back to ready for the rest. */
+  /** One row per run: what the company step found and which way it went. */
+  function recordCompanyRoute(route: FirstRunCompanyPath, summary: CompanyRouteSummary): void {
+    if (route.kind === 'skip') companyStepCompanyUid = route.company.companyUid;
+    recordStep(COMPANY_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
+      outcome: `route_${route.decision}`,
+      decision: route.decision,
+      existingCompanies: summary.existingCompanies,
+      paidCompany: summary.paidCompany,
+      pendingInvites: summary.pendingInvites,
+    });
+    if (route.kind === 'skip') void selectCompany(route.company.slug);
+  }
+
+  /** A failed lookup keeps the existing #setup create-company recovery in place. */
+  function recordCompanyRouteLookupFailed(): void {
+    recordStep(COMPANY_STEP_INDEX, 'started', {
+      outcome: 'route_lookup_failed',
+      decision: 'lookup_failed',
+    });
+  }
+
+  /** Make the chosen company the app's active one. Best effort. */
+  async function selectCompany(slug: string | null): Promise<void> {
+    if (!slug) return;
+    try {
+      await invokeCommand('set_desktop_active_company', { companySlug: slug });
+    } catch (error) {
+      console.warn('onboarding: could not select the company', error);
+    }
+  }
+
+  /** Leave the company step: made, joined, used, or skipped. Back to ready for the rest. */
   function leaveCompanyStep(result: CompanyStepResult): void {
     const outcome =
       result.outcome === 'created'
         ? result.paid
           ? 'workforce_paid'
           : `created_${result.plan}`
-        : result.outcome;
+        : result.outcome === 'joined'
+          ? 'joined_invite'
+          : result.outcome;
+    const details: StepTelemetryDetails = { outcome };
+    if (result.outcome === 'joined') {
+      details.decision = 'joined_invite';
+      if (result.companyUid) companyStepCompanyUid = result.companyUid;
+      void selectCompany(result.slugs[0] ?? null);
+    } else if (result.outcome === 'used_existing') {
+      details.decision = 'used_existing';
+      companyStepCompanyUid = result.companyUid;
+      void selectCompany(result.slug);
+    }
     advanceTo(
       READY_STEP_INDEX,
       result.outcome === 'skipped' ? 'skipped' : 'completed',
-      { outcome },
+      details,
       'ready',
     );
   }
@@ -3136,6 +3613,14 @@
               {/if}
             {/if}
           </div>
+          {#if existingSessionEmail}
+            <p class="status inline-note" role="status" data-testid="onboarding-signed-in-as">
+              You're signed in as {existingSessionEmail}.
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-continue" disabled={switchingAccount} onclick={continueExistingSession}>Continue</button>
+              or
+              <button class="link-inline" type="button" data-testid="onboarding-signed-in-as-switch" disabled={switchingAccount} onclick={() => void switchAccount('welcome')}>switch account</button>?
+            </p>
+          {/if}
           {#if signInError}
             <p class="status error inline-note" role="alert">{signInError}</p>
           {:else}
@@ -3479,10 +3964,13 @@
       aria-labelledby="onboarding-title-company"
     >
       <div class="panel-block" bind:this={refs['panel:company']}>
-        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'existing'}
+        {#if currentStep === COMPANY_STEP_INDEX && companyPath && companyPath.kind !== 'skip'}
           <CompanyStep
             path={companyPath}
+            namePrefillEnabled={companyNamePrefillEnabled}
+            signedInEmail={signedInEmail}
             invoke={invokeCommand}
+            onswitchaccount={() => void switchAccount('company')}
             openUrl={(url) => openExternal(url)}
             listen={(event, handler) => listen(event, (message) => handler(message.payload))}
             onTelemetry={recordCompanyStep}
@@ -3510,7 +3998,9 @@
           >
             <h2 class="h" id="onboarding-title-first-folder-sync" tabindex="-1" data-scene-heading>Sync your first folder</h2>
             <p class="body">Start syncing {installDisplayPath} so it is available across your HQ devices.</p>
-            {#if firstFolderSyncBusy}
+            {#if firstFolderSelfHealing}
+              <p class="note inline-note" role="status" aria-live="polite" data-testid="onboarding-first-folder-finishing-setup">Finishing setup…</p>
+            {:else if firstFolderSyncBusy}
               <p class="note inline-note" role="status" aria-live="polite">Syncing your first folder…</p>
             {:else if firstFolderSyncError}
               <p class="note inline-note warning" role="alert">HQ could not sync this folder. Try again or skip for now.</p>
@@ -4140,6 +4630,15 @@
 {/snippet}
 
 <style>
+  .link-inline {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays
      here is scoped to the post-ready walkthrough's product mockups. */

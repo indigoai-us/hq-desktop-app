@@ -863,6 +863,26 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "requiredGitVersion",
     "detectedGitVersion",
     "found",
+    "companyUidMissing",
+    "invitesSent",
+    // Company step route decision + provisioning + self-heal (look before create).
+    "existingCompanies",
+    "paidCompany",
+    "pendingInvites",
+    "decision",
+    "provisioningStep",
+    "selfHeal",
+    // Funnel rows mirrored to the CDP (cdp_mirror::OPERATIONAL_MIRRORS).
+    "isFirstLaunch",
+    "userHash",
+    "companyHash",
+    "success",
+    "errorClass",
+    "trigger",
+    "downloadedCount",
+    "count",
+    "route",
+    "plan",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1079,8 +1099,16 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                         | "versionBehind"
                         | "npxResolved"
                         | "found"
+                        | "paidCompany"
+                        | "success"
+                        | "isFirstLaunch"
+                        | "companyUidMissing"
                 )
                 .then_some(value),
+                ("invitesSent", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|count| *count <= 20)
+                    .map(|_| Value::Number(number.clone())),
                 (_, Value::Number(n)) => {
                     (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
                 }
@@ -1093,6 +1121,19 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     }
 
     Value::Object(out)
+}
+
+/// Onboarding rows that may name their company: company and invite-teammate
+/// steps, plus the missing-bucket self-heal (any step).
+fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+    matches!(
+        input.get("step").and_then(Value::as_str),
+        Some("company" | "invite-teammate")
+    )
+        || input.get("selfHeal").and_then(Value::as_str).is_some()
 }
 
 fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
@@ -1158,16 +1199,31 @@ fn build_desktop_telemetry_event(
             })
             .unwrap_or(false);
     let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
     let mut properties = if is_post_ready_action {
         sanitize_post_ready_action_properties(properties)
     } else {
         sanitize_desktop_properties(properties)
     };
+    // The company step (route decision, provisioning, join) and the first-sync
+    // self-heal carry the company they are about; hq-pro takes it as the
+    // event-level `companyUid` (and checks the caller is a member).
+    let company_scoped_onboarding_row = event_name == "desktop_onboarding_step"
+        && properties_company_scoped(raw_company_scope.as_ref());
     let company_uid = if is_post_ready_action {
         properties
             .get("companyUid")
             .and_then(Value::as_str)
             .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else if company_scoped_onboarding_row {
+        raw_company_scope
+            .as_ref()
+            .and_then(|input| input.get("companyUid"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.starts_with("cmp_") && value.len() <= 128 && is_safe_label_value(value)
+            })
             .map(str::to_string)
     } else {
         None
@@ -1178,6 +1234,12 @@ fn build_desktop_telemetry_event(
             .and_then(Value::as_str)
             .filter(|value| is_safe_label_value(value))
             .map(str::to_string)
+    } else if event_name == crate::commands::cdp_mirror::OP_APP_OPENED
+        && properties["isFirstLaunch"].as_bool() == Some(true)
+    {
+        crate::commands::first_run::install_attempt_id()
+            .filter(|id| is_safe_label_value(id))
+            .map(|id| crate::commands::cdp_mirror::first_open_idempotency_key(&id))
     } else {
         None
     };
@@ -1206,7 +1268,8 @@ fn build_desktop_telemetry_event(
     if matches!(
         event_name.as_str(),
         "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
-    ) {
+    ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
+    {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
     if is_post_ready_action {
@@ -1216,9 +1279,12 @@ fn build_desktop_telemetry_event(
         &mut properties,
         crate::commands::cdp_mirror::current_anon_id(),
     );
-    let install_attempt_id = (event_name == "desktop_setup_completed")
-        .then(crate::commands::first_run::install_attempt_id)
-        .flatten();
+    let install_attempt_id = matches!(
+        event_name.as_str(),
+        "desktop_setup_completed" | "desktop_onboarding_step"
+    )
+    .then(crate::commands::first_run::install_attempt_id)
+    .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1327,6 +1393,18 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
     "install_tag_read",
+    crate::commands::cdp_mirror::OP_APP_OPENED,
+    crate::commands::cdp_mirror::OP_ACCOUNT_LINKED,
+    crate::commands::cdp_mirror::OP_AGENT_SESSION_LAUNCHED,
+    crate::commands::cdp_mirror::OP_SYNC_STARTED,
+    crate::commands::cdp_mirror::OP_SYNC_COMPLETED,
+    crate::commands::cdp_mirror::OP_SYNC_FAILED,
+    crate::commands::cdp_mirror::OP_INVITE_SENT,
+    crate::commands::cdp_mirror::OP_INVITE_FAILED,
+    crate::commands::cdp_mirror::OP_COMPANY_JOINED,
+    crate::commands::cdp_mirror::OP_PLAN_SELECTED,
+    crate::commands::cdp_mirror::OP_AUTH_PROGRESS,
+    crate::commands::cdp_mirror::OP_AUTH_FAILURE,
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
@@ -1345,7 +1423,16 @@ pub async fn emit_desktop_operational_telemetry(
     // Mirror the funnel stage to the CDP before any auth work: a queue push
     // only, and independent of whether hq-pro accepts the row.
     crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
-    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let access_token = match crate::commands::cognito::get_valid_access_token().await {
+        Ok(token) => token,
+        // A first sign-in has no session until the token exchange, so its
+        // progress and failure rows wait on disk for the next session.
+        Err(_) if crate::commands::cdp_mirror::is_held_auth_event(&event_name) => {
+            crate::commands::cdp_mirror::hold_auth_row(&event_name, properties.as_ref());
+            return Ok(());
+        }
+        Err(err) => return Err(err),
+    };
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_operational_telemetry_with_vault(
@@ -1354,6 +1441,58 @@ pub async fn emit_desktop_operational_telemetry(
         properties,
         session_id,
         occurred_at,
+    )
+    .await?;
+    crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
+    Ok(())
+}
+
+/// Send one row held by `cdp_mirror::hold_auth_row` with its own timestamp
+/// and idempotencyKey.
+pub async fn post_held_auth_row(row: &Value) -> Result<(), String> {
+    let event_name = row
+        .get("eventName")
+        .and_then(Value::as_str)
+        .filter(|name| crate::commands::cdp_mirror::is_held_auth_event(name))
+        .ok_or("held row has no sign-in event name")?;
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    let mut event = build_desktop_telemetry_event(
+        event_name.to_string(),
+        row.get("properties").cloned(),
+        None,
+        row.get("occurredAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "no-consent",
+    );
+    event.idempotency_key = row
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    vault
+        .post_telemetry_events(&TelemetryEventsBatch {
+            events: vec![event],
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// hq-pro only, for a row whose CDP copy was queued earlier.
+pub async fn emit_desktop_operational_telemetry_unmirrored(
+    event_name: &str,
+    properties: Value,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name.to_string(),
+        Some(properties),
+        None,
+        None,
     )
     .await
 }
@@ -1391,13 +1530,12 @@ pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: 
     });
 }
 
-fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
-    let day = utc_day.format("%Y-%m-%d");
-    let occurred_at = utc_day
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight is a valid UTC time")
-        .and_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+/// `occurredAt` is the send time. The once-per-day guarantee comes from the
+/// day in `idempotencyKey` (hq-pro keeps one row per subject, event and key);
+/// a midnight timestamp would put every row outside any daytime query window.
+fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryEvent {
+    let day = now.date_naive().format("%Y-%m-%d");
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     RawTelemetryEvent {
         event_name: "desktop_app_daily_active".to_string(),
@@ -1419,10 +1557,10 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
 
 async fn emit_daily_active_with_vault(
     vault: &VaultClient,
-    utc_day: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), String> {
     let batch = TelemetryEventsBatch {
-        events: vec![build_daily_active_event(utc_day)],
+        events: vec![build_daily_active_event(now)],
     };
     vault
         .post_telemetry_events(&batch)
@@ -1430,12 +1568,12 @@ async fn emit_daily_active_with_vault(
         .map_err(|e| e.to_string())
 }
 
-async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+async fn emit_daily_active_at(now: chrono::DateTime<chrono::Utc>) {
     let result = async {
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
-        emit_daily_active_with_vault(&vault, utc_day).await
+        emit_daily_active_with_vault(&vault, now).await
     }
     .await;
 
@@ -1444,11 +1582,18 @@ async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
     }
 }
 
-/// Start a best-effort daily-active emit without delaying application startup.
+/// How often a running app re-sends daily-active. hq-pro keeps the first row
+/// per UTC day, so repeats cost one request and cover a launch that had no
+/// session yet and an app left running past midnight.
+const DAILY_ACTIVE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Start best-effort daily-active emits without delaying application startup.
 pub fn setup_daily_active_emit() {
-    let utc_day = chrono::Utc::now().date_naive();
     tauri::async_runtime::spawn(async move {
-        emit_daily_active_for_utc_day(utc_day).await;
+        loop {
+            emit_daily_active_at(chrono::Utc::now()).await;
+            tokio::time::sleep(DAILY_ACTIVE_INTERVAL).await;
+        }
     });
 }
 
@@ -2785,6 +2930,110 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn company_step_route_row_keeps_decision_counts_and_lifts_company_uid() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "company",
+                "action": "started",
+                "outcome": "joined_invite",
+                "decision": "joined_invite",
+                "existingCompanies": 0,
+                "paidCompany": false,
+                "pendingInvites": 1,
+                "companyUid": "cmp_company-1",
+                "email": "ada@example.com",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(event.properties["decision"], "joined_invite");
+        assert_eq!(event.properties["existingCompanies"], 0);
+        assert_eq!(event.properties["paidCompany"], false);
+        assert_eq!(event.properties["pendingInvites"], 1);
+        assert!(event.properties.get("email").is_none());
+        assert!(event.properties.get("companyUid").is_none());
+    }
+
+    #[test]
+    fn invite_teammate_outcomes_lift_company_uid_and_missing_company_is_explicit() {
+        for action in ["entered", "completed", "skipped", "failed"] {
+            let event = build_desktop_telemetry_event(
+                "desktop_onboarding_step".to_string(),
+                Some(json!({
+                    "step": "invite-teammate",
+                    "action": action,
+                    "companyUid": "cmp_company-1",
+                })),
+                Some("session-1".to_string()),
+                None,
+                "no-consent",
+            );
+            assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"), "{action}");
+        }
+
+        let missing = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "invite-teammate",
+                "action": "entered",
+                "companyUidMissing": true,
+            })),
+            Some("session-2".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(missing.company_uid.is_none());
+        assert_eq!(missing.properties["companyUidMissing"], true);
+    }
+
+    #[test]
+    fn invite_step_sent_count_is_bounded_to_twenty() {
+        let valid = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 20,
+        })));
+        assert_eq!(valid["invitesSent"], 20);
+
+        let too_large = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 21,
+        })));
+        assert!(too_large.get("invitesSent").is_none());
+    }
+
+    #[test]
+    fn self_heal_row_lifts_company_uid_but_other_steps_do_not() {
+        let heal = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "first-folder-sync",
+                "action": "started",
+                "selfHeal": "triggered",
+                "companyUid": "cmp_company-2",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(heal.company_uid.as_deref(), Some("cmp_company-2"));
+        assert_eq!(heal.properties["selfHeal"], "triggered");
+
+        let other = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered", "companyUid": "cmp_x"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(other.company_uid.is_none());
+    }
+
+    #[test]
     fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
         let event = build_desktop_telemetry_event(
             "desktop_post_ready_action".to_string(),
@@ -2898,6 +3147,43 @@ mod codex_telemetry_tests {
         assert!(unsafe_values.get("errorOperation").is_none());
         assert!(unsafe_values.get("errorIoKind").is_none());
         assert!(unsafe_values.get("errorCode").is_none());
+    }
+
+    #[test]
+    fn cdp_funnel_rows_are_operational_and_keep_their_props() {
+        let samples = json!({
+            "isFirstLaunch": true,
+            "userHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "companyHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "provider": "claude",
+            "surface": "terminal",
+            "success": false,
+            "errorClass": "not_found",
+            "trigger": "manual",
+            "flow": "runner",
+            "downloadedCount": 12,
+            "count": 1,
+            "route": "onboarding",
+            "plan": "workforce",
+        });
+        for (op, _, keys) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            assert!(is_operational_desktop_event_name(op), "{op} not approved");
+            let input: Map<String, Value> = keys
+                .iter()
+                .map(|key| ((*key).to_string(), samples[*key].clone()))
+                .collect();
+            let out = sanitize_desktop_properties(Some(Value::Object(input)));
+            for key in keys.iter() {
+                assert_eq!(out[*key], samples[*key], "{op}.{key} dropped");
+            }
+        }
+        // Identifiers and emails never pass, whatever the row.
+        let leaky = sanitize_desktop_properties(Some(json!({
+            "userHash": "prs_01ABC@example.com",
+            "personUid": "prs_01ABC",
+            "inviteeEmail": "a@b.c",
+        })));
+        assert!(leaky.as_object().unwrap().is_empty(), "{leaky}");
     }
 
     #[test]
@@ -3079,6 +3365,24 @@ mod codex_telemetry_tests {
                 "requiredGitVersion",
                 "detectedGitVersion",
                 "found",
+                "companyUidMissing",
+                "invitesSent",
+                "existingCompanies",
+                "paidCompany",
+                "pendingInvites",
+                "decision",
+                "provisioningStep",
+                "selfHeal",
+                "isFirstLaunch",
+                "userHash",
+                "companyHash",
+                "success",
+                "errorClass",
+                "trigger",
+                "downloadedCount",
+                "count",
+                "route",
+                "plan",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -3150,6 +3454,10 @@ mod codex_telemetry_tests {
             crate::app_version::current()
         );
         assert_eq!(event.properties["step"], "connector-import");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
 
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
@@ -3588,6 +3896,8 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
         std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_operational_telemetry_with_vault(
@@ -3628,6 +3938,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(event["installAttemptId"], install_attempt_id);
 
         let allowed_event_keys = [
             "eventName",
@@ -3638,6 +3949,7 @@ mod codex_telemetry_tests {
             "schemaVersion",
             "idempotencyKey",
             "sessionId",
+            "installAttemptId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
@@ -3695,6 +4007,8 @@ mod codex_telemetry_tests {
 
     #[tokio::test]
     async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
         let vault = VaultClient::new(server.uri(), "test-jwt");
 
@@ -3787,13 +4101,486 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn funnel_operational_rows_carry_the_trusted_app_version() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Regression: the PR 1264 funnel rows reached hq-pro with no version.
+        for (op, _, _) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            let event = build_desktop_telemetry_event(
+                op.to_string(),
+                Some(json!({ "appVersion": "renderer-controlled-version" })),
+                None,
+                None,
+                "no-consent",
+            );
+            assert_eq!(
+                event.properties["appVersion"],
+                crate::app_version::current(),
+                "{op} must carry the build's app version"
+            );
+        }
+    }
+
+    async fn first_open_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            // HQ_VAULT_API_URL is process-wide, so a test running alongside
+            // can post its own rows here; count only the first-open rows.
+            .filter(|body| body["events"][0]["eventName"] == "desktop_app_opened")
+            .collect()
+    }
+
+    async fn first_open_server(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn first_open_held(home: &std::path::Path) -> bool {
+        hq_desktop_core::first_run::read_menubar_obj(&home.join(".hq/menubar.json"))
+            .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
+    #[tokio::test]
+    async fn first_launch_app_opened_is_held_until_a_session_exists() {
+        // Regression: the first launch has no session, so its
+        // `desktop_app_opened isFirstLaunch=true` row was dropped and only
+        // signed-in relaunches (`false`) ever reached hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // What `cdp_mirror::init` does on a first launch.
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let without_session = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+        assert!(!without_session, "no session: the row stays held");
+        assert!(first_open_held(home.path()));
+        write_valid_access_token(home.path());
+        assert!(
+            crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "the held row is sent once a session exists"
+        );
+        assert!(!first_open_held(home.path()));
+        assert!(
+            !crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "sent once"
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1);
+        let event = &posts[0]["events"][0];
+        assert_eq!(event["eventName"], "desktop_app_opened");
+        assert_eq!(event["properties"]["isFirstLaunch"], true);
+        assert_eq!(
+            event["properties"]["appVersion"],
+            crate::app_version::current()
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_open_flushes_send_one_row() {
+        // Regression: a flush checked the pending flag before taking the guard,
+        // so a flush that checked, then took the guard after another flush had
+        // sent and released it, sent the row a second time.
+        use crate::commands::cdp_mirror::{
+            flush_pending_first_open_now, FirstOpenGuardHook, FIRST_OPEN_GUARD_HOOK,
+        };
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let hook = std::sync::Arc::new(FirstOpenGuardHook {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        let late =
+            tokio::spawn(FIRST_OPEN_GUARD_HOOK.scope(hook.clone(), flush_pending_first_open_now()));
+        // `late` has seen the pending row and is parked before the guard.
+        hook.reached.notified().await;
+        let early = flush_pending_first_open_now().await;
+        hook.resume.notify_one();
+        let late = late.await.unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert!(early, "the first flush sends the row");
+        assert!(!late, "the overlapping flush finds it already sent");
+        assert!(!first_open_held(home.path()));
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1, "exactly one POST");
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        assert_eq!(
+            posts[0]["events"][0]["idempotencyKey"],
+            crate::commands::cdp_mirror::first_open_idempotency_key(&install)
+        );
+    }
+
+    #[test]
+    fn background_telemetry_flush_path_is_captured_before_home_changes() {
+        // Models a scheduled task whose first poll happens after another test
+        // changes HOME: the production task builders must already own this path.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let scheduled_home = setup_home();
+        let later_home = setup_home();
+
+        let _scheduled_home = scoped_home(scheduled_home.path());
+        let scheduled_path = crate::commands::cdp_mirror::capture_background_flush_path();
+        let scheduled_path = scheduled_path.expect("HOME A has a menubar path");
+        assert!(crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        let _later_home = scoped_home(later_home.path());
+
+        assert_eq!(
+            scheduled_path,
+            scheduled_home.path().join(".hq/menubar.json"),
+            "the path is captured synchronously before a background task is polled"
+        );
+        assert!(!crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        assert_ne!(scheduled_path, later_home.path().join(".hq/menubar.json"));
+    }
+
+    #[test]
+    fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
+        // Regression: the held first-launch row had no idempotencyKey, so a
+        // repeated send was stored twice by hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let build = |first: bool| {
+            build_desktop_telemetry_event(
+                "desktop_app_opened".to_string(),
+                Some(json!({ "isFirstLaunch": first })),
+                None,
+                None,
+                "no-consent",
+            )
+        };
+        let first = build(true);
+        let retry = build(true);
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        let key = first.idempotency_key.clone().unwrap();
+        assert_eq!(key, format!("hq-desktop-app:first-open:{install}"));
+        assert_eq!(retry.idempotency_key.as_deref(), Some(key.as_str()));
+        // hq-pro's envelope accepts [A-Za-z0-9_.:#-]{1,200} for idempotencyKey.
+        assert!(key.len() <= 200);
+        assert!(key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:#-".contains(&b)));
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["idempotencyKey"],
+            json!(key)
+        );
+        assert!(
+            build(false).idempotency_key.is_none(),
+            "relaunch rows are not deduped"
+        );
+    }
+
+    fn first_open_warnings(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("[cdp] WARN first_open"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_open_failures_are_logged_as_warnings() {
+        // Regression: the hold write, the send and the clear write each
+        // dropped their error without a trace.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let logs = TempDir::new().unwrap();
+        let log = logs.path().join("hq-sync.log");
+        let _log = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        let server = first_open_server(500).await;
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // Hold: menubar.json is a directory, so the write fails.
+        std::fs::create_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+        crate::commands::cdp_mirror::hold_first_open();
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("hold_write_failed"), "{warnings:?}");
+        std::fs::remove_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+
+        // Send: hq-pro answers 500; the row stays held.
+        write_menubar(home.path(), "{}");
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+        assert!(!crate::commands::cdp_mirror::flush_pending_first_open_now().await);
+        assert!(first_open_held(home.path()));
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[1].contains("send_failed_held_for_retry"),
+            "{warnings:?}"
+        );
+
+        // Clear: the send succeeds but the config directory is read-only.
+        #[cfg(unix)]
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .mount(&server)
+                .await;
+            crate::commands::first_run::install_attempt_id().unwrap();
+            let hq_dir = home.path().join(".hq");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let sent = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::remove_var("HQ_VAULT_API_URL");
+            assert!(sent);
+            let warnings = first_open_warnings(&log);
+            assert_eq!(warnings.len(), 3, "{warnings:?}");
+            assert!(warnings[2].contains("clear_write_failed"), "{warnings:?}");
+        }
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    async fn auth_failure_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            .flat_map(|body| body["events"].as_array().cloned().unwrap_or_default())
+            .filter(|event| event["eventName"] == "desktop_auth_failure")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_sign_in_failure_before_a_token_reaches_hq_pro_after_sign_in() {
+        // Regression: a brand-new user has no token until token_exchange_ok,
+        // so a sign-in failure before that was never sent to hq-pro. Only
+        // returning users' sign-in rows reached it.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // First-time sign-in, no token: the provider page fails to open.
+        let _ = emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": "provider_page_opened",
+                "errorCategory": "network",
+            })),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "no session yet"
+        );
+
+        // The app quits here; only what is on disk carries over. On the next
+        // launch the user signs in and the app reports token_exchange_ok.
+        write_valid_access_token(home.path());
+        emit_desktop_operational_telemetry(
+            "desktop_auth_progress".to_string(),
+            Some(json!({ "provider": "google", "step": "token_exchange_ok" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "the pre-token failure must reach hq-pro");
+        assert_eq!(failures[0]["properties"]["step"], "provider_page_opened");
+        assert_eq!(failures[0]["properties"]["errorCategory"], "network");
+    }
+
+    fn held_auth_rows(home: &std::path::Path) -> Vec<Value> {
+        crate::commands::cdp_mirror::held_auth_rows_at(
+            &home.join(".hq/menubar.json"),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+    }
+
+    async fn emit_pre_token_failure(step: &str) {
+        emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": step,
+                "errorCategory": "network",
+                "message": "connect error: secret-callback-code-123",
+            })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_survives_app_quit_with_labels_only() {
+        // Regression: the row lived nowhere once the app quit after a failed
+        // first sign-in. It must be on disk, with closed labels only.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("provider_page_opened").await;
+        // Quit: nothing in memory carries over; read what a relaunch reads.
+        let raw = std::fs::read_to_string(home.path().join(".hq/menubar.json")).unwrap();
+        assert!(
+            !raw.contains("secret-callback-code"),
+            "no raw error text on disk"
+        );
+        let held = held_auth_rows(home.path());
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0]["properties"],
+            json!({ "provider": "google", "step": "provider_page_opened", "errorCategory": "network" })
+        );
+
+        // Next launch, user signs in; the launch-time flush sends it.
+        write_valid_access_token(home.path());
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            1
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert!(held_auth_rows(home.path()).is_empty());
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["occurredAt"], held[0]["occurredAt"]);
+        assert!(failures[0]["properties"].get("message").is_none());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_is_delivered_exactly_once_after_sign_in() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("callback_received").await;
+        let key = held_auth_rows(home.path())[0]["idempotencyKey"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        write_valid_access_token(home.path());
+        for step in ["sign_in_started", "token_exchange_ok"] {
+            emit_desktop_operational_telemetry(
+                "desktop_auth_progress".to_string(),
+                Some(json!({ "provider": "google", "step": step })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            0
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "delivered exactly once");
+        assert_eq!(failures[0]["idempotencyKey"], json!(key));
+        assert!(key.starts_with("hq-desktop-app:auth-held:") && key.len() <= 200);
+        assert!(held_auth_rows(home.path()).is_empty());
+    }
+
+    #[test]
+    fn held_sign_in_rows_are_capped_and_expire() {
+        use crate::commands::cdp_mirror::{
+            held_auth_rows_at, hold_auth_row_at, AUTH_HELD_CAP, AUTH_HELD_TTL_MS,
+        };
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let path = home.path().join(".hq/menubar.json");
+        let start = 1_800_000_000_000u64;
+        let props = |i: usize| json!({ "provider": format!("p{i}"), "step": "sign_in_started" });
+        for i in 0..AUTH_HELD_CAP + 5 {
+            hold_auth_row_at(
+                &path,
+                "desktop_auth_progress",
+                Some(&props(i)),
+                start + i as u64,
+            )
+            .unwrap();
+        }
+        let rows = held_auth_rows_at(&path, start + 100);
+        assert_eq!(rows.len(), AUTH_HELD_CAP, "capped");
+        assert_eq!(
+            rows[0]["properties"]["provider"], "p5",
+            "oldest dropped first"
+        );
+
+        // Past the TTL every row is gone, and the next hold prunes the file.
+        let later = start + AUTH_HELD_TTL_MS + 100;
+        assert!(held_auth_rows_at(&path, later).is_empty(), "expired");
+        hold_auth_row_at(&path, "desktop_auth_failure", Some(&props(99)), later).unwrap();
+        let stored = hq_desktop_core::first_run::read_menubar_obj(&path);
+        assert_eq!(stored["cdpAuthHeld"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_daily_active_event_uses_stable_utc_day_values() {
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-15T14:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
 
-        let first = build_daily_active_event(utc_day);
-        let retry = build_daily_active_event(utc_day);
+        let first = build_daily_active_event(now);
+        let retry = build_daily_active_event(now);
 
-        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        // Regression: the row used to be stamped 00:00:00Z, so every daytime
+        // read of hq-pro telemetry returned no daily-active rows.
+        assert_eq!(first.occurred_at, "2026-07-15T14:30:05.250Z");
+        let later_same_day = build_daily_active_event(now + chrono::Duration::hours(6));
+        assert_eq!(
+            later_same_day.idempotency_key, first.idempotency_key,
+            "re-sends on the same UTC day share one idempotency key"
+        );
         assert_eq!(
             first.idempotency_key.as_deref(),
             Some("hq-desktop-app:daily-active:2026-07-15")
@@ -3839,9 +4626,9 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
-        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+        let result = emit_daily_active_with_vault(&vault, now).await;
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
@@ -3864,7 +4651,7 @@ mod codex_telemetry_tests {
     async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
         for token_contents in [None, Some("{not valid json")] {
             let home = setup_home();
@@ -3874,7 +4661,7 @@ mod codex_telemetry_tests {
 
             std::env::set_var("HQ_TEST_HOME", home.path());
             std::env::set_var("HQ_VAULT_API_URL", server.uri());
-            emit_daily_active_for_utc_day(utc_day).await;
+            emit_daily_active_at(now).await;
             std::env::remove_var("HQ_TEST_HOME");
             std::env::remove_var("HQ_VAULT_API_URL");
         }
@@ -3902,8 +4689,8 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
-        emit_daily_active_for_utc_day(utc_day).await;
+        let now = chrono::Utc::now();
+        emit_daily_active_at(now).await;
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");

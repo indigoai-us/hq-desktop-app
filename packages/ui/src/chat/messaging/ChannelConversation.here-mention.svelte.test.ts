@@ -5,8 +5,6 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
 import ChannelConversation from "./ChannelConversation.svelte";
 import type { MentionTarget } from "../mentions";
@@ -94,15 +92,17 @@ describe("@here in a channel composer", () => {
     const row = pickerRows()[0]!;
     expect(row.className).toContain("selected");
     expect(row.getAttribute("aria-selected")).toBe("true");
+    await tick();
 
-    // Selection states are a background highlight, never a left accent bar.
-    // happy-dom does not resolve scoped Svelte styles, so assert the rule at
-    // its source instead of reading a computed value that is always empty.
-    const css = readFileSync(
-      join(process.cwd(), "src/chat/messaging/MentionPicker.svelte"),
-      "utf8",
-    );
-    const rule = /\.mention-row\.selected[\s\S]*?\{([\s\S]*?)\}/.exec(css);
+    // Selection is a background highlight, never a left accent bar.
+    // happy-dom does not compute scoped styles, so read the stylesheet the
+    // mounted picker injected.
+    const css = [...document.querySelectorAll("style")]
+      .map((node) => node.textContent ?? "")
+      .filter((text) => text.includes("mention-row"))
+      .join("\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const rule = /\.mention-row(?:\.[\w-]+)?\.selected[\s\S]*?\{([^}]*)\}/.exec(css);
     expect(rule).not.toBeNull();
     expect(rule![1]).toContain("background:");
     expect(rule![1]).not.toMatch(/border-left|box-shadow|outline/);

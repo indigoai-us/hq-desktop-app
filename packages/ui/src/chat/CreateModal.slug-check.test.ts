@@ -83,7 +83,9 @@ const created: CreateCompanyResult = {
   company: {
     companyUid: "cmp_new",
     companyChannelId: "chn_company",
-    inviteFailures: [], queuedInvites: [],
+    inviteFailures: [],
+    queuedInvites: [],
+    cloudError: null,
   },
 };
 

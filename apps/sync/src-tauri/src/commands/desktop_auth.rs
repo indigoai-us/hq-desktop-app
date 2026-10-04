@@ -64,6 +64,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::ShellExt;
 
@@ -77,13 +78,13 @@ use super::cognito::{self, AuthState, CognitoTokens};
 /// this file is taken, used, and dropped inside one block. Holding it across an
 /// HTTP round trip would let a slow provider block a Cancel click.
 static CUSTODY: Mutex<Option<ContinuationCustody>> = Mutex::new(None);
-/// The browser-link nonce belongs to the one native continuation attempt and
-/// never crosses the renderer bridge.
-static SIGNIN_LINK_ATTEMPT: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 /// Serializes authenticated receipt drains so one background retry cannot race
 /// another. File mutations use a separate short-lived lock and never span HTTP.
 static AUTHENTICATED_RECEIPT_FLUSH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static DESKTOP_REFERRAL_SCHEDULER_STARTED: AtomicBool = AtomicBool::new(false);
+static DESKTOP_REFERRAL_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+const DESKTOP_REFERRAL_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 /// Serializes durable custody writes so an awaited caller cannot mistake a
 /// concurrent background drain for its own receipt being persisted.
 static AUTHENTICATED_RECEIPT_PERSISTENCE: tokio::sync::Mutex<()> =
@@ -143,63 +144,10 @@ pub(crate) fn note_auth_transition(end: AttemptEnd) {
         // is not a first launch, and `may_start` refuses on that ground too.
         SIGNED_OUT_THIS_SESSION.store(true, Ordering::SeqCst);
     }
-    SIGNIN_LINK_ATTEMPT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    with_custody(|custody| custody.bump_generation(end));
-}
-
-fn set_signin_link_attempt(attempt_id: String, link: Option<String>) {
-    let mut pending = SIGNIN_LINK_ATTEMPT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *pending = link.map(|link| (attempt_id, link));
-}
-
-fn take_signin_link_attempt(attempt_id: &str) -> Option<String> {
-    let mut pending = SIGNIN_LINK_ATTEMPT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if pending.as_ref().is_some_and(|(id, _)| id == attempt_id) {
-        pending.take().map(|(_, link)| link)
-    } else {
-        None
+    let (_, referral_nonce) = with_custody(|custody| custody.bump_generation(end));
+    if let Some(nonce) = referral_nonce {
+        discard_unbound_desktop_referral_nonce(nonce);
     }
-}
-
-fn clear_signin_link_attempt(attempt_id: &str) {
-    let mut pending = SIGNIN_LINK_ATTEMPT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if pending.as_ref().is_some_and(|(id, _)| id == attempt_id) {
-        pending.take();
-    }
-}
-
-/// A claimed link answers `{"anonId"}`, the website visitor that downloaded
-/// this install; the CDP mirror tags its events with it.
-fn post_signin_link_best_effort(link: String, bearer: String) {
-    let client = build_client();
-    hq_desktop_core::desktop_signin_link::spawn_best_effort(async move {
-        let response = client
-            .post(hq_desktop_core::desktop_signin_link::SIGNIN_LINK_URL)
-            .bearer_auth(bearer)
-            .json(&hq_desktop_core::desktop_signin_link::signin_link_body(
-                &link,
-                crate::commands::cdp_mirror::download_tag_anon_id().as_deref(),
-            ))
-            .send()
-            .await?;
-        let status = response.status().as_u16();
-        let body = response.text().await?;
-        if let Some(anon_id) =
-            hq_desktop_core::desktop_signin_link::parse_link_anon_id(status, &body)
-        {
-            crate::commands::cdp_mirror::note_signin_link_visitor(&anon_id);
-        }
-        Ok::<(), reqwest::Error>(())
-    });
 }
 
 /// Set when the person signs out on purpose. Never cleared.
@@ -210,6 +158,283 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+fn desktop_referral_queue_path() -> Option<PathBuf> {
+    crate::util::paths::home_dir()
+        .map(|home| hq_desktop_core::desktop_referral::queue_path_from_home(&home))
+}
+
+/// Prepare the browser hop for a desktop referral. The nonce is durable before
+/// the URL leaves native code; callers tear down their listener if this fails.
+pub(crate) async fn prepare_desktop_referral_start_url(
+    authorize_url: &str,
+) -> Result<(String, String), ()> {
+    let link = hq_desktop_core::desktop_signin_link::new_link_nonce();
+    let install_attempt_id =
+        tauri::async_runtime::spawn_blocking(|| super::first_run::install_attempt_id())
+            .await
+            .map_err(|error| {
+                eprintln!("[desktop-referral] installation id worker failed: {error}");
+            })?;
+    let browser_url = hq_desktop_core::desktop_signin_link::signin_start_url(
+        authorize_url,
+        &link,
+        install_attempt_id.as_deref(),
+        super::cdp_mirror::download_tag_anon_id().as_deref(),
+    )
+    .ok_or_else(|| {
+        eprintln!("[desktop-referral] sign-in start URL refused");
+    })?;
+    let path = desktop_referral_queue_path().ok_or_else(|| {
+        eprintln!("[desktop-referral] queue home unavailable");
+    })?;
+    let receipt = hq_desktop_core::desktop_referral::ReferralReceipt::new(&link, now_ms());
+    hq_desktop_core::desktop_referral::enqueue_async(path, receipt)
+        .await
+        .map_err(|error| {
+            eprintln!("[desktop-referral] queue persistence failed: {error}");
+        })?;
+    Ok((browser_url, link))
+}
+
+pub(crate) async fn authorize_desktop_referral_for_tokens(
+    tokens: &CognitoTokens,
+    nonce: &str,
+) -> Result<(), String> {
+    if super::cognito::non_human_principal_from_tokens(tokens).is_some() {
+        return Err("referral cannot be authorized for a non-human token".to_string());
+    }
+    let Some(subject) = super::auth::notification_identity_from_bearer_token(&tokens.access_token)
+    else {
+        return Err("referral cannot be authorized without a token subject".to_string());
+    };
+    let path = desktop_referral_queue_path()
+        .ok_or_else(|| "referral queue home is unavailable".to_string())?;
+    match hq_desktop_core::desktop_referral::authorize_nonce_async(path, nonce.to_string(), subject)
+        .await?
+    {
+        true => Ok(()),
+        false => Err("referral nonce was not found for authorization".to_string()),
+    }
+}
+
+/// Best-effort cancellation/supersession cleanup for an exact native nonce.
+/// The core mutation removes only an unbound row, so a concurrent successful
+/// authorization remains durable for delivery rather than losing its proof.
+pub(crate) fn discard_unbound_desktop_referral_nonce(nonce: String) {
+    let Some(path) = desktop_referral_queue_path() else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            hq_desktop_core::desktop_referral::discard_unbound_nonce_async(path, nonce).await
+        {
+            eprintln!("[desktop-referral] cancelled referral cleanup failed: {error}");
+        }
+    });
+}
+
+fn referral_session_allows_delivery(
+    session: Option<&super::auth::AuthSessionEnvelope>,
+    token_subject: Option<&str>,
+) -> bool {
+    matches!(
+        (session, token_subject),
+        (Some(session), Some(subject))
+            if session.status == super::auth::AuthSessionStatus::Active
+                && session.account_id.as_deref() == Some(subject)
+    )
+}
+
+async fn post_desktop_referral_receipt(
+    app: &AppHandle,
+    receipt: &hq_desktop_core::desktop_referral::ReferralReceipt,
+) -> Result<hq_desktop_core::desktop_referral::ReferralDelivery, String> {
+    for attempt in 0..2 {
+        // Resolve an exact identity/token generation from the durable store.
+        // The existing notification mutation lease below binds the POST and
+        // complete bounded response read to this snapshot.
+        let auth = super::dm_notify::resolve_notification_auth_snapshot(app).await?;
+        let token_subject =
+            super::auth::notification_identity_from_bearer_token(&auth.access_token);
+        let active = super::auth::active_auth_session_snapshot();
+        if !hq_desktop_core::desktop_referral::may_deliver_for_subject(
+            receipt.authorized_subject.as_deref(),
+            token_subject.as_deref(),
+        ) || token_subject.as_deref() != Some(auth.identity.as_str())
+            || !referral_session_allows_delivery(active.as_ref(), Some(auth.identity.as_str()))
+        {
+            eprintln!("[desktop-referral] referral held because the auth session changed");
+            return Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Held);
+        }
+
+        let access_token = auth.access_token.clone();
+        let request_body = hq_desktop_core::desktop_referral::referral_link_body(
+            &receipt.nonce,
+            crate::commands::cdp_mirror::download_tag_anon_id().as_deref(),
+        );
+        let response =
+            super::dm_notify::with_current_notification_mutation(app, &auth, move || async move {
+                let response = build_client()
+                    .post(hq_desktop_core::desktop_signin_link::SIGNIN_LINK_URL)
+                    .timeout(DESKTOP_REFERRAL_HTTP_TIMEOUT)
+                    .bearer_auth(access_token)
+                    .json(&request_body)
+                    .send()
+                    .await
+                    .map_err(|error| format!("desktop referral request failed: {error}"))?;
+                let status = response.status().as_u16();
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|error| format!("desktop referral response failed: {error}"))?;
+                Ok::<_, String>((status, body))
+            })
+            .await;
+        let Some(response) = response else {
+            // Dispatch may already have reached the server. Retain the exact
+            // nonce until a matching session obtains a duplicate ACK.
+            return Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Held);
+        };
+        let (status, body) = response?;
+        if status == 401 && attempt == 0 {
+            // A server rejection is stronger evidence than the local expiry
+            // timestamp. The mutation helper has returned and dropped its
+            // lease before refresh (refresh itself transitions auth), avoiding
+            // a lease/transition deadlock. The retry resolves a fresh snapshot.
+            super::auth::refresh_tokens(app.clone()).await?;
+            continue;
+        }
+        if let Some(ack) = hq_desktop_core::desktop_referral::parse_referral_ack(status, &body) {
+            if let Some(anon_id) = ack.anon_id.as_deref() {
+                let _ =
+                    super::dm_notify::with_current_notification_auth_snapshot(app, &auth, || {
+                        crate::commands::cdp_mirror::note_signin_link_visitor(anon_id)
+                    })
+                    .await;
+            }
+            if ack.referral.status == hq_desktop_core::desktop_referral::ReferralStatus::Expired {
+                eprintln!("[desktop-referral] referral expired on the server");
+            }
+            return Ok(
+                hq_desktop_core::desktop_referral::ReferralDelivery::Delivered(ack.referral.status),
+            );
+        }
+        return Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Retry);
+    }
+    Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Retry)
+}
+
+async fn drain_desktop_referrals(app: &AppHandle) -> Option<i64> {
+    let Some(path) = desktop_referral_queue_path() else {
+        return None;
+    };
+    let now = now_ms();
+    match hq_desktop_core::desktop_referral::expire_old_async(path.clone(), now).await {
+        Ok(expired) => {
+            if !expired.is_empty() {
+                eprintln!(
+                    "[desktop-referral] expired {} local referral receipt(s) before delivery",
+                    expired.len()
+                );
+            }
+        }
+        Err(error) => eprintln!("[desktop-referral] referral expiry check failed: {error}"),
+    }
+    let due = match hq_desktop_core::desktop_referral::due_receipts_async(path.clone(), now).await {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            eprintln!("[desktop-referral] referral queue read failed: {error}");
+            return None;
+        }
+    };
+    let active_subject =
+        super::auth::active_auth_session_snapshot().and_then(|session| session.account_id);
+    for receipt in due {
+        if receipt.authorized_subject.as_deref() != active_subject.as_deref() {
+            continue;
+        }
+        match post_desktop_referral_receipt(app, &receipt).await {
+            Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Delivered(_)) => {
+                if let Err(error) = hq_desktop_core::desktop_referral::remove_nonce_async(
+                    path.clone(),
+                    receipt.nonce.clone(),
+                )
+                .await
+                {
+                    eprintln!("[desktop-referral] referral queue removal failed: {error}");
+                }
+            }
+            Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Retry) => {
+                if let Err(error) = hq_desktop_core::desktop_referral::retain_with_retry_async(
+                    path.clone(),
+                    receipt.nonce.clone(),
+                    now,
+                )
+                .await
+                {
+                    eprintln!("[desktop-referral] referral retry update failed: {error}");
+                }
+            }
+            Ok(hq_desktop_core::desktop_referral::ReferralDelivery::Held) => {}
+            Err(error) => {
+                eprintln!("[desktop-referral] referral delivery will retry: {error}");
+                if let Err(error) = hq_desktop_core::desktop_referral::retain_with_retry_async(
+                    path.clone(),
+                    receipt.nonce.clone(),
+                    now,
+                )
+                .await
+                {
+                    eprintln!("[desktop-referral] referral retry update failed: {error}");
+                }
+            }
+        }
+    }
+
+    let active_subject =
+        super::auth::active_auth_session_snapshot().and_then(|session| session.account_id)?;
+    match hq_desktop_core::desktop_referral::earliest_attempt_at_for_subject_async(
+        path,
+        active_subject,
+    )
+    .await
+    {
+        Ok(deadline) => deadline.map(|deadline| deadline.max(now_ms().saturating_add(1_000))),
+        Err(error) => {
+            eprintln!("[desktop-referral] referral schedule read failed: {error}");
+            None
+        }
+    }
+}
+
+async fn run_desktop_referral_scheduler(app: AppHandle) {
+    loop {
+        match drain_desktop_referrals(&app).await {
+            Some(deadline_ms) => {
+                let delay_ms = deadline_ms.saturating_sub(now_ms()).max(1) as u64;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
+                    _ = DESKTOP_REFERRAL_WAKE.notified() => {}
+                }
+            }
+            None => DESKTOP_REFERRAL_WAKE.notified().await,
+        }
+    }
+}
+
+pub(crate) fn flush_pending_desktop_referrals(app: &AppHandle) {
+    if DESKTOP_REFERRAL_SCHEDULER_STARTED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(run_desktop_referral_scheduler(app));
+    }
+    // Notify stores at most one permit, coalescing repeated get_auth_state and
+    // completion triggers instead of growing a waiter backlog.
+    DESKTOP_REFERRAL_WAKE.notify_one();
 }
 
 /// What the renderer is told about a refusal.
@@ -301,6 +526,8 @@ pub struct ContinuationContext {
     /// Vault API base, resolved the same way the sync path resolves it, so a
     /// dev install pointed elsewhere by `HQ_VAULT_API_URL` stays pointed there.
     pub api_base: String,
+    /// Set only by CI jobs that launch packaged builds against production telemetry.
+    pub suppress_first_launch_telemetry: bool,
 }
 
 fn endpoints() -> ContinuationEndpoints {
@@ -322,11 +549,17 @@ fn endpoints() -> ContinuationEndpoints {
 /// consecutive days. The renderer reads `None` as "off", which is the screen
 /// that ships today.
 #[tauri::command]
-pub fn desktop_continuation_context(_app: AppHandle) -> Option<ContinuationContext> {
+pub async fn desktop_continuation_context(_app: AppHandle) -> Option<ContinuationContext> {
+    let install_attempt_id =
+        tauri::async_runtime::spawn_blocking(|| super::first_run::install_attempt_id())
+            .await
+            .ok()??;
     Some(ContinuationContext {
-        install_attempt_id: super::first_run::install_attempt_id()?,
+        install_attempt_id,
         app_version: crate::app_version::current().to_string(),
         api_base: endpoints().api_base,
+        suppress_first_launch_telemetry: std::env::var("HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED")
+            .is_ok_and(|value| value == "1"),
     })
 }
 
@@ -374,26 +607,21 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
     // signed in there minutes ago.
     let armed = super::oauth::arm_oauth_flow(&app, None, Some(&nonce))?;
 
-    // A missing, malformed, slow, or unreachable marketing response preserves
-    // today's direct Cognito URL. Only an explicit true can add the web join.
-    let (browser_url, link_nonce) = hq_desktop_core::desktop_signin_link::select_browser_url(
-        &armed.authorize_url,
-        super::first_run::install_attempt_id().as_deref(),
-        super::cdp_mirror::download_tag_anon_id().as_deref(),
-        || async {
-            let response = reqwest::Client::new()
-                .get(hq_desktop_core::desktop_signin_link::SIGNIN_CONFIG_URL)
-                .send()
-                .await?;
-            let status = response.status().as_u16();
-            let body = response.text().await?;
-            Ok::<_, reqwest::Error>((status, body))
-        },
-    )
-    .await;
-    set_signin_link_attempt(attempt_id.clone(), link_nonce);
+    let (browser_url, referral_nonce) =
+        match prepare_desktop_referral_start_url(&armed.authorize_url).await {
+            Ok(result) => result,
+            Err(()) => {
+                release_listener(&armed.state);
+                return Err("CONTINUATION_REFERRAL_PERSIST_FAILED".to_string());
+            }
+        };
+    if super::oauth::set_pending_referral_nonce(&armed.state, &referral_nonce).is_err() {
+        discard_unbound_desktop_referral_nonce(referral_nonce);
+        release_listener(&armed.state);
+        return Err("CONTINUATION_REFERRAL_PERSIST_FAILED".to_string());
+    }
 
-    with_custody(|custody| {
+    let superseded_referral_nonce = with_custody(|custody| {
         let attempt = ContinuationAttempt::start(
             attempt_id.clone(),
             armed.state.clone(),
@@ -401,10 +629,12 @@ pub async fn desktop_continuation_start(app: AppHandle) -> Result<ContinuationSt
             custody.generation(),
             now_ms(),
         );
-        custody.begin(attempt);
+        custody.begin(attempt).1
     });
+    if let Some(nonce) = superseded_referral_nonce {
+        discard_unbound_desktop_referral_nonce(nonce);
+    }
     if let Err(error) = app.shell().open(&browser_url, None) {
-        clear_signin_link_attempt(&attempt_id);
         with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Failed));
         // The listener was armed before the browser was opened, so a failure
         // here leaves it holding both loopback sockets and the blur-suppression
@@ -440,28 +670,35 @@ pub async fn desktop_continuation_await_identity(
     // attempt: the two stores can only disagree if something went wrong, and
     // that is exactly when a second check earns its keep.
     let (callback, matched_state) = super::oauth::oauth_listen_for_code_internal(&app).await?;
-    with_custody(|custody| custody.accept_callback(&attempt_id, &matched_state, now_ms()))
-        .map_err(|error| custody_error_code(error).to_string())?;
+    if let Err(error) =
+        with_custody(|custody| custody.accept_callback(&attempt_id, &matched_state, now_ms()))
+    {
+        release_listener(&matched_state);
+        return Err(custody_error_code(error).to_string());
+    }
 
     let exchanged = match super::oauth::exchange_code_for_tokens(&callback.code).await {
         Ok(exchanged) => exchanged,
         Err(error) => {
-            clear_signin_link_attempt(&attempt_id);
             return Err(error);
         }
     };
+    let referral_nonce = exchanged.referral_nonce;
     let tokens = exchanged.tokens;
-
-    // Link attribution is best-effort and detached: it never waits on the
-    // network and no bearer is added to either browser URL.
-    if let Some(link) = take_signin_link_attempt(&attempt_id) {
-        post_signin_link_best_effort(link, tokens.access_token.clone());
-    }
+    let cleanup_nonce = referral_nonce.clone();
 
     // Server-side verification. The desktop reading its own claims proves
     // nothing — the backend checks the signature, the audience, and that the
     // subject is a person this deployment knows.
-    let identity = verify_with_backend(&tokens).await?;
+    let identity = match verify_with_backend(&tokens).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            if let Some(nonce) = cleanup_nonce {
+                discard_unbound_desktop_referral_nonce(nonce);
+            }
+            return Err(error);
+        }
+    };
 
     let nonce = cognito::decode_id_token_claims(tokens.id_token.as_deref().unwrap_or_default())
         .ok()
@@ -471,11 +708,19 @@ pub async fn desktop_continuation_await_identity(
         custody.hold(
             &attempt_id,
             nonce.as_deref(),
-            PendingCredentials::new(tokens, identity),
+            PendingCredentials::new_with_referral_nonce(tokens, identity, referral_nonce),
             now_ms(),
         )
-    })
-    .map_err(|error| custody_error_code(error).to_string())?;
+    });
+    let held = match held {
+        Ok(held) => held,
+        Err(error) => {
+            if let Some(nonce) = cleanup_nonce {
+                discard_unbound_desktop_referral_nonce(nonce);
+            }
+            return Err(custody_error_code(error).to_string());
+        }
+    };
 
     Ok(VerifiedIdentityPayload::from(held))
 }
@@ -506,12 +751,35 @@ pub async fn desktop_continuation_confirm(
 ) -> Result<AuthState, String> {
     let credentials = with_custody(|custody| custody.confirm(&attempt_id, now_ms()))
         .map_err(|error| custody_error_code(error).to_string())?;
+    let referral_nonce = credentials.referral_nonce().map(str::to_string);
 
     // Only now does anything touch the disk. `complete_auth_session` is the
     // same completion the provider-button path runs, so both flows end in one
     // definition of "signed in".
     let tokens: CognitoTokens = credentials.into_tokens();
-    let state = super::auth::complete_auth_session(&app, &tokens).await?;
+    if let Some(nonce) = referral_nonce.as_deref() {
+        authorize_desktop_referral_for_tokens(&tokens, nonce)
+            .await
+            .map_err(|error| {
+                eprintln!("[desktop-referral] continuation binding failed: {error}");
+                discard_unbound_desktop_referral_nonce(nonce.to_string());
+                "CONTINUATION_REFERRAL_PERSIST_FAILED".to_string()
+            })?;
+    }
+    let state = match super::auth::complete_auth_session(&app, &tokens).await {
+        Ok(state) => state,
+        Err(error) => {
+            // Completion is ambiguous: credentials are durable before the
+            // session-ready event is emitted, and that emit can fail. Keep the
+            // bound receipt for this account and let the guarded scheduler
+            // deliver it now or after the next matching auth transition.
+            if referral_nonce.is_some() {
+                flush_pending_desktop_referrals(&app);
+            }
+            return Err(error);
+        }
+    };
+    flush_pending_desktop_referrals(&app);
 
     // This is the first durable, human-authenticated edge in the browser
     // continuation flow. It enters process custody before the background
@@ -546,9 +814,15 @@ pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), Strin
     // finished attempt has no state to hand over. Scoped to this attempt id so
     // a late Cancel for a superseded attempt cannot tear down the listener the
     // current one is waiting on.
-    let state = with_custody(|custody| custody.active_state_for(&attempt_id).map(str::to_string));
+    let (state, referral_nonce) = with_custody(|custody| {
+        (
+            custody.active_state_for(&attempt_id).map(str::to_string),
+            custody
+                .active_referral_nonce_for(&attempt_id)
+                .map(str::to_string),
+        )
+    });
     with_custody(|custody| custody.cancel(&attempt_id, AttemptEnd::Cancelled));
-    clear_signin_link_attempt(&attempt_id);
 
     // Dropping the custody entry is not cancelling. Without this the listener
     // thread keeps both loopback sockets and `OAUTH_FLOW_ACTIVE` alive until a
@@ -556,6 +830,9 @@ pub async fn desktop_continuation_cancel(attempt_id: String) -> Result<(), Strin
     // Cancel visibly cancels nothing.
     if let Some(state) = state {
         release_listener(&state);
+    }
+    if let Some(nonce) = referral_nonce {
+        discard_unbound_desktop_referral_nonce(nonce);
     }
     Ok(())
 }
@@ -1587,5 +1864,98 @@ mod authenticated_receipt_tests {
         );
 
         assert_eq!(remaining, vec![queued_during_delivery]);
+    }
+
+    #[test]
+    fn referral_delivery_requires_an_explicitly_active_matching_session() {
+        let active = AuthSessionEnvelope {
+            account_id: Some("person-a".to_string()),
+            generation: 1,
+            status: AuthSessionStatus::Active,
+            reason: None,
+        };
+        let unavailable = AuthSessionEnvelope {
+            status: AuthSessionStatus::RefreshTemporarilyUnavailable,
+            ..active.clone()
+        };
+
+        assert!(referral_session_allows_delivery(
+            Some(&active),
+            Some("person-a")
+        ));
+        assert!(!referral_session_allows_delivery(
+            Some(&unavailable),
+            Some("person-a")
+        ));
+        assert!(!referral_session_allows_delivery(
+            Some(&active),
+            Some("person-b")
+        ));
+    }
+
+    #[test]
+    fn referral_native_wiring_binds_before_persistence_then_detaches_delivery() {
+        let source = include_str!("desktop_auth.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production referral wiring");
+        assert!(!production.contains("bearer_override"));
+        assert!(source.contains("static DESKTOP_REFERRAL_WAKE: tokio::sync::Notify"));
+        assert!(source.contains("compare_exchange(false, true"));
+        assert!(source.contains("earliest_attempt_at_for_subject_async"));
+        assert!(source.contains(".timeout(DESKTOP_REFERRAL_HTTP_TIMEOUT)"));
+        assert!(source.contains("super::auth::refresh_tokens(app.clone()).await?"));
+
+        let confirm = source
+            .split("pub async fn desktop_continuation_confirm(")
+            .nth(1)
+            .expect("continuation confirmation")
+            .split("pub async fn desktop_continuation_cancel(")
+            .next()
+            .expect("confirmation body");
+        let bind = confirm
+            .find("authorize_desktop_referral_for_tokens")
+            .expect("durable referral binding");
+        let persist = confirm
+            .find("super::auth::complete_auth_session(&app, &tokens).await")
+            .expect("credential persistence");
+        let detached = confirm
+            .find("flush_pending_desktop_referrals(&app)")
+            .expect("detached referral scheduler wake");
+        assert!(bind < persist && persist < detached);
+        assert!(confirm[bind..persist].contains("?;"));
+        let ambiguous_failure = confirm[persist..]
+            .split("return Err(error);")
+            .next()
+            .expect("ambiguous completion failure branch");
+        assert!(ambiguous_failure.contains("Err(error) =>"));
+        assert!(ambiguous_failure.contains("flush_pending_desktop_referrals(&app)"));
+        assert!(!ambiguous_failure.contains("discard_unbound_desktop_referral_nonce"));
+
+        let prepare = source
+            .split("pub(crate) async fn prepare_desktop_referral_start_url(")
+            .nth(1)
+            .expect("referral preparation")
+            .split("pub(crate) async fn authorize_desktop_referral_for_tokens")
+            .next()
+            .expect("preparation body");
+        assert!(prepare.contains("spawn_blocking"));
+        assert!(prepare.contains("install_attempt_id"));
+    }
+
+    #[test]
+    fn referral_native_cancellation_removes_known_nonce_without_authorizing_it() {
+        let source = include_str!("desktop_auth.rs");
+        let cancel = source
+            .split("pub async fn desktop_continuation_cancel(")
+            .nth(1)
+            .expect("continuation cancellation")
+            .split("fn release_listener")
+            .next()
+            .expect("cancellation body");
+        assert!(cancel.contains("active_referral_nonce_for"));
+        assert!(cancel.contains("discard_unbound_desktop_referral_nonce(nonce)"));
+        assert!(!cancel.contains("authorize_desktop_referral_for_tokens"));
     }
 }

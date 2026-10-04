@@ -97,25 +97,33 @@ struct SetupDiagnosticCollector {
     command_failure: Arc<Mutex<Option<SetupCommandDiagnostic>>>,
 }
 
+/// Return the guard after a panic. Callers assign one value, update one map
+/// entry, or clone. A diagnostic tail caught mid-append is still a string.
+fn recover_lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 impl SetupDiagnosticCollector {
     fn new() -> Self {
         Self { command_failure: Arc::new(Mutex::new(None)) }
     }
 
     fn record(&self, diagnostic: SetupCommandDiagnostic) {
-        *self.command_failure.lock().unwrap() = Some(diagnostic);
+        *recover_lock(&self.command_failure) = Some(diagnostic);
     }
 
     fn take(&self) -> Option<SetupCommandDiagnostic> {
-        self.command_failure.lock().unwrap().take()
+        recover_lock(&self.command_failure).take()
     }
 
     fn current(&self) -> Option<SetupCommandDiagnostic> {
-        self.command_failure.lock().unwrap().clone()
+        recover_lock(&self.command_failure).clone()
     }
 
     fn clear(&self) {
-        let _ = self.command_failure.lock().unwrap().take();
+        let _ = recover_lock(&self.command_failure).take();
     }
 }
 
@@ -264,7 +272,7 @@ impl InstallCancellationCollector {
     }
 
     fn record(&self, cancellation: InstallCancellation) -> bool {
-        let mut slot = self.cancellation.lock().unwrap();
+        let mut slot = recover_lock(&self.cancellation);
         if slot.is_none() {
             *slot = Some(cancellation);
             true
@@ -274,15 +282,15 @@ impl InstallCancellationCollector {
     }
 
     fn take(&self) -> Option<InstallCancellation> {
-        self.cancellation.lock().unwrap().take()
+        recover_lock(&self.cancellation).take()
     }
 
     fn mark_cleanup_failure_reported(&self) {
-        *self.cleanup_failure_reported.lock().unwrap() = true;
+        *recover_lock(&self.cleanup_failure_reported) = true;
     }
 
     fn cleanup_failure_reported(&self) -> bool {
-        *self.cleanup_failure_reported.lock().unwrap()
+        *recover_lock(&self.cleanup_failure_reported)
     }
 }
 
@@ -502,23 +510,18 @@ fn cancel_registry() -> &'static Arc<Mutex<HashMap<String, CancelState>>> {
 /// Exposed publicly so the test suite can exercise `cancel_install` without
 /// spawning a real Tauri runtime.
 pub fn register_cancel_handle(handle: String) {
-    cancel_registry()
-        .lock()
-        .unwrap()
-        .insert(handle, CancelState::default());
+    recover_lock(cancel_registry()).insert(handle, CancelState::default());
 }
 
 fn is_cancelled(handle: &str) -> bool {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get(handle)
         .map(|state| state.cancelled)
         .unwrap_or(false)
 }
 
 fn deregister_handle(handle: &str) {
-    cancel_registry().lock().unwrap().remove(handle);
+    recover_lock(cancel_registry()).remove(handle);
 }
 
 /// A non-process phase (such as waiting for the CLI update lock) still needs a
@@ -614,20 +617,20 @@ async fn acquire_cli_install_lock_for_setup_with_budget(
 
 #[cfg(unix)]
 fn register_process_group(handle: &str, pgid: i32) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         state.pgid = Some(pgid);
     }
 }
 
 #[cfg(windows)]
 fn register_job_handle(handle: &str, job: Arc<JobHandle>) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         state.job = Some(job);
     }
 }
 
 fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
-    if let Some(state) = cancel_registry().lock().unwrap().get_mut(handle) {
+    if let Some(state) = recover_lock(cancel_registry()).get_mut(handle) {
         // Preserve the first failed cleanup attempt. It is normally SIGTERM;
         // retaining it prevents a later SIGKILL attempt from hiding the
         // original failure that could leave the process tree running.
@@ -638,17 +641,13 @@ fn record_cleanup_failure(handle: &str, failure: CancellationCleanupFailure) {
 }
 
 fn take_cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get_mut(handle)
         .and_then(|state| state.cleanup_failure.take())
 }
 
 fn cleanup_failure(handle: &str) -> Option<CancellationCleanupFailure> {
-    cancel_registry()
-        .lock()
-        .unwrap()
+    recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.cleanup_failure.clone())
 }
@@ -792,9 +791,7 @@ fn terminate_process_tree(
     handle: &str,
     signal_kind: Signal,
 ) -> Result<(), CancellationCleanupFailure> {
-    let pgid = cancel_registry()
-        .lock()
-        .unwrap()
+    let pgid = recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.pgid);
     let Some(pgid) = pgid else {
@@ -811,9 +808,7 @@ fn terminate_process_tree(
 
 #[cfg(windows)]
 fn terminate_process_tree(handle: &str) -> Result<(), CancellationCleanupFailure> {
-    let job = cancel_registry()
-        .lock()
-        .unwrap()
+    let job = recover_lock(cancel_registry())
         .get(handle)
         .and_then(|state| state.job.clone());
     let Some(job) = job else {
@@ -2164,7 +2159,6 @@ pub fn composed_settings_env_path(
 /// Return `settings_json` with `.env.PATH` set to `new_path`, preserving every
 /// other key. Creates the `env` object when absent. Errors when the document
 /// is not a JSON object.
-#[cfg(not(windows))]
 pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Result<String, String> {
     let mut doc: serde_json::Value = serde_json::from_str(settings_json)
         .map_err(|e| format!("settings.json is not valid JSON: {e}"))?;
@@ -2189,7 +2183,6 @@ pub fn settings_json_with_env_path(settings_json: &str, new_path: &str) -> Resul
 
 /// The result of writing the composed managed-toolchain PATH into the winning
 /// `.claude` settings file.
-#[cfg(not(windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsPathWriteOutcome {
     /// Wrote the composed PATH into this settings file.
@@ -2205,24 +2198,24 @@ pub(crate) enum SettingsPathWriteOutcome {
 /// when it defines a non-empty `env.PATH`, else settings.json — resolved through
 /// the single source of truth [`hq_desktop_core::paths::winning_settings_path_file`].
 ///
-/// This is the heart of the HQ-DESKTOP-46 fix: [`composed_settings_env_path`]
-/// already produces the correct managed-first ordering; only the DESTINATION file
-/// was wrong (it was hard-coded to settings.json, which the resolver ignores
-/// whenever settings.local.json defines a non-empty PATH, so the managed-first
-/// value never reached the file the app resolves `hq` through and a stale foreign
-/// copy kept shadowing the managed CLI).
+/// Unix composes the managed dirs, login-shell PATH and existing entries;
+/// Windows composes its managed toolchain dirs with the native `;` separator.
+/// Both paths update only the file selected by the resolver's shared winning-file
+/// rule, so a stale foreign copy cannot continue shadowing the managed CLI.
 ///
 /// Reuses the existing staged-sibling + [`atomic_replace_file`] so a partial
 /// write is impossible, and canonicalizes the resolved file to require it stay
 /// inside the resolved HQ folder — a symlinked settings file cannot redirect the
 /// write outside the HQ tree. Pure enough to unit-test with a tempdir HQ root and
 /// home (no `AppHandle`).
-#[cfg(not(windows))]
 pub(crate) fn write_managed_toolchain_settings_path(
     hq_root: &Path,
     home: &Path,
     login_path: &str,
 ) -> Result<SettingsPathWriteOutcome, String> {
+    #[cfg(windows)]
+    let _ = (home, login_path);
+
     let file = match hq_desktop_core::paths::winning_settings_path_file(hq_root) {
         hq_desktop_core::paths::SettingsPathFile::Local => "settings.local.json",
         // Base or None both write the generated base file, exactly as before the
@@ -2260,7 +2253,13 @@ pub(crate) fn write_managed_toolchain_settings_path(
     let existing_env_path = serde_json::from_str::<serde_json::Value>(&contents)
         .ok()
         .and_then(|v| v.get("env")?.get("PATH")?.as_str().map(|s| s.to_string()));
+    #[cfg(not(windows))]
     let composed = composed_settings_env_path(home, login_path, existing_env_path.as_deref());
+    #[cfg(windows)]
+    let composed = hq_desktop_core::paths::compose_windows_settings_env_path(
+        &hq_desktop_core::paths::managed_toolchain_roots(),
+        existing_env_path.as_deref(),
+    );
     let updated = settings_json_with_env_path(&contents, &composed)?;
 
     let staged = unique_sibling_path(&settings_path, "pathfix")?;
@@ -2438,7 +2437,7 @@ pub fn check_dep_in(tool: &str, path_dirs: &str) -> DepStatus {
 /// progress), `false` otherwise.
 #[tauri::command]
 pub fn cancel_install(handle: String) -> bool {
-    let mut reg = cancel_registry().lock().unwrap();
+    let mut reg = recover_lock(cancel_registry());
     let Some(state) = reg.get_mut(&handle) else {
         return false;
     };
@@ -2576,7 +2575,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
-                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
+                        append_setup_diagnostic_tail(&mut recover_lock(&stdout_tail), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -2605,8 +2604,8 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
-                        stderr_lines.lock().unwrap().push(line.clone());
-                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
+                        recover_lock(&stderr_lines).push(line.clone());
+                        append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -2781,9 +2780,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
-        let stdout = stdout_tail.lock().unwrap().clone();
-        let captured = stderr_lines.lock().unwrap().clone();
-        let stderr = stderr_tail.lock().unwrap().clone();
+        let stdout = recover_lock(&stdout_tail).clone();
+        let captured = recover_lock(&stderr_lines).clone();
+        let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
@@ -5262,7 +5261,7 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stdout).lines() {
                 match line_result {
                     Ok(line) => {
-                        append_setup_diagnostic_tail(&mut stdout_tail.lock().unwrap(), &line);
+                        append_setup_diagnostic_tail(&mut recover_lock(&stdout_tail), &line);
                         if tx.send(ReaderMsg::Stdout(line)).is_err() {
                             return;
                         }
@@ -5291,8 +5290,8 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
             for line_result in BufReader::new(stderr).lines() {
                 match line_result {
                     Ok(line) => {
-                        stderr_lines.lock().unwrap().push(line.clone());
-                        append_setup_diagnostic_tail(&mut stderr_tail.lock().unwrap(), &line);
+                        recover_lock(&stderr_lines).push(line.clone());
+                        append_setup_diagnostic_tail(&mut recover_lock(&stderr_tail), &line);
                         let _ = app.emit(
                             "install:progress",
                             InstallProgress {
@@ -5457,9 +5456,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         Ok(handle_id)
     } else {
         let code = status.code().unwrap_or(-1);
-        let stdout = stdout_tail.lock().unwrap().clone();
-        let captured = stderr_lines.lock().unwrap().clone();
-        let stderr = stderr_tail.lock().unwrap().clone();
+        let stdout = recover_lock(&stdout_tail).clone();
+        let captured = recover_lock(&stderr_lines).clone();
+        let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
@@ -6275,6 +6274,36 @@ where
             RsyncRescueProvisioning::ProvisioningFailed(reason)
         }
         RsyncRescueProvisioningAttempt::TimedOut => RsyncRescueProvisioning::ProvisioningTimedOut,
+    }
+}
+
+#[cfg(test)]
+mod poison_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn setup_command_diagnostic_recovers_a_poisoned_mutex() {
+        let collector = SetupDiagnosticCollector::new();
+        let poisoned = collector.clone();
+        let panic = std::thread::spawn(move || {
+            let _guard = poisoned.command_failure.lock().unwrap();
+            panic!("poison setup command diagnostic");
+        })
+        .join();
+        assert!(panic.is_err());
+
+        let diagnostic = SetupCommandDiagnostic {
+            command: "npm install hq".to_string(),
+            exit_code: Some(1),
+            stdout: "out".to_string(),
+            stderr: "err".to_string(),
+            error: "install failed".to_string(),
+        };
+        collector.record(diagnostic.clone());
+        assert_eq!(collector.current(), Some(diagnostic.clone()));
+        assert_eq!(collector.take(), Some(diagnostic));
+        collector.clear();
+        assert_eq!(collector.current(), None);
     }
 }
 

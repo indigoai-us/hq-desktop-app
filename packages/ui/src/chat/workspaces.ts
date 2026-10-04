@@ -99,6 +99,20 @@ export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
 }
 
 /**
+ * A company the person owns that has a cloud uid but no vault bucket: it was
+ * created without its cloud provisioning (activate-cloud), so a sync of it can
+ * only fail with "not provisioned". Owner-only because the server route is.
+ */
+export function needsCloudProvisioning(workspace: Workspace): boolean {
+  return (
+    workspace.kind === "company" &&
+    Boolean(workspace.cloudUid?.trim()) &&
+    !workspace.bucketName?.trim() &&
+    (workspace.role ?? "").trim().toLowerCase() === "owner"
+  );
+}
+
+/**
  * Companies the signed-in user has an ACTIVE membership in that are not on this
  * machine yet — i.e. they accepted an invite (the cloud membership is `active`,
  * which is what `claimByEmail` produces on first sign-in) but the workspace has

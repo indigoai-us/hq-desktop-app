@@ -1,5 +1,11 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment happy-dom
+
+import { afterEach, describe, expect, it } from "vitest";
+import { mount, tick, unmount } from "svelte";
+
+import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+import ReplyPanel from "../chat/messaging/ReplyPanel.svelte";
+import type { ConversationApi } from "../chat/chat-api";
 import {
   EMOJI_SHORTCODES,
   JUMBO_EMOJI_MAX,
@@ -118,31 +124,88 @@ describe("jumbo emoji-only bodies", () => {
   });
 });
 
-describe("jumbo wiring (source contract)", () => {
-  const read = (relative: string): string =>
-    readFileSync(new URL(relative, import.meta.url), "utf8");
+describe("jumbo emoji on a rendered message", () => {
+  let host: HTMLDivElement | null = null;
+  let component: ReturnType<typeof mount> | null = null;
 
-  it("styles the jumbo class in the shared message-row stylesheet", () => {
-    const css = read("../chat/messaging/message-row.css");
-    expect(css).toContain(".msg-body.msg-body-jumbo");
-    expect(css).toContain("--msg-jumbo-emoji-size, 30px");
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = null;
+    host?.remove();
+    host = null;
   });
 
-  it("applies the jumbo class from the shared predicate on every body surface", () => {
-    for (const file of [
-      "../chat/messaging/ChannelConversation.svelte",
-      "../chat/messaging/ReplyPanel.svelte",
-    ]) {
-      const src = read(file);
-      expect(src).toContain("isJumboEmojiBody");
-      expect(src).toContain("class:msg-body-jumbo={isJumboEmojiBody(");
-    }
+  function mountConversation(body: string) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        messages: [
+          {
+            eventId: "evt_jumbo",
+            direction: "in",
+            fromPersonUid: "prs_ada",
+            fromDisplayName: "Ada",
+            body,
+            createdAt: "2026-08-28T01:14:00.000Z",
+          },
+        ],
+      },
+    });
+  }
+
+  it("marks an emoji-only conversation body as jumbo", async () => {
+    mountConversation("🎉");
+    await tick();
+    const body = host!.querySelector(".msg-body");
+    expect(body).not.toBeNull();
+    expect(body!.classList.contains("msg-body-jumbo")).toBe(true);
+    expect(body!.textContent).toContain("🎉");
   });
 
-  it("routes bodies through emoji conversion after autolinking", () => {
-    const src = read("./messageMarkdown.ts");
-    expect(src).toMatch(
-      /replaceEmojiShortcodesInHtml\(\s*\n\s*autolinkMessageUrls\(/,
-    );
+  it("does not mark a sentence as jumbo", async () => {
+    mountConversation("ship the chip");
+    await tick();
+    const body = host!.querySelector(".msg-body");
+    expect(body).not.toBeNull();
+    expect(body!.classList.contains("msg-body-jumbo")).toBe(false);
+  });
+
+  it("marks an emoji-only thread root as jumbo", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = {
+      eventId: "evt_root",
+      direction: "in",
+      fromPersonUid: "prs_ada",
+      fromDisplayName: "Ada",
+      body: "🎉",
+      createdAt: "2026-08-28T01:14:00.000Z",
+    };
+    component = mount(ReplyPanel, {
+      target: host,
+      props: {
+        api: {
+          fetchReplyThread: async () => ({
+            scope: "channel",
+            root,
+            replies: [],
+            replyCount: 0,
+          }),
+          sendReply: async () => {},
+        } as unknown as ConversationApi,
+        rootEventId: "evt_root",
+        scope: "channel",
+        channelId: "chn_1",
+        seedRoot: root,
+        selfDisplayName: "Ada",
+        onclose: () => {},
+      },
+    });
+    await tick();
+    const body = host.querySelector(".msg-body");
+    expect(body).not.toBeNull();
+    expect(body!.classList.contains("msg-body-jumbo")).toBe(true);
   });
 });

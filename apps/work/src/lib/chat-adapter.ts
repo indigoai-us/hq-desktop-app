@@ -544,6 +544,10 @@ export function createConversationApi(
     checkCompanySlug: adapter.messaging.checkCompanySlug
       ? async (slug: string) => call(adapter.messaging.checkCompanySlug!(slug))
       : undefined,
+    activateCompanyCloud: adapter.messaging.activateCompanyCloud
+      ? async (companyUid: string) =>
+          call(adapter.messaging.activateCompanyCloud!(companyUid))
+      : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tab) =>
           call(adapter.messaging.getCompanyTab!(companyUid, tab))

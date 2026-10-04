@@ -21,8 +21,10 @@
 //!
 //! Contract: fail silent, bounded in-memory queue (drops oldest), one retry at
 //! most, 2 s per request, never on the UI thread, and nothing leaves the
-//! process while the `desktop.cdp-mirror` public hq-flag is off. No email,
-//! name, or token ever enters a payload — see [`sanitize_props`].
+//! process while the `desktop.cdp-mirror` public hq-flag is off. The flag is
+//! re-resolved every [`FLAG_REFRESH_INTERVAL`], so flipping it takes effect
+//! without a relaunch. No email, name, or token ever enters a payload — see
+//! [`sanitize_props`]. Account ids leave only as [`hash_identifier`] output.
 
 use serde_json::{json, Map, Value};
 use std::collections::VecDeque;
@@ -42,6 +44,9 @@ pub const ORIGIN: &str = "https://hqforwork.com";
 pub const FLAG_RESOLVE_URL: &str = "https://hqapi.hq.computer/v1/flags/resolve-public";
 /// Public hq-flags key gating the whole mirror. Default off.
 pub const FLAG_KEY: &str = "desktop.cdp-mirror";
+/// How often the sender re-resolves [`FLAG_KEY`] (matches the version
+/// heartbeat cadence).
+pub const FLAG_REFRESH_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 /// Per-request budget. The pixel's own retries are 250 ms-based; we allow one.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 /// Events held in memory before the oldest is dropped.
@@ -59,6 +64,45 @@ pub const EVENT_COMPANY_CREATED: &str = "company_created";
 pub const EVENT_FIRST_SYNC_COMPLETED: &str = "first_sync_completed";
 pub const EVENT_SETUP_ABANDONED: &str = "setup_abandoned";
 pub const EVENT_INSTALL_LINKED: &str = "install_linked";
+/// Company step looked before creating: which route it took.
+pub const EVENT_COMPANY_ROUTE_DECIDED: &str = "company_route_decided";
+/// Company provisioning failed (with the step) during onboarding.
+pub const EVENT_COMPANY_PROVISIONING_FAILED: &str = "company_provisioning_failed";
+/// First sync found a company with no bucket and asked hq-pro to finish it.
+pub const EVENT_COMPANY_SELF_HEAL: &str = "company_self_heal";
+/// Every launch, first or not.
+pub const EVENT_APP_OPENED: &str = "app_opened";
+/// Once per UTC day the app runs (mirrors hq-pro `desktop_app_daily_active`).
+pub const EVENT_APP_DAILY_ACTIVE: &str = "app_daily_active";
+/// Sign-in completed: joins this visitor to hashed person/company uids.
+pub const EVENT_ACCOUNT_LINKED: &str = "account_linked";
+/// The app launched a Claude, Codex, or Grok session.
+pub const EVENT_AGENT_SESSION_LAUNCHED: &str = "agent_session_launched";
+pub const EVENT_SYNC_STARTED: &str = "sync_started";
+pub const EVENT_SYNC_COMPLETED: &str = "sync_completed";
+pub const EVENT_SYNC_FAILED: &str = "sync_failed";
+pub const EVENT_INVITE_SENT: &str = "invite_sent";
+pub const EVENT_INVITE_FAILED: &str = "invite_failed";
+/// A pending invite was accepted from the app.
+pub const EVENT_COMPANY_JOINED: &str = "company_joined";
+/// A plan was chosen in the onboarding company step.
+pub const EVENT_PLAN_SELECTED: &str = "plan_selected";
+/// A pre-auth desktop sign-in stage for the download-to-login funnel.
+pub const EVENT_AUTH_PROGRESS: &str = "auth_progress";
+/// A pre-auth desktop sign-in failure with only a closed error category.
+pub const EVENT_AUTH_FAILURE: &str = "auth_failure";
+
+/// Lowercase sha256 hex of a trimmed identifier, or `None` when it is empty.
+/// The only form in which a person or company uid may reach the CDP: hq-pro
+/// holds the raw uid and can compute the same digest to join rows.
+pub fn hash_identifier(raw: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(format!("{:x}", Sha256::digest(trimmed.as_bytes())))
+}
 
 /// What every mirrored event carries. Assembled once at startup by the app and
 /// updated when the sign-in link completion returns the visitor id.
@@ -387,6 +431,12 @@ impl Mirror {
         self.gate.load(Ordering::SeqCst) == GATE_ON
     }
 
+    /// Whether [`Mirror::record`] would keep an event right now: the flag is on
+    /// or not resolved yet (events are held until it is).
+    pub fn accepts_events(&self) -> bool {
+        self.gate.load(Ordering::SeqCst) != GATE_OFF
+    }
+
     pub fn queued(&self) -> usize {
         self.queue
             .lock()
@@ -426,7 +476,10 @@ impl Mirror {
         self.notify.notify_one();
     }
 
-    /// Resolve the gate once. Off clears whatever was held.
+    /// Resolve the gate. Off clears whatever was held. A transport error on a
+    /// re-resolve keeps the current state, so a network blip cannot switch a
+    /// working mirror off for a whole refresh interval; on the first resolve
+    /// it counts as off.
     pub async fn resolve_gate(&self) -> bool {
         let install_id = self.context().install_id;
         let url = flag_resolve_url(&self.endpoints.flag_resolve, &install_id);
@@ -436,7 +489,10 @@ impl Mirror {
                 let body = response.text().await.unwrap_or_default();
                 parse_flag(status, &body)
             }
-            Err(_) => false,
+            Err(_) => match self.gate.load(Ordering::SeqCst) {
+                GATE_UNRESOLVED => false,
+                current => return current == GATE_ON,
+            },
         };
         if enabled {
             self.gate.store(GATE_ON, Ordering::SeqCst);
@@ -519,17 +575,31 @@ impl Mirror {
         }
     }
 
-    /// The background sender: resolve the flag, then drain whenever something
-    /// is queued. Returns when the gate is off.
+    /// The background sender: resolve the flag, drain whenever something is
+    /// queued, and re-resolve every [`FLAG_REFRESH_INTERVAL`]. Never returns.
     pub async fn run(self: Arc<Self>) {
-        if !self.resolve_gate().await {
-            return;
-        }
+        self.run_with_refresh(FLAG_REFRESH_INTERVAL).await
+    }
+
+    /// [`Mirror::run`] with an explicit refresh interval (tests use a short one).
+    pub async fn run_with_refresh(self: Arc<Self>, every: Duration) {
         loop {
-            self.flush_now().await;
-            self.notify.notified().await;
-            // Coalesce bursts (a step shown + a receipt) into one request.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let enabled = self.resolve_gate().await;
+            let next_resolve = tokio::time::Instant::now() + every;
+            if !enabled {
+                tokio::time::sleep_until(next_resolve).await;
+                continue;
+            }
+            loop {
+                self.flush_now().await;
+                tokio::select! {
+                    _ = self.notify.notified() => {
+                        // Coalesce bursts (a step shown + a receipt) into one request.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    _ = tokio::time::sleep_until(next_resolve) => break,
+                }
+            }
         }
     }
 }
@@ -750,7 +820,9 @@ mod tests {
         let mirror = Mirror::new(c, endpoints(&server), Box::new(|_, _| {}));
         mirror.record(EVENT_APP_FIRST_LAUNCH, Map::new());
         assert_eq!(mirror.queued(), 1);
-        mirror.clone().run().await;
+        assert!(mirror.accepts_events(), "held until the flag resolves");
+        assert!(!mirror.resolve_gate().await);
+        assert!(!mirror.accepts_events());
         assert!(!mirror.is_enabled());
         assert_eq!(mirror.queued(), 0);
         mirror.record(EVENT_ONBOARDING_STEP_SHOWN, Map::new());
@@ -802,6 +874,54 @@ mod tests {
         let body: Value = serde_json::from_slice(&post.body).unwrap();
         assert!(body.get("profileId").is_none());
         assert_eq!(body["events"][0]["eventType"], EVENT_APP_FIRST_LAUNCH);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn pre_auth_signin_failure_reaches_cdp_without_a_login_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/cdp/ingest"))
+            .respond_with(ResponseTemplate::new(202))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut c = ctx();
+        c.anon_id = None;
+        let mirror = Mirror::new(c, endpoints(&server), Box::new(|_, _| {}));
+        mirror.record(
+            EVENT_AUTH_FAILURE,
+            Map::from_iter([
+                ("provider".into(), json!("google")),
+                ("step".into(), json!("provider_page_opened")),
+                ("errorCategory".into(), json!("network")),
+            ]),
+        );
+
+        assert!(mirror.resolve_gate().await);
+        mirror.flush_now().await;
+
+        let requests = server.received_requests().await.unwrap();
+        let post = requests
+            .iter()
+            .find(|request| request.method == "POST")
+            .unwrap();
+        assert!(
+            post.headers.get("authorization").is_none(),
+            "the pre-auth CDP path must not require a login token"
+        );
+        let body: Value = serde_json::from_slice(&post.body).unwrap();
+        assert!(body.get("profileId").is_none());
+        assert_eq!(body["events"][0]["eventType"], EVENT_AUTH_FAILURE);
+        assert_eq!(body["events"][0]["properties"]["provider"], "google");
+        assert_eq!(body["events"][0]["properties"]["errorCategory"], "network");
         server.verify().await;
     }
 
@@ -890,5 +1010,130 @@ mod tests {
         mirror.record(EVENT_COMPANY_CREATED, Map::new());
         mirror.flush_now().await;
         server.verify().await;
+    }
+
+    #[test]
+    fn hash_identifier_is_sha256_hex_and_never_the_raw_id() {
+        let hashed = hash_identifier(" prs_01ABC ").unwrap();
+        assert_eq!(hashed.len(), 64);
+        assert!(hashed
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(Some(hashed.clone()), hash_identifier("prs_01ABC"));
+        assert!(!hashed.contains("prs_"));
+        // Known vector: sha256("abc").
+        assert_eq!(
+            hash_identifier("abc").unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(hash_identifier("   "), None);
+    }
+
+    #[test]
+    fn hashed_ids_survive_sanitize_under_their_prop_names() {
+        let mut props = Map::new();
+        props.insert("userHash".into(), json!(hash_identifier("prs_1").unwrap()));
+        props.insert(
+            "companyHash".into(),
+            json!(hash_identifier("cmp_1").unwrap()),
+        );
+        let out = sanitize_props(props);
+        assert_eq!(out.len(), 2, "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn flag_flip_takes_effect_on_the_next_refresh_without_relaunch() {
+        let server = MockServer::start().await;
+        // First resolve: off. Every later resolve: on.
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":false}"#))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/cdp/ingest"))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        let mirror = Mirror::new(ctx(), endpoints(&server), Box::new(|_, _| {}));
+        let sender = tokio::spawn(mirror.clone().run_with_refresh(Duration::from_millis(150)));
+        for _ in 0..100 {
+            if mirror.gate.load(Ordering::SeqCst) == GATE_OFF {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        mirror.record(EVENT_APP_OPENED, Map::new());
+        assert_eq!(mirror.queued(), 0, "dropped while off");
+        for _ in 0..200 {
+            if mirror.is_enabled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(mirror.is_enabled(), "flag flip picked up by the refresh");
+        mirror.record(EVENT_APP_DAILY_ACTIVE, Map::new());
+        let mut sent = false;
+        for _ in 0..100 {
+            let requests = server.received_requests().await.unwrap();
+            sent = requests.iter().any(|r| {
+                r.method == "POST"
+                    && serde_json::from_slice::<Value>(&r.body).unwrap()["events"][0]["eventType"]
+                        == EVENT_APP_DAILY_ACTIVE
+            });
+            if sent {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.abort();
+        assert!(sent, "event recorded after the flip is sent");
+    }
+
+    #[tokio::test]
+    async fn refresh_turning_off_clears_queue_and_transport_error_keeps_state() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"enabled":true}"#))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/flags/resolve-public"))
+            .respond_with(ResponseTemplate::new(404).set_body_string(r#"{"enabled":false}"#))
+            .mount(&server)
+            .await;
+        let mirror = Mirror::new(ctx(), endpoints(&server), Box::new(|_, _| {}));
+        assert!(mirror.resolve_gate().await);
+        mirror.record(EVENT_SYNC_STARTED, Map::new());
+        assert!(
+            !mirror.resolve_gate().await,
+            "re-resolve reads the flipped flag"
+        );
+        assert_eq!(
+            mirror.queued(),
+            0,
+            "held events are cleared when it turns off"
+        );
+
+        // A dead flag endpoint on re-resolve keeps the current state.
+        let dead = Endpoints {
+            ingest: "http://127.0.0.1:9/cdp/ingest".into(),
+            flag_resolve: "http://127.0.0.1:9/v1/flags/resolve-public".into(),
+        };
+        let on = Mirror::new(ctx(), dead.clone(), Box::new(|_, _| {}));
+        on.gate.store(GATE_ON, Ordering::SeqCst);
+        assert!(on.resolve_gate().await);
+        assert!(on.is_enabled());
+        let fresh = Mirror::new(ctx(), dead, Box::new(|_, _| {}));
+        assert!(!fresh.resolve_gate().await, "first resolve failing is off");
+        assert!(!fresh.is_enabled());
     }
 }

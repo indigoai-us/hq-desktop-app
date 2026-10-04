@@ -141,6 +141,15 @@ pub fn is_first_run(state: State<'_, LaunchKindState>) -> bool {
     state.0 == LaunchKind::FirstRun
 }
 
+/// Read the stable installation identity for anonymous first-launch joins.
+#[tauri::command]
+pub async fn desktop_install_attempt_id() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| install_attempt_id())
+        .await
+        .ok()
+        .flatten()
+}
+
 /// True when a legacy user updated to this build, hasn't seen the auto-sync
 /// notice yet, AND still has auto-sync on. A user who explicitly turned
 /// auto-sync off (`realtimeSync: false`) made a deliberate choice and gets no
@@ -244,7 +253,13 @@ pub async fn show_main_window_at_tray(
             return;
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        if let Err(error) = crate::commands::sync::start_sync(handle, None).await {
+        if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+            handle,
+            None,
+            crate::commands::cdp_mirror::SyncTrigger::First,
+        )
+        .await
+        {
             crate::util::logfile::log(
                 "first-run",
                 &format!("first-launch sync did not start: {error}"),

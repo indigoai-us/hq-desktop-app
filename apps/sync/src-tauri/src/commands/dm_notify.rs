@@ -837,6 +837,7 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
             message: "Notification session state is unavailable".to_string(),
             refresh_failure_class: None,
             requires_reauth: false,
+            rejection_class: "none",
         }
     })?;
     let tokens = match cognito::get_valid_tokens_classified().await {
@@ -863,6 +864,7 @@ pub(crate) async fn resolve_notification_credentials_classified<R: Runtime>(
         message: "Authentication changed while resolving credentials".to_string(),
         refresh_failure_class: None,
         requires_reauth: false,
+        rejection_class: "none",
     })?;
     Ok((tokens, snapshot))
 }
@@ -2860,7 +2862,10 @@ fn person_uid_from_memberships(
     })
 }
 
-async fn fetch_person_uid_from_vault(base_url: &str, access_token: &str) -> Option<String> {
+pub(crate) async fn fetch_person_uid_from_vault(
+    base_url: &str,
+    access_token: &str,
+) -> Option<String> {
     let vault = crate::commands::vault_client::VaultClient::new(base_url, access_token);
     match vault.list_entities_by_type("person").await {
         Ok(persons) => {

@@ -221,6 +221,27 @@ describe('onboarding step telemetry', () => {
     expect(unsafeFailure).not.toHaveProperty('errorCode');
   });
 
+  it('adds a bounded failure stage when a failed setup event omits failureStage', () => {
+    const missingStage = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        errorCategory: '/Users/alice/HQ/raw-error.txt' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(missingStage).toMatchObject({
+      failureStage: 'deps',
+      errorCategory: 'unknown',
+    });
+    expect(JSON.stringify(missingStage)).not.toContain('/Users/alice/HQ/raw-error.txt');
+  });
+
   it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -338,6 +359,78 @@ describe('onboarding step telemetry', () => {
     });
     expect(JSON.stringify(properties)).not.toContain('alice');
     expect(JSON.stringify(properties)).not.toContain('work.example');
+  });
+
+  it('keeps only bounded company name-prefill status, never a suggested value', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'offered_kept',
+        companyUid: 'cmp_test',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(properties.namePrefill).toBe('offered_kept');
+    expect(JSON.stringify(properties)).not.toContain('Acme');
+
+    const invalid = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'Acme Corporation',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalid).not.toHaveProperty('namePrefill');
+  });
+
+  it('keeps invite company scope, explicit missing-scope marker, and a bounded sent count', () => {
+    const completed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        companyUid: 'cmp_test',
+        invitesSent: 20,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(completed).toMatchObject({ companyUid: 'cmp_test', invitesSent: 20 });
+
+    const missing = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'entered',
+        companyUidMissing: true,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(missing).toMatchObject({ companyUidMissing: true });
+
+    const invalidCount = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        invitesSent: 21,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalidCount).not.toHaveProperty('invitesSent');
   });
 
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
@@ -723,5 +816,67 @@ describe('invite-teammate failure telemetry', () => {
     expect(properties.errorKind).toBe('request_failed');
     expect(properties.statusCode).toBeUndefined();
     expect(JSON.stringify(properties)).not.toContain('example.com');
+  });
+
+  it('carries the company route decision, provisioning step and self-heal, bounded', () => {
+    const route = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'paid_existing',
+        existingCompanies: 2,
+        paidCompany: true,
+        pendingInvites: 0,
+        companyUid: 'cmp_a',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(route).toMatchObject({
+      decision: 'paid_existing',
+      existingCompanies: 2,
+      paidCompany: true,
+      pendingInvites: 0,
+      companyUid: 'cmp_a',
+    });
+    const odd = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'first-folder-sync',
+        action: 'failed',
+        decision: 'made up',
+        provisioningStep: 'Has Spaces',
+        selfHeal: 'failed',
+        companyUid: 'cmp_b',
+        existingCompanies: -1,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(odd.decision).toBe('unknown');
+    expect(odd.provisioningStep).toBe('unknown');
+    expect(odd.selfHeal).toBe('failed');
+    expect(odd.companyUid).toBe('cmp_b');
+    expect(odd.existingCompanies).toBeUndefined();
+
+    const lookupFailed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'lookup_failed',
+        outcome: 'route_lookup_failed',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(lookupFailed).toMatchObject({
+      decision: 'lookup_failed',
+      outcome: 'route_lookup_failed',
+    });
   });
 });

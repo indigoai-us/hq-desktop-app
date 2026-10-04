@@ -337,8 +337,17 @@ export interface SelectAgentAvatarResult {
 
 export interface IdentityApi {
   whoami(): AdapterPromise<WhoAmI>;
+  /** Native auth envelope; accountId is the Cognito subject used by local writers. */
+  getAuthSession?(): AdapterPromise<{
+    accountId: string | null;
+    generation: number;
+    status: string;
+    reason: string | null;
+  }>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
+  /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
+  refreshFeatureFlags?(): Promise<void>;
   /**
    * Optional live subscription to a feature flag. When the underlying flag
    * registry publishes a fresh snapshot, `onChange` fires with the resolved
@@ -731,6 +740,12 @@ export interface MessagingApi {
    * omits it and the step falls back to submit-time validation.
    */
   checkCompanySlug?(slug: string): AdapterPromise<Json>;
+  /**
+   * POST activate-cloud for a company: owner-only, idempotent cloud vault
+   * provisioning (bucket, KMS, owner grants). Optional: a host without the
+   * route omits it.
+   */
+  activateCompanyCloud?(companyUid: string): AdapterPromise<Json>;
   /** GET /v1/companies/{uid}/tabs/{tab} (US-015). */
   getCompanyTab?(companyUid: string, tab: string): AdapterPromise<Json>;
   /** POST /v1/companies/{uid}/tabs/{tab}/actions (US-015). */
@@ -1052,6 +1067,8 @@ export interface VaultApi {
     targets: string[],
   ): AdapterPromise<VaultNoteLinks>;
   readNote(path: string): AdapterPromise<VaultNotePreview>;
+  /** Bounded frontmatter-only read for list surfaces that need note metadata. */
+  readFrontmatter(path: string): AdapterPromise<string>;
 }
 
 export interface FilesApi {
