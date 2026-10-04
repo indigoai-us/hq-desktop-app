@@ -1637,6 +1637,65 @@ describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
     await vi.waitFor(() => expect(sendBotHello).toHaveBeenCalledTimes(1));
   });
 
+  it("opens the bot's own conversation, not the takeover, when its company no longer has the flag (review item 9)", async () => {
+    seedWaking([{ ...SEEDED, startedAt: Date.now() - 60_000 }]);
+    const onselect = vi.fn();
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      // The host read the flag as off for Indigo since the bot was made.
+      newBotCompanyUids: [],
+      onselect,
+    });
+    await settle(12);
+    const row = q<HTMLElement>('[data-conversation-id="dm:agt_nova"]');
+    expect(row).toBeTruthy();
+    // The sidebar opens a row of its own at mount. What counts is the click.
+    onselect.mockClear();
+
+    row!.click();
+    await settle();
+
+    // No takeover with nothing in it. The direct message with the bot opens.
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(onselect).toHaveBeenCalledTimes(1);
+    expect(onselect.mock.calls[0]?.[0]).toMatchObject({ id: "dm:agt_nova", kind: "dm", personUid: "agt_nova" });
+    // What is opened is the plain conversation, not the "starting" row.
+    expect(onselect.mock.calls[0]?.[0].wakingBot ?? null).toBeNull();
+  });
+
+  it("still opens the waiting screen when the company has the flag", async () => {
+    seedWaking([{ ...SEEDED, startedAt: Date.now() - 60_000 }]);
+    const onselect = vi.fn();
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), onselect });
+    await settle(12);
+    onselect.mockClear();
+
+    q<HTMLElement>('[data-conversation-id="dm:agt_nova"]')!.click();
+    await settle();
+
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Nova");
+    expect(onselect).not.toHaveBeenCalled();
+  });
+
+  it("opens the bot's own conversation when the flag is on for another company only", async () => {
+    seedWaking([{ ...SEEDED, startedAt: Date.now() - 60_000 }]);
+    const onselect = vi.fn();
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      companies: [INDIGO, { ...INDIGO, slug: "acme", displayName: "Acme", cloudUid: "cmp_acme" }],
+      newBotCompanyUids: ["cmp_acme"],
+      onselect,
+    });
+    await settle(12);
+    onselect.mockClear();
+
+    q<HTMLElement>('[data-conversation-id="dm:agt_nova"]')!.click();
+    await settle();
+
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(onselect.mock.calls[0]?.[0]).toMatchObject({ id: "dm:agt_nova" });
+  });
+
   it("keeps a bot whose status could not be read, and forgets one that has been starting for a day", async () => {
     seedWaking([
       { ...SEEDED, startedAt: Date.now() - 60_000 },

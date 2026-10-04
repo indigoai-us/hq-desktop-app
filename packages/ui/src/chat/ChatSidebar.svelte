@@ -1642,6 +1642,15 @@
         const held = openWakingKey
           ? wakingBots.find((session) => wakingSessionKey(session) === openWakingKey)
           : null;
+        if (row.wakingBot && !wakingScreenFor(held)) {
+          // The waiting screen belongs to the full-window flow. With the
+          // company's flag off, or no session to show, the takeover would
+          // open on nothing: the bot's own conversation opens instead.
+          openWakingKey = null;
+          const { wakingBot: _waking, ...plain } = row;
+          void openRow(plain);
+          return;
+        }
         if (held) {
           const reopened = reopenWakingSession(held);
           if (reopened !== held) changeWakingBots((sessions) => upsertWakingSession(sessions, reopened));
@@ -1966,6 +1975,15 @@
     const key = wakingSessionKey(session);
     if (!key) return;
     changeWakingBots((sessions) => withoutWakingSession(sessions, key));
+  }
+
+  /**
+   * True when a starting bot's row should open its waiting screen: there is
+   * a session to show, and its company still has the full-window flow.
+   */
+  function wakingScreenFor(session: WakingBotSession | null | undefined): boolean {
+    if (!session) return false;
+    return newBotCompanies.some((company) => company.companyUid === session.companyUid);
   }
 
   /** True when this sidebar shows the session's company: all companies, or that one. */
