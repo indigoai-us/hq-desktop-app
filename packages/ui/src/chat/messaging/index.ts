@@ -17,6 +17,23 @@ export * from "./agent-avatars";
 export { default as SystemEventLine } from "./SystemEventLine.svelte";
 export { default as RichMessageContent } from "./RichMessageContent.svelte";
 export * from "./richMessageContent";
+// The modal a card can open, and the pieces a flow inside it is built from.
+export { default as CardModal } from "./CardModal.svelte";
+export { default as CardModalStep } from "./CardModalStep.svelte";
+export { default as CardModalStatus } from "./CardModalStatus.svelte";
+export { default as CardModalField } from "./CardModalField.svelte";
+export {
+  CARD_MODAL_AUTOFOCUS,
+  type CardModalStatusKind,
+  type CardModalStepState,
+  type CardModalSteps,
+} from "./card-modal";
+export { connectionCardArt, type ConnectionCardArt } from "./connection-card-art";
+export type {
+  CardModalContent,
+  CardModalContentProps,
+  CardModalFrame,
+} from "./card-modal-registry";
 export { default as WorkMeshActivityRow } from "./WorkMeshActivityRow.svelte";
 export * from "./workSessionEvent";
 export * from "./channelMessageModels";

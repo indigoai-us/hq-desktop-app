@@ -3,6 +3,7 @@
  * REST pages are newest-first; callers reverse for oldest → newest display.
  */
 
+import { AGENT_HELLO_REQUEST_LEAD } from "./agent-channel.js";
 import type { ConversationMessageWire } from "./chat-api.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -337,8 +338,21 @@ function parseWireAttachments(
   return out.length > 0 ? out : undefined;
 }
 
+/** What {@link normalizeConversationMessages} keeps beyond the fields every conversation reads. */
+export interface NormalizeMessagesOptions {
+  /**
+   * Keep each row's `audience`. Off by default, as it always was: rows of a
+   * channel or a conversation between people carry no audience, so nothing
+   * about how those are shown (the human-only view reads the field) changes.
+   * A one-to-one conversation with a bot turns it on, to leave out the rows
+   * written for the bot only ({@link inlineReplyRows}).
+   */
+  keepAudience?: boolean;
+}
+
 export function normalizeConversationMessages(
   raw: unknown,
+  options: NormalizeMessagesOptions = {},
 ): ConversationMessageWire[] {
   const rec = asRecord(raw);
   const list = Array.isArray(rec?.messages)
@@ -355,6 +369,7 @@ export function normalizeConversationMessages(
     const rootEventId = optionalString(row.rootEventId);
     const replyCount = optionalReplyCount(row.replyCount);
     const lastReplyAt = optionalString(row.lastReplyAt);
+    const audience = options.keepAudience ? optionalString(row.audience) : undefined;
     out.push({
       eventId,
       fromPersonUid: asString(row.fromPersonUid) || null,
@@ -373,16 +388,116 @@ export function normalizeConversationMessages(
       ...(rootEventId ? { rootEventId } : {}),
       ...(replyCount !== undefined ? { replyCount } : {}),
       ...(lastReplyAt ? { lastReplyAt } : {}),
+      ...(audience ? { audience } : {}),
     });
   }
   return out;
 }
 
+/** How a conversation's fetched rows are laid out on the main timeline. */
+export interface TimelineDisplayOptions {
+  /**
+   * Show thread replies in the main timeline, in time order, instead of
+   * tucking them under their root. A one-to-one conversation with a bot is a
+   * single exchange: hosted bots answer every message as a reply to it, and a
+   * person should read those answers in line like any other chat.
+   */
+  inlineReplies?: boolean;
+  /**
+   * The signed-in person's uid, for {@link isAppRequestRow}: with it, a row
+   * that carries no audience counts as the app's own request only when this
+   * person sent it.
+   */
+  selfUid?: string | null;
+}
+
+/** A uid of a bot, hosted or local. */
+function isAgentUid(uid: string): boolean {
+  return uid.startsWith("agt_");
+}
+
+/**
+ * Whether a row is one of the app's own requests to the bot, which the
+ * person never sees: the hello request after setup, a notice that an app was
+ * connected. The app sends them for the person on the bot-only lane.
+ *
+ * - A row the bot sent is never one, whatever it says and whatever it is
+ *   tagged. A bot that starts an answer with the app's opening words (it is
+ *   quoting them, or was led to) is answering the person: hiding that answer
+ *   leaves the person looking at "stopped responding".
+ * - A row tagged `audience: "agent"` is one. That is the lane the app sends
+ *   on, and the server returns it on every read.
+ * - A row with any other audience is not one. It came from the server, and
+ *   the server says it is for the person: a message the person typed
+ *   themselves, even one that starts with the app's opening words.
+ * - A row with no audience at all is one only when it starts with the app's
+ *   opening words AND the person sent it AND it is not a message on its way
+ *   out (`local-send-`). That is a copy of the request from the host's stored
+ *   thread, which does not keep the lane. With `selfUid` the sender must be
+ *   that person; without it, any sender that is not a bot, which in a
+ *   one-to-one conversation with a bot is the person.
+ */
+export function isAppRequestRow(
+  row: Pick<ConversationMessageWire, "eventId" | "fromPersonUid" | "audience" | "body">,
+  options: { selfUid?: string | null } = {},
+): boolean {
+  const from = (row.fromPersonUid ?? "").trim();
+  if (isAgentUid(from)) return false;
+  const audience = (row.audience ?? "").trim().toLowerCase();
+  if (audience === "agent") return true;
+  if (audience !== "") return false;
+  if (!(row.body ?? "").startsWith(AGENT_HELLO_REQUEST_LEAD)) return false;
+  if ((row.eventId ?? "").startsWith("local-send-")) return false;
+  const self = (options.selfUid ?? "").trim();
+  return self ? from === self : from !== "";
+}
+
+/**
+ * Lay a page out as one flat exchange: replies become ordinary rows, the
+ * "N replies" affordance is dropped, and the app's own requests to the bot
+ * ({@link isAppRequestRow}) are left out because they are not for the person.
+ */
+export function inlineReplyRows(
+  rows: readonly ConversationMessageWire[],
+  options: { selfUid?: string | null } = {},
+): ConversationMessageWire[] {
+  const out: ConversationMessageWire[] = [];
+  let changed = false;
+  for (const row of rows) {
+    if (isAppRequestRow(row, options)) {
+      changed = true;
+      continue;
+    }
+    if (
+      row.rootEventId === undefined &&
+      row.replyCount === undefined &&
+      row.lastReplyAt === undefined &&
+      row.replyAuthors === undefined
+    ) {
+      out.push(row);
+      continue;
+    }
+    const { rootEventId: _root, replyCount: _count, lastReplyAt: _last, replyAuthors: _authors, ...flat } = row;
+    out.push(flat);
+    changed = true;
+  }
+  // Nothing to change: hand back the caller's own array so reactive readers
+  // of an already flat timeline are not re-run.
+  return changed ? out : (rows as ConversationMessageWire[]);
+}
+
 /** REST returns newest-first; ChannelConversation wants oldest → newest. */
-export function messagesForDisplay(raw: unknown): ConversationMessageWire[] {
+export function messagesForDisplay(
+  raw: unknown,
+  options: TimelineDisplayOptions = {},
+): ConversationMessageWire[] {
+  // Only the flat exchange with a bot reads a row's audience. Everywhere
+  // else rows carry none, exactly as before that exchange existed.
+  const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: options.inlineReplies === true })].reverse();
+  if (options.inlineReplies) return inlineReplyRows(oldestFirst, options);
   // Fold FIRST: the reply rows carry the author + time the root affordance
   // needs, and are discarded on the next line.
-  return foldReplyMetadata([...normalizeConversationMessages(raw)].reverse())
+  return foldReplyMetadata(oldestFirst)
     .filter((row) => !isReplyMessage(row));
 }
 
@@ -475,7 +590,18 @@ export function timelineHasEvent(
 export function mergeFetchedTimeline(
   existing: ConversationMessageWire[],
   raw: unknown,
+  options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
+  if (options.inlineReplies) {
+    // Rows already on the timeline (a cached thread, rows the host seeded) get
+    // the same treatment as the page, so a bot-only row cannot linger.
+    const merged = inlineReplyRows(
+      mergeTimelineMessages(inlineReplyRows(existing, options), messagesForDisplay(raw, options)),
+      options,
+    );
+    if (merged === existing) return existing;
+    return timelinesContentEqual(existing, merged) ? existing : merged;
+  }
   const page = timelinePageFromPayload(raw);
   const mapped = normalizeConversationMessages(
     page.messages !== undefined ? page.messages : raw,
