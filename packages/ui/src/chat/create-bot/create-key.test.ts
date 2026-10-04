@@ -13,6 +13,7 @@ import {
   loadPendingCreateKeys,
   mintCreateKey,
   releaseCreateKey,
+  releaseCreateKeysFor,
   takeCreateKey,
 } from "./create-key.js";
 
@@ -122,5 +123,30 @@ describe("takeCreateKey", () => {
     const b = mintCreateKey();
     expect(a).not.toBe(b);
     expect(a.length).toBeGreaterThan(10);
+  });
+});
+
+describe("releaseCreateKeysFor (review item 6)", () => {
+  it("lets go of every key kept for that bot in that company, and no other", () => {
+    const storage = memoryStorage();
+    const mint = (key: string) => ({ now: 1_000, mint: () => key });
+    takeCreateKey(storage, createDraftSignature("cmp_indigo", NOVA), mint("key-nova-codex"));
+    takeCreateKey(storage, createDraftSignature("cmp_indigo", { ...NOVA, runtime: "grok" }), mint("key-nova-grok"));
+    takeCreateKey(storage, createDraftSignature("cmp_indigo", { ...NOVA, name: "Novalis" }), mint("key-novalis"));
+    takeCreateKey(storage, createDraftSignature("cmp_acme", NOVA), mint("key-acme-nova"));
+
+    expect(releaseCreateKeysFor(storage, " cmp_indigo ", "Nova").sort()).toEqual(["key-nova-codex", "key-nova-grok"]);
+    expect(
+      (JSON.parse(storage.data[CREATE_KEYS_STORAGE_KEY]!) as Array<{ key: string }>).map((entry) => entry.key).sort(),
+    ).toEqual(["key-acme-nova", "key-novalis"]);
+  });
+
+  it("does nothing without a company or a handle", () => {
+    const storage = memoryStorage();
+    takeCreateKey(storage, createDraftSignature("cmp_indigo", NOVA), { now: 1_000, mint: () => "key-1" });
+    expect(releaseCreateKeysFor(storage, "", "nova")).toEqual([]);
+    expect(releaseCreateKeysFor(storage, "cmp_indigo", " ")).toEqual([]);
+    expect(releaseCreateKeysFor(null, "cmp_indigo", "nova")).toEqual([]);
+    expect(JSON.parse(storage.data[CREATE_KEYS_STORAGE_KEY]!)).toHaveLength(1);
   });
 });

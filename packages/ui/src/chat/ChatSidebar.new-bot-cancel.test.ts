@@ -542,7 +542,7 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(keysKept()).toEqual([]);
   });
 
-  it("on Cancel, never says nothing was created when the bot is not found, and keeps the key", async () => {
+  it("on Cancel, never says nothing was created when the bot is not found", async () => {
     const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer(rosterRow("agt_old", "scout")));
     const removeAgent = vi.fn(async () => REMOVED);
     const { oncreatenewbot, fail } = await cancelWhileCreating({ loadCompanyBots, removeAgent });
@@ -555,8 +555,9 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(loadCompanyBots).toHaveBeenCalledTimes(4);
     expect(removeAgent).not.toHaveBeenCalled();
     expect(oncreatenewbot).toHaveBeenCalledTimes(1);
-    // The key is kept: pressing Create bot again for the same bot picks up the first answer.
-    expect(keysKept()).toEqual(keysSent(oncreatenewbot));
+    // The key went with the attempt the person cancelled (review item 6): a
+    // create of the same bot after this is a new create.
+    expect(keysKept()).toEqual([]);
   });
 
   it("on Cancel, never removes a bot that already had the handle before the create was sent", async () => {
@@ -874,6 +875,207 @@ describe("The key a create is sent under (review A-C5)", () => {
     // The cancelled bot is not taken up as a bot that is starting.
     expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
     expect(q('[data-conversation-id="dm:agt_woah"]')).toBeNull();
+  });
+});
+
+describe("How long a create's key is kept (review item 6)", () => {
+  const NO_ANSWER: EntryPointResult = { ok: false, blocked: false, reason: "The request timed out.", outcomeUnknown: true };
+  type Create = (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
+
+  function keysSent(oncreatenewbot: { mock: { calls: unknown[][] } }): string[] {
+    return oncreatenewbot.mock.calls.map((call) => (call[1] as CloudBotDraft).idempotencyKey ?? "");
+  }
+
+  function keysKept(): string[] {
+    return (stored(CREATE_KEYS_STORAGE_KEY) as Array<{ key: string }>).map((entry) => entry.key);
+  }
+
+  function rosterAnswer(...rows: Array<Record<string, unknown>>): unknown {
+    return { ok: true, value: { agents: rows } };
+  }
+
+  function rosterRow(agentUid: string, slug: string): Record<string, unknown> {
+    return { agentUid, uid: agentUid, companyUid: "cmp_indigo", name: slug, displayName: slug, slug, setupPhase: "provisioning" };
+  }
+
+  it("lets the key go when the person cancels, so the next create of the same bot is a new one", async () => {
+    const finishers: Array<(result: EntryPointResult) => void> = [];
+    const oncreatenewbot = vi.fn<Create>(() => new Promise<EntryPointResult>((resolve) => { finishers.push(resolve); }));
+    mountSidebar({ oncreatenewbot, removeAgent: vi.fn(async () => REMOVED) });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    expect(keysKept()).toHaveLength(1);
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(keysKept()).toEqual([]);
+
+    await pressCreate("Woah");
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBeTruthy();
+    expect(sent[1]).not.toBe(sent[0]);
+  });
+
+  it("a cancelled create never removes the bot a later create of the same name made", async () => {
+    // The first create is cancelled and its answer is lost. The second, of
+    // the same name, makes the bot. The first one's look then finds a bot
+    // with that handle: it is the second create's, and it stays.
+    const finishers: Array<(result: EntryPointResult) => void> = [];
+    const oncreatenewbot = vi.fn<Create>(() => new Promise<EntryPointResult>((resolve) => { finishers.push(resolve); }));
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      // The list at the first press, and at the second.
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_two", "woah")));
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    await pressCreate("Woah");
+    expect(oncreatenewbot).toHaveBeenCalledTimes(2);
+
+    // The cancelled request's answer is lost. Its look finds the bot the
+    // second request has just made, before that request's own answer is in.
+    finishers[0]!(NO_ANSWER);
+    await vi.waitFor(() => expect(loadCompanyBots.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await settle(12);
+    expect(removeAgent).not.toHaveBeenCalled();
+
+    finishers[1]!(created("agt_two"));
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+    await settle(12);
+
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(q('[data-conversation-id="dm:agt_two"]')).toBeTruthy();
+    // The cancelled attempt has nothing left to report.
+    expect(q('[data-testid="new-bot-cancel-notice"]')).toBeNull();
+  });
+
+  it("still removes the first create's own bot when the later create was refused for the name", async () => {
+    const finishers: Array<(result: EntryPointResult) => void> = [];
+    const oncreatenewbot = vi.fn<Create>(() => new Promise<EntryPointResult>((resolve) => { finishers.push(resolve); }));
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_one", "woah")));
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    await pressCreate("Woah");
+
+    finishers[0]!(NO_ANSWER);
+    await vi.waitFor(() => expect(loadCompanyBots.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await settle(12);
+    expect(removeAgent).not.toHaveBeenCalled();
+    // The second create is told the name is in use: the bot is the first one's.
+    finishers[1]!({ ok: false, blocked: false, reason: "A bot with that name already exists in this company. Try a different name." });
+    await removalSettled(() => expect(notice()).toBe("Woah was removed."));
+
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(removeAgent).toHaveBeenCalledWith("agt_one", undefined);
+  });
+
+  it("sends the create once more under a new key when a kept key is answered with a bot that was removed", async () => {
+    const oncreatenewbot = vi
+      .fn<Create>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      // The kept key gets the first request's bot back. It was removed since.
+      .mockResolvedValueOnce(created("agt_old"))
+      .mockResolvedValueOnce(created("agt_new"));
+    const loadAgentStatus = vi.fn(async (agentUid: string) =>
+      agentUid === "agt_old"
+        ? { ok: false, reason: "error", code: "http-404", status: 404, message: "Not found" }
+        : { ok: true, value: { setupState: { phase: "provisioning" } } },
+    );
+    mountSidebar({ oncreatenewbot, loadAgentStatus });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
+    click('[data-testid="new-bot-create-submit"]');
+
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(3);
+    expect(sent[1]).toBe(sent[0]);
+    expect(sent[2]).toBeTruthy();
+    expect(sent[2]).not.toBe(sent[0]);
+    // The bot the person gets is the new one. The removed one has no row.
+    expect(q('[data-conversation-id="dm:agt_new"]')).toBeTruthy();
+    expect(q('[data-conversation-id="dm:agt_old"]')).toBeNull();
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("sends it again only once: a second removed bot is not chased", async () => {
+    const oncreatenewbot = vi
+      .fn<Create>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValue(created("agt_old"));
+    const loadAgentStatus = vi.fn(async () => ({ ok: false, reason: "error", code: "http-404", status: 404, message: "Not found" }));
+    mountSidebar({ oncreatenewbot, loadAgentStatus });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
+    click('[data-testid="new-bot-create-submit"]');
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy());
+    await settle(12);
+
+    expect(oncreatenewbot).toHaveBeenCalledTimes(3);
+  });
+
+  it("lets a kept key go when the bot it was sent for is removed", async () => {
+    // A key is kept for Nova in Indigo. Nova is being removed.
+    window.localStorage.setItem(
+      storageKey(CREATE_KEYS_STORAGE_KEY),
+      JSON.stringify([
+        { key: "key-nova", signature: "cmp_indigo|nova|codex|basic|subscription", mintedAt: Date.now() },
+        { key: "key-vega", signature: "cmp_indigo|vega|codex|basic|subscription", mintedAt: Date.now() },
+      ]),
+    );
+    window.localStorage.setItem(
+      storageKey(OPEN_BOT_REMOVALS_STORAGE_KEY),
+      JSON.stringify([
+        { name: "Nova", companyUid: "cmp_indigo", agentUid: "agt_nova", channelId: "", phase: "removing", hadRow: true, startedAt: 1, problem: null },
+      ]),
+    );
+    const onbotremoved = vi.fn();
+    mountSidebar({ oncreatenewbot: async () => created("agt_other"), removeAgent: vi.fn(async () => REMOVED), onbotremoved });
+    await removalSettled(() => expect(onbotremoved).toHaveBeenCalledWith("agt_nova"));
+
+    // The key for another bot is left alone.
+    expect(keysKept()).toEqual(["key-vega"]);
+  });
+
+  it("lets a kept key go when a bot that was starting turns out to be removed", async () => {
+    window.localStorage.setItem(
+      storageKey(CREATE_KEYS_STORAGE_KEY),
+      JSON.stringify([{ key: "key-nova", signature: "cmp_indigo|nova|codex|basic|subscription", mintedAt: Date.now() }]),
+    );
+    window.localStorage.setItem(
+      storageKey(WAKING_BOTS_STORAGE_KEY),
+      JSON.stringify([
+        { agentUid: "agt_nova", channelId: "", companyUid: "cmp_indigo", name: "Nova", brain: "codex", startedAt: Date.now() - 60_000, estimateMs: 180_000, phase: "waking" },
+      ]),
+    );
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      loadAgentStatus: async () => ({ ok: false, reason: "error", code: "http-404", status: 404, message: "Not found" }),
+    });
+
+    await vi.waitFor(() => expect(keysKept()).toEqual([]));
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
   });
 });
 

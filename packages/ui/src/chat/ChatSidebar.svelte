@@ -214,7 +214,7 @@
     type BotRemovalRun,
     type RemoveBotRequest,
   } from "./create-bot/cancel-model.js";
-  import { createDraftSignature, releaseCreateKey, takeCreateKey } from "./create-bot/create-key.js";
+  import { createDraftSignature, releaseCreateKey, releaseCreateKeysFor, takeCreateKey } from "./create-bot/create-key.js";
   import {
     createdByAnotherPerson,
     findCreatedBot,
@@ -1937,10 +1937,24 @@
     }
   }
 
+  /**
+   * A bot was removed. A key kept for a create of the same bot (same
+   * company, same handle) would be answered with the bot that is gone, so
+   * it is let go. The takeover makes the handle from the name.
+   */
+  function forgetKeysOfRemovedBot(companyUid: string, name: string): void {
+    for (const key of releaseCreateKeysFor(accountStorage, companyUid, botHandle({ name, handle: "" }))) {
+      createBaselines.delete(key);
+    }
+  }
+
   function updateWakingBot(session: WakingBotSession): void {
     if (botIsCancelled(session.agentUid)) return;
     // A bot that is live, removed or out of reach is no longer waited for.
     if (session.phase === "ready" || wakingBotGone(session)) {
+      if (session.phase === "stopped" && (session.stopped === "removed" || session.stopped === "removing")) {
+        forgetKeysOfRemovedBot(session.companyUid, session.name);
+      }
       endWakingBot(session);
       return;
     }
@@ -1974,10 +1988,12 @@
             ).toLowerCase();
             const gone = phase === "deprovisioning" || phase === "deprovisioned";
             const live = agentChatReadiness(answer.value).chatReady && session.helloAskedAt != null;
+            if (gone) forgetKeysOfRemovedBot(session.companyUid, session.name);
             if (gone || live) endWakingBot(session);
             return;
           }
           const stop = wakingStopFromFailure(result);
+          if (stop === "removed") forgetKeysOfRemovedBot(session.companyUid, session.name);
           if (stop === "removed" || stop === "no-access") endWakingBot(session);
         })
         .catch(() => {
@@ -2010,9 +2026,18 @@
     baseline: Promise<ReadonlySet<string> | null>;
     /** The create's answer, when it says what was made. Null when it does not. */
     answer: EntryPointResult | null;
-    /** The request has ended and the company's bots are being read for the bot. */
-    looking: boolean;
+    /** The request has ended, and what follows it here (a look for the bot, a status read) is under way. */
+    ended: boolean;
+    /** Resolves when this attempt has returned its answer to the screen. */
+    finished: Promise<void>;
   } | null = null;
+
+  /**
+   * Bots a create that was not cancelled took up: named by its answer, or
+   * found by its handle. The settle of an earlier, cancelled create of the
+   * same draft must not remove one of these.
+   */
+  const takenUpBots = new Set<string>();
 
   /**
    * The company's bots as they were at the first press for each key. Kept
@@ -2082,12 +2107,22 @@
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
+    return sendCreate(companyUid, draft, false);
+  }
+
+  /**
+   * Send one create. `resent` is true for the one time a create is sent
+   * again by the app itself: a kept key was answered with a bot that has
+   * since been removed, so the same draft goes out once more under a new key.
+   */
+  async function sendCreate(companyUid: string, draft: CloudBotDraft, resent: boolean): Promise<EntryPointResult> {
     if (!oncreatenewbot) return { ok: false, blocked: false, reason: "" };
     // One key for this draft, minted at the press and written down before
     // the request leaves. A draft whose last create got no answer gets the
     // same key again: the server answers with what that first request made.
     const keyed = takeCreateKey(accountStorage, createDraftSignature(companyUid, draft));
     const sent: CloudBotDraft = { ...draft, idempotencyKey: keyed.key };
+    let finish!: () => void;
     const attempt = {
       cancelled: false,
       name: draft.name,
@@ -2099,71 +2134,109 @@
       // Started before the create is sent, so it shows what was there before.
       baseline: baselineFor(keyed.key, keyed.reused, companyUid),
       answer: null as EntryPointResult | null,
-      looking: false,
+      ended: false,
+      finished: new Promise<void>((resolve) => { finish = resolve; }),
     };
     createInFlight = attempt;
     const done = (): void => {
       if (createInFlight === attempt) createInFlight = null;
     };
     const cancelledAnswer: EntryPointResult = { ok: false, blocked: false, reason: "", cancelled: true };
-    let result: EntryPointResult | null = null;
     try {
-      result = await oncreatenewbot(companyUid, sent);
-    } catch {
-      // A create that threw says nothing about what it made.
-      result = null;
-    }
-    const unknown = !result || (!result.ok && result.outcomeUnknown === true);
-    // "That name already exists", said to a create that was sent again after
-    // no answer, may be about the very bot the first request made: the
-    // server checks the name before it looks at the key, so a second request
-    // that arrives while the first is still running is refused this way.
-    const takenAfterResend =
-      keyed.reused && !!result && !result.ok && result.reason === CLOUD_BOT_NAME_TAKEN_REASON;
-    // What Cancel settles from. Neither of the two above says what was made.
-    attempt.answer = unknown || takenAfterResend ? null : result;
-    if (attempt.cancelled) {
-      done();
-      void settleCancelledCreate(attempt, attempt.answer);
-      return cancelledAnswer;
-    }
-    if (unknown || takenAfterResend) {
-      // Look for the bot before anything else is offered. Create bot stays
-      // held meanwhile, so the common case (the first request did make the
-      // bot) never sends a second create at all.
-      attempt.looking = true;
-      if (loadCompanyBots) checkingCreate = attempt;
-      // After no answer: one look, then the person may send it again. After
-      // a refused resend there is nothing more to send: every look is used.
-      const found = await lookUpOwnBot(attempt, lookupDelays(unknown ? 1 : 3));
-      if (checkingCreate === attempt) checkingCreate = null;
-      // Cancel pressed during the looks settles on its own (cancelCreateInFlight).
-      if (attempt.cancelled) return cancelledAnswer;
-      done();
-      if (found) {
-        // The bot is this create's own: take it up as its answer would have.
+      let result: EntryPointResult | null = null;
+      try {
+        result = await oncreatenewbot(companyUid, sent);
+      } catch {
+        // A create that threw says nothing about what it made.
+        result = null;
+      }
+      const unknown = !result || (!result.ok && result.outcomeUnknown === true);
+      // "That name already exists", said to a create that was sent again after
+      // no answer, may be about the very bot the first request made: the
+      // server checks the name before it looks at the key, so a second request
+      // that arrives while the first is still running is refused this way.
+      const takenAfterResend =
+        keyed.reused && !!result && !result.ok && result.reason === CLOUD_BOT_NAME_TAKEN_REASON;
+      // What Cancel settles from. Neither of the two above says what was made.
+      attempt.answer = unknown || takenAfterResend ? null : result;
+      if (attempt.cancelled) {
+        done();
+        void settleCancelledCreate(attempt, attempt.answer);
+        return cancelledAnswer;
+      }
+      // The request is over. From here on Cancel settles the attempt itself.
+      attempt.ended = true;
+      if (unknown || takenAfterResend) {
+        // Look for the bot before anything else is offered. Create bot stays
+        // held meanwhile, so the common case (the first request did make the
+        // bot) never sends a second create at all.
+        if (loadCompanyBots) checkingCreate = attempt;
+        // After no answer: one look, then the person may send it again. After
+        // a refused resend there is nothing more to send: every look is used.
+        const found = await lookUpOwnBot(attempt, lookupDelays(unknown ? 1 : 3));
+        if (checkingCreate === attempt) checkingCreate = null;
+        // Cancel pressed during the looks settles on its own (cancelCreateInFlight).
+        if (attempt.cancelled) return cancelledAnswer;
+        done();
+        if (found) {
+          // The bot is this create's own: take it up as its answer would have.
+          forgetCreateKey(keyed.key);
+          const adopted: EntryPointResult = {
+            ok: true,
+            target: { channelId: "", cardId: null, cardKind: null, agentUid: found },
+          };
+          rememberCreatedBot(companyUid, draft, adopted);
+          return adopted;
+        }
+        if (unknown) {
+          // The key stays: the next press of Create bot for this draft sends it again.
+          return { ok: false, blocked: false, reason: createUnknownReason(draft.name), outcomeUnknown: true };
+        }
+        // The server has answered this key for good, and the bot was not found.
         forgetCreateKey(keyed.key);
-        const adopted: EntryPointResult = {
-          ok: true,
-          target: { channelId: "", cardId: null, cardKind: null, agentUid: found },
-        };
-        rememberCreatedBot(companyUid, draft, adopted);
-        return adopted;
+        return { ok: false, blocked: false, reason: CREATE_MAYBE_CREATED_REASON };
       }
-      if (unknown) {
-        // The key stays: the next press of Create bot for this draft sends it again.
-        return { ok: false, blocked: false, reason: createUnknownReason(draft.name), outcomeUnknown: true };
+      const answered = result as EntryPointResult;
+      const named = answered.ok && !answered.target.cardId ? (answered.target.agentUid ?? "").trim() : "";
+      if (keyed.reused && named && !resent) {
+        // A kept key is answered with the bot its first request made, however
+        // long ago. That bot may have been removed since. Its status is read
+        // once: if the server says it is gone, the key is let go and the same
+        // draft is sent once more as a new create.
+        if (await botIsGone(named)) {
+          if (attempt.cancelled) return cancelledAnswer;
+          done();
+          forgetCreateKey(keyed.key);
+          return sendCreate(companyUid, draft, true);
+        }
+        if (attempt.cancelled) return cancelledAnswer;
       }
-      // The server has answered this key for good, and the bot was not found.
+      done();
+      // The server answered. Its answer is final for this key.
       forgetCreateKey(keyed.key);
-      return { ok: false, blocked: false, reason: CREATE_MAYBE_CREATED_REASON };
+      rememberCreatedBot(companyUid, draft, answered);
+      return answered;
+    } finally {
+      finish();
     }
-    done();
-    // The server answered. Its answer is final for this key.
-    forgetCreateKey(keyed.key);
-    const answered = result as EntryPointResult;
-    rememberCreatedBot(companyUid, draft, answered);
-    return answered;
+  }
+
+  /** True when a status read says the server no longer has the bot, or is taking it down. */
+  async function botIsGone(agentUid: string): Promise<boolean> {
+    if (!loadAgentStatus) return false;
+    let status: unknown = null;
+    try {
+      status = await loadAgentStatus(agentUid);
+    } catch {
+      return false;
+    }
+    if (wakingStopFromFailure(status) === "removed") return true;
+    const answer = status as { ok?: unknown; value?: unknown } | null;
+    if (answer?.ok !== true) return false;
+    const phase = String(
+      (answer.value as { setupState?: { phase?: unknown } } | null)?.setupState?.phase ?? "",
+    ).toLowerCase();
+    return phase === "deprovisioning" || phase === "deprovisioned";
   }
 
   /** The waits before each look at the company's bots. */
@@ -2214,6 +2287,8 @@
       stopped: () => attempt.cancelled,
     });
     if (outcome.kind !== "created" || !outcome.agentUid || attempt.cancelled) return null;
+    // A bot the person cancelled is being removed: it is not taken up.
+    if (botIsCancelled(outcome.agentUid)) return null;
     return (await ownCreatedBot(outcome.agentUid)) ? outcome.agentUid : null;
   }
 
@@ -2229,6 +2304,7 @@
     const agentUid = result.target.agentUid?.trim() ?? "";
     const channelId = result.target.channelId?.trim() ?? "";
     if (!agentUid && !channelId) return;
+    if (agentUid) takenUpBots.add(agentUid);
     beginWakingBot(
       beginWakingSession({ agentUid, channelId, companyUid, name: draft.name, brain: draft.runtime ?? null }),
     );
@@ -2243,9 +2319,13 @@
     const removal = beginBotRemoval({ name: attempt.name, companyUid: attempt.companyUid, brain: attempt.brain });
     attempt.removalId = removal.id;
     setBotRemovals([removal, ...botRemovals]);
-    // The request already ended and the bot was being looked for: nothing
-    // else will settle this attempt, so it is settled from here.
-    if (attempt.looking) void settleCancelledCreate(attempt, attempt.answer);
+    // The key goes with the attempt. A create of the same draft after this
+    // is a new create under a new key: it must not be answered with the bot
+    // this cancelled attempt made, which is about to be removed.
+    forgetCreateKey(attempt.key);
+    // The request already ended: nothing else will settle this attempt, so
+    // it is settled from here.
+    if (attempt.ended) void settleCancelledCreate(attempt, attempt.answer);
     if (checkingCreate === attempt) checkingCreate = null;
   }
 
@@ -2268,8 +2348,7 @@
       delaysMs: lookupDelays(3),
     });
     if (outcome.kind === "unknown") {
-      // Still not known. Nothing is claimed, and the key is kept: pressing
-      // Create bot again for the same draft picks up the first answer.
+      // Still not known. Nothing is claimed.
       patchBotRemoval(removalId, { phase: "unconfirmed" });
       return;
     }
@@ -2285,6 +2364,26 @@
     if (channelId) botSetupChannels = rememberBotSetupChannel(botSetupChannels, channelId, storage);
     if (!agentUid) {
       patchBotRemoval(removalId, { channelId, phase: "failed", problem: "unknown-bot" });
+      return;
+    }
+    if (lookedUp) {
+      // A later create of the same draft may be the one that made this bot.
+      // Its answer says so: wait for it before deciding whose bot this is.
+      const later = createInFlight;
+      if (
+        later &&
+        later !== attempt &&
+        !later.cancelled &&
+        later.companyUid === attempt.companyUid &&
+        later.handle === attempt.handle
+      ) {
+        await later.finished;
+      }
+    }
+    if (takenUpBots.has(agentUid) || botRemovals.some((other) => other.id !== removalId && other.agentUid === agentUid)) {
+      // The bot belongs to a create the person did not cancel, or another
+      // cancel already accounts for it. This cancel has nothing to remove.
+      setBotRemovals(botRemovals.filter((other) => other.id !== removalId));
       return;
     }
     if (lookedUp) {
@@ -2382,6 +2481,7 @@
     // the list, because the server leaves the thread behind.
     removedBotUids = rememberRemovedBot(removedBotUids, agentUid, storage);
     endWakingBot({ agentUid, channelId: "" });
+    forgetKeysOfRemovedBot(removal.companyUid, removal.name);
     patchBotRemoval(id, { phase: "removed", problem: null });
     onbotremoved?.(agentUid);
   }

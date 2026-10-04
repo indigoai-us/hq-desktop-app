@@ -26,6 +26,10 @@
  * Once the server has answered, whatever it answered, the key is let go: a
  * stored refusal (the plan, a name that is taken) would otherwise be played
  * back for ever, even after its cause was fixed.
+ *
+ * A key is also let go when the person cancels the create it was sent with
+ * (the next create of the same draft is a new one, not that one again), and
+ * when the bot it was sent for is removed.
  */
 
 import type { CloudBotDraft } from "../lifecycle-entry-points.js";
@@ -138,4 +142,24 @@ export function releaseCreateKey(storage: KeyStorage | null | undefined, key: st
   const pending = readAll(storage);
   const next = pending.filter((entry) => entry.key !== key);
   if (next.length !== pending.length) save(next, storage);
+}
+
+/**
+ * The bot with this handle in this company was removed: every key kept for
+ * a create of it is let go, whatever brain or size the draft had. A kept key
+ * would otherwise be answered with the bot that is gone.
+ */
+export function releaseCreateKeysFor(
+  storage: KeyStorage | null | undefined,
+  companyUid: string,
+  handle: string,
+): string[] {
+  const company = companyUid.trim();
+  const slug = handle.trim().toLowerCase();
+  if (!company || !slug) return [];
+  const prefix = `${company}|${slug}|`;
+  const pending = readAll(storage);
+  const gone = pending.filter((entry) => entry.signature.startsWith(prefix));
+  if (gone.length) save(pending.filter((entry) => !entry.signature.startsWith(prefix)), storage);
+  return gone.map((entry) => entry.key);
 }
