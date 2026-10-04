@@ -269,13 +269,6 @@
      */
     belowMessages?: Snippet;
     /**
-     * Optional strip across the top of the conversation, directly under the
-     * host's header and above the message scroller (a bot's file sync). It is
-     * not part of the thread: it stays in view while the person scrolls, and
-     * takes its own room, so it never covers a message.
-     */
-    aboveMessages?: Snippet;
-    /**
      * The bot whose suggestions are drawn: its newest message's `suggestions`
      * block becomes a row of buttons under that message's bubble, part of the
      * message, while nothing has been written after it. Older messages draw
@@ -397,7 +390,6 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
-    aboveMessages,
     suggestionsFrom = null,
     suggestedReplyText = null,
     connections = null,
@@ -1728,9 +1720,8 @@
     const content = threadContent;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     let lastHeight = content.offsetHeight;
-    // The scroller itself changes height when the strip above it or the area
-    // pinned under it does (a sync strip or suggested replies appear or go,
-    // the message box grows).
+    // The scroller itself changes height when the area pinned under it does
+    // (the message box grows).
     // A tall thread's content box does not change then, so it is watched too.
     let lastViewport = el.clientHeight;
     const observer = new ResizeObserver(() => {
@@ -1796,16 +1787,6 @@
     <div class="drop-overlay" data-testid="composer-drop-overlay">
       <div class="drop-overlay-card">Drop files to attach</div>
     </div>
-  {/if}
-  {#if aboveMessages && !headerOnly}
-    <!--
-      The host's strip (a bot's file sync): directly under the header, full
-      width, above the scroller and outside its scroll flow, so it stays in
-      view. When it appears or goes the scroller changes height; the effect
-      that holds the bottom keeps a reader at the newest message there, and
-      leaves a reader who scrolled up where they are.
-    -->
-    <div class="conversation-strip" data-testid="conversation-strip">{@render aboveMessages()}</div>
   {/if}
   <div class="conversation-body">
     <div class="dm-thread-wrap">
@@ -2582,12 +2563,6 @@
        for WebKit to take the hit. */
     background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
     pointer-events: auto;
-  }
-
-  /* The host's strip under the header: the pane's full width, above the scroller. */
-  .conversation-strip {
-    flex: 0 0 auto;
-    min-width: 0;
   }
 
   .conversation-body {

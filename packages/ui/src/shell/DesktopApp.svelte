@@ -156,7 +156,7 @@
   import { presenceSnapshot, presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
-  import BotSyncWidget from "../chat/BotSyncWidget.svelte";
+  import BotSyncStatus from "../chat/BotSyncStatus.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../chat/tasks/agent-tasks";
   import {
@@ -4404,8 +4404,8 @@
   /**
    * Cloud bots made in the new bot flow on this device whose company files
    * may still be downloading. Their conversation is a direct message; the
-   * sync widget at the bottom of it says the bot can chat while the files
-   * arrive. A bot leaves the list once its files are there.
+   * sync status in its header says the files are still arriving while the
+   * bot can already chat. A bot leaves the list once its files are there.
    */
   const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
   function loadNewCloudBots(): string[] {
@@ -4460,16 +4460,17 @@
   );
   const dmNewCloudBotUid = $derived(dmAgentUid && isNewCloudBotHere(dmAgentUid) ? dmAgentUid : null);
 
-  // ── Sync widget in a cloud bot's direct message ─────────────────────────
+  // ── Sync status in a cloud bot's direct message ─────────────────────────
   //
-  // A slim strip under the conversation header while the bot's copy of the
-  // company's files is being brought up to date. It is drawn from plain facts
-  // per bot (bot-sync-model.ts). Today the facts come from the bot's status:
-  // the first download after the bot was made, and any later full download
-  // the server reports. Anything else that knows about a sync can set them
-  // with `setBotSyncFacts`.
+  // A still sync glyph and one short line in the conversation header, to the
+  // right of "Direct message", while the bot's copy of the company's files is
+  // being brought up to date (BotSyncStatus.svelte). It is drawn from plain
+  // facts per bot (bot-sync-model.ts). Today the facts come from the bot's
+  // status: the first download after the bot was made, and any later full
+  // download the server reports. Anything else that knows about a sync can
+  // set them with `setBotSyncFacts`.
 
-  /** What is known about each cloud bot's file sync. No entry: no widget. */
+  /** What is known about each cloud bot's file sync. No entry: no status. */
   let botSyncByUid = $state.raw<Record<string, BotSyncFacts>>({});
   function setBotSyncFacts(agentUid: string, facts: BotSyncFacts | null): void {
     const current = botSyncByUid[agentUid] ?? null;
@@ -4501,7 +4502,7 @@
    * outside have one too. It takes a positive sign (`isCloudBotDm`): the bot
    * was made in the New Bot flow on this device, or the server answered this
    * person's read of its status. Everything a cloud bot's conversation adds
-   * (cards, suggestions, the sync strip, notices to the bot) hangs off this.
+   * (cards, suggestions, the sync status, notices to the bot) hangs off this.
    */
   const dmCloudBotUid = $derived(
     dmAgentUid &&
@@ -4560,8 +4561,8 @@
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // server refuses the read, which means no widget and never an error in the
-  // chat. The first answer is also what says the bot is a cloud bot.
+  // server refuses the read, which means no sync status and never an error
+  // in the chat. The first answer is also what says the bot is a cloud bot.
   //
   // Only a refusal ends the asking. A read that fails any other way is tried
   // again, sooner at first and less often each time, and at once when the
@@ -8536,7 +8537,7 @@
    *
    * The takeover owns what happens next (the waking screen, the hand-off to
    * the direct message), so nothing is navigated here. The bot is remembered
-   * as made in the new flow on this device: that is what its sync strip's
+   * as made in the new flow on this device: that is what its sync status's
    * first-download reading, its connection cards and its first message key
    * on.
    */
@@ -13139,6 +13140,14 @@
                   </span>
                 {/if}
               </div>
+              {#if dmCloudBotUid}
+                <!-- The bot's file sync, to the right of "Direct message": a
+                     still glyph and one muted line. It is the title block's
+                     one item that may shrink to nothing, so in a narrow
+                     window it is cut first, and the name, the label and
+                     "Edit profile" keep their places. -->
+                <BotSyncStatus facts={dmCloudBotSync} />
+              {/if}
             </div>
 
             <div class="channel-header-trailing">
@@ -13653,14 +13662,6 @@
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
                 {/snippet}
-                {#snippet botSyncStrip()}
-                  <!-- A strip directly under the header, above the message
-                       scroller: the bot's file sync. It stays in view while
-                       the person scrolls. -->
-                  {#if dmCloudBotUid}
-                    <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
-                  {/if}
-                {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
                     settings={adapter.settings}
@@ -13866,7 +13867,6 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
-                  aboveMessages={botSyncStrip}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraCards}
