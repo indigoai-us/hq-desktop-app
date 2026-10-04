@@ -92,6 +92,10 @@ export function provisioningFromMessages(
  * same point at which the web console tells the person they can leave.
  */
 const CHAT_READY_STEPS = ["codex-auth", "sync"] as const;
+/** The provider name of a bot that runs the v2 runtime. */
+const V2_RUNTIME_PROVIDER = "agents-v2";
+/** The setup step that installs the v2 runtime, the part that answers a message. */
+const RUNTIME_INSTALL_STEP = "runtime-install";
 
 /**
  * How long the app waits, after it asked a new bot to say hello, before it
@@ -341,15 +345,20 @@ export function agentChatReadiness(payload: unknown): AgentChatReadiness {
   const failed = /failed|error|blocked|cancelled/.test(phase);
   const fullyReady = !failed && /ready|active|complete|online/.test(phase);
   const steps = Array.isArray(setup?.steps) ? setup.steps.filter(isRecord) : null;
+  const stepDone = (name: string): boolean =>
+    steps !== null && steps.some((step) => lowerText(step.name) === name && lowerText(step.status) === "done");
+  // A bot on the v2 runtime answers only once that runtime is installed. In
+  // the older setup order the install is the last step, after the sign-in,
+  // the sync and the audit, so those two steps alone would say ready while
+  // nothing on the bot's computer can answer yet.
+  const needsRuntimeInstall = lowerText(agent?.provider) === V2_RUNTIME_PROVIDER;
   const stepsReady =
     steps !== null &&
-    CHAT_READY_STEPS.every((name) =>
-      steps.some((step) => lowerText(step.name) === name && lowerText(step.status) === "done"),
-    );
-  // The server says when the bot can chat (`setupState.chatReady`). Under the
-  // chat-first setup order the runtime that answers is installed after the
-  // sign-in and sync steps, so the step list alone would say ready too early.
-  // The step rule stays for payloads without the flag (older deployments).
+    CHAT_READY_STEPS.every((name) => stepDone(name)) &&
+    (!needsRuntimeInstall || stepDone(RUNTIME_INSTALL_STEP));
+  // The server says when the bot can chat (`setupState.chatReady`), and its
+  // word is final when it is there. The step rule is only for payloads
+  // without the flag (the older setup order, older deployments).
   const serverChatReady = typeof setup?.chatReady === "boolean" ? setup.chatReady : null;
   const chatReady = !failed && (fullyReady || (serverChatReady ?? stepsReady));
   const runtime = isRecord(agent?.runtime) ? agent.runtime : null;

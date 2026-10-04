@@ -190,6 +190,37 @@ describe("agentChatReadiness", () => {
     // No flag: the step rule still decides (older deployments).
     expect(agentChatReadiness({ setupState: { phase: "waiting", steps: steps("waiting") } }).chatReady).toBe(true);
   });
+
+  it("waits for the runtime install on a v2 bot set up in the older order, which sends no chatReady flag", () => {
+    // Review A-I5: in the older order the v2 runtime is installed last, after
+    // the sign-in, the sync and the audit. The sign-in and sync steps alone
+    // said the bot could chat while nothing on its computer could answer.
+    const v2 = { provider: "agents-v2" };
+    expect(
+      agentChatReadiness({ agent: v2, setupState: { phase: "waiting", steps: steps("waiting", "pending") } }).chatReady,
+    ).toBe(false);
+    expect(
+      agentChatReadiness({ agent: v2, setupState: { phase: "waiting", steps: steps("done", "running") } }).chatReady,
+    ).toBe(false);
+    expect(
+      agentChatReadiness({ agent: v2, setupState: { phase: "waiting", steps: steps("done", "done") } }).chatReady,
+    ).toBe(true);
+    // The flat payload shape (no `agent` wrapper) reads the same way.
+    expect(
+      agentChatReadiness({ provider: "agents-v2", setupState: { phase: "waiting", steps: steps("waiting", "pending") } }).chatReady,
+    ).toBe(false);
+    // A bot on another provider has no runtime to install: the step is a no-op for it.
+    expect(
+      agentChatReadiness({ agent: { provider: "codex" }, setupState: { phase: "waiting", steps: steps("waiting", "pending") } }).chatReady,
+    ).toBe(true);
+    // The server's flag stays the last word when it is there.
+    expect(
+      agentChatReadiness({ agent: v2, setupState: { phase: "waiting", chatReady: true, steps: steps("waiting", "pending") } }).chatReady,
+    ).toBe(true);
+    expect(
+      agentChatReadiness({ agent: v2, setupState: { phase: "waiting", chatReady: false, steps: steps("done", "done") } }).chatReady,
+    ).toBe(false);
+  });
 });
 
 describe("the new bot's first message", () => {
