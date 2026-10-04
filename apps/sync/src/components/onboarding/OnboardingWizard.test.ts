@@ -2883,6 +2883,12 @@ describe('invite teammate onboarding step', () => {
     });
 
     expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    const hiddenRows = inviteStepRows().filter((row) => row.action === 'skipped');
+    expect(hiddenRows).toMatchObject([
+      { outcome: 'no_invite_context', companyUid: 'cmp_demo' },
+    ]);
+    expect(hiddenRows).toHaveLength(1);
+    expect(hiddenRows[0]).not.toHaveProperty('companyUidMissing');
     expect(
       tauri.invoke.mock.calls.some(
         ([command, args]) =>
@@ -2890,6 +2896,25 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('records one hidden invite row when the eligibility lookup fails', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/company/cmp_demo': Array.from({ length: 4 }, () => ({
+          status: 503,
+          body: { error: 'busy' },
+        })),
+      },
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    const hiddenRows = inviteStepRows().filter((row) => row.action === 'skipped');
+    expect(hiddenRows).toMatchObject([
+      { outcome: 'lookup_failed', companyUid: 'cmp_demo' },
+    ]);
+    expect(hiddenRows).toHaveLength(1);
+    expect(hiddenRows[0]).not.toHaveProperty('companyUidMissing');
   });
 
   it('shows the invite step for a one-member company without a feature flag', async () => {
@@ -3236,6 +3261,7 @@ describe('invite teammate onboarding step', () => {
     const rows = inviteStepRows();
     expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
     expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.find((row) => row.action === 'entered')).not.toHaveProperty('companyUidMissing');
     expect(rows.find((row) => row.action === 'completed')?.invitesSent).toBe(1);
     expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
     expect(JSON.stringify(rows)).not.toContain(inviteEmail);
