@@ -20,6 +20,8 @@ The release moves it under the version it ships in.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
 
+- HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
+
 ## [0.10.389] — 2026-10-04
 
 - When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.
