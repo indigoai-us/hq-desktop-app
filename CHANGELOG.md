@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.
 - Setup no longer says "Claude Code is installed. Sign in to finish." on a Mac that has only the Claude desktop app. Setup needs Claude Code itself, so it now shows "Install Claude", which installs Claude Code and opens its sign-in in one step. Codex works the same way with the ChatGPT app. HQ now also finds the Codex that comes inside current versions of the ChatGPT app, so people with the ChatGPT app can sign in to Codex without installing it separately. If a sign-in check still fails, the message names Claude Code or Codex and says to make sure it is installed. The coding-tool step on the welcome channel now only installs and signs in to Claude Code or Codex: the "Set up with Claude" and "Set up with ChatGPT" buttons and the "Already use Claude Code or Codex?" card are gone from it. The setup assistant offers to continue in Claude or Codex itself, and the Launch menu in the top right still opens your HQ folder in either one.
 
 ## [0.10.391] — 2026-10-04
@@ -18,7 +19,6 @@ The release moves it under the version it ships in.
 
 - Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
 - Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
-- The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04
