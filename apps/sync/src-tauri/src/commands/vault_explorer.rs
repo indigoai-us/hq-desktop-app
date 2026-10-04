@@ -241,7 +241,7 @@ async fn snapshot(app: &AppHandle, key: VaultKey) -> Result<Arc<VaultSnapshot>, 
     let slot = slot(&key);
     if let Some((built_at, snap)) = slot.snapshot.read().await.clone() {
         if built_at.elapsed() > REFRESH_AFTER {
-            refresh_in_background(app.clone(), key, slot);
+            refresh_in_background(app.clone(), key, slot.clone());
         }
         return Ok(snap);
     }
@@ -254,11 +254,11 @@ async fn snapshot(app: &AppHandle, key: VaultKey) -> Result<Arc<VaultSnapshot>, 
         // as current. Mark it stale so the first caller starts the same
         // stale-while-revalidate walk used for an in-memory snapshot.
         *slot.snapshot.write().await = Some((Instant::now() - REFRESH_AFTER, cached.clone()));
-        refresh_in_background(app.clone(), key, slot);
+        refresh_in_background(app.clone(), key, slot.clone());
         return Ok(cached);
     }
     let refresh = slot.refresh.clone().lock_owned().await;
-    refresh_snapshot(app, key, slot, refresh).await
+    refresh_snapshot(app, key, slot.clone(), refresh).await
 }
 
 fn prewarm_is_quiet(app: &AppHandle) -> bool {
