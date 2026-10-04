@@ -217,6 +217,7 @@
   import { createDraftSignature, releaseCreateKey, releaseCreateKeysFor, takeCreateKey } from "./create-bot/create-key.js";
   import {
     createdByAnotherPerson,
+    createdByViewer,
     findCreatedBot,
     rosterBaseline,
   } from "./create-bot/created-bot-lookup.js";
@@ -2337,18 +2338,20 @@
   }
 
   /**
-   * False when the server names another person as the bot's creator. A bot
-   * found by its handle is checked this way before it is removed or taken
-   * up. A read that fails, or does not say, decides nothing.
+   * Whether a bot found by its handle is this person's own, from the creator
+   * the server records. Taking a bot up (`proven` false) is refused only when
+   * the server names another person: a read that fails, or does not say,
+   * decides nothing. Removing one (`proven` true) needs the server to name
+   * this person: anything less is not enough to remove a bot.
    */
-  async function ownCreatedBot(agentUid: string): Promise<boolean> {
+  async function ownCreatedBot(agentUid: string, proven = false): Promise<boolean> {
     let status: unknown = null;
     try {
       status = loadAgentStatus ? await loadAgentStatus(agentUid) : null;
     } catch {
       status = null;
     }
-    return !createdByAnotherPerson(status, self?.uid);
+    return proven ? createdByViewer(status, self?.uid) : !createdByAnotherPerson(status, self?.uid);
   }
 
   /**
@@ -2476,8 +2479,8 @@
         return;
       }
       // One more check before removing a bot found that way: the server
-      // records who created it.
-      if (!(await ownCreatedBot(agentUid))) {
+      // must name this person as its creator.
+      if (!(await ownCreatedBot(agentUid, true))) {
         patchBotRemoval(removalId, { phase: "unconfirmed" });
         return;
       }

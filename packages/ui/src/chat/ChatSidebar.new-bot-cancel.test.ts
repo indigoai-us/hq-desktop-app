@@ -69,6 +69,19 @@ const OPTIONS: AgentProvisionOptionsView = {
 
 const REMOVED = { ok: true, value: { uid: "agt_woah", terminal: true } };
 
+/**
+ * A bot found by its handle is removed only when the server names the person
+ * as its creator (round 4, item 4). These props are that case: the person is
+ * Ada, and every status read names her as the bot's owner.
+ */
+const OWN_BOT = {
+  self: { uid: "prs_ada", displayName: "Ada" },
+  loadAgentStatus: async (agentUid: string) => ({
+    ok: true,
+    value: { agent: { uid: agentUid, ownerUid: "prs_ada" }, setupState: { phase: "provisioning" } },
+  }),
+};
+
 async function settle(times = 8): Promise<void> {
   for (let i = 0; i < times; i += 1) {
     await tick();
@@ -503,7 +516,7 @@ describe("The key a create is sent under (review A-C5)", () => {
       .mockResolvedValueOnce(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" })))
       .mockResolvedValue(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" }), ...after));
     const removeAgent = vi.fn(async () => REMOVED);
-    const { oncreatenewbot, finish, fail } = await cancelWhileCreating({ loadCompanyBots, removeAgent });
+    const { oncreatenewbot, finish, fail } = await cancelWhileCreating({ loadCompanyBots, removeAgent, ...OWN_BOT });
 
     if (end === "unknown") finish(NO_ANSWER);
     else if (end === "timeout") fail(new Error("The request timed out."));
@@ -525,7 +538,7 @@ describe("The key a create is sent under (review A-C5)", () => {
       .mockResolvedValueOnce(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" })))
       .mockResolvedValue(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" }), rosterRow("agt_woah", "woah")));
     const removeAgent = vi.fn(async () => REMOVED);
-    const { oncreatenewbot, finish } = await cancelWhileCreating({ loadCompanyBots, removeAgent });
+    const { oncreatenewbot, finish } = await cancelWhileCreating({ loadCompanyBots, removeAgent, ...OWN_BOT });
     // The baseline was read at the press, for this company, before any answer.
     expect(loadCompanyBots).toHaveBeenCalledTimes(1);
     expect(loadCompanyBots).toHaveBeenCalledWith("cmp_indigo");
@@ -615,6 +628,65 @@ describe("The key a create is sent under (review A-C5)", () => {
     await settle(12);
 
     expect(loadAgentStatus).toHaveBeenCalledWith("agt_woah");
+    expect(removeAgent).not.toHaveBeenCalled();
+  });
+
+  // Round 4, item 4: the creator check used to count a failed read, and an
+  // answer that names no creator, as the person's own bot.
+  it.each([
+    {
+      read: "names no creator",
+      loadAgentStatus: async () => ({ ok: true, value: { agent: { uid: "agt_woah" }, setupState: { phase: "provisioning" } } }),
+    },
+    {
+      read: "fails",
+      loadAgentStatus: async () => ({ ok: false, status: 500 }),
+    },
+    {
+      read: "throws",
+      loadAgentStatus: async () => {
+        throw new Error("The request timed out.");
+      },
+    },
+  ])("on Cancel, never removes a bot found by its handle when the status read $read", async ({ loadAgentStatus }) => {
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const readStatus = vi.fn(loadAgentStatus);
+    const removeAgent = vi.fn(async () => REMOVED);
+    const { finish } = await cancelWhileCreating({
+      loadCompanyBots,
+      loadAgentStatus: readStatus,
+      removeAgent,
+      self: { uid: "prs_ada", displayName: "Ada" },
+    });
+
+    finish(NO_ANSWER);
+    await removalSettled(() => expect(notice()).toBe(UNCONFIRMED));
+    await settle(12);
+
+    expect(readStatus).toHaveBeenCalledWith("agt_woah");
+    expect(removeAgent).not.toHaveBeenCalled();
+  });
+
+  it("on Cancel, never removes a bot found by its handle when the app does not know who is signed in", async () => {
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const removeAgent = vi.fn(async () => REMOVED);
+    const { finish } = await cancelWhileCreating({
+      loadCompanyBots,
+      loadAgentStatus: OWN_BOT.loadAgentStatus,
+      removeAgent,
+      self: null,
+    });
+
+    finish(NO_ANSWER);
+    await removalSettled(() => expect(notice()).toBe(UNCONFIRMED));
+    await settle(12);
+
     expect(removeAgent).not.toHaveBeenCalled();
   });
 
@@ -877,6 +949,31 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(keysKept()).toEqual([]);
   });
 
+  it("still takes up a bot whose creator the status read does not give (round 4, item 4)", async () => {
+    // Taking a bot up only opens its waiting screen, so it keeps the looser
+    // rule: refused only when the server names another person. The first
+    // read here (the creator check) fails, and later ones name no creator.
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const loadAgentStatus = vi
+      .fn<(agentUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce({ ok: false, status: 500 })
+      .mockResolvedValue({ ok: true, value: { setupState: { phase: "provisioning" } } });
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(NO_ANSWER);
+    mountSidebar({ oncreatenewbot, loadCompanyBots, loadAgentStatus, self: { uid: "prs_ada", displayName: "Ada" } });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+    expect(loadAgentStatus.mock.calls[0]![0]).toBe("agt_woah");
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeTruthy();
+  });
+
   it("does not take up a bot that already had the handle before the create was sent", async () => {
     // Somebody's older bot is called woah. Both requests were refused for it.
     const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer(rosterRow("agt_theirs", "woah", { setupPhase: "ready" })));
@@ -933,7 +1030,7 @@ describe("The key a create is sent under (review A-C5)", () => {
       .mockResolvedValue(NO_ANSWER);
     const removeAgent = vi.fn(async () => REMOVED);
     // A long wait before each look, so Cancel lands while the first is pending.
-    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent, botCreateLookupMs: 40 });
+    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent, botCreateLookupMs: 40, ...OWN_BOT });
     await settle();
     await openTakeover();
     await pressCreate("Woah");
@@ -1041,7 +1138,7 @@ describe("How long a create's key is kept (review item 6)", () => {
       .mockResolvedValueOnce(rosterAnswer())
       .mockResolvedValue(rosterAnswer(rosterRow("agt_one", "woah")));
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent });
+    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent, ...OWN_BOT });
     await settle();
     await openTakeover();
     await pressCreate("Woah");

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createdByAnotherPerson,
+  createdByViewer,
   findCreatedBot,
   rosterBaseline,
   rosterBots,
@@ -132,5 +133,26 @@ describe("createdByAnotherPerson", () => {
     expect(createdByAnotherPerson(status("prs_grace"), "0b1c-cognito-sub")).toBe(false);
     expect(createdByAnotherPerson({ ok: false, status: 403 }, "prs_ada")).toBe(false);
     expect(createdByAnotherPerson(null, "prs_ada")).toBe(false);
+  });
+});
+
+describe("createdByViewer (round 4, item 4)", () => {
+  const status = (ownerUid: unknown): unknown => ({ ok: true, value: { agent: { uid: "agt_woah", ownerUid } } });
+
+  it("is true only when the server names this person as the creator", () => {
+    expect(createdByViewer(status("prs_ada"), "prs_ada")).toBe(true);
+    expect(createdByViewer(status(" prs_ada "), "prs_ada")).toBe(true);
+    expect(createdByViewer(status("prs_grace"), "prs_ada")).toBe(false);
+  });
+
+  it("is false when the read failed, or the answer or the viewer does not say", () => {
+    expect(createdByViewer(status(undefined), "prs_ada")).toBe(false);
+    expect(createdByViewer(status(""), "")).toBe(false);
+    expect(createdByViewer(status("prs_ada"), null)).toBe(false);
+    expect(createdByViewer(status("prs_ada"), undefined)).toBe(false);
+    expect(createdByViewer({ ok: true, value: { setupState: { phase: "provisioning" } } }, "prs_ada")).toBe(false);
+    expect(createdByViewer({ ok: false, status: 403 }, "prs_ada")).toBe(false);
+    expect(createdByViewer({ ok: false, status: 500 }, "prs_ada")).toBe(false);
+    expect(createdByViewer(null, "prs_ada")).toBe(false);
   });
 });

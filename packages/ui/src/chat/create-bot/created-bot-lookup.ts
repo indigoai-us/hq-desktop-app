@@ -127,3 +127,16 @@ export function createdByAnotherPerson(statusAnswer: unknown, viewerUid: string 
   const viewer = (viewerUid ?? "").trim();
   return owner.startsWith("prs_") && viewer.startsWith("prs_") && owner !== viewer;
 }
+
+/**
+ * True only when a status read names this person as the bot's creator. A
+ * read that failed, or an answer that does not say, is not a match. A bot
+ * found by its handle is removed only after this.
+ */
+export function createdByViewer(statusAnswer: unknown, viewerUid: string | null | undefined): boolean {
+  const outer = record(statusAnswer);
+  if (!outer || outer.ok !== true) return false;
+  const owner = text(record(record(outer.value)?.agent)?.ownerUid);
+  const viewer = (viewerUid ?? "").trim();
+  return !!owner && owner === viewer;
+}
