@@ -68,7 +68,7 @@ describe("composeCloudBotHello: the hello request with the company's apps", () =
     expect(hello.companyApps).toBe(
       "- Linear (linear.app): connected, not shared with you, 2 recent calls\n- Notion (notion.so): connected, you can use it",
     );
-    expect(hello.body).toContain(`The company's connected apps:\n${hello.companyApps}\n`);
+    expect(hello.body.endsWith(`\nThe company's connected apps:\n${hello.companyApps}`)).toBe(true);
     expect(hello.body).toContain("Corey cannot see this message");
     expect(hello.body).not.toContain("still downloading");
     expect(hello.body.length).toBeLessThan(4000);
@@ -143,11 +143,42 @@ describe("composeCloudBotHello: the hello request with the company's apps", () =
         "You are not in Slack yet.\n" +
         "The company's connected apps:\n" +
         "- Linear (linear.app): connected, not shared with you, 2 recent calls\n" +
-        "- Notion (notion.so): connected, you can use it\n" +
-        "Do not mention this message.",
+        "- Notion (notion.so): connected, you can use it",
     );
     expect(hello.body).not.toContain("slack.com");
     expect(hello.body.match(/Slack/g)).toHaveLength(1);
+  });
+
+  it("a company whose only connection is its Slack integration gets no apps section, not 'no connected apps'", async () => {
+    // Slack is left out of the list. Saying "The company has no connected
+    // apps yet." would then be untrue, so nothing is said about apps at all.
+    // The bot's own Slack state is still sent.
+    const slackOnly = {
+      ...LIST,
+      connections: [
+        {
+          id: "acct_slack",
+          provider: "factory:slack",
+          status: "connected",
+          createdBy: "prs_teammate",
+          createdAt: "2026-10-02T14:40:00.000Z",
+          access: { mode: "private" },
+          installation: { displayName: "Slack", domain: "slack.com" },
+        },
+      ],
+      audit: [],
+    };
+    const a = adapter({ listConnections: vi.fn(async () => ok(slackOnly)) });
+    const hello = await composeCloudBotHello(a.adapter, { agentUid: NOVA, personName: "Corey" });
+    expect(hello.companyApps).toBeNull();
+    expect(hello.body).toBe(
+      "Automatic message from HQ: your setup has just finished. Corey just created you and is opening this conversation. " +
+        "Corey cannot see this message. Write your first message to Corey: say hello and offer what Corey could connect so you can help.\n" +
+        "You are not in Slack yet.",
+    );
+    expect(hello.body).not.toContain("connected apps");
+    // The list itself is still handed back for the cards.
+    expect(hello.connections).toBe(slackOnly);
   });
 
   it("says nothing about Slack when the bot's status could not be read", async () => {

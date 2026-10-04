@@ -26,7 +26,11 @@ export interface ComposedCloudBotHello {
   body: string;
   /** The bot's company, when its status said. */
   companyUid: string | null;
-  /** The apps brief as sent: null when the list could not be read, "" when nothing is connected. */
+  /**
+   * The apps brief as sent: null when there is no apps section (the list
+   * could not be read, or the company's only connections are its Slack
+   * integration, which the brief leaves out), "" when nothing is connected.
+   */
   companyApps: string | null;
   /** The bot's status answer as the server sent it. Null when it could not be read. */
   status: unknown | null;
@@ -66,7 +70,13 @@ export async function composeCloudBotHello(
       const list = await adapter.integrations?.listConnections?.(companyUid);
       if (list?.ok) {
         connections = list.value ?? null;
-        companyApps = companyAppsBrief({ facts: readCompanyConnections(list.value), record: input.record ?? null });
+        const facts = readCompanyConnections(list.value);
+        const brief = companyAppsBrief({ facts, record: input.record ?? null });
+        // An empty brief means "nothing is connected" only when the list is
+        // empty. When the company's connections are all its Slack integration
+        // (left out of the brief), "The company has no connected apps yet."
+        // would be untrue: the request then carries no apps section at all.
+        companyApps = brief === "" && facts !== null && facts.connections.length > 0 ? null : brief;
       }
     } catch {
       companyApps = null;
