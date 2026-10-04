@@ -370,10 +370,12 @@ function expectPreBranchProviderScreen(): void {
     'Continue with Microsoft',
   ]);
   expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
   expect(host.querySelector('.inline-note.error')).toBeNull();
   expect(host.textContent).not.toContain('Continue as');
   expect(host.textContent).not.toContain('Use another account');
   expect(host.textContent).not.toContain('Finishing your sign-in in the browser');
+  expect(host.textContent).not.toContain('Authorize');
 }
 
 /**
@@ -1385,7 +1387,20 @@ describe('first-run sign-in screen', () => {
     ).toBe(true);
   });
 
-  it('cancels a hanging web authorize listen so provider buttons stay usable', async () => {
+  it('shows a single Authorize button when the flag is on', async () => {
+    stubWebAuthorizeInvoke();
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealWebAuthorizeSignIn();
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    expect(host.textContent).not.toContain('Other ways to sign in');
+  });
+
+  it('cancels a hanging web authorize listen and returns to the single Authorize button', async () => {
     stubWebAuthorizeInvoke();
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
     await revealWebAuthorizeSignIn();
@@ -1394,7 +1409,13 @@ describe('first-run sign-in screen', () => {
     host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-cancel"]')?.click();
     await flushUntil(() => !host.querySelector('[data-testid="web-authorize-cancel"]'));
     expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'web-state' });
-    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(providerButtons()).toHaveLength(1);
+    expect(providerButtons()[0]?.disabled).toBe(false);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
   });
 
   it('times out a hanging web authorize listen and falls back to provider buttons', async () => {
@@ -1411,6 +1432,52 @@ describe('first-run sign-in screen', () => {
     expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'web-state' });
     expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+    expect(providerButtons().map((button) => button.textContent?.trim())).toEqual([
+      'Continue with Google',
+      'Continue with Microsoft',
+    ]);
+  });
+
+  it('holds the waiting state after web authorize succeeds so welcome buttons do not reappear', async () => {
+    let resolveRefocus!: () => void;
+    const refocus = new Promise<void>((resolve) => {
+      resolveRefocus = resolve;
+    });
+    stubWebAuthorizeInvoke({
+      listen: Promise.resolve({ code: 'code' }),
+      exchange: { authenticated: true },
+    });
+    const fallback = tauri.invoke.getMockImplementation();
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'bring_main_window_to_front') return refocus;
+      return fallback?.(command, args);
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealWebAuthorizeSignIn();
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'bring_main_window_to_front'),
+    );
+    const welcome = host.querySelector('[data-testid="onboarding-signin"]');
+    expect(welcome?.classList.contains('on')).toBe(true);
+    expect(host.querySelector('[data-testid="web-authorize-cancel"]')).not.toBeNull();
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Waiting for browser…',
+    );
+    resolveRefocus();
+    await flushUntil(
+      () => host.querySelector('[data-testid="onboarding-directory"]')?.classList.contains('on') === true,
+    );
+    expect(host.textContent).toContain("It's a folder");
+    expect(welcome?.classList.contains('on')).toBe(false);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    const idleAuthorize = Array.from(
+      host.querySelectorAll<HTMLButtonElement>('[data-testid="web-authorize-signin"]'),
+    ).find((button) => (button.textContent ?? '').includes('Authorize'));
+    expect(idleAuthorize).toBeUndefined();
   });
 
   it('keeps the welcome-signin step event in control and continuation arms', async () => {

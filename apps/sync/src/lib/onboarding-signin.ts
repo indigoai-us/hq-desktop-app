@@ -1,5 +1,8 @@
 export type SignInProvider = 'Google' | 'Microsoft';
 
+/** Label for the flag-on web authorize button. One string so both screens stay in sync. */
+export const AUTHORIZE_BUTTON_LABEL = 'Authorize';
+
 function parseStructuredOAuthError(
   message: string,
 ): { code?: string; message?: string } | null {

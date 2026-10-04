@@ -56,7 +56,11 @@
     friendlyPath,
     homeDirFromDefaultHqPath,
   } from '../../lib/onboarding-path';
-  import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import {
+    AUTHORIZE_BUTTON_LABEL,
+    mapSignInError,
+    type SignInProvider,
+  } from '../../lib/onboarding-signin';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -395,6 +399,7 @@
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
   let webAuthorizeEnabled = $state(false);
+  let webAuthorizeResolved = $state(false);
   let webAuthorizeBusy = $state(false);
   let webAuthorizeCancelling = $state(false);
   let signInError = $state('');
@@ -914,10 +919,14 @@
       if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
       void invokeCommand<boolean>('web_authorize_enabled')
         .then((enabled) => {
-          if (mounted) webAuthorizeEnabled = enabled === true;
+          if (!mounted) return;
+          webAuthorizeEnabled = enabled === true;
+          webAuthorizeResolved = true;
         })
         .catch(() => {
-          if (mounted) webAuthorizeEnabled = false;
+          if (!mounted) return;
+          webAuthorizeEnabled = false;
+          webAuthorizeResolved = true;
         });
     }
 
@@ -1106,6 +1115,7 @@
     webAuthorizeBusy = true;
     signInError = '';
     webAuthorizeState = null;
+    let succeeded = false;
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
     void emitDesktopAuthProgress({ provider: 'web', step: authStep });
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: 'web' });
@@ -1154,6 +1164,7 @@
       if (result.authenticated) {
         authStep = 'token_exchange_ok';
         void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+        succeeded = true;
         await completeAuthenticatedSignIn(call, { provider: 'web' });
       } else {
         failWebAuthorize(authStep, 'authentication rejected', {
@@ -1169,7 +1180,9 @@
       });
       await cancelWebAuthorizeListen();
     } finally {
-      if (isCurrentSignInCall(call)) {
+      // Hold the waiting state on success so the welcome buttons cannot flash
+      // while the wizard refocuses and advances to the folder step.
+      if (isCurrentSignInCall(call) && !succeeded) {
         webAuthorizeBusy = false;
         webAuthorizeState = null;
         clearWebAuthorizeTimeout();
@@ -4087,7 +4100,7 @@
         {#if !replay}
           <!-- The consent question is its own screen; nothing is asked here. -->
           <div class="btns-slot">
-            {#if signInActionsReady}
+            {#if signInActionsReady && webAuthorizeResolved}
               <div class="btns">
                 {#if webAuthorizeEnabled}
                   <button
@@ -4097,11 +4110,10 @@
                     disabled={loadingProvider !== null || webAuthorizeBusy}
                     aria-busy={webAuthorizeBusy}
                     onclick={() => void handleWebAuthorize()}
-                  >{webAuthorizeBusy ? 'Waiting for browser…' : 'Sign in'}</button>
-                {/if}
+                  >{webAuthorizeBusy ? 'Waiting for browser…' : AUTHORIZE_BUTTON_LABEL}</button>
+                {:else}
                 <button
                   class="btn btn-primary"
-                  class:btn-secondary={webAuthorizeEnabled}
                   type="button"
                   disabled={loadingProvider !== null || webAuthorizeBusy}
                   aria-busy={loadingProvider === 'Google'}
@@ -4114,6 +4126,7 @@
                   aria-busy={loadingProvider === 'Microsoft'}
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>
+                {/if}
               </div>
               {#if microsoftEmailPrompt}
                 <form

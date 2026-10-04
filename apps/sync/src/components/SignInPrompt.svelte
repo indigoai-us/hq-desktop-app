@@ -21,7 +21,11 @@
     type ContinuationDeps,
     type ContinuationState,
   } from '../lib/desktop-session-continuation';
-  import { mapSignInError, type SignInProvider } from '../lib/onboarding-signin';
+  import {
+    AUTHORIZE_BUTTON_LABEL,
+    mapSignInError,
+    type SignInProvider,
+  } from '../lib/onboarding-signin';
 
   const AUTH_RECHECK_INTERVAL_MS = 2_000;
   const CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
@@ -299,6 +303,7 @@
     lastProvider = null;
     activeState = null;
     authorizeUrl = null;
+    let succeeded = false;
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
     void emitDesktopAuthProgress({ provider: 'web', step: authStep });
     try {
@@ -338,6 +343,7 @@
       if (result.authenticated) {
         void emitDesktopAuthProgress({ provider: 'web', step: authStep });
         acceptedExistingSession = true;
+        succeeded = true;
         if (bringMainToFront) {
           try {
             await invoke('bring_main_window_to_front');
@@ -359,7 +365,9 @@
       failWebAuthorize(authStep, err);
       await cancelPendingSignIn();
     } finally {
-      if (isCurrentSignInRun(run)) {
+      // Hold the waiting state on success so the Authorize button cannot flash
+      // before the parent leaves this screen.
+      if (isCurrentSignInRun(run) && !succeeded) {
         resetManualSignInState();
       }
     }
@@ -618,26 +626,9 @@
             <span class="spinner"></span>
             Waiting for browser…
           {:else}
-            Sign in
+            {AUTHORIZE_BUTTON_LABEL}
           {/if}
         </button>
-        <details class="other-ways" data-testid="other-ways-to-sign-in">
-          <summary>Other ways to sign in</summary>
-          {#each providers as provider}
-            <button
-              class="sign-in-btn"
-              onclick={() => handleSignIn(provider.key)}
-              disabled={loadingProvider !== null || webAuthorizeBusy || quitting}
-            >
-              {#if provider.key === 'Google'}
-                {@render GoogleGlyph()}
-              {:else}
-                {@render MicrosoftGlyph()}
-              {/if}
-              Continue with {provider.label}
-            </button>
-          {/each}
-        </details>
       {:else}
       {#each providers as provider}
         <button
@@ -861,23 +852,6 @@
 
   .sign-in-actions[hidden] {
     display: none;
-  }
-
-  .other-ways {
-    width: 100%;
-    text-align: left;
-  }
-
-  .other-ways summary {
-    cursor: pointer;
-    font-size: 0.75rem;
-    color: var(--pop-muted);
-    margin: 0.25rem 0 0.5rem;
-  }
-
-  .other-ways .sign-in-btn {
-    width: 100%;
-    margin-top: 0.5rem;
   }
 
   .microsoft-email {

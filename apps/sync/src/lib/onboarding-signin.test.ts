@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mapSignInError } from './onboarding-signin';
+import { AUTHORIZE_BUTTON_LABEL, mapSignInError } from './onboarding-signin';
+
+describe('AUTHORIZE_BUTTON_LABEL', () => {
+  it('is the single Authorize label used by both sign-in screens', () => {
+    expect(AUTHORIZE_BUTTON_LABEL).toBe('Authorize');
+  });
+});
 
 describe('mapSignInError', () => {
   it('maps referral persistence failures to neutral retryable copy', () => {

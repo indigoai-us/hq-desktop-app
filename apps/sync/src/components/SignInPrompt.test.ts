@@ -405,7 +405,7 @@ describe('SignInPrompt web authorize flag', () => {
     ]);
   });
 
-  it('shows Sign in when the flag is on and opens the web authorize page', async () => {
+  it('shows Authorize when the flag is on and opens the web authorize page', async () => {
     tauri.invoke.mockImplementation((command: string) => {
       switch (command) {
         case 'web_authorize_enabled':
@@ -425,7 +425,13 @@ describe('SignInPrompt web authorize flag', () => {
     });
     component = mount(SignInPrompt, { target: host });
     await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
-    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
     host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
     flushSync();
     await flush();
@@ -456,8 +462,13 @@ describe('SignInPrompt web authorize flag', () => {
     expect(providerButtons()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(1_500);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
-    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain('Sign in');
-    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
   });
 
   it('falls back to enabled provider buttons and plain copy when web authorize listen rejects', async () => {
@@ -501,6 +512,94 @@ describe('SignInPrompt web authorize flag', () => {
       expect.stringContaining('Continue with Microsoft'),
     ]);
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('returns to the single Authorize button after a plain cancel', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        case 'oauth_cancel_listen':
+          return Promise.resolve(undefined);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="signin-browser-handoff"]')));
+    const back = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      (button.textContent ?? '').includes('Back'),
+    );
+    expect(back).toBeTruthy();
+    back?.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+  });
+
+  it('holds the waiting state after web authorize succeeds so Authorize does not reappear', async () => {
+    let resolveRefocus!: () => void;
+    const refocus = new Promise<void>((resolve) => {
+      resolveRefocus = resolve;
+    });
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return Promise.resolve({ code: 'code' });
+        case 'oauth_exchange_code':
+          return Promise.resolve({ authenticated: true, expiresAt: 'later' });
+        case 'bring_main_window_to_front':
+          return refocus;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'bring_main_window_to_front'),
+    );
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).not.toBeNull();
+    expect(host.querySelector<HTMLElement>('[data-testid="sign-in-actions"]')?.hidden).toBe(true);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    resolveRefocus();
+    await flush();
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).not.toBeNull();
+    expect(host.querySelector<HTMLElement>('[data-testid="sign-in-actions"]')?.hidden).toBe(true);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).not.toContain(
+      'Authorize',
+    );
   });
 });
 
