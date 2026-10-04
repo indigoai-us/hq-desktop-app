@@ -179,7 +179,7 @@ describe("CorePopover sync trouble notices (PL-02)", () => {
 });
 
 describe("CorePopover first-week return nudge", () => {
-  const workspaces = [{ uid: "cmp_test", slug: "indigo", name: "Indigo" }];
+  const workspaces = [{ cloudUid: "cmp_test", slug: "indigo", name: "Indigo" }];
   const eligible = { eligible: true, dayIndex: 2, reason: "eligible" };
 
   it("stays hidden when the feature flag is off", async () => {

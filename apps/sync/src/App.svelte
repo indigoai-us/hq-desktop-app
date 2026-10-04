@@ -91,6 +91,7 @@
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
+  import { registerMainReturnNudgeListener } from './lib/return-nudge-event-bridge';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
@@ -150,9 +151,17 @@
     );
   }
   window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const unlistenReturnNudge = registerMainReturnNudgeListener(
+    (handler) => listen(POST_READY_ACTION_EVENT, (event) => handler(event.payload)),
+    (detail) => handlePostReadyAction(new CustomEvent(POST_READY_ACTION_EVENT, { detail })),
+  ).catch((error: unknown) => {
+    console.warn('post-ready action cross-window listener failed:', error);
+    return () => {};
+  });
   const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
   onDestroy(() => {
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void unlistenReturnNudge.then((unlisten) => unlisten());
     void postReadyCloseListener.then((unlisten) => unlisten());
   });
 

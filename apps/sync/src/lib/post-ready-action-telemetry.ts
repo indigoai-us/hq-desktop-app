@@ -213,9 +213,9 @@ export function createPostReadyActionTelemetry(
     scope: { companyUid: string },
   ): Promise<boolean> {
     state = loadState(storage);
-    if (!['shown', 'clicked', 'dismissed'].includes(value) || !beginFirstSessionIfReady()) return false;
+    if (!['shown', 'clicked', 'dismissed'].includes(value) || !beginFirstSessionIfReady(true)) return false;
     const pending = operation.then(async () => {
-      if (!beginFirstSessionIfReady()) return false;
+      if (!beginFirstSessionIfReady(true)) return false;
       let enabled = false;
       try {
         enabled = await options.isFlagEnabled();

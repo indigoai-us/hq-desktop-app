@@ -91,6 +91,19 @@ describe('post-ready action telemetry', () => {
     expect(setup.emit).not.toHaveBeenCalled();
   });
 
+  it('records a return nudge after the first setup session was closed', async () => {
+    const setup = makeTracker();
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('close_window')).toBe(true);
+    expect(await setup.tracker.recordReturnNudge('shown', { companyUid: 'cmp_company' })).toBe(true);
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+    expect(setup.emit.mock.calls.map(([event]) => event.properties.action)).toEqual([
+      'close_window', 'start_sync',
+    ]);
+    expect(setup.emit.mock.calls[1][0].properties.returnNudge).toBe('shown');
+  });
+
   it('records only the bounded return nudge outcome on the existing post-ready event', async () => {
     const setup = makeTracker();
     markPostReadyActionReady(setup.storage);

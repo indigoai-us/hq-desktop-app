@@ -401,9 +401,11 @@
       const flag = await adapter.identity.hasFeature(FIRST_WEEK_RETURN_NUDGE_FLAG);
       if (!flag.ok || flag.value !== true || disposed) return;
       for (const workspace of workspaces) {
-        const companyUid = typeof workspace.uid === "string"
-          ? workspace.uid
-          : typeof workspace.companyUid === "string" ? workspace.companyUid : "";
+        const companyUid = typeof workspace.cloudUid === "string"
+          ? workspace.cloudUid
+          : typeof workspace.uid === "string"
+            ? workspace.uid
+            : typeof workspace.companyUid === "string" ? workspace.companyUid : "";
         if (!/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) continue;
         const result = await adapter.company.getFirstWeekReturnNudge(companyUid);
         if (!result.ok || disposed) continue;
