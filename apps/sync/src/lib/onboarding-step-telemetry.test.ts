@@ -65,6 +65,8 @@ describe('onboarding step telemetry', () => {
         action: 'entered',
         flow: 'first_launch',
         outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
       },
     });
     expect(reached.outcome).toBe('reached-signin');
@@ -77,6 +79,8 @@ describe('onboarding step telemetry', () => {
         action: 'skipped',
         flow: 'first_launch',
         outcome: 'setup-resume-skip',
+        surface: 'desktop_installer',
+        platform: 'macos',
       },
     });
     expect(skipped.outcome).toBe('setup-resume-skip');
@@ -103,6 +107,8 @@ describe('onboarding step telemetry', () => {
         action: 'entered',
         flow: 'first_launch',
         outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
       },
     });
     expect(wrongScope).not.toHaveProperty('outcome');
@@ -115,6 +121,8 @@ describe('onboarding step telemetry', () => {
         action: 'entered',
         flow: 'first_install',
         outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
       },
     });
     expect(wrongFlow).not.toHaveProperty('outcome');
