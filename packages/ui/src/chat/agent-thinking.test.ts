@@ -18,6 +18,8 @@ import {
   clearRowFromMessages,
   dropRow,
   kickoffThinkingState,
+  helloThinkingState,
+  HELLO_ASK_SKEW_MS,
   agentDisplayName,
   applyAgentStatus,
   parseAgentStatusWake,
@@ -445,6 +447,61 @@ describe('kickoffThinkingState', () => {
   });
   it('is done when the answer already landed', () => {
     expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
+  });
+});
+
+describe('helloThinkingState (B-4): a hello request the bot already answered starts no row', () => {
+  const NOVA = 'agt_nova';
+  const ASKED = Date.UTC(2026, 9, 3, 10, 0, 0);
+  const at = (offsetMs: number) => new Date(ASKED + offsetMs).toISOString();
+  const bot = (offsetMs: number) => ({ fromPersonUid: NOVA, createdAt: at(offsetMs) });
+  const me = (offsetMs: number) => ({ fromPersonUid: 'prs_me', createdAt: at(offsetMs) });
+
+  it('starts no row when the bot has written since the request', () => {
+    // The stale case: the hello landed, the person opens the DM later.
+    expect(helloThinkingState([bot(20_000)], NOVA, ASKED, ASKED + 60_000)).toEqual({ state: 'done' });
+    expect(helloThinkingState([bot(-60_000), bot(1)], NOVA, ASKED, ASKED + 400_000)).toEqual({ state: 'done' });
+  });
+
+  it('allows for the two clocks not agreeing to the second', () => {
+    expect(HELLO_ASK_SKEW_MS).toBe(5_000);
+    // The server stamped the hello a little before this Mac's time of the ask.
+    expect(helloThinkingState([bot(-5_000)], NOVA, ASKED, ASKED + 1_000)).toEqual({ state: 'done' });
+    // A message from well before the ask is not an answer to it.
+    expect(helloThinkingState([bot(-5_001)], NOVA, ASKED, ASKED + 1_000)).toEqual({
+      state: 'start',
+      startedAt: ASKED,
+      afterMs: ASKED - 5_001,
+    });
+  });
+
+  it('starts the row as of the request when nothing came back, pinned to the bot\'s newest message', () => {
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 30_000)).toEqual({ state: 'start', startedAt: ASKED });
+    // The person's own messages are not the bot's answer.
+    expect(helloThinkingState([me(10_000)], NOVA, ASKED, ASKED + 30_000)).toEqual({ state: 'start', startedAt: ASKED });
+    expect(helloThinkingState([bot(-90_000)], NOVA, ASKED, ASKED + 30_000)).toEqual({
+      state: 'start',
+      startedAt: ASKED,
+      afterMs: ASKED - 90_000,
+    });
+  });
+
+  it('a row started as of the request ends when one started then would have', () => {
+    const decision = helloThinkingState([], NOVA, ASKED, ASKED + 500_000);
+    expect(decision).toEqual({ state: 'start', startedAt: ASKED });
+    const rows = startThinking([], { agentUid: NOVA, agentName: 'Nova' }, ASKED);
+    expect(tick(rows, ASKED + 599_999)).toHaveLength(1);
+    expect(tick(rows, ASKED + 600_000)).toEqual([]);
+    // Past that, there is nothing to start.
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 600_000)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 86_400_000)).toEqual({ state: 'done' });
+  });
+
+  it('starts no row without a usable time of the request, and never starts one in the future', () => {
+    expect(helloThinkingState([], NOVA, null, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, undefined, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, Number.NaN, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, ASKED + 10_000, ASKED)).toEqual({ state: 'start', startedAt: ASKED });
   });
 });
 

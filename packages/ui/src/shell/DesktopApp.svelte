@@ -462,6 +462,7 @@
     startThinkingIn,
     syncBusyThinking,
     kickoffThinkingState,
+    helloThinkingState,
     tickAll,
     endedBotDmThinking,
     thinkingEndedLogLine,
@@ -4030,8 +4031,11 @@
     };
   });
 
-  /** Bots asked for their first message whose answer has not been seen yet (uid → name). */
-  let cloudBotHelloPending = $state<Record<string, string>>({});
+  /**
+   * Bots asked for their first message whose answer has not been seen yet
+   * (uid to the bot's name and the time the request was sent).
+   */
+  let cloudBotHelloPending = $state<Record<string, { name: string; askedAt: number }>>({});
   /**
    * A bot cancelled in the New bot flow is gone from the server. Drop what
    * this window kept for it, so nothing keeps asking about a bot that no
@@ -4081,9 +4085,14 @@
       record: connectionRecords[uid] ?? null,
       companyUidHint: selectedRow?.kind === "dm" && selectedRow.personUid === uid ? selectedRow.companyUid : null,
     });
+    const askedAt = Date.now();
     const result = await adapter.messaging.sendDm(uid, hello.body, { audience: "agent", idempotencyKey: `new-bot-hello-${uid}` });
     if (!result.ok) return false;
-    cloudBotHelloPending = { ...cloudBotHelloPending, [uid]: session.name };
+    // The first ask is the one that counts: a repeat is the same request to the server.
+    cloudBotHelloPending = {
+      ...cloudBotHelloPending,
+      [uid]: { name: session.name, askedAt: cloudBotHelloPending[uid]?.askedAt ?? askedAt },
+    };
     return true;
   }
   async function cloudBotHelloArrived(session: { agentUid: string; helloAskedAt?: number | null }): Promise<boolean> {
@@ -4104,22 +4113,34 @@
     return arrived;
   }
   // The person reached the conversation before the bot's first message: show
-  // the bot as working, because a request to it is in flight.
+  // the bot as working, because a request to it is in flight. Decided once
+  // the conversation has loaded, and only when the bot has written nothing
+  // since the request (`helloThinkingState`): a request the bot already
+  // answered must not leave a row that nothing would ever end.
   $effect(() => {
     const row = selectedRow;
     const uid = dmAgentUid;
-    if (!row || !uid || !cloudBotHelloPending[uid] || liveTimelineId !== row.id) return;
-    const name = cloudBotHelloPending[uid]!;
-    const { [uid]: _started, ...rest } = cloudBotHelloPending;
-    cloudBotHelloPending = rest;
-    // Pinned like a send: only a bot message newer than the request ends it.
-    thinkingByRow = startThinkingIn(
-      thinkingByRow,
-      row.id,
-      { agentUid: uid, agentName: row.title?.trim() || name },
-      Date.now(),
-      { afterMs: untrack(() => botPinFor(row.id, uid)) },
-    );
+    const pending = uid ? cloudBotHelloPending[uid] : undefined;
+    if (!row || !uid || !pending || liveTimelineId !== row.id || timelineHydrating) return;
+    const messages = liveTimeline;
+    untrack(() => {
+      const { [uid]: _decided, ...rest } = cloudBotHelloPending;
+      cloudBotHelloPending = rest;
+      // A row that is already up for the bot (its own status) stays as it is.
+      if ((thinkingByRow[row.id] ?? []).some((entry) => entry.agentUid === uid)) return;
+      const decision = helloThinkingState(messages, uid, pending.askedAt, Date.now());
+      if (decision.state !== "start") return;
+      // Started as of the request and pinned like a send: only a bot message
+      // newer than the bot's last one ends it, and it runs out when a row
+      // started at the request would have.
+      thinkingByRow = startThinkingIn(
+        thinkingByRow,
+        row.id,
+        { agentUid: uid, agentName: row.title?.trim() || pending.name },
+        decision.startedAt,
+        { afterMs: decision.afterMs },
+      );
+    });
   });
 
   const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";

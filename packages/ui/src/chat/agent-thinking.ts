@@ -348,6 +348,43 @@ export function kickoffThinkingState(
 }
 
 /**
+ * A server time this far before the local time a request was sent still
+ * counts as after it: the two clocks need not agree to the second.
+ */
+export const HELLO_ASK_SKEW_MS = 5_000;
+
+/**
+ * The app asked a new cloud bot for its first message (a hidden request) and
+ * the person reached the conversation. Decide, from the loaded timeline,
+ * whether the bot should show as working:
+ * - `done`: the bot has written since the ask (its hello is already there),
+ *   or the ask is older than a row would have lived anyway, or its time is
+ *   not usable. No row: nothing is in flight that the person is waiting on.
+ * - `start`: nothing from the bot since the ask. The row starts as of the
+ *   ask (`startedAt`), so it ends no later than a row started then would
+ *   have, pinned to the bot's newest message so only a newer one ends it.
+ *
+ * Call it only once the conversation's timeline has loaded: an empty
+ * timeline that is still loading says nothing about what the bot wrote.
+ */
+export function helloThinkingState(
+  messages: ReadonlyArray<{
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  agentUid: string,
+  askedAtMs: number | null | undefined,
+  now: number,
+  opts?: { expireAfterMs?: number },
+): { state: 'start'; startedAt: number; afterMs?: number } | { state: 'done' } {
+  if (typeof askedAtMs !== 'number' || !Number.isFinite(askedAtMs)) return { state: 'done' };
+  const newest = newestMessageAtFrom(messages, agentUid);
+  if (newest !== undefined && newest >= askedAtMs - HELLO_ASK_SKEW_MS) return { state: 'done' };
+  if (now - askedAtMs >= (opts?.expireAfterMs ?? DEFAULT_EXPIRE_AFTER_MS)) return { state: 'done' };
+  return { state: 'start', startedAt: Math.min(askedAtMs, now), ...(newest !== undefined ? { afterMs: newest } : {}) };
+}
+
+/**
  * The name to show for an agent's thinking row. Never the name on a message
  * someone else wrote: a thread's root is often the person's own message, and
  * labelling the row with its author read "Jacob is thinking…" while the agent
