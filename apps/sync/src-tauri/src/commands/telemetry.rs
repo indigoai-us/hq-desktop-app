@@ -1300,7 +1300,7 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action"
+        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action" | "desktop_update_outcome"
     ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
     {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
@@ -1312,9 +1312,10 @@ fn build_desktop_telemetry_event(
         &mut properties,
         crate::commands::cdp_mirror::current_anon_id(),
     );
+    let schema_version = if event_name == "desktop_update_outcome" { 2 } else { 1 };
     let install_attempt_id = matches!(
         event_name.as_str(),
-        "desktop_setup_completed" | "desktop_onboarding_step"
+        "desktop_setup_completed" | "desktop_onboarding_step" | "desktop_update_outcome"
     )
     .then(crate::commands::first_run::install_attempt_id)
     .flatten();
@@ -1333,7 +1334,7 @@ fn build_desktop_telemetry_event(
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             }),
         consent_basis: consent_basis.to_string(),
-        schema_version: 1,
+        schema_version,
         idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
         company_uid,
@@ -1423,6 +1424,7 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_post_ready_action",
     "desktop_setup_completed",
     "desktop_auto_update_post_cap_outcome",
+    "desktop_update_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
     "install_tag_read",
@@ -4208,6 +4210,40 @@ mod codex_telemetry_tests {
                 .any(|request| request.url.path() == "/v1/usage/opt-in"),
             "operational telemetry must not wait for or read the skill consent"
         );
+    }
+
+    #[test]
+    fn desktop_update_outcome_uses_v2_and_the_install_join_key() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-update-test"}"#);
+        std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
+        let event = build_desktop_telemetry_event(
+            "desktop_update_outcome".to_string(),
+            Some(json!({
+                "stage": "download_ok",
+                "fromVersion": "0.10.386",
+                "toVersion": "0.10.387",
+                "channel": "stable",
+                "autoUpdate": true
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+
+        std::env::remove_var("HOME");
+        let event = serde_json::to_value(event).unwrap();
+        assert_eq!(event["schemaVersion"], 2);
+        assert_eq!(event["installAttemptId"], install_attempt_id);
+        assert_eq!(event["properties"]["stage"], "download_ok");
+        assert_eq!(event["properties"]["fromVersion"], "0.10.386");
+        assert_eq!(event["properties"]["toVersion"], "0.10.387");
+        assert_eq!(event["properties"]["channel"], "stable");
+        assert_eq!(event["properties"]["autoUpdate"], true);
     }
 
     #[test]
