@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyWakingCheckFailure,
   applyWakingStatus,
   awaitingHello,
   beginWakingSession,
@@ -13,7 +14,19 @@ import {
   signInConfirmMessage,
   US001_MEDIAN_WAKING_ESTIMATE_MS,
   WAKING_ESTIMATE_MS,
+  WAKING_NUDGE_FAST_WINDOW_MS,
+  WAKING_NUDGE_MS,
+  WAKING_NUDGE_SLOW_MS,
+  WAKING_POLL_FAILING_LONG_MS,
+  WAKING_POLL_FAILING_MS,
+  WAKING_POLL_FAST_WINDOW_MS,
+  WAKING_POLL_MS,
+  WAKING_POLL_SLOW_MS,
+  wakingBotGone,
+  wakingNudgeIntervalMs,
+  wakingPollDelayMs,
   wakingStatusLine,
+  wakingStopFromFailure,
 } from "./waking-model";
 
 const STARTED = 1_700_000_000_000;
@@ -221,6 +234,116 @@ describe("waking model", () => {
 
     const complete = applyWakingStatus(pending, { setupState: { phase: "ready" } });
     expect(complete.approval).toBeNull();
+  });
+
+  describe("a bot that is gone or out of reach (review A-I4)", () => {
+    it("stops on a status that says the bot is being taken down, with its own line", () => {
+      const removing = applyWakingStatus(session(), { setupState: { phase: "deprovisioning", steps: [{ name: "codex-auth", status: "done" }, { name: "sync", status: "done" }] } }, STARTED + 9_000);
+      expect(removing).toMatchObject({ phase: "stopped", stopped: "removing", approval: null });
+      expect(wakingStatusLine(removing, STARTED + 9_000)).toBe("Nova is being removed.");
+      expect(wakingBotGone(removing)).toBe(true);
+
+      const removed = applyWakingStatus(session(), { agent: { setupState: { phase: "deprovisioned" } } }, STARTED + 9_000);
+      expect(removed).toMatchObject({ phase: "stopped", stopped: "removed" });
+      expect(wakingStatusLine(removed, STARTED + 9_000)).toBe("Nova was removed.");
+    });
+
+    it("stops on a refused status read only once it has been refused twice in a row", () => {
+      // One 404 right after the create can be a read that ran ahead of the
+      // write. The second one in a row is the bot being gone.
+      const once = applyWakingCheckFailure(session(), { ok: false, reason: "error", code: "http-404" }, STARTED + 3_000);
+      expect(once).toMatchObject({ phase: "waking", consecutiveCheckFailures: 1, stopSignals: 1 });
+      const twice = applyWakingCheckFailure(once, { ok: false, reason: "error", code: "http-404" }, STARTED + 6_000);
+      expect(twice).toMatchObject({ phase: "stopped", stopped: "removed" });
+      expect(wakingStatusLine(twice, STARTED + 6_000)).toBe("Nova was removed.");
+
+      // A good read in between starts the count again.
+      const recovered = applyWakingStatus(once, { setupState: { phase: "creating" } }, STARTED + 6_000);
+      expect(recovered.stopSignals).toBe(0);
+      expect(applyWakingCheckFailure(recovered, { ok: false, code: "http-404" }, STARTED + 9_000).phase).toBe("waking");
+    });
+
+    it.each([
+      [{ ok: false, code: "http-404" }, "removed", "Nova was removed."],
+      [{ ok: false, code: "AGENT_NOT_FOUND", status: 404 }, "removed", "Nova was removed."],
+      [{ ok: false, code: "http-403" }, "no-access", "You no longer have access to Nova."],
+      [{ ok: false, code: "FORBIDDEN" }, "no-access", "You no longer have access to Nova."],
+      [{ ok: false, code: "SOMETHING", status: 403 }, "no-access", "You no longer have access to Nova."],
+      [{ ok: false, code: "http-401" }, "signed-out", "You're signed out of HQ. Sign in again, then open Nova from the list."],
+    ])("reads %j as %s", (failure, stopped, line) => {
+      expect(wakingStopFromFailure(failure)).toBe(stopped);
+      const stoppedSession = applyWakingCheckFailure(applyWakingCheckFailure(session(), failure, STARTED), failure, STARTED + 3_000);
+      expect(stoppedSession).toMatchObject({ phase: "stopped", stopped });
+      expect(wakingStatusLine(stoppedSession, STARTED + 3_000)).toBe(line);
+    });
+
+    it("keeps waiting through failures that say nothing about the bot", () => {
+      let current = session();
+      for (const failure of [{ ok: false, code: "http-500" }, { ok: false, code: "http-504" }, { ok: false, code: "network" }, null, "boom"]) {
+        expect(wakingStopFromFailure(failure)).toBeNull();
+        current = applyWakingCheckFailure(current, failure, STARTED + 3_000);
+        expect(current.phase).toBe("waking");
+      }
+      expect(current.consecutiveCheckFailures).toBe(5);
+      expect(wakingStatusLine(current, STARTED + 3_000)).toBe("Reconnecting. Your bot is still waking up.");
+      // A refusal after ordinary failures still needs to be seen twice.
+      expect(applyWakingCheckFailure(current, { ok: false, code: "http-404" }, STARTED + 6_000).phase).toBe("waking");
+    });
+
+    it("does not call a signed-out app a bot that is gone", () => {
+      expect(wakingBotGone({ phase: "stopped", stopped: "signed-out" })).toBe(false);
+      expect(wakingBotGone({ phase: "stopped", stopped: "no-access" })).toBe(true);
+      expect(wakingBotGone({ phase: "waking", stopped: null })).toBe(false);
+    });
+
+    it("starts clean again when a stopped or failed bot is retried", () => {
+      const stopped = { ...session(), phase: "stopped" as const, stopped: "signed-out" as const, stopSignals: 2 };
+      expect(resumeWakingSession(stopped, STARTED + 60_000)).toMatchObject({ phase: "waking", stopped: null, stopSignals: 0 });
+    });
+  });
+
+  describe("how often the screen asks (review A-I7)", () => {
+    it("reads the status every 3 seconds for half an hour, then every 15", () => {
+      expect(wakingPollDelayMs(session(), STARTED)).toBe(WAKING_POLL_MS);
+      expect(wakingPollDelayMs(session(), STARTED + WAKING_POLL_FAST_WINDOW_MS)).toBe(WAKING_POLL_MS);
+      expect(wakingPollDelayMs(session(), STARTED + WAKING_POLL_FAST_WINDOW_MS + 1)).toBe(WAKING_POLL_SLOW_MS);
+      expect(WAKING_POLL_SLOW_MS).toBeGreaterThanOrEqual(15_000);
+    });
+
+    it("starts the fast stretch again when the screen is opened and when the sign-in is seen", () => {
+      const old = STARTED + 5 * 60 * 60_000;
+      expect(wakingPollDelayMs(session(), old)).toBe(WAKING_POLL_SLOW_MS);
+      // Opened just now: the person is watching.
+      expect(wakingPollDelayMs(session(), old, old - 1_000)).toBe(WAKING_POLL_MS);
+      expect(wakingNudgeIntervalMs(session(), old, old - 1_000)).toBe(WAKING_NUDGE_MS);
+      // Signed in just now: the rest moves fast.
+      const signedIn = { ...session(), signedInAt: old - 2_000 };
+      expect(wakingPollDelayMs(signedIn, old)).toBe(WAKING_POLL_MS);
+      expect(wakingNudgeIntervalMs(signedIn, old)).toBe(WAKING_NUDGE_MS);
+    });
+
+    it("asks for a re-check every 12 seconds for ten minutes, then once a minute", () => {
+      expect(wakingNudgeIntervalMs(session(), STARTED)).toBe(WAKING_NUDGE_MS);
+      expect(wakingNudgeIntervalMs(session(), STARTED + WAKING_NUDGE_FAST_WINDOW_MS)).toBe(WAKING_NUDGE_MS);
+      expect(wakingNudgeIntervalMs(session(), STARTED + WAKING_NUDGE_FAST_WINDOW_MS + 1)).toBe(WAKING_NUDGE_SLOW_MS);
+      expect(WAKING_NUDGE_SLOW_MS).toBe(60_000);
+    });
+
+    it("spaces out reads that keep failing, whatever the stretch", () => {
+      expect(wakingPollDelayMs({ ...session(), consecutiveCheckFailures: 2 }, STARTED)).toBe(WAKING_POLL_MS);
+      expect(wakingPollDelayMs({ ...session(), consecutiveCheckFailures: 3 }, STARTED)).toBe(WAKING_POLL_FAILING_MS);
+      expect(wakingPollDelayMs({ ...session(), consecutiveCheckFailures: 10 }, STARTED)).toBe(WAKING_POLL_FAILING_LONG_MS);
+    });
+
+    it("comes to far fewer requests in an hour than one every 3 and 12 seconds", () => {
+      const hour = 60 * 60_000;
+      let reads = 0;
+      for (let at = 0; at < hour; at += wakingPollDelayMs(session(), STARTED + at)) reads += 1;
+      let nudges = 0;
+      for (let at = 0; at < hour; at += wakingNudgeIntervalMs(session(), STARTED + at)) nudges += 1;
+      expect(reads).toBeLessThanOrEqual(725);
+      expect(nudges).toBeLessThanOrEqual(101);
+    });
   });
 
   it("resumes the exact same bot after retrying", () => {

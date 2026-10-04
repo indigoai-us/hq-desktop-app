@@ -1164,8 +1164,11 @@ export function createSyncPlatformAdapter(
           attempted.body,
         );
       },
+      // A refused read keeps its HTTP status: the New Bot waiting screen
+      // tells a bot that is gone (404) or out of reach (403, 401) from a
+      // read that merely failed.
       getStatus: (agentUid, brain) =>
-        hqProJson('GET', AGENT_PATHS.status(agentUid, brain)),
+        hqProRequestWithStatus('GET', AGENT_PATHS.status(agentUid, brain)),
       restartBrainApproval: (agentUid, brain) =>
         hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
       submitClaudeLoginCode: (agentUid, code) =>

@@ -4,7 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import NewBotWakingScreen from "./NewBotWakingScreen.svelte";
-import { beginWakingSession, recordWakingCheckFailure, WAKING_NUDGE_MS, WAKING_POLL_MS } from "./waking-model";
+import {
+  beginWakingSession,
+  recordWakingCheckFailure,
+  WAKING_NUDGE_FAST_WINDOW_MS,
+  WAKING_NUDGE_MS,
+  WAKING_POLL_FAILING_MS,
+  WAKING_POLL_FAST_WINDOW_MS,
+  WAKING_POLL_MS,
+  WAKING_POLL_SLOW_MS,
+} from "./waking-model";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -189,14 +198,18 @@ describe("NewBotWakingScreen", () => {
     expect(document.querySelector('[data-testid="new-bot-codex-code"]')?.textContent).toBe("TEST-CODE");
   });
 
-  it("clears the copied Codex code after the bot is ready", async () => {
+  it("never reads the clipboard, and writes it only on a press (review A-I13)", async () => {
+    // The screen used to read the clipboard when the bot became ready, to
+    // clear the code it had copied. Outside a press that read makes the
+    // webview show a paste prompt. (The two tests this one replaces asserted
+    // that read and the clearing write; that is the behaviour the review
+    // asked to change. The second of them, "does not erase a newer clipboard
+    // value", still holds: nothing is erased at all.)
     vi.useFakeTimers();
     let ready = false;
     const writeText = vi.fn(async () => undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { readText: vi.fn(async () => "TEST-CODE"), writeText },
-    });
+    const readText = vi.fn(async () => "TEST-CODE");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText, writeText } });
     render({
       ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
       approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
@@ -205,36 +218,178 @@ describe("NewBotWakingScreen", () => {
       openExternal: vi.fn(),
     });
     await settle();
+    expect(writeText).not.toHaveBeenCalled();
     document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
     await settle();
     ready = true;
-    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
-    expect(writeText).toHaveBeenNthCalledWith(1, "TEST-CODE");
-    expect(writeText).toHaveBeenNthCalledWith(2, "");
-  });
-
-  it("does not erase a newer clipboard value after Codex approval completes", async () => {
-    vi.useFakeTimers();
-    let ready = false;
-    const writeText = vi.fn(async () => undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { readText: vi.fn(async () => "newer clipboard value"), writeText },
-    });
-    render({
-      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
-      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
-    }, {
-      getStatus: async () => ({ ok: true, value: { setupState: { phase: ready ? "ready" : "creating" } } }),
-      openExternal: vi.fn(),
-    });
-    await settle();
-    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
-    await settle();
-    ready = true;
-    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
+    await vi.advanceTimersByTimeAsync(WAKING_POLL_MS * 3);
+    expect(readText).not.toHaveBeenCalled();
     expect(writeText).toHaveBeenCalledOnce();
     expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+  });
+
+  it("opens the sign-in page inside the press, before anything is awaited (review A-I13)", async () => {
+    // The page was opened after the clipboard write had been awaited. A
+    // window opened after an await is not the person's own action any more,
+    // and a webview may block it.
+    let finishCopy: () => void = () => {};
+    const writeText = vi.fn(() => new Promise<void>((resolve) => { finishCopy = resolve; }));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const openExternal = vi.fn();
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal, getStatus: null });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    // No await between the press and these: both began inside it, while the
+    // clipboard write is still out.
+    expect(writeText).toHaveBeenCalledWith("TEST-CODE");
+    expect(openExternal).toHaveBeenCalledWith("https://auth.openai.com/codex/device");
+    finishCopy();
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-approval-open"]')?.textContent).toBe("Open Codex again");
+  });
+
+  it("does not say the page is open when the host could not open it (review A-I13)", async () => {
+    const openExternal = vi.fn(() => false);
+    render({
+      ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+      approval: { provider: "grok", url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+    }, { openExternal, getStatus: null });
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+    await settle();
+    expect(openExternal).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toBe("We couldn't open the sign-in page. Try again.");
+    expect(document.querySelector('[data-testid="new-bot-approval-open"]')?.textContent).toBe("Continue with Grok");
+    expect(document.querySelector('[data-testid="new-bot-approval-done"]')).toBeNull();
+    expect(document.querySelector('[data-testid="new-bot-approval-waiting"]')).toBeNull();
+  });
+
+  describe("how often it asks (review A-I7)", () => {
+    function setHidden(hidden: boolean): void {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+    afterEach(() => {
+      Reflect.deleteProperty(document, "hidden");
+    });
+
+    it("asks nothing while the window is hidden, and picks up when it is shown again", async () => {
+      vi.useFakeTimers();
+      setHidden(true);
+      const getStatus = vi.fn(async () => ({ ok: true, value: { setupState: { phase: "creating" } } }));
+      const { retryAgent } = render(undefined, { getStatus });
+      await settle();
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      expect(getStatus).not.toHaveBeenCalled();
+      expect(retryAgent).not.toHaveBeenCalled();
+
+      setHidden(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(WAKING_POLL_MS);
+      expect(getStatus).toHaveBeenCalledTimes(2);
+
+      // Hidden again mid-wait: the read that comes due is held.
+      setHidden(true);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it("reads the status every 3 seconds at first, then every 15 once half an hour has passed", async () => {
+      vi.useFakeTimers();
+      const getStatus = vi.fn(async () => ({ ok: true, value: { setupState: { phase: "creating" } } }));
+      render(undefined, { getStatus });
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getStatus.mock.calls.length).toBeGreaterThanOrEqual(20);
+      expect(getStatus.mock.calls.length).toBeLessThanOrEqual(21);
+
+      await vi.advanceTimersByTimeAsync(WAKING_POLL_FAST_WINDOW_MS);
+      const before = getStatus.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getStatus.mock.calls.length - before).toBe(60_000 / WAKING_POLL_SLOW_MS);
+    });
+
+    it("asks for a re-check every 12 seconds at first, then once a minute after ten minutes", async () => {
+      vi.useFakeTimers();
+      const { retryAgent } = render();
+      await settle();
+      await vi.advanceTimersByTimeAsync(WAKING_NUDGE_FAST_WINDOW_MS);
+      const early = retryAgent.mock.calls.length;
+      // Every 12 seconds, on the 3-second read that first passes the mark.
+      expect(early).toBeGreaterThanOrEqual(40);
+      expect(early).toBeLessThanOrEqual(50);
+
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      const later = retryAgent.mock.calls.length - early;
+      expect(later).toBeGreaterThanOrEqual(9);
+      expect(later).toBeLessThanOrEqual(11);
+    });
+
+    it("spaces out status reads that keep failing", async () => {
+      vi.useFakeTimers();
+      const getStatus = vi.fn(async () => ({ ok: false, reason: "error", code: "http-502" }));
+      const failing = { ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova", now: Date.now() }), consecutiveCheckFailures: 5 };
+      render(failing, { getStatus });
+      await settle();
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(WAKING_POLL_FAILING_MS - 1);
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("a bot that is gone or out of reach (review A-I4)", () => {
+    it("stops reading and re-checking once the status says the bot is being removed", async () => {
+      // "deprovisioning" read as waking: the screen kept its countdown and
+      // kept asking the server to re-check a bot it was taking down.
+      vi.useFakeTimers();
+      const getStatus = vi.fn(async () => ({ ok: true, value: { setupState: { phase: "deprovisioning", steps: [] } } }));
+      const { onupdate, retryAgent } = render(undefined, { getStatus });
+      await settle();
+      expect(onupdate).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "stopped", stopped: "removing", approval: null }));
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      expect(retryAgent).not.toHaveBeenCalled();
+    });
+
+    it("shows its own line and one Close for a stopped bot, with no sign-in and no Try again", async () => {
+      render({
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }),
+        phase: "stopped" as const,
+        stopped: "removed" as const,
+      }, { getStatus: vi.fn() });
+      await settle();
+      expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toBe("Nova was removed.");
+      expect(document.querySelector('[data-testid="new-bot-approval"]')).toBeNull();
+      expect(document.querySelector('[data-testid="new-bot-waking-retry"]')).toBeNull();
+      expect(document.querySelector('[data-testid="new-bot-waking-close"]')?.textContent?.trim()).toBe("Close");
+    });
+  });
+
+  it("holds Try again while the request is out and says so when it is refused (review A-I14)", async () => {
+    const failed = { ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }), phase: "failed" as const };
+    const { onretry } = render(failed, { retryBusy: true });
+    await settle();
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Trying again...");
+    button.click();
+    expect(onretry).not.toHaveBeenCalled();
+
+    await unmount(component!);
+    component = null;
+    host.remove();
+    render(failed, { retryMessage: "We couldn't start Nova again. Try again in a moment." });
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-waking-retry-message"]')?.textContent).toBe(
+      "We couldn't start Nova again. Try again in a moment.",
+    );
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!.disabled).toBe(false);
   });
 
   it("submits the Claude browser code and enters a pending state", async () => {

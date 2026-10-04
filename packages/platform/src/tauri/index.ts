@@ -592,7 +592,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         attempted.body,
       );
     },
-    getStatus: (agentUid, brain) => this.hqProJson("GET", AGENT_PATHS.status(agentUid, brain)),
+    // A refused read keeps its HTTP status: the New Bot waiting screen tells a
+    // bot that is gone (404) or out of reach (403, 401) from a read that failed.
+    getStatus: (agentUid, brain) => this.hqProRequestWithStatus("GET", AGENT_PATHS.status(agentUid, brain)),
     restartBrainApproval: (agentUid, brain) =>
       this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
     submitClaudeLoginCode: (agentUid, code) =>

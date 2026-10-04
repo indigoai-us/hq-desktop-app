@@ -39,6 +39,58 @@ export const WAKING_POLL_MS = 3_000;
  */
 export const WAKING_NUDGE_MS = 12_000;
 
+// How often the screen asks, and for how long it asks that often. The screen
+// used to read the status every 3 seconds and ask for a re-check every 12 for
+// as long as it stayed open, hidden window included: about 1,200 reads and
+// 300 re-checks an hour. It now asks only while the window is visible, and
+// slows down once the fast stretch has passed.
+
+/** How long the status is read every {@link WAKING_POLL_MS} before it slows down. */
+export const WAKING_POLL_FAST_WINDOW_MS = 30 * 60_000;
+/** The slower status read, after the fast stretch. */
+export const WAKING_POLL_SLOW_MS = 15_000;
+/** Status reads that keep failing are spaced out: after three, and after ten. */
+export const WAKING_POLL_FAILING_MS = 10_000;
+export const WAKING_POLL_FAILING_LONG_MS = 30_000;
+const WAKING_POLL_FAILING_LONG_AFTER = 10;
+/** How long the re-check is asked every {@link WAKING_NUDGE_MS} before it slows down. */
+export const WAKING_NUDGE_FAST_WINDOW_MS = 10 * 60_000;
+/** The slower re-check: the server's own pace. */
+export const WAKING_NUDGE_SLOW_MS = 60_000;
+
+/**
+ * When the current stretch of asking began: when the screen was opened, or
+ * when the sign-in was seen done, whichever is later. A person who opens the
+ * screen is watching, and a finished sign-in is when the rest moves fast.
+ */
+function askingSince(session: Pick<WakingBotSession, "startedAt" | "signedInAt">, openedAt: number): number {
+  return Math.max(session.startedAt, session.signedInAt ?? 0, openedAt);
+}
+
+/** How long to wait before the next status read. */
+export function wakingPollDelayMs(
+  session: Pick<WakingBotSession, "startedAt" | "signedInAt" | "consecutiveCheckFailures">,
+  now: number = Date.now(),
+  openedAt: number = session.startedAt,
+): number {
+  if (session.consecutiveCheckFailures >= WAKING_POLL_FAILING_LONG_AFTER) return WAKING_POLL_FAILING_LONG_MS;
+  if (session.consecutiveCheckFailures >= WAKING_RECONNECT_AFTER_FAILURES) return WAKING_POLL_FAILING_MS;
+  return now - askingSince(session, openedAt) > WAKING_POLL_FAST_WINDOW_MS
+    ? WAKING_POLL_SLOW_MS
+    : WAKING_POLL_MS;
+}
+
+/** How long to leave between two requests for a re-check. */
+export function wakingNudgeIntervalMs(
+  session: Pick<WakingBotSession, "startedAt" | "signedInAt">,
+  now: number = Date.now(),
+  openedAt: number = session.startedAt,
+): number {
+  return now - askingSince(session, openedAt) > WAKING_NUDGE_FAST_WINDOW_MS
+    ? WAKING_NUDGE_SLOW_MS
+    : WAKING_NUDGE_MS;
+}
+
 /**
  * After "I've signed in": the bot's machine reports the sign-in on its next
  * heartbeat, up to a minute or two later. Until {@link SIGN_IN_CONFIRM_SLOW_MS}
@@ -62,7 +114,31 @@ export function signInConfirmMessage(elapsedMs: number, brainLabel: string): str
 }
 export const WAKING_RECONNECT_AFTER_FAILURES = 3;
 
-export type WakingPhase = "waking" | "ready" | "failed";
+/**
+ * "stopped": there is nothing left to wait for, and asking again will not
+ * change that. The bot was removed, or this person can no longer reach it.
+ * The screen says which, and stops reading the status and asking for
+ * re-checks. See {@link WakingStop}.
+ */
+export type WakingPhase = "waking" | "ready" | "failed" | "stopped";
+
+/** Why a waiting screen stopped. */
+export type WakingStop =
+  /** The server no longer has the bot. */
+  | "removed"
+  /** The server is taking the bot down. */
+  | "removing"
+  /** The server will not show this bot to this person. */
+  | "no-access"
+  /** The app's own sign-in to HQ has ended. The bot may be fine. */
+  | "signed-out";
+
+/**
+ * A refusal has to be seen this many times in a row before the screen stops.
+ * One 404 right after the create can be a read that ran ahead of the write,
+ * and one 401 can be a token being renewed.
+ */
+export const WAKING_STOP_AFTER_SIGNALS = 2;
 
 export interface WakingBotSession {
   agentUid: string;
@@ -92,6 +168,10 @@ export interface WakingBotSession {
   helloAt?: number | null;
   /** Fixtures can shorten how long the screen waits for the first message. */
   helloWaitMs?: number;
+  /** Why the screen stopped. Set only while the phase is "stopped". */
+  stopped?: WakingStop | null;
+  /** Refusals in a row that would stop the screen (see {@link WAKING_STOP_AFTER_SIGNALS}). */
+  stopSignals?: number;
 }
 
 function helloWait(session: WakingBotSession): number {
@@ -166,6 +246,51 @@ function phaseFromStatus(payload: unknown): WakingPhase {
   return readiness.chatReady ? "ready" : "waking";
 }
 
+/** The setup phase the server reports, lowercased. Empty when the payload has none. */
+function setupPhaseText(payload: unknown): string {
+  const root = record(payload);
+  const agent = record(root?.agent) ?? root;
+  const setup = record(root?.setupState) ?? record(agent?.setupState);
+  return text(setup?.phase) || text(agent?.setupPhase);
+}
+
+/** A status that says the bot is being taken down, or is gone. */
+function stopFromStatus(payload: unknown): WakingStop | null {
+  const phase = setupPhaseText(payload);
+  if (phase === "deprovisioned") return "removed";
+  if (phase === "deprovisioning") return "removing";
+  return null;
+}
+
+/**
+ * What a failed status read says about the bot, when it says anything. A read
+ * the server refused names its HTTP status (`status`, or an `http-404` code);
+ * some hosts keep only the server's own code. Anything else is an ordinary
+ * failure: the network, a server error.
+ */
+export function wakingStopFromFailure(result: unknown): WakingStop | null {
+  const answer = record(result);
+  if (!answer || answer.ok === true) return null;
+  const code = typeof answer.code === "string" ? answer.code.trim() : "";
+  const status =
+    typeof answer.status === "number" ? answer.status : Number(code.match(/^http-(\d{3})$/i)?.[1] ?? NaN);
+  if (status === 404 || /(^|_)NOT_FOUND$/i.test(code)) return "removed";
+  if (status === 403 || /(^|_)(FORBIDDEN|NOT_ALLOWED)$/i.test(code)) return "no-access";
+  if (status === 401 || /(^|_)(UNAUTHORI[SZ]ED|UNAUTHENTICATED)$/i.test(code)) return "signed-out";
+  return null;
+}
+
+function stopSession(session: WakingBotSession, stopped: WakingStop, now: number): WakingBotSession {
+  return {
+    ...session,
+    phase: "stopped",
+    stopped,
+    approval: null,
+    approvalSince: null,
+    progress: stageProgress({ ...session, approval: null }, now),
+  };
+}
+
 /** True while the screen holds for the bot's first message. */
 export function awaitingHello(session: WakingBotSession): boolean {
   return session.phase === "waking" && session.chatReadyAt != null && session.helloAt == null;
@@ -216,6 +341,9 @@ export function applyWakingStatus(
   payload: unknown,
   now: number = Date.now(),
 ): WakingBotSession {
+  // A bot the server is taking down is not waking up, whatever its steps say.
+  const stop = stopFromStatus(payload);
+  if (stop) return stopSession({ ...session, consecutiveCheckFailures: 0, stopSignals: 0 }, stop, now);
   const statusPhase = phaseFromStatus(payload);
   const stepDone = signInStepDone(payload);
   let signedInAt = session.signedInAt ?? null;
@@ -256,6 +384,8 @@ export function applyWakingStatus(
     chatReadyAt,
     askedApproval: session.askedApproval === true || session.approval !== null || approval !== null,
     consecutiveCheckFailures: 0,
+    stopped: null,
+    stopSignals: 0,
   };
   return { ...next, progress: phase === "ready" ? 100 : stageProgress(next, now) };
 }
@@ -296,10 +426,48 @@ export function recordWakingCheckFailure(
   };
 }
 
+/**
+ * A status read failed. A refusal that says the bot is gone, or that this
+ * person may not see it, stops the screen once it has been seen
+ * {@link WAKING_STOP_AFTER_SIGNALS} times in a row. Anything else counts
+ * toward "Reconnecting" and is asked again, less often as it keeps failing.
+ */
+export function applyWakingCheckFailure(
+  session: WakingBotSession,
+  result: unknown,
+  now: number = Date.now(),
+): WakingBotSession {
+  const stop = wakingStopFromFailure(result);
+  if (!stop) return { ...recordWakingCheckFailure(session, now), stopSignals: 0 };
+  const stopSignals = (session.stopSignals ?? 0) + 1;
+  if (stopSignals >= WAKING_STOP_AFTER_SIGNALS) return stopSession({ ...session, stopSignals }, stop, now);
+  return { ...recordWakingCheckFailure(session, now), stopSignals };
+}
+
+/** The one line for a screen that stopped. */
+function stoppedLine(session: WakingBotSession): string {
+  switch (session.stopped) {
+    case "removing":
+      return `${session.name} is being removed.`;
+    case "no-access":
+      return `You no longer have access to ${session.name}.`;
+    case "signed-out":
+      return `You're signed out of HQ. Sign in again, then open ${session.name} from the list.`;
+    default:
+      return `${session.name} was removed.`;
+  }
+}
+
+/** True when the bot behind a stopped screen is gone for this person. */
+export function wakingBotGone(session: Pick<WakingBotSession, "phase" | "stopped">): boolean {
+  return session.phase === "stopped" && session.stopped !== "signed-out";
+}
+
 export function wakingStatusLine(
   session: WakingBotSession,
   now: number = Date.now(),
 ): string {
+  if (session.phase === "stopped") return stoppedLine(session);
   if (session.phase === "failed") return "We couldn't start this bot.";
   if (session.phase === "ready") return `${session.name} is live. Opening chat…`;
   if (session.approval) return "One thing from you.";
@@ -335,5 +503,7 @@ export function resumeWakingSession(
     approvalSince: null,
     signedInAt: session.signedInAt != null ? now : null,
     chatReadyAt: null,
+    stopped: null,
+    stopSignals: 0,
   };
 }

@@ -281,6 +281,113 @@ describe("NewBotTakeover", () => {
     vi.useRealTimers();
   });
 
+  it("stops waiting for a bot the server no longer has, and offers Close instead of Cancel (review A-I4)", async () => {
+    // A deleted bot answered 404 on every status read. The screen said
+    // "Reconnecting" and read the status every 3 seconds for as long as it
+    // stayed open, and Cancel offered to remove a bot that was already gone.
+    vi.useFakeTimers();
+    const getStatus = vi.fn(async () => ({ ok: false, reason: "error", code: "http-404", status: 404 }));
+    const retryAgent = vi.fn(async () => ({ ok: true }));
+    const oncancelbot = vi.fn();
+    const onclosewaking = vi.fn();
+    const onwakingchange = vi.fn();
+    render({
+      wakingSession: beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }),
+      getStatus,
+      retryAgent,
+      oncancelbot,
+      onclosewaking,
+      onwakingchange,
+    });
+    await settle();
+    // One refusal is not enough: it can be a read that ran ahead of the write.
+    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).not.toContain("removed");
+    await vi.advanceTimersByTimeAsync(3_000);
+    await settle();
+
+    expect(document.querySelector('[data-testid="new-bot-waking-status"]')?.textContent).toBe("Nova was removed.");
+    expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "stopped", stopped: "removed" }));
+    const reads = getStatus.mock.calls.length;
+    expect(reads).toBe(2);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(getStatus).toHaveBeenCalledTimes(reads);
+    expect(retryAgent).not.toHaveBeenCalled();
+
+    // Nothing to cancel: the header button closes, with no question.
+    const header = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-takeover-cancel"]')!;
+    expect(header.textContent?.trim()).toBe("Close");
+    header.click();
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-cancel-confirm"]')).toBeNull();
+    expect(oncancelbot).not.toHaveBeenCalled();
+    expect(onclosewaking).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("asks the server once per press of Try again, and says so when it is refused (review A-I14)", async () => {
+    let answer: (value: unknown) => void = () => {};
+    const retryAgent = vi.fn(() => new Promise<unknown>((resolve) => { answer = resolve; }));
+    const onwakingchange = vi.fn();
+    render({
+      wakingSession: {
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }),
+        phase: "failed" as const,
+      },
+      retryAgent,
+      onwakingchange,
+    });
+    await settle();
+    const button = () => document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!;
+    button().click();
+    await settle();
+    // The request is out: the button says so and a second press does nothing.
+    expect(button().disabled).toBe(true);
+    expect(button().textContent).toBe("Trying again...");
+    button().click();
+    await settle();
+    expect(retryAgent).toHaveBeenCalledTimes(1);
+
+    answer({ ok: false, reason: "error", code: "STEP_ALREADY_IN_PROGRESS" });
+    await settle();
+    expect(document.querySelector('[data-testid="new-bot-waking-retry-message"]')?.textContent).toBe(
+      "We couldn't start Nova again. Try again in a moment.",
+    );
+    expect(button().disabled).toBe(false);
+    expect(button().textContent).toBe("Try again");
+    expect(onwakingchange).not.toHaveBeenCalled();
+
+    // The next press goes through, and the message goes with it.
+    button().click();
+    await settle();
+    expect(retryAgent).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[data-testid="new-bot-waking-retry-message"]')).toBeNull();
+    answer({ ok: true });
+    await settle();
+    expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "waking" }));
+  });
+
+  it("reports a blocked sign-in window as not opened (review A-I13)", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      render({
+        wakingSession: {
+          ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }),
+          approval: { provider: "grok" as const, url: "https://accounts.x.ai/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+        },
+      });
+      await settle();
+      document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+      await settle();
+      expect(open).toHaveBeenCalledWith("https://accounts.x.ai/device?user_code=TEST-CODE", "_blank");
+      expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toBe(
+        "We couldn't open the sign-in page. Try again.",
+      );
+      expect(document.querySelector('[data-testid="new-bot-approval-open"]')?.textContent).toBe("Continue with Grok");
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it("retries the same failed agent instead of returning to creation", async () => {
     const retryAgent = vi.fn(async () => ({ ok: true }));
     const onwakingchange = vi.fn();

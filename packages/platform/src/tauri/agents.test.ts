@@ -173,3 +173,31 @@ describe("bot removal that names the running machine", () => {
     });
   });
 });
+
+describe("a refused agent status read keeps its HTTP status (review A-I4)", () => {
+  // The New Bot waiting screen tells a bot that is gone (404) or out of
+  // reach (403, 401) from a read that merely failed. Without the status a
+  // deleted bot read as "Reconnecting" for as long as the screen stayed open.
+  const refused = (status: number, body: string) => async (cmd: string) => {
+    if (cmd === "hq_pro_fetch") return { status, body };
+    throw new Error(`unexpected command ${cmd}`);
+  };
+
+  it.each([
+    [404, '{"error":"Not found"}', "http-404"],
+    [403, '{"error":"Forbidden"}', "http-403"],
+    [401, '{"message":"Unauthorized"}', "http-401"],
+    [404, '{"error":"Agent not found","code":"AGENT_NOT_FOUND"}', "AGENT_NOT_FOUND"],
+  ])("on %i with body %s", async (status, body, code) => {
+    const sync = createSyncPlatformAdapter({ invoke: refused(status, body), requestPolicy: { throttle: null } });
+    await expect(sync.agents.getStatus("agt_1", "codex")).resolves.toMatchObject({ ok: false, status, code });
+    const tauri = new TauriPlatformAdapter({ invoke: refused(status, body) });
+    await expect(tauri.agents.getStatus("agt_1", "codex")).resolves.toMatchObject({ ok: false, status, code });
+  });
+
+  it("answers a good read unchanged", async () => {
+    const invoke = async () => ({ status: 200, body: '{"setupState":{"phase":"ready"}}' });
+    const sync = createSyncPlatformAdapter({ invoke, requestPolicy: { throttle: null } });
+    await expect(sync.agents.getStatus("agt_1")).resolves.toEqual({ ok: true, value: { setupState: { phase: "ready" } } });
+  });
+});

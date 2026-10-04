@@ -39,7 +39,8 @@
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
     submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
-    openExternal?: ((url: string) => void | Promise<void>) | null;
+    /** Open the sign-in page. `false` says it did not open (see NewBotWakingScreen). */
+    openExternal?: ((url: string) => void | boolean | Promise<void | boolean>) | null;
     sendHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     checkHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     wakingSession?: WakingBotSession | null;
@@ -79,7 +80,19 @@
     retryAgent = null,
     restartBrainApproval = null,
     submitClaudeLoginCode = null,
-    openExternal = (url) => { window.open(url, "_blank", "noopener,noreferrer"); },
+    // "noopener" in the features makes the call answer null whether or not a
+    // window opened, so the opener is cut by hand instead: a blocked window is
+    // then reported as not opened, and the screen does not claim it is open.
+    openExternal = (url) => {
+      const opened = window.open(url, "_blank");
+      if (!opened) return false;
+      try {
+        opened.opener = null;
+      } catch {
+        // A window that will not let its opener be changed is still open.
+      }
+      return true;
+    },
     sendHello = null,
     checkHello = null,
     wakingSession = null,
@@ -159,6 +172,12 @@
   );
   /** The chat hand-off has begun: the bot is live and Cancel is no longer offered. */
   const handingOff = $derived(activeWakingSession?.phase === "ready");
+  /** The bot was removed, or this person can no longer reach it: there is nothing to cancel. */
+  const wakingStopped = $derived(activeWakingSession?.phase === "stopped");
+  /** True while the server is being asked to start a failed bot again. */
+  let retryBusy = $state(false);
+  /** What to say when the server would not start it again. */
+  let retryMessage = $state("");
 
   const focusableSelector =
     'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
@@ -222,7 +241,7 @@
 
   function onHeaderCancel(): void {
     if (activeWakingSession) {
-      if (cancelsBot) confirmSession = activeWakingSession;
+      if (cancelsBot && !wakingStopped) confirmSession = activeWakingSession;
       else closeWaking();
       return;
     }
@@ -253,6 +272,7 @@
   }
 
   function startWaking(created: NewBotCreated): void {
+    retryMessage = "";
     const session = beginWakingSession({
       agentUid: created.target.agentUid ?? "",
       channelId: created.target.channelId ?? "",
@@ -300,13 +320,29 @@
     onclosewaking?.();
   }
 
+  /**
+   * Try again for a bot that failed to start. One request at a time: a
+   * second press while the first is out does nothing. A request the server
+   * refuses, or that never answers, says so instead of leaving the button
+   * looking as if nothing was pressed.
+   */
   async function retryWaking(): Promise<void> {
-    if (!activeWakingSession || !retryAgent) return;
-    const result = await retryAgent(activeWakingSession.agentUid).catch(() => null);
-    if (!(result as { ok?: unknown } | null)?.ok) return;
-    const session = resumeWakingSession(activeWakingSession);
-    localWakingSession = session;
-    onwakingchange?.(session);
+    const target = activeWakingSession;
+    if (!target || !retryAgent || retryBusy) return;
+    retryBusy = true;
+    retryMessage = "";
+    try {
+      const result = await retryAgent(target.agentUid).catch(() => null);
+      if (!(result as { ok?: unknown } | null)?.ok) {
+        retryMessage = `We couldn't start ${target.name} again. Try again in a moment.`;
+        return;
+      }
+      const session = resumeWakingSession(target);
+      localWakingSession = session;
+      onwakingchange?.(session);
+    } finally {
+      retryBusy = false;
+    }
   }
 </script>
 
@@ -334,7 +370,7 @@
         use:focusOnMount
         onclick={onHeaderCancel}
       >
-        {activeWakingSession && !cancelsBot ? "Close" : "Cancel"}
+        {activeWakingSession && (!cancelsBot || wakingStopped) ? "Close" : "Cancel"}
       </button>
     {/if}
   </header>
@@ -355,6 +391,8 @@
           onupdate={updateWaking}
           onclose={closeWaking}
           onretry={retryWaking}
+          {retryBusy}
+          {retryMessage}
         />
         {/key}
       {:else if oncreate && loadProvisionOptions && companies.length}
