@@ -5148,6 +5148,12 @@ mod tests {
     // while it holds the CLI package lease. Two of them running at once would
     // see the gate already closed and fail with "another desktop update is
     // already quiescing HQ processes", so they take this lock first.
+    // Those tests also hold ENV_MUTEX across the install. begin publishes the
+    // HQ CLI update lease under the process home (dirs::home_dir when
+    // XDG_STATE_HOME is unset). A parallel test that points HOME at a
+    // temporary directory and deletes it makes that rename return os-error-2.
+    // Home-swapping tests already take ENV_MUTEX. The mutex is not
+    // re-entrant, so a test that already holds it must not lock it again.
     #[cfg(unix)]
     static CLI_PROCESS_ADMISSION_TEST_LOCK: tokio::sync::Mutex<()> =
         tokio::sync::Mutex::const_new(());
@@ -5906,6 +5912,9 @@ console.log('ready'); setInterval(() => {}, 1000);
     #[tokio::test]
     async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -6098,6 +6107,9 @@ exit 1
     #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6184,6 +6196,9 @@ exit 0
     #[tokio::test]
     async fn etarget_retries_once_with_prefer_online() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6246,6 +6261,9 @@ exit 0
     #[tokio::test]
     async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6318,6 +6336,9 @@ exit 0
     #[tokio::test]
     async fn prefer_online_output_uses_existing_bin_collision_recovery() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6393,6 +6414,9 @@ exit 2
     #[tokio::test]
     async fn public_registry_output_uses_existing_bin_collision_recovery() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6474,6 +6498,9 @@ exit 2
     #[tokio::test]
     async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6522,6 +6549,9 @@ exit 1
     #[tokio::test]
     async fn prefix_less_enotempty_cleans_the_npm_reported_scope_and_recovers() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-5B: on a machine whose `hq` is bare or non-npm-shaped the
         // updater resolves NO prefix (npm_prefix_known=false in 61/61 events), so
         // the pre-fix ENOTEMPTY rung took its else arm and left the wedge in place
@@ -6628,6 +6658,9 @@ exit 0
     #[tokio::test]
     async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6700,6 +6733,9 @@ exit 0
     #[tokio::test]
     async fn second_shim_eexist_arms_one_force_retry_and_stays_a_warning() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-4Y: the collision npm reported was on the package's SECOND
         // declared shim, `hq-auth-refresh`. It must arm the SAME single `--force`
         // rung the `hq` collision uses — one retry, still within the hard cap,
@@ -6784,6 +6820,9 @@ exit 0
     #[tokio::test]
     async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
