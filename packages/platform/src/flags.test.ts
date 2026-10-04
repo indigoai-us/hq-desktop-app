@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
-import { FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG } from "./index.js";
+import {
+  FIRST_LAUNCH_DEVICE_KEY_FLAG as PUBLIC_FIRST_LAUNCH_DEVICE_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG,
+} from "./index.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_DEVICE_KEY_FLAG,
   FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -75,6 +79,16 @@ describe("registry key mapping", () => {
     expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
     expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
       FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
+  });
+
+  it("registers the first-launch device-key rollout through hq-flags", () => {
+    expect(FIRST_LAUNCH_DEVICE_KEY_FLAG).toBe(
+      "desktop.first-launch-device-key-v1",
+    );
+    expect(PUBLIC_FIRST_LAUNCH_DEVICE_KEY_FLAG).toBe(FIRST_LAUNCH_DEVICE_KEY_FLAG);
+    expect(registryKeyFor(FIRST_LAUNCH_DEVICE_KEY_FLAG)).toBe(
+      FIRST_LAUNCH_DEVICE_KEY_FLAG,
     );
   });
 

@@ -340,7 +340,10 @@ export function progressReceipt(
 }
 
 /** Build the once-per-installation launch receipt. */
-export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
+export function launchReceipt(
+  deps: ContinuationDeps,
+  anonId?: string,
+): ContinuationReceipt {
   return {
     path: '/v1/desktop/onboarding/launch',
     body: {
@@ -349,6 +352,7 @@ export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
       occurredAt: new Date(deps.now()).toISOString(),
       platform: deps.platform,
       version: deps.appVersion,
+      ...(anonId ? { anonId } : {}),
     },
   };
 }

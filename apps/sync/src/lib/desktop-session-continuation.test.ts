@@ -252,6 +252,14 @@ describe('the receipt queue', () => {
     expect(delivered[0].path).toBe('/v1/desktop/onboarding/launch');
   });
 
+  it('includes the gated anonymous device key on a launch receipt when supplied', () => {
+    const { deps } = harness();
+    const receipt = launchReceipt(deps, 'vyg-22222222-2222-4222-8222-222222222222');
+
+    expect(receipt.body.installAttemptId).toBe(INSTALL);
+    expect(receipt.body.anonId).toBe('vyg-22222222-2222-4222-8222-222222222222');
+  });
+
   it('replays the receipt unchanged, timestamp and all', async () => {
     // The server's sort key includes occurredAt, so a re-stamped retry writes a
     // SECOND row instead of deduplicating against the first. The receipt has to

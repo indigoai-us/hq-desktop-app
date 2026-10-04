@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
+- First-launch receipts can include the same anonymous visitor key used by desktop telemetry when the default-off measurement flag is enabled.
 
 ## [0.10.389] — 2026-10-04
 

@@ -185,6 +185,7 @@
     dispatchPostReadyAction,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
+    FIRST_LAUNCH_DEVICE_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -204,6 +205,8 @@
     type InviteErrorKind,
     type InviteFailure,
   } from '../../lib/onboarding-invite';
+
+  const FIRST_LAUNCH_DEVICE_KEY_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
   interface Props {
     initialStep: number;
@@ -309,6 +312,7 @@
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
+  let firstLaunchDeviceKeyPromise: Promise<string | undefined> | null = null;
   let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
@@ -1132,8 +1136,59 @@
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
     if (firstLaunchReceiptRecorded) {
-      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+      const anonId = await resolveFirstLaunchDeviceKey();
+      void recordReceipt(deps, launchReceipt(deps, anonId)).catch(() => undefined);
     }
+  }
+
+  function resolveFirstLaunchDeviceKey(): Promise<string | undefined> {
+    if (!firstLaunchDeviceKeyPromise) {
+      const flag = onboardingFeatureFlags.identity
+        .hasFeature(FIRST_LAUNCH_DEVICE_KEY_FLAG)
+        .then((result) => {
+          if (!result.ok) {
+            console.warn(
+              'onboarding: first-launch device-key flag unavailable; leaving device key off',
+              result.reason,
+              result.code,
+            );
+            return false;
+          }
+          return result.value === true;
+        }, (error) => {
+          console.warn(
+            'onboarding: first-launch device-key flag failed; leaving device key off',
+            error,
+          );
+          return false;
+        });
+      firstLaunchDeviceKeyPromise = resolveFlagWithTimeout(flag, 2_000)
+        .then(async (enabled) => {
+          if (!enabled) return undefined;
+          try {
+            const anonId = await invokeCommand<string | null>('web_visitor_anon_id');
+            if (typeof anonId === 'string' && FIRST_LAUNCH_DEVICE_KEY_RE.test(anonId)) {
+              return anonId;
+            }
+            console.warn('onboarding: first-launch device key unavailable; omitting device key');
+            return undefined;
+          } catch (error) {
+            console.warn(
+              'onboarding: first-launch device key read failed; omitting device key',
+              error,
+            );
+            return undefined;
+          }
+        })
+        .catch((error) => {
+          console.warn(
+            'onboarding: first-launch device-key flag resolution failed; leaving device key off',
+            error,
+          );
+          return undefined;
+        });
+    }
+    return firstLaunchDeviceKeyPromise;
   }
 
   function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
