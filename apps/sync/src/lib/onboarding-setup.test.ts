@@ -30,6 +30,7 @@ import {
   resolveFlagWithTimeout,
   resolveFlagStatusWithTimeout,
   normalizeDepsOperation,
+  depsRetryWasAttemptedForFailure,
   depsTimeoutRetryTelemetry,
   normalizeDepsRetryResult,
   DEPS_OPERATIONS,
@@ -128,6 +129,13 @@ describe('bounded deps retry telemetry values', () => {
       flagStatus: 'disabled', timedOut: true, retrySuppressed: false,
       retryAttempted: false, retryRecovered: false,
     })).toEqual({ retryAttempted: false, retryResult: 'skipped-flag-off' });
+  });
+
+  it('attributes retry only to the failure whose own recovery scheduled it', () => {
+    expect(depsRetryWasAttemptedForFailure(true, true)).toBe(true);
+    // A later deps timeout can be in the same batch as an earlier generic retry,
+    // but it did not itself get another attempt after the retry limit was reached.
+    expect(depsRetryWasAttemptedForFailure(false, true)).toBe(false);
   });
 
   it('keeps unreadable, disabled, and enabled flag resolutions distinct within the same timeout', async () => {

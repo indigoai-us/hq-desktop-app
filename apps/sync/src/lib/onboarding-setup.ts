@@ -24,6 +24,13 @@ export const DEPS_RETRY_RESULTS = [
 export type DepsRetryResult = (typeof DEPS_RETRY_RESULTS)[number];
 export type DepsTimeoutRetryFlagStatus = 'enabled' | 'disabled' | 'unreadable';
 
+export function depsRetryWasAttemptedForFailure(
+  failureScheduledRetry: boolean,
+  subsequentAttemptRan: boolean,
+): boolean {
+  return failureScheduledRetry && subsequentAttemptRan;
+}
+
 export function depsTimeoutRetryTelemetry(input: {
   flagStatus: DepsTimeoutRetryFlagStatus;
   timedOut: boolean;

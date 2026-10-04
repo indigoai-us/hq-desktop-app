@@ -88,6 +88,41 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
+  it('durably defers setup failure until retry outcome, then recovers unresolved rows after restart', async () => {
+    const first = createTelemetry();
+    const deferredId = first.recordDeferred({
+      properties: { step: 'setup', action: 'failed', component: 'deps', depsOperation: 'git' },
+      occurredAt: '2026-10-03T10:00:00.000Z',
+    }, {
+      retryAttempted: false,
+      retryResult: 'skipped-flag-unreadable',
+    });
+
+    await Promise.resolve();
+    expect(emitted).toEqual([]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('skipped-flag-unreadable');
+
+    const restarted = createTelemetry();
+    await restarted.flush();
+    expect(emitted).toMatchObject([{
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'setup', action: 'failed', component: 'deps', depsOperation: 'git',
+        retryAttempted: false, retryResult: 'skipped-flag-unreadable',
+      },
+    }]);
+
+    const live = createTelemetry();
+    const resolvedId = live.recordDeferred({
+      properties: { step: 'setup', action: 'failed', component: 'deps', depsOperation: 'node' },
+    }, { retryAttempted: false, retryResult: 'not-eligible' });
+    live.markDeferredRetryAttempted(resolvedId);
+    live.resolveDeferred(resolvedId, { retryAttempted: true, retryResult: 'recovered' });
+    await live.flush();
+    expect(emitted.at(-1)?.properties).toMatchObject({ retryAttempted: true, retryResult: 'recovered' });
+    expect(deferredId).not.toBe(resolvedId);
+  });
+
   it('records first-folder-step transitions only on the desktop onboarding event path', async () => {
     const telemetry = createTelemetry();
     expect(INSTALLER_STEP_BY_WIZARD_STEP['first-folder-sync' as never]).toBeNull();
@@ -625,9 +660,9 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
-  it('migrates the compatible v2 session and pending records before creating v3', async () => {
+  it('migrates the compatible v2 session and pending records into the current queue schema', async () => {
     storage.setItem(
-      __INTERNALS__.LEGACY_STORAGE_KEY,
+      __INTERNALS__.OLDER_STORAGE_KEY,
       JSON.stringify({
         version: 2,
         sessionId: '55555555-5555-4555-8555-555555555555',
@@ -655,7 +690,7 @@ describe('onboarding step telemetry', () => {
     });
 
     expect(telemetry.sessionId).toBe('55555555-5555-4555-8555-555555555555');
-    expect(storage.getItem(__INTERNALS__.LEGACY_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(__INTERNALS__.OLDER_STORAGE_KEY)).toBeNull();
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
 
     await telemetry.flush();

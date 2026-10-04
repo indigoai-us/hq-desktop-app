@@ -573,6 +573,8 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
+      resolveFeatureFlagStatus: (flag) =>
+        flags.resolveStatus(flag, () => hasFeatureLegacy(flag)),
       hasFeature: (flag) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? // Pinned per release; the registry cannot turn it off.

@@ -101,6 +101,7 @@
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
+    depsRetryWasAttemptedForFailure,
     depsTimeoutRetryTelemetry,
     setupProgressPercent,
     setupStageRecoveryAction,
@@ -591,6 +592,22 @@
       },
       ...(occurredAt ? { occurredAt } : {}),
     });
+  }
+
+  function recordDeferredSetupFailure(
+    failure: DeferredDepsFailure,
+    fallback: Pick<RecordOnboardingStep['properties'], 'retryAttempted' | 'retryResult'>,
+  ): string {
+    return onboardingTelemetry.recordDeferred({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        ...failure.details,
+        appVersion: onboardingAppVersion,
+        flow: onboardingFlow,
+      },
+      occurredAt: failure.occurredAt,
+    }, fallback);
   }
 
   function resolveOnboardingAppVersion(): Promise<void> {
@@ -2139,6 +2156,8 @@
     flagStatus: DepsTimeoutRetryFlagStatus;
     timedOut: boolean;
     retrySuppressed: boolean;
+    retryScheduled: boolean;
+    telemetryId?: string;
   };
 
   type StageRunResult =
@@ -2464,20 +2483,28 @@
       retryAttempted: boolean,
       retryResult: DepsRetryResult,
     ) => {
+      const didRetryThisFailure = depsRetryWasAttemptedForFailure(
+        failure.retryScheduled,
+        retryAttempted,
+      );
       const retryTelemetry = depsTimeoutRetryTelemetry({
         flagStatus: failure.flagStatus,
         timedOut: failure.timedOut,
         retrySuppressed: failure.retrySuppressed,
-        retryAttempted,
-        retryRecovered: retryResult === 'recovered',
+        retryAttempted: didRetryThisFailure,
+        retryRecovered: didRetryThisFailure && retryResult === 'recovered',
       });
-      recordStep(
-        SETUP_STEP_INDEX,
-        'failed',
-        { ...failure.details, ...retryTelemetry },
-        undefined,
-        failure.occurredAt,
-      );
+      if (failure.telemetryId) {
+        onboardingTelemetry.resolveDeferred(failure.telemetryId, retryTelemetry);
+      } else {
+        recordStep(
+          SETUP_STEP_INDEX,
+          'failed',
+          { ...failure.details, ...retryTelemetry },
+          undefined,
+          failure.occurredAt,
+        );
+      }
     };
     const flushPendingDepsFailures = (
       retryAttempted: boolean,
@@ -2520,7 +2547,12 @@
           break;
         }
 
-        if (result.depsFailure) pendingDepsFailures.push(result.depsFailure);
+        if (result.depsFailure) {
+          const failure = result.depsFailure;
+          failure.retryScheduled = false;
+          failure.telemetryId = recordDeferredSetupFailure(failure, skippedRetryResult(failure));
+          pendingDepsFailures.push(failure);
+        }
         const action = result.recovery;
         if (action.kind !== 'retry') {
           if (pendingDepsFailures.length > 1) {
@@ -2545,6 +2577,13 @@
             flushPendingDepsFailures(false, 'not-eligible');
           }
           return;
+        }
+        const retryingFailure = pendingDepsFailures.at(-1);
+        if (retryingFailure) {
+          retryingFailure.retryScheduled = true;
+          if (retryingFailure.telemetryId) {
+            onboardingTelemetry.markDeferredRetryAttempted(retryingFailure.telemetryId);
+          }
         }
       }
     }
@@ -2813,11 +2852,14 @@
       const depsTimeoutRetryStatus = resolveFlagStatusWithTimeout(
         Promise.resolve()
           .then(() =>
-            onboardingFeatureFlags.identity.hasFeature(
+            onboardingFeatureFlags.identity.resolveFeatureFlagStatus?.(
               SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-            ),
+            ) ?? Promise.resolve({ ok: false as const, reason: 'unavailable' as const }),
           )
-          .then((result) => result.ok ? result.value === true : null)
+          .then((result) => {
+            if (!result.ok || !result.value.configured) return null;
+            return result.value.enabled;
+          })
           .catch((error) => {
             console.warn(
               'onboarding: dependency timeout retry flag unavailable; leaving retry off',

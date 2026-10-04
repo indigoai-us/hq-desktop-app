@@ -24,6 +24,7 @@ const onboardingFlags = vi.hoisted(() => ({
   companyNamePrefillEnabled: false,
   companyRouteLookupRetryEnabled: false,
   hasFeature: vi.fn(),
+  resolveFeatureFlagStatus: vi.fn(),
   startSync: vi.fn(),
   refreshFeatureFlags: vi.fn(),
 }));
@@ -64,6 +65,7 @@ vi.mock('@hq/platform', () => ({
   createSyncPlatformAdapter: vi.fn(() => ({
     identity: {
       refreshFeatureFlags: () => onboardingFlags.refreshFeatureFlags(),
+      resolveFeatureFlagStatus: (flag: string) => onboardingFlags.resolveFeatureFlagStatus(flag),
       hasFeature: (flag: string) => {
         if (flag === 'desktop.first-folder-sync-step-v1') {
           return onboardingFlags.hasFeature(flag);
@@ -455,6 +457,12 @@ beforeEach(() => {
   onboardingFlags.companyNamePrefillEnabled = false;
   onboardingFlags.companyRouteLookupRetryEnabled = false;
   onboardingFlags.refreshFeatureFlags.mockReset().mockResolvedValue(undefined);
+  onboardingFlags.resolveFeatureFlagStatus.mockReset().mockImplementation(async (flag: string) => {
+    const result = await onboardingFlags.hasFeature(flag);
+    return result.ok
+      ? { ok: true, value: { enabled: result.value, configured: true } }
+      : result;
+  });
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
     value: flag === 'desktop.first-folder-sync-step-v1'
@@ -1925,19 +1933,19 @@ describe('onboarding connector telemetry', () => {
     await flushUntil(() => {
       const pending = JSON.parse(
         localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}',
-      ) as { pending?: Array<{ properties: { step: string } }> };
+      ) as { pending?: Array<{ event: { properties: { step: string } } }> };
       return !(pending.pending ?? []).some(
-        (event) => event.properties.step === 'connector-import',
+        (record) => record.event.properties.step === 'connector-import',
       );
     });
 
     const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
-      pending?: Array<{ properties: { step: string; action: string } }>;
+      pending?: Array<{ event: { properties: { step: string; action: string } } }>;
     };
     expect(
       (stored.pending ?? [])
-        .filter((event) => event.properties.step === 'connector-import')
-        .map((event) => event.properties.action),
+        .filter((record) => record.event.properties.step === 'connector-import')
+        .map((record) => record.event.properties.action),
     ).toEqual([]);
   });
 });
@@ -2180,13 +2188,15 @@ describe('anonymous installer step pings', () => {
     await flush();
 
     const stored = JSON.parse(localStorage.getItem(__INTERNALS__.STORAGE_KEY) ?? '{}') as {
-      pending?: Array<{ properties: { step: string; action: string } }>;
+      pending?: Array<{ event: { properties: { step: string; action: string } } }>;
     };
     expect(stored.pending).toContainEqual(
       expect.objectContaining({
-        properties: expect.objectContaining({
-          step: 'welcome-signin',
-          action: 'entered',
+        event: expect.objectContaining({
+          properties: expect.objectContaining({
+            step: 'welcome-signin',
+            action: 'entered',
+          }),
         }),
       }),
     );

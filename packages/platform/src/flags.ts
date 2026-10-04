@@ -147,8 +147,15 @@ export type FlagInvokeFn = (
 
 export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
+export interface FeatureFlagResolution {
+  enabled: boolean;
+  /** Whether this value came from a boolean registry entry rather than fallback. */
+  configured: boolean;
+}
+
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  resolveStatus(flag: string, fallback: FeatureFlagFallback): AdapterPromise<FeatureFlagResolution>;
   /** Bypass the normal refresh cadence when identity changes before a gated route. */
   refresh(): Promise<void>;
   /** Notify when the registry client publishes a refreshed snapshot. */
@@ -308,18 +315,20 @@ export function createFeatureFlagGate(
         unsubscribe();
       };
     },
-    async resolve(flag, fallback) {
+    async resolveStatus(flag, fallback) {
       const key = registryKeyFor(flag);
-      if (!key) return fallback();
+      if (!key) {
+        const result = await fallback();
+        return result.ok
+          ? ok({ enabled: result.value, configured: false })
+          : result;
+      }
 
       let configuredValue: boolean | null = null;
       try {
         const flagClient = getClient();
         await flagClient.ready();
         let snapshot = flagClient.snapshot();
-        // ready() already attempted the first load. A second request on this
-        // same resolve would double-hit a still-unauthenticated endpoint.
-        // A later resolve with a still-null snapshot self-heals via refresh().
         const shouldRecover = snapshot == null && initialReadySettled;
         initialReadySettled = true;
         if (shouldRecover) {
@@ -333,8 +342,17 @@ export function createFeatureFlagGate(
         configuredValue = null;
       }
 
-      if (configuredValue !== null) return ok(configuredValue);
-      return fallback();
+      if (configuredValue !== null) {
+        return ok({ enabled: configuredValue, configured: true });
+      }
+      const result = await fallback();
+      return result.ok
+        ? ok({ enabled: result.value, configured: false })
+        : result;
+    },
+    async resolve(flag, fallback) {
+      const result = await gate.resolveStatus(flag, fallback);
+      return result.ok ? ok(result.value.enabled) : result;
     },
   };
   return gate;
