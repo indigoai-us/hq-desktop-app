@@ -119,6 +119,13 @@ export interface ThinkingEntry {
   /** The DM thread root the agent said it is working in, kept for a later
    * per-thread indicator. It does not change where the row draws. */
   rootEventId?: string;
+  /** The agent reported at least one status of its own on this row, in this
+   * turn or an earlier one. Unlike `lastStatusAt` it is kept when the person
+   * writes again, so the row still says this is a bot that reports what it
+   * is doing. Nothing the person sees depends on it: the 90 s rule reads
+   * `lastStatusAt` only. The end-of-row log line reads it (see
+   * {@link thinkingEndedLogLine}). */
+  statusSeen?: true;
   /** The event id of the person's message whose send started (or last
    * restarted) this row, when a send did. It lets the "stopped responding"
    * sentence recognise that message by identity, with no clock involved
@@ -137,6 +144,13 @@ export interface StartThinkingOpts {
    * before this message, and counting the agent's silence from it would end
    * the row moments after the person wrote. The 90 s rule applies again from
    * the agent's next status.
+   *
+   * That a status was ever seen stays on the row (`statusSeen`). A turn that
+   * then gets no status and no message keeps the long timers, as a row that
+   * never had a status does: "taking longer than usual" at 150 s, gone at
+   * 600 s, and nothing said. Saying "stopped responding" there would be a
+   * guess: a bot that is slow to pick the message up has sent no status yet
+   * either.
    */
   asked?: { eventId?: string | null };
 }
@@ -192,6 +206,7 @@ export function startThinking(
       ...next,
       since: prev.since ?? prev.startedAt,
       ...(prev.rootEventId ? { rootEventId: prev.rootEventId } : {}),
+      ...(prev.statusSeen ? { statusSeen: true as const } : {}),
       ...(askedEventId ? { askedEventId } : {}),
     };
     return copy;
@@ -200,6 +215,7 @@ export function startThinking(
     ...next,
     since: prev.since ?? prev.startedAt,
     ...(prev.lastStatusAt !== undefined ? { lastStatusAt: prev.lastStatusAt } : {}),
+    ...(prev.statusSeen ? { statusSeen: true as const } : {}),
     ...(prev.rootEventId ? { rootEventId: prev.rootEventId } : {}),
     ...(prev.askedEventId ? { askedEventId: prev.askedEventId } : {}),
   };
@@ -686,6 +702,7 @@ export function applyDmAgentStatus(
     return {
       ...rest,
       lastStatusAt: now,
+      statusSeen: true as const,
       ...(wake.rootEventId ? { rootEventId: wake.rootEventId } : {}),
     };
   });
@@ -1105,7 +1122,14 @@ export function endedBotDmThinking(
   return out;
 }
 
-/** One `bot-thinking` log line: `ended agent=… row=… reason=… elapsedMs=… pinned=yes|no`. */
+/**
+ * One `bot-thinking` log line: `ended agent=… row=… reason=… elapsedMs=… pinned=yes|no`.
+ *
+ * A row whose bot reported statuses before the person last wrote, and none
+ * since, ends with ` statusThisTurn=no` on the line. The person sees such a
+ * row run out with nothing said; the log is where a walkthrough can tell a
+ * bot that went quiet for a whole turn from one that never reports statuses.
+ */
 export function thinkingEndedLogLine(input: {
   rowId: string;
   entry: ThinkingEntry;
@@ -1117,7 +1141,8 @@ export function thinkingEndedLogLine(input: {
   const { rowId, entry, reason, now, via } = input;
   const elapsedMs = Math.max(0, Math.round(now - (entry.since ?? entry.startedAt)));
   const pinned = entry.afterMs !== undefined ? 'yes' : 'no';
-  return `ended agent=${entry.agentUid} row=${rowId} reason=${reason}${via ? ` via=${via}` : ''} elapsedMs=${elapsedMs} pinned=${pinned}`;
+  const quietTurn = entry.statusSeen === true && entry.lastStatusAt === undefined ? ' statusThisTurn=no' : '';
+  return `ended agent=${entry.agentUid} row=${rowId} reason=${reason}${via ? ` via=${via}` : ''} elapsedMs=${elapsedMs} pinned=${pinned}${quietTurn}`;
 }
 
 // ---------------------------------------------------------------------------

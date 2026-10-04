@@ -958,7 +958,14 @@ describe("DesktopApp New bot takeover", () => {
     // message can be found later on a page that leaves the request out.
     const before = Date.now();
     await vi.waitFor(() => expect(stored(BOT_HELLO_ASKED_STORAGE_KEY)).toContain("agt_nova"));
-    const asked = (JSON.parse(stored(BOT_HELLO_ASKED_STORAGE_KEY)) as Record<string, number>).agt_nova!;
+    const kept = JSON.parse(stored(BOT_HELLO_ASKED_STORAGE_KEY)) as {
+      accounts: Record<string, { asked: Record<string, number>; made: string[] }>;
+    };
+    // Kept for the account that is signed in, which is also recorded as the bot's maker here.
+    expect(Object.keys(kept.accounts)).toHaveLength(1);
+    const mine = Object.values(kept.accounts)[0]!;
+    expect(mine.made).toEqual(["agt_nova"]);
+    const asked = mine.asked.agt_nova!;
     expect(asked).toBeGreaterThan(before - 60_000);
     expect(asked).toBeLessThanOrEqual(Date.now());
   }, 30_000);

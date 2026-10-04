@@ -631,6 +631,7 @@ describe("a bot's status in its DM drives the DM row", () => {
         afterMs: ms(10),
         detail: 'Searching the web',
         lastStatusAt: 5_000,
+        statusSeen: true,
       },
     ]);
     expect(thinkingLine(rows[0]!, 5_000).label).toBe('Nova: Searching the web');

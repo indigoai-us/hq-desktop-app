@@ -76,6 +76,7 @@
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import {
+    HOST_PLACED_BLOCK_KINDS,
     messageHasConnectBlock,
     messageHasVisibleContent,
     messageMarksSetupDone,
@@ -239,10 +240,15 @@
     type ReadinessRead,
   } from "./agent-readiness-poll.js";
   import {
-    loadHelloAsked,
-    saveHelloAsked,
+    botMadeByAnotherAccount,
+    helloAskedFor,
+    loadBotsByAccount,
+    saveBotsByAccount,
+    withBotMadeBy,
     withHelloAsked,
+    withoutBot,
     withoutHelloAsked,
+    type BotsByAccount,
     type HelloAskedTimes,
   } from "../chat/cloud-bot-hello-asked.js";
   import {
@@ -3964,7 +3970,35 @@
     }
   }
   let newCloudBotUids = $state<string[]>(loadNewCloudBots());
+  /**
+   * What each account did with new cloud bots on this device: which bots it
+   * made here, and when it asked each for its first message
+   * (cloud-bot-hello-asked.ts). "Made here" is a fact about the person who
+   * made the bot, not about the Mac, so a second account signing in on the
+   * same Mac does not inherit it.
+   */
+  let botsByAccount = $state.raw<BotsByAccount>(loadBotsByAccount(connectionStorage()));
+  function setBotsByAccount(next: BotsByAccount): void {
+    if (next === botsByAccount) return;
+    botsByAccount = next;
+    saveBotsByAccount(connectionStorage(), next);
+  }
+  /** A bot another account is recorded as having made on this device. */
+  function madeByAnotherAccount(agentUid: string): boolean {
+    return botMadeByAnotherAccount(botsByAccount, self?.uid, agentUid);
+  }
+  /** One of this account's own new bots (see `newCloudBotUids`). */
+  function isNewCloudBotHere(agentUid: string): boolean {
+    return newCloudBotUids.includes(agentUid) && !madeByAnotherAccount(agentUid);
+  }
   function setNewCloudBots(next: string[]): void {
+    // A bot that enters the list was just made here, by whoever is signed in.
+    const before = newCloudBotUids;
+    let made = botsByAccount;
+    for (const uid of next) {
+      if (!before.includes(uid)) made = withBotMadeBy(made, self?.uid, uid);
+    }
+    setBotsByAccount(made);
     newCloudBotUids = next;
     try {
       window.localStorage?.setItem(NEW_CLOUD_BOTS_STORAGE_KEY, JSON.stringify(next.slice(0, 50)));
@@ -3977,7 +4011,7 @@
       ? (selectedRow.personUid as string)
       : null,
   );
-  const dmNewCloudBotUid = $derived(dmAgentUid && newCloudBotUids.includes(dmAgentUid) ? dmAgentUid : null);
+  const dmNewCloudBotUid = $derived(dmAgentUid && isNewCloudBotHere(dmAgentUid) ? dmAgentUid : null);
 
   // ── Sync widget in a cloud bot's direct message ─────────────────────────
   //
@@ -4035,19 +4069,45 @@
       : null,
   );
   const dmCloudBotSync = $derived(dmCloudBotUid ? (botSyncByUid[dmCloudBotUid] ?? null) : null);
+  /**
+   * Whether a failed status read is the server refusing it: this person may
+   * not read the bot's status (403), or the server will not say there is such
+   * a bot (404, which is also its answer to a plain member). Only these end
+   * the asking. Anything else is a read that did not get through: the
+   * network, a timeout, a 5xx, a 401 while the sign-in is being refreshed.
+   * Those say nothing about the bot and are tried again.
+   */
+  function botStatusReadRefused(result: unknown): boolean {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+    const rec = result as Record<string, unknown>;
+    if (rec.ok !== false) return false;
+    const code = typeof rec.code === "string" ? rec.code.trim().toLowerCase() : "";
+    return rec.status === 403 || rec.status === 404 || code === "http-403" || code === "http-404";
+  }
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // read fails, which means no widget and never an error in the chat. The
-  // first answer is also what says the bot is a cloud bot.
+  // server refuses the read, which means no widget and never an error in the
+  // chat. The first answer is also what says the bot is a cloud bot.
+  //
+  // Only a refusal ends the asking. A read that fails any other way is tried
+  // again, sooner at first and less often each time, and at once when the
+  // window comes back to the front or the network returns: one failed read
+  // must not leave an owner's conversation without its cards until they
+  // leave it and come back.
   $effect(() => {
     const uid = dmCloudBotCandidateUid;
     if (!uid) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let failures = 0;
+    let inFlight = false;
+    /** The server refused the read: nothing more is asked while this conversation stays open. */
+    let refused = false;
     const check = async (): Promise<void> => {
-      const madeHere = untrack(() => newCloudBotUids).includes(uid);
+      if (inFlight) return;
+      inFlight = true;
+      const madeHere = untrack(() => isNewCloudBotHere(uid));
       let next: AgentChatReadiness | null = null;
       let readable = false;
       try {
@@ -4068,25 +4128,49 @@
               setNewCloudBots(untrack(() => newCloudBotUids).filter((id) => id !== uid));
             }
           }
+        } else if (botStatusReadRefused(result)) {
+          // Refused, with nothing known about the bot from before: this
+          // person may not read its status. Do not keep asking.
+          refused = !madeHere && !untrack(() => botSyncByUid[uid]);
         }
       } catch {
-        // Keep the last known state and ask again.
+        // The read did not get through. Keep the last known state and ask again.
+      } finally {
+        inFlight = false;
       }
-      if (stopped) return;
-      // Nothing known and nothing readable: this person may not read the
-      // bot's status. Do not keep asking.
-      if (!readable && !madeHere && !untrack(() => botSyncByUid[uid])) return;
+      if (stopped || refused) return;
       // A read that keeps failing (the bot was removed, the network is down)
       // is asked less often each time, never every 5 s for ever.
       failures = readable ? 0 : failures + 1;
       const usual = madeHere && next?.chatReady !== true ? AGENT_CHAT_READY_POLL_MS : BOT_SYNC_POLL_MS;
-      const wait = readable ? usual : Math.max(usual, nextReadinessPollMs({ kind: "failed" }, failures) ?? usual);
+      const backoff = nextReadinessPollMs({ kind: "failed" }, failures) ?? usual;
+      // Until the server has answered once nothing of a cloud bot's shows, so
+      // the next try does not wait for the slow timer.
+      const answered = untrack(() => cloudBotStatusRead)[uid] === true;
+      const wait = readable ? usual : answered ? Math.max(usual, backoff) : backoff;
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => void check(), wait);
     };
+    // The window is back, or the network is: a read that has not been
+    // answered yet is made now instead of at the end of its wait.
+    const retryNow = (): void => {
+      if (stopped || refused || inFlight) return;
+      if (untrack(() => cloudBotStatusRead)[uid]) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void check();
+    };
     void check();
+    window.addEventListener("focus", retryNow);
+    window.addEventListener("online", retryNow);
+    document.addEventListener("visibilitychange", retryNow);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      window.removeEventListener("focus", retryNow);
+      window.removeEventListener("online", retryNow);
+      document.removeEventListener("visibilitychange", retryNow);
     };
   });
 
@@ -4114,15 +4198,18 @@
     }
     setBotSyncFacts(uid, null);
     forgetBotConnections(uid);
-    forgetHelloAsked(uid);
+    setBotsByAccount(withoutBot(botsByAccount, uid));
     chosenItemsByBot.delete(uid);
   }
   /**
    * True for a bot made in the full-window New Bot flow on this device. Its
    * connection record is written when that flow's create answers and stays
    * for as long as the bot does. A bot made in the "+" modal has neither.
+   * Never for a bot another account made here: that account's record is not
+   * this person's.
    */
   function madeInNewBotFlow(agentUid: string): boolean {
+    if (madeByAnotherAccount(agentUid)) return false;
     return Boolean(connectionRecords[agentUid]) || newCloudBotUids.includes(agentUid);
   }
   /**
@@ -5065,23 +5152,18 @@
   });
   /**
    * When each bot made here was asked for its first message, kept on this
-   * device (cloud-bot-hello-asked.ts). A page filtered for people leaves the
-   * hello request out, and the takeover that knew the time is gone once the
-   * person is in the conversation. A person who typed before the bot's hello
-   * arrived would otherwise never get the cards under it.
+   * device for the signed-in account (cloud-bot-hello-asked.ts). A page
+   * filtered for people leaves the hello request out, and the takeover that
+   * knew the time is gone once the person is in the conversation. A person
+   * who typed before the bot's hello arrived would otherwise never get the
+   * cards under it. Another account on this Mac has its own times.
    */
-  let helloAskedAtByUid = $state.raw<HelloAskedTimes>(loadHelloAsked(connectionStorage()));
+  const helloAskedAtByUid = $derived<HelloAskedTimes>(helloAskedFor(botsByAccount, self?.uid));
   function rememberHelloAsked(agentUid: string, atMs: number): void {
-    const next = withHelloAsked(helloAskedAtByUid, agentUid, atMs);
-    if (next === helloAskedAtByUid) return;
-    helloAskedAtByUid = next;
-    saveHelloAsked(connectionStorage(), next);
+    setBotsByAccount(withHelloAsked(botsByAccount, self?.uid, agentUid, atMs));
   }
   function forgetHelloAsked(agentUid: string): void {
-    const next = withoutHelloAsked(helloAskedAtByUid, agentUid);
-    if (next === helloAskedAtByUid) return;
-    helloAskedAtByUid = next;
-    saveHelloAsked(connectionStorage(), next);
+    setBotsByAccount(withoutHelloAsked(botsByAccount, self?.uid, agentUid));
   }
   // The bot's first message by the time it was asked for: its first row
   // written after the request went out, read off the loaded conversation
@@ -6124,12 +6206,41 @@
     hqLog("setup-state", snapshot);
   });
 
+  /**
+   * A message that is nothing but connection cards: no words, no prompt or
+   * details, no file, and every block it draws is a `connect` block.
+   */
+  function isCardsOnlyMessage(message: ConversationMessageWire): boolean {
+    if (message.prompt?.trim() || message.details?.trim() || message.systemEvent) return false;
+    if ((message.attachments?.length ?? 0) > 0) return false;
+    const { text, rich } = richContentForMessage(message);
+    if (text.trim() || !rich) return false;
+    const drawn = rich.blocks.filter((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind));
+    return drawn.length > 0 && drawn.every((block) => block.kind === "connect");
+  }
+  /**
+   * In a one-to-one conversation with a bot where nobody draws cards (a
+   * member who may not read the bot's status, a local bot, a bot from
+   * outside), a message that is only cards has nothing in it for the person.
+   * It is left out, the way a message whose only block is of a kind the app
+   * does not know is: otherwise it is an empty row with the bot's name on
+   * it. A message with words keeps its words. Same array when nothing is
+   * left out.
+   */
+  function withoutCardsOnlyRows(rows: ConversationMessageWire[]): ConversationMessageWire[] {
+    const row = selectedRow;
+    if (!row || !timelineDisplayFor(row).inlineReplies || dmCloudBotUid) return rows;
+    const kept = rows.filter((message) => !isCardsOnlyMessage(message));
+    return kept.length === rows.length ? rows : kept;
+  }
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
   const timelineWithActivity = $derived.by(() => {
+    const shown = withoutCardsOnlyRows(timeline);
     const merged =
       projectActivityRows.length > 0
-        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-        : timeline;
+        ? mergeActivityIntoTimeline(shown, projectActivityRows)
+        : shown;
     let rows = merged;
     if (selectedRow && isSetupChannel(selectedRow.channelId)) {
       const welcome = withoutCompaniesSummaryCards(

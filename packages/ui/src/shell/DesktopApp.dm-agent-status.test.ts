@@ -405,6 +405,35 @@ describe("DesktopApp: a bot's status in its DM", () => {
     expect(stoppedNote()?.textContent?.trim()).toBe("Nova stopped responding. Try again.");
   });
 
+  it("a bot that dies after the person writes again: the long timers, nothing said, and the log says the turn had no status", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await botStatus(wakes, "Working", Date.now());
+    await pass(30_000);
+    await typeAndSend("Are you there?");
+    const asked = Date.now();
+
+    // No status and no message for this turn. The 90 s rule has nothing to count from.
+    await pass(100_000);
+    expect(thinkingRow()).not.toBeNull();
+    expect(stoppedNote()).toBeNull();
+
+    // 150 s after the person wrote: the slow wording, as for any row with no status.
+    await pass(asked + 155_000 - Date.now());
+    expect(thinkingRow()?.textContent).toContain("Nova is taking longer than usual");
+    expect(stoppedNote()).toBeNull();
+
+    // 600 s: the row runs out. Nothing is said: a bot slow to pick the message
+    // up has sent no status either, so "stopped responding" would be a guess.
+    await pass(asked + 605_000 - Date.now());
+    expect(thinkingRow()).toBeNull();
+    expect(stoppedNote()).toBeNull();
+    expect(thinkingLog()).toEqual([
+      expect.stringMatching(new RegExp(`^ended agent=${NOVA} row=dm:${NOVA} reason=expired elapsedMs=\\d+ pinned=yes statusThisTurn=no$`)),
+    ]);
+  });
+
   it("does not end the row on the first check after the Mac slept: the 90 s start over", async () => {
     fakeTime();
     const w = world(Date.now());
