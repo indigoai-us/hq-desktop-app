@@ -449,11 +449,12 @@ describe('kickoffThinkingState', () => {
     expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
   });
   it('starts no row when the only message holds the kickoff (the setup bot\'s app offer)', () => {
-    const offer = { ...intro, body: 'Looks like you use the Claude app. Want to continue setup there?', offer: true };
-    const holdsKickoff = (m: { offer?: boolean }) => m.offer === true;
-    expect(kickoffThinkingState([offer], bot, { holdsKickoff })).toEqual({ state: 'done' });
+    type Msg = { fromPersonUid: string; createdAt: string; offer?: boolean };
+    const offer: Msg = { ...intro, offer: true };
+    const holdsKickoff = (m: Msg) => m.offer === true;
+    expect(kickoffThinkingState<Msg>([offer], bot, { holdsKickoff })).toEqual({ state: 'done' });
     // No offer: unchanged, the intro starts the row.
-    expect(kickoffThinkingState([intro], bot, { holdsKickoff })).toEqual({ state: 'start', afterMs: Date.parse(intro.createdAt) });
+    expect(kickoffThinkingState<Msg>([intro], bot, { holdsKickoff })).toEqual({ state: 'start', afterMs: Date.parse(intro.createdAt) });
   });
 });
 
