@@ -100,6 +100,7 @@
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
+  import { registerMainReturnNudgeListener } from './lib/return-nudge-event-bridge';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
@@ -153,6 +154,7 @@
         action?: unknown;
         companyUid?: unknown;
         companySlug?: unknown;
+        returnNudge?: unknown;
       }>
     ).detail;
     if (!detail || !isPostReadyAction(detail.action)) return;
@@ -160,6 +162,15 @@
       ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
       ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
     };
+    if (detail.returnNudge === 'shown' || detail.returnNudge === 'clicked' || detail.returnNudge === 'dismissed') {
+      if (typeof detail.companyUid !== 'string') return;
+      void postReadyTelemetry.then((telemetry) =>
+        telemetry.recordReturnNudge(detail.returnNudge as 'shown' | 'clicked' | 'dismissed', {
+          companyUid: detail.companyUid as string,
+        }),
+      );
+      return;
+    }
     void postReadyTelemetry.then((telemetry) =>
       telemetry.record(
         detail.action as Parameters<typeof telemetry.record>[0],
@@ -168,9 +179,17 @@
     );
   }
   window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const unlistenReturnNudge = registerMainReturnNudgeListener(
+    (handler) => listen(POST_READY_ACTION_EVENT, (event) => handler(event.payload)),
+    (detail) => handlePostReadyAction(new CustomEvent(POST_READY_ACTION_EVENT, { detail })),
+  ).catch((error: unknown) => {
+    console.warn('post-ready action cross-window listener failed:', error);
+    return () => {};
+  });
   const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
   onDestroy(() => {
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void unlistenReturnNudge.then((unlisten) => unlisten());
     void postReadyCloseListener.then((unlisten) => unlisten());
   });
 
