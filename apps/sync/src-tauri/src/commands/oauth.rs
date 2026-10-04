@@ -477,10 +477,10 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
     font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
   .bg {{ position: fixed; inset: 0; background: #000 url("{dusk}") center 60%/cover no-repeat; }}
   .frame {{ position: relative; z-index: 1; min-height: 100%; display: flex; justify-content: center;
-    align-items: flex-start; padding: 88px 16px 48px; }}
+    align-items: center; padding: 48px 16px; }}
   .col {{ width: 100%; max-width: 420px; }}
-  .mark {{ display: block; height: 26px; width: auto; margin: 0 0 32px; }}
-  .card {{ position: relative; min-height: 420px; padding: 32px; box-sizing: border-box;
+  .mark {{ display: block; height: 26px; width: auto; margin: 0 0 24px; }}
+  .card {{ position: relative; padding: 32px; box-sizing: border-box;
     border: 1px solid rgba(255,255,255,.10); background: rgba(9,9,11,.60);
     -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }}
   .tick {{ position: absolute; width: 10px; height: 10px; border-color: rgba(255,255,255,.30);
@@ -497,7 +497,8 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
   .bad {{ color: #ff6b6b; }}
   h1 {{ margin: 0; font-size: 40px; font-weight: 400; line-height: 1.05; letter-spacing: -2.4px; }}
   .lead {{ margin: 12px 0 0; font-size: 14px; line-height: 20px; color: rgba(255,255,255,.80); }}
-  @media (max-width: 639px) {{ h1 {{ font-size: 32px; letter-spacing: -1.6px; }} .frame {{ padding-top: 96px; }} }}
+  @media (max-width: 639px) {{ h1 {{ font-size: 32px; letter-spacing: -1.6px; }}
+    .frame {{ padding: 32px 16px; }} .card {{ padding: 24px; }} }}
 </style>
 </head>
 <body>
@@ -1475,6 +1476,11 @@ mod tests {
         assert!(html.contains("HQ Desktop"));
         assert!(html.contains("data:image/jpeg;base64,"));
         assert!(html.contains("rgba(9,9,11,.60)"));
+        assert!(html.contains("max-width: 420px"));
+        assert!(html.contains("align-items: center"));
+        assert!(html.contains("padding: 32px"));
+        assert!(!html.contains("min-height: 420px"));
+        assert!(!html.contains("align-items: flex-start"));
         assert!(html.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(!html.contains("https://"));
         assert!(!html.contains("src=\"http"));
