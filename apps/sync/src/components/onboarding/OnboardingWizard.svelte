@@ -3801,7 +3801,10 @@
 
   /** One row per run: what the company step found and which way it went. */
   function recordCompanyRoute(route: FirstRunCompanyPath, summary: CompanyRouteSummary): void {
-    if (route.kind === 'skip') companyStepCompanyUid = route.company.companyUid;
+    if (route.kind === 'skip') {
+      companyStepCompanyUid = route.company.companyUid;
+      recordWorkspaceSelected(route.company.companyUid);
+    }
     recordStep(COMPANY_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
       outcome: `route_${route.decision}`,
       decision: route.decision,
@@ -3817,6 +3820,14 @@
     recordStep(COMPANY_STEP_INDEX, 'started', {
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
+    });
+  }
+
+  /** Record the company action without delaying or changing the visible flow. */
+  function recordWorkspaceSelected(companyUid: string | null | undefined): void {
+    if (!companyUid) return;
+    void invokeCommand('record_onboarding_workspace_selected', { companyUid }).catch((error) => {
+      console.warn('onboarding: workspace-selected receipt could not be queued', error);
     });
   }
 
@@ -3841,13 +3852,24 @@
           ? 'joined_invite'
           : result.outcome;
     const details: StepTelemetryDetails = { outcome };
-    if (result.outcome === 'joined') {
+    if (result.outcome === 'created') {
+      recordWorkspaceSelected(result.companyUid);
+    } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
-      if (result.companyUid) companyStepCompanyUid = result.companyUid;
+      const joinedInvite =
+        companyPath?.kind === 'join'
+          ? companyPath.invites.find((invite) => invite.slug !== null && result.slugs.includes(invite.slug))
+          : undefined;
+      const companyUid = result.companyUid ?? joinedInvite?.companyUid;
+      if (companyUid) {
+        companyStepCompanyUid = companyUid;
+        recordWorkspaceSelected(companyUid);
+      }
       void selectCompany(result.slugs[0] ?? null);
     } else if (result.outcome === 'used_existing') {
       details.decision = 'used_existing';
       companyStepCompanyUid = result.companyUid;
+      recordWorkspaceSelected(result.companyUid);
       void selectCompany(result.slug);
     }
     advanceTo(

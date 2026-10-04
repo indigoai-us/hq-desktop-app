@@ -8639,7 +8639,10 @@ pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
     }
 }
 
-pub fn report_package_use_lease_timeout(retry_attempt: u8) {
+pub fn report_package_use_lease_timeout(
+    summary: &crate::package_use_lease::PackageUseLeaseTimeoutSummary,
+    retry_attempt: u8,
+) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
@@ -8648,6 +8651,15 @@ pub fn report_package_use_lease_timeout(retry_attempt: u8) {
             scope.set_tag(
                 "lease_retry_attempt",
                 package_use_lease_retry_attempt_tag(retry_attempt),
+            );
+            scope.set_tag(
+                "holder_live_count_bucket",
+                summary.live_holder_count.as_tag(),
+            );
+            scope.set_tag("holder_version_bucket", summary.holder_version.as_tag());
+            scope.set_tag(
+                "oldest_holder_age_bucket",
+                summary.oldest_holder_age.as_tag(),
             );
             scope.set_fingerprint(Some(&[
                 "hq-cli-update",
@@ -9612,10 +9624,23 @@ mod tests {
 
     #[test]
     fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
-        let events = sentry::test::with_captured_events(|| report_package_use_lease_timeout(0));
+        use crate::package_use_lease::{
+            HolderAgeBucket, HolderVersionBucket, LiveHolderCountBucket,
+            PackageUseLeaseTimeoutSummary,
+        };
+
+        let summary = PackageUseLeaseTimeoutSummary {
+            live_holder_count: LiveHolderCountBucket::TwoToThree,
+            holder_version: HolderVersionBucket::Pre53424,
+            oldest_holder_age: HolderAgeBucket::From1hTo24h,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            report_package_use_lease_timeout(&summary, 0)
+        });
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.tags["hq_cli_update_kind"], "install-failed");
         assert_eq!(
             event.tags["install_failure_kind"],
             "package_use_lease_timeout"
@@ -9625,6 +9650,9 @@ mod tests {
             "package_use_lease_timeout"
         );
         assert_eq!(event.tags["lease_retry_attempt"], "0");
+        assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
+        assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
+        assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
         assert_eq!(
             fingerprint,

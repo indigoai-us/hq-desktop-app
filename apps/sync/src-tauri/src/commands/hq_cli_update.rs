@@ -1523,17 +1523,17 @@ async fn acquire_cli_package_update_lease(
     let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
 
     let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
-    let package_guard = match request.wait_with_classification(remaining).await {
-        Err(hq_desktop_core::package_use_lease::PackageUseUpdateWaitError::TimedOut) => {
-            report_package_use_lease_timeout(retry_attempt);
+    let package_guard = match request.wait_with_summary(remaining).await {
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)) => {
+            report_package_use_lease_timeout(&summary, retry_attempt);
             return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
                 display_message: None,
             });
         }
-        Err(hq_desktop_core::package_use_lease::PackageUseUpdateWaitError::Other(error)) => {
+        Ok(guard) => guard,
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Other(error)) => {
             return Err(error.into());
         }
-        Ok(guard) => guard,
     };
     Ok((package_guard, process_guard))
 }

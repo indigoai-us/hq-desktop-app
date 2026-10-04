@@ -4328,6 +4328,7 @@ describe('company onboarding step', () => {
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(host.textContent).not.toContain('Name your company');
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'paid' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_paid' });
     expect(companyRows().find((row) => row.decision === 'paid_existing')).toMatchObject({ paidCompany: true });
   });
 
@@ -4345,6 +4346,7 @@ describe('company onboarding step', () => {
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'mine' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_mine' });
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
     expect(
       companyRows().some((row) => row.action === 'completed' && row.decision === 'used_existing' && row.companyUid === 'cmp_mine'),
@@ -4540,6 +4542,7 @@ describe('company onboarding step', () => {
     ).toBe(false);
     const rows = companyRows();
     expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_new' });
     expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
     expect(operationalRows('desktop_plan_selected')).toEqual([{ plan: 'starter' }]);
     expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
@@ -4802,6 +4805,7 @@ describe('company onboarding step', () => {
     const done = companyRows().find((row) => row.action === 'completed' && row.outcome === 'joined_invite');
     expect(done).toMatchObject({ decision: 'joined_invite', companyUid: 'cmp_acme' });
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_acme' });
     expect(host.textContent).not.toContain('Name your company');
   });
 

@@ -7,6 +7,9 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
+
+- Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
 
 - HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
 
