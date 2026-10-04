@@ -9,6 +9,11 @@
  * One status call and one list call, the person as the caller. A status or
  * list that cannot be read costs nothing but its section: the hello still
  * goes, with no apps section, and the files are taken as still downloading.
+ *
+ * The two answers are handed back as read (`status`, `connections`). They are
+ * the same two reads the connection cards under the bot's first message are
+ * drawn from, so the shell keeps them and that message draws its cards at
+ * once, with no second pair of requests first.
  */
 
 import type { PlatformAdapter } from "@hq/platform";
@@ -23,6 +28,10 @@ export interface ComposedCloudBotHello {
   companyUid: string | null;
   /** The apps brief as sent: null when the list could not be read, "" when nothing is connected. */
   companyApps: string | null;
+  /** The bot's status answer as the server sent it. Null when it could not be read. */
+  status: unknown | null;
+  /** The company's connection list as the server sent it. Null when it was not read or could not be. */
+  connections: unknown | null;
 }
 
 /**
@@ -51,14 +60,17 @@ export async function composeCloudBotHello(
   }
   const companyUid = companyUidFromStatus(statusValue) ?? (input.companyUidHint?.trim() || null);
   let companyApps: string | null = null;
+  let connections: unknown | null = null;
   if (companyUid) {
     try {
       const list = await adapter.integrations?.listConnections?.(companyUid);
       if (list?.ok) {
+        connections = list.value ?? null;
         companyApps = companyAppsBrief({ facts: readCompanyConnections(list.value), record: input.record ?? null });
       }
     } catch {
       companyApps = null;
+      connections = null;
     }
   }
   // The bot's own Slack, from its own status. Not known when the status could not be read.
@@ -67,5 +79,7 @@ export async function composeCloudBotHello(
     body: buildAgentHelloRequest({ personName: input.personName, filesStillDownloading, companyApps, inSlack }),
     companyUid,
     companyApps,
+    status: statusValue,
+    connections,
   };
 }

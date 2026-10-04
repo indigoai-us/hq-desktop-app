@@ -215,6 +215,8 @@
     catalogMatchFor,
     connectFailureSentence,
     connectRowReady,
+    connectionsRetryMs,
+    rowAwaitsList,
     connectionAnswersPress,
     connectionForDomain,
     domainsToLookUp,
@@ -4529,6 +4531,32 @@
     const code = typeof rec.code === "string" ? rec.code.trim().toLowerCase() : "";
     return rec.status === 403 || rec.status === 404 || code === "http-403" || code === "http-404";
   }
+  /**
+   * The status read the open conversation's poll made last, per bot: the read
+   * itself and when it answered. The connection cards need the same answer
+   * when the conversation opens, so they take this one instead of asking the
+   * server a second time (`refreshBotConnectionFacts`). Held outside the
+   * reactive state on purpose: nothing redraws from it.
+   */
+  type BotStatusRead = ReturnType<PlatformAdapter["agents"]["getStatus"]>;
+  const botStatusPolls = new Map<string, { read: BotStatusRead; answeredAt: number | null }>();
+  /** How long a poll's answer still counts as the status "now" for the cards (ms). */
+  const BOT_STATUS_REUSE_MS = 3_000;
+  function pollBotStatus(agentUid: string): BotStatusRead {
+    let read: BotStatusRead;
+    try {
+      read = Promise.resolve(adapter.agents.getStatus(agentUid));
+    } catch (error) {
+      read = Promise.reject(error);
+    }
+    const poll = { read, answeredAt: null as number | null };
+    botStatusPolls.set(agentUid, poll);
+    const answered = (): void => {
+      poll.answeredAt = Date.now();
+    };
+    read.then(answered, answered);
+    return read;
+  }
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
@@ -4556,7 +4584,7 @@
       let next: AgentChatReadiness | null = null;
       let readable = false;
       try {
-        const result = await adapter.agents.getStatus(uid);
+        const result = await pollBotStatus(uid);
         if (stopped) return;
         if (result.ok) {
           readable = true;
@@ -4613,6 +4641,7 @@
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      botStatusPolls.delete(uid);
       window.removeEventListener("focus", retryNow);
       window.removeEventListener("online", retryNow);
       document.removeEventListener("visibilitychange", retryNow);
@@ -4682,6 +4711,10 @@
       record: connectionRecords[uid] ?? null,
       companyUidHint: selectedRow?.kind === "dm" && selectedRow.personUid === uid ? selectedRow.companyUid : null,
     });
+    // The same two answers are what the cards under the bot's first message
+    // are drawn from. Kept now, that message draws its cards in the frame it
+    // arrives in, instead of after a second status read and a second list read.
+    seedBotConnectionFacts(uid, hello);
     const askedAt = Date.now();
     const result = await adapter.messaging.sendDm(uid, hello.body, {
       audience: "agent",
@@ -5720,8 +5753,14 @@
    */
   let catalogLookups = $state.raw<Record<string, Record<string, CatalogLookup>>>({});
   const catalogLookupsInFlight = new Set<string>();
-  /** When each row of cards first waited for a lookup (ms), for the settle timeout. */
+  /** When each row of cards first waited for the company's list (ms), for the settle timeout. */
   const connectRowSince = new Map<string, number>();
+  /** The timers that end those waits: each moves the cards' clock once, so its row is worked out again. */
+  const connectRowTimers = new Set<ReturnType<typeof setTimeout>>();
+  onDestroy(() => {
+    for (const timer of connectRowTimers) clearTimeout(timer);
+    connectRowTimers.clear();
+  });
 
   function setConnectionNote(agentUid: string, key: string, note: string | null): void {
     const current = connectionNotes[agentUid] ?? {};
@@ -5756,39 +5795,119 @@
   }
 
   /**
+   * Keep what the hello request's two reads answered (`composeCloudBotHello`)
+   * as this bot's facts. Only what was read is kept: a read that failed
+   * leaves what was known, and its flag, as they were.
+   */
+  function seedBotConnectionFacts(
+    agentUid: string,
+    read: { status: unknown | null; connections: unknown | null; companyUid: string | null },
+  ): void {
+    if (read.status == null && read.connections == null) return;
+    const known = botConnectionFacts[agentUid] ?? null;
+    botConnectionFacts = {
+      ...botConnectionFacts,
+      [agentUid]: {
+        status: read.status ?? known?.status ?? null,
+        connections: read.connections ?? known?.connections ?? null,
+        companyUid: read.companyUid ?? known?.companyUid ?? null,
+        slackFailed: read.status != null ? false : (known?.slackFailed ?? false),
+        slackDenied: read.status != null ? false : (known?.slackDenied ?? false),
+        toolsFailed: read.connections != null ? false : (known?.toolsFailed ?? false),
+      },
+    };
+  }
+
+  /**
+   * Where a refresh takes the bot's status from:
+   * - "read": its own read (a recheck, a press, a modal). The default.
+   * - "poll": the open conversation's status poll, when that read is on its
+   *   way or answered a moment ago; else its own read. For the refresh made
+   *   when the conversation opens, which used to ask a second time for what
+   *   the poll had just been told.
+   * - "keep": the status already known, with no read. For trying a failed
+   *   list read again. With no status known yet, the poll's last answer,
+   *   whatever its age: the poll is what keeps asking, and a second asker
+   *   beside it would double the requests while the server is failing.
+   */
+  type BotStatusSource = "read" | "poll" | "keep";
+  /** What a refresh says about the company's list: read, worth another try, or not. */
+  type BotConnectionsOutcome = "ok" | "retry" | "stop";
+
+  /**
    * Ask the server about a bot's Slack and its company's connections. A
    * failure keeps what was known and never reaches the conversation: the
    * card says it could not check and stays usable.
+   *
+   * The list is read at the same time as the status, for the company known
+   * from before (or the one the conversation's row names). The two used to
+   * go one after the other, and the cards waited for both. When the status
+   * then names another company, or no company was known, the list is read
+   * for the status's company after it.
    */
-  async function refreshBotConnectionFacts(agentUid: string, rowCompanyUid: string | null): Promise<void> {
+  async function refreshBotConnectionFacts(
+    agentUid: string,
+    rowCompanyUid: string | null,
+    options: { status?: BotStatusSource } = {},
+  ): Promise<BotConnectionsOutcome> {
     const before = botConnectionFacts[agentUid] ?? null;
-    let status = before?.status ?? null;
-    let slackFailed = false;
-    let slackDenied = false;
-    try {
-      const result = await adapter.agents.getStatus(agentUid);
-      if (result.ok) status = result.value;
-      else {
-        slackFailed = true;
-        slackDenied = slackStatusDenied(result);
+    const wanted: BotStatusSource = options.status ?? "read";
+    const source: BotStatusSource = wanted === "keep" && before?.status == null ? "poll" : wanted;
+    const readStatus = async (): Promise<{ value: unknown | null; failed: boolean; denied: boolean; refused: boolean }> => {
+      if (source === "keep") {
+        return { value: null, failed: before?.slackFailed ?? false, denied: before?.slackDenied ?? false, refused: false };
       }
-    } catch {
-      slackFailed = true;
-    }
-    const companyUid = companyUidFromStatus(status) ?? (rowCompanyUid?.trim() || before?.companyUid || null);
-    let connections = before?.connections ?? null;
-    let toolsFailed = false;
-    try {
-      const list = companyUid ? await adapter.integrations?.listConnections?.(companyUid) : null;
-      if (list?.ok) connections = list.value;
-      else toolsFailed = true;
-    } catch {
-      toolsFailed = true;
-    }
+      try {
+        const poll = source === "poll" ? botStatusPolls.get(agentUid) : undefined;
+        const usePoll =
+          poll !== undefined &&
+          (wanted === "keep" || poll.answeredAt === null || Date.now() - poll.answeredAt <= BOT_STATUS_REUSE_MS);
+        const result = await (usePoll ? poll.read : adapter.agents.getStatus(agentUid));
+        if (result.ok) return { value: result.value, failed: false, denied: false, refused: false };
+        return { value: null, failed: true, denied: slackStatusDenied(result), refused: botStatusReadRefused(result) };
+      } catch {
+        return { value: null, failed: true, denied: false, refused: false };
+      }
+    };
+    const readList = async (companyUid: string): Promise<{ value: unknown | null; refused: boolean }> => {
+      try {
+        const read = adapter.integrations?.listConnections;
+        // A host with no list to read has nothing to try again.
+        if (!read) return { value: null, refused: true };
+        const list = await read(companyUid);
+        if (list.ok) return { value: list.value, refused: false };
+        return { value: null, refused: botStatusReadRefused(list) };
+      } catch {
+        return { value: null, refused: false };
+      }
+    };
+    // The company learned from an earlier answer first: it is the status's
+    // own, so a later refresh reads the right list once, whatever the row says.
+    const earlyCompanyUid = before?.companyUid || rowCompanyUid?.trim() || null;
+    const earlyList = earlyCompanyUid ? readList(earlyCompanyUid) : null;
+    const status = await readStatus();
+    const companyUid = companyUidFromStatus(status.value ?? before?.status ?? null) ?? earlyCompanyUid;
+    const list = earlyList && companyUid === earlyCompanyUid ? await earlyList : companyUid ? await readList(companyUid) : null;
+    // What is known may have moved while the reads were out (the hello's own
+    // reads, another refresh): a read that failed keeps the newest, not the
+    // copy from before it started.
+    const latest = botConnectionFacts[agentUid] ?? null;
     botConnectionFacts = {
       ...botConnectionFacts,
-      [agentUid]: { status, connections, companyUid, slackFailed, slackDenied, toolsFailed },
+      [agentUid]: {
+        status: status.value ?? latest?.status ?? null,
+        connections: list?.value ?? latest?.connections ?? null,
+        companyUid,
+        slackFailed: status.failed,
+        slackDenied: status.denied,
+        toolsFailed: list?.value == null,
+      },
     };
+    if (list?.value != null) return "ok";
+    // The list was asked for and refused, or there is no company to ask
+    // about and the status will not name one: asking again changes nothing.
+    if (list) return list.refused ? "stop" : "retry";
+    return status.failed && !status.refused ? "retry" : "stop";
   }
 
   // ── The modal a connection card opens ───────────────────────────────
@@ -5903,16 +6022,27 @@
               inFlight: input.inFlight,
               note: input.appNotes[appNoteKey(item.domain)] ?? null,
             }),
-          // A row with apps still being looked up waits, up to the settle time
-          // counted from when this row first waited.
+          // A row that names an app waits for the company's list, up to the
+          // settle time counted from when this row first waited. An app still
+          // being looked up in the catalog never holds the row: its card
+          // comes in when the lookup answers.
           rowReady: (items) => {
+            if (!rowAwaitsList(items, input.company)) return true;
             const key = `${input.uid}|${items.map((item) => item.domain ?? "").filter(Boolean).sort().join(",")}`;
             let since = connectRowSince.get(key);
             if (since === undefined) {
-              since = input.now;
+              // The first wait. Nothing else may move the clock before the
+              // settle time is over (the list read can fail, or be refused),
+              // so the row sets its own timer for that moment.
+              since = Date.now();
               connectRowSince.set(key, since);
+              const timer = setTimeout(() => {
+                connectRowTimers.delete(timer);
+                connectionClock = Date.now();
+              }, ROW_SETTLE_MS + 50);
+              connectRowTimers.add(timer);
             }
-            return connectRowReady(items, { facts: input.company, lookupFor: input.lookupFor, since, now: input.now });
+            return connectRowReady(items, { facts: input.company, since, now: input.now });
           },
           browseAll: browseUrl ? { url: browseUrl, open: () => openConnectionUrl(browseUrl) } : null,
           onaction: (detail) => handleConnectionAction(input.uid, detail),
@@ -5977,7 +6107,9 @@
         checkedAt: input.now,
         adapter,
         openUrl: openConnectionUrl,
-        refresh: () => refreshBotConnectionFacts(agentUid, rowCompanyUid),
+        refresh: async () => {
+          await refreshBotConnectionFacts(agentUid, rowCompanyUid);
+        },
         started: () => markConnectionStarted(agentUid, target),
       },
     };
@@ -6020,8 +6152,8 @@
   });
   // Look up, once per bot and domain, every app on screen that is not a
   // connection. Only an owner or admin may ask the catalog: for anyone else
-  // an unknown app simply draws no card. After the settle time the rows stop
-  // waiting for answers that have not come.
+  // an unknown app simply draws no card. The row does not wait for these:
+  // each app's card comes in when its own lookup answers.
   $effect(() => {
     const input = cloudBotCardInput;
     const items = cloudBotConnectItems;
@@ -6034,11 +6166,7 @@
       const wanted = domainsToLookUp(items, company).filter(
         (domain) => !catalogLookups[uid]?.[domain] && !catalogLookupsInFlight.has(`${uid}:${domain}`),
       );
-      if (wanted.length === 0) return;
       for (const domain of wanted) void lookUpCatalog(uid, companyUid, domain);
-      setTimeout(() => {
-        connectionClock = Date.now();
-      }, ROW_SETTLE_MS + 50);
     });
   });
   // A connect started from an integration card: when the list shows the
@@ -6066,13 +6194,45 @@
     }
   });
 
-  // Ask the server once when a bot's cards come on screen.
+  // Ask the server when a cloud bot's conversation opens, not when a message
+  // with cards comes on screen. The cards under a message are drawn from the
+  // bot's status and the company's list; read only once a card was already
+  // on screen, the cards came seconds after their message. Read here, they
+  // are known before the message is, and it draws them in its own frame.
+  //
+  // A list read that fails is tried again, further apart each time, and at
+  // once when the network returns. It used to stay failed until the person
+  // left the conversation and came back.
   $effect(() => {
     const uid = dmCloudBotUid;
-    if (!uid || !cloudBotCardsShown) return;
-    untrack(() => {
-      void refreshBotConnectionFacts(uid, selectedRow?.companyUid ?? null);
-    });
+    if (!uid) return;
+    const rowCompanyUid = untrack(() => selectedRow?.companyUid ?? null);
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
+    const read = async (status: BotStatusSource): Promise<void> => {
+      const outcome = await refreshBotConnectionFacts(uid, rowCompanyUid, { status });
+      if (stopped || outcome !== "retry") return;
+      failures += 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void read("keep");
+      }, connectionsRetryMs(failures));
+    };
+    // The network is back: a try that was waiting its turn is made now.
+    const retryNow = (): void => {
+      if (stopped || !retryTimer) return;
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      void read("keep");
+    };
+    untrack(() => void read("poll"));
+    window.addEventListener("online", retryNow);
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener("online", retryNow);
+    };
   });
   // While a card waits (for the browser, or for a Slack setup the server has
   // and that is not finished), or while a card's modal is open, ask again

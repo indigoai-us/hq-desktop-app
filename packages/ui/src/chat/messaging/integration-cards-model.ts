@@ -24,8 +24,10 @@
  *   one another's subdomain): a connection card (connected, or "Let {bot} use
  *   it" for the person's own). A provider name alone never matches a domain;
  * - else a catalog match for the domain: a connectable card with its auth class;
- * - else no card. While the lookup is unknown there is no card yet, and the
- *   row waits for its lookups up to {@link ROW_SETTLE_MS}.
+ * - else no card. While the lookup is unknown that app has no card yet: it
+ *   comes in when its lookup answers. It never keeps the row's other cards
+ *   from drawing. Only the company's list being unknown holds a whole row,
+ *   for up to {@link ROW_SETTLE_MS}.
  *
  * The person's own presses (Connect, Not now) live in the per-bot record
  * (connection-card-model.ts, `apps`). "Connected" is never stored: it is
@@ -46,8 +48,24 @@ import {
   type IntegrationAuthClass,
 } from "./connection-card-model.js";
 
-/** How long a row waits for unknown lookups before unknown items are left out (ms). */
+/** How long a row waits for the company's list before it draws what it can without it (ms). */
 export const ROW_SETTLE_MS = 2_000;
+
+/** The first wait before a failed read of the company's list is tried again (ms). It doubles each time. */
+export const CONNECTIONS_RETRY_BASE_MS = 2_000;
+/** The longest wait between tries of a list read that keeps failing (ms). */
+export const CONNECTIONS_RETRY_MAX_MS = 60_000;
+
+/**
+ * How long to wait before reading the company's list again after `failures`
+ * failed reads in a row: 2 s, 4 s, 8 s and so on, never more than a minute.
+ * A failed read used to leave the cards without the list until the person
+ * left the conversation and came back.
+ */
+export function connectionsRetryMs(failures: number): number {
+  const n = Math.max(1, Math.floor(Number.isFinite(failures) ? failures : 1));
+  return Math.min(CONNECTIONS_RETRY_BASE_MS * 2 ** Math.min(n - 1, 20), CONNECTIONS_RETRY_MAX_MS);
+}
 
 /** How many connections the apps brief for the bot lists. */
 export const MAX_BRIEF_CONNECTIONS = 25;
@@ -477,34 +495,37 @@ export function botReason(botName: string, why: string): string {
 }
 
 /**
- * Whether an item's card is decided: it names a built-in card, or its domain
- * matches a connection, or its lookup has settled. The list itself being
- * unknown leaves a domain undecided.
+ * Whether a block's row has to wait for the company's list: the list is not
+ * known yet and the row names a domain. Nothing can be said about any domain
+ * without the list. A row of built-in cards alone never waits.
  */
-export function itemSettled(
-  item: { app?: ConnectTarget; domain?: string; connectionId?: string },
+export function rowAwaitsList(
+  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   facts: CompanyConnections | null | undefined,
-  lookupFor: (domain: string) => CatalogLookup,
 ): boolean {
-  if (item.app) return true;
-  const domain = normalizeConnectDomain(item.domain);
-  if (!domain) return true;
-  if (!facts) return false;
-  if (connectionForItem(facts, { domain, connectionId: item.connectionId })) return true;
-  return lookupFor(domain) !== "unknown";
+  if (facts) return false;
+  return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
 }
 
 /**
- * Whether a block's row may draw: every item is settled, or the row has
- * waited {@link ROW_SETTLE_MS} since `since`. After that, unknown items are
- * simply left out, and come in when they settle.
+ * Whether a block's row may draw.
+ *
+ * A row draws as soon as the company's list is known. From then every item is
+ * decided on its own: a built-in card and a connection draw at once, and an
+ * app that still waits for its catalog lookup simply has no card until the
+ * lookup answers ({@link integrationCardView} gives null for it). One app
+ * being looked up never holds the other cards back.
+ *
+ * Only the list itself being unknown holds a whole row ({@link rowAwaitsList}).
+ * That hold ends when the list arrives, or after {@link ROW_SETTLE_MS} since
+ * `since`, when the row draws what it can without it.
  */
 export function connectRowReady(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
-  input: { facts: CompanyConnections | null | undefined; lookupFor: (domain: string) => CatalogLookup; since: number; now: number },
+  input: { facts: CompanyConnections | null | undefined; since: number; now: number },
 ): boolean {
-  if (input.now - input.since >= ROW_SETTLE_MS) return true;
-  return items.every((item) => itemSettled(item, input.facts, input.lookupFor));
+  if (!rowAwaitsList(items, input.facts)) return true;
+  return input.now - input.since >= ROW_SETTLE_MS;
 }
 
 /** The domains of a block's items that need a catalog lookup: not a built-in, not a connection. */

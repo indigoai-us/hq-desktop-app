@@ -74,6 +74,35 @@ describe("composeCloudBotHello: the hello request with the company's apps", () =
     expect(hello.body.length).toBeLessThan(4000);
   });
 
+  it("hands back the two answers as read, for the cards under the bot's first message", async () => {
+    // The shell keeps them, so that message draws its cards with no second
+    // status read and no second list read.
+    const a = adapter();
+    const hello = await composeCloudBotHello(a.adapter, { agentUid: NOVA, personName: "Corey" });
+    expect(hello.status).toEqual(status());
+    expect(hello.connections).toBe(LIST);
+    expect(a.getStatus).toHaveBeenCalledTimes(1);
+    expect(a.listConnections).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands back null for a read that failed, and still what the other read answered", async () => {
+    const noList = adapter({ listConnections: vi.fn(async () => ({ ok: false, reason: "error", code: "http-500", message: "boom" })) });
+    const withoutList = await composeCloudBotHello(noList.adapter, { agentUid: NOVA, personName: "Corey" });
+    expect(withoutList.status).toEqual(status());
+    expect(withoutList.connections).toBeNull();
+    const thrown = adapter({ listConnections: vi.fn(async () => Promise.reject(new Error("offline"))) });
+    expect((await composeCloudBotHello(thrown.adapter, { agentUid: NOVA, personName: "Corey" })).connections).toBeNull();
+    const noStatus = adapter({ getStatus: vi.fn(async () => ({ ok: false, reason: "error", code: "http-500" })) });
+    const withoutStatus = await composeCloudBotHello(noStatus.adapter, { agentUid: NOVA, personName: "Corey", companyUidHint: COMPANY });
+    expect(withoutStatus.status).toBeNull();
+    expect(withoutStatus.connections).toBe(LIST);
+    // Neither read answered: nothing to keep.
+    const neither = adapter({ getStatus: vi.fn(async () => ({ ok: false, reason: "error", code: "http-403" })) });
+    const nothing = await composeCloudBotHello(neither.adapter, { agentUid: NOVA, personName: "Corey" });
+    expect(nothing.status).toBeNull();
+    expect(nothing.connections).toBeNull();
+  });
+
   it("says what was granted from here as usable, and says the bot is in Slack as its own line", async () => {
     const a = adapter({ getStatus: vi.fn(async () => ok(status({}, "ok"))) });
     const hello = await composeCloudBotHello(a.adapter, {
