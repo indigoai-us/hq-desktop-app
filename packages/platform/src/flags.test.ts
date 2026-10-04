@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
+import { FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG } from "./index.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
@@ -51,6 +52,12 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("exports first-launch sign-in reach through the public platform entrypoint", () => {
+    expect(PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
+      "desktop.first-launch-signin-reach-telemetry-v1",
+    );
+  });
+
   it("maps company name prefill to its hq-flags key", () => {
     expect(COMPANY_NAME_PREFILL_FLAG).toBe("desktop.company-name-prefill-v1");
     expect(registryKeyFor(COMPANY_NAME_PREFILL_FLAG)).toBe(COMPANY_NAME_PREFILL_FLAG);
