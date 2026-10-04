@@ -330,6 +330,7 @@ pub fn ensure_machine_id() -> Result<String, String> {
 }
 
 fn ensure_machine_id_at(path: &std::path::Path) -> Result<String, String> {
+    let _lock = crate::first_run::lock_menubar_writes();
     let obj = crate::first_run::prepare_menubar_write(path)?;
 
     // 1. Return an existing machineId unchanged if already populated.
