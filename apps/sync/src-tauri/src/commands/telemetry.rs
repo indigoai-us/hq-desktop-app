@@ -1437,6 +1437,65 @@ fn is_operational_desktop_event_name(event_name: &str) -> bool {
     OPERATIONAL_DESKTOP_EVENT_NAMES.contains(&event_name)
 }
 
+/// Token file that belongs to the install whose `menubar.json` is `menubar`.
+fn tokens_path_for_menubar(menubar: &Path) -> std::path::PathBuf {
+    menubar.with_file_name("cognito-tokens.json")
+}
+
+/// File `get_valid_access_token` reads. `tokens_file_path` is private, and
+/// `cognito.rs` is left unchanged. App tests compile that crate with
+/// `test-support`, so `HQ_TEST_HOME` wins there; a production build ignores
+/// it and uses `dirs::home_dir`, matching the private resolver.
+fn auth_resolver_tokens_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        return Some(
+            std::path::PathBuf::from(home)
+                .join(".hq")
+                .join("cognito-tokens.json"),
+        );
+    }
+    dirs::home_dir().map(|home| home.join(".hq").join("cognito-tokens.json"))
+}
+
+/// Access token stored beside a captured menubar path, with no refresh.
+/// Refresh persists through the resolver and would write another home's file.
+fn unexpired_access_token_at(path: &Path) -> Result<String, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Not signed in".to_string());
+        }
+        Err(error) => return Err(format!("Failed to read token file: {error}")),
+    };
+    let tokens: crate::commands::cognito::CognitoTokens = serde_json::from_str(&contents)
+        .map_err(|error| format!("Failed to parse token file: {error}"))?;
+    if tokens.access_token.is_empty() || crate::commands::cognito::is_expired(&tokens) {
+        return Err("Not signed in".to_string());
+    }
+    Ok(tokens.access_token)
+}
+
+/// Token for the install that owns `menubar`. The resolver is used only when
+/// it names that same file, so refresh and invalidation stay on one home.
+async fn access_token_for_captured_home(menubar: &Path) -> Result<String, String> {
+    let captured = tokens_path_for_menubar(menubar);
+    if auth_resolver_tokens_path().as_ref() == Some(&captured) {
+        crate::commands::cognito::get_valid_access_token().await
+    } else {
+        unexpired_access_token_at(&captured)
+    }
+}
+
+async fn access_token_for_optional_home(
+    menubar: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    match menubar {
+        Some(path) => access_token_for_captured_home(&path).await,
+        None => crate::commands::cognito::get_valid_access_token().await,
+    }
+}
+
 /// Emit an installation or delivery-health record. Operational telemetry is
 /// intentionally independent of the skill-telemetry opt-in.
 #[tauri::command]
@@ -1449,10 +1508,15 @@ pub async fn emit_desktop_operational_telemetry(
     // Mirror the funnel stage to the CDP before any auth work: a queue push
     // only, and independent of whether hq-pro accepts the row.
     crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
+    // Capture once, before the token await. HOME and HQ_TEST_HOME are
+    // process-global and can diverge while this future is pending; the hold
+    // path and a later flush must keep using this install's menubar file.
+    let menubar_path = paths::menubar_json_path().ok();
     let Some(access_token) = access_token_or_hold_auth_event(
         &event_name,
         properties.as_ref(),
-        crate::commands::cognito::get_valid_access_token(),
+        menubar_path.clone(),
+        access_token_for_optional_home(menubar_path.clone()),
     )
     .await?
     else {
@@ -1468,13 +1532,18 @@ pub async fn emit_desktop_operational_telemetry(
         occurred_at,
     )
     .await?;
-    crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
+    if let Some(path) = menubar_path {
+        crate::commands::cdp_mirror::flush_held_auth_rows_at(path).await;
+    } else {
+        crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
+    }
     Ok(())
 }
 
 async fn access_token_or_hold_auth_event<F>(
     event_name: &str,
     properties: Option<&Value>,
+    menubar_path: Option<std::path::PathBuf>,
     access_token: F,
 ) -> Result<Option<String>, String>
 where
@@ -1482,9 +1551,13 @@ where
 {
     // Resolve the destination before awaiting auth: HOME is process-global, so
     // a concurrent profile/test-home change must not redirect a held receipt.
-    let held_path = crate::commands::cdp_mirror::is_held_auth_event(event_name)
-        .then(|| paths::menubar_json_path().ok())
-        .flatten();
+    // Callers that already captured the install path pass it in; a missing
+    // path is resolved here, still before the token future runs.
+    let held_path = if crate::commands::cdp_mirror::is_held_auth_event(event_name) {
+        menubar_path.or_else(|| paths::menubar_json_path().ok())
+    } else {
+        None
+    };
     match access_token.await {
         Ok(token) => Ok(Some(token)),
         // A first sign-in has no session until the token exchange, so its
@@ -1513,14 +1586,15 @@ where
 }
 
 /// Send one row held by `cdp_mirror::hold_auth_row` with its own timestamp
-/// and idempotencyKey.
-pub async fn post_held_auth_row(row: &Value) -> Result<(), String> {
+/// and idempotencyKey. `menubar_path` is the file the row was held on; the
+/// access token is read from that install, not from a later resolver home.
+pub async fn post_held_auth_row(row: &Value, menubar_path: &Path) -> Result<(), String> {
     let event_name = row
         .get("eventName")
         .and_then(Value::as_str)
         .filter(|name| crate::commands::cdp_mirror::is_held_auth_event(name))
         .ok_or("held row has no sign-in event name")?;
-    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let access_token = access_token_for_captured_home(menubar_path).await?;
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     let mut event = build_desktop_telemetry_event(
@@ -4592,6 +4666,7 @@ mod codex_telemetry_tests {
         let result = access_token_or_hold_auth_event(
             "desktop_auth_failure",
             Some(&json!({ "provider": "google", "step": "callback_received" })),
+            None,
             async {
                 std::env::set_var("HOME", changed_home.path());
                 Err("Not signed in".to_string())
@@ -4680,6 +4755,77 @@ mod codex_telemetry_tests {
         assert_eq!(failures[0]["idempotencyKey"], json!(key));
         assert!(key.starts_with("hq-desktop-app:auth-held:") && key.len() <= 200);
         assert!(held_auth_rows(home.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_stays_on_its_home_when_token_home_disagrees() {
+        // The menubar path follows HOME. The token resolver follows
+        // HQ_TEST_HOME. A signed resolver home must not turn an unsigned
+        // install's first sign-in failure into a delivered row.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let unsigned = setup_home();
+        let signed = setup_home();
+        write_menubar(unsigned.path(), "{}");
+        write_menubar(signed.path(), "{}");
+        write_valid_access_token(signed.path());
+        let _home = scoped_home(unsigned.path());
+        std::env::set_var("HQ_TEST_HOME", signed.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("provider_page_opened").await;
+
+        std::env::remove_var("HQ_VAULT_API_URL");
+        let held = held_auth_rows(unsigned.path());
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0]["properties"],
+            json!({ "provider": "google", "step": "provider_page_opened", "errorCategory": "network" })
+        );
+        assert!(held_auth_rows(signed.path()).is_empty());
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "a foreign token must not deliver the unsigned install's failure"
+        );
+        let raw = std::fs::read_to_string(unsigned.path().join(".hq/menubar.json")).unwrap();
+        assert!(!raw.contains("secret-callback-code"));
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_row_is_not_flushed_with_a_different_homes_token() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let unsigned = setup_home();
+        let signed = setup_home();
+        write_menubar(unsigned.path(), "{}");
+        write_menubar(signed.path(), "{}");
+        write_valid_access_token(signed.path());
+        let _home = scoped_home(unsigned.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("callback_received").await;
+        assert_eq!(held_auth_rows(unsigned.path()).len(), 1);
+        std::env::set_var("HQ_TEST_HOME", signed.path());
+
+        let emitted = emit_desktop_operational_telemetry(
+            crate::commands::cdp_mirror::OP_SYNC_STARTED.to_string(),
+            Some(json!({ "trigger": "manual", "flow": "sync" })),
+            None,
+            None,
+        )
+        .await;
+        assert!(emitted.is_err(), "the unsigned install has no session");
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            0
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(held_auth_rows(unsigned.path()).len(), 1);
+        assert!(held_auth_rows(signed.path()).is_empty());
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "the success-path flush must not clear the row with the other home's token"
+        );
     }
 
     #[test]
