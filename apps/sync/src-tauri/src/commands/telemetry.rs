@@ -1423,15 +1423,14 @@ pub async fn emit_desktop_operational_telemetry(
     // Mirror the funnel stage to the CDP before any auth work: a queue push
     // only, and independent of whether hq-pro accepts the row.
     crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
-    let access_token = match crate::commands::cognito::get_valid_access_token().await {
-        Ok(token) => token,
-        // A first sign-in has no session until the token exchange, so its
-        // progress and failure rows wait on disk for the next session.
-        Err(_) if crate::commands::cdp_mirror::is_held_auth_event(&event_name) => {
-            crate::commands::cdp_mirror::hold_auth_row(&event_name, properties.as_ref());
-            return Ok(());
-        }
-        Err(err) => return Err(err),
+    let Some(access_token) = access_token_or_hold_auth_event(
+        &event_name,
+        properties.as_ref(),
+        crate::commands::cognito::get_valid_access_token(),
+    )
+    .await?
+    else {
+        return Ok(());
     };
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
@@ -1445,6 +1444,46 @@ pub async fn emit_desktop_operational_telemetry(
     .await?;
     crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
     Ok(())
+}
+
+async fn access_token_or_hold_auth_event<F>(
+    event_name: &str,
+    properties: Option<&Value>,
+    access_token: F,
+) -> Result<Option<String>, String>
+where
+    F: std::future::Future<Output = Result<String, String>>,
+{
+    // Resolve the destination before awaiting auth: HOME is process-global, so
+    // a concurrent profile/test-home change must not redirect a held receipt.
+    let held_path = crate::commands::cdp_mirror::is_held_auth_event(event_name)
+        .then(|| paths::menubar_json_path().ok())
+        .flatten();
+    match access_token.await {
+        Ok(token) => Ok(Some(token)),
+        // A first sign-in has no session until the token exchange, so its
+        // progress and failure rows wait on disk for the next session.
+        Err(_) if crate::commands::cdp_mirror::is_held_auth_event(event_name) => {
+            let result = held_path
+                .ok_or_else(|| "Cannot determine home directory".to_string())
+                .and_then(|path| {
+                    crate::commands::cdp_mirror::hold_auth_row_at(
+                        &path,
+                        event_name,
+                        properties,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_millis() as u64)
+                            .unwrap_or(0),
+                    )
+                });
+            if result.is_err() {
+                crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
+            }
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Send one row held by `cdp_mirror::hold_auth_row` with its own timestamp
@@ -4451,6 +4490,31 @@ mod codex_telemetry_tests {
         )
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn held_auth_failure_uses_home_captured_before_token_resolution() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = setup_home();
+        let changed_home = setup_home();
+        write_menubar(original_home.path(), "{}");
+        write_menubar(changed_home.path(), "{}");
+        let _home = scoped_home(original_home.path());
+
+        let result = access_token_or_hold_auth_event(
+            "desktop_auth_failure",
+            Some(&json!({ "provider": "google", "step": "callback_received" })),
+            async {
+                std::env::set_var("HOME", changed_home.path());
+                Err("Not signed in".to_string())
+            },
+        )
+        .await;
+        std::env::set_var("HOME", original_home.path());
+
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(held_auth_rows(original_home.path()).len(), 1);
+        assert!(held_auth_rows(changed_home.path()).is_empty());
     }
 
     #[tokio::test]
