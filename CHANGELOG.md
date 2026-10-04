@@ -9,6 +9,9 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core rescue now materializes hq-cloud with its HQ-owned npm cache while regular sync prewarm keeps using the runner's global npm cache.
+- Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
+
+- Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04

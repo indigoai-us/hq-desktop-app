@@ -431,6 +431,11 @@ pub struct ChannelMessage {
     pub created_at: String,
     #[serde(default)]
     pub direction: String,
+    /// Reader lane selected by the sender: `"human"`, `"agent"`, or `"both"`.
+    /// Older servers omit it. Keep it on the wire so the webview can apply the
+    /// human-only conversation view to channel rows as well as direct messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
     /// `"system"` for bridge events; absent for normal human/agent posts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_kind: Option<String>,
@@ -946,6 +951,25 @@ mod tests {
         assert_eq!(v["rootEventId"], "evt_root");
         assert_eq!(v["replyCount"], 4);
         assert!(m.mentions.is_none());
+    }
+
+    #[test]
+    fn channel_message_audience_round_trips_server_wire_shape() {
+        // Captured server wire shape: an agent-lane channel message has an
+        // explicit audience. Serde otherwise drops unlisted fields silently.
+        let json = r#"{
+            "eventId": "evt_agent_lane",
+            "fromPersonUid": "agt_deacon",
+            "body": "Internal progress",
+            "createdAt": "2026-10-04T16:30:00Z",
+            "direction": "in",
+            "audience": "agent"
+        }"#;
+        let message: ChannelMessage = serde_json::from_str(json).expect("channel message parses");
+        assert_eq!(message.audience.as_deref(), Some("agent"));
+
+        let wire = serde_json::to_value(&message).expect("channel message serializes");
+        assert_eq!(wire["audience"], "agent");
     }
 
     #[test]

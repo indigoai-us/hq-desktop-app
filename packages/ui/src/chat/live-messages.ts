@@ -491,9 +491,10 @@ export function messagesForDisplay(
   raw: unknown,
   options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
-  // Only the flat exchange with a bot reads a row's audience. Everywhere
-  // else rows carry none, exactly as before that exchange existed.
-  const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: options.inlineReplies === true })].reverse();
+  // Every conversation reader needs the server's audience now. An absent tag
+  // remains absent, so older and untagged rows retain their human-visible
+  // behavior while an explicit agent lane can be filtered correctly.
+  const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: true })].reverse();
   if (options.inlineReplies) return inlineReplyRows(oldestFirst, options);
   // Fold FIRST: the reply rows carry the author + time the root affordance
   // needs, and are discarded on the next line.
