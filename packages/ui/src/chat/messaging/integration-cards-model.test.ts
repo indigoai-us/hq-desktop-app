@@ -360,12 +360,12 @@ describe("integrationCardView", () => {
   it("shows a connected app the bot can use, with no button", () => {
     const open = facts([connection({ access: { mode: "everyone" } })]);
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: open }))!;
-    expect(view).toMatchObject({ state: "connected", line: "Connected. Nova can use it.", primaryLabel: null, declineLabel: null, mark: "Connected", connectionId: "acct_linear" });
+    expect(view).toMatchObject({ state: "connected", line: "Nova can use it.", primaryLabel: null, declineLabel: null, mark: "Connected", connectionId: "acct_linear" });
     const granted = integrationCardView(
       { domain: "linear.app" },
       input({ facts: facts([connection()]), record: recordGrant(null, "acct_linear", "Linear", NOW) }),
     )!;
-    expect(granted.line).toBe("Connected. Nova can use it.");
+    expect(granted.line).toBe("Nova can use it.");
     expect(granted.primaryLabel).toBeNull();
   });
 
@@ -373,7 +373,7 @@ describe("integrationCardView", () => {
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection()]) }))!;
     expect(view).toMatchObject({
       state: "connected",
-      line: "Connected. Let Nova use it?",
+      line: "Let Nova use it?",
       primaryLabel: "Let Nova use it",
       primaryAction: "allow",
       connectionId: "acct_linear",
@@ -387,12 +387,31 @@ describe("integrationCardView", () => {
   it("names a teammate's connection as theirs to share, with no button", () => {
     const theirs = facts([connection({ createdBy: "prs_teammate" })]);
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: theirs }))!;
-    expect(view.line).toBe("Connected by a teammate. Ask them to share it with Nova.");
+    expect(view.line).toBe("A teammate connected this. Ask them to share it with Nova.");
     expect(view.primaryLabel).toBeNull();
     expect(view.state).toBe("connected");
     // A list that does not say who is looking is not this person's to share either.
     const anon = facts([connection()], { viewer: { canManageIntegrations: true } });
     expect(integrationCardView({ domain: "linear.app" }, input({ facts: anon }))!.primaryLabel).toBeNull();
+  });
+
+  it("never repeats the Connected mark in the line under it, in any connected state", () => {
+    // Owner, 2026-10-04: a green "Connected" mark with a line that also began
+    // "Connected" read as the same word twice, and the one-row clamp then cut
+    // the instruction off.
+    const usable = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection({ access: { mode: "everyone" } })]) }))!;
+    const own = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection()]) }))!;
+    const theirs = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection({ createdBy: "prs_teammate" })]) }))!;
+    for (const view of [usable, own, theirs]) {
+      expect(view.mark).toBe("Connected");
+      expect(view.line).not.toMatch(/^connected\b/i);
+      expect(view.line.toLowerCase().startsWith(view.mark!.toLowerCase())).toBe(false);
+    }
+    expect([usable.line, own.line, theirs.line]).toEqual([
+      "Nova can use it.",
+      "Let Nova use it?",
+      "A teammate connected this. Ask them to share it with Nova.",
+    ]);
   });
 
   it("a connection wins over the catalog, a decline and a wait", () => {

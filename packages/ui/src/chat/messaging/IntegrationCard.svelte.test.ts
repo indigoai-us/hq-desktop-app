@@ -155,7 +155,7 @@ describe("an integration card", () => {
     const el = renderCard(view("linear.app", { facts: facts([connection()]) }), onaction);
     expect(el.dataset.state).toBe("connected");
     expect(el.querySelector('[data-testid="connection-card-mark"]')?.textContent?.trim()).toBe("Connected");
-    expect(el.textContent).toContain("Connected. Let Nova use it?");
+    expect(el.textContent).toContain("Let Nova use it?");
     expect(primary(el)?.textContent?.trim()).toBe("Let Nova use it");
     expect(decline(el)).toBeNull();
     primary(el)!.click();
@@ -164,14 +164,21 @@ describe("an integration card", () => {
 
   it("a connected app the bot can use, and a teammate's, have no button", () => {
     const usable = renderCard(view("linear.app", { facts: facts([connection()]), record: recordGrant(null, "acct_linear", "Linear", NOW) }));
-    expect(usable.textContent).toContain("Connected. Nova can use it.");
+    expect(usable.textContent).toContain("Nova can use it.");
     expect(usable.querySelectorAll("button")).toHaveLength(0);
     void unmount(component!);
     component = null;
     host?.remove();
     const theirs = renderCard(view("linear.app", { facts: facts([connection({ createdBy: "prs_other" })]) }));
-    expect(theirs.textContent).toContain("Connected by a teammate. Ask them to share it with Nova.");
+    expect(theirs.textContent).toContain("A teammate connected this. Ask them to share it with Nova.");
     expect(theirs.querySelectorAll("button")).toHaveLength(0);
+    // The mark says Connected once; the line under it does not say it again,
+    // and its title holds the whole sentence.
+    const line = theirs.querySelector<HTMLElement>('[data-testid="connection-card-line"]')!;
+    expect(theirs.querySelector('[data-testid="connection-card-mark"]')?.textContent?.trim()).toBe("Connected");
+    expect(line.textContent).toBe("A teammate connected this. Ask them to share it with Nova.");
+    expect(line.getAttribute("title")).toBe(line.textContent);
+    expect(theirs.textContent?.match(/Connected/g)).toHaveLength(1);
   });
 
   it("draws a declined card dimmed with no button, and a connecting card with Open again", () => {

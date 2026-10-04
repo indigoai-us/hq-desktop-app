@@ -35,6 +35,8 @@ The release moves it under the version it ships in.
 
 - HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
 
+- Connection cards in a cloud bot's direct message no longer say "Connected" twice. Under the green Connected mark, an app a teammate connected now reads "A teammate connected this. Ask them to share it with Nova." (for a bot named Nova), your own app reads "Let Nova use it?", and an app the bot can already use reads "Nova can use it." The sentence on a card can take two rows, so the instruction is no longer cut off after the first few words. Every card in a row keeps the same height.
+
 ## [0.10.389] — 2026-10-04
 
 - When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.

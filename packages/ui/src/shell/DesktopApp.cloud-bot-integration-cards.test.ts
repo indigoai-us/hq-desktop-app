@@ -356,11 +356,11 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     });
     await mountResolved(w);
     expect(cardIds()).toEqual(["notion.so", "gmail.com", "asana.com"]);
-    expect(appLine("notion.so")).toBe("Connected. Let Nova use it?");
+    expect(appLine("notion.so")).toBe("Let Nova use it?");
     expect(appPrimary("notion.so")!.textContent?.trim()).toBe("Let Nova use it");
-    expect(appLine("gmail.com")).toBe("Connected by a teammate. Ask them to share it with Nova.");
+    expect(appLine("gmail.com")).toBe("A teammate connected this. Ask them to share it with Nova.");
     expect(appPrimary("gmail.com")).toBeNull();
-    expect(appLine("asana.com")).toBe("Connected. Nova can use it.");
+    expect(appLine("asana.com")).toBe("Nova can use it.");
     expect(appPrimary("asana.com")).toBeNull();
     expect(cards().every((el) => el.dataset.state === "connected")).toBe(true);
     expect(w.catalogSearch).not.toHaveBeenCalled();
@@ -395,7 +395,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(to).toBe(NOVA);
     expect(body).toMatch(/^Automatic message from HQ: Corey just connected Linear/);
     expect(extras).toEqual({ audience: "agent", idempotencyKey: `new-bot-conn-${NOVA}-acct_linear` });
-    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Connected. Nova can use it."));
+    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Nova can use it."));
     expect(appCard("linear.app")!.dataset.state).toBe("connected");
     expect(appPrimary("linear.app")).toBeNull();
     // The list arriving again grants and tells nothing twice.
@@ -414,7 +414,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     w.connections = [...w.connections, connectedAfterPress()];
     await refocus();
     await vi.waitFor(() => expect(appNote("linear.app")).toBe("Could not share Linear. Try again."));
-    expect(appLine("linear.app")).toBe("Connected. Let Nova use it?");
+    expect(appLine("linear.app")).toBe("Let Nova use it?");
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Let Nova use it");
     expect(hidden(w)).toHaveLength(0);
   });
@@ -432,7 +432,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     await refocus();
     await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
     expect(w.grantConnectionAccess).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Connected. Nova can use it."));
+    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Nova can use it."));
   });
 
   it("says a refused OAuth start in one sentence, and opens nothing", async () => {
@@ -465,7 +465,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(w.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: COMPANY, connectionId: "acct_deepwiki", granteeUid: NOVA });
     await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
     expect(hidden(w)[0]![1]).toMatch(/^Automatic message from HQ: Corey just connected DeepWiki/);
-    await vi.waitFor(() => expect(appLine("deepwiki.com")).toBe("Connected. Nova can use it."));
+    await vi.waitFor(() => expect(appLine("deepwiki.com")).toBe("Nova can use it."));
     expect(appCard("deepwiki.com")!.dataset.state).toBe("connected");
     expect(w.openUrl).not.toHaveBeenCalled();
     expect(w.startOAuth).not.toHaveBeenCalled();
@@ -557,7 +557,7 @@ describe("DesktopApp integration cards: a 'connecting' record left in storage", 
     expect(w.grantConnectionAccess).not.toHaveBeenCalled();
     expect(hidden(w)).toHaveLength(0);
     expect(appCard("linear.app")!.dataset.state).toBe("connected");
-    expect(appLine("linear.app")).toBe("Connected. Let Nova use it?");
+    expect(appLine("linear.app")).toBe("Let Nova use it?");
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Let Nova use it");
   }
 
@@ -574,7 +574,7 @@ describe("DesktopApp integration cards: a 'connecting' record left in storage", 
     await vi.waitFor(() => expect(w.grantConnectionAccess).toHaveBeenCalledTimes(1));
     expect(w.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: COMPANY, connectionId: "acct_linear", granteeUid: NOVA });
     await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
-    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Connected. Nova can use it."));
+    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Nova can use it."));
   });
 
   it("a press just past the wait shares nothing, even for a connection made after it", async () => {
