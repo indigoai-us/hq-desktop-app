@@ -4821,7 +4821,7 @@ describe('first-launch sign-in reach stays independent from the join-key rollout
     );
 
     expect(reachBlock).not.toContain('onboardingTelemetry.setInstallAttemptId(');
-    expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId : undefined');
+    expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined');
   });
 
   it('does not use the standalone reporter when the native CI suppression marker is set', () => {

@@ -1261,7 +1261,7 @@
           !firstLaunchSignInReachOutcomeWasRecorded()
           ? signInReachOutcome
           : undefined;
-        const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId : undefined;
+        const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined;
         const firstLaunchReceiptRecorded = context
           ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
             onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)
