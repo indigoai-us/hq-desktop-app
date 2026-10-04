@@ -62,6 +62,8 @@ export type OnboardingAction =
 
 export type OnboardingFlow = 'first_install' | 'first_launch' | 'resume';
 export type OnboardingPlatform = 'macos' | 'windows' | 'linux';
+export const INVITE_STEP_HIDDEN_REASONS = ['no_invite_context', 'lookup_failed'] as const;
+export type InviteStepHiddenReason = (typeof INVITE_STEP_HIDDEN_REASONS)[number];
 
 export interface OnboardingStepProperties {
   step: WizardStepId;
@@ -451,7 +453,11 @@ export function desktopPropertiesForOnboardingStep(
     if (value !== undefined) properties[key] = value;
   }
   const outcome = event.properties.outcome;
-  if (event.properties.step === 'welcome-signin' && event.properties.flow === 'first_launch') {
+  if (event.properties.step === 'invite-teammate' && event.properties.action === 'skipped') {
+    if (INVITE_STEP_HIDDEN_REASONS.includes(outcome as InviteStepHiddenReason)) {
+      properties.outcome = outcome;
+    }
+  } else if (event.properties.step === 'welcome-signin' && event.properties.flow === 'first_launch') {
     const reachOutcome = normalizeFirstLaunchSignInReachOutcome(outcome);
     const actionMatchesOutcome = reachOutcome === 'reached-signin'
       ? event.properties.action === 'entered'

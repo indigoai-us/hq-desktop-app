@@ -32,7 +32,7 @@ import {
   type SlackSetupWait,
 } from "./slack-status.js";
 
-export type SlackConnectStage = "approve" | "token" | "finishing" | "connected" | "blocked";
+type SlackConnectStage = "approve" | "token" | "finishing" | "connected" | "blocked";
 
 /** Why the modal cannot move the connection forward by itself. */
 export type SlackBlockedReason = "not-admin" | "company-not-connected" | "own-app" | "config-dead" | "app-switch";
@@ -53,10 +53,10 @@ export const SLACK_TOKEN_ACCEPT_GRACE_MS = 30_000;
 
 export const SLACK_ATTACH_ALREADY_CONNECTED = "SLACK_ATTACH_ALREADY_CONNECTED";
 export const SLACK_FACTORY_ROTATE_UNAVAILABLE = "SLACK_FACTORY_ROTATE_UNAVAILABLE";
-export const SLACK_CHANNEL_ATTACH_FAILED = "CHANNEL_ATTACH_FAILED";
-export const SLACK_FACTORY_ROOT_MISSING = "FACTORY_ROOT_MISSING";
+const SLACK_CHANNEL_ATTACH_FAILED = "CHANNEL_ATTACH_FAILED";
+const SLACK_FACTORY_ROOT_MISSING = "FACTORY_ROOT_MISSING";
 export const SLACK_PASTE_REQUIRED = "SLACK_PASTE_REQUIRED";
-export const SLACK_LEGACY_CONFIG_TOKEN_DEAD = "LEGACY_FACTORY_CONFIG_TOKEN_DEAD";
+const SLACK_LEGACY_CONFIG_TOKEN_DEAD = "LEGACY_FACTORY_CONFIG_TOKEN_DEAD";
 export const SLACK_ATTACH_APP_SWITCH_NOT_WIRED = "SLACK_ATTACH_APP_SWITCH_NOT_WIRED";
 export const SLACK_APP_TOKEN_INVALID = "SLACK_APP_TOKEN_INVALID";
 export const SLACK_APP_TOKEN_REJECTED = "SLACK_APP_TOKEN_REJECTED";
@@ -110,9 +110,9 @@ export function slackTokenWhySentence(botName: string): string {
   return `Slack needs a token so ${botOf(botName)} can listen for messages. Slack only lets a person create it.`;
 }
 
-export type SlackTokenStepKey = "open" | "scope" | "paste";
+type SlackTokenStepKey = "open" | "scope" | "paste";
 
-export interface SlackTokenStep {
+interface SlackTokenStep {
   key: SlackTokenStepKey;
   /** One line. The `scope` step's line is followed by the scope itself, with a Copy button. */
   text: string;
@@ -183,7 +183,7 @@ export function slackConnectedSentence(botName: string): string {
   return `${botOf(botName)} is in Slack. Invite it to a channel or send it a direct message.`;
 }
 
-export interface SlackBlockedCopy {
+interface SlackBlockedCopy {
   sentence: string;
   /** The one button of the state, or null when all a person can do is close. */
   action: { label: string; page: SlackConsolePage } | null;
@@ -234,7 +234,7 @@ export function slackStatusDenied(result: unknown): boolean {
   return notAllowed(result, failureCode(result));
 }
 
-export type SlackAttachAnswer =
+type SlackAttachAnswer =
   /** The server set the bot up. `attached` is its answer, kept until the status says the same. */
   | { kind: "attached"; attached: unknown }
   /** Not an error: the bot already has Slack. Read the status and go on from it. */
@@ -284,7 +284,7 @@ export function readSlackAttachAnswer(result: unknown): SlackAttachAnswer {
   return { kind: "retry", sentence: SLACK_ATTACH_RETRY_SENTENCE, unanswered: !refused(result, code) };
 }
 
-export type SlackTokenAnswer =
+type SlackTokenAnswer =
   | { kind: "accepted" }
   /** The server was not waiting for a token. Read the status and go on from it. */
   | { kind: "continue" }
@@ -348,9 +348,9 @@ export interface SlackConnectInput {
   now: number;
 }
 
-export type SlackConnectStepKey = "approve" | "token" | "finishing";
+type SlackConnectStepKey = "approve" | "token" | "finishing";
 
-export interface SlackConnectStep {
+interface SlackConnectStep {
   key: SlackConnectStepKey;
   /** Counted from 1. */
   number: number;
@@ -358,7 +358,7 @@ export interface SlackConnectStep {
   text: string;
 }
 
-export interface SlackConnectView {
+interface SlackConnectView {
   stage: SlackConnectStage;
   title: string;
   /** The app has a status answer for this bot. */

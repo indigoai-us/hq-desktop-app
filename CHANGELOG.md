@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
+## [0.10.389] — 2026-10-04
+
+- When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.
+
+- Setup telemetry now records a bounded reason when the invite step is hidden after company creation.
 - New bot: for companies that have the new bot screen turned on, choosing New bot from the + menu now opens a full-window screen for creating a cloud bot. You pick the company, give the bot a name, choose its brain and machine size, and wait on a "Waking up" screen until the bot can chat. Cancel works at every step and removes a bot that was already being made. "Create a local bot instead" is on the same screen. If your plan cannot host another bot, the screen says so and links to the upgrade options. Companies without it keep the New bot steps in the + menu, which work as before.
 - A cloud bot made on the new screen opens in a direct message with you instead of its own channel. A direct message with any bot now reads as one conversation: the bot's answers show in line instead of under "1 reply", and the setup request the app sends to the bot for you is not shown.
 - A cloud bot's direct message shows connection cards under its messages for Slack and the other apps your company uses. Connect Slack opens in a window over the chat. Writing "Connect more tools" brings the cards back. Suggested replies appear under the bot's newest message.
