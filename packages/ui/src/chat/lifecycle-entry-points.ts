@@ -752,6 +752,12 @@ const CREATE_AGENT_CARD_ID = "create_agent";
 export const UPGRADE_PLAN_CARD_ID = "upgrade_plan";
 const CREATE_ACTION_ID = "create";
 
+/** True for the upgrade card, whether the server names it bare or with a company suffix. */
+export function isUpgradePlanCard(cardId: string | null | undefined): boolean {
+  const id = (cardId ?? "").trim();
+  return id === UPGRADE_PLAN_CARD_ID || id.startsWith(`${UPGRADE_PLAN_CARD_ID}:`) || id.endsWith(`:${UPGRADE_PLAN_CARD_ID}`);
+}
+
 export interface CloudBotOneShotOptions {
   idempotencyKey?: string;
 }
@@ -764,7 +770,7 @@ export const CLOUD_BOT_SERVER_FAILED_REASON =
  * What to show for a thrown failure. A short sentence the server wrote for a
  * person is kept. Anything that reads like a raw backend error (cloud resource
  * names, status payloads, stack text, long strings) is replaced with a plain
- * line, and the detail goes to the support log instead of the screen.
+ * line. The support log gets a code for it (`failureCode`), never the text.
  */
 function shownFailure(err: unknown): { reason: string; raw: boolean } {
   const message = cardActionFailureMessage(err);
@@ -778,10 +784,23 @@ function shownFailure(err: unknown): { reason: string; raw: boolean } {
     : { reason: message, raw: false };
 }
 
-/** A single-line, length-bounded copy of a failure for the support log. */
-function failureDetail(err: unknown): string {
+/**
+ * What kind of failure this was, for the support log: a code, never the text.
+ * The text of a thrown failure can repeat what the person typed (a name, a
+ * handle) or name cloud resources, so none of it is written down. What is
+ * kept is the adapter's own leading `[code]` tag, else the HTTP status the
+ * text names, else one word for the kind.
+ */
+function failureCode(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
-  return raw.replace(/\s+/g, " ").trim().slice(0, 400);
+  const tag = raw.match(/^\[([A-Za-z0-9_.:-]{1,60})(?:\s[^\]]*)?]/)?.[1];
+  if (tag) return tag;
+  const status = raw.match(/\bstatus:? (\d{3})\b/i)?.[1] ?? raw.match(/\b([45]\d{2})\b/)?.[1];
+  if (status) return `http-${status}`;
+  if (/timed? ?out/i.test(raw)) return "timeout";
+  if (/network|offline|connection/i.test(raw)) return "network";
+  if (/not authorized|accessdenied|forbidden|permission/i.test(raw)) return "denied";
+  return "error";
 }
 
 interface WireField {
@@ -820,7 +839,8 @@ function blockedReason(result: CardActionResult): string {
 
 /**
  * One line per failed attempt in the support log, so a failure names its own
- * exit. Ids and states only: no names, handles or keys.
+ * exit. Ids, codes and states only: no names, handles or keys, and no text
+ * of a failure.
  */
 function logCloudBotExit(
   api: CloudBotOneShotApi,
@@ -891,7 +911,7 @@ export async function runCreateCloudBotOneShotEntry(
     });
   } catch (err) {
     const shown = shownFailure(err);
-    logCloudBotExit(api, "open-failed", { detail: failureDetail(err) });
+    logCloudBotExit(api, "open-failed", { code: failureCode(err), raw: String(shown.raw) });
     return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
   }
   if (opened.state === "blocked") {
@@ -913,8 +933,10 @@ export async function runCreateCloudBotOneShotEntry(
     return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
   }
   if (focusCardId !== CREATE_AGENT_CARD_ID) {
-    // A plan that cannot host a bot answers with the upgrade card instead.
-    // That card still renders, so this is a destination, not a failure.
+    // The server sent the person to another card. That card still renders, so
+    // this is a destination, not a failure. A plan that cannot host a bot
+    // answers with the upgrade card (`isUpgradePlanCard`); any other card is
+    // some other step, and the caller must not call it an upgrade.
     return {
       ok: true,
       target: { channelId, cardId: focusCardId, cardKind: null },
@@ -967,7 +989,7 @@ export async function runCreateCloudBotOneShotEntry(
     // server's defect, not the person's refusal: it is neither shown nor
     // treated as "you may not do this".
     const shown = shownFailure(err);
-    logCloudBotExit(api, "create-failed", { detail: failureDetail(err) });
+    logCloudBotExit(api, "create-failed", { code: failureCode(err), raw: String(shown.raw) });
     return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
   }
 

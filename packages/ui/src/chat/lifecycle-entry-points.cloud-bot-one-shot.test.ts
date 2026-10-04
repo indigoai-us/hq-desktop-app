@@ -359,23 +359,54 @@ describe("runCreateCloudBotOneShotEntry", () => {
     });
   });
 
-  it("never shows a raw backend error: a plain line on screen, the detail in the support log", async () => {
+  it("never shows a raw backend error: a plain line on screen, and only a code in the support log", async () => {
     // Regression (owner walkthrough 2026-10-02): a missing cloud permission
     // put the full "User: arn:aws:sts::... is not authorized to perform:
     // dynamodb:Scan on resource: arn:aws:dynamodb:..." text on the screen.
+    //
+    // Review A-I15: the same text then went to the support log, up to 400
+    // characters of it. The log now names the kind of failure and nothing
+    // from its text. (This test used to assert the text WAS in the log; that
+    // is the behaviour the review asked to change.)
     const denial =
       "User: arn:aws:sts::000000000000:assumed-role/fn-role/fn is not authorized to perform: dynamodb:Scan on resource: arn:aws:dynamodb:us-east-1:000000000000:table/entities because no identity-based policy allows the dynamodb:Scan action";
     const { api, logToFile } = harness({ created: new Error(denial) });
-    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toMatchObject({
       ok: false,
       reason: CLOUD_BOT_SERVER_FAILED_REASON,
       // The word "authorized" must not make this read as the person's refusal.
       blocked: false,
     });
     const line = String(logToFile.mock.calls[0]![1]);
-    expect(line).toContain("exit=create-failed");
-    expect(line).toContain("dynamodb:Scan");
+    expect(line).toBe("exit=create-failed code=denied raw=true");
+    expect(line).not.toContain("dynamodb");
+    expect(line).not.toContain("arn:aws");
     expect(line).not.toContain("Polar");
+  });
+
+  it.each([
+    ["[run_card_action] network down", "run_card_action"],
+    ["[plan-limit url=https://example.test/upgrade?x=1] Too many bots", "plan-limit"],
+    ["Request failed (status 504)", "http-504"],
+    ['agent create returned status 409: {"statusCode":409,"body":"{\"handle\":\"ice-bear\"}"}', "http-409"],
+    ["Network error: operation timed out for https://api.example.test/v1/x", "timeout"],
+    ["Network error: connection refused", "network"],
+    ["A bot named Polar (@ice-bear) could not be made", "error"],
+  ])("logs a code for the failure %j, never its text", async (text, code) => {
+    const { api, logToFile } = harness({ created: new Error(text) });
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    const line = String(logToFile.mock.calls[0]![1]);
+    expect(line).toMatch(new RegExp(`^exit=create-failed code=${code} raw=(true|false)$`));
+    // Nothing the person typed, no address, no payload.
+    for (const leaked of ["Polar", "ice-bear", "https://", "statusCode", "refused"]) {
+      expect(line).not.toContain(leaked);
+    }
+  });
+
+  it("logs a code, never the text, when the opening action fails", async () => {
+    const { api, logToFile } = harness({ opened: new Error("403 forbidden for Polar in Acme") });
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(String(logToFile.mock.calls[0]![1])).toBe("exit=open-failed code=http-403 raw=false");
   });
 
   it.each([
