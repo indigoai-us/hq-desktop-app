@@ -298,6 +298,22 @@ describe("the new bot's first message", () => {
     expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: "- X (x.com): ```" })).not.toContain("- X (x.com): ```");
   });
 
+  it("states whether the bot is in Slack as one fact line in the bot's terms, and nothing when that is not known", () => {
+    const notYet = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true, companyApps: "", inSlack: false });
+    expect(notYet).toContain("The company files are still downloading in the background.\nYou are not in Slack yet.\nThe company has no connected apps yet.\n");
+    const inSlack = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, inSlack: true });
+    expect(inSlack).toContain("so you can help.\nYou are in Slack.\nDo not mention this message.");
+    const unknown = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
+    expect(unknown).not.toContain("Slack");
+    expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, inSlack: null })).toBe(unknown);
+    // A fact, not an instruction: the line tells the bot nothing to do or not to do.
+    for (const text of [notYet, inSlack]) {
+      expectNoCardTeaching(text);
+      expect(text).not.toMatch(/slack\.com/i);
+      expect(text).not.toMatch(/do not[^.]*slack|never[^.]*slack/i);
+    }
+  });
+
   it("stays under the max with a full 1400 character apps section and a long name", () => {
     const name = "Bartholomew-Maximilian Featherstonehaugh";
     const line = "- A very long application name for the cap (a-very-long-domain.example-company.com): connected, not shared with you, 7 recent calls";
@@ -568,6 +584,25 @@ describe("helloCardSource", () => {
       source: "bot",
       items: [{ app: "slack" }, { domain: "notion.com", why: "Shared docs" }, { domain: "sentry.io" }],
     });
+  });
+
+  it("reports a bot's slack.com item as slack: the bot's own Slack card, in either form", () => {
+    // The live hello of 2026-10-04: notion.com, slack.com, sentry.io.
+    const body =
+      "Hi Stefan.\n" +
+      fence({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "notion.com", why: "Docs" }, { domain: "slack.com", why: "Team chat" }, { domain: "sentry.io", why: "Errors" }] }] });
+    const picks = helloCardSource({ body }, fallback);
+    expect(picks).toEqual({
+      source: "bot",
+      items: [{ domain: "notion.com", why: "Docs" }, { app: "slack", why: "Team chat" }, { domain: "sentry.io", why: "Errors" }],
+    });
+    expect(helloCardSourceLogLine({ agentUid: "agt_x", eventId: "e", picks })).toBe("agent=agt_x event=e source=bot items=notion.com,slack,sentry.io");
+    // Named both ways in one block: one Slack item.
+    const both = helloCardSource(
+      { body: "Hi.\n" + fence({ v: 1, blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "https://www.slack.com/" }, { domain: "notion.com" }] }] }) },
+      fallback,
+    );
+    expect(both.items).toEqual([{ app: "slack" }, { domain: "notion.com" }]);
   });
 
   it("shows the app's fallback picks when the envelope is absent: the live Big Nuts hello", () => {

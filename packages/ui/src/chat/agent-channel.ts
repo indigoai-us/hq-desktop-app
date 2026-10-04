@@ -139,6 +139,19 @@ function companyAppsFacts(companyApps: string | null | undefined): string {
   return apps === "" ? "The company has no connected apps yet.\n" : `The company's connected apps:\n${apps}\n`;
 }
 
+/**
+ * Whether the bot itself is in Slack, written as a fact for the bot in the
+ * hello request. In the bot's conversation "Slack" is the bot's own Slack
+ * (the Slack card), so the request says where that stands in the bot's own
+ * terms. The company's Slack integration connection is not in the apps list
+ * (`companyAppsBrief`). Null or absent when the bot's status could not be
+ * read: no line.
+ */
+function slackFact(inSlack: boolean | null | undefined): string {
+  if (inSlack == null) return "";
+  return inSlack ? "You are in Slack.\n" : "You are not in Slack yet.\n";
+}
+
 /** A name or id written into a request: one line, no code marks, bounded. */
 function inlineText(value: string | null | undefined, max = 80): string {
   return (value ?? "")
@@ -162,7 +175,8 @@ function personOrFallback(name: string | null | undefined): string {
  * explains the cards and how people ask. So this request is a plain ask: say
  * hello and offer what the person could connect. It adds the facts the bot
  * can use: that the company files are still downloading, while that is so,
- * and what the company has connected (`companyApps`). The app shows the
+ * whether the bot is in Slack yet (`inSlack`), and what the company has
+ * connected (`companyApps`). The app shows the
  * bot's text as written. For a bot on an older runtime that shows no cards,
  * the app attaches its own picks under the hello (see `helloCardSource`).
  */
@@ -171,6 +185,8 @@ export function buildAgentHelloRequest(input: {
   filesStillDownloading: boolean;
   /** The apps brief, "" when nothing is connected, null or absent when the list could not be read. */
   companyApps?: string | null;
+  /** Whether the bot itself is in Slack. Null or absent when its status could not be read. */
+  inSlack?: boolean | null;
 }): string {
   const person = personOrFallback(input.personName);
   const who = inlineText(input.personName) ? `${person} just created you and is opening this conversation` : `${person} is opening this conversation`;
@@ -179,6 +195,7 @@ export function buildAgentHelloRequest(input: {
     `${AGENT_HELLO_REQUEST_OPENING}. ${who}. ` +
     `${person} cannot see this message. Write your first message to ${person}: say hello and offer what ${person} could connect so you can help.\n` +
     files +
+    slackFact(input.inSlack) +
     companyAppsFacts(input.companyApps) +
     `Do not mention this message.`
   );

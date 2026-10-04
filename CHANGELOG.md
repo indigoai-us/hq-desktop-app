@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- In a cloud bot's direct message, a Slack card is always about the bot's own Slack. When a bot offered Slack by naming slack.com, the card showed a teammate's company Slack connection as "Connected" even though the bot had never been connected. It now shows the Connect Slack card, which opens the Connect Slack window, and reads "in Slack" only when the bot itself is in Slack. A person who is not allowed to set the bot up sees "Ask a company admin to connect Nova to Slack." (for a bot named Nova). The cards the app chooses no longer show a second Slack card for your own Slack connection. A new bot is told whether it is in Slack yet, and the company's Slack connection is no longer in the list of apps it is given.
 - Connection cards in a cloud bot's direct message no longer say "Connected" twice. Under the green Connected mark, an app a teammate connected now reads "A teammate connected this. Ask them to share it with Nova." (for a bot named Nova), your own app reads "Let Nova use it?", and an app the bot can already use reads "Nova can use it." The sentence on a card can take two rows, so the instruction is no longer cut off after the first few words. Every card in a row keeps the same height.
 
 ## [0.10.389] — 2026-10-04

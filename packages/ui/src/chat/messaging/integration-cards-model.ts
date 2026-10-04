@@ -13,6 +13,12 @@
  * have one, else a generic glyph; never a remote image), every word, every
  * link and every state.
  *
+ * SLACK IS NOT ONE OF THESE CARDS. In a bot's conversation "Slack" means the
+ * bot's own Slack: the built-in card (connection-card-model.ts) drawn from
+ * the bot's own status. A company's Slack integration connection, a
+ * teammate's say, is never drawn as a card here, never offered by the app,
+ * and never listed to the bot ({@link isSlackConnection}).
+ *
  * WHAT DECIDES A CARD:
  * - a company connection whose listed domain is the item's (or the two are
  *   one another's subdomain): a connection card (connected, or "Let {bot} use
@@ -28,7 +34,7 @@
 
 import { brandMarkFor } from "./app-brand-marks.js";
 import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
-import { normalizeConnectDomain } from "./richMessageContent.js";
+import { isSlackConnectDomain, normalizeConnectDomain } from "./richMessageContent.js";
 import {
   CONNECTING_TIMEOUT_MS,
   connectionActionKey,
@@ -147,6 +153,17 @@ export function readCompanyConnections(json: unknown): CompanyConnections | null
     recentCallsByProvider,
     recentCallsByConnection,
   };
+}
+
+/**
+ * Whether a company connection is a Slack integration connection: its listed
+ * domain is Slack's, or the list gives no domain and its provider is `slack`.
+ * Such a connection is left out of everything a bot's conversation shows or
+ * tells the bot about apps, because Slack there is the bot's own Slack.
+ */
+export function isSlackConnection(connection: Pick<CompanyConnection, "domain" | "provider">): boolean {
+  if (connection.domain !== null) return isSlackConnectDomain(connection.domain);
+  return connection.provider === "slack";
 }
 
 /** Whether one domain is the other, or a subdomain of it. */
@@ -351,6 +368,9 @@ export function integrationCardView(
 ): ConnectionCardView | null {
   const domain = normalizeConnectDomain(item.domain);
   if (!domain) return null;
+  // Slack is the bot's own Slack card, never an integration card: a company's
+  // Slack connection must not be read as the bot being in Slack.
+  if (isSlackConnectDomain(domain)) return null;
   const bot = input.botName.trim() || "your bot";
   const connection = connectionForItem(input.facts, { domain, connectionId: item.connectionId });
   const match = typeof input.lookup === "object" ? input.lookup : null;
@@ -593,6 +613,10 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
  * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
  * all (Slack counts as one).
  *
+ * Slack is offered once, as the bot's own Slack card. The person's own Slack
+ * integration connection is not offered beside it (that gave two cards
+ * titled Slack), nor in its place once the bot is in Slack.
+ *
  * Each app's item carries the connection's id, so its card is that one
  * connection and no other. The item's domain is the one the list gives; a
  * connection the list gives no domain for is named `{provider}.com`, which
@@ -606,12 +630,14 @@ export function appChosenItems(
 ): ConnectItem[] {
   const items: ConnectItem[] = slackConnected ? [] : [{ app: "slack" }];
   if (!facts || !facts.viewerUid) return items;
-  const own = newestFirst(facts.connections.filter((c) => c.createdBy === facts.viewerUid && !botCanUse(c, record)));
+  const own = newestFirst(
+    facts.connections.filter((c) => c.createdBy === facts.viewerUid && !isSlackConnection(c) && !botCanUse(c, record)),
+  );
   const seen = new Set<string>();
   for (const connection of own) {
     if (items.length >= MAX_FALLBACK_APPS) break;
     const domain = connection.domain ?? normalizeConnectDomain(connection.provider ? `${connection.provider}.com` : null);
-    if (!domain || seen.has(domain)) continue;
+    if (!domain || seen.has(domain) || isSlackConnectDomain(domain)) continue;
     seen.add(domain);
     items.push({ domain, connectionId: connection.id });
   }
@@ -628,18 +654,21 @@ export function appChosenItems(
  * characters by dropping lines from the end. Empty when nothing is connected.
  *
  * "you can use it" is the same rule as the card's ({@link botCanUse}).
+ *
+ * Slack is not in the list. A company's Slack integration connection is left
+ * out ({@link isSlackConnection}): listed as `Slack (slack.com): connected`,
+ * it read to the bot as its own Slack, and the bot then named `slack.com` as
+ * an app to connect. Whether the bot itself is in Slack is said in the
+ * request, as its own line (agent-channel.ts, `buildAgentHelloRequest`).
  */
 export function companyAppsBrief(input: {
   facts: CompanyConnections | null | undefined;
   record?: BotConnectionRecord | null;
-  /** The bot is in Slack: said first, so the bot does not offer Slack again. */
-  slackConnected?: boolean;
 }): string {
   const lines: string[] = [];
-  if (input.slackConnected) lines.push("- Slack: connected, you can use it");
   const facts = input.facts;
   if (facts) {
-    const ranked = [...facts.connections].sort((a, b) => {
+    const ranked = facts.connections.filter((connection) => !isSlackConnection(connection)).sort((a, b) => {
       const calls = recentCallsFor(facts, b) - recentCallsFor(facts, a);
       if (calls !== 0) return calls;
       return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;

@@ -21,6 +21,7 @@ import {
   defaultAppName,
   domainsToLookUp,
   integrationCardView,
+  isSlackConnection,
   keyRejectedSentence,
   readCompanyConnections,
   readKeyBlueprint,
@@ -395,6 +396,18 @@ describe("integrationCardView", () => {
     expect(integrationCardView({ domain: "linear.app" }, input({ facts: anon }))!.primaryLabel).toBeNull();
   });
 
+  it("draws no integration card for Slack's domain, whatever the company has connected", () => {
+    // Slack in a bot's conversation is the bot's own Slack card. A teammate's
+    // Slack integration connection must never be read as the bot's state.
+    const f = facts([connection({ id: "acct_slack", provider: "factory:slack", createdBy: "prs_teammate", installation: { displayName: "Slack", domain: "slack.com" } })]);
+    const slackMatch = { domain: "slack.com", name: "Slack", authClass: "oauth" as const };
+    for (const domain of ["slack.com", "www.slack.com", "https://slack.com/", "acme.slack.com"]) {
+      expect(integrationCardView({ domain }, input({ facts: f })), domain).toBeNull();
+      expect(integrationCardView({ domain, connectionId: "acct_slack" }, input({ facts: f })), domain).toBeNull();
+      expect(integrationCardView({ domain }, input({ facts: f, lookup: slackMatch })), domain).toBeNull();
+    }
+  });
+
   it("never repeats the Connected mark in the line under it, in any connected state", () => {
     // Owner, 2026-10-04: a green "Connected" mark with a line that also began
     // "Connected" read as the same word twice, and the one-row clamp then cut
@@ -638,6 +651,24 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
     expect(connectRowReady(appChosenItems(f, null, true), { facts: f, lookupFor: () => "unknown", since: NOW, now: NOW })).toBe(true);
   });
 
+  it("offers Slack once, as the bot's own card: the person's own Slack integration connection is never a second card", () => {
+    const f = facts([
+      own("a1", "Slack", "slack.com", "2026-10-05T00:00:00.000Z"),
+      own("a2", "Notion", "notion.so", "2026-10-03T00:00:00.000Z"),
+      own("a3", "Slack", "acme.slack.com", "2026-10-04T00:00:00.000Z"),
+      // No domain on the list: it would be named slack.com from its provider.
+      connection({ id: "a4", provider: "slack", createdAt: "2026-10-06T00:00:00.000Z", installation: { displayName: "Slack" } }),
+    ]);
+    const notion = { domain: "notion.so", connectionId: "a2" };
+    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, notion]);
+    // Once the bot is in Slack there is no Slack card at all.
+    expect(appChosenItems(f, null, true)).toEqual([notion]);
+    expect(isSlackConnection({ domain: "slack.com", provider: "slack" })).toBe(true);
+    expect(isSlackConnection({ domain: null, provider: "slack" })).toBe(true);
+    expect(isSlackConnection({ domain: "linear.app", provider: "slack" })).toBe(false);
+    expect(isSlackConnection({ domain: null, provider: "linear" })).toBe(false);
+  });
+
   it("offers nothing of a list that does not say who is looking", () => {
     const anon = facts([own("a1", "Linear", "linear.app", "2026-10-01T00:00:00.000Z")], { viewer: {} });
     expect(appChosenItems(anon, null, true)).toEqual([]);
@@ -668,17 +699,42 @@ describe("companyAppsBrief: what the bot is told about the company's apps", () =
     );
   });
 
-  it("says Slack first when the bot is in Slack, and says what was granted from here as usable", () => {
+  it("says what was granted from here as usable", () => {
     const f = readCompanyConnections(rows());
-    const brief = companyAppsBrief({ facts: f, record: recordGrant(null, "acct_linear", "Linear", NOW), slackConnected: true });
-    expect(brief.split("\n")[0]).toBe("- Slack: connected, you can use it");
+    const brief = companyAppsBrief({ facts: f, record: recordGrant(null, "acct_linear", "Linear", NOW) });
     expect(brief).toContain("- Linear (linear.app): connected, you can use it");
   });
 
-  it("is empty with no apps and no Slack, and still names Slack with no list", () => {
+  it("is empty with no apps, and with no list", () => {
     expect(companyAppsBrief({ facts: readCompanyConnections(envelope()) })).toBe("");
     expect(companyAppsBrief({ facts: null })).toBe("");
-    expect(companyAppsBrief({ facts: null, slackConnected: true })).toBe("- Slack: connected, you can use it");
+  });
+
+  it("leaves the company's Slack integration connection out: Slack is the bot's own, said in the request", () => {
+    // Live, 2026-10-04: the brief listed a teammate's connection as
+    // "Slack (slack.com): connected, not shared with you", the bot named
+    // slack.com as an app to connect, and its card then showed the
+    // teammate's connection as if the bot were in Slack.
+    const slack = (over: Record<string, unknown> = {}) =>
+      connection({ id: "acct_slack", provider: "factory:slack", createdBy: "prs_teammate", installation: { displayName: "Slack", domain: "slack.com" }, ...over });
+    for (const row of [
+      slack(),
+      slack({ installation: { displayName: "Slack", domain: "https://acme.slack.com/" } }),
+      // No domain on the list: named by its provider.
+      slack({ provider: "slack", installation: { displayName: "Slack" } }),
+      // Open to everyone, and called a lot: still not an app in the bot's list.
+      slack({ access: { mode: "everyone" } }),
+    ]) {
+      const f = readCompanyConnections(envelope([connection(), row], { audit: Array.from({ length: 9 }, () => ({ connectionId: "acct_slack" })) }));
+      const brief = companyAppsBrief({ facts: f });
+      expect(brief).toBe("- Linear (linear.app): connected, not shared with you");
+      expect(brief.toLowerCase()).not.toContain("slack");
+    }
+    // Slack alone leaves nothing to list.
+    expect(companyAppsBrief({ facts: readCompanyConnections(envelope([slack()])) })).toBe("");
+    // A name that only resembles Slack's is some other app, and is listed.
+    const other = connection({ id: "acct_x", provider: "factory:slackbot-tools", installation: { displayName: "Slack Tools", domain: "slack-tools.com" } });
+    expect(companyAppsBrief({ facts: readCompanyConnections(envelope([other])) })).toBe("- Slack Tools (slack-tools.com): connected, not shared with you");
   });
 
   it("names an app with no domain by its provider, and keeps a name to one clean line", () => {

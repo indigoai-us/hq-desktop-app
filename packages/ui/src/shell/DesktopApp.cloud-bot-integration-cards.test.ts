@@ -267,7 +267,7 @@ async function settle(times = 10): Promise<void> {
 
 const DM_ROW: ConversationRow = { id: `dm:${NOVA}`, kind: "dm", title: "Nova", personUid: NOVA, companyUid: null } as ConversationRow;
 
-async function mountDm(w: World): Promise<void> {
+async function mountDm(w: World, row: ConversationRow = DM_ROW): Promise<void> {
   window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -278,7 +278,7 @@ async function mountDm(w: World): Promise<void> {
       sidebarApi: createFixtureChatSidebarApi(),
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey Epstein", email: "me@example.com" },
-      initialRow: DM_ROW,
+      initialRow: row,
       companies: w.companies,
       onopenurl: w.openUrl,
       wakes: createChatWakeBus(),
@@ -522,6 +522,106 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(host.querySelector('[data-target="tools"]')!.textContent).toContain("Connect your tools");
     expect(host.querySelector('[data-testid="rich-connect-browse"]')).toBeNull();
     expect(w.catalogSearch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * In a bot's conversation "Slack" is the bot's own Slack. Live, 2026-10-04: a
+ * new bot named `{"domain":"slack.com"}`. The company had a Slack integration
+ * connection a teammate made, so the card read "Connected. Connected by a
+ * teammate..." for a bot that had never been connected to Slack.
+ */
+describe("DesktopApp: a bot that names slack.com gets its own Slack card", () => {
+  const TEAMMATE_SLACK = connection({
+    id: "acct_slack",
+    provider: "factory:slack",
+    createdBy: "prs_teammate",
+    installation: { displayName: "Slack", domain: "slack.com" },
+  });
+  /** The live hello's block: notion.com, slack.com, sentry.io. */
+  const NAMES_SLACK = [{ kind: "connect", items: [{ domain: "notion.so", why: "Docs" }, { domain: "slack.com", why: "Team chat" }] }];
+  const slackCard = (): HTMLElement | null => host.querySelector<HTMLElement>('[data-testid="connection-card"][data-target="slack"]');
+  const slackPrimary = () => slackCard()?.querySelector<HTMLButtonElement>('[data-testid="connection-card-primary"]') ?? null;
+  const slackLine = (): string => slackCard()?.querySelector('[data-testid="connection-card-line"]')?.textContent ?? "";
+  const statusWith = (agent: Row) =>
+    vi.fn(async () =>
+      ok({ setupState: { phase: "ready" }, agent: { companyUid: COMPANY, runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" }, ...agent } }),
+    );
+
+  it("shows Connect Slack, not the teammate's company connection, and the button opens the Slack window", async () => {
+    const w = world({ thread: thread(NAMES_SLACK), connections: [connection(), TEAMMATE_SLACK] });
+    await mountResolved(w);
+    expect(cardIds()).toEqual(["notion.so", "slack"]);
+    // No integration card is drawn for Slack, and nothing says a teammate connected it.
+    expect(appCard("slack.com")).toBeNull();
+    expect(slackCard()!.dataset.state).toBe("offered");
+    expect(slackCard()!.dataset.kind).toBeUndefined();
+    expect(slackCard()!.querySelector('[data-testid="connection-card-mark"]')).toBeNull();
+    expect(slackLine()).toBe("Talk to Nova in Slack and let it post there.");
+    expect(slackCard()!.textContent).not.toMatch(/teammate|Connected/);
+    expect(slackPrimary()!.textContent?.trim()).toBe("Connect Slack");
+    expect(slackPrimary()!.getAttribute("aria-haspopup")).toBe("dialog");
+    // The catalog is never asked about Slack: it is not an app to look up.
+    expect(w.catalogSearch.mock.calls.map(([, query]) => query)).not.toContain("slack.com");
+    slackPrimary()!.click();
+    await vi.waitFor(() => expect(dialog()).not.toBeNull());
+    expect(dialog()!.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Connect Nova to Slack");
+    expect(w.openUrl).not.toHaveBeenCalled();
+    expect(w.startOAuth).not.toHaveBeenCalled();
+  });
+
+  it("names Slack both ways in one block and still draws one Slack card", async () => {
+    const w = world({
+      thread: thread([{ kind: "connect", items: [{ app: "slack" }, { domain: "https://www.slack.com/" }, { domain: "notion.so" }] }]),
+      connections: [connection(), TEAMMATE_SLACK],
+    });
+    await mountResolved(w);
+    expect(cardIds()).toEqual(["slack", "notion.so"]);
+    expect(host.querySelectorAll('[data-testid="connection-card"][data-target="slack"]')).toHaveLength(1);
+  });
+
+  it("shows the bot as in Slack only when the bot's own status says so", async () => {
+    const w = world({
+      thread: thread(NAMES_SLACK),
+      connections: [connection(), TEAMMATE_SLACK],
+      getStatus: statusWith({ channels: { slack: { appId: "A1" } }, channelDiagnostics: { slack: { inboundCapability: "ok" } } }),
+    });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(slackCard()?.dataset.state).toBe("connected"));
+    expect(slackLine()).toBe("Nova is in Slack.");
+    expect(slackCard()!.querySelector('[data-testid="connection-card-mark"]')?.textContent?.trim()).toBe("Connected");
+    expect(slackPrimary()).toBeNull();
+    expect(slackCard()!.textContent).not.toContain("teammate");
+    expect(appCard("slack.com")).toBeNull();
+  });
+
+  it("says to ask a company admin when this person may not read the bot's status, whatever the company has connected", async () => {
+    const w = world({
+      thread: thread(NAMES_SLACK),
+      connections: [connection(), TEAMMATE_SLACK],
+      getStatus: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-403", message: "no" })),
+    });
+    // The row names the company, so the list is still read with the status refused.
+    await mountDm(w, { ...DM_ROW, companyUid: COMPANY } as ConversationRow);
+    await vi.waitFor(() => expect(slackLine()).toBe("Ask a company admin to connect Nova to Slack."));
+    expect(cardIds()).toEqual(["notion.so", "slack"]);
+    expect(slackPrimary()).toBeNull();
+    expect(slackCard()!.querySelector('[data-testid="connection-card-mark"]')).toBeNull();
+    expect(slackCard()!.textContent).not.toMatch(/teammate|Connected/);
+    expect(appCard("slack.com")).toBeNull();
+  });
+
+  it("the app's own picks offer Slack once: the person's own Slack integration connection is not a second Slack card", async () => {
+    // No connect block from the bot: the app chooses. The person's own Slack
+    // integration connection would have been offered beside the Slack card.
+    const w = world({
+      thread: thread([]),
+      connections: [connection(), connection({ id: "acct_my_slack", provider: "factory:slack", installation: { displayName: "Slack", domain: "slack.com" } })],
+    });
+    await mountResolved(w);
+    expect(cardIds()).toEqual(["slack", "notion.so"]);
+    expect([...host.querySelectorAll('[data-testid="connection-card"]')].filter((el) => el.getAttribute("aria-label") === "Slack")).toHaveLength(1);
+    expect(appCard("slack.com")).toBeNull();
   });
 });
 

@@ -2,7 +2,9 @@
  * The hello request a new cloud bot gets, composed from what the app can
  * read: the bot's status (whether its files are still downloading, whether
  * it is in Slack, its company) and the company's connection list (the apps
- * brief the bot chooses cards from). The shell sends what this returns.
+ * brief the bot chooses cards from, with the company's Slack integration
+ * connection left out: Slack is said as the bot's own state). The shell
+ * sends what this returns.
  *
  * One status call and one list call, the person as the caller. A status or
  * list that cannot be read costs nothing but its section: the hello still
@@ -53,18 +55,16 @@ export async function composeCloudBotHello(
     try {
       const list = await adapter.integrations?.listConnections?.(companyUid);
       if (list?.ok) {
-        companyApps = companyAppsBrief({
-          facts: readCompanyConnections(list.value),
-          record: input.record ?? null,
-          slackConnected: statusValue != null && slackFactsFromStatus(statusValue).state === "connected",
-        });
+        companyApps = companyAppsBrief({ facts: readCompanyConnections(list.value), record: input.record ?? null });
       }
     } catch {
       companyApps = null;
     }
   }
+  // The bot's own Slack, from its own status. Not known when the status could not be read.
+  const inSlack = statusValue != null ? slackFactsFromStatus(statusValue).state === "connected" : null;
   return {
-    body: buildAgentHelloRequest({ personName: input.personName, filesStillDownloading, companyApps }),
+    body: buildAgentHelloRequest({ personName: input.personName, filesStillDownloading, companyApps, inSlack }),
     companyUid,
     companyApps,
   };
