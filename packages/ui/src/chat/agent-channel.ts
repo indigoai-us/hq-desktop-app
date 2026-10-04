@@ -120,8 +120,8 @@ export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
 export const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
 
 /**
- * What the company has connected, written as a fact for the bot. Shared by
- * the hello request and the request behind "Connect more tools".
+ * What the company has connected, written as a fact for the bot in the
+ * hello request.
  *
  * `companyApps` is the apps brief the app wrote from the company's
  * connection list (integration-cards-model.ts, `companyAppsBrief`): null
@@ -175,22 +175,6 @@ export function buildAgentHelloRequest(input: {
     `${AGENT_HELLO_REQUEST_OPENING}. ${who}. ` +
     `${person} cannot see this message. Write your first message to ${person}: say hello and offer what ${person} could connect so you can help.\n` +
     files +
-    companyAppsFacts(input.companyApps) +
-    `Do not mention this message.`
-  );
-}
-
-/**
- * The request the app sends a cloud bot, on the bot-only lane, when the
- * person asks to connect more apps (the "Connect more tools" message, from
- * the chip or typed). Like the hello, it is a plain ask with the company's
- * connected apps as facts; the bot shows the cards with its own tool.
- */
-export function buildAgentConnectMoreRequest(input: { personName?: string | null; companyApps?: string | null }): string {
-  const person = personOrFallback(input.personName);
-  return (
-    `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps. ` +
-    `${person} cannot see this message. Answer ${person} and offer what ${person} could connect.\n` +
     companyAppsFacts(input.companyApps) +
     `Do not mention this message.`
   );
@@ -314,6 +298,39 @@ export function agentHelloEventId(
 ): string | null {
   const row = firstBotRowAfterRequest(rows, input, (body) => body.startsWith(AGENT_HELLO_REQUEST_OPENING));
   return row?.eventId?.trim() || null;
+}
+
+/**
+ * Whether a direct message is with a cloud bot whose conversation gets what
+ * the app adds for one: connection cards, suggested replies, the file sync
+ * strip, and the app's hidden notices to the bot.
+ *
+ * An `agt_` uid alone does not say so. A teammate's local bot, the person's
+ * own local bot on another Mac and a bot from outside the company all have
+ * one, and none of them is sent the app's notices or offered the company's
+ * connections. It takes a positive sign:
+ *
+ * - `madeHere`: the bot was made in the New Bot flow on this device; or
+ * - `statusRead`: the server answered this person's read of the bot's
+ *   status. That route knows hosted bots only and answers owners, admins
+ *   and the bot's creator, so an answer says both "cloud" and "this person
+ *   may see it".
+ *
+ * A local bot on this Mac, or one of the person's own on another Mac, is
+ * never one, whatever else is true.
+ */
+export function isCloudBotDm(input: {
+  agentUid: string | null | undefined;
+  /** A local bot on this Mac has this uid. */
+  localHere: boolean;
+  /** One of the person's own local bots, on another computer, has it. */
+  ownLocalElsewhere: boolean;
+  madeHere: boolean;
+  statusRead: boolean;
+}): boolean {
+  if (!isAgentUid((input.agentUid ?? "").trim())) return false;
+  if (input.localHere || input.ownLocalElsewhere) return false;
+  return input.madeHere || input.statusRead;
 }
 
 /**

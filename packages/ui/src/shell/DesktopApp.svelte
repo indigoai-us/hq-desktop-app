@@ -92,7 +92,6 @@
     connectionActionKey,
     connectionCardView,
     forgetAppCard,
-    isConnectMoreRequest,
     loadConnectionRecords,
     markAppConnecting,
     markAppDeclined,
@@ -120,7 +119,6 @@
     appChosenItems,
     botCanUse,
     catalogMatchFor,
-    companyAppsBrief,
     connectFailureSentence,
     connectRowReady,
     connectionAnswersPress,
@@ -212,7 +210,7 @@
     agentHelloEventId,
     agentHelloEventIdByAskTime,
     dmPageHoldsStart,
-    buildAgentConnectMoreRequest,
+    isCloudBotDm,
     buildAgentHelloRequest,
     buildAgentSlackConnectedNotice,
     buildAgentToolConnectedNotice,
@@ -3989,15 +3987,48 @@
     const { [agentUid]: _gone, ...rest } = botSyncByUid;
     botSyncByUid = rest;
   }
-  /** The cloud bot on the other side of the open direct message, if any. */
-  const dmCloudBotUid = $derived(dmAgentUid && !selectedLocalBot ? dmAgentUid : null);
+  /**
+   * Cloud bots whose status the server let this person read, this session.
+   * The status route knows hosted bots only, so an answer is the positive
+   * sign that a bot is a cloud bot this person can see the status of.
+   */
+  let cloudBotStatusRead = $state.raw<Record<string, true>>({});
+  /**
+   * A direct message with a bot that is not a local bot of this person's
+   * (on this Mac or another). It may be a cloud bot, a teammate's local bot,
+   * or a bot from outside: its status is asked once to find out.
+   */
+  const dmCloudBotCandidateUid = $derived(
+    dmAgentUid && !selectedLocalBot && !ownedLocalBotUids.includes(dmAgentUid) ? dmAgentUid : null,
+  );
+  /**
+   * The cloud bot on the other side of the open direct message, if any. An
+   * `agt_` uid alone does not say so: a teammate's local bot and a bot from
+   * outside have one too. It takes a positive sign (`isCloudBotDm`): the bot
+   * was made in the New Bot flow on this device, or the server answered this
+   * person's read of its status. Everything a cloud bot's conversation adds
+   * (cards, suggestions, the sync strip, notices to the bot) hangs off this.
+   */
+  const dmCloudBotUid = $derived(
+    dmAgentUid &&
+      isCloudBotDm({
+        agentUid: dmAgentUid,
+        localHere: Boolean(selectedLocalBot),
+        ownLocalElsewhere: ownedLocalBotUids.includes(dmAgentUid),
+        madeHere: madeInNewBotFlow(dmAgentUid),
+        statusRead: cloudBotStatusRead[dmAgentUid] === true,
+      })
+      ? dmAgentUid
+      : null,
+  );
   const dmCloudBotSync = $derived(dmCloudBotUid ? (botSyncByUid[dmCloudBotUid] ?? null) : null);
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // read fails, which means no widget and never an error in the chat.
+  // read fails, which means no widget and never an error in the chat. The
+  // first answer is also what says the bot is a cloud bot.
   $effect(() => {
-    const uid = dmCloudBotUid;
+    const uid = dmCloudBotCandidateUid;
     if (!uid) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -4010,6 +4041,9 @@
         if (stopped) return;
         if (result.ok) {
           readable = true;
+          if (!untrack(() => cloudBotStatusRead)[uid]) {
+            cloudBotStatusRead = { ...untrack(() => cloudBotStatusRead), [uid]: true };
+          }
           const now = Date.now();
           const before = untrack(() => botSyncByUid[uid]) ?? null;
           setBotSyncFacts(uid, advanceBotSync(before, observeBotSync(result.value, now, { expectFirstSync: madeHere }), now));
@@ -5146,34 +5180,6 @@
   }
   const appNoteKey = (domain: string): string => `app:${domain}`;
 
-  /**
-   * The apps brief for a request to the bot: one list call, the person as
-   * the caller. Null when the list could not be read (no section), "" when
-   * nothing is connected. The company comes from the bot's status, else from
-   * what the cards last learned, else from the open row.
-   */
-  async function readCompanyAppsBrief(agentUid: string, companyUidHint: string | null, statusValue: unknown): Promise<string | null> {
-    const facts = botConnectionFacts[agentUid] ?? null;
-    const row = selectedRow;
-    const rowCompanyUid = row?.kind === "dm" && row.personUid === agentUid ? (row.companyUid?.trim() ?? "") : "";
-    const companyUid = companyUidHint ?? facts?.companyUid ?? (rowCompanyUid || null);
-    if (!companyUid) return null;
-    let list: unknown = null;
-    try {
-      const result = await adapter.integrations?.listConnections?.(companyUid);
-      if (!result?.ok) return null;
-      list = result.value;
-    } catch {
-      return null;
-    }
-    const slackStatus = statusValue ?? facts?.status ?? null;
-    return companyAppsBrief({
-      facts: readCompanyConnections(list),
-      record: connectionRecords[agentUid] ?? null,
-      slackConnected: slackStatus != null && slackFactsFromStatus(slackStatus).state === "connected",
-    });
-  }
-
   /** Ask the catalog about one domain a bot named, once per bot. A failure reads as not found. */
   async function lookUpCatalog(agentUid: string, companyUid: string, domain: string): Promise<void> {
     const key = `${agentUid}:${domain}`;
@@ -5580,20 +5586,6 @@
   }
   function noticePersonName(): string {
     return (self?.displayName ?? "").trim().split(/\s+/)[0] ?? "";
-  }
-  /**
-   * The hidden request behind "Connect more tools": the company's apps and
-   * the picking rules, once per message of the person's, so the bot's
-   * visible answer carries the cards it chose. The apps brief comes from one
-   * list call; without it the request still goes, with no apps section.
-   */
-  async function sendConnectMoreRequest(agentUid: string, eventId: string | null): Promise<void> {
-    const companyApps = await readCompanyAppsBrief(agentUid, null, null);
-    await sendBotNotice(
-      agentUid,
-      buildAgentConnectMoreRequest({ personName: noticePersonName(), companyApps }),
-      `new-bot-connect-more-${agentUid}-${eventId?.trim() || Date.now()}`,
-    );
   }
   /** Tell the bot, once, about a connection it can now use. */
   async function announceToolToBot(agentUid: string, connection: ToolConnection): Promise<void> {
@@ -9664,12 +9656,11 @@
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
         scheduleDmHumanRecencyRefresh(true);
-        // "Connect more tools" typed to a cloud bot: the bot
-        // also gets one hidden request with the company's apps, so its
-        // visible answer can carry the cards it chose.
-        if (dmCloudBotUid && row.personUid === dmCloudBotUid && isConnectMoreRequest(body)) {
-          void sendConnectMoreRequest(row.personUid, wire?.eventId ?? null);
-        }
+        // "Connect more tools" is this one message and nothing else: the
+        // bot answers what the person wrote. The app sends no second, hidden
+        // request beside it, which the bot answered as well. The cards come
+        // with the bot's answer: its own, or the app's picks under it
+        // (`cloudBotConnectMoreAt`).
         // A 1:1 DM with an agent is inherently addressed to that agent, so
         // any send starts the indicator — no @mention required (unlike a
         // channel, where only an explicit mention wakes an agent). Started

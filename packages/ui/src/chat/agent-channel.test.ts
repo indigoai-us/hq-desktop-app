@@ -10,7 +10,7 @@ import {
   agentHelloEventId,
   agentHelloEventIdByAskTime,
   dmPageHoldsStart,
-  buildAgentConnectMoreRequest,
+  isCloudBotDm,
   buildAgentHelloRequest,
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
@@ -269,20 +269,6 @@ describe("the new bot's first message", () => {
     expect(over.length).toBeLessThan(AGENT_HELLO_REQUEST_MAX_CHARS);
   });
 
-  it("the Connect more request is a plain ask with the apps as facts", () => {
-    const brief = "- Linear (linear.app): connected, not shared with you";
-    const text = buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: brief });
-    expect(text.startsWith(AGENT_HELLO_REQUEST_LEAD)).toBe(true);
-    expect(text).toContain("Stefan just asked to connect more apps.");
-    expect(text).toContain("Stefan cannot see this message. Answer Stefan and offer what Stefan could connect.");
-    expect(text).toContain(`The company's connected apps:\n${brief}\n`);
-    expect(text.endsWith("Do not mention this message.")).toBe(true);
-    expectNoCardTeaching(text);
-    expect(text).not.toContain("\u2014");
-    expect(buildAgentConnectMoreRequest({ personName: "Stefan" })).not.toContain("The company's connected apps:");
-    expect(buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: "" })).toContain("The company has no connected apps yet.");
-  });
-
   it("stays well under the direct message body limit, even with a long name", () => {
     const name = "Bartholomew-Maximilian Featherstonehaugh";
     expect(name).toHaveLength(40);
@@ -362,6 +348,28 @@ describe("the hello message the cards sit under", () => {
     const answer = { eventId: "e6", fromPersonUid: "agt_nova", body: "I am in Slack now.", createdAt: "2026-10-02T14:30:20.000Z" };
     expect(agentHelloEventId([answer, notice], { agentUid: "agt_nova" })).toBeNull();
     expect(agentHelloEventId([answer, notice, HELLO, REQUEST], { agentUid: "agt_nova" })).toBe("e2");
+  });
+});
+
+describe("isCloudBotDm (B-9): an agt_ uid alone is not a cloud bot", () => {
+  const base = { agentUid: "agt_nova", localHere: false, ownLocalElsewhere: false, madeHere: false, statusRead: false };
+
+  it("takes a positive sign: made here, or a status the server let this person read", () => {
+    // A teammate's local bot, a bot from outside: an agt_ uid and nothing else.
+    expect(isCloudBotDm(base)).toBe(false);
+    expect(isCloudBotDm({ ...base, madeHere: true })).toBe(true);
+    expect(isCloudBotDm({ ...base, statusRead: true })).toBe(true);
+  });
+
+  it("is never a local bot, on this Mac or another of the person's", () => {
+    expect(isCloudBotDm({ ...base, localHere: true, madeHere: true, statusRead: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, ownLocalElsewhere: true, madeHere: true, statusRead: true })).toBe(false);
+  });
+
+  it("is never a person or a missing uid", () => {
+    expect(isCloudBotDm({ ...base, agentUid: "prs_nova", madeHere: true, statusRead: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, agentUid: null, madeHere: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, agentUid: "  ", statusRead: true })).toBe(false);
   });
 });
 
