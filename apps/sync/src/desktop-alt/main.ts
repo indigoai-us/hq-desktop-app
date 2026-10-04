@@ -14,9 +14,17 @@ import { installAppearancePreferences } from '../lib/appearancePreferences';
 import { bootDesktopAltWindow } from './boot';
 import { dismissBootLoader } from './boot-loader';
 import { installUiHotUpdates, reportUiBootFailure, signalUiBoot } from '../lib/ui-hot';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
+import { POST_READY_ACTION_EVENT } from '../lib/post-ready-action-telemetry';
+import { registerDesktopAltReturnNudgeBridge } from '../lib/return-nudge-event-bridge';
 
 const windowLabel = getCurrentWindow().label;
+if (windowLabel === 'desktop-alt') {
+  const unlistenReturnNudge = registerDesktopAltReturnNudgeBridge((eventName, payload) =>
+    emitTo('main', eventName, payload),
+  );
+  window.addEventListener('pagehide', unlistenReturnNudge, { once: true });
+}
 document.documentElement.dataset.window = windowLabel;
 // Platform marker before first paint so title-bar / chrome CSS can drop the
 // macOS traffic-light inset on Windows (native decorated title bar + Snap
