@@ -406,7 +406,12 @@ export async function resolveCompanyFeature(
       if (res.status !== 200) return false;
       const body: unknown = await res.json();
       if (!isFlagSnapshot(body)) return false;
-      return Object.hasOwn(body.flags, key) && body.flags[key] === true;
+      // Own keys only. `Object.hasOwn` is newer than the oldest webview the
+      // desktop app still builds for.
+      return (
+        Object.prototype.hasOwnProperty.call(body.flags, key) &&
+        body.flags[key] === true
+      );
     } catch {
       return false;
     }
