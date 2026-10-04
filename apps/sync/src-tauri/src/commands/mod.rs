@@ -86,6 +86,7 @@ pub mod sync;
 pub mod sync_mode;
 pub mod sync_progress_watch;
 pub mod telemetry;
+pub(crate) mod updater_restart_marker;
 pub mod un_notify;
 pub mod vault_client;
 pub mod vault_explorer;
