@@ -179,8 +179,6 @@ function mountApp(
   platform: PlatformAdapter,
   initialRow?: ConversationRow,
   sidebarApi: ChatSidebarApi = createFixtureChatSidebarApi(),
-  /** Agents with a real conversation — see the agent-stub rail rule. */
-  engagedAgentUids: readonly string[] = [],
 ): void {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -192,7 +190,6 @@ function mountApp(
       notificationsApi: createEmptyNotificationsApi(),
       self: { uid: "prs_me", displayName: "Corey", email: "me@example.com" },
       coreFixtures: false,
-      engagedAgentUids,
       ...(initialRow ? { initialRow } : {}),
     },
   });
@@ -668,11 +665,8 @@ describe("when HQ Cloud cannot list your bots", () => {
       logToFile: async () => {},
       ensureCompanyHomeChannel: async (companyUid: string) => ({ homeChannelId: `chn_home_${companyUid}` }),
     } as ChatSidebarApi;
-    // `izzy` is someone else's cloud bot: it is on the rail because it has
-    // talked to this user, not because it exists (see the agent-stub rule).
-    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi, [
-      FLEET_UID,
-    ]);
+    // `izzy` is someone else's cloud bot, so it keeps the Cloud label.
+    mountApp(wipedBotAdapter(async () => CLOUD_UNSUPPORTED), undefined, sidebarApi);
 
     const chipFor = (uid: string) =>
       q(`[data-conversation-id="dm:${uid}"] [data-testid="bot-kind-chip"]`);
