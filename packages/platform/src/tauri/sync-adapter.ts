@@ -18,7 +18,12 @@ import {
   type WhoAmI,
   type VersionInfo,
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
+  INTEGRATION_PATHS,
+  integrationAppRefBody,
+  type IntegrationOAuthStart,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
@@ -27,6 +32,8 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
+  withHttpStatus,
+  withoutSecret,
 } from '../adapter.js';
 import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
@@ -36,6 +43,7 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -46,11 +54,13 @@ import {
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
+  resolveCompanyFeature,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
+import { withCreateAgentsAdmins } from './provision-refusal.js';
 import { createCallsApi } from '../calls/api.js';
 import {
   isLambdaInvokeServiceErrorBody,
@@ -222,6 +232,10 @@ export function createSyncPlatformAdapter(
     }
     if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
       // Missing or unreadable registry data leaves the new join-key behavior off.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_LAUNCH_SIGNIN_REACH_FLAG) {
+      // Reach measurement is opt-in; missing or unreadable registry data stays off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
@@ -441,6 +455,20 @@ export function createSyncPlatformAdapter(
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
+    return (await hqProAttemptWithRetries<T>(method, path, body)).result;
+  }
+
+  /**
+   * One hq-pro request under the shared policy: the 429/503 retries, then a
+   * single repeat of a GET that failed with the gateway's own 504 (the Lambda
+   * was never invoked, so asking again is safe). Both request helpers below
+   * go through here, so neither can skip a retry the other has.
+   */
+  async function hqProAttemptWithRetries<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): ReturnType<typeof hqProAttempt<T>> {
     const makeAttempt = () => retryThrottled(
       () => hqProAttempt<T>(method, path, body),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
@@ -456,7 +484,35 @@ export function createSyncPlatformAdapter(
       await (requestPolicy.sleep ?? sleepForLambdaInvokeRetry)(delayMs);
       attempted = await makeAttempt();
     }
-    return attempted.result;
+    return attempted;
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code. Same 429/503 policy.
+   */
+  function hqProPostWithStatus<T>(
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    return hqProRequestWithStatus<T>('POST', path, body);
+  }
+
+  /**
+   * {@link hqProJson}, with the HTTP status on a failure. Same 429/503 policy
+   * and the same single repeat of a GET that met the gateway's 504.
+   */
+  async function hqProRequestWithStatus<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await hqProAttemptWithRetries<T>(method, path, body);
+    // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === 'network') {
+      return attempted.result;
+    }
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   /**
@@ -599,6 +655,8 @@ export function createSyncPlatformAdapter(
           ? // Pinned per release; the registry cannot turn it off.
             Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
           : flags.resolve(flag, () => hasFeatureLegacy(flag)),
+      hasCompanyFeature: (flag, companyUid) =>
+        resolveCompanyFeature(createHqProFlagFetch(invokeFn), flag, companyUid),
       subscribeFeature: (flag, onChange) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? () => {}
@@ -822,11 +880,16 @@ export function createSyncPlatformAdapter(
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
-        if (attachments && attachments.length > 0) {
+        const hasAttachments = Boolean(attachments && attachments.length > 0);
+        const audience = extras?.audience;
+        const idempotencyKey = extras?.idempotencyKey?.trim();
+        if (hasAttachments || audience || idempotencyKey) {
           return hqProJson('POST', WEB_PATHS.dmSend, {
             toPersonUid,
             body,
-            attachments,
+            ...(hasAttachments ? { attachments } : {}),
+            ...(audience ? { audience } : {}),
+            ...(idempotencyKey ? { idempotencyKey } : {}),
           });
         }
         return call('send_dm', { toPersonUid, body });
@@ -1091,13 +1154,38 @@ export function createSyncPlatformAdapter(
     },
 
     agents: {
-      getProvisionOptions: (companyUid) =>
-        hqProJson<AgentProvisionOptionsView>(
+      // A refusal keeps its HTTP status and the people the server says to
+      // ask (`admins`), so the New Bot screen can say why Create is off.
+      getProvisionOptions: async (companyUid) => {
+        const attempted = await hqProAttemptWithRetries<AgentProvisionOptionsView>(
           'GET',
           AGENT_PATHS.provisionOptions(companyUid),
+        );
+        if (!attempted.result.ok && attempted.result.code === 'network') {
+          return attempted.result;
+        }
+        return withCreateAgentsAdmins(
+          withHttpStatus(attempted.result, attempted.status),
+          attempted.body,
+        );
+      },
+      // A refused read keeps its HTTP status: the New Bot waiting screen
+      // tells a bot that is gone (404) or out of reach (403, 401) from a
+      // read that merely failed.
+      getStatus: (agentUid, brain) =>
+        hqProRequestWithStatus('GET', AGENT_PATHS.status(agentUid, brain)),
+      restartBrainApproval: (agentUid, brain) =>
+        hqProJson('POST', AGENT_PATHS.reauth(agentUid), { brain }),
+      submitClaudeLoginCode: (agentUid, code) =>
+        hqProJson('POST', AGENT_PATHS.loginCode(agentUid), { code }),
+      attachSlack: (agentUid) =>
+        hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
+      // The token goes in the body only. The path names the bot, nothing else.
+      submitSlackAppToken: async (agentUid, appToken) =>
+        withoutSecret(
+          await hqProPostWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+          appToken,
         ),
-      getStatus: (agentUid) =>
-        hqProJson('GET', AGENT_PATHS.status(agentUid)),
       listMobileRoster: (companyUid) =>
         hqProJson('GET', AGENT_PATHS.mobileRoster(companyUid)),
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),
@@ -1107,12 +1195,36 @@ export function createSyncPlatformAdapter(
         hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
       stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
       start: (agentUid) => hqProJson('POST', AGENT_PATHS.start(agentUid)),
-      deprovision: (agentUid) =>
-        hqProJson('DELETE', AGENT_PATHS.deprovision(agentUid)),
+      retryProvisioning: (agentUid) =>
+        hqProJson('POST', AGENT_PATHS.retryProvisioning(agentUid)),
+      // A refusal keeps its HTTP status: Cancel in the New Bot flow tells
+      // "already gone" (404) and "not yours to remove" (403) from a failure.
+      deprovision: (agentUid, options) =>
+        hqProRequestWithStatus(
+          'DELETE',
+          AGENT_PATHS.deprovision(agentUid, options?.confirmDestroyInstanceId),
+        ),
       listOwners: (companyUid, agentUid) =>
         hqProJson('GET', AGENT_PATHS.owners(companyUid, agentUid)),
       getCompanyTelemetry: (companyUid, from, to) =>
         hqProJson('GET', AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    },
+
+    integrations: {
+      listConnections: (companyUid) =>
+        hqProJson('GET', INTEGRATION_PATHS.connections(companyUid)),
+      grantConnectionAccess: (input) =>
+        hqProJson('POST', INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+      catalogSearch: (companyUid, query, limit) =>
+        hqProRequestWithStatus('GET', INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+      // No redirectUri: the server's default lands on the console's callback.
+      startOAuth: (input) =>
+        hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+      // The key goes in the body only, and is taken out of any failure's text.
+      install: async (input) =>
+        withoutSecret(await hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ''),
+      blueprint: (input) =>
+        hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
     },
 
     company: {

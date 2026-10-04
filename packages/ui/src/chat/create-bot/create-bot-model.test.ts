@@ -7,8 +7,10 @@ import {
   canCreate,
   cloudNameIssue,
   companyTemplates,
+  cloudBrainChoices,
   firstBlockingStep,
   firstReadyRuntime,
+  firstSignedInCloudRuntime,
   firstSentence,
   groupTemplates,
   handleIssue,
@@ -19,6 +21,8 @@ import {
   botDisplayName,
   nextStep,
   prevStep,
+  provisionOptionsProblem,
+  provisionOptionsProblemLine,
   scopeIssue,
   scopeLine,
   stepIssue,
@@ -31,6 +35,11 @@ import {
   toCreateInput,
   type CreateBotContext,
   type CreateBotDraft,
+  NEW_BOT_LOCAL_LABEL,
+  provisionOptionsPriced,
+  newBotCheckingLine,
+  newBotOtherWayLabel,
+  newBotTargetLine,
 } from "./create-bot-model.js";
 
 const WORKERS: LocalBotWorkerOption[] = [
@@ -126,6 +135,76 @@ describe("initialDraft", () => {
     expect(initialDraft(ctx({ canLocal: false })).runtime).toBe("codex");
     expect(firstReadyRuntime(null)).toBe("claude");
     expect(firstReadyRuntime({ claude: false, codex: false, grok: false })).toBe("claude");
+  });
+});
+
+describe("firstSignedInCloudRuntime", () => {
+  it("uses the provider signed in on this Mac and otherwise starts with Codex", () => {
+    expect(firstSignedInCloudRuntime({ claude: false, codex: true, grok: true })).toBe("codex");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true })).toBe("claude");
+    expect(firstSignedInCloudRuntime({ claude: false, codex: false, grok: false })).toBe("codex");
+    expect(firstSignedInCloudRuntime(null)).toBe("codex");
+  });
+
+  it("never answers a brain the caller does not offer (review A-C1)", () => {
+    // Claude signed in on this computer, but the company does not have the
+    // Claude provider: the New Bot flow offers Codex and Grok only.
+    const offered = cloudBrainChoices(false);
+    expect(offered).toEqual(["codex", "grok"]);
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, offered)).toBe("codex");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: true }, offered)).toBe("grok");
+    expect(firstSignedInCloudRuntime({ claude: true, codex: false, grok: false }, offered)).toBe("codex");
+    expect(firstSignedInCloudRuntime(null, offered)).toBe("codex");
+    // With the provider on, Claude is offered and a signed-in Claude leads.
+    expect(cloudBrainChoices(true)).toEqual(["codex", "claude", "grok"]);
+    expect(firstSignedInCloudRuntime({ claude: true, codex: true, grok: true }, cloudBrainChoices(true))).toBe("claude");
+  });
+});
+
+describe("provisionOptionsProblem", () => {
+  it("reads a refusal by code, by status or by the server's sentence", () => {
+    expect(provisionOptionsProblem({ ok: false, code: "CREATE_AGENTS_NOT_ALLOWED" }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, code: "http-403" }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, code: "SOMETHING", status: 403 }).kind).toBe("permission");
+    expect(provisionOptionsProblem({ ok: false, message: "Forbidden: createAgents capability required" }).kind).toBe("permission");
+  });
+
+  it("reads anything else, and nothing at all, as a failed load", () => {
+    expect(provisionOptionsProblem({ ok: false, code: "http-500" })).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem({ ok: false, code: "http-404", message: "Not found" })).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem(null)).toEqual({ kind: "load", askNames: [] });
+    expect(provisionOptionsProblem("boom")).toEqual({ kind: "load", askNames: [] });
+  });
+
+  it("names up to three people, skipping ids, blanks and repeats", () => {
+    const admins = [
+      { personUid: "prs_1", displayName: "Corey" },
+      { personUid: "prs_2", displayName: "prs_2" },
+      { personUid: "prs_3", displayName: " " },
+      { personUid: "prs_4", displayName: "Corey" },
+      "Dana",
+      { personUid: "prs_5", displayName: "Dana" },
+      { personUid: "prs_6", displayName: "Lee" },
+      { personUid: "prs_7", displayName: "Max" },
+    ];
+    expect(provisionOptionsProblem({ ok: false, code: "CREATE_AGENTS_NOT_ALLOWED", admins }).askNames).toEqual(["Corey", "Dana", "Lee"]);
+    // A list on a failed load is not a list of people to ask.
+    expect(provisionOptionsProblem({ ok: false, code: "http-500", admins }).askNames).toEqual([]);
+  });
+
+  it("writes one line for each reason", () => {
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: ["Corey"] }, "Acme")).toBe(
+      "You don't have permission to add bots in Acme. Ask Corey.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: ["Corey", "Dana", "Lee"] }, "Acme")).toBe(
+      "You don't have permission to add bots in Acme. Ask Corey, Dana or Lee.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "permission", askNames: [] }, " ")).toBe(
+      "You don't have permission to add bots in this company. Ask an owner or admin.",
+    );
+    expect(provisionOptionsProblemLine({ kind: "load", askNames: [] }, "Acme")).toBe(
+      "We couldn't load the price for Acme. Check your connection and try again.",
+    );
   });
 });
 
@@ -452,5 +531,45 @@ describe("toCreateInput", () => {
     expect(thinksWithLine(draft(), c)).toBe("thinks with Claude Code");
     expect(thinksWithLine(draft({ runtime: "grok", model: "grok-4" }), c)).toBe("thinks with Grok · grok-4");
     expect(thinksWithLine(draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe("hosted by Acme");
+  });
+});
+
+describe("the New Bot screen's words about companies (review G-1)", () => {
+  it("labels the second way out by what it leads to", () => {
+    expect(newBotOtherWayLabel({ local: true, otherCompanies: true })).toBe("Another company or a local bot");
+    expect(newBotOtherWayLabel({ local: false, otherCompanies: true })).toBe("Create in another company");
+    expect(newBotOtherWayLabel({ local: true, otherCompanies: false })).toBe("Create a local bot instead");
+    expect(NEW_BOT_LOCAL_LABEL).toBe("Create a local bot instead");
+    // It leads nowhere: no button.
+    expect(newBotOtherWayLabel({ local: false, otherCompanies: false })).toBe("");
+  });
+
+  it("says where the bot will be created", () => {
+    expect(newBotTargetLine(" Nova ", "Indigo")).toBe("Nova will be created in Indigo.");
+    expect(newBotTargetLine("", "Indigo")).toBe("This bot will be created in Indigo.");
+  });
+});
+
+describe("what the New Bot screen says while a lost create is looked for (review G-2)", () => {
+  it("names the bot", () => {
+    expect(newBotCheckingLine(" Nova ")).toBe("Checking whether Nova was created...");
+    expect(newBotCheckingLine("")).toBe("Checking whether your bot was created...");
+  });
+});
+
+describe("options that load with no price (review item 7)", () => {
+  it("knows when a bot can be priced", () => {
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: 1200 }] })).toBe(true);
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: 0 }] })).toBe(true);
+    expect(provisionOptionsPriced({ options: [{ selectable: true, netMonthlyCents: null }] })).toBe(false);
+    expect(provisionOptionsPriced({ options: [{ selectable: false, netMonthlyCents: 1200 }] })).toBe(false);
+    expect(provisionOptionsPriced({ options: [] })).toBe(false);
+    expect(provisionOptionsPriced(null)).toBe(false);
+  });
+
+  it("says so in one plain line", () => {
+    expect(provisionOptionsProblemLine({ kind: "unpriced", askNames: [] }, "Indigo")).toBe(
+      "We don't have a price for a bot in Indigo right now. Try again in a moment.",
+    );
   });
 });

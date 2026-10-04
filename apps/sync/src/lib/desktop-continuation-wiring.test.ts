@@ -193,12 +193,12 @@ describe('the first-run wizard never opens the browser on its own', () => {
       onboardingWizard.indexOf('async function recordLaunch'),
       onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
-    expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
+    expect(record).toContain('onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)');
     expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
     expect(record).toContain('flushReceipts(deps)');
     expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
     expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
-      record.lastIndexOf('onboardingTelemetry.recordFirstLaunch()'),
+      record.lastIndexOf('onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)'),
     );
   });
 });
