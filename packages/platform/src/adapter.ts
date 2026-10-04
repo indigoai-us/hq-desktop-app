@@ -346,6 +346,11 @@ export interface IdentityApi {
   }>;
   isAdmin(): AdapterPromise<boolean>;
   hasFeature(flag: string): AdapterPromise<boolean>;
+  /** Status-aware flag read for telemetry that distinguishes explicit-off from missing/unreadable. */
+  resolveFeatureFlagStatus?(flag: string): AdapterPromise<{
+    enabled: boolean;
+    configured: boolean;
+  }>;
   /** Force a fresh hq-flags snapshot after the authenticated identity changes. */
   refreshFeatureFlags?(): Promise<void>;
   /**

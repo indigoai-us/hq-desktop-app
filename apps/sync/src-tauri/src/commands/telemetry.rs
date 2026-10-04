@@ -847,6 +847,9 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "platform",
     "attemptCount",
     "failedDependency",
+    "retryAttempted",
+    "retryResult",
+    "depsOperation",
     "errorCategory",
     "failureStage",
     "setupRunId",
@@ -883,6 +886,18 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "count",
     "route",
     "plan",
+];
+
+const DEPS_RETRY_RESULT_VALUES: &[&str] = &[
+    "not-eligible",
+    "recovered",
+    "failed-again",
+    "skipped-flag-off",
+    "skipped-flag-unreadable",
+];
+
+const DEPS_OPERATION_VALUES: &[&str] = &[
+    "node", "yq", "qmd", "hq-cli", "git", "jq", "gh", "claude-code", "homebrew", "unknown",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1042,6 +1057,9 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     };
 
     let connector_import = input.get("step").and_then(Value::as_str) == Some("connector-import");
+    let deps_setup_failure = input.get("step").and_then(Value::as_str) == Some("setup")
+        && input.get("action").and_then(Value::as_str) == Some("failed")
+        && input.get("component").and_then(Value::as_str) == Some("deps");
     let mut out = Map::new();
 
     for (key, value) in input {
@@ -1054,6 +1072,14 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 ("failedDependency", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
                 )),
+                ("retryAttempted", Value::Bool(_)) if deps_setup_failure => Some(value),
+                ("retryResult", Value::String(value)) if deps_setup_failure => DEPS_RETRY_RESULT_VALUES
+                    .contains(&value.as_str())
+                    .then_some(Value::String(value.clone())),
+                ("depsOperation", Value::String(value)) if deps_setup_failure => DEPS_OPERATION_VALUES
+                    .contains(&value.as_str())
+                    .then_some(Value::String(value.clone())),
+                ("retryAttempted", _) | ("retryResult", _) | ("depsOperation", _) => None,
                 ("errorCategory", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
                 )),
@@ -3248,6 +3274,65 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn deps_retry_diagnostics_survive_only_as_closed_failed_setup_values() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "failed",
+                "component": "deps",
+                "retryAttempted": true,
+                "retryResult": "failed-again",
+                "depsOperation": "git",
+                "shellOutput": "private command output",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["retryAttempted"], true);
+        assert_eq!(event.properties["retryResult"], "failed-again");
+        assert_eq!(event.properties["depsOperation"], "git");
+        assert!(event.properties.get("shellOutput").is_none());
+
+        let invalid = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "failed",
+                "component": "deps",
+                "retryAttempted": "yes",
+                "retryResult": "ran npm install from /private/path",
+                "depsOperation": "/private/path/git",
+            })),
+            Some("session-2".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(invalid.properties.get("retryAttempted").is_none());
+        assert!(invalid.properties.get("retryResult").is_none());
+        assert!(invalid.properties.get("depsOperation").is_none());
+
+        let wrong_scope = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "completed",
+                "component": "deps",
+                "retryAttempted": true,
+                "retryResult": "recovered",
+                "depsOperation": "git",
+            })),
+            Some("session-3".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(wrong_scope.properties.get("retryAttempted").is_none());
+        assert!(wrong_scope.properties.get("retryResult").is_none());
+        assert!(wrong_scope.properties.get("depsOperation").is_none());
+    }
+
+    #[test]
     fn symlink_diagnostics_are_only_emitted_for_failed_content_setup_steps() {
         let failed_content = json!({
             "step": "setup",
@@ -3388,6 +3473,9 @@ mod codex_telemetry_tests {
                 "platform",
                 "attemptCount",
                 "failedDependency",
+                "retryAttempted",
+                "retryResult",
+                "depsOperation",
                 "errorCategory",
                 "failureStage",
                 "setupRunId",

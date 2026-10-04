@@ -101,8 +101,11 @@
     resumeStartStageFromManifest,
     setStageStatus,
     setupCompletionResult,
+    depsRetryWasAttemptedForFailure,
+    depsTimeoutRetryTelemetry,
     setupProgressPercent,
     setupStageRecoveryAction,
+    resolveFlagStatusWithTimeout,
     resolveFlagWithTimeout,
     stageCommandInvocations,
     stageTimeoutMs,
@@ -114,6 +117,8 @@
     withTimeout,
     type InstallManifest,
     type SetupRetryAttempt,
+    type DepsTimeoutRetryFlagStatus,
+    type DepsRetryResult,
     type SetupStageRecoveryAction,
     type StageId,
     type StageState,
@@ -552,6 +557,7 @@
     action: OnboardingAction,
     details: StepTelemetryDetails = {},
     flow?: OnboardingFlow,
+    occurredAt?: string,
   ): void {
     if (consentOnly || replay) return;
     // Hold records only until first-launch eligibility is known. A disabled
@@ -562,16 +568,16 @@
       firstLaunchJoinKeyEnabled !== false
     ) {
       const queuedDetails = { ...details };
-      const occurredAt = new Date().toISOString();
+      const eventOccurredAt = occurredAt ?? new Date().toISOString();
       queuedOnboardingStepRecords.push({
         step,
         action,
-        occurredAt,
-        record: () => recordStepNow(step, action, queuedDetails, flow, occurredAt),
+        occurredAt: eventOccurredAt,
+        record: () => recordStepNow(step, action, queuedDetails, flow, eventOccurredAt),
       });
       return;
     }
-    recordStepNow(step, action, details, flow);
+    recordStepNow(step, action, details, flow, occurredAt);
   }
 
   function recordStepNow(
@@ -601,6 +607,22 @@
       },
       ...(occurredAt ? { occurredAt } : {}),
     });
+  }
+
+  function recordDeferredSetupFailure(
+    failure: DeferredDepsFailure,
+    fallback: Pick<RecordOnboardingStep['properties'], 'retryAttempted' | 'retryResult'>,
+  ): string {
+    return onboardingTelemetry.recordDeferred({
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        ...failure.details,
+        appVersion: onboardingAppVersion,
+        flow: onboardingFlow,
+      },
+      occurredAt: failure.occurredAt,
+    }, fallback);
   }
 
   function resolveOnboardingAppVersion(): Promise<void> {
@@ -2155,10 +2177,28 @@
     }
   }
 
+  type DeferredDepsFailure = {
+    details: StepTelemetryDetails;
+    occurredAt: string;
+    flagStatus: DepsTimeoutRetryFlagStatus;
+    timedOut: boolean;
+    retrySuppressed: boolean;
+    retryScheduled: boolean;
+    telemetryId?: string;
+  };
+
   type StageRunResult =
     | { outcome: 'ok' }
-    | { outcome: 'cancelled' }
-    | { outcome: 'failed'; recovery: SetupStageRecoveryAction };
+    | {
+        outcome: 'cancelled';
+        retryAttempted?: boolean;
+        retryResult?: DepsRetryResult;
+      }
+    | {
+        outcome: 'failed';
+        recovery: SetupStageRecoveryAction;
+        depsFailure?: DeferredDepsFailure;
+      };
 
   const CANCELLED_STAGE_RUN: StageRunResult = { outcome: 'cancelled' };
 
@@ -2203,12 +2243,13 @@
     id: StageId,
     runId: number,
     attemptCount: number,
-    depsTimeoutRetryFlag: Promise<boolean>,
+    depsTimeoutRetryStatus: Promise<DepsTimeoutRetryFlagStatus>,
   ): Promise<StageRunResult> {
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupRunId = currentSetupRunId;
-    const depsTimeoutRetryEnabled =
-      id === 'deps' ? await depsTimeoutRetryFlag : false;
+    const depsRetryFlagStatus =
+      id === 'deps' ? await depsTimeoutRetryStatus : 'disabled';
+    const depsTimeoutRetryEnabled = depsRetryFlagStatus === 'enabled';
     if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
     const setupAttemptId =
       id === 'deps' && depsTimeoutRetryEnabled
@@ -2251,7 +2292,15 @@
         outcome: 'cancelled',
         setupRunId,
       });
-      return CANCELLED_STAGE_RUN;
+      return {
+        outcome: 'cancelled',
+        ...(id === 'deps' && attemptCount > 1
+          ? {
+              retryAttempted: true,
+              retryResult: result.kind === 'done' ? 'recovered' : 'failed-again',
+            }
+          : {}),
+      };
     }
 
     if (result.kind === 'done') {
@@ -2270,6 +2319,7 @@
       // Decide recovery before the status lands: a stage that will try again
       // must never pass through 'failed', which would count it as settled and
       // then un-count it, jolting the ring forward and straight back.
+      const occurredAt = new Date().toISOString();
       const recovery = setupStageRecoveryAction({
         stageId: id,
         message,
@@ -2287,8 +2337,15 @@
       );
       await journalStageFailure(id, message);
       const failureDetails = await stageFailureTelemetryDetails(id, result.err, failureScope);
-      if (!isCurrentRun(runId)) return CANCELLED_STAGE_RUN;
-      recordStep(SETUP_STEP_INDEX, 'failed', {
+      if (!isCurrentRun(runId)) {
+        return {
+          outcome: 'cancelled',
+          ...(id === 'deps' && attemptCount > 1
+            ? { retryAttempted: true, retryResult: 'failed-again' as const }
+            : {}),
+        };
+      }
+      const details: StepTelemetryDetails = {
         component: id,
         failureStage: id,
         attemptCount,
@@ -2296,7 +2353,23 @@
         outcome: 'stage_command_failed',
         setupRunId,
         ...failureDetails,
-      });
+      };
+      if (id === 'deps') {
+        return {
+          outcome: 'failed',
+          recovery,
+          depsFailure: {
+            details,
+            occurredAt,
+            flagStatus: depsRetryFlagStatus,
+            timedOut: result.err instanceof StageTimeoutError,
+            retrySuppressed:
+              result.err instanceof StageTimeoutError && result.err.retrySuppressed,
+            retryScheduled: false,
+          },
+        };
+      }
+      recordStep(SETUP_STEP_INDEX, 'failed', details, undefined, occurredAt);
       return { outcome: 'failed', recovery };
     }
     return CANCELLED_STAGE_RUN;
@@ -2428,10 +2501,54 @@
   async function runSetup(
     runId: number,
     startStage: StageId = STAGE_ORDER[0],
-    depsTimeoutRetryFlag: Promise<boolean> = Promise.resolve(false),
+    depsTimeoutRetryStatus: Promise<DepsTimeoutRetryFlagStatus> = Promise.resolve('disabled'),
   ) {
     const startIndex = Math.max(0, STAGE_ORDER.indexOf(startStage));
     const retryCounts = new Map<StageId, number>();
+    const pendingDepsFailures: DeferredDepsFailure[] = [];
+    const recordDepsFailure = (
+      failure: DeferredDepsFailure,
+      retryAttempted: boolean,
+      retryResult: DepsRetryResult,
+    ) => {
+      const didRetryThisFailure = depsRetryWasAttemptedForFailure(
+        failure.retryScheduled,
+        retryAttempted,
+      );
+      const retryTelemetry = depsTimeoutRetryTelemetry({
+        flagStatus: failure.flagStatus,
+        timedOut: failure.timedOut,
+        retrySuppressed: failure.retrySuppressed,
+        retryAttempted: didRetryThisFailure,
+        retryRecovered: didRetryThisFailure && retryResult === 'recovered',
+      });
+      if (failure.telemetryId) {
+        onboardingTelemetry.resolveDeferred(failure.telemetryId, retryTelemetry);
+      } else {
+        recordStep(
+          SETUP_STEP_INDEX,
+          'failed',
+          { ...failure.details, ...retryTelemetry },
+          undefined,
+          failure.occurredAt,
+        );
+      }
+    };
+    const flushPendingDepsFailures = (
+      retryAttempted: boolean,
+      retryResult: DepsRetryResult,
+    ) => {
+      for (const failure of pendingDepsFailures) {
+        recordDepsFailure(failure, retryAttempted, retryResult);
+      }
+      pendingDepsFailures.length = 0;
+    };
+    const skippedRetryResult = (failure: DeferredDepsFailure): DepsRetryResult => {
+      if (!failure.timedOut || failure.retrySuppressed) return 'not-eligible';
+      if (failure.flagStatus === 'unreadable') return 'skipped-flag-unreadable';
+      if (failure.flagStatus === 'disabled') return 'skipped-flag-off';
+      return 'not-eligible';
+    };
     for (const id of STAGE_ORDER.slice(startIndex)) {
       if (!isCurrentRun(runId)) return;
       while (isCurrentRun(runId)) {
@@ -2440,13 +2557,44 @@
           id,
           runId,
           attemptCount,
-          depsTimeoutRetryFlag,
+          depsTimeoutRetryStatus,
         );
-        if (result.outcome === 'cancelled') return;
-        if (result.outcome === 'ok') break;
+        if (result.outcome === 'cancelled') {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(
+              result.retryAttempted ?? false,
+              result.retryResult ?? 'not-eligible',
+            );
+          }
+          return;
+        }
+        if (result.outcome === 'ok') {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(true, 'recovered');
+          }
+          break;
+        }
 
+        if (result.depsFailure) {
+          const failure = result.depsFailure;
+          failure.retryScheduled = false;
+          failure.telemetryId = recordDeferredSetupFailure(failure, {
+            retryAttempted: false,
+            retryResult: skippedRetryResult(failure),
+          });
+          pendingDepsFailures.push(failure);
+        }
         const action = result.recovery;
-        if (action.kind !== 'retry') break;
+        if (action.kind !== 'retry') {
+          if (pendingDepsFailures.length > 1) {
+            flushPendingDepsFailures(true, 'failed-again');
+          } else if (pendingDepsFailures.length === 1) {
+            const [failure] = pendingDepsFailures;
+            if (failure) recordDepsFailure(failure, false, skippedRetryResult(failure));
+            pendingDepsFailures.length = 0;
+          }
+          break;
+        }
 
         retryCounts.set(id, action.nextRetryCount);
         // The stage keeps its place in the bands while it waits — it is still
@@ -2455,6 +2603,19 @@
         setupRetry = { stageId: id, attempt: setupRetryAttempt(id, action.nextRetryCount) };
         stageDetail = null;
         await waitForAutoRetry(action.delayMs);
+        if (!isCurrentRun(runId)) {
+          if (pendingDepsFailures.length > 0) {
+            flushPendingDepsFailures(false, 'not-eligible');
+          }
+          return;
+        }
+        const retryingFailure = pendingDepsFailures.at(-1);
+        if (retryingFailure) {
+          retryingFailure.retryScheduled = true;
+          if (retryingFailure.telemetryId) {
+            onboardingTelemetry.markDeferredRetryAttempted(retryingFailure.telemetryId);
+          }
+        }
       }
     }
 
@@ -2787,20 +2948,23 @@
     const runId = beginSetupRun();
     inFlightRunId = runId;
     try {
-      const depsTimeoutRetryFlag = resolveFlagWithTimeout(
+      const depsTimeoutRetryStatus = resolveFlagStatusWithTimeout(
         Promise.resolve()
           .then(() =>
-            onboardingFeatureFlags.identity.hasFeature(
+            onboardingFeatureFlags.identity.resolveFeatureFlagStatus?.(
               SETUP_DEPS_TIMEOUT_RETRY_FLAG,
-            ),
+            ) ?? Promise.resolve({ ok: false as const, reason: 'unavailable' as const }),
           )
-          .then((result) => result.ok && result.value === true)
+          .then((result) => {
+            if (!result.ok || !result.value.configured) return null;
+            return result.value.enabled;
+          })
           .catch((error) => {
             console.warn(
               'onboarding: dependency timeout retry flag unavailable; leaving retry off',
               error,
             );
-            return false;
+            return null;
           }),
         2_000,
       );
@@ -2821,7 +2985,7 @@
         }
       }
       if (!isCurrentRun(runId)) return;
-      await runSetup(runId, startStage, depsTimeoutRetryFlag);
+      await runSetup(runId, startStage, depsTimeoutRetryStatus);
     } finally {
       // Only the run that still owns the guard may release it: a superseded
       // run finishing late must not clear a newer run's claim. Every exit —
