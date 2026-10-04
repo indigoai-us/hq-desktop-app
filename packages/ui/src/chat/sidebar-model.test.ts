@@ -2079,6 +2079,37 @@ describe("G3: contacts directory never renders as sidebar conversation rows", ()
     expect(rows.map((r) => r.id)).toEqual(["dm:prs_jacob"]);
   });
 
+  it("shows a bot DM from the same activity, unread, or dot signals as a human DM", () => {
+    const rows = normalizeConversations(
+      [],
+      [
+        dm({ personUid: "agt_activity", lastDmAt: iso(msOnDay(0, 8)) }),
+        dm({ personUid: "agt_unread", unreadCount: 1 }),
+        dm({ personUid: "agt_dot" }),
+      ],
+      { dmDots: ["agt_dot"] },
+    );
+    expect(rows.map((row) => row.id).sort()).toEqual([
+      "dm:agt_activity",
+      "dm:agt_dot",
+      "dm:agt_unread",
+    ]);
+  });
+
+  it("keeps an agent channel under the same channel rule as every other channel", () => {
+    const rows = normalizeConversations(
+      [
+        channel({
+          channelId: "chn_agent",
+          name: "bot-project",
+          members: [{ personUid: "agt_izzy", displayName: "Izzy" }],
+        }),
+      ],
+      [],
+    );
+    expect(rows.map((row) => row.id)).toContain("ch:chn_agent");
+  });
+
   it("dedupes the same personUid if the roster listed them twice", () => {
     const rows = normalizeConversations(
       [],
