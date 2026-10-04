@@ -335,6 +335,31 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     );
   });
 
+  it('queues workspace-selected receipts for company create, pick, and invite-join paths', () => {
+    const record = rustFunction(desktopAuth, 'record_onboarding_workspace_selected');
+    const authorization = rustFunction(desktopAuth, 'workspace_receipt_authorization_for_current_session');
+    const fromBearer = rustFunction(desktopAuth, 'workspace_receipt_authorization_from_bearer_token');
+    const leaveCompany = onboardingWizard
+      .split('function leaveCompanyStep(')[1]
+      ?.split('/** Leave the teammate invite')[0] ?? '';
+    const recordRoute = onboardingWizard
+      .split('function recordCompanyRoute(')[1]
+      ?.split('/** A failed lookup')[0] ?? '';
+
+    expect(main).toContain('commands::desktop_auth::record_onboarding_workspace_selected,');
+    expect(record).toContain('workspace_receipt_authorization_for_current_session().await');
+    expect(record).toContain('record_desktop_workspace_selected');
+    expect(authorization).toContain('workspace_receipt_authorization()');
+    expect(authorization).toContain('super::sync::resolve_jwt().await');
+    expect(fromBearer).toContain('notification_identity_from_bearer_token');
+    expect(leaveCompany).toContain("result.outcome === 'created'");
+    expect(leaveCompany).toContain("result.outcome === 'joined'");
+    expect(leaveCompany).toContain("result.outcome === 'used_existing'");
+    expect(leaveCompany.match(/recordWorkspaceSelected\(/g)).toHaveLength(3);
+    expect(recordRoute).toContain('recordWorkspaceSelected(');
+    expect(recordRoute).toContain('route.company.companyUid');
+  });
+
   it('keeps a partial cloud provision in the installer-to-company join', () => {
     const connect = rustFunction(workspaces, 'connect_workspace_to_cloud');
     expect(connect).toContain('partial_sync_company_uid(&e)');
