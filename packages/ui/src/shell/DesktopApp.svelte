@@ -2820,15 +2820,16 @@
         setupToolOfferError = SETUP_TOOL_OFFER_COPY.folderNotReady;
         return;
       }
-      // The same cascade as the title-bar Launch menu and the finish card,
-      // with a plain-language setup request in place of a command.
+      // A plain-language setup request in place of a command, prefilled in
+      // the app's composer (Claude: the link's `q`; Codex: its prompt link).
       const actions = createLaunchActions({
         shell: adapter.shell,
         hqFolderPath: folder,
         prompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
         deepLinkPrompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
       });
-      const error = tool === "claude" ? await actions.launchClaude() : await actions.launchCodex();
+      // The desktop app the offer named, never a terminal.
+      const error = tool === "claude" ? await actions.launchClaudeApp() : await actions.launchCodexApp();
       launched = !error;
       if (error) setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
     } catch (err) {

@@ -18,7 +18,7 @@ const BOT = "agt_setup";
 const ME = "prs_me";
 /** Exactly what hq-cli sends (setup-tool-offer.ts `setupToolOfferText`). */
 const offer = (tool: string) =>
-  `I see you use ${tool === "claude" ? "Claude Code" : "Codex"} a lot. Want to continue setup there?\n\n` +
+  `Looks like you use the ${tool === "claude" ? "Claude" : "Codex"} app. Want to continue setup there?\n\n` +
   "```hq-block\n" +
   JSON.stringify({ v: 1, blocks: [{ kind: "continueInTool", tool }, { kind: "suggestions", items: ["Keep going here"] }] }) +
   "\n```";
@@ -26,7 +26,7 @@ const offer = (tool: string) =>
 describe("the continueInTool block", () => {
   it("is parsed from the bot's message, leaving only the sentence as text", () => {
     const { text, rich } = extractRichContentFromBody(offer("claude"));
-    expect(text.trim()).toBe("I see you use Claude Code a lot. Want to continue setup there?");
+    expect(text.trim()).toBe("Looks like you use the Claude app. Want to continue setup there?");
     expect(rich?.blocks).toEqual([
       { kind: "continueInTool", tool: "claude" },
       { kind: "suggestions", items: ["Keep going here"] },
@@ -35,7 +35,7 @@ describe("the continueInTool block", () => {
     expect(suggestionsForMessage({ body: offer("claude") })).toEqual([SETUP_KEEP_GOING_HERE]);
   });
 
-  it("only names Claude Code or Codex; any other tool drops the block", () => {
+  it("only names Claude or Codex; any other tool drops the block", () => {
     expect(parseRichContent({ v: 1, blocks: [{ kind: "continueInTool", tool: "cursor" }] })).toBeNull();
     expect(parseRichContent({ v: 1, blocks: [{ kind: "continueInTool" }] })).toBeNull();
     expect(continueInToolForMessage({ body: "Just text." })).toBeNull();
@@ -84,7 +84,8 @@ describe("what the coding tool receives", () => {
   it("the card's own copy never tells anyone to type a command", () => {
     const all = JSON.stringify(SETUP_TOOL_OFFER_COPY);
     expect(all).not.toMatch(/(^|[\s"])\/[a-z]/);
-    expect(SETUP_TOOL_OFFER_COPY.claude.continue).toBe("Continue in Claude Code");
+    expect(SETUP_TOOL_OFFER_COPY.claude.continue).toBe("Continue in Claude");
+    expect(SETUP_TOOL_OFFER_COPY.launchFailed).toContain("the {name} app");
     expect(SETUP_TOOL_OFFER_COPY.codex.continue).toBe("Continue in Codex");
     expect(SETUP_TOOL_OFFER_COPY.keep).toBe("Keep going here");
   });

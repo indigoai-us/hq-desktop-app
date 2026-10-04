@@ -489,11 +489,11 @@ export const SETUP_KEEP_GOING_HERE = "Keep going here";
 
 /** Copy for the card under the setup bot's "continue setup there?" offer. */
 export const SETUP_TOOL_OFFER_COPY = {
-  claude: { name: "Claude Code", continue: "Continue in Claude Code" },
+  claude: { name: "Claude", continue: "Continue in Claude" },
   codex: { name: "Codex", continue: "Continue in Codex" },
   keep: SETUP_KEEP_GOING_HERE,
-  /** The launch did not work: say what to do by hand, in plain words. `{name}` is the tool. */
-  launchFailed: "Couldn't open {name} from here. Open your HQ folder in {name} and ask it to set up HQ.",
+  /** The launch did not work: say what to do by hand, in plain words. `{name}` is the app. */
+  launchFailed: "Couldn't open the {name} app from here. Open your HQ folder in the {name} app and ask it to set up HQ.",
   folderNotReady: "Your HQ folder isn't ready yet. Try again in a moment.",
 } as const;
 

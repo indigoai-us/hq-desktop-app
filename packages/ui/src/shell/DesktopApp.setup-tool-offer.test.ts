@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 
 /**
- * The setup bot's first message can offer to continue setup in a coding tool
- * the person already uses a lot ("I see you use Claude Code a lot. Want to
- * continue setup there?", with a `continueInTool` hq-block from hq-cli). The
- * app draws a two-button card under it:
- *   - "Continue in Claude Code" opens the HQ folder in Claude Code through the
- *     same launch cascade as the title-bar Launch menu, with a plain-language
- *     setup request pre-filled;
+ * The setup bot's first message can offer to continue setup in the Claude or
+ * Codex desktop app the person already uses a lot ("Looks like you use the
+ * Claude app. Want to continue setup there?", with a `continueInTool` hq-block
+ * from hq-cli). The app draws a two-button card under it:
+ *   - "Continue in Claude" opens the HQ folder in the Claude APP (its
+ *     `claude://code/new` link), "Continue in Codex" in the Codex APP (bundled
+ *     `codex app` plus the prompt link), with a plain-language setup request
+ *     pre-filled. Never a terminal, even when a CLI is installed;
  *   - "Keep going here" sends the reply the bot waits for.
  * Telemetry: shown, continued and kept-here, with the tool and flags only.
  */
@@ -23,11 +24,13 @@ import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { SETUP_CONTINUE_IN_TOOL_PROMPT } from "../chat/setup-bot.js";
 
 const SETUP_UID = "agt_setup_offer";
-const OFFER =
-  "I see you use Claude Code a lot. Want to continue setup there?\n\n" +
+const offerFor = (tool: "claude" | "codex") =>
+  "Hi, I'm Pickles, your setup bot.\n\n" +
+  `Looks like you use the ${tool === "claude" ? "Claude" : "Codex"} app. Want to continue setup there?\n\n` +
   "```hq-block\n" +
-  '{"v":1,"blocks":[{"kind":"continueInTool","tool":"claude"},{"kind":"suggestions","items":["Keep going here"]}]}' +
+  `{"v":1,"blocks":[{"kind":"continueInTool","tool":"${tool}"},{"kind":"suggestions","items":["Keep going here"]}]}` +
   "\n```";
+const OFFER = offerFor("claude");
 
 function botRow(): LocalBotRow {
   return {
@@ -51,6 +54,10 @@ const SETUP_DM_ROW = { id: `dm:${SETUP_UID}`, kind: "dm", title: "setup", person
 
 let sendDm: ReturnType<typeof vi.fn>;
 let openClaudeCodeLink: ReturnType<typeof vi.fn>;
+let launchCodexWorkspace: ReturnType<typeof vi.fn>;
+let launchCliInTerminal: ReturnType<typeof vi.fn>;
+let launchClaudeCode: ReturnType<typeof vi.fn>;
+let aiTools: Record<string, boolean>;
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 let events: unknown[] = [];
@@ -75,12 +82,11 @@ function adapter(messages: Array<Record<string, unknown>>): PlatformAdapter {
       getSetupStatus: async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ" }),
     },
     shell: {
-      detectAiTools: async () =>
-        ok({ claude_cli: true, claude_desktop: true, codex_cli: false, codex_desktop: false, grok_cli: false, any: true }),
+      detectAiTools: async () => ok(aiTools),
       openClaudeCodeLink,
-      launchClaudeCode: async () => ok(undefined),
-      launchCodexWorkspace: async () => ok(undefined),
-      launchCliInTerminal: async () => ok(undefined),
+      launchClaudeCode,
+      launchCodexWorkspace,
+      launchCliInTerminal,
     },
     sessions: {
       preflight: async () =>
@@ -103,6 +109,10 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   sendDm = vi.fn(async () => ok({ eventId: "evt_self_1", createdAt: new Date().toISOString() }));
   openClaudeCodeLink = vi.fn(async () => ok(undefined));
+  launchCodexWorkspace = vi.fn(async () => ok(undefined));
+  launchCliInTerminal = vi.fn(async () => ok(undefined));
+  launchClaudeCode = vi.fn(async () => ok(undefined));
+  aiTools = { claude_cli: true, claude_desktop: true, codex_cli: true, codex_desktop: true, grok_cli: false, any: true };
   events = [];
   window.addEventListener(SETUP_TOOL_OFFER_EVENT, record);
 });
@@ -151,14 +161,15 @@ describe("the setup bot's coding tool offer", () => {
       expect(el).toBeTruthy();
       return el!;
     });
-    expect(card.textContent).toContain("Continue in Claude Code");
+    expect(card.textContent).toContain("Continue in Claude");
+    expect(card.textContent).not.toContain("Claude Code");
     expect(card.textContent).toContain("Keep going here");
     expect(q('[data-testid="suggested-replies"]')).toBeNull();
     await settle();
     expect(events).toEqual([{ action: "shown", tool: "claude" }]);
   });
 
-  it("Continue in Claude Code opens the HQ folder in Claude Code with the plain-language setup request", async () => {
+  it("Continue in Claude opens the HQ folder in the Claude app with the plain-language setup request", async () => {
     await openSetupDm([offerMessage]);
     const button = await vi.waitFor(() => {
       const el = q<HTMLButtonElement>('[data-testid="setup-tool-offer-continue"]');
@@ -170,8 +181,43 @@ describe("the setup bot's coding tool offer", () => {
     const url = new URL(String(openClaudeCodeLink.mock.calls[0]![0]));
     expect(url.searchParams.get("q")).toBe(SETUP_CONTINUE_IN_TOOL_PROMPT);
     expect(url.searchParams.get("folder")).toBe("/tmp/HQ");
+    expect(url.protocol).toBe("claude:");
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
     expect(sendDm).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(events).toContainEqual({ action: "continued", tool: "claude", launched: true }));
+  });
+
+  it("Continue in Codex opens the HQ folder in the Codex app with the request pre-typed, never a terminal", async () => {
+    await openSetupDm([{ ...offerMessage, body: offerFor("codex") }]);
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="setup-tool-offer-continue"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(button.textContent?.trim()).toBe("Continue in Codex");
+    button.click();
+    await vi.waitFor(() => expect(launchCodexWorkspace).toHaveBeenCalledOnce());
+    expect(launchCodexWorkspace).toHaveBeenCalledWith("/tmp/HQ", SETUP_CONTINUE_IN_TOOL_PROMPT);
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(events).toContainEqual({ action: "continued", tool: "codex", launched: true }));
+  });
+
+  it("never falls back to a terminal: app missing or failing to open shows the message instead", async () => {
+    aiTools = { claude_cli: true, claude_desktop: false, codex_cli: true, codex_desktop: false, grok_cli: false, any: true };
+    await openSetupDm([offerMessage]);
+    const button = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="setup-tool-offer-continue"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    button.click();
+    await vi.waitFor(() => expect(q('[data-testid="setup-tool-offer-error"]')).toBeTruthy());
+    expect(q('[data-testid="setup-tool-offer-error"]')!.textContent).toContain("Couldn't open the Claude app from here");
+    expect(openClaudeCodeLink).not.toHaveBeenCalled();
+    expect(launchClaudeCode).not.toHaveBeenCalled();
+    expect(launchCliInTerminal).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(events).toContainEqual({ action: "continued", tool: "claude", launched: false }));
   });
 
   it("Keep going here sends the reply the bot waits for", async () => {

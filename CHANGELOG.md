@@ -10,7 +10,8 @@ The release moves it under the version it ships in.
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
-- When your setup bot sees that you already use Claude Code or Codex a lot on this computer, its first message asks whether you want to continue setup there, and shows two buttons under it: "Continue in Claude Code" (or Codex) opens your HQ folder in that tool with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. Needs the hq-cli release that sends the offer.
+- When the Claude app or the Codex app is installed on your Mac and you have used it a lot lately, your setup bot's welcome asks whether you want to continue setup there, with two buttons under it: "Continue in Claude" (or "Continue in Codex") opens your HQ folder in that app with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. The button opens the desktop app, never a terminal. Needs the hq-cli release that sends the offer.
+- Opening your HQ folder in the Codex app works again with the current ChatGPT app, which moved its built-in Codex command inside the app.
 
 ## [0.10.389] — 2026-10-04
 

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 // SetupToolOffer is the card under the setup bot's first message when the
-// person already uses Claude Code or Codex a lot. Contract: it names the tool
+// person already uses the Claude or Codex app a lot. Contract: it names the app
 // on the primary button, offers "Keep going here" as the second action, and
 // hands both clicks back to the host.
 
@@ -32,9 +32,9 @@ function render(props: Record<string, unknown> = {}) {
 const q = (el: HTMLElement, id: string) => el.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`);
 
 describe("SetupToolOffer", () => {
-  it("offers Claude Code as the primary action and keeping setup here as the second", () => {
+  it("offers the Claude app as the primary action and keeping setup here as the second", () => {
     const { host, oncontinue, onkeep } = render();
-    expect(q(host, "setup-tool-offer-continue")!.textContent?.trim()).toBe("Continue in Claude Code");
+    expect(q(host, "setup-tool-offer-continue")!.textContent?.trim()).toBe("Continue in Claude");
     expect(q(host, "setup-tool-offer-keep")!.textContent?.trim()).toBe("Keep going here");
     q(host, "setup-tool-offer-continue")!.click();
     expect(oncontinue).toHaveBeenCalledOnce();
@@ -60,8 +60,8 @@ describe("SetupToolOffer", () => {
   it("shows a launch failure in plain words, and nothing when there is none", () => {
     const quiet = render();
     expect(q(quiet.host, "setup-tool-offer-error")).toBeNull();
-    const failed = render({ launchError: "Couldn't open Claude Code from here." });
-    expect(failed.host.querySelector('[data-testid="setup-tool-offer-error"]')!.textContent).toBe("Couldn't open Claude Code from here.");
+    const failed = render({ launchError: "Couldn't open the Claude app from here." });
+    expect(failed.host.querySelector('[data-testid="setup-tool-offer-error"]')!.textContent).toBe("Couldn't open the Claude app from here.");
   });
 
   it("never asks the person to type a command", () => {

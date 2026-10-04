@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
    * SetupToolOffer — the card under the setup bot's first message when the
-   * person already uses Claude Code or Codex a lot on this computer. The bot
-   * (hq-cli) sends "I see you use Claude Code a lot. Want to continue setup
+   * person has the Claude or Codex desktop app and uses it a lot. The bot
+   * (hq-cli) sends "Looks like you use the Claude app. Want to continue setup
    * there?" with a `continueInTool` hq-block; the host draws this card for it.
    *
-   * Two actions, both handled by the host: continue in that tool (opens the
+   * Two actions, both handled by the host: continue in that app (opens the
    * HQ folder in it with setup ready to go) or keep going here (sends the
    * reply the bot waits for). Presentational; nothing here talks to the bot.
    *
