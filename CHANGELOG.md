@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
+
 - Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
 
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
