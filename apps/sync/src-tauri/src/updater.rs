@@ -1321,7 +1321,7 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        if !crate::commands::autostart::restart_preferring_launch_agent(app) {
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(app, &update.version) {
             // A recording won the final exit race. The updater work has already
             // been deferred by the chokepoint instead of terminating the app.
             return Ok(());
@@ -1841,7 +1841,7 @@ pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
 /// A support-requested restart has no staged installer for the standard waiter
 /// to consume. Wait on the same poll cadence, then require the normal
 /// automatic-update focus rule before exiting the app.
-pub(crate) fn defer_restart_until_safe(app: AppHandle) {
+pub(crate) fn defer_restart_until_safe(app: AppHandle, update_version: Option<String>) {
     if DEFERRED_RESTART_ACTIVE
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -1856,7 +1856,13 @@ pub(crate) fn defer_restart_until_safe(app: AppHandle) {
                 .is_some_and(|focus| focus.is_focused());
             if deferred_restart_is_safe(held, focused) {
                 log("updater", "deferred restart is now safe; restarting");
-                crate::commands::autostart::restart_preferring_launch_agent(&app);
+                if let Some(version) = update_version.as_deref() {
+                    crate::commands::autostart::restart_after_update_preferring_launch_agent(
+                        &app, version,
+                    );
+                } else {
+                    crate::commands::autostart::restart_preferring_launch_agent(&app);
+                }
             }
             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         }
@@ -2061,7 +2067,7 @@ async fn install_staged_update(
         if post_cap {
             emit_post_cap_install_outcome(&staged.info.version, "installed", None);
         }
-        if !crate::commands::autostart::restart_preferring_launch_agent(app) {
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(app, &staged.info.version) {
             // A recording won the final exit race. The staged install entry
             // gate normally prevents this; retain a successful deferred
             // outcome for the remaining narrow race window.

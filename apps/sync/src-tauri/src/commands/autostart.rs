@@ -3,6 +3,7 @@ use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::first_run::merge_menubar_flags;
 use serde_json::Value;
+use tauri::Manager;
 
 /// One-time in-app copy when a stale LaunchAgent was healed or an old bundle
 /// was retired. Persisted untyped in menubar.json so a settings save cannot
@@ -95,12 +96,28 @@ pub fn reconcile_launch_agent_after_update() {
 /// Returns `false` when a protected activity deferred the restart. Successful
 /// restart paths do not return, preserving `AppHandle::restart` semantics.
 pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> bool {
+    restart_preferring_launch_agent_with_update_version(app, None)
+}
+
+/// Restart after a verified update, carrying its target version through the GUI
+/// fallback when no LaunchAgent can perform the restart.
+pub fn restart_after_update_preferring_launch_agent(
+    app: &tauri::AppHandle,
+    expected_version: &str,
+) -> bool {
+    restart_preferring_launch_agent_with_update_version(app, Some(expected_version))
+}
+
+fn restart_preferring_launch_agent_with_update_version(
+    app: &tauri::AppHandle,
+    update_version: Option<&str>,
+) -> bool {
     if let Some(reasons) = crate::updater::restart_is_held(app) {
         log(
             "updater",
             &format!("restart deferred while protected activity is active: {reasons:?}"),
         );
-        crate::updater::defer_restart_until_safe(app.clone());
+        crate::updater::defer_restart_until_safe(app.clone(), update_version.map(str::to_owned));
         return false;
     }
     #[cfg(target_os = "macos")]
@@ -117,6 +134,16 @@ pub fn restart_preferring_launch_agent(app: &tauri::AppHandle) -> bool {
             "updater",
             "launchd handoff unavailable; falling back to GUI relaunch",
         );
+    }
+    if let Some(version) = update_version {
+        if let Err(error) =
+            crate::commands::updater_restart_marker::persist_before_gui_restart(app, version)
+        {
+            log(
+                "updater",
+                &format!("could not persist updater restart marker: {error}"),
+            );
+        }
     }
     app.restart()
 }
