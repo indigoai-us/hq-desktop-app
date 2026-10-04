@@ -9,6 +9,7 @@ one download, one version, one updater stream.
 - **Date:** 2026-06-24
 - **Base:** `hq-sync` (Svelte 5). The React installer's wizard is ported into Svelte as
   first-run onboarding; `hq-sync-win` is folded back in for Windows.
+- `imports/hq-installer-react` was removed; the notes below that name it are history.
 
 ## Locked owner decisions (2026-06-24)
 
