@@ -68,7 +68,7 @@ function num(issue: Issue, key: string): number {
 
 function snapshotCapacityLine(
   logTail: string,
-): { needed: string; available: string } | undefined {
+): { needed: string; available: string; shortfall: string } | undefined {
   const match =
     /error: insufficient free space for safety snapshot \(need (\d+) bytes, have (\d+)\)\./.exec(
       logTail,
@@ -80,13 +80,17 @@ function snapshotCapacityLine(
   if (!Number.isSafeInteger(neededBytes) || !Number.isSafeInteger(availableBytes)) {
     return undefined;
   }
+  const shortfallBytes = neededBytes - availableBytes;
+  if (!Number.isSafeInteger(shortfallBytes) || shortfallBytes <= 0) return undefined;
 
   const gib = 1024 ** 3;
   const neededTenths = Math.ceil((neededBytes / gib) * 10);
   const availableTenths = Math.floor((availableBytes / gib) * 10);
+  const shortfallTenths = Math.ceil((shortfallBytes / gib) * 10);
   return {
     needed: `${(neededTenths / 10).toFixed(1)} GiB`,
     available: `${(availableTenths / 10).toFixed(1)} GiB`,
+    shortfall: `${(shortfallTenths / 10).toFixed(1)} GiB`,
   };
 }
 
@@ -95,10 +99,10 @@ function diskFullUpdatePrompt(logTail: string): string {
   return [
     'My HQ menubar update stopped before changing anything because there was not enough free space for the safety snapshot.',
     capacity
-      ? `The snapshot needs at least ${capacity.needed} free; ${capacity.available} is available.`
+      ? `The snapshot needs ${capacity.needed} free; ${capacity.available} is available.`
       : '',
     capacity
-      ? `Please free at least ${capacity.needed}, then retry the update with \`/update-hq\`.`
+      ? `Please free at least ${capacity.shortfall} more, then retry the update with \`/update-hq\`.`
       : 'Please free some space, then retry the update with `/update-hq`.',
   ]
     .filter(Boolean)
