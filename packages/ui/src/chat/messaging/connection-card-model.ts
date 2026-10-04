@@ -56,14 +56,13 @@ export type IntegrationAuthClass = "none" | "oauth" | "key";
 
 /**
  * The logo of an integration card: a bundled brand mark when the app has
- * one, else image sources tried in order, else the generic app glyph. There
- * is no badge made from the name: a card never shows a made-up logo.
+ * one, else the generic app glyph. There is no badge made from the name and
+ * no remote image: a card never shows a made-up logo, and never asks another
+ * host for one.
  */
 export interface ConnectionCardLogo {
   /** The app's bundled mark (app-brand-marks.ts), or null when it has none. */
   mark: BrandMark | null;
-  /** Image URLs the app built from the domain, tried in order. Never from the bot. */
-  sources: string[];
 }
 
 /**
@@ -606,7 +605,7 @@ export interface ConnectionCardView {
   kind?: "integration";
   /** The app's website domain, normalized. Integration cards only. */
   domain?: string;
-  /** The app's logo: a bundled mark or image sources. Integration cards only; Slack keeps its drawn mark. */
+  /** The app's logo: a bundled mark, or none for the generic glyph. Integration cards only; Slack keeps its drawn mark. */
   logo?: ConnectionCardLogo | null;
   /** How the app connects, when known. Integration cards only. */
   authClass?: IntegrationAuthClass | null;

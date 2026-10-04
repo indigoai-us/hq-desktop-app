@@ -302,13 +302,15 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(appCard("linear.app")!.textContent).toContain("Linear");
     expect(appLine("linear.app")).toBe("Your team's issues live here");
     expect(appLine("deepwiki.com")).toBe("Connect DeepWiki so Nova can use it.");
-    // Linear has a bundled mark, so no favicon is requested and no letters are drawn. DeepWiki has none: its favicon chain starts.
+    // Linear has a bundled mark, so no letters are drawn. DeepWiki has none: it shows the generic glyph. No card asks another host for an image.
     expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(brandMarkFor("linear.app")?.path);
     expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-img"]')).toBeNull();
     expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
-    expect(appCard("deepwiki.com")!.querySelector<HTMLImageElement>('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toBe(
-      "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https%3A%2F%2Fdeepwiki.com&size=64",
-    );
+    expect(appCard("deepwiki.com")!.querySelector('[data-testid="connection-card-logo-generic"]')).not.toBeNull();
+    for (const card of cardIds()) {
+      const logo = (card === "slack" ? null : appCard(card))?.querySelector('[data-testid="connection-card-logo"]');
+      expect(logo?.querySelector("img") ?? null, card).toBeNull();
+    }
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Connect Linear");
     expect(appPrimary("example.com")!.getAttribute("aria-haspopup")).toBe("dialog");
     expect(threadText()).not.toContain("unknown.example");
@@ -450,7 +452,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     appPrimary("example.com")!.click();
     await vi.waitFor(() => expect(dialog()).not.toBeNull());
     expect(dialog()!.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Example");
-    // Example has no bundled mark: the generic glyph holds the box while the favicon loads, never letters.
+    // Example has no bundled mark: the generic glyph holds the box, never letters.
     expect(dialog()!.querySelector('[data-testid="connection-card-logo-generic"]')).not.toBeNull();
     expect(dialog()!.querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
     expect(dialog()!.textContent).toContain("Example needs a key to connect.");

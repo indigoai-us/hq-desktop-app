@@ -7,7 +7,6 @@ import {
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
-  appLogoSources,
   botCanUse,
   catalogMatchFor,
   companyAppsBrief,
@@ -176,23 +175,27 @@ describe("catalogMatchFor", () => {
 });
 
 describe("the logo", () => {
-  it("builds exactly the console's two sources from the domain, in its order", () => {
-    expect(appLogoSources("linear.app")).toEqual([
-      "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https%3A%2F%2Flinear.app&size=64",
-      "https://icons.duckduckgo.com/ip3/linear.app.ico",
-    ]);
-    expect(appLogoSources("mcp.linear.app")).toEqual(appLogoSources("linear.app"));
-    expect(appLogoSources("nope")).toEqual([]);
-  });
-
-  it("pairs the bundled mark, when the app has one, with the favicon sources; never a badge from the name", () => {
-    expect(appLogo("linear.app")).toEqual({ mark: brandMarkFor("linear.app"), sources: appLogoSources("linear.app") });
+  it("is the bundled mark when the app has one, else nothing; never a badge from the name", () => {
+    expect(appLogo("linear.app")).toEqual({ mark: brandMarkFor("linear.app") });
     expect(appLogo("linear.app").mark?.title).toBe("Linear");
     expect(appLogo("mcp.linear.app").mark?.title).toBe("Linear");
-    // An app with no bundled mark: the image chain only.
-    expect(appLogo("example.com")).toEqual({ mark: null, sources: appLogoSources("example.com") });
-    expect(appLogo("nope")).toEqual({ mark: null, sources: [] });
+    // An app with no bundled mark: the generic glyph.
+    expect(appLogo("example.com")).toEqual({ mark: null });
+    expect(appLogo("nope")).toEqual({ mark: null });
     expect(Object.keys(appLogo("github.com"))).not.toContain("monogram");
+  });
+
+  it("never builds an image address from the domain", () => {
+    // The app's image policy allows one remote origin, the marketplace assets
+    // host. A favicon service address built from a domain the bot named would
+    // make the webview call a third party with no click.
+    for (const domain of ["linear.app", "example.com", "deepwiki.com", "evil.example.org"]) {
+      const logo = appLogo(domain);
+      expect(Object.keys(logo)).toEqual(["mark"]);
+      expect(JSON.stringify(logo)).not.toMatch(/https?:/);
+    }
+    const view = integrationCardView({ domain: "example.com" }, input({ facts: facts(), lookup: KEYED }))!;
+    expect(JSON.stringify(view)).not.toMatch(/https?:/);
   });
 });
 
@@ -222,7 +225,7 @@ describe("integrationCardView", () => {
       connectionId: null,
       logo: { mark: { title: "Linear" } },
     });
-    expect(view.logo?.sources).toHaveLength(2);
+    expect(view.logo).toEqual({ mark: brandMarkFor("linear.app") });
   });
 
   it("writes its own line when the bot gives no reason, and opens the modal for a key app", () => {

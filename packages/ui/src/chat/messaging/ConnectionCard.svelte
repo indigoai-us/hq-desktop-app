@@ -158,7 +158,7 @@
   <div class="connection-card-glass">
     <div class="connection-card-head">
       {#if view.logo}
-        <!-- The app's logo: its bundled mark at once, else the favicon once it has loaded, else the generic glyph. -->
+        <!-- The app's logo: its bundled mark, else the generic glyph. Never a remote image. -->
         <ConnectionCardLogo logo={view.logo} size={HEAD_BOX} />
       {:else}
         <!-- Slack's own mark on a light tile; the generic glyph on the glass for the tools card. -->

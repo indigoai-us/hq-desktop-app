@@ -9,8 +9,8 @@
  * WHAT THE BOT SUPPLIES: a domain and an optional sanitized reason. Nothing
  * else. The app supplies the name (the connection's, else the catalog's, else
  * the domain's first label), the logo (a bundled brand mark for the apps that
- * have one, else two favicon URLs built from the domain, else a generic
- * glyph), every word, every link and every state.
+ * have one, else a generic glyph; never a remote image), every word, every
+ * link and every state.
  *
  * WHAT DECIDES A CARD:
  * - a company connection whose domain or provider matches the item: a
@@ -226,34 +226,15 @@ export function defaultAppName(domain: string): string {
 // ── The logo ─────────────────────────────────────────────────────────────
 
 /**
- * The two favicon services the console uses, in its order: Google's index
- * first, DuckDuckGo second. Both answer a real 404 for an unknown domain, so
- * an image that fails falls through to the next and then to the generic
- * glyph. The app's image policy names exactly these two hosts, in both places
- * it is set: `tauri.conf.json` (`app.security.csp`) and the UI protocol's
- * response header (`apps/sync/src-tauri/src/ui_protocol.rs`). The webview
- * enforces both, so a host missing from either blocks the image.
- */
-export function appLogoSources(domain: string): string[] {
-  const registrable = normalizeConnectDomain(domain);
-  if (!registrable) return [];
-  const target = encodeURIComponent(`https://${registrable}`);
-  const encoded = encodeURIComponent(registrable);
-  return [
-    `https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=${target}&size=64`,
-    `https://icons.duckduckgo.com/ip3/${encoded}.ico`,
-  ];
-}
-
-/**
  * An app's logo: its bundled brand mark when it has one (app-brand-marks.ts),
- * and the favicon sources for the image tried when it has none. The card
- * draws the mark, else the first image that loads, else the generic app
- * glyph. Nothing is made up from the name.
+ * else nothing, and the card draws the generic app glyph. Nothing is made up
+ * from the name, and nothing is fetched: the app's image policy allows one
+ * remote origin, the marketplace assets host (avatars/csp-image-src.ts), and
+ * neither the catalog nor the connections list carries an icon on it. A
+ * domain a bot names therefore never makes the webview call another host.
  */
 export function appLogo(domain: string): ConnectionCardLogo {
-  const registrable = normalizeConnectDomain(domain);
-  return { mark: brandMarkFor(registrable), sources: appLogoSources(domain) };
+  return { mark: brandMarkFor(normalizeConnectDomain(domain)) };
 }
 
 // ── The view ─────────────────────────────────────────────────────────────

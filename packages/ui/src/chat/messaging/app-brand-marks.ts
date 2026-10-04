@@ -3,42 +3,110 @@
  * card, keyed by the app's website domain.
  *
  * A card's logo is drawn in this order: a bundled mark from here, else the
- * favicon chain (integration-cards-model.ts, `appLogoSources`), else the
  * generic app glyph (ConnectionCardIcon.svelte). A bundled mark needs no
  * network and no image policy, so the apps on this list have their real logo
  * the moment the card draws, inside the Tauri webview as much as in a browser.
+ * There is no remote image: the app's image policy names one remote origin
+ * (the marketplace assets host, see avatars/csp-image-src.ts), and a domain a
+ * bot writes in a message must never make the webview call a third party.
+ * An app that is not on this list shows the generic glyph, never a made-up
+ * logo.
  *
  * The paths and brand colours come from the `simple-icons` package (CC0 1.0).
- * Each path is drawn in a 24x24 viewBox. simple-icons has no Gmail, Google
- * Drive or Google Calendar in colour, no Salesforce, and no Microsoft marks
- * (Teams, Outlook): those apps take the favicon chain. The Slack mark was in
- * simple-icons up to 15.x and is not in 16.x; its 15.0.0 path is bundled
- * here so the Slack card and the Connect Slack modal draw the real mark.
+ * Each path is drawn in a 24x24 viewBox. simple-icons has no Salesforce, no
+ * Microsoft marks (Teams, Outlook), no Firecrawl, Twilio, LinkedIn, Attio,
+ * Amplitude, Segment or DocuSign: those apps show the generic glyph. The Slack
+ * mark was in simple-icons up to 15.x and is not in 16.x; its 15.0.0 path is
+ * bundled here so the Slack card and the Connect Slack modal draw the real
+ * mark.
  *
  * Nothing here comes from the bot: a domain is looked up in this table, and
  * the table is the app's own.
  */
 
 import {
+  si1password,
   siAirtable,
+  siAlgolia,
+  siAnthropic,
   siAsana,
+  siAuth0,
+  siBasecamp,
+  siBitbucket,
+  siBox,
+  siBrave,
+  siBrevo,
+  siCaldotcom,
+  siCalendly,
+  siClerk,
+  siClickup,
+  siCloudflare,
+  siCoda,
+  siDatabricks,
+  siDatadog,
+  siDiscord,
   siDropbox,
+  siElevenlabs,
+  siFacebook,
   siFigma,
+  siFirebase,
   siGithub,
+  siGitlab,
   siGmail,
+  siGoogle,
+  siGoogleads,
+  siGoogleanalytics,
   siGooglecalendar,
+  siGooglecloud,
   siGoogledocs,
   siGoogledrive,
   siGooglemeet,
   siGooglesheets,
+  siGrafana,
+  siGusto,
   siHubspot,
+  siHuggingface,
+  siInstagram,
   siIntercom,
   siJira,
   siLinear,
+  siLoom,
+  siMailchimp,
+  siMiro,
+  siMixpanel,
+  siMongodb,
+  siN8n,
+  siNetlify,
   siNotion,
+  siOkta,
+  siPagerduty,
+  siPaypal,
+  siPerplexity,
+  siPosthog,
+  siQuickbooks,
+  siReddit,
+  siResend,
+  siRetool,
+  siSentry,
+  siShopify,
+  siSnowflake,
+  siSquare,
   siStripe,
+  siSupabase,
+  siTelegram,
+  siTodoist,
   siTrello,
+  siTypeform,
+  siVercel,
+  siWebflow,
+  siWhatsapp,
+  siWise,
+  siX,
+  siXero,
+  siYoutube,
+  siZapier,
   siZendesk,
+  siZoho,
   siZoom,
 } from "simple-icons";
 
@@ -102,6 +170,80 @@ const MARKS: Readonly<Record<string, BrandMark>> = {
   "intercom.com": mark(siIntercom),
   "intercom.io": mark(siIntercom),
   "zendesk.com": mark(siZendesk),
+  // Google itself: a Google product that is not listed above draws the G.
+  "google.com": mark(siGoogle),
+  "analytics.google.com": mark(siGoogleanalytics),
+  "ads.google.com": mark(siGoogleads),
+  "cloud.google.com": mark(siGooglecloud),
+  "firebase.google.com": mark(siFirebase),
+  "youtube.com": mark(siYoutube),
+  // Engineering.
+  "sentry.io": mark(siSentry),
+  "gitlab.com": mark(siGitlab),
+  "bitbucket.org": mark(siBitbucket),
+  "vercel.com": mark(siVercel),
+  "netlify.com": mark(siNetlify),
+  "cloudflare.com": mark(siCloudflare),
+  "supabase.com": mark(siSupabase),
+  "supabase.co": mark(siSupabase),
+  "mongodb.com": mark(siMongodb),
+  "snowflake.com": mark(siSnowflake),
+  "databricks.com": mark(siDatabricks),
+  "datadoghq.com": mark(siDatadog),
+  "grafana.com": mark(siGrafana),
+  "pagerduty.com": mark(siPagerduty),
+  "algolia.com": mark(siAlgolia),
+  "auth0.com": mark(siAuth0),
+  "okta.com": mark(siOkta),
+  "clerk.com": mark(siClerk),
+  "1password.com": mark(si1password),
+  "retool.com": mark(siRetool),
+  "n8n.io": mark(siN8n),
+  "zapier.com": mark(siZapier),
+  // Product and analytics.
+  "mixpanel.com": mark(siMixpanel),
+  "posthog.com": mark(siPosthog),
+  // Work and planning.
+  "calendly.com": mark(siCalendly),
+  "cal.com": mark(siCaldotcom),
+  "clickup.com": mark(siClickup),
+  "todoist.com": mark(siTodoist),
+  "basecamp.com": mark(siBasecamp),
+  "coda.io": mark(siCoda),
+  "miro.com": mark(siMiro),
+  "loom.com": mark(siLoom),
+  "box.com": mark(siBox),
+  "typeform.com": mark(siTypeform),
+  "webflow.com": mark(siWebflow),
+  "zoho.com": mark(siZoho),
+  // Commerce and money.
+  "shopify.com": mark(siShopify),
+  "myshopify.com": mark(siShopify),
+  "paypal.com": mark(siPaypal),
+  "squareup.com": mark(siSquare),
+  "wise.com": mark(siWise),
+  "xero.com": mark(siXero),
+  "quickbooks.intuit.com": mark(siQuickbooks),
+  "gusto.com": mark(siGusto),
+  // Mail and marketing.
+  "mailchimp.com": mark(siMailchimp),
+  "brevo.com": mark(siBrevo),
+  "resend.com": mark(siResend),
+  // Messaging and social.
+  "discord.com": mark(siDiscord),
+  "telegram.org": mark(siTelegram),
+  "whatsapp.com": mark(siWhatsapp),
+  "x.com": mark(siX),
+  "twitter.com": mark(siX),
+  "facebook.com": mark(siFacebook),
+  "instagram.com": mark(siInstagram),
+  "reddit.com": mark(siReddit),
+  // Research and models.
+  "anthropic.com": mark(siAnthropic),
+  "perplexity.ai": mark(siPerplexity),
+  "elevenlabs.io": mark(siElevenlabs),
+  "huggingface.co": mark(siHuggingface),
+  "brave.com": mark(siBrave),
 };
 
 /** The domains with a bundled mark, for tests and for anyone listing them. */
