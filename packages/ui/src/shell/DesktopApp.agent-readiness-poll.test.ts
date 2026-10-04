@@ -109,7 +109,7 @@ async function pass(ms: number): Promise<void> {
 
 describe("DesktopApp: the readiness read in a cloud bot's channel", () => {
   it("keeps asking every 5 s while the bot is not ready to chat", async () => {
-    const getStatus = vi.fn(async () => notReady());
+    const getStatus = vi.fn(async (_agentUid: string) => notReady());
     await mountChannel(getStatus);
     const before = getStatus.mock.calls.length;
     await pass(31_000);

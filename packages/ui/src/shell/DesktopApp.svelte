@@ -7967,7 +7967,7 @@
   $effect(() => {
     if (!wakes) return;
     const coalescer = createStatusCoalescer<DmAgentStatusWake>({
-      apply: (_agentUid, wake) => applyDmStatusWake(wake),
+      apply: (_agentUid, wake) => takeDmStatusWake(wake),
       // Of two statuses waiting, the one created later.
       newer: (candidate, held) => dmAgentStatusCreatedAt(candidate) >= dmAgentStatusCreatedAt(held),
     });
@@ -7981,7 +7981,7 @@
       coalescer.dispose();
     };
   });
-  function applyDmStatusWake(wake: DmAgentStatusWake): void {
+  function takeDmStatusWake(wake: DmAgentStatusWake): void {
     // A status held for a moment is checked again: the signed-in person may have changed.
     const me = self?.uid?.trim() ?? "";
     if (!me || wake.withPersonUid !== me) return;
