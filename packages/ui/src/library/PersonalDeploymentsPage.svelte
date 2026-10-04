@@ -78,6 +78,9 @@
   // AUDIT-3: a read that loaded nothing shows the failed-read line, not "No deployments yet."
   let loadFailed = $state(false);
   let loadAttempt = $state(0);
+  // A selected company can only be absent after the current scope reads finish.
+  // While they are pending, or when a scope failed, its missing rows are unknown.
+  let rowsFinishedLoading = $state(false);
 
   const scopes = $derived<DeployScope[]>([
     { id: "personal", label: "Personal" },
@@ -94,6 +97,8 @@
     void loadAttempt;
     const wanted = scopes;
     cache = readPersonalDeploymentsCache(account);
+    rowsFinishedLoading = false;
+    failedScopes = [];
     if (!list) {
       unavailable = true;
       return;
@@ -112,6 +117,7 @@
         if (!live) return;
         refreshing = false;
         failedScopes = next.failed;
+        rowsFinishedLoading = true;
         if (next.failed.length > 0 && next.failed.length === wanted.length) {
           // Keep the cached list when every scope failed (offline, signed out).
           if (cache) return;
@@ -125,6 +131,8 @@
         console.error("[deployments] refresh failed", err);
         if (!live) return;
         refreshing = false;
+        failedScopes = wanted.map((scope) => scope.id);
+        rowsFinishedLoading = true;
         if (!cache) loadFailed = true;
       },
     );
@@ -153,7 +161,12 @@
     sessionSort = sort ? { ...sort } : null;
   });
   $effect(() => {
-    if (pills.company !== "all" && !companyOptions.some((option) => option.value === pills.company)) {
+    if (
+      rowsFinishedLoading
+      && pills.company !== "all"
+      && !failedScopes.includes(pills.company)
+      && !companyOptions.some((option) => option.value === pills.company)
+    ) {
       setPills({ company: "all" });
     }
   });
@@ -292,7 +305,7 @@
       <p class="warn" data-testid="deploy-failed-scopes">Couldn't load {failedLabels} right now. Showing the rest.</p>
     {/if}
     <div class="deploys">
-      <div class="table">
+      <div class="table" role="table" aria-label="Deployments">
         <div class="drow hd" role="row">
           {#each [
             ["app", "App"], ["scope", "Scope"], ["status", "Status"], ["access", "Access"], ["views", "30d views"], ["lastVisit", "Last visit"],

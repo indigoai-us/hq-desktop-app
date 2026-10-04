@@ -31,6 +31,14 @@ function rows(root: HTMLElement): HTMLButtonElement[] {
   return [...root.querySelectorAll<HTMLButtonElement>(".table .drow:not(.hd)")];
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function mountPage(): Promise<HTMLDivElement> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -66,6 +74,7 @@ describe("Deployments company filter and sorting", () => {
 
   it("sorts each header in both directions, returns to default, and keeps missing values last", async () => {
     const root = await mountPage();
+    expect(root.querySelector(".table")?.getAttribute("role")).toBe("table");
     const initial = rows(root).map((row) => row.textContent);
     for (const [key, first, second] of [
       ["app", "ascending", "descending"],
@@ -117,9 +126,37 @@ describe("Deployments company filter and sorting", () => {
     expect(await dropdownValue(root, "deploy-company-pill")).toBe("personal");
   });
 
-  it("resets the company pill when a refresh removes that company's rows", async () => {
+  it("resets the company pill only after a completed refresh removes that company's rows", async () => {
     let root = await mountPage();
     await chooseDropdown(root, "deploy-company-pill", "indigo");
+    localStorage.clear();
+    if (component) await unmount(component);
+    component = null;
+    root.remove();
+    const personal = deferred<{ apps: never[] }>();
+    const indigo = deferred<{ apps: never[] }>();
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(PersonalDeploymentsPage, {
+      target: host,
+      props: {
+        accountId: "company-sort",
+        companies: [{ slug: "indigo", displayName: "Indigo", kind: "company", state: "cloud" }] as never,
+        listDeployApps: async (scope: string) => ({ ok: true, value: await (scope === "personal" ? personal.promise : indigo.promise) as never }),
+      } as never,
+    });
+    await settle();
+    expect(await dropdownValue(host, "deploy-company-pill")).toBe("indigo");
+    personal.resolve({ apps: [] });
+    indigo.resolve({ apps: [] });
+    await settle();
+    expect(await dropdownValue(host, "deploy-company-pill")).toBe("all");
+  });
+
+  it("keeps the company pill when that scope failed to load", async () => {
+    let root = await mountPage();
+    await chooseDropdown(root, "deploy-company-pill", "indigo");
+    localStorage.clear();
     if (component) await unmount(component);
     component = null;
     root.remove();
@@ -130,10 +167,13 @@ describe("Deployments company filter and sorting", () => {
       props: {
         accountId: "company-sort",
         companies: [{ slug: "indigo", displayName: "Indigo", kind: "company", state: "cloud" }] as never,
-        listDeployApps: async () => ({ ok: true, value: { apps: [] } as never }),
+        listDeployApps: async (scope: string) => {
+          if (scope === "indigo") throw new Error("offline");
+          return { ok: true, value: { apps: [] } as never };
+        },
       } as never,
     });
     await settle();
-    expect(await dropdownValue(host, "deploy-company-pill")).toBe("all");
+    expect(await dropdownValue(host, "deploy-company-pill")).toBe("indigo");
   });
 });
