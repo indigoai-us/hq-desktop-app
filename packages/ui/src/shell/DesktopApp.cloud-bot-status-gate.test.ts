@@ -209,11 +209,17 @@ describe("DesktopApp: the status read that says a bot is a cloud bot", () => {
       await pass(9_000);
       expect(m.getStatus).toHaveBeenCalledTimes(1);
       // The next try comes by itself, without the person leaving the
-      // conversation. (Once it answers, the cards read the status too.)
+      // conversation.
       await pass(2_000);
-      expect(m.getStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
       await expectCloudBotFeatures();
       expect(m.listConnections).toHaveBeenCalledWith(COMPANY);
+      // Rewritten 2026-10-04: this used to allow "2 or more", because the
+      // cards read the status a second time once the poll had answered. The
+      // cards now take the poll's own answer: the failed read, then the one
+      // that answered, and no third.
+      await pass(1_000);
+      expect(m.getStatus).toHaveBeenCalledTimes(2);
+      expect(m.listConnections).toHaveBeenCalledTimes(1);
     });
   }
 
@@ -232,8 +238,19 @@ describe("DesktopApp: the status read that says a bot is a cloud bot", () => {
     await pass(35_000);
     expect(m.getStatus).toHaveBeenCalledTimes(3);
     await pass(6_000);
-    expect(m.getStatus.mock.calls.length).toBeGreaterThanOrEqual(4);
     await expectCloudBotFeatures();
+    // Three failed reads and the one that answered. The cards add no read of
+    // their own (rewritten 2026-10-04: was "4 or more").
+    expect(m.getStatus).toHaveBeenCalledTimes(4);
+  });
+
+  it("opens with one status read and one list read: the cards take the poll's answer", async () => {
+    const m = await mountDm(vi.fn<StatusFn>(async () => STATUS));
+    await expectCloudBotFeatures();
+    await pass(1_000);
+    expect(m.getStatus).toHaveBeenCalledTimes(1);
+    expect(m.listConnections).toHaveBeenCalledTimes(1);
+    expect(m.listConnections).toHaveBeenCalledWith(COMPANY);
   });
 
   it("asks again at once when the window comes back to the front, becomes visible, or the network returns", async () => {
@@ -247,7 +264,9 @@ describe("DesktopApp: the status read that says a bot is a cloud bot", () => {
       expect(m.getStatus, name).toHaveBeenCalledTimes(1);
       resume();
       await settle();
-      expect(m.getStatus.mock.calls.length, name).toBeGreaterThanOrEqual(2);
+      // The failed read, and the one made at once on coming back. The cards
+      // use that answer too (rewritten 2026-10-04: was "2 or more").
+      expect(m.getStatus, name).toHaveBeenCalledTimes(2);
       await expectCloudBotFeatures();
       await settle();
       // Answered: coming back again asks nothing more.

@@ -918,8 +918,10 @@ export interface ConnectionCards {
   integration?: ((item: { domain: string; why?: string; connectionId?: string }) => ConnectionCardView | null) | null;
   /**
    * Whether a block's row may draw yet: null means draw it. A row with apps
-   * in it waits while their lookups are unknown, so no card appears and then
-   * goes away. Absent: draw at once.
+   * in it waits while the company's list is unknown, so no card appears and
+   * then goes away. An app whose catalog lookup is still out does not hold
+   * the row: `integration` gives no view for it until the lookup answers,
+   * and its card then joins the row. Absent: draw at once.
    */
   rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>) => boolean) | null;
   /**

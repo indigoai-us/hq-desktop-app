@@ -314,10 +314,15 @@ async function mountResolved(w: World): Promise<void> {
 }
 
 describe("DesktopApp integration cards named by a cloud bot", () => {
-  it("draws one card per resolvable domain, in the bot's order, and none for an unknown domain", async () => {
+  it("draws one card per resolvable domain, and none for an unknown domain: what is known at once in the bot's order, a looked-up app after it", async () => {
+    // Rewritten 2026-10-04: the order used to be the bot's for every card
+    // (slack, linear.app, notion.so), because the whole row waited for its
+    // catalog lookups. A row now draws the cards it knows at once (Slack, and
+    // Notion, which is connected), and Linear joins after them when its
+    // lookup answers, so no card on screen moves aside.
     const w = world();
     await mountResolved(w);
-    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "linear.app", "notion.so", "deepwiki.com", "example.com"]));
+    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "deepwiki.com", "example.com"]));
     // The catalog was asked once per app that is not connected, never for the connected one.
     const asked = w.catalogSearch.mock.calls.map(([, query]) => query).sort();
     expect(asked).toEqual(["deepwiki.com", "example.com", "linear.app", "unknown-app.io"]);
@@ -512,7 +517,8 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     await vi.waitFor(() => expect(appCard("linear.app")!.dataset.state).toBe("declined"));
     expect(appLine("linear.app")).toBe("Not connected. Ask Nova any time.");
     expect(appCard("linear.app")!.querySelectorAll("button")).toHaveLength(0);
-    expect(cardIds()).toEqual(["slack", "linear.app", "notion.so", "deepwiki.com", "example.com"]);
+    // The same places as before the press (see the first test for the order).
+    expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "deepwiki.com", "example.com"]);
   });
 
   it("the old targets form still draws the built-in cards", async () => {

@@ -532,11 +532,16 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
   });
 
   it("puts no cards under the messages of a bot that was not made here", async () => {
+    // Rewritten 2026-10-04: this also asserted that the company's
+    // connections are not read. They are read once when a cloud bot's
+    // conversation opens, whether or not a card shows, so that a message
+    // that brings cards draws them at once. No card is drawn from the read.
     const w = world();
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalled());
     await settle(20);
     expect(cards()).toHaveLength(0);
-    expect(w.listConnections).not.toHaveBeenCalled();
+    expect(w.listConnections).toHaveBeenCalledTimes(1);
   });
 });
 

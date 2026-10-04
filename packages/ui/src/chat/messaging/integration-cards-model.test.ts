@@ -5,6 +5,8 @@ import {
   MAX_BRIEF_CHARS,
   MAX_FALLBACK_APPS,
   PRESS_CLOCK_SKEW_MS,
+  CONNECTIONS_RETRY_BASE_MS,
+  CONNECTIONS_RETRY_MAX_MS,
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
@@ -15,6 +17,7 @@ import {
   connectActionFor,
   connectFailureSentence,
   connectRowReady,
+  connectionsRetryMs,
   connectionAnswersPress,
   connectionForDomain,
   connectionForItem,
@@ -25,6 +28,7 @@ import {
   keyRejectedSentence,
   readCompanyConnections,
   readKeyBlueprint,
+  rowAwaitsList,
   recentCallsFor,
   type CatalogLookup,
   type CompanyConnections,
@@ -482,26 +486,52 @@ describe("integrationCardView", () => {
   });
 });
 
-describe("the row waits for its lookups", () => {
-  const lookups = (known: Record<string, CatalogLookup>) => (domain: string): CatalogLookup => known[domain] ?? "unknown";
-
-  it("is ready when every app is connected or looked up, and not before", () => {
+describe("the row waits for the company's list, never for one app's lookup", () => {
+  it("is ready as soon as the list is known, whatever is still being looked up", () => {
     const f = facts([connection()]);
+    // Slack, a connection, and an app that still needs a catalog lookup: the
+    // row draws, and the app being looked up has no card yet.
     const items = [{ app: "slack" as const }, { domain: "linear.app" }, { domain: "notion.so" }];
-    expect(connectRowReady(items, { facts: f, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(false);
-    expect(connectRowReady(items, { facts: f, lookupFor: lookups({ "notion.so": "not-found" }), since: NOW, now: NOW })).toBe(true);
-    // Only built-in cards: ready at once, even with no list.
-    expect(connectRowReady([{ app: "slack" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(true);
-    // No list yet: an app is undecided.
-    expect(connectRowReady([{ domain: "linear.app" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(false);
-    // A domain that is not one is decided (it draws nothing).
-    expect(connectRowReady([{ domain: "nope" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(true);
+    expect(connectRowReady(items, { facts: f, since: NOW, now: NOW })).toBe(true);
+    expect(integrationCardView({ domain: "linear.app" }, input({ facts: f }))).not.toBeNull();
+    expect(integrationCardView({ domain: "notion.so" }, input({ facts: f, lookup: "unknown" }))).toBeNull();
+    // Every app still being looked up: the row is ready all the same, and empty until one answers.
+    expect(connectRowReady([{ domain: "notion.so" }, { domain: "asana.com" }], { facts: facts(), since: NOW, now: NOW })).toBe(true);
   });
 
-  it("gives up waiting after the settle time", () => {
-    const items = [{ domain: "notion.so" }];
-    expect(connectRowReady(items, { facts: facts(), lookupFor: lookups({}), since: NOW, now: NOW + ROW_SETTLE_MS - 1 })).toBe(false);
-    expect(connectRowReady(items, { facts: facts(), lookupFor: lookups({}), since: NOW, now: NOW + ROW_SETTLE_MS })).toBe(true);
+  it("holds a row that names an app while the list itself is unknown, and no other row", () => {
+    // Only built-in cards: ready at once, even with no list.
+    expect(connectRowReady([{ app: "slack" }], { facts: null, since: NOW, now: NOW })).toBe(true);
+    // No list yet: nothing can be said about an app, so its row waits.
+    expect(connectRowReady([{ domain: "linear.app" }], { facts: null, since: NOW, now: NOW })).toBe(false);
+    expect(connectRowReady([{ app: "slack" }, { domain: "linear.app" }], { facts: undefined, since: NOW, now: NOW })).toBe(false);
+    // A domain that is not one is decided (it draws nothing).
+    expect(connectRowReady([{ domain: "nope" }], { facts: null, since: NOW, now: NOW })).toBe(true);
+  });
+
+  it("says which rows have to wait for the list: one that names an app, while the list is unknown", () => {
+    expect(rowAwaitsList([{ app: "slack" }, { domain: "linear.app" }], null)).toBe(true);
+    expect(rowAwaitsList([{ domain: "https://www.notion.so/" }], undefined)).toBe(true);
+    expect(rowAwaitsList([{ app: "slack" }, { app: "tools" }], null)).toBe(false);
+    expect(rowAwaitsList([{ domain: "nope" }], null)).toBe(false);
+    expect(rowAwaitsList([], null)).toBe(false);
+    // The list is known: no row waits, whatever it names.
+    expect(rowAwaitsList([{ app: "slack" }, { domain: "linear.app" }, { domain: "notion.so" }], facts())).toBe(false);
+  });
+
+  it("gives up waiting for the list after the settle time", () => {
+    const items = [{ app: "slack" as const }, { domain: "notion.so" }];
+    expect(connectRowReady(items, { facts: null, since: NOW, now: NOW + ROW_SETTLE_MS - 1 })).toBe(false);
+    expect(connectRowReady(items, { facts: null, since: NOW, now: NOW + ROW_SETTLE_MS })).toBe(true);
+  });
+
+  it("tries a failed list read again after 2 s, then twice as long each time, never more than a minute", () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 50].map(connectionsRetryMs)).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]);
+    expect(connectionsRetryMs(1)).toBe(CONNECTIONS_RETRY_BASE_MS);
+    expect(connectionsRetryMs(1_000)).toBe(CONNECTIONS_RETRY_MAX_MS);
+    // A count that is not one is the first try.
+    expect(connectionsRetryMs(0)).toBe(2_000);
+    expect(connectionsRetryMs(Number.NaN)).toBe(2_000);
   });
 
   it("names the domains that need a lookup: not built-ins, not connections, each once", () => {
@@ -648,7 +678,7 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
     expect(view).toMatchObject({ state: "connected", connectionId: "a1", primaryLabel: "Let Nova use it" });
     // Its row is settled and asks the catalog nothing.
     expect(domainsToLookUp(appChosenItems(f, null, true), f)).toEqual([]);
-    expect(connectRowReady(appChosenItems(f, null, true), { facts: f, lookupFor: () => "unknown", since: NOW, now: NOW })).toBe(true);
+    expect(connectRowReady(appChosenItems(f, null, true), { facts: f, since: NOW, now: NOW })).toBe(true);
   });
 
   it("offers Slack once, as the bot's own card: the person's own Slack integration connection is never a second card", () => {
