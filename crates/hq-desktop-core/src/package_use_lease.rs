@@ -23,6 +23,21 @@ pub const PACKAGE_USE_LEASE_TIMEOUT_ERROR: &str =
     "The HQ CLI is still running. Close active HQ CLI work and retry the update; npm was not started.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PackageUseUpdateWaitError {
+    TimedOut,
+    Other(String),
+}
+
+impl std::fmt::Display for PackageUseUpdateWaitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut => formatter.write_str(PACKAGE_USE_LEASE_TIMEOUT_ERROR),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageUseLeasePaths {
     pub lease_directory: PathBuf,
     pub update_request_path: PathBuf,
@@ -362,14 +377,26 @@ impl PackageUseUpdateRequest {
         }))
     }
 
-    pub async fn wait(mut self, timeout: Duration) -> Result<PackageUseUpdateGuard, String> {
+    pub async fn wait(self, timeout: Duration) -> Result<PackageUseUpdateGuard, String> {
+        self.wait_with_classification(timeout)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn wait_with_classification(
+        mut self,
+        timeout: Duration,
+    ) -> Result<PackageUseUpdateGuard, PackageUseUpdateWaitError> {
         let started = tokio::time::Instant::now();
         loop {
-            if let Some(guard) = self.try_acquire()? {
+            if let Some(guard) = self
+                .try_acquire()
+                .map_err(PackageUseUpdateWaitError::Other)?
+            {
                 return Ok(guard);
             }
             if started.elapsed() >= timeout {
-                return Err(PACKAGE_USE_LEASE_TIMEOUT_ERROR.to_string());
+                return Err(PackageUseUpdateWaitError::TimedOut);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
