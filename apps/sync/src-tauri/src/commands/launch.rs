@@ -198,25 +198,42 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Where the ChatGPT app carries its embedded Codex CLI. Codex desktop is
-/// distributed inside ChatGPT.app, and the bundle ships the full CLI at
-/// Contents/Resources/codex — so a machine with the app needs NOTHING
-/// installed for a workspace launch.
+/// distributed inside ChatGPT.app, and the bundle ships the full CLI — so a
+/// machine with the app needs NOTHING installed for a workspace launch.
 #[cfg(target_os = "macos")]
 pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
-    let candidates = [
-        std::path::PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
-        std::path::PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
-    ];
-    let home = dirs::home_dir();
-    candidates
-        .into_iter()
-        .chain(home.into_iter().flat_map(|h| {
-            [
-                h.join("Applications/ChatGPT.app/Contents/Resources/codex"),
-                h.join("Applications/Codex.app/Contents/Resources/codex"),
-            ]
-        }))
-        .find(|p| p.is_file())
+    let mut app_dirs = vec![std::path::PathBuf::from("/Applications")];
+    if let Some(home) = dirs::home_dir() {
+        app_dirs.push(home.join("Applications"));
+    }
+    bundled_codex_bin_in(&app_dirs)
+}
+
+/// App bundles that carry the Codex CLI, in preference order.
+const BUNDLED_CODEX_APPS: [&str; 2] = ["ChatGPT.app", "Codex.app"];
+
+/// Where inside the bundle the CLI sits. Older builds put it at
+/// `Contents/Resources/codex`; current ChatGPT.app builds ship it at
+/// `Contents/Resources/codex-cli/bin/codex` (verified with ChatGPT.app
+/// carrying codex-cli 0.159.2). Missing the second path made a desktop-only
+/// Mac read as "Codex not installed" to the sign-in backend.
+const BUNDLED_CODEX_PATHS: [&str; 2] = [
+    "Contents/Resources/codex",
+    "Contents/Resources/codex-cli/bin/codex",
+];
+
+/// First Codex CLI found in a ChatGPT/Codex app bundle under `app_dirs`.
+pub(crate) fn bundled_codex_bin_in(app_dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    app_dirs
+        .iter()
+        .flat_map(|dir| {
+            BUNDLED_CODEX_APPS.iter().flat_map(move |app| {
+                BUNDLED_CODEX_PATHS
+                    .iter()
+                    .map(move |relative| dir.join(app).join(relative))
+            })
+        })
+        .find(|path| path.is_file())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -825,5 +842,47 @@ mod bundled_claude_tests {
         fs::write(dir.path().join("2.1.261/.verified"), b"sha").unwrap();
         assert_eq!(bundled_claude_bin_in(dir.path()), None);
         assert_eq!(bundled_claude_bin_in(&dir.path().join("absent")), None);
+    }
+}
+
+#[cfg(test)]
+mod bundled_codex_tests {
+    use super::bundled_codex_bin_in;
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn place(root: &std::path::Path, relative: &str) -> std::path::PathBuf {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"#!/bin/sh\n").unwrap();
+        path
+    }
+
+    /// Regression: current ChatGPT.app ships its Codex CLI under
+    /// `codex-cli/bin/codex`, and only the old `Resources/codex` spot was
+    /// checked, so a Mac with just the desktop app read as "not installed".
+    #[test]
+    fn finds_the_cli_in_current_chatgpt_bundles() {
+        let dir = tempdir().unwrap();
+        let cli = place(
+            dir.path(),
+            "ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+        );
+        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), Some(cli));
+    }
+
+    #[test]
+    fn still_finds_the_cli_in_older_bundles() {
+        let dir = tempdir().unwrap();
+        let cli = place(dir.path(), "Codex.app/Contents/Resources/codex");
+        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), Some(cli));
+    }
+
+    #[test]
+    fn an_app_without_a_cli_or_a_missing_dir_finds_nothing() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("ChatGPT.app/Contents/Resources")).unwrap();
+        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), None);
+        assert_eq!(bundled_codex_bin_in(&[dir.path().join("absent")]), None);
     }
 }

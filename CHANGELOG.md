@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Setup no longer says "Claude Code is installed. Sign in to finish." on a Mac that has only the Claude desktop app. Setup needs Claude Code itself, so it now shows "Install Claude", which installs Claude Code and opens its sign-in in one step. Codex works the same way with the ChatGPT app. HQ now also finds the Codex that comes inside current versions of the ChatGPT app, so people with the ChatGPT app can sign in to Codex without installing it separately. If a sign-in check still fails, the message names Claude Code or Codex and says to make sure it is installed.
+
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
