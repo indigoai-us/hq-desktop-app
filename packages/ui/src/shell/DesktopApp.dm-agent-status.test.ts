@@ -80,6 +80,9 @@ beforeEach(() => {
   window.localStorage.clear();
   hqLog = vi.fn();
   (globalThis as { __hqLog?: unknown }).__hqLog = hqLog;
+  // Every test here runs on fake time: a bot's statuses are applied at most
+  // once a second per bot (B-11), and the 90 s rule is checked every 5 s.
+  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
 });
 
 afterEach(async () => {
@@ -132,15 +135,31 @@ const mountDm = (w: World) => mountApp(w, DM_ROW, "Hi Corey, I am Nova.");
 
 type Wakes = ReturnType<typeof createChatWakeBus>;
 
-/** The bot reports a status in its DM with `withPersonUid`. */
+/** Put a status on the bus and nothing else: no time passes. */
+function emitStatus(
+  wakes: Wakes,
+  status: string,
+  ts: number,
+  extra: { withPersonUid?: string; sentAt?: string; rootEventId?: string } = {},
+): void {
+  const { withPersonUid = ME, ...rest } = extra;
+  wakes.emit("agent:dm-status", { agentUid: NOVA, withPersonUid, status, ts: iso(ts), ...rest });
+}
+
+/**
+ * The bot reports a status in its DM with `withPersonUid`, the way it does
+ * for real: on its own, with a second gone by before the next thing happens.
+ * (Statuses closer together than that are coalesced: see the B-11 tests.)
+ */
 async function botStatus(
   wakes: Wakes,
   status: string,
   ts: number,
   extra: { withPersonUid?: string; sentAt?: string; rootEventId?: string } = {},
 ): Promise<void> {
-  const { withPersonUid = ME, ...rest } = extra;
-  wakes.emit("agent:dm-status", { agentUid: NOVA, withPersonUid, status, ts: iso(ts), ...rest });
+  emitStatus(wakes, status, ts, extra);
+  await settle();
+  await vi.advanceTimersByTimeAsync(1_000);
   await settle();
 }
 
@@ -288,9 +307,8 @@ describe("DesktopApp: a bot's status in its DM", () => {
     await vi.advanceTimersByTimeAsync(msTotal);
     await settle();
   }
-  const fakeTime = (): void => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
-  };
+  /** Fake time is on for every test in this file (see `beforeEach`). */
+  const fakeTime = (): void => {};
 
   it("after the person asks: ends the row 90 s after the bot's last status, logs it, and says the bot stopped responding", async () => {
     fakeTime();
@@ -503,7 +521,6 @@ describe("DesktopApp: a bot's status in its DM", () => {
   });
 
   it("leaves a row that never received a status on the long timers", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
     const w = world(Date.now());
     await mountDm(w);
     await typeAndSend("Are you there?");
@@ -530,6 +547,59 @@ describe("DesktopApp: a bot's status in its DM", () => {
     expect(thinkingRow()).toBeNull();
     expect(stoppedNote()).toBeNull();
     expect(thinkingLog()).toEqual([endedLine("expired", "yes")]);
+  });
+});
+
+describe("DesktopApp: a burst of statuses from one bot (B-11)", () => {
+  it("shows the first at once, then the newest a second later, and nothing in between", async () => {
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    const start = Date.now();
+
+    // Five statuses in the same instant.
+    for (let i = 1; i <= 5; i += 1) emitStatus(wakes, `Step ${i}`, start + i);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: Step 1");
+
+    // Until a second has passed, the row is not redrawn for the others.
+    await vi.advanceTimersByTimeAsync(900);
+    await settle();
+    expect(thinkingRows()).toHaveLength(1);
+    expect(thinkingRow()?.textContent).toContain("Nova: Step 1");
+
+    await vi.advanceTimersByTimeAsync(200);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: Step 5");
+    expect(thinkingRows()).toHaveLength(1);
+
+    // Nothing is left waiting: another second changes nothing.
+    await vi.advanceTimersByTimeAsync(2_000);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: Step 5");
+  });
+
+  it("of the statuses held, applies the one created last, whichever arrived last", async () => {
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    const start = Date.now();
+    emitStatus(wakes, "First", start + 1);
+    emitStatus(wakes, "Created later", start + 50);
+    emitStatus(wakes, "Created earlier, arrived last", start + 20);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: First");
+    await vi.advanceTimersByTimeAsync(1_100);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: Created later");
+  });
+
+  it("a status for someone else does not hold back this person's", async () => {
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    const start = Date.now();
+    emitStatus(wakes, "Not for me", start + 1, { withPersonUid: "prs_someone_else" });
+    emitStatus(wakes, "For me", start + 2);
+    await settle();
+    expect(thinkingRow()?.textContent).toContain("Nova: For me");
   });
 });
 
@@ -567,7 +637,6 @@ describe("DesktopApp: a status after a reply the app has only heard about (B-7)"
 
 describe("DesktopApp: a bot's status for a DM that is not open", () => {
   it("is late when the bot's reply was announced by a wake, though the app holds no timeline for that DM", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
     const w = world(Date.now());
     const wakes = await mountApp(w, CHANNEL_ROW, "Morning all");
     const start = Date.now();
@@ -603,7 +672,6 @@ describe("DesktopApp: a channel status is unchanged", () => {
   };
 
   it("draws in its channel, takes no DM status, and is not ended by 90 s of silence", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
     const w = world(Date.now());
     const wakes = await mountApp(w, CHANNEL_ROW, "Morning all");
     const start = Date.now();

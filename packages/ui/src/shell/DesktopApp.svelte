@@ -461,6 +461,9 @@
     agentDisplayName,
     applyAgentStatus,
     applyDmAgentStatus,
+    createStatusCoalescer,
+    dmAgentStatusCreatedAt,
+    type DmAgentStatusWake,
     heldDmMessages,
     endStatusSilentAll,
     statusSilenceClockRestarts,
@@ -7914,35 +7917,55 @@
   // someone else, or one no newer than the bot's last message (the reply
   // already landed), changes nothing. A thread root on the status is kept on
   // the row; the row still draws in the main pane.
+  //
+  // A bot's statuses are applied at most once a second per bot, always the
+  // newest (`createStatusCoalescer`): the first shows at once, a burst after
+  // it costs one apply a second, and the last one always lands. The wakes
+  // themselves arrive at whatever rate the server relays them.
   $effect(() => {
     if (!wakes) return;
-    return wakes.on("agent:dm-status", (wake) => {
+    const coalescer = createStatusCoalescer<DmAgentStatusWake>({
+      apply: (_agentUid, wake) => applyDmStatusWake(wake),
+      // Of two statuses waiting, the one created later.
+      newer: (candidate, held) => dmAgentStatusCreatedAt(candidate) >= dmAgentStatusCreatedAt(held),
+    });
+    const off = wakes.on("agent:dm-status", (wake) => {
       const me = self?.uid?.trim() ?? "";
       if (!me || wake.withPersonUid !== me) return;
-      const rowId = `dm:${wake.agentUid}`;
-      const timeline = liveTimelineId === rowId ? liveTimeline : (timelineCache.get(rowId) ?? []);
-      // Plus the bot's newest message announced by a wake, for a DM whose
-      // timeline the app does not hold or that is a page behind the wake.
-      const held = heldDmMessages(timeline, wake.agentUid, botDmMessageSeenAt.get(wake.agentUid));
-      const current = thinkingByRow[rowId] ?? [];
-      // The name the DM already goes by, when the app has one.
-      const name =
-        (selectedRow?.id === rowId ? selectedRow.title?.trim() : "") ||
-        current.find((entry) => entry.agentUid === wake.agentUid)?.agentName ||
-        agentDisplayName(wake.agentUid, held, {
-          liveNames: displayNameByUid,
-          fallback: localBots.find((bot) => bot.agentUid === wake.agentUid)?.name,
-        });
-      // The pin is the bot's newest message known either way: the timeline's
-      // or the announced one, whichever is newer. Pinned to the timeline
-      // alone, a reply already announced (and older than this status) ended
-      // the row when its page arrived.
-      const next = applyDmAgentStatus(current, wake, name, held, Date.now(), {
-        afterMs: newestMessageAtFrom(held, wake.agentUid),
-      });
-      if (next !== current) thinkingByRow = { ...thinkingByRow, [rowId]: next };
+      coalescer.push(wake.agentUid, wake);
     });
+    return () => {
+      off();
+      coalescer.dispose();
+    };
   });
+  function applyDmStatusWake(wake: DmAgentStatusWake): void {
+    // A status held for a moment is checked again: the signed-in person may have changed.
+    const me = self?.uid?.trim() ?? "";
+    if (!me || wake.withPersonUid !== me) return;
+    const rowId = `dm:${wake.agentUid}`;
+    const timeline = liveTimelineId === rowId ? liveTimeline : (timelineCache.get(rowId) ?? []);
+    // Plus the bot's newest message announced by a wake, for a DM whose
+    // timeline the app does not hold or that is a page behind the wake.
+    const held = heldDmMessages(timeline, wake.agentUid, botDmMessageSeenAt.get(wake.agentUid));
+    const current = thinkingByRow[rowId] ?? [];
+    // The name the DM already goes by, when the app has one.
+    const name =
+      (selectedRow?.id === rowId ? selectedRow.title?.trim() : "") ||
+      current.find((entry) => entry.agentUid === wake.agentUid)?.agentName ||
+      agentDisplayName(wake.agentUid, held, {
+        liveNames: displayNameByUid,
+        fallback: localBots.find((bot) => bot.agentUid === wake.agentUid)?.name,
+      });
+    // The pin is the bot's newest message known either way: the timeline's
+    // or the announced one, whichever is newer. Pinned to the timeline
+    // alone, a reply already announced (and older than this status) ended
+    // the row when its page arrived.
+    const next = applyDmAgentStatus(current, wake, name, held, Date.now(), {
+      afterMs: newestMessageAtFrom(held, wake.agentUid),
+    });
+    if (next !== current) thinkingByRow = { ...thinkingByRow, [rowId]: next };
+  }
 
   // Closed-panel `reply:new`: bump visible “N replies”. Open panel on this
   // root re-fetches via ReplyPanel. Other roots do not rewrite the panel.

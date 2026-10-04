@@ -560,6 +560,92 @@ export function dmAgentStatusCreatedAt(wake: DmAgentStatusWake): number {
   return Number.isNaN(sent) ? Date.parse(wake.ts) : sent;
 }
 
+/** A bot's DM statuses are applied at most this often per bot. */
+export const DM_STATUS_APPLY_MIN_INTERVAL_MS = 1_000;
+
+export interface StatusCoalescer<T> {
+  /** Hand in a value for `key`: applied now, or held and applied when its turn comes. */
+  push(key: string, value: T): void;
+  /** Drop everything held and cancel every timer. Nothing is applied. */
+  dispose(): void;
+}
+
+/**
+ * Apply values per key at most once per `minIntervalMs`, always the newest.
+ *
+ * The first value for a key is applied at once. Values that arrive within
+ * the interval after an apply are held: only the newest is kept, and it is
+ * applied when the interval is over. So one bot sending many statuses a
+ * second costs one apply (one reactive write) a second, the row still shows
+ * the first status without delay, and the last status always lands.
+ *
+ * Nothing here rate-limits the sender. A bot's status wakes arrive at
+ * whatever rate the server relays them; this bounds what the app does with
+ * them. `newer` says which of two held values to keep (default: the one
+ * pushed last). The clock and timers can be handed in for tests.
+ */
+export function createStatusCoalescer<T>(opts: {
+  apply: (key: string, value: T) => void;
+  minIntervalMs?: number;
+  newer?: (candidate: T, held: T) => boolean;
+  now?: () => number;
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
+}): StatusCoalescer<T> {
+  const interval = Math.max(0, opts.minIntervalMs ?? DM_STATUS_APPLY_MIN_INTERVAL_MS);
+  const now = opts.now ?? (() => Date.now());
+  const setTimer = opts.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const clearTimer = opts.clearTimer ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+  const newer = opts.newer ?? (() => true);
+  interface Slot {
+    appliedAt: number;
+    held?: { value: T };
+    timer?: unknown;
+  }
+  const slots = new Map<string, Slot>();
+  let disposed = false;
+  /** Keys with nothing held and nothing applied lately carry no state worth keeping. */
+  const MAX_IDLE_SLOTS = 200;
+
+  function prune(at: number): void {
+    if (slots.size <= MAX_IDLE_SLOTS) return;
+    for (const [key, slot] of slots) {
+      if (slot.timer === undefined && at - slot.appliedAt >= interval) slots.delete(key);
+    }
+  }
+
+  return {
+    push(key, value) {
+      if (disposed) return;
+      const at = now();
+      const slot = slots.get(key);
+      if (!slot || (slot.timer === undefined && at - slot.appliedAt >= interval)) {
+        slots.set(key, { appliedAt: at });
+        prune(at);
+        opts.apply(key, value);
+        return;
+      }
+      if (!slot.held || newer(value, slot.held.value)) slot.held = { value };
+      if (slot.timer !== undefined) return;
+      slot.timer = setTimer(() => {
+        slot.timer = undefined;
+        const held = slot.held;
+        slot.held = undefined;
+        if (disposed || !held) return;
+        slot.appliedAt = now();
+        opts.apply(key, held.value);
+      }, Math.max(0, slot.appliedAt + interval - at));
+    },
+    dispose() {
+      disposed = true;
+      for (const slot of slots.values()) {
+        if (slot.timer !== undefined) clearTimer(slot.timer);
+      }
+      slots.clear();
+    },
+  };
+}
+
 /**
  * A bot says it is working in its DM: start its row, or refresh the one that
  * is there, with the status text and the time the status arrived.
