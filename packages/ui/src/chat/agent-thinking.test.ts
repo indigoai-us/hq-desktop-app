@@ -22,6 +22,9 @@ import {
   applyAgentStatus,
   parseAgentStatusWake,
   clearFromMessages as clearRows,
+  endedBotDmThinking,
+  thinkingEndedLogLine,
+  syncBusyThinking,
 } from './agent-thinking.js';
 
 function member(personUid: string, displayName: string): MentionCandidate {
@@ -149,6 +152,31 @@ describe('startThinking', () => {
 
     expect(rows[0]!.since).toBe(1_000);
     expect(rows[0]!.startedAt).toBe(12_000);
+  });
+
+  // Owner walkthrough: a person's question pinned the row to the bot's last
+  // message; a hidden notice to the same bot then restarted it with no pin,
+  // which dropped the pin and put the row back on the clock-skew rule. The
+  // bot's previous message (100 s before the restart, already on screen) then
+  // ended the row on the next page fetch, before the bot answered.
+  it('a restart with no pin keeps the existing pin', () => {
+    const lastBotAt = Date.parse('2026-10-04T03:41:00.000Z');
+    const askedAt = Date.parse('2026-10-04T03:42:10.000Z');
+    let rows = startThinking([], agent, askedAt, { afterMs: lastBotAt });
+    rows = startThinking(rows, agent, askedAt + 30_000);
+    expect(rows[0]!.afterMs).toBe(lastBotAt);
+    // The page fetched after the restart still carries the bot's old message.
+    const page = [{ fromPersonUid: 'agt_izzy', createdAt: '2026-10-04T03:41:00.000Z' }];
+    expect(clearFromMessages(rows, page)).toHaveLength(1);
+    // The answer ends it.
+    const answered = [...page, { fromPersonUid: 'agt_izzy', createdAt: '2026-10-04T03:43:17.000Z' }];
+    expect(clearFromMessages(rows, answered)).toHaveLength(0);
+  });
+
+  it('a restart with a pin moves the pin', () => {
+    let rows = startThinking([], agent, 1_000, { afterMs: 100 });
+    rows = startThinking(rows, agent, 2_000, { afterMs: 500 });
+    expect(rows[0]!.afterMs).toBe(500);
   });
 });
 
@@ -342,7 +370,8 @@ describe('per-row map (thinking survives navigation)', () => {
     const again = startThinkingIn(two, A, izzy, 3000);
     expect(again[A]).toHaveLength(1);
     expect(again[A]?.[0]?.startedAt).toBe(3000);
-    expect(again[A]?.[0]?.afterMs).toBeUndefined();
+    // A restart with no pin of its own keeps the row's pin (see startThinking).
+    expect(again[A]?.[0]?.afterMs).toBe(500);
   });
 
   it('tickAll advances every row and drops rows emptied by expiry', () => {
@@ -558,5 +587,51 @@ describe('thinkingLine — the row visibly changes while the agent works', () =>
     expect(formatThinkingElapsed(42_400)).toBe('42s');
     expect(formatThinkingElapsed(65_000)).toBe('1m 05s');
     expect(formatThinkingElapsed(-10)).toBe('0s');
+  });
+});
+
+describe('why a bot DM row ended (file log line)', () => {
+  const bot = (over: Partial<ThinkingEntry> = {}): ThinkingEntry =>
+    entry({ agentUid: 'agt_nova', agentName: 'Nova', startedAt: 1_000, since: 1_000, ...over });
+
+  it('names bot DM rows that are gone, and nothing else', () => {
+    const prev: ThinkingByRow = {
+      'dm:agt_nova': [bot({ afterMs: 500 })],
+      'dm:agt_kept': [bot({ agentUid: 'agt_kept' })],
+      'ch:chn_1': [bot({ agentUid: 'agt_room' })],
+      'dm:prs_human': [bot({ agentUid: 'prs_human' })],
+    };
+    const next: ThinkingByRow = { 'dm:agt_kept': prev['dm:agt_kept']! };
+    expect(endedBotDmThinking(prev, next)).toEqual([{ rowId: 'dm:agt_nova', entry: prev['dm:agt_nova']![0] }]);
+    // A restart keeps the agent's row: not an end.
+    const restarted = { ...prev, 'dm:agt_nova': startThinking(prev['dm:agt_nova']!, { agentUid: 'agt_nova', agentName: 'Nova' }, 9_000) };
+    expect(endedBotDmThinking(prev, restarted)).toEqual([]);
+    expect(endedBotDmThinking(prev, prev)).toEqual([]);
+  });
+
+  it('writes ids, the reason, elapsed ms from when the turn began, and the pin', () => {
+    expect(
+      thinkingEndedLogLine({ rowId: 'dm:agt_nova', entry: bot({ startedAt: 4_000, afterMs: 500 }), reason: 'newer-message', now: 68_400 }),
+    ).toBe('ended agent=agt_nova row=dm:agt_nova reason=newer-message elapsedMs=67400 pinned=yes');
+    expect(
+      thinkingEndedLogLine({ rowId: 'dm:agt_nova', entry: bot(), reason: 'other', via: 'busy-ended', now: 2_000 }),
+    ).toBe('ended agent=agt_nova row=dm:agt_nova reason=other via=busy-ended elapsedMs=1000 pinned=no');
+  });
+});
+
+describe('a busy local bot row is pinned when its DM timeline is known', () => {
+  it('pins to the newest message the caller knows, and leaves it unpinned when there is none', () => {
+    const next = syncBusyThinking(
+      {},
+      {
+        busy: ['agt_a', 'agt_b'],
+        previouslyBusy: [],
+        nameOf: () => 'bot',
+        now: 1_000,
+        afterMsOf: (uid) => (uid === 'agt_a' ? 400 : undefined),
+      },
+    );
+    expect(next['dm:agt_a']![0]!.afterMs).toBe(400);
+    expect(next['dm:agt_b']![0]!.afterMs).toBeUndefined();
   });
 });

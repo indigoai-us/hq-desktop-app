@@ -446,7 +446,10 @@
     syncBusyThinking,
     kickoffThinkingState,
     tickAll,
+    endedBotDmThinking,
+    thinkingEndedLogLine,
     type ThinkingByRow,
+    type ThinkingEndReason,
     type ThinkingEntry,
   } from "../chat/agent-thinking.js";
   import {
@@ -1874,7 +1877,7 @@
     const uid = (agentUid ?? "").trim();
     if (!uid) return;
     unrunnableBotUids = { ...unrunnableBotUids, [uid]: reason };
-    thinkingByRow = clearAgentEverywhere(thinkingByRow, uid);
+    setThinking(clearAgentEverywhere(thinkingByRow, uid), "verdict");
   }
   /**
    * Per-machine memory for the bot surfaces: the restore prompt's dismissal
@@ -4003,7 +4006,14 @@
     const name = cloudBotHelloPending[uid]!;
     const { [uid]: _started, ...rest } = cloudBotHelloPending;
     cloudBotHelloPending = rest;
-    thinkingByRow = startThinkingIn(thinkingByRow, row.id, { agentUid: uid, agentName: row.title?.trim() || name }, Date.now());
+    // Pinned like a send: only a bot message newer than the request ends it.
+    thinkingByRow = startThinkingIn(
+      thinkingByRow,
+      row.id,
+      { agentUid: uid, agentName: row.title?.trim() || name },
+      Date.now(),
+      { afterMs: untrack(() => botPinFor(row.id, uid)) },
+    );
   });
 
   const SETUP_DONE_PLACEHOLDER = "Setup is complete — pick a next step above.";
@@ -4080,6 +4090,37 @@
   // row, a failed send there, or the hard expiry) — never a row switch.
   const AGENT_THINKING_TICK_MS = 5_000;
   let thinkingByRow = $state<ThinkingByRow>({});
+  /**
+   * The pin for a row started now in `rowId` for `agentUid`: the newest
+   * message from that agent in the timeline the app holds for that
+   * conversation, so only a NEWER one ends the row. Undefined when the app
+   * holds no timeline for it or the agent has not written there yet; the row
+   * then falls back to the clock-skew rule, which cannot misfire on an agent
+   * message the app does not know about.
+   */
+  function botPinFor(rowId: string, agentUid: string): number | undefined {
+    const messages = liveTimelineId === rowId ? liveTimeline : (timelineCache.get(rowId) ?? []);
+    return newestMessageAtFrom(messages, agentUid);
+  }
+  /**
+   * Every path that removes thinking rows goes through here with its reason,
+   * and each bot DM row it ends gets one line in the app's file log (ids, the
+   * reason, how long it was up, whether it was pinned), so a walkthrough can
+   * show why a row went away.
+   */
+  function setThinking(next: ThinkingByRow, reason: ThinkingEndReason, via?: string): void {
+    const prev = untrack(() => thinkingByRow);
+    if (next === prev) return;
+    const ended = endedBotDmThinking(prev, next);
+    thinkingByRow = next;
+    if (ended.length === 0) return;
+    const hqLog = (globalThis as { __hqLog?: (tag: string, message: string) => void }).__hqLog;
+    if (!hqLog) return;
+    const now = Date.now();
+    for (const { rowId, entry } of ended) {
+      hqLog("bot-thinking", thinkingEndedLogLine({ rowId, entry, reason, now, via }));
+    }
+  }
   /** Bots created with a kickoff whose first turn has not been shown yet
    *  (uid → name). Once the intro is in the open DM, the row starts there. */
   let kickoffPendingByUid = $state<Record<string, string>>({});
@@ -4143,9 +4184,11 @@
         nameOf: (uid) => localBots.find((b) => b.agentUid === uid)?.name ?? "bot",
         now: Date.now(),
         answered: answeredWhileBusy,
+        afterMsOf: (uid) => botPinFor(`dm:${uid}`, uid),
       });
       previouslyBusyBotUids = busy;
-      if (next !== thinkingByRow) thinkingByRow = next;
+      // Rows this removes are bots whose `busy` dropped (their turn is over).
+      if (next !== thinkingByRow) setThinking(next, "other", "busy-ended");
     });
   });
 
@@ -4196,7 +4239,7 @@
 
   onMount(() => {
     const handle = window.setInterval(() => {
-      thinkingByRow = tickAll(thinkingByRow, Date.now());
+      setThinking(tickAll(thinkingByRow, Date.now()), "expired");
     }, AGENT_THINKING_TICK_MS);
     return () => {
       clearInterval(handle);
@@ -4224,7 +4267,7 @@
     // catch-up page containing an OLD agent message cannot clear a newer row.
     const next = clearRowOnReply(thinkingByRow, answeredWhileBusy, rowId, messages, busyBotUids);
     answeredWhileBusy = next.answered;
-    if (next.map !== thinkingByRow) thinkingByRow = next.map;
+    if (next.map !== thinkingByRow) setThinking(next.map, "newer-message");
   }
 
   /**
@@ -5085,7 +5128,10 @@
     } catch {
       return false;
     }
-    // The bot answers the notice: show it as working in its conversation.
+    // The bot answers the notice: show it as working in its conversation,
+    // pinned to its newest message so only the answer ends the row. Unpinned,
+    // a bot message from up to two minutes before the notice ended it on the
+    // next page fetch (Gmail and Firecrawl notices in the owner's walkthrough).
     const row = selectedRow;
     if (row?.kind === "dm" && row.personUid === agentUid) {
       thinkingByRow = startThinkingIn(
@@ -5093,6 +5139,7 @@
         row.id,
         { agentUid, agentName: row.title?.trim() || "bot" },
         Date.now(),
+        { afterMs: botPinFor(row.id, agentUid) },
       );
     }
     return true;
@@ -8283,7 +8330,7 @@
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
-    thinkingByRow = {};
+    setThinking({}, "tenant-switch");
     answeredWhileBusy = {};
     openReplyRootId = null;
     openProfileMember = null;
@@ -8979,7 +9026,7 @@
       // Send never left — drop this conversation's optimistic thinking rows
       // so the status cannot outlive a failed mention. Other conversations'
       // rows are unrelated to this failure and stay.
-      thinkingByRow = dropRow(thinkingByRow, row.id);
+      setThinking(dropRow(thinkingByRow, row.id), "send-failed");
       throw err;
     }
   }

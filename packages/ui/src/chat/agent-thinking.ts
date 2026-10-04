@@ -118,8 +118,11 @@ const DEFAULT_EXPIRE_AFTER_MS = 600_000;
 /** Start (or restart) a thinking row for `agent`. Idempotent per `agentUid`:
  * a second start for the same agent replaces the existing row in place,
  * resetting `startedAt` and `phase` to `'thinking'` so a follow-up mention
- * doesn't stack rows and doesn't inherit a stale `'slow'` phase. Always
- * returns a NEW array. */
+ * doesn't stack rows and doesn't inherit a stale `'slow'` phase. A restart
+ * that carries no pin keeps the existing row's pin: without it the row fell
+ * back to the clock-skew rule, and an agent message from up to two minutes
+ * BEFORE the restart (already on screen) ended it on the next page fetch.
+ * Always returns a NEW array. */
 export function startThinking(
   entries: ThinkingEntry[],
   agent: { agentUid: string; agentName: string },
@@ -127,17 +130,21 @@ export function startThinking(
   opts?: { afterMs?: number; detail?: string },
 ): ThinkingEntry[] {
   const detail = opts?.detail?.trim();
+  const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
+  const pinned =
+    opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
+      ? opts.afterMs
+      : idx >= 0
+        ? entries[idx]!.afterMs
+        : undefined;
   const next: ThinkingEntry = {
     agentUid: agent.agentUid,
     agentName: agent.agentName,
     startedAt: now,
     phase: 'thinking',
-    ...(opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
-      ? { afterMs: opts.afterMs }
-      : {}),
+    ...(pinned !== undefined ? { afterMs: pinned } : {}),
     ...(detail ? { detail } : {}),
   };
-  const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
   if (idx < 0) return [...entries, { ...next, since: now }];
   const copy = entries.slice();
   // A restart is the same stretch of work continuing (a fresh status, or a
@@ -579,6 +586,11 @@ export function syncBusyThinking(
     /** Bots whose reply already ended the row this turn (see
      *  {@link AnsweredWhileBusy}); their still-set `busy` is not re-shown. */
     answered?: AnsweredWhileBusy;
+    /** Newest known message time from this bot in its DM, to pin the row
+     *  (see {@link ThinkingEntry.afterMs}). Undefined when the app holds no
+     *  timeline for that DM or the bot has no message in it: there is nothing
+     *  to pin to, and the clock-skew rule is the only one left. */
+    afterMsOf?: (agentUid: string) => number | undefined;
   },
 ): ThinkingByRow {
   let next = map;
@@ -590,9 +602,66 @@ export function syncBusyThinking(
     const rowId = `dm:${uid}`;
     if (next[rowId]?.some((e) => e.agentUid === uid)) continue;
     if (opts.answered?.[uid]) continue;
-    next = startThinkingIn(next, rowId, { agentUid: uid, agentName: opts.nameOf(uid) }, opts.now);
+    const afterMs = opts.afterMsOf?.(uid);
+    next = startThinkingIn(
+      next,
+      rowId,
+      { agentUid: uid, agentName: opts.nameOf(uid) },
+      opts.now,
+      afterMs !== undefined ? { afterMs } : undefined,
+    );
   }
   return next;
+}
+
+// ---------------------------------------------------------------------------
+// Why a row ended, for the app's file log.
+//
+// A walkthrough showed bot DM rows that vanished before the reply with no way
+// to tell which path removed them. Every path that removes rows names its
+// reason, and one log line per ended bot DM row records it: ids, the reason,
+// how long the row had been up and whether it was pinned. No message text.
+
+export type ThinkingEndReason =
+  | 'newer-message'
+  | 'expired'
+  | 'send-failed'
+  | 'tenant-switch'
+  | 'verdict'
+  | 'other';
+
+/** Bot DM rows (`dm:<agentUid>` with an agent on it) present in `prev` and
+ *  gone from `next`. A restart keeps the agent's row, so it is not an end. */
+export function endedBotDmThinking(
+  prev: ThinkingByRow,
+  next: ThinkingByRow,
+): Array<{ rowId: string; entry: ThinkingEntry }> {
+  if (prev === next) return [];
+  const out: Array<{ rowId: string; entry: ThinkingEntry }> = [];
+  for (const [rowId, entries] of Object.entries(prev)) {
+    if (!rowId.startsWith('dm:')) continue;
+    const kept = new Set((next[rowId] ?? []).map((e) => e.agentUid));
+    for (const entry of entries) {
+      if (!isAgentUid(entry.agentUid) || kept.has(entry.agentUid)) continue;
+      out.push({ rowId, entry });
+    }
+  }
+  return out;
+}
+
+/** One `bot-thinking` log line: `ended agent=… row=… reason=… elapsedMs=… pinned=yes|no`. */
+export function thinkingEndedLogLine(input: {
+  rowId: string;
+  entry: ThinkingEntry;
+  reason: ThinkingEndReason;
+  now: number;
+  /** Narrower cause under `other` (e.g. `busy-ended`). */
+  via?: string;
+}): string {
+  const { rowId, entry, reason, now, via } = input;
+  const elapsedMs = Math.max(0, Math.round(now - (entry.since ?? entry.startedAt)));
+  const pinned = entry.afterMs !== undefined ? 'yes' : 'no';
+  return `ended agent=${entry.agentUid} row=${rowId} reason=${reason}${via ? ` via=${via}` : ''} elapsedMs=${elapsedMs} pinned=${pinned}`;
 }
 
 // ---------------------------------------------------------------------------
