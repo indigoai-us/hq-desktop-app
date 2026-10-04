@@ -238,10 +238,15 @@
     type ReadinessRead,
   } from "./agent-readiness-poll.js";
   import {
-    loadHelloAsked,
-    saveHelloAsked,
+    botMadeByAnotherAccount,
+    helloAskedFor,
+    loadBotsByAccount,
+    saveBotsByAccount,
+    withBotMadeBy,
     withHelloAsked,
+    withoutBot,
     withoutHelloAsked,
+    type BotsByAccount,
     type HelloAskedTimes,
   } from "../chat/cloud-bot-hello-asked.js";
   import {
@@ -3978,7 +3983,35 @@
     }
   }
   let newCloudBotUids = $state<string[]>(loadNewCloudBots());
+  /**
+   * What each account did with new cloud bots on this device: which bots it
+   * made here, and when it asked each for its first message
+   * (cloud-bot-hello-asked.ts). "Made here" is a fact about the person who
+   * made the bot, not about the Mac, so a second account signing in on the
+   * same Mac does not inherit it.
+   */
+  let botsByAccount = $state.raw<BotsByAccount>(loadBotsByAccount(connectionStorage()));
+  function setBotsByAccount(next: BotsByAccount): void {
+    if (next === botsByAccount) return;
+    botsByAccount = next;
+    saveBotsByAccount(connectionStorage(), next);
+  }
+  /** A bot another account is recorded as having made on this device. */
+  function madeByAnotherAccount(agentUid: string): boolean {
+    return botMadeByAnotherAccount(botsByAccount, self?.uid, agentUid);
+  }
+  /** One of this account's own new bots (see `newCloudBotUids`). */
+  function isNewCloudBotHere(agentUid: string): boolean {
+    return newCloudBotUids.includes(agentUid) && !madeByAnotherAccount(agentUid);
+  }
   function setNewCloudBots(next: string[]): void {
+    // A bot that enters the list was just made here, by whoever is signed in.
+    const before = newCloudBotUids;
+    let made = botsByAccount;
+    for (const uid of next) {
+      if (!before.includes(uid)) made = withBotMadeBy(made, self?.uid, uid);
+    }
+    setBotsByAccount(made);
     newCloudBotUids = next;
     try {
       window.localStorage?.setItem(NEW_CLOUD_BOTS_STORAGE_KEY, JSON.stringify(next.slice(0, 50)));
@@ -3991,7 +4024,7 @@
       ? (selectedRow.personUid as string)
       : null,
   );
-  const dmNewCloudBotUid = $derived(dmAgentUid && newCloudBotUids.includes(dmAgentUid) ? dmAgentUid : null);
+  const dmNewCloudBotUid = $derived(dmAgentUid && isNewCloudBotHere(dmAgentUid) ? dmAgentUid : null);
 
   // ── Sync widget in a cloud bot's direct message ─────────────────────────
   //
@@ -4087,7 +4120,7 @@
     const check = async (): Promise<void> => {
       if (inFlight) return;
       inFlight = true;
-      const madeHere = untrack(() => newCloudBotUids).includes(uid);
+      const madeHere = untrack(() => isNewCloudBotHere(uid));
       let next: AgentChatReadiness | null = null;
       let readable = false;
       try {
@@ -4178,15 +4211,18 @@
     }
     setBotSyncFacts(uid, null);
     forgetBotConnections(uid);
-    forgetHelloAsked(uid);
+    setBotsByAccount(withoutBot(botsByAccount, uid));
     chosenItemsByBot.delete(uid);
   }
   /**
    * True for a bot made in the full-window New Bot flow on this device. Its
    * connection record is written when that flow's create answers and stays
    * for as long as the bot does. A bot made in the "+" modal has neither.
+   * Never for a bot another account made here: that account's record is not
+   * this person's.
    */
   function madeInNewBotFlow(agentUid: string): boolean {
+    if (madeByAnotherAccount(agentUid)) return false;
     return Boolean(connectionRecords[agentUid]) || newCloudBotUids.includes(agentUid);
   }
   /**
@@ -5121,23 +5157,18 @@
   });
   /**
    * When each bot made here was asked for its first message, kept on this
-   * device (cloud-bot-hello-asked.ts). A page filtered for people leaves the
-   * hello request out, and the takeover that knew the time is gone once the
-   * person is in the conversation. A person who typed before the bot's hello
-   * arrived would otherwise never get the cards under it.
+   * device for the signed-in account (cloud-bot-hello-asked.ts). A page
+   * filtered for people leaves the hello request out, and the takeover that
+   * knew the time is gone once the person is in the conversation. A person
+   * who typed before the bot's hello arrived would otherwise never get the
+   * cards under it. Another account on this Mac has its own times.
    */
-  let helloAskedAtByUid = $state.raw<HelloAskedTimes>(loadHelloAsked(connectionStorage()));
+  const helloAskedAtByUid = $derived<HelloAskedTimes>(helloAskedFor(botsByAccount, self?.uid));
   function rememberHelloAsked(agentUid: string, atMs: number): void {
-    const next = withHelloAsked(helloAskedAtByUid, agentUid, atMs);
-    if (next === helloAskedAtByUid) return;
-    helloAskedAtByUid = next;
-    saveHelloAsked(connectionStorage(), next);
+    setBotsByAccount(withHelloAsked(botsByAccount, self?.uid, agentUid, atMs));
   }
   function forgetHelloAsked(agentUid: string): void {
-    const next = withoutHelloAsked(helloAskedAtByUid, agentUid);
-    if (next === helloAskedAtByUid) return;
-    helloAskedAtByUid = next;
-    saveHelloAsked(connectionStorage(), next);
+    setBotsByAccount(withoutHelloAsked(botsByAccount, self?.uid, agentUid));
   }
   // The bot's first message by the time it was asked for: its first row
   // written after the request went out, read off the loaded conversation

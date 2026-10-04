@@ -351,3 +351,50 @@ describe("DesktopApp: a member who may not read the bot's status", () => {
     await vi.waitFor(() => expect(messageRow("b3")?.querySelectorAll('[data-testid="connection-card"]').length).toBeGreaterThan(0));
   });
 });
+
+/**
+ * Round 2, c: "made in the New Bot flow on this device" is a fact about the
+ * person who made the bot. A second account signing in on the same Mac must
+ * not get it from what the first one left in storage.
+ */
+describe("DesktopApp: a bot another account made on this Mac", () => {
+  const NEW_BOTS_KEY = "hq.chat.newCloudBots.v1";
+  const CARDS_KEY = "hq.chat.botConnectionCards.v1";
+  const MADE_KEY = "hq.chat.botHelloAskedAt.v1";
+  const refusedRead = () => vi.fn<StatusFn>(async () => ({ ok: false, reason: "error", code: "http-404", message: "Not found" }));
+
+  /** What the device holds after `maker` made Nova here in the New Bot flow. */
+  function seedMadeHere(maker: string | null): void {
+    window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+    window.localStorage.setItem(CARDS_KEY, JSON.stringify({ [NOVA]: {} }));
+    if (maker) window.localStorage.setItem(MADE_KEY, JSON.stringify({ v: 2, accounts: { [maker]: { asked: {}, made: [NOVA] } } }));
+  }
+
+  it("is not 'made here' for the account now signed in: a refused status read means no cards, and the asking stops", async () => {
+    seedMadeHere("prs_someone_else");
+    const m = await mountDm(refusedRead());
+    await pass(120_000);
+    expectNoCloudBotFeatures(m);
+    expect(m.getStatus).toHaveBeenCalledTimes(1);
+    // The other account's record is left as it was.
+    expect(JSON.parse(window.localStorage.getItem(MADE_KEY)!).accounts.prs_someone_else.made).toEqual([NOVA]);
+  });
+
+  it("is still a cloud bot for that account when the server lets it read the status", async () => {
+    seedMadeHere("prs_someone_else");
+    await mountDm(vi.fn<StatusFn>(async () => STATUS));
+    await expectCloudBotFeatures();
+  });
+
+  it("stays 'made here' for the account that made it, whatever the status read says", async () => {
+    seedMadeHere("prs_me");
+    await mountDm(refusedRead());
+    await vi.waitFor(() => expect(cards().length).toBeGreaterThan(0));
+  });
+
+  it("a bot with no maker on record (made before accounts were kept apart) is treated as before", async () => {
+    seedMadeHere(null);
+    await mountDm(refusedRead());
+    await vi.waitFor(() => expect(cards().length).toBeGreaterThan(0));
+  });
+});

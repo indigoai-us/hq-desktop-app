@@ -559,8 +559,17 @@ describe("DesktopApp connection cards: the hello found by when it was asked for 
   ];
   function seedAsked(atMs: number | null): void {
     window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
-    if (atMs !== null) window.localStorage.setItem(BOT_HELLO_ASKED_STORAGE_KEY, JSON.stringify({ [NOVA]: atMs }));
+    if (atMs !== null) seedAskedBy("prs_me", atMs);
   }
+  /** What the app keeps per account: when that account asked the bot for its first message. */
+  function seedAskedBy(account: string, atMs: number): void {
+    window.localStorage.setItem(
+      BOT_HELLO_ASKED_STORAGE_KEY,
+      JSON.stringify({ v: 2, accounts: { [account]: { asked: { [NOVA]: atMs }, made: [] } } }),
+    );
+  }
+  const storedAsked = (account: string): Record<string, number> =>
+    JSON.parse(window.localStorage.getItem(BOT_HELLO_ASKED_STORAGE_KEY) ?? "{}").accounts?.[account]?.asked ?? {};
 
   it("puts the cards under the bot's first message on a page with no request row", async () => {
     seedAsked(ASKED);
@@ -570,7 +579,7 @@ describe("DesktopApp connection cards: the hello found by when it was asked for 
     await vi.waitFor(() => expect(storedHello()).toBe("e2"));
     await vi.waitFor(() => expect(cardsUnder("e2").map((el) => el.dataset.target)).toEqual(["slack"]));
     // Once the message is known, the time is no longer kept.
-    await vi.waitFor(() => expect(window.localStorage.getItem(BOT_HELLO_ASKED_STORAGE_KEY)).toBe("{}"));
+    await vi.waitFor(() => expect(storedAsked("prs_me")).toEqual({}));
   });
 
   it("finds it when the hello arrives after the person typed", async () => {
@@ -613,7 +622,24 @@ describe("DesktopApp connection cards: the hello found by when it was asked for 
     await settle(40);
     expect(storedHello()).toBeUndefined();
     expect(cards()).toHaveLength(0);
-    expect(window.localStorage.getItem(BOT_HELLO_ASKED_STORAGE_KEY)).toContain(NOVA);
+    expect(storedAsked("prs_me")).toEqual({ [NOVA]: ASKED });
+  });
+
+  it("does not use a time another account on this Mac kept, or one in the old shape with no account", async () => {
+    for (const seed of [
+      () => seedAskedBy("prs_someone_else", ASKED),
+      () => window.localStorage.setItem(BOT_HELLO_ASKED_STORAGE_KEY, JSON.stringify({ [NOVA]: ASKED })),
+    ]) {
+      window.localStorage.clear();
+      window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+      seed();
+      const w = world({ thread: [HELLO, TYPED] });
+      await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
+      await settle(40);
+      expect(storedHello()).toBeUndefined();
+      expect(cards()).toHaveLength(0);
+      await unmountShell();
+    }
   });
 });
 
