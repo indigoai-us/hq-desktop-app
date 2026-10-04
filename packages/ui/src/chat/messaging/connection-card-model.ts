@@ -31,9 +31,9 @@ import {
 } from "./slack-status.js";
 
 /** Which wait the server is in at the last step (slack-status.ts). */
-export type SlackSetupWaitKind = SlackSetupWait["kind"];
+type SlackSetupWaitKind = SlackSetupWait["kind"];
 
-export type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
+type ConnectionCardState = "offered" | "connecting" | "connected" | "declined";
 
 /**
  * Which card: one of the built-in cards, or an integration card. An
@@ -111,7 +111,7 @@ export const MAX_WAITING_ROWS = 30;
 const MAX_USABLE_NAMES = 6;
 const MAX_REMEMBERED_IDS = 200;
 
-export interface SlackCardRecord {
+interface SlackCardRecord {
   state: "connecting" | "declined";
   /** When the person pressed the button (ms). */
   since: number;
@@ -119,7 +119,7 @@ export interface SlackCardRecord {
   announced?: boolean;
 }
 
-export interface ToolsCardRecord {
+interface ToolsCardRecord {
   state: "connecting" | "declined";
   since: number;
   /** Connection ids that existed when the person pressed Connect. */
@@ -436,7 +436,7 @@ export function slackFactsFromStatus(json: unknown): SlackFacts {
 }
 
 /** The card's line while the server finishes the setup on the bot's computer. */
-export const SLACK_CARD_AUDIT_WAIT_HINT = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
+const SLACK_CARD_AUDIT_WAIT_HINT = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
 
 /** The Slack card's one-line hint for what a setup that is not finished waits for. */
 export function slackPendingHint(
@@ -472,7 +472,7 @@ export interface ToolConnection {
   byViewer: boolean;
 }
 
-export interface ToolFacts {
+interface ToolFacts {
   /** Connections the bot can use. */
   usable: ToolConnection[];
   /**
@@ -587,7 +587,7 @@ export function connectionActionKey(
   return `${target}${domain ? `[${domain}]` : ""}:${action}${connectionId ? `:${connectionId}` : ""}`;
 }
 
-export interface ConnectionCardRow {
+interface ConnectionCardRow {
   connectionId: string;
   name: string;
   /** The row's button, e.g. "Let Nova use it". */
