@@ -6222,6 +6222,106 @@ pub const STDERR_ORIGIN_EMPTY: &str = "empty";
 pub const STDERR_ORIGIN_NPM_LOGGER: &str = "npm-logger";
 pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";
 
+/// Closed classification for a Node process that died before npm's logger
+/// produced an error. Values are safe for tags and bounded grouping keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeCrashKind {
+    None,
+    V8HeapOom,
+    V8Fatal,
+    NativeAssertion,
+    AccessViolation,
+    StackBufferOverrun,
+    Abort,
+    Breakpoint,
+}
+
+impl NodeCrashKind {
+    fn tag_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::V8HeapOom => "v8_heap_oom",
+            Self::V8Fatal => "v8_fatal",
+            Self::NativeAssertion => "native_assertion",
+            Self::AccessViolation => "access_violation",
+            Self::StackBufferOverrun => "stack_buffer_overrun",
+            Self::Abort => "abort",
+            Self::Breakpoint => "breakpoint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeCrashClassification {
+    kind: NodeCrashKind,
+    evidence: &'static str,
+}
+
+impl NodeCrashClassification {
+    const NONE: Self = Self {
+        kind: NodeCrashKind::None,
+        evidence: "none",
+    };
+}
+
+/// Recognize only known Node crash statuses paired with stable Node/V8 stderr
+/// signatures. Arbitrary exit codes and unrecognized text remain `none`.
+fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassification {
+    const NODE_ABORT: i32 = 134;
+    const STATUS_BREAKPOINT: i32 = -2_147_483_645;
+    const STATUS_ACCESS_VIOLATION: i32 = -1_073_741_819;
+    const STATUS_STACK_BUFFER_OVERRUN: i32 = -1_073_740_791;
+
+    let Some(code) = exit_code else {
+        return NodeCrashClassification::NONE;
+    };
+    if !matches!(
+        code,
+        NODE_ABORT
+            | STATUS_BREAKPOINT
+            | STATUS_ACCESS_VIOLATION
+            | STATUS_STACK_BUFFER_OVERRUN
+            | -1
+    ) {
+        return NodeCrashClassification::NONE;
+    }
+
+    let text = stderr.to_ascii_lowercase();
+    let oom = text.contains("javascript heap out of memory");
+    let fatal = text.contains("fatal error:");
+    let assertion = text.contains("assertion failed");
+    let native_trace = text.contains("node::") || text.contains("native stack trace");
+    if !(oom || fatal || assertion || native_trace) {
+        return NodeCrashClassification::NONE;
+    }
+
+    let evidence = if oom {
+        "javascript_heap_oom"
+    } else if assertion {
+        "assertion_failed"
+    } else if fatal {
+        "fatal_error_marker"
+    } else {
+        "node_native_trace"
+    };
+    let kind = if oom {
+        NodeCrashKind::V8HeapOom
+    } else if code == STATUS_BREAKPOINT {
+        NodeCrashKind::Breakpoint
+    } else if code == STATUS_ACCESS_VIOLATION {
+        NodeCrashKind::AccessViolation
+    } else if code == STATUS_STACK_BUFFER_OVERRUN {
+        NodeCrashKind::StackBufferOverrun
+    } else if assertion {
+        NodeCrashKind::NativeAssertion
+    } else if fatal {
+        NodeCrashKind::V8Fatal
+    } else {
+        NodeCrashKind::Abort
+    };
+    NodeCrashClassification { kind, evidence }
+}
+
 /// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
 /// case-insensitively). These are the lines npm's own error reporter writes; their
 /// presence proves npm ran and reported, even when it never emitted the structured
@@ -6444,13 +6544,36 @@ fn install_failure_signature_with_environment(
     // `none:unknown:none` bucket where unrelated causes merged into one permanently
     // Error issue. Give it a bounded structural signature — `unattributed:<origin>:
     // <dominant shape>`, at most 2 origins × 8 shapes = 16 groups — so distinct
-    // causes stop colliding and the next occurrence is self-diagnosing. An EMPTY
-    // stderr is deliberately excluded (returns `None` from the profile), so it keeps
-    // the byte-identical `none:unknown:none` envelope and its pinned test.
+    // causes stop colliding and the next occurrence is self-diagnosing. The report
+    // boundary may refine a non-npm signature to `node-crash:<kind>` when both a
+    // known process status and a stable Node/V8 marker agree. An EMPTY stderr is
+    // deliberately excluded (returns `None` from the profile), so it keeps the
+    // byte-identical `none:unknown:none` envelope and its pinned test.
     if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
         return format!("unattributed:{}:{}", profile.origin, profile.dominant_shape);
     }
     install_failure_signature(kind, detail, prefix)
+}
+
+/// Add a crash-specific signature only to non-npm markerless failures. The
+/// classifier requires both a known crash status and a stable Node/V8 marker;
+/// ordinary npm errors and unknown crashes retain their existing signature.
+fn install_failure_signature_with_exit_code(
+    exit_code: Option<i32>,
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+    env: &InstallEnvironment,
+) -> String {
+    if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+        if profile.origin == STDERR_ORIGIN_NON_NPM {
+            let crash = node_crash_kind(exit_code, detail);
+            if crash.kind != NodeCrashKind::None {
+                return format!("node-crash:{}", crash.kind.tag_value());
+            }
+        }
+    }
+    install_failure_signature_with_environment(kind, detail, prefix, env)
 }
 
 /// Free-up-space guidance shared by BOTH disk-full paths — the lifecycle
@@ -6685,7 +6808,8 @@ pub fn install_failure_report_with_environment(
     // Title the capture with the same signature the fingerprint groups on, so a
     // Sentry issue's title cannot drift across the events inside it. The raw
     // exit status stays on the `exit_code` tag and in `npm_diagnostics`.
-    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
+    let signature =
+        install_failure_signature_with_exit_code(exit_code, kind, detail, prefix, env);
     Some(format!("[hq-cli-update] install failed ({signature})"))
 }
 
@@ -7778,7 +7902,8 @@ pub fn report_install_failure_with_environment(
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
-    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
+    let signature =
+        install_failure_signature_with_exit_code(exit_code, kind, detail, prefix, env);
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
@@ -7848,6 +7973,20 @@ pub fn report_install_failure_with_environment(
     // `Some` only for the attributed subclass, so every other event's tags and the
     // diagnostics extra stay byte-identical to today.
     let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
+    let crash_kind = unattributed_profile
+        .as_ref()
+        .filter(|profile| profile.origin == STDERR_ORIGIN_NON_NPM)
+        .map(|_| node_crash_kind(exit_code, detail))
+        .unwrap_or(NodeCrashClassification::NONE);
+    let crash_diag_suffix = if crash_kind.kind == NodeCrashKind::None {
+        String::new()
+    } else {
+        format!(
+            " node_crash_kind={} node_crash_evidence={}",
+            crash_kind.kind.tag_value(),
+            crash_kind.evidence
+        )
+    };
     // Append the origin + shape render to the diagnostics extra ONLY for the
     // attributed subclass, so the extra stays a fixed-shape string within each class
     // (the six-key provenance suffix is unchanged for every other event).
@@ -7861,7 +8000,7 @@ pub fn report_install_failure_with_environment(
         None => String::new(),
     };
     let mut npm_diagnostics = format!(
-        "{} {}{}",
+        "{} {}{}{}",
         npm_diagnostics_summary(
             exit_str.as_str(),
             npm_errno,
@@ -7879,6 +8018,7 @@ pub fn report_install_failure_with_environment(
             env.managed_retry_outcome.tag_value(),
         ),
         unattributed_diag_suffix,
+        crash_diag_suffix,
     );
     // Append the missing-target diagnostic ONLY when the mkdir remedy actually ran
     // (state != Unknown). The default keeps every existing event's `npm_diagnostics`
@@ -7935,6 +8075,8 @@ pub fn report_install_failure_with_environment(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("install_failure_kind", kind.fingerprint_component());
+            scope.set_tag("node_crash_kind", crash_kind.kind.tag_value());
+            scope.set_tag("node_crash_evidence", crash_kind.evidence);
             scope.set_tag("exit_code", exit_str.as_str());
             scope.set_tag("eacces", if eacces { "true" } else { "false" });
             scope.set_tag("npm_failure_site", npm_failure_site(detail, prefix));
@@ -8078,9 +8220,9 @@ pub fn report_install_failure_with_environment(
             // Structural attribution for a NON-EMPTY markerless failure
             // (HQ-DESKTOP-56): the stderr origin (closed 3-value enum) and a bounded
             // `shape:count` render of its unmatched-shape mix. Present ONLY for the
-            // attributed subclass; both are tags/diagnostics ONLY and must never enter
-            // the fingerprint — the shape counts vary run to run, so grouping keys only
-            // on `unattributed:<origin>:<dominant shape>` in the signature above.
+            // attributed subclass. These fields never enter the fingerprint: generic
+            // markerless events group on `unattributed:<origin>:<dominant shape>`,
+            // while recognized Node crashes use their closed `node-crash:<kind>` key.
             if let Some(profile) = &unattributed_profile {
                 scope.set_tag("npm_stderr_origin", profile.origin);
                 scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());
@@ -8245,11 +8387,25 @@ pub fn install_failure_episode_key_with_environment(
         // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now carries a bounded
         // structural signature, so it CAN be episode-bounded: page once per published
         // CLI version per distinct `(origin, dominant shape)` instead of on every
-        // ~6-hourly check. The key mirrors the attributed SIGNATURE (same profile
-        // helper) so the key and the group can never disagree, and `|managed` matches
-        // the other shapes so a managed-retry event never collides with its user-path
-        // predecessor.
+        // ~6-hourly check. Recognized Node crashes use `(node-crash, kind)` for both
+        // the key and Sentry signature; other profiles keep `(origin, dominant shape)`.
+        // `|managed` matches the other shapes so a managed-retry event never collides
+        // with its user-path predecessor.
         if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
+            if profile.origin == STDERR_ORIGIN_NON_NPM {
+                let crash = node_crash_kind(exit_code, detail);
+                if crash.kind != NodeCrashKind::None {
+                    let key = format!(
+                        "{latest}|node-crash|{}",
+                        crash.kind.tag_value()
+                    );
+                    return Some(if env.managed_toolchain_retry {
+                        format!("{key}|managed")
+                    } else {
+                        key
+                    });
+                }
+            }
             let key = format!(
                 "{latest}|unattributed|{}|{}",
                 profile.origin, profile.dominant_shape
@@ -18997,6 +19153,148 @@ mod tests {
             cmp_semver(HQ_CLI_MIN_VERSION, resolver_floor),
             std::cmp::Ordering::Less,
             "HQ_CLI_MIN_VERSION ({HQ_CLI_MIN_VERSION}) is below the resolver's npx range floor ({resolver_floor})"
+        );
+    }
+
+    #[test]
+    fn node_crash_kinds_require_known_exit_and_stable_runtime_signature() {
+        let cases = [
+            (
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                "v8_heap_oom",
+                "javascript_heap_oom",
+            ),
+            (
+                Some(134),
+                "FATAL ERROR: v8 internal failure",
+                "v8_fatal",
+                "fatal_error_marker",
+            ),
+            (
+                Some(134),
+                "Assertion failed: node invariant",
+                "native_assertion",
+                "assertion_failed",
+            ),
+            (
+                Some(-2_147_483_645),
+                "Native stack trace from node::",
+                "breakpoint",
+                "node_native_trace",
+            ),
+            (
+                Some(-1_073_741_819),
+                "node::OnFatalError Native stack trace",
+                "access_violation",
+                "node_native_trace",
+            ),
+            (
+                Some(-1_073_740_791),
+                "Native stack trace from node::",
+                "stack_buffer_overrun",
+                "node_native_trace",
+            ),
+            (
+                Some(-1),
+                "node::OnFatalError",
+                "abort",
+                "node_native_trace",
+            ),
+        ];
+        for (exit_code, stderr, expected_kind, expected_evidence) in cases {
+            let actual = node_crash_kind(exit_code, stderr);
+            assert_eq!(actual.kind.tag_value(), expected_kind);
+            assert_eq!(actual.evidence, expected_evidence);
+        }
+
+        assert_eq!(
+            node_crash_kind(Some(134), "npm error code E404").kind.tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(7), "Native stack trace").kind.tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(-1), "unclassified process failure")
+                .kind
+                .tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(None, "FATAL ERROR: failure").kind.tag_value(),
+            "none"
+        );
+    }
+
+    #[test]
+    fn crash_signature_splits_only_classified_non_npm_failures() {
+        let env = reopen_env();
+        let oom = install_failure_signature_with_exit_code(
+            Some(134),
+            InstallFailureKind::Unexpected,
+            "FATAL ERROR: JavaScript heap out of memory",
+            None,
+            &env,
+        );
+        assert_eq!(oom, "node-crash:v8_heap_oom");
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|node-crash|v8_heap_oom")
+        );
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                None,
+                false,
+                &env,
+            )
+            .as_deref(),
+            Some("[hq-cli-update] install failed (node-crash:v8_heap_oom)")
+        );
+
+        let npm_error = "npm error code ENOTEMPTY";
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(134),
+                InstallFailureKind::Unexpected,
+                npm_error,
+                None,
+                &env,
+            ),
+            "ENOTEMPTY:unknown:none"
+        );
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(134),
+                InstallFailureKind::Unexpected,
+                "unclassified process failure",
+                None,
+                &env,
+            ),
+            "unattributed:non-npm:other"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(134),
+                "unclassified process failure",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|unattributed|non-npm|other")
         );
     }
 
