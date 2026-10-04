@@ -2,13 +2,16 @@
   import { DEFAULT_DEPLOY_PILLS as DEFAULTS, type DeployFilterPills as Pills } from "./personal-deployments.js";
   /** OWNER-R34: filter state survives leaving and coming back in a session. */
   let sessionPills: Pills = { ...DEFAULTS };
+  let sessionSort: import("./personal-deployments.js").DeploySort | null = null;
   export function resetDeployPillsForTests(): void {
     sessionPills = { ...DEFAULTS };
+    sessionSort = null;
   }
 </script>
 
 <script lang="ts">
   import Dropdown from "../common/LazyDropdown.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -30,12 +33,15 @@
     pillsAreDefault,
     DEFAULT_DEPLOY_PILLS,
     type DeployFilterPills,
+    type DeploySort,
+    type DeploySortKey,
     formatViews,
     loadDeployments,
     progressFor,
     readPersonalDeploymentsCache,
     relativeAge,
     statusLabel,
+    sortDeployments,
     writePersonalDeploymentsCache,
     type DeployAppsPage,
     type DeployScope,
@@ -63,8 +69,10 @@
   // OWNER-R34: two header pills (status, scope) plus "Deployed by you" and
   // "Deployed by your bots" toggles. Kept for the session across visits.
   let pills = $state<DeployFilterPills>({ ...sessionPills });
+  let sort = $state<DeploySort | null>(sessionSort);
   let query = $state("");
   let selectedId = $state<string | null>(null);
+  let selectionCleared = $state(false);
   let limit = $state(PAGE);
   let notice = $state("");
   // AUDIT-3: a read that loaded nothing shows the failed-read line, not "No deployments yet."
@@ -132,9 +140,22 @@
     (row.lastVisitAt ? relativeAge(row.lastVisitAt, now) : "") || row.lastVisit;
 
   const allRows = $derived(cache?.rows ?? []);
-  const rows = $derived(filterDeploymentsBy(allRows, pills, query));
+  const companyOptions = $derived([
+    { value: "all", label: "All companies" },
+    ...Array.from(new Map(allRows.map((row) => [row.scopeId ?? row.scopeLabel, row.scopeLabel])).entries())
+      .sort(([, left], [, right]) => left.localeCompare(right, undefined, { sensitivity: "base" }))
+      .map(([value, label]) => ({ value, label })),
+  ]);
+  const filteredRows = $derived(filterDeploymentsBy(allRows, pills, query));
+  const rows = $derived(sortDeployments(filteredRows, sort));
   $effect(() => {
     sessionPills = { ...pills };
+    sessionSort = sort ? { ...sort } : null;
+  });
+  $effect(() => {
+    if (pills.company !== "all" && !companyOptions.some((option) => option.value === pills.company)) {
+      setPills({ company: "all" });
+    }
   });
   const statusCounts = $derived({
     active: allRows.filter((r) => r.status === "active" || r.status === "deploying" || r.status === "building").length,
@@ -146,7 +167,14 @@
     company: allRows.filter((r) => r.scope === "company").length,
   });
   const shown = $derived(rows.slice(0, limit));
-  const selected = $derived(allRows.find((row) => row.id === selectedId) ?? rows[0] ?? null);
+  const selectedRowId = $derived(selectedId ?? (selectionCleared ? null : rows[0]?.id ?? null));
+  const selected = $derived(rows.find((row) => row.id === selectedRowId) ?? null);
+  $effect(() => {
+    if (selectedId && !rows.some((row) => row.id === selectedId)) {
+      selectedId = null;
+      selectionCleared = true;
+    }
+  });
   const progress = $derived(selected && (selected.status === "deploying" || selected.status === "building")
     ? progressFor(selected)
     : null);
@@ -167,12 +195,30 @@
     limit = PAGE;
   }
 
+  function toggleSort(key: DeploySortKey): void {
+    const initial = key === "lastVisit" ? "descending" : "ascending";
+    if (sort?.key !== key) sort = { key, direction: initial };
+    else if (sort.direction === initial) sort = { key, direction: initial === "ascending" ? "descending" : "ascending" };
+    else sort = null;
+    limit = PAGE;
+  }
+
+  function sortState(key: DeploySortKey): "ascending" | "descending" | "none" {
+    return sort?.key === key ? sort.direction : "none";
+  }
+
+  function sortMark(key: DeploySortKey): string {
+    const state = sortState(key);
+    return state === "ascending" ? "↑" : state === "descending" ? "↓" : "";
+  }
+
   function redeploy(): void {
     notice = "Redeploy from the desktop isn't wired up yet. Run /deploy from the project for now.";
   }
 
   function select(row: PersonalDeployment): void {
     selectedId = row.id;
+    selectionCleared = false;
     notice = "";
   }
 
@@ -209,6 +255,15 @@
           />
           <Dropdown
             pill
+            active={pills.company !== "all"}
+            testid="deploy-company-pill"
+            label="Company"
+            value={pills.company}
+            onchange={(v) => setPills({ company: v })}
+            options={companyOptions}
+          />
+          <Dropdown
+            pill
             active={pills.scope !== "all"}
             testid="deploy-scope-pill"
             label="Scope"
@@ -238,7 +293,13 @@
     {/if}
     <div class="deploys">
       <div class="table">
-        <div class="drow hd"><span>App</span><span>Scope</span><span>Status</span><span>Access</span><span>30d views</span><span>Last visit</span></div>
+        <div class="drow hd" role="row">
+          {#each [
+            ["app", "App"], ["scope", "Scope"], ["status", "Status"], ["access", "Access"], ["views", "30d views"], ["lastVisit", "Last visit"],
+          ] as [key, label] (key)}
+            <span role="columnheader" aria-sort={sortState(key as DeploySortKey)}><button type="button" class="sort-header" data-testid={`deploy-sort-${key}`} onclick={() => toggleSort(key as DeploySortKey)}>{label}<span class="sort-mark" aria-hidden="true">{sortMark(key as DeploySortKey)}</span></button></span>
+          {/each}
+        </div>
         {#if !cache}
           {#if loadFailed}
             <div class="load-error" role="alert" data-testid="deploy-load-error">
@@ -274,13 +335,13 @@
             <button
               type="button"
               class="drow"
-              class:active={selected?.id === row.id}
+              class:active={selectedRowId === row.id}
               data-testid="deploy-row"
-              aria-current={selected?.id === row.id ? "true" : undefined}
+              aria-current={selectedRowId === row.id ? "true" : undefined}
               onclick={() => select(row)}
             >
               <span class="nm"><span class="t">{row.name}</span>{#if row.detail}<small>{row.detail}</small>{/if}</span>
-              <span class="sub">{row.scopeLabel}</span>
+              <span class="sub">{#if row.scope === "company"}<CompanyLabel name={row.scopeLabel} companyUid={row.scopeId} />{:else}{row.scopeLabel}{/if}</span>
               <span class="st {tone(row)}">{statusLabel(row)}</span>
               <span class="sub">{row.access}</span>
               <span class="n">{formatViews(row.views30d)}</span>
@@ -419,6 +480,9 @@
   .drow { contain: layout style; content-visibility: auto; contain-intrinsic-size: auto 48px; }
   .hd > :nth-child(n + 5), .drow > :nth-child(n + 5) { text-align: right; white-space: nowrap; }
   .hd { padding: 4px 8px; color: var(--t3); font-size: 13px; }
+  .sort-header { display: inline-flex; align-items: center; gap: 3px; min-width: 0; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: inherit; cursor: pointer; }
+  .sort-header:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
+  .sort-mark { width: 10px; color: var(--t2); }
   .nm { display: flex; flex-direction: column; min-width: 0; }
   .nm .t { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nm small, .sub, .foot, .url { color: var(--t3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
