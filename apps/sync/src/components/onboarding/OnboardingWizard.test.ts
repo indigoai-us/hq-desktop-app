@@ -2883,6 +2883,12 @@ describe('invite teammate onboarding step', () => {
     });
 
     expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    const hiddenRows = inviteStepRows().filter((row) => row.action === 'skipped');
+    expect(hiddenRows).toMatchObject([
+      { outcome: 'no_invite_context', companyUid: 'cmp_demo' },
+    ]);
+    expect(hiddenRows).toHaveLength(1);
+    expect(hiddenRows[0]).not.toHaveProperty('companyUidMissing');
     expect(
       tauri.invoke.mock.calls.some(
         ([command, args]) =>
@@ -2890,6 +2896,25 @@ describe('invite teammate onboarding step', () => {
           (args as { url?: string })?.url === '/membership/company/cmp_demo',
       ),
     ).toBe(true);
+  });
+
+  it('records one hidden invite row when the eligibility lookup fails', async () => {
+    await reachInviteScenario({
+      fetchResponses: {
+        '/membership/company/cmp_demo': Array.from({ length: 4 }, () => ({
+          status: 503,
+          body: { error: 'busy' },
+        })),
+      },
+    });
+
+    expect(host.querySelector('[data-testid="onboarding-invite-teammate"]')).toBeNull();
+    const hiddenRows = inviteStepRows().filter((row) => row.action === 'skipped');
+    expect(hiddenRows).toMatchObject([
+      { outcome: 'lookup_failed', companyUid: 'cmp_demo' },
+    ]);
+    expect(hiddenRows).toHaveLength(1);
+    expect(hiddenRows[0]).not.toHaveProperty('companyUidMissing');
   });
 
   it('shows the invite step for a one-member company without a feature flag', async () => {
@@ -3236,6 +3261,7 @@ describe('invite teammate onboarding step', () => {
     const rows = inviteStepRows();
     expect(rows.map((row) => row.action)).toEqual(['entered', 'completed']);
     expect(rows.every((row) => row.companyUid === 'cmp_demo')).toBe(true);
+    expect(rows.find((row) => row.action === 'entered')).not.toHaveProperty('companyUidMissing');
     expect(rows.find((row) => row.action === 'completed')?.invitesSent).toBe(1);
     expect(rows.some((row) => 'email' in row || 'inviteeEmail' in row)).toBe(false);
     expect(JSON.stringify(rows)).not.toContain(inviteEmail);
@@ -4302,6 +4328,7 @@ describe('company onboarding step', () => {
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(host.textContent).not.toContain('Name your company');
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'paid' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_paid' });
     expect(companyRows().find((row) => row.decision === 'paid_existing')).toMatchObject({ paidCompany: true });
   });
 
@@ -4319,6 +4346,7 @@ describe('company onboarding step', () => {
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'mine' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_mine' });
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'run_card_action')).toBe(false);
     expect(
       companyRows().some((row) => row.action === 'completed' && row.decision === 'used_existing' && row.companyUid === 'cmp_mine'),
@@ -4514,6 +4542,7 @@ describe('company onboarding step', () => {
     ).toBe(false);
     const rows = companyRows();
     expect(rows.find((row) => row.outcome === 'company_created')?.companyUid).toBe('cmp_new');
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_new' });
     expect(rows.some((row) => row.outcome === 'plan_starter')).toBe(true);
     expect(operationalRows('desktop_plan_selected')).toEqual([{ plan: 'starter' }]);
     expect(rows.some((row) => row.action === 'completed' && row.outcome === 'created_starter')).toBe(true);
@@ -4776,6 +4805,7 @@ describe('company onboarding step', () => {
     const done = companyRows().find((row) => row.action === 'completed' && row.outcome === 'joined_invite');
     expect(done).toMatchObject({ decision: 'joined_invite', companyUid: 'cmp_acme' });
     expect(tauri.invoke).toHaveBeenCalledWith('set_desktop_active_company', { companySlug: 'acme' });
+    expect(tauri.invoke).toHaveBeenCalledWith('record_onboarding_workspace_selected', { companyUid: 'cmp_acme' });
     expect(host.textContent).not.toContain('Name your company');
   });
 

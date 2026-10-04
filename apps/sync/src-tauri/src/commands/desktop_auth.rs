@@ -113,6 +113,26 @@ pub(crate) fn workspace_receipt_authorization() -> Option<WorkspaceReceiptAuthor
     workspace_receipt_authorization_from_session(super::auth::active_auth_session_snapshot())
 }
 
+/// Capture the identity at an immediate onboarding selection action. Some
+/// first-run paths have a valid access token before the in-memory auth envelope
+/// is hydrated; in that case bind custody to the same token subject the server
+/// will resolve. Later delivery still requires an exact bearer/account match.
+pub(crate) async fn workspace_receipt_authorization_for_current_session(
+) -> Option<WorkspaceReceiptAuthorization> {
+    if let Some(authorizer) = workspace_receipt_authorization() {
+        return Some(authorizer);
+    }
+    let jwt = super::sync::resolve_jwt().await.ok()?;
+    workspace_receipt_authorization_from_bearer_token(&jwt)
+}
+
+fn workspace_receipt_authorization_from_bearer_token(
+    jwt: &str,
+) -> Option<WorkspaceReceiptAuthorization> {
+    super::auth::notification_identity_from_bearer_token(jwt)
+        .map(|account_id| WorkspaceReceiptAuthorization { account_id })
+}
+
 fn workspace_receipt_authorization_from_session(
     session: Option<super::auth::AuthSessionEnvelope>,
 ) -> Option<WorkspaceReceiptAuthorization> {
@@ -1337,18 +1357,24 @@ async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Record the company the person explicitly connected from the desktop shell.
+/// Record a company selected during onboarding or connected from the desktop shell.
 /// The server resolves the person from the JWT and verifies active membership;
 /// the client never gets to assert either identity. A selection can occur long
 /// after sign-in, so it intentionally carries no auth cohort fields rather
 /// than guessing that it belongs to the manual-control arm.
+#[tauri::command]
+pub async fn record_onboarding_workspace_selected(app: AppHandle, company_uid: String) {
+    let authorizer = workspace_receipt_authorization_for_current_session().await;
+    record_desktop_workspace_selected(&app, company_uid, authorizer);
+}
+
 pub(crate) fn record_desktop_workspace_selected(
     app: &AppHandle,
     company_uid: String,
     authorizer: Option<WorkspaceReceiptAuthorization>,
 ) {
     let Some(authorizer) = authorizer else {
-        eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authorizing account snapshot");
+        eprintln!("[desktop-onboarding] workspace_selected receipt not queued without an authorizing account identity");
         return;
     };
     let app = app.clone();
@@ -1659,6 +1685,16 @@ mod authenticated_receipt_tests {
             receipt_matches_bearer_account(&receipt, &bearer),
             "string-form email_verified must not hold the receipt"
         );
+    }
+
+    #[test]
+    fn onboarding_workspace_receipt_can_bind_a_bearer_when_the_session_snapshot_is_missing() {
+        let captured = workspace_receipt_authorization_from_bearer_token(&bearer_with_sub(
+            "person-a",
+        ))
+        .expect("the current access-token subject authorizes the selection receipt");
+        assert_eq!(captured.account_id, "person-a");
+        assert!(workspace_receipt_authorization_from_bearer_token("not-a-jwt").is_none());
     }
 
     #[test]

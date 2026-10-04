@@ -49,7 +49,7 @@ export interface BotRemoval {
   problem: BotRemovalProblem | null;
 }
 
-export type BotRemovalBrain = "codex" | "claude" | "grok";
+type BotRemovalBrain = "codex" | "claude" | "grok";
 
 export type BotRemovalProblem =
   /** The request failed, or the server stayed busy past the wait. Worth another try. */
@@ -67,7 +67,7 @@ export type BotRemovalProblem =
   /** The create request named no bot id, so there is nothing to ask the server to remove. */
   | "unknown-bot";
 
-export interface BotRemovalRequestOptions {
+interface BotRemovalRequestOptions {
   confirmDestroyInstanceId?: string | null;
 }
 
@@ -78,34 +78,34 @@ export type RemoveBotRequest = (
 ) => Promise<unknown>;
 
 /** Server codes this module acts on. Anything else is a plain failure. */
-export const REMOVAL_NEEDS_MACHINE_CODE = "AGENTS_V2_BOX_PROTECTED";
-export const REMOVAL_BUSY_CODE = "STEP_ALREADY_IN_PROGRESS";
-export const REMOVAL_PLAN_BOT_CODE = "TEAM_SETUP_AGENT_PROTECTED";
+const REMOVAL_NEEDS_MACHINE_CODE = "AGENTS_V2_BOX_PROTECTED";
+const REMOVAL_BUSY_CODE = "STEP_ALREADY_IN_PROGRESS";
+const REMOVAL_PLAN_BOT_CODE = "TEAM_SETUP_AGENT_PROTECTED";
 /**
  * The server's refusal for a caller who is not an owner or admin: an HTTP 403.
  * A host that keeps the server's own code instead (`FORBIDDEN`) is read by
  * `status`, or by the shape of the code (see `readBotRemovalAnswer`).
  */
-export const REMOVAL_NOT_ALLOWED_CODE = "http-403";
+const REMOVAL_NOT_ALLOWED_CODE = "http-403";
 
 /** How long to wait before asking again while the server is still working. */
-export const BOT_REMOVAL_RETRY_MS = 5_000;
+const BOT_REMOVAL_RETRY_MS = 5_000;
 /**
  * Requests one removal run may make that the server did not accept (busy,
  * a machine to name) before it reports a failure.
  */
-export const BOT_REMOVAL_MAX_REQUESTS = 36;
+const BOT_REMOVAL_MAX_REQUESTS = 36;
 /**
  * Times the server may answer "still removing" before this window stops
  * asking. Taking a bot's computer down can run well past three minutes, and
  * a removal the server accepted is not a failure: 240 answers at 5 seconds
  * is 20 minutes.
  */
-export const BOT_REMOVAL_MAX_WORKING_REQUESTS = 240;
+const BOT_REMOVAL_MAX_WORKING_REQUESTS = 240;
 /** Failed requests in a row before the run reports a failure. */
-export const BOT_REMOVAL_MAX_FAILURES = 3;
+const BOT_REMOVAL_MAX_FAILURES = 3;
 
-export type BotRemovalAnswer =
+type BotRemovalAnswer =
   | { kind: "removed" }
   /** Removal started and is not finished. Ask again. */
   | { kind: "working" }
@@ -160,7 +160,7 @@ export function readBotRemovalAnswer(result: unknown): BotRemovalAnswer {
   return { kind: "failed" };
 }
 
-export interface BotRemovalRunOptions {
+interface BotRemovalRunOptions {
   /** Test seam. Production waits on a timer that ends early when the run is stopped. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   retryMs?: number;
@@ -213,7 +213,7 @@ function whenDocumentVisible(signal?: AbortSignal): Promise<void> {
   });
 }
 
-export type BotRemovalOutcome = "removed" | BotRemovalProblem;
+type BotRemovalOutcome = "removed" | BotRemovalProblem;
 /** How a removal run ended. "stopped": it was told to stop, and decided nothing. */
 export type BotRemovalRun = BotRemovalOutcome | "stopped";
 
@@ -380,7 +380,7 @@ export function botRemovalDismissLabel(removal: Pick<BotRemoval, "name" | "phase
 // ── A create the person cancelled ──────────────────────────────────────────
 
 /** What a cancelled create made, as far as is known. */
-export type CancelledCreateOutcome =
+type CancelledCreateOutcome =
   /** The request made a bot. It exists. */
   | { kind: "created"; agentUid: string; channelId: string }
   /** The server answered, and made nothing. */
@@ -421,7 +421,7 @@ export type CancelledCreateLookup =
 /** How long to wait before each look at the company's bots after a cancelled create. */
 export const CANCELLED_CREATE_LOOKUP_DELAYS_MS: readonly number[] = [10_000, 20_000, 40_000];
 
-export interface CancelledCreateOptions {
+interface CancelledCreateOptions {
   /** Test seam. Production waits on a timer. */
   sleep?: (ms: number) => Promise<void>;
   /** The wait before each look. Its length is how many times the server is asked. */
@@ -466,11 +466,6 @@ export async function resolveCancelledCreate(
     if (seen.kind === "unproven") break;
   }
   return { kind: "unknown" };
-}
-
-/** True while the bot may still exist on the server. */
-export function botRemovalOpen(removal: Pick<BotRemoval, "phase">): boolean {
-  return removal.phase === "stopping" || removal.phase === "removing" || removal.phase === "failed";
 }
 
 const BRAINS: readonly BotRemovalBrain[] = ["codex", "claude", "grok"];
