@@ -1,6 +1,5 @@
 // Library area (ported from desktop-alt) — shared/root library surfaces plus
 // the chat Library overlay. Pure UI: platform access arrives via `@hq/platform`.
-export { default as LibraryPage } from "./LibraryPage.svelte";
 export { default as LibraryOverlay } from "./LibraryOverlay.svelte";
 export { default as LibraryBrowser } from "./LibraryBrowser.svelte";
 export { default as LibraryList } from "./LibraryList.svelte";
