@@ -274,6 +274,73 @@ describe("#welcome Run Setup creates the setup bot", () => {
     await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')).toBeNull());
   });
 
+  it("the app offer holds the kickoff: no thinking until Keep going here, then thinking until the answer", async () => {
+    const dm: Array<Record<string, unknown>> = [];
+    const wakes = createChatWakeBus();
+    // The bot exists once it is created (so the app creates it, with the kickoff).
+    let created = false;
+    const platform = adapter({
+      dm,
+      bots: {
+        list: async () => ok({ bots: created ? [setupBotRow()] : [] }),
+        create: async () => {
+          created = true;
+          return ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID });
+        },
+      },
+    });
+    const sendDm = vi.fn(async (_to: string, body: string) => {
+      const sent = { eventId: `evt_me_${dm.length}`, body, fromPersonUid: "prs_test", fromDisplayName: "Test", createdAt: new Date().toISOString(), direction: "out" };
+      dm.push(sent);
+      return ok({ eventId: sent.eventId, createdAt: sent.createdAt });
+    });
+    (platform.messaging as unknown as Record<string, unknown>).sendDm = sendDm;
+    await mountWelcome(platform, fakeSetupRun(), wakes);
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    expect(created).toBe(true);
+
+    // hq-cli sends the offer in place of the intro and holds the kickoff.
+    const at = Date.now();
+    dm.push({
+      eventId: "evt_offer",
+      body:
+        "Hi, I'm Pickles, your setup bot.\n\nLooks like you use the Claude app. Want to continue setup there?\n\n" +
+        "```hq-block\n" +
+        '{"v":1,"blocks":[{"kind":"continueInTool","tool":"claude"},{"kind":"suggestions","items":["Keep going here"]}]}' +
+        "\n```",
+      fromPersonUid: SETUP_BOT_UID,
+      fromDisplayName: "setup",
+      createdAt: new Date(at).toISOString(),
+      direction: "in",
+    });
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    const keep = await vi.waitFor(() => {
+      const el = q<HTMLButtonElement>('[data-testid="setup-tool-offer-keep"]');
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    await settle(20);
+    expect(q('[data-testid="agent-thinking-row"]')).toBeNull();
+
+    // "Keep going here" starts the kickoff: now the bot is working.
+    keep.click();
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled());
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')?.textContent).toContain("is thinking"));
+
+    // Its first answer ends it.
+    dm.push({
+      eventId: "evt_step_one",
+      body: "Here's what's set up already…",
+      fromPersonUid: SETUP_BOT_UID,
+      fromDisplayName: "setup",
+      createdAt: new Date(Date.now() + 60_000).toISOString(),
+      direction: "in",
+    });
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')).toBeNull());
+  });
+
   it("opens the setup bot that already exists instead of creating a second one", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     await mountWelcome(
