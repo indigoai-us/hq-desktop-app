@@ -11,11 +11,14 @@ import {
   loadOpenBotRemovals,
   loadRemovedBots,
   readBotRemovalAnswer,
+  readCancelledCreate,
   rememberRemovedBot,
+  resolveCancelledCreate,
   runBotRemoval,
   saveOpenBotRemovals,
   type BotRemoval,
   type BotRemovalPhase,
+  type CancelledCreateAnswer,
   type BotRemovalProblem,
 } from "./cancel-model.js";
 
@@ -342,5 +345,109 @@ describe("cancelled bots across restarts", () => {
     uids = rememberRemovedBot(uids, "agt_rex", storage);
     expect(uids).toEqual(["agt_rex", "agt_nova"]);
     expect(loadRemovedBots(storage)).toEqual(["agt_rex", "agt_nova"]);
+  });
+});
+
+describe("what a cancelled create made (review A-C5)", () => {
+  const CREATED: CancelledCreateAnswer = { ok: true, target: { cardId: null, channelId: "", agentUid: "agt_woah" } };
+  const UPGRADE: CancelledCreateAnswer = { ok: true, target: { cardId: "card_upgrade", channelId: "chn_team" } };
+  const REFUSED: CancelledCreateAnswer = { ok: false, reason: "A bot with that name already exists in this company. Try a different name." };
+  const NO_ANSWER: CancelledCreateAnswer = { ok: false, reason: "The request timed out.", outcomeUnknown: true };
+
+  it("reads the first answer for what it says", () => {
+    expect(readCancelledCreate(CREATED)).toEqual({ kind: "created", agentUid: "agt_woah", channelId: "" });
+    expect(readCancelledCreate({ ok: true, target: { channelId: " chn_old " } })).toEqual({
+      kind: "created",
+      agentUid: "",
+      channelId: "chn_old",
+    });
+    expect(readCancelledCreate(UPGRADE)).toEqual({ kind: "not-created" });
+    expect(readCancelledCreate(REFUSED)).toEqual({ kind: "not-created" });
+    expect(readCancelledCreate({ ok: true, target: {} })).toEqual({ kind: "not-created" });
+  });
+
+  it("never reads silence as nothing created", () => {
+    expect(readCancelledCreate(NO_ANSWER)).toEqual({ kind: "unknown" });
+    expect(readCancelledCreate(null)).toEqual({ kind: "unknown" });
+    expect(readCancelledCreate(undefined)).toEqual({ kind: "unknown" });
+  });
+
+  it("takes nothing but a bot as an answer once the first outcome is unknown", () => {
+    expect(readCancelledCreate(CREATED, true)).toEqual({ kind: "created", agentUid: "agt_woah", channelId: "" });
+    // The name may be held by the bot the first request made.
+    expect(readCancelledCreate(REFUSED, true)).toEqual({ kind: "unknown" });
+    // The upgrade card may be shown because that bot took the plan's last place.
+    expect(readCancelledCreate(UPGRADE, true)).toEqual({ kind: "unknown" });
+    expect(readCancelledCreate(NO_ANSWER, true)).toEqual({ kind: "unknown" });
+  });
+
+  it("does not ask again when the first answer says what was made", async () => {
+    const replay = vi.fn(async () => CREATED);
+    expect(await resolveCancelledCreate(REFUSED, replay, { sleep: noWait })).toEqual({ kind: "not-created" });
+    expect(await resolveCancelledCreate(CREATED, replay, { sleep: noWait })).toMatchObject({ kind: "created" });
+    expect(replay).not.toHaveBeenCalled();
+  });
+
+  it("sends the create again after no answer, waits first, and takes the bot the server names", async () => {
+    const waits: number[] = [];
+    const replay = vi.fn(async () => CREATED);
+    const outcome = await resolveCancelledCreate(NO_ANSWER, replay, {
+      sleep: async (ms) => { waits.push(ms); },
+    });
+
+    expect(outcome).toEqual({ kind: "created", agentUid: "agt_woah", channelId: "" });
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([10_000]);
+  });
+
+  it("keeps asking while there is still no answer, a thrown request included, then stays unknown", async () => {
+    const waits: number[] = [];
+    const replay = vi
+      .fn<() => Promise<CancelledCreateAnswer | null>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(null);
+    const outcome = await resolveCancelledCreate(null, replay, {
+      sleep: async (ms) => { waits.push(ms); },
+    });
+
+    expect(outcome).toEqual({ kind: "unknown" });
+    expect(replay).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([10_000, 20_000, 40_000]);
+  });
+
+  it("takes a bot named on a later ask", async () => {
+    const replay = vi
+      .fn<() => Promise<CancelledCreateAnswer | null>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(CREATED);
+
+    expect(await resolveCancelledCreate(NO_ANSWER, replay, { sleep: noWait })).toMatchObject({
+      kind: "created",
+      agentUid: "agt_woah",
+    });
+    expect(replay).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops asking once the server answers without a bot, and still claims nothing", async () => {
+    for (const answer of [REFUSED, UPGRADE]) {
+      const replay = vi.fn(async () => answer);
+      expect(await resolveCancelledCreate(NO_ANSWER, replay, { sleep: noWait })).toEqual({ kind: "unknown" });
+      expect(replay).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("stays unknown when there is no way to ask again", async () => {
+    expect(await resolveCancelledCreate(NO_ANSWER, null, { sleep: noWait })).toEqual({ kind: "unknown" });
+  });
+
+  it("tells the person it could not confirm, and does not say nothing was created", () => {
+    const line = botRemovalLine({ name: "Woah", phase: "unconfirmed", problem: null });
+    expect(line).toBe(
+      "We couldn't confirm whether Woah was created. If it shows up in your bots, remove it from Settings, under Bots.",
+    );
+    expect(line).not.toContain("Nothing was created");
+    expect(line).not.toContain(LONG_DASH);
+    expect(canRetryBotRemoval({ phase: "unconfirmed", agentUid: "", problem: null })).toBe(false);
   });
 });

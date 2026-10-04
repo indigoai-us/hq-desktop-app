@@ -146,8 +146,90 @@ describe("runCreateCloudBotOneShotEntry", () => {
         conversation: "dm",
         surface: "desktop_new_bot",
       },
+      // Review A-C5: the create itself carries the key. It used to go out
+      // with none, and the native command minted a fresh one per call.
+      idempotencyKey: "idem-1",
     });
     expect(logToFile).not.toHaveBeenCalled();
+  });
+
+  describe("the create's own key (review A-C5)", () => {
+    it("sends the draft's key with the create action, and not with the opening action", async () => {
+      const { api, runCompanyTabAction, runCardAction } = harness();
+      await runCreateCloudBotOneShotEntry(api, "cmp_acme", { ...DRAFT, idempotencyKey: " key-for-polar " });
+      expect(runCardAction.mock.calls[0]![0]).toMatchObject({ actionId: "create", idempotencyKey: "key-for-polar" });
+      expect(runCompanyTabAction.mock.calls[0]![0]).toMatchObject({ actionId: "add_agent", idempotencyKey: undefined });
+      // The key is not a value of the card: it never reaches the card's fields.
+      expect(JSON.stringify((runCardAction.mock.calls[0]![0] as { values: unknown }).values)).not.toContain("key-for-polar");
+    });
+
+    it("sends the same key again on a retry of the same draft, so the server can answer with the first bot", async () => {
+      // First answer lost; the server made the bot. The retry under the same
+      // key gets the stored answer back (`replayed`), bot included.
+      const calls: unknown[] = [];
+      const answers: Array<Record<string, unknown> | Error> = [
+        new Error("Request failed (status 504)"),
+        { cardId: "create_agent", actionId: "create", state: "done", replayed: true, agentUid: "agt_polar" },
+      ];
+      const api = {
+        runCompanyTabAction: vi.fn(async () => OPENED),
+        runCardAction: vi.fn(async (args: unknown) => {
+          calls.push(args);
+          const answer = answers.shift()!;
+          if (answer instanceof Error) throw answer;
+          return answer;
+        }),
+        logToFile: vi.fn(async () => undefined),
+      } as unknown as CloudBotOneShotApi;
+      const draft = { ...DRAFT, idempotencyKey: "key-for-polar" };
+
+      expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", draft)).toMatchObject({ ok: false, outcomeUnknown: true });
+      expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", draft)).toEqual({
+        ok: true,
+        target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_polar" },
+      });
+      expect(calls.map((call) => (call as { idempotencyKey?: string }).idempotencyKey)).toEqual(["key-for-polar", "key-for-polar"]);
+    });
+
+    it("sends no key when the draft has none, as before", async () => {
+      const { api, runCardAction } = harness();
+      await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect("idempotencyKey" in (runCardAction.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it.each([
+      ["Request failed (status 504)", true],
+      ["Request failed (status 502)", true],
+      ["Network error: operation timed out", true],
+      ["[run_card_action] network down", true],
+      ['agent create returned status 500: {"statusCode":500}', true],
+      ["User: arn:aws:sts::000000000000:assumed-role/fn is not authorized to perform: dynamodb:Scan", true],
+      // The server's own refusals of the request: nothing was made.
+      ["403 forbidden", false],
+      ["Viewer cannot act on this card (403)", false],
+      ["Card not found", false],
+      ["Unknown actionId for this card", false],
+      ["[plan-limit url=https://example.test/u] You have reached the limit of your plan", false],
+    ])("says whether the outcome is known when the create fails with %j", async (text, unknown) => {
+      const { api, logToFile } = harness({ created: new Error(text) });
+      const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect(result.ok).toBe(false);
+      expect("outcomeUnknown" in result && result.outcomeUnknown === true).toBe(unknown);
+      expect(String(logToFile.mock.calls[0]![1])).toContain(`outcome=${unknown ? "unknown" : "refused"}`);
+    });
+
+    it("never calls an answer the server gave an unknown outcome", async () => {
+      const taken = harness({
+        created: { cardId: "create_agent", state: "open", fields: [{ id: "handle", value: "ice-bear", error: "This handle is already taken" }] },
+      });
+      const result = await runCreateCloudBotOneShotEntry(taken.api, "cmp_acme", DRAFT);
+      expect(result).toEqual({ ok: false, reason: CLOUD_BOT_NAME_TAKEN_REASON, blocked: false });
+      // A failure before the create was sent is not an unknown outcome either.
+      const notOpened = harness({ opened: new Error("Request failed (status 504)") });
+      const opened = await runCreateCloudBotOneShotEntry(notOpened.api, "cmp_acme", DRAFT);
+      expect("outcomeUnknown" in opened).toBe(false);
+      expect(notOpened.runCardAction).not.toHaveBeenCalled();
+    });
   });
 
   it("never reads the channel: the stored card cannot decide what is created", async () => {
@@ -370,10 +452,13 @@ describe("runCreateCloudBotOneShotEntry", () => {
       ok: false,
       reason: "network down",
       blocked: false,
+      // The request left and no answer came back: the bot may exist.
+      outcomeUnknown: true,
     });
     const denied = harness({ created: new Error("403 forbidden") });
-    expect(await runCreateCloudBotOneShotEntry(denied.api, "cmp_acme", DRAFT)).toMatchObject({
+    expect(await runCreateCloudBotOneShotEntry(denied.api, "cmp_acme", DRAFT)).toEqual({
       ok: false,
+      reason: "403 forbidden",
       blocked: true,
     });
   });
@@ -397,7 +482,7 @@ describe("runCreateCloudBotOneShotEntry", () => {
       blocked: false,
     });
     const line = String(logToFile.mock.calls[0]![1]);
-    expect(line).toBe("exit=create-failed code=denied raw=true");
+    expect(line).toBe("exit=create-failed code=denied raw=true outcome=unknown");
     expect(line).not.toContain("dynamodb");
     expect(line).not.toContain("arn:aws");
     expect(line).not.toContain("Polar");
@@ -415,9 +500,9 @@ describe("runCreateCloudBotOneShotEntry", () => {
     const { api, logToFile } = harness({ created: new Error(text) });
     await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
     const line = String(logToFile.mock.calls[0]![1]);
-    expect(line).toMatch(new RegExp(`^exit=create-failed code=${code} raw=(true|false)$`));
+    expect(line).toMatch(new RegExp(`^exit=create-failed code=${code} raw=(true|false) outcome=(unknown|refused)$`));
     // Nothing the person typed, no address, no payload.
-    for (const leaked of ["Polar", "ice-bear", "https://", "statusCode", "refused"]) {
+    for (const leaked of ["Polar", "ice-bear", "https://", "statusCode", "connection", "Too many"]) {
       expect(line).not.toContain(leaked);
     }
   });

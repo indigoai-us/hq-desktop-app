@@ -52,7 +52,7 @@
     type ChatSidebarApi,
     type ChatWakeBus,
   } from "./chat-api";
-  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import { CLOUD_BOT_NAME_TAKEN_REASON, type CloudBotDraft, type EntryPointResult } from "./lifecycle-entry-points.js";
   import { beginWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
   import {
     upsertWakingSession,
@@ -205,11 +205,13 @@
     loadOpenBotRemovals,
     loadRemovedBots,
     rememberRemovedBot,
+    resolveCancelledCreate,
     runBotRemoval,
     saveOpenBotRemovals,
     type BotRemoval,
     type RemoveBotRequest,
   } from "./create-bot/cancel-model.js";
+  import { createDraftSignature, releaseCreateKey, takeCreateKey } from "./create-bot/create-key.js";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -347,6 +349,11 @@
     onbotremoved?: ((agentUid: string) => void) | null;
     /** Test seam: how long a removal waits before asking the server again. */
     botRemovalRetryMs?: number;
+    /**
+     * Test seam: how long a cancelled create with no answer waits before each
+     * time it asks the server what its request made.
+     */
+    botCreateReplayMs?: number;
     /** Ask a new cloud bot, on the bot-only lane, to write its first message. */
     sendBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     /** True once that first message is in the direct message. */
@@ -520,6 +527,7 @@
     removeAgent = null,
     onbotremoved = null,
     botRemovalRetryMs = undefined,
+    botCreateReplayMs = undefined,
     sendBotHello = null,
     checkBotHello = null,
     restartBrainApproval = null,
@@ -1164,7 +1172,8 @@
           companyDisplayNamesByUid,
         }), botSetupChannels),
       ),
-      botRemovals,
+      // A cancel whose create has no known outcome names no bot and has no row.
+      botRemovals.filter((removal): removal is BotRemoval & { phase: Exclude<BotRemoval["phase"], "unconfirmed"> } => removal.phase !== "unconfirmed"),
       removedBotUids,
     ),
   );
@@ -1928,7 +1937,18 @@
     companyUid: string;
     brain: string | null;
     removalId: string | null;
+    /** The draft as it was sent, key included, so the same create can be sent again. */
+    draft: CloudBotDraft;
   } | null = null;
+
+  /** Shown when the create got no answer. Sending it again picks up the first answer. */
+  function createUnknownReason(name: string): string {
+    return `We didn't hear back, so we can't tell if ${name.trim() || "this bot"} was created. Try again to pick up where it left off.`;
+  }
+
+  /** Shown when a create sent again after no answer is told the name is in use. */
+  const CREATE_MAYBE_CREATED_REASON =
+    "A bot with that name already exists in this company. It may be the one you just tried to create. Look in Settings, under Bots, before trying again.";
 
   /** A late answer for a cancelled bot must never bring its waiting screen back. */
   function botIsCancelled(agentUid: string): boolean {
@@ -1952,28 +1972,47 @@
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
     if (!oncreatenewbot) return { ok: false, blocked: false, reason: "" };
+    // One key for this draft, minted at the press and written down before
+    // the request leaves. A draft whose last create got no answer gets the
+    // same key again: the server answers with what that first request made.
+    const keyed = takeCreateKey(accountStorage, createDraftSignature(companyUid, draft));
+    const sent: CloudBotDraft = { ...draft, idempotencyKey: keyed.key };
     const attempt = {
       cancelled: false,
       name: draft.name,
       companyUid,
       brain: draft.runtime ?? null,
       removalId: null as string | null,
+      draft: sent,
     };
     createInFlight = attempt;
     let result: EntryPointResult | null = null;
     try {
-      result = await oncreatenewbot(companyUid, draft);
-    } catch (err) {
-      if (!attempt.cancelled) throw err;
+      result = await oncreatenewbot(companyUid, sent);
+    } catch {
+      // A create that threw says nothing about what it made.
+      result = null;
     } finally {
       if (createInFlight === attempt) createInFlight = null;
     }
-    if (!attempt.cancelled && result) {
-      rememberCreatedBot(companyUid, draft, result);
-      return result;
+    if (attempt.cancelled) {
+      void settleCancelledCreate(attempt, result);
+      return { ok: false, blocked: false, reason: "", cancelled: true };
     }
-    settleCancelledCreate(attempt.removalId, result);
-    return { ok: false, blocked: false, reason: "", cancelled: true };
+    const unknown = !result || (!result.ok && result.outcomeUnknown === true);
+    if (unknown) {
+      // The key stays: the next press of Create bot for this draft sends it again.
+      return { ok: false, blocked: false, reason: createUnknownReason(draft.name), outcomeUnknown: true };
+    }
+    // The server answered. Its answer is final for this key.
+    releaseCreateKey(accountStorage, keyed.key);
+    const answered = result as EntryPointResult;
+    if (keyed.reused && !answered.ok && answered.reason === CLOUD_BOT_NAME_TAKEN_REASON) {
+      // The first request may have made the bot that now holds the name.
+      return { ...answered, reason: CREATE_MAYBE_CREATED_REASON };
+    }
+    rememberCreatedBot(companyUid, draft, answered);
+    return answered;
   }
 
   /**
@@ -2004,14 +2043,34 @@
     setBotRemovals([removal, ...botRemovals]);
   }
 
-  /** The answer to a create the person cancelled. A bot it names exists and is removed. */
-  function settleCancelledCreate(removalId: string | null, result: EntryPointResult | null): void {
+  /**
+   * The answer to a create the person cancelled. A bot it names exists and
+   * is removed. An answer that does not say (a timeout, a dropped
+   * connection) is not read as "nothing was created": the same create is
+   * sent again under the same key, and the server answers with what the
+   * first request made.
+   */
+  async function settleCancelledCreate(
+    attempt: NonNullable<typeof createInFlight>,
+    result: EntryPointResult | null,
+  ): Promise<void> {
+    const removalId = attempt.removalId;
     if (!removalId) return;
-    // A card in the answer is the upgrade card: nothing was created.
-    const created = result?.ok && !result.target.cardId ? result.target : null;
-    const agentUid = created?.agentUid?.trim() ?? "";
-    const channelId = created?.channelId?.trim() ?? "";
-    if (!agentUid && !channelId) {
+    const send = oncreatenewbot;
+    const outcome = await resolveCancelledCreate(
+      result,
+      send ? () => send(attempt.companyUid, attempt.draft) : null,
+      botCreateReplayMs === undefined ? {} : { delaysMs: [botCreateReplayMs, botCreateReplayMs, botCreateReplayMs] },
+    );
+    if (outcome.kind === "unknown") {
+      // Still not known. Nothing is claimed, and the key is kept.
+      patchBotRemoval(removalId, { phase: "unconfirmed" });
+      return;
+    }
+    if (attempt.draft.idempotencyKey) releaseCreateKey(accountStorage, attempt.draft.idempotencyKey);
+    const agentUid = outcome.kind === "created" ? outcome.agentUid : "";
+    const channelId = outcome.kind === "created" ? outcome.channelId : "";
+    if (outcome.kind === "not-created") {
       patchBotRemoval(removalId, { phase: "not-created" });
       return;
     }
@@ -2125,8 +2184,10 @@
   $effect(() => {
     if (newBotOpen) return;
     untrack(() => {
-      if (botRemovals.some((removal) => removal.phase === "removed" || removal.phase === "not-created")) {
-        setBotRemovals(botRemovals.filter((removal) => removal.phase !== "removed" && removal.phase !== "not-created"));
+      const finished = (removal: BotRemoval): boolean =>
+        removal.phase === "removed" || removal.phase === "not-created" || removal.phase === "unconfirmed";
+      if (botRemovals.some(finished)) {
+        setBotRemovals(botRemovals.filter((removal) => !finished(removal)));
       }
     });
   });

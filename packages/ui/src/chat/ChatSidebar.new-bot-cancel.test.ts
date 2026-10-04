@@ -14,7 +14,8 @@ import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
-import type { EntryPointResult } from "./lifecycle-entry-points.js";
+import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+import { CREATE_KEYS_STORAGE_KEY } from "./create-bot/create-key.js";
 import {
   OPEN_BOT_REMOVALS_STORAGE_KEY,
   REMOVED_BOTS_STORAGE_KEY,
@@ -108,6 +109,7 @@ function mountSidebar(props: Record<string, unknown>): void {
       loadAgentStatus: async () => ({ ok: true, value: { setupState: { phase: "provisioning" } } }),
       tenantAccountId: ACCOUNT,
       botRemovalRetryMs: 0,
+      botCreateReplayMs: 0,
       ...props,
     },
   });
@@ -282,6 +284,230 @@ describe("Cancel while the create request is out", () => {
     expect(q('[data-conversation-id="dm:agt_second"]')).toBeTruthy();
     expect(q('[data-conversation-id="dm:agt_woah"]')).toBeNull();
     expect(removeAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("The key a create is sent under (review A-C5)", () => {
+  const NO_ANSWER: EntryPointResult = {
+    ok: false,
+    blocked: false,
+    reason: "The request timed out.",
+    outcomeUnknown: true,
+  };
+  const NAME_TAKEN: EntryPointResult = {
+    ok: false,
+    blocked: false,
+    reason: "A bot with that name already exists in this company. Try a different name.",
+  };
+
+  /** The key each create request went out under, in order. */
+  function keysSent(oncreatenewbot: { mock: { calls: unknown[][] } }): string[] {
+    return oncreatenewbot.mock.calls.map((call) => (call[1] as CloudBotDraft).idempotencyKey ?? "");
+  }
+
+  function keysKept(): string[] {
+    return (stored(CREATE_KEYS_STORAGE_KEY) as Array<{ key: string }>).map((entry) => entry.key);
+  }
+
+  function createError(): string {
+    return q('[data-testid="new-bot-create-screen"] [role="alert"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  }
+
+  it("sends the same key again when the first create got no answer, and picks up the bot it made", async () => {
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(created("agt_woah"));
+    mountSidebar({ oncreatenewbot });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    // No answer: the person is not told the create failed, and not told a name is taken.
+    expect(createError()).toBe(
+      "We didn't hear back, so we can't tell if Woah was created. Try again to pick up where it left off.",
+    );
+    const [first] = keysSent(oncreatenewbot);
+    expect(first).toBeTruthy();
+    // The key is written down while the outcome is unknown.
+    expect(keysKept()).toEqual([first]);
+
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(12);
+
+    expect(keysSent(oncreatenewbot)).toEqual([first, first]);
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah");
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeTruthy();
+    // The server answered: the key is let go.
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("reads a create that threw as no answer, and keeps its key", async () => {
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockResolvedValueOnce(created("agt_woah"));
+    mountSidebar({ oncreatenewbot });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    expect(createError()).toContain("we can't tell if Woah was created");
+    expect(createError()).not.toContain("socket");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(12);
+
+    const sent = keysSent(oncreatenewbot);
+    expect(sent[0]).toBeTruthy();
+    expect(sent[1]).toBe(sent[0]);
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy();
+  });
+
+  it("uses a new key once the server has answered", async () => {
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NAME_TAKEN)
+      .mockResolvedValueOnce(created("agt_woah"));
+    mountSidebar({ oncreatenewbot });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    // A refusal on the first try is the server's own word and is shown as it is.
+    expect(createError()).toBe(NAME_TAKEN.reason);
+    expect(keysKept()).toEqual([]);
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(12);
+
+    const sent = keysSent(oncreatenewbot);
+    expect(sent[0]).toBeTruthy();
+    expect(sent[1]).toBeTruthy();
+    expect(sent[1]).not.toBe(sent[0]);
+  });
+
+  it("says the bot may already exist when the same create, sent again, is told the name is in use", async () => {
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(NAME_TAKEN);
+    mountSidebar({ oncreatenewbot });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(12);
+
+    expect(createError()).toBe(
+      "A bot with that name already exists in this company. It may be the one you just tried to create. Look in Settings, under Bots, before trying again.",
+    );
+  });
+
+  it("on Cancel after no answer, sends the create again under its key and removes the bot the server names", async () => {
+    let finishCreate!: (result: EntryPointResult) => void;
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockImplementationOnce(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }))
+      .mockResolvedValueOnce(created("agt_woah"));
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot, removeAgent });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(notice()).toBe("Cancelling Woah. Anything already set up for it will be removed.");
+
+    // The request the person cancelled times out. The bot exists on the server.
+    finishCreate(NO_ANSWER);
+    await removalSettled(() => expect(notice()).toBe("Woah was removed."));
+
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBeTruthy();
+    expect(sent[1]).toBe(sent[0]);
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(removeAgent).toHaveBeenCalledWith("agt_woah", undefined);
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeNull();
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("on Cancel, never says nothing was created when no answer ever arrives", async () => {
+    let failCreate!: (err: Error) => void;
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockImplementationOnce(() => new Promise<EntryPointResult>((_resolve, reject) => { failCreate = reject; }))
+      .mockResolvedValue(NO_ANSWER);
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ oncreatenewbot, removeAgent });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+
+    failCreate(new Error("The network connection was lost."));
+    await removalSettled(() =>
+      expect(notice()).toBe(
+        "We couldn't confirm whether Woah was created. If it shows up in your bots, remove it from Settings, under Bots.",
+      ),
+    );
+
+    expect(notice()).not.toContain("Nothing was created");
+    // Asked three more times, each under the first request's key.
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(4);
+    expect(new Set(sent).size).toBe(1);
+    expect(removeAgent).not.toHaveBeenCalled();
+    // The key is kept: creating the same bot again picks up the first answer.
+    expect(keysKept()).toEqual([sent[0]]);
+    expect(q('[role="alert"]')).toBeNull();
+  });
+
+  it("on Cancel after no answer, does not take a refusal of the second request as nothing created", async () => {
+    let finishCreate!: (result: EntryPointResult) => void;
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockImplementationOnce(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }))
+      .mockResolvedValue(NAME_TAKEN);
+    mountSidebar({ oncreatenewbot, removeAgent: vi.fn(async () => REMOVED) });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+
+    finishCreate(NO_ANSWER);
+    await removalSettled(() => expect(notice()).toContain("We couldn't confirm whether Woah was created."));
+
+    expect(notice()).not.toContain("Nothing was created");
+    // The server answered the second request: it is not asked a third time.
+    expect(oncreatenewbot).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the line about an unconfirmed create when the takeover closes", async () => {
+    let finishCreate!: (result: EntryPointResult) => void;
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockImplementationOnce(() => new Promise<EntryPointResult>((resolve) => { finishCreate = resolve; }))
+      .mockResolvedValue(NO_ANSWER);
+    mountSidebar({ oncreatenewbot, removeAgent: vi.fn(async () => REMOVED) });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    finishCreate(NO_ANSWER);
+    await removalSettled(() => expect(notice()).toContain("We couldn't confirm"));
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    await openTakeover();
+
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(notice()).toBe("");
+    // No row is made for a bot nobody can name.
+    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
   });
 });
 

@@ -84,6 +84,15 @@ export type EntryPointResult =
        * caller shows nothing for it: no waiting screen and no message.
        */
       cancelled?: boolean;
+      /**
+       * Set when the create was sent and no answer came back (a timeout, a
+       * dropped connection, a server error part-way). The bot may exist. A
+       * caller must not say that nothing was created; sending the same
+       * create again under the same key (`CloudBotDraft.idempotencyKey`)
+       * gets the first answer. Only the New Bot takeover's one-shot create
+       * sets it.
+       */
+      outcomeUnknown?: boolean;
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
@@ -229,6 +238,14 @@ export interface CloudBotDraft {
   authMode?: "subscription" | "apiKey";
   /** Write-only create input; never copied into lifecycle card state. */
   apiKey?: string;
+  /**
+   * The key this create is sent under (create-bot/create-key.ts). The server
+   * keeps its first answer under the key, so the same key sent again gets
+   * that answer, bot included, and makes no second bot. Only the New Bot
+   * takeover's one-shot create sends it; the "+" modal's card walk does not
+   * read it.
+   */
+  idempotencyKey?: string;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
@@ -759,7 +776,20 @@ export function isUpgradePlanCard(cardId: string | null | undefined): boolean {
 }
 
 export interface CloudBotOneShotOptions {
+  /** Overrides the draft's own key, and is also sent with the opening `add_agent`. */
   idempotencyKey?: string;
+}
+
+/**
+ * True when a thrown create is the server's own refusal of the request: it
+ * was turned away before anything was made (not allowed, no such card, an
+ * action it does not know). Any other thrown failure leaves the outcome
+ * unknown: the request may have got through and made the bot.
+ */
+function refusedOutright(err: unknown, raw: boolean): boolean {
+  if (raw) return false;
+  const text = err instanceof Error ? err.message : String(err ?? "");
+  return isPermission(err) || isNotFound(err) || /unknown action|plan[- ]limit/i.test(text);
 }
 
 /** Shown when the server failed for a reason a person cannot act on. */
@@ -976,6 +1006,10 @@ export async function runCreateCloudBotOneShotEntry(
     ...(authMode === "apiKey" && draft.apiKey ? { apiKey: draft.apiKey } : {}),
   };
 
+  // The create goes out under the draft's key. The server keeps its first
+  // answer under that key, so a create sent again after a lost answer gets
+  // the same bot back instead of "that name already exists".
+  const createKey = trimmed(options.idempotencyKey) || trimmed(draft.idempotencyKey);
   let result: CardActionResult;
   try {
     result = await api.runCardAction({
@@ -983,14 +1017,27 @@ export async function runCreateCloudBotOneShotEntry(
       cardId: CREATE_AGENT_CARD_ID,
       actionId: CREATE_ACTION_ID,
       values,
+      ...(createKey ? { idempotencyKey: createKey } : {}),
     });
   } catch (err) {
     // A raw backend failure (a cloud permission, a status payload) is the
     // server's defect, not the person's refusal: it is neither shown nor
     // treated as "you may not do this".
     const shown = shownFailure(err);
-    logCloudBotExit(api, "create-failed", { code: failureCode(err), raw: String(shown.raw) });
-    return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
+    // Unless the server turned the request away outright, nobody knows
+    // whether the bot was made: the request left, and no answer came back.
+    const outcomeUnknown = !refusedOutright(err, shown.raw);
+    logCloudBotExit(api, "create-failed", {
+      code: failureCode(err),
+      raw: String(shown.raw),
+      outcome: outcomeUnknown ? "unknown" : "refused",
+    });
+    return {
+      ok: false,
+      reason: shown.reason,
+      blocked: !shown.raw && isPermission(err),
+      ...(outcomeUnknown ? { outcomeUnknown: true } : {}),
+    };
   }
 
   const agentChannelId = trimmed(result.agentChannelId);
