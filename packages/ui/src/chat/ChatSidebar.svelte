@@ -2204,6 +2204,8 @@
       removalId: null as string | null,
       handle: botHandle({ name: draft.name, handle: draft.handle ?? "" }),
       key: keyed.key,
+      // Sent under a key kept from an earlier press with no answer.
+      reused: keyed.reused,
       // Started before the create is sent, so it shows what was there before.
       baseline: baselineFor(keyed.key, keyed.reused, companyUid),
       answer: null as EntryPointResult | null,
@@ -2419,11 +2421,15 @@
     const removalId = attempt.removalId;
     if (!removalId) return;
     const lookedUp = readCancelledCreate(result).kind === "unknown";
-    const outcome = await resolveCancelledCreate(result, createdBotLookup(attempt), {
+    // A create sent under a kept key is answered with the bot that key's
+    // first request made, which may be from an earlier day and in use. Cancel
+    // removes a starting bot only after the person confirms, and nobody was
+    // asked here, so that bot is never removed and is not looked for.
+    const outcome = await resolveCancelledCreate(result, attempt.reused ? null : createdBotLookup(attempt), {
       delaysMs: lookupDelays(3),
     });
-    if (outcome.kind === "unknown") {
-      // Still not known. Nothing is claimed.
+    if (outcome.kind === "unknown" || (attempt.reused && outcome.kind === "created")) {
+      // Still not known, or not this press's to remove. Nothing is claimed.
       patchBotRemoval(removalId, { phase: "unconfirmed" });
       return;
     }

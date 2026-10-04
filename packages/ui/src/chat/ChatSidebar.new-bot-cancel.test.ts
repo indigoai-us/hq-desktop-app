@@ -673,16 +673,57 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
   });
 
-  it("compares a second press of the same draft with the list from before the first", async () => {
-    // First press: no answer, and the bot is not on the list yet when the
-    // app looks. The person presses Create bot again (same key) and cancels
-    // that one. The bot is not on the list from before the first press, so
-    // it is this create's.
+  // ── Cancel during a create sent under a kept key (round 4, item 3) ──────
+  // A kept key is answered with the bot its first request made. That bot may
+  // be from an earlier press, or an earlier day, and nobody confirmed its
+  // removal. Cancel removes nothing there and says it could not confirm.
+
+  /** First press: no answer, no bot found. Second press (same key) is left out. */
+  async function cancelSecondPress(props: Record<string, unknown>): Promise<{
+    oncreatenewbot: ReturnType<typeof vi.fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>>;
+    finishSecond: (result: EntryPointResult) => void;
+  }> {
     let finishSecond!: (result: EntryPointResult) => void;
     const oncreatenewbot = vi
       .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
       .mockResolvedValueOnce(NO_ANSWER)
       .mockImplementationOnce(() => new Promise<EntryPointResult>((resolve) => { finishSecond = resolve; }));
+    mountSidebar({ oncreatenewbot, ...props });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
+    click('[data-testid="new-bot-create-submit"]');
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(notice()).toBe("Cancelling Woah. Anything already set up for it will be removed.");
+    return { oncreatenewbot, finishSecond };
+  }
+
+  it("on Cancel of a create sent under a kept key, never removes the bot the key is answered with", async () => {
+    const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer());
+    const removeAgent = vi.fn(async () => REMOVED);
+    const { oncreatenewbot, finishSecond } = await cancelSecondPress({ loadCompanyBots, removeAgent });
+
+    // The server answers the kept key with the bot its first request made.
+    finishSecond(created("agt_woah"));
+    await removalSettled(() => expect(notice()).toBe(UNCONFIRMED));
+    await settle(12);
+
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    // Two presses, two creates, under one key. Cancel added none.
+    expect(oncreatenewbot).toHaveBeenCalledTimes(2);
+    expect(new Set(keysSent(oncreatenewbot)).size).toBe(1);
+    // The key went with the cancel.
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("on Cancel of a create sent under a kept key with no answer, does not look for a bot to remove", async () => {
+    // Rewritten for round 4, item 3. This test used to expect "Woah was
+    // removed." here: the bot was found on the list and removed with no
+    // confirm. A second press under a kept key now settles as unconfirmed.
     const loadCompanyBots = vi
       .fn<(companyUid: string) => Promise<unknown>>()
       // The list at the first press, and the look after its lost answer.
@@ -690,23 +731,16 @@ describe("The key a create is sent under (review A-C5)", () => {
       .mockResolvedValueOnce(rosterAnswer())
       .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
     const removeAgent = vi.fn(async () => REMOVED);
-    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent });
-    await settle();
-    await openTakeover();
-    await pressCreate("Woah");
-    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
-    click('[data-testid="new-bot-create-submit"]');
-    await settle();
+    const { oncreatenewbot, finishSecond } = await cancelSecondPress({ loadCompanyBots, removeAgent });
     // The second press reads no new list: the first one's is kept with the key.
     expect(loadCompanyBots).toHaveBeenCalledTimes(2);
-    click('[data-testid="new-bot-takeover-cancel"]');
-    await settle();
 
     finishSecond(NO_ANSWER);
-    await removalSettled(() => expect(notice()).toBe("Woah was removed."));
+    await removalSettled(() => expect(notice()).toBe(UNCONFIRMED));
+    await settle(12);
 
-    expect(removeAgent).toHaveBeenCalledWith("agt_woah", undefined);
-    // Two presses, two creates, under one key. Cancel added none.
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(loadCompanyBots).toHaveBeenCalledTimes(2);
     expect(oncreatenewbot).toHaveBeenCalledTimes(2);
     expect(new Set(keysSent(oncreatenewbot)).size).toBe(1);
   });
