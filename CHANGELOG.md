@@ -13,6 +13,8 @@ The release moves it under the version it ships in.
 - While a cloud bot's copy of your company files is syncing, a slim strip under the header of its direct message shows how far along it is, and goes away once the files are up to date.
 - While a bot works on an answer in its direct message, the "working" row shows what the bot is doing, and it goes away when the answer arrives.
 - App logos on connection cards are the app's own brand mark, shipped inside HQ. An app HQ has no mark for shows a plain app icon. No logo is loaded from another site.
+- Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
+- Updater restarts now carry a short-lived, version-checked marker through the GUI restart fallback when start-at-login is disabled.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 

@@ -1236,6 +1236,8 @@ export function createSyncPlatformAdapter(
       getSummary: (slug) => call('get_company_summary', { slug }),
       getBoard: (slug) => call('get_company_board', { slug }),
       getActivity: (slug) => call('get_company_activity', { slug }),
+      getFirstWeekReturnNudge: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

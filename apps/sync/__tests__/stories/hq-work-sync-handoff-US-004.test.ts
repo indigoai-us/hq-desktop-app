@@ -94,8 +94,8 @@ describe('US-004 silent HQ Work co-install after Sync update', () => {
     const postInstallSpawnAt = installFn.indexOf('spawn_maybe_co_install_hq_work');
     expect(downloadAt).toBeGreaterThan(-1);
     expect(postInstallSpawnAt).toBeGreaterThan(downloadAt);
-    expect(installFn.indexOf('restart_preferring_launch_agent(app)')).toBeGreaterThan(
-      postInstallSpawnAt,
+    expect(installFn.slice(postInstallSpawnAt)).toMatch(
+      /restart_after_update_preferring_launch_agent\(\s*app,\s*&update\.version/,
     );
 
     const autoIdx = updater.indexOf('BackgroundUpdateAction::Install =>');
@@ -111,6 +111,8 @@ describe('US-004 silent HQ Work co-install after Sync update', () => {
     expect(stagedFn).toContain('#[cfg(not(target_os = "windows"))]');
     const stagedSpawn = stagedFn.indexOf('spawn_maybe_co_install_hq_work');
     expect(stagedSpawn).toBeGreaterThan(-1);
-    expect(stagedFn.indexOf('restart_preferring_launch_agent(app)')).toBeGreaterThan(stagedSpawn);
+    expect(stagedFn.slice(stagedSpawn)).toMatch(
+      /restart_after_update_preferring_launch_agent\(\s*app,\s*&staged\.info\.version/,
+    );
   });
 });
