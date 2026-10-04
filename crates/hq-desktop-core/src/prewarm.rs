@@ -6,7 +6,7 @@
 //! `npx -y --package=@indigoai-us/hq-cloud@<ver> hq-sync-runner …` (see
 //! `commands::sync`). The *first* invocation after a fresh install — or
 //! after bumping `sync::HQ_CLOUD_VERSION` — downloads the package into
-//! npx's on-disk cache (`~/.npm/_npx/<hash>/`). That download takes
+//! an HQ-owned cache directory, isolated from npm's user-global cache. That download takes
 //! ~3–10s, which would otherwise pad the user's first click of
 //! "Sync Now" and feel like the app is broken.
 //!
@@ -50,7 +50,8 @@
 //! trivial `node` no-op rather than a runner bin so the payload is
 //! immune to future `hq-sync-runner` argv changes and always exits 0.
 //! Output is dropped; we only care about the side effect of filling
-//! the cache.
+//! the cache. `NPM_CONFIG_CACHE` points npx at the app-owned cache below
+//! the HQ config directory, so a root-owned npm user cache cannot block rescue.
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
@@ -303,15 +304,35 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     with_materialization_lock(run_materialization_payload)?
 }
 
+fn rescue_npm_cache_dir() -> Result<std::path::PathBuf, String> {
+    let cache = paths::hq_config_dir()?.join("npm-cache");
+    std::fs::create_dir_all(&cache).map_err(|_| {
+        "HQ Sync cannot prepare its app-owned npm cache. Check permissions for the HQ configuration directory, then try Sync again."
+            .to_string()
+    })?;
+    Ok(cache)
+}
+
+fn npx_materialization_command(
+    npx: &str,
+    package_spec: &str,
+    path: &str,
+    cache: &std::path::Path,
+) -> std::process::Command {
+    let mut command = paths::spawn_command(npx, &[]);
+    command
+        .args(["-y", package_spec, "--", "node", "-e", "process.exit(0)"])
+        .env("PATH", path)
+        .env("NPM_CONFIG_CACHE", cache);
+    command
+}
+
 fn run_materialization_payload() -> Result<(), String> {
     let npx = paths::resolve_bin("npx");
     let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
     let path = paths::child_path();
-    let output = paths::spawn_command(
-        &npx,
-        &["-y", &package_spec, "--", "node", "-e", "process.exit(0)"],
-    )
-    .env("PATH", &path)
+    let cache = rescue_npm_cache_dir()?;
+    let output = npx_materialization_command(&npx, &package_spec, &path, &cache)
     .output()
     .map_err(|err| {
         if err.kind() == ErrorKind::PermissionDenied {
@@ -604,6 +625,27 @@ mod tests {
 
         assert_eq!(err, MATERIALIZATION_LOCK_TIMEOUT_MESSAGE);
         assert_eq!(attempts, 1, "the retry budget must terminate the loop");
+    }
+
+    #[test]
+    fn rescue_npx_uses_the_hq_owned_cache_instead_of_the_global_npm_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("app-owned-npm-cache");
+        let command = npx_materialization_command(
+            "npx",
+            "--package=@indigoai-us/hq-cloud@test",
+            "/test/path",
+            &cache,
+        );
+
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(name, _)| *name == std::ffi::OsStr::new("NPM_CONFIG_CACHE"))
+                .and_then(|(_, value)| value),
+            Some(cache.as_os_str()),
+            "rescue npx must not write into a potentially root-owned user-global npm cache",
+        );
     }
 
     #[test]
