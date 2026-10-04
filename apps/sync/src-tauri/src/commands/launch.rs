@@ -198,8 +198,13 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Where the ChatGPT app carries its embedded Codex CLI. Codex desktop is
-/// distributed inside ChatGPT.app, and the bundle ships the full CLI — so a
+/// distributed inside ChatGPT.app, and the bundle ships the full CLI, so a
 /// machine with the app needs NOTHING installed for a workspace launch.
+///
+/// The CLI's place in the bundle has moved: ChatGPT 26.928 (bundle id
+/// `com.openai.codex`) ships it at `Contents/Resources/codex-cli/bin/codex`
+/// and no longer at `Contents/Resources/codex`, where older builds had it.
+/// Both are tried, newest layout first.
 #[cfg(target_os = "macos")]
 pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
     let mut app_dirs = vec![std::path::PathBuf::from("/Applications")];
@@ -209,31 +214,17 @@ pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
     bundled_codex_bin_in(&app_dirs)
 }
 
-/// App bundles that carry the Codex CLI, in preference order.
-const BUNDLED_CODEX_APPS: [&str; 2] = ["ChatGPT.app", "Codex.app"];
-
-/// Where inside the bundle the CLI sits. Older builds put it at
-/// `Contents/Resources/codex`; current ChatGPT.app builds ship it at
-/// `Contents/Resources/codex-cli/bin/codex` (verified with ChatGPT.app
-/// carrying codex-cli 0.159.2). Missing the second path made a desktop-only
-/// Mac read as "Codex not installed" to the sign-in backend.
-const BUNDLED_CODEX_PATHS: [&str; 2] = [
-    "Contents/Resources/codex",
-    "Contents/Resources/codex-cli/bin/codex",
-];
-
-/// First Codex CLI found in a ChatGPT/Codex app bundle under `app_dirs`.
+/// The bundled Codex CLI inside ChatGPT.app or Codex.app under any of
+/// `app_dirs`, checked in order.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn bundled_codex_bin_in(app_dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    const BUNDLES: [&str; 2] = ["ChatGPT.app", "Codex.app"];
+    const CLI_PATHS: [&str; 2] = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex"];
     app_dirs
         .iter()
-        .flat_map(|dir| {
-            BUNDLED_CODEX_APPS.iter().flat_map(move |app| {
-                BUNDLED_CODEX_PATHS
-                    .iter()
-                    .map(move |relative| dir.join(app).join(relative))
-            })
-        })
-        .find(|path| path.is_file())
+        .flat_map(|dir| BUNDLES.iter().map(move |bundle| dir.join(bundle)))
+        .flat_map(|app| CLI_PATHS.iter().map(move |rel| app.join(rel)))
+        .find(|p| p.is_file())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -645,6 +636,35 @@ mod tests {
     }
 
     #[test]
+    fn bundled_codex_bin_finds_the_cli_where_current_and_older_chatgpt_builds_keep_it() {
+        let root = std::env::temp_dir().join(format!("hq-codex-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let system = root.join("Applications");
+        let user = root.join("home/Applications");
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), None);
+
+        // Older ChatGPT.app: Contents/Resources/codex, in the user folder.
+        let old = user.join("ChatGPT.app/Contents/Resources/codex");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(old.clone()));
+
+        // Current ChatGPT.app (26.928): Contents/Resources/codex-cli/bin/codex.
+        let current = system.join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::fs::write(&current, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(current));
+
+        // A standalone Codex.app with the new layout.
+        let standalone_root = root.join("standalone");
+        let standalone = standalone_root.join("Codex.app/Contents/Resources/codex-cli/bin/codex");
+        std::fs::create_dir_all(standalone.parent().unwrap()).unwrap();
+        std::fs::write(&standalone, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[standalone_root]), Some(standalone));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn deep_link_rejects_empty_body() {
         assert!(validate_claude_deep_link("claude://").is_err());
     }
@@ -842,47 +862,5 @@ mod bundled_claude_tests {
         fs::write(dir.path().join("2.1.261/.verified"), b"sha").unwrap();
         assert_eq!(bundled_claude_bin_in(dir.path()), None);
         assert_eq!(bundled_claude_bin_in(&dir.path().join("absent")), None);
-    }
-}
-
-#[cfg(test)]
-mod bundled_codex_tests {
-    use super::bundled_codex_bin_in;
-    use std::fs;
-    use tempfile::tempdir;
-
-    fn place(root: &std::path::Path, relative: &str) -> std::path::PathBuf {
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, b"#!/bin/sh\n").unwrap();
-        path
-    }
-
-    /// Regression: current ChatGPT.app ships its Codex CLI under
-    /// `codex-cli/bin/codex`, and only the old `Resources/codex` spot was
-    /// checked, so a Mac with just the desktop app read as "not installed".
-    #[test]
-    fn finds_the_cli_in_current_chatgpt_bundles() {
-        let dir = tempdir().unwrap();
-        let cli = place(
-            dir.path(),
-            "ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
-        );
-        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), Some(cli));
-    }
-
-    #[test]
-    fn still_finds_the_cli_in_older_bundles() {
-        let dir = tempdir().unwrap();
-        let cli = place(dir.path(), "Codex.app/Contents/Resources/codex");
-        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), Some(cli));
-    }
-
-    #[test]
-    fn an_app_without_a_cli_or_a_missing_dir_finds_nothing() {
-        let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("ChatGPT.app/Contents/Resources")).unwrap();
-        assert_eq!(bundled_codex_bin_in(&[dir.path().to_path_buf()]), None);
-        assert_eq!(bundled_codex_bin_in(&[dir.path().join("absent")]), None);
     }
 }
