@@ -79,7 +79,19 @@
 
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { messageHasVisibleContent, richContentForMessage } from "./richMessageContent";
+  import {
+    messageHasVisibleContent,
+    replyForSuggestion,
+    richContentForMessage,
+    withExtraBlocks,
+    type ExtractedRichContent,
+    type RichBlock,
+  } from "./richMessageContent";
+  import {
+    messageMayDrawCards,
+    type ConnectionCards,
+    type ConversationConnectionCards,
+  } from "./connection-card-model.js";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import type { DecisionOption } from "./richMessageContent";
   import {
@@ -161,7 +173,10 @@
      * already notified.
      */
     allowHereMention?: boolean;
-    /** Open ReplyPanel for this root eventId. */
+    /**
+     * Open ReplyPanel for this root eventId. Without it no "Reply in thread"
+     * button is drawn: the host has no threads to open here.
+     */
     onreply?: (rootEventId: string) => void;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
@@ -247,11 +262,40 @@
      */
     belowMessages?: Snippet;
     /**
-     * Suggested replies to show as buttons after the newest message. The host
-     * decides which conversation gets them and when; a click sends the text
-     * as the person's reply, exactly as if they had typed it.
+     * Optional strip across the top of the conversation, directly under the
+     * host's header and above the message scroller (a bot's file sync). It is
+     * not part of the thread: it stays in view while the person scrolls, and
+     * takes its own room, so it never covers a message.
      */
-    suggestedReplies?: readonly string[];
+    aboveMessages?: Snippet;
+    /**
+     * The bot whose suggestions are drawn: its newest message's `suggestions`
+     * block becomes a row of buttons under that message's bubble, part of the
+     * message, while nothing has been written after it. Older messages draw
+     * none, so chips never pile up, and a message that carries a `connect`
+     * block (its own or one the host attached) draws none either: the cards
+     * are the decision. A click sends the text as the person's reply, exactly
+     * as if they had typed it. Null: no message draws chips.
+     */
+    suggestionsFrom?: string | null;
+    /**
+     * What a suggested reply sends when it is not its own label (label → the
+     * message). A label that is not here sends itself.
+     */
+    suggestedReplyText?: Readonly<Record<string, string>> | null;
+    /**
+     * Connection cards (Slack, Connect your tools) for `connect` blocks in
+     * this conversation: the host builds each card and handles each press.
+     * Omitted everywhere but a cloud bot's direct message, where a `connect`
+     * block then draws nothing.
+     */
+    connections?: ConversationConnectionCards | null;
+    /**
+     * Blocks the host attaches to a message that did not carry them, by
+     * eventId. They are appended to that message's own blocks when it is
+     * drawn; the message itself is not changed.
+     */
+    extraBlocksByEventId?: Readonly<Record<string, readonly RichBlock[]>> | null;
     /**
      * Sidebar row id (`ch:<id>` / `dm:<uid>`) this composer belongs to. With
      * `draftStorage`, unsent text is restored on mount, persisted (debounced)
@@ -343,7 +387,11 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
-    suggestedReplies = [],
+    aboveMessages,
+    suggestionsFrom = null,
+    suggestedReplyText = null,
+    connections = null,
+    extraBlocksByEventId = null,
     draftKey = null,
     draftStorage = null,
     composerLocked = false,
@@ -354,6 +402,26 @@
     serverHumanView = false,
     conversationKey = null,
   }: Props = $props();
+
+  /** A message's text and blocks, with any blocks the host put on it. */
+  function richForMessage(msg: ConversationMessageWire): ExtractedRichContent {
+    const own = richContentForMessage(msg);
+    const extra = extraBlocksByEventId?.[msg.eventId];
+    if (!extra) return own;
+    return { text: own.text, rich: withExtraBlocks(own.rich, extra) };
+  }
+
+  /**
+   * The connection cards a message may draw: the host's, for a message the
+   * bot of this direct message sent. Never for the person's own message: a
+   * `connect` block they typed or pasted is their text, not the bot's offer.
+   */
+  function cardsForMessage(msg: ConversationMessageWire): ConnectionCards | null {
+    if (!connections) return null;
+    const botUid = connections.botUid ?? suggestionsFrom;
+    if (!messageMayDrawCards(msg, { botUid, selfUid: selfPersonUid })) return null;
+    return connections.cardsFor(msg);
+  }
 
   /** Presence-store online flag for an actor in this conversation's company. */
   function actorOnline(actorUid: string | null | undefined): boolean {
@@ -890,35 +958,92 @@
     await send();
   }
 
+  /**
+   * The suggestions a message draws under its bubble: every `suggestions`
+   * block's items from the message's own blocks, in order, each once. A
+   * suggestions block the host attaches is not drawn: the chips are the
+   * bot's own, shown only when it has something to suggest (owner, live
+   * walkthrough 2026-10-03). None when the message carries a `connect` block,
+   * its own or one the host attached: the cards are the decision, and a row
+   * of chips next to them is decision overload.
+   */
+  function suggestionsIn(msg: ConversationMessageWire): string[] {
+    if ((richForMessage(msg).rich?.blocks ?? []).some((block) => block.kind === "connect")) return [];
+    const out: string[] = [];
+    for (const block of richContentForMessage(msg).rich?.blocks ?? []) {
+      if (block.kind !== "suggestions") continue;
+      for (const item of block.items) if (!out.includes(item)) out.push(item);
+    }
+    return out;
+  }
+
+  /**
+   * The message whose suggestions are drawn: the newest message from
+   * `suggestionsFrom` with something to read, while nothing has been written
+   * after it. The person's reply (typed or clicked) puts them away, and a
+   * newer bot message without suggestions replaces them with nothing, so old
+   * chips never linger under a conversation that moved on.
+   */
+  const suggestionsEventId = $derived.by((): string | null => {
+    const uid = (suggestionsFrom ?? "").trim();
+    if (!uid) return null;
+    for (let i = timeline.length - 1; i >= 0; i -= 1) {
+      const msg = timeline[i]!;
+      if ((msg.fromPersonUid ?? "").trim() !== uid) return null;
+      if (messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0) return msg.eventId;
+    }
+    return null;
+  });
+  const inlineSuggestions = $derived.by((): string[] => {
+    const id = suggestionsEventId;
+    if (!id) return [];
+    const msg = timeline.find((candidate) => candidate.eventId === id);
+    return msg ? suggestionsIn(msg) : [];
+  });
   // A clicked suggestion hides its set at once, before the reply reaches the
   // timeline, so a second click cannot send it twice. A new set shows again.
   let usedSuggestionKey = $state<string | null>(null);
-  const suggestionKey = $derived(suggestedReplies.join("\u0000"));
-  const visibleSuggestions = $derived(
-    suggestionKey && suggestionKey !== usedSuggestionKey ? suggestedReplies : [],
+  const suggestionKey = $derived(
+    inlineSuggestions.length > 0 ? `${suggestionsEventId}\u0000${inlineSuggestions.join("\u0000")}` : "",
   );
+  const visibleSuggestions = $derived(
+    suggestionKey && suggestionKey !== usedSuggestionKey ? inlineSuggestions : [],
+  );
+  // Once the host has put a set away (the reply landed), the same words under
+  // a later message are a new set and show again.
+  $effect(() => {
+    if (!suggestionKey && untrack(() => usedSuggestionKey) !== null) usedSuggestionKey = null;
+  });
 
-  // Suggested replies are a shortcut, not the only answers: the last chip says
-  // so, and pressing it puts the cursor in the composer with a prompt to type.
+  // When the bot offers a list of choices (two or more), a last chip says the
+  // list is not the only answer, and pressing it puts the cursor in the
+  // composer with a prompt to type. A single suggestion is not a list, so it
+  // gets no such chip, and the chip never shows on its own.
   const SUGGESTION_OTHER_LABEL = "Something else";
   const SUGGESTION_OTHER_PLACEHOLDER = "Type your own answer here…";
+  const SUGGESTION_OTHER_MIN = 2;
+  const showSuggestionOther = $derived(visibleSuggestions.length >= SUGGESTION_OTHER_MIN);
   let otherForKey = $state<string | null>(null);
   const composerPlaceholder = $derived(
-    otherForKey !== null && otherForKey === suggestionKey && visibleSuggestions.length > 0
+    otherForKey !== null && otherForKey === suggestionKey && showSuggestionOther
       ? SUGGESTION_OTHER_PLACEHOLDER
       : placeholder,
   );
   function chooseOtherSuggestion(): void {
-    if (composerLocked) return;
+    if (composerLocked || !showSuggestionOther) return;
     otherForKey = suggestionKey;
     replyInputEl?.focus();
   }
 
   async function sendSuggestion(label: string): Promise<void> {
-    if (composerLocked) return;
+    // A second press before the row has been redrawn sends nothing. The set
+    // itself is checked, not its key: the first press adds the person's reply
+    // to the timeline at once, which already changes the key.
+    if (composerLocked || !visibleSuggestions.includes(label)) return;
     usedSuggestionKey = suggestionKey;
-    if (replyInputEl) replyInputEl.value = label;
-    replyText = label;
+    const text = replyForSuggestion(label, suggestedReplyText);
+    if (replyInputEl) replyInputEl.value = text;
+    replyText = text;
     await send();
   }
 
@@ -1548,15 +1673,23 @@
     const content = threadContent;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     let lastHeight = content.offsetHeight;
+    // The scroller itself changes height when the strip above it or the area
+    // pinned under it does (a sync strip or suggested replies appear or go,
+    // the message box grows).
+    // A tall thread's content box does not change then, so it is watched too.
+    let lastViewport = el.clientHeight;
     const observer = new ResizeObserver(() => {
       const height = content.offsetHeight;
-      if (height === lastHeight) return;
+      const viewport = el.clientHeight;
+      if (height === lastHeight && viewport === lastViewport) return;
       lastHeight = height;
+      lastViewport = viewport;
       if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
       if (restoreScrollPending) return;
       el.scrollTop = el.scrollHeight;
     });
     observer.observe(content);
+    observer.observe(el);
     return () => observer.disconnect();
   });
 
@@ -1607,6 +1740,16 @@
     <div class="drop-overlay" data-testid="composer-drop-overlay">
       <div class="drop-overlay-card">Drop files to attach</div>
     </div>
+  {/if}
+  {#if aboveMessages && !headerOnly}
+    <!--
+      The host's strip (a bot's file sync): directly under the header, full
+      width, above the scroller and outside its scroll flow, so it stays in
+      view. When it appears or goes the scroller changes height; the effect
+      that holds the bottom keeps a reader at the newest message there, and
+      leaves a reader who scrolled up where they are.
+    -->
+    <div class="conversation-strip" data-testid="conversation-strip">{@render aboveMessages()}</div>
   {/if}
   <div class="conversation-body">
     <div class="dm-thread-wrap">
@@ -1820,7 +1963,7 @@
               time={row.timeLabel}
             />
           {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
-            {@const rich = richContentForMessage(msg)}
+            {@const rich = richForMessage(msg)}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -1909,6 +2052,7 @@
                       ondecision={handleDecision}
                       {answeredQuestionIds}
                       {answeredChoices}
+                      connections={cardsForMessage(msg)}
                     />
                   {/if}
                   {#if msg.details?.trim()}
@@ -1936,6 +2080,33 @@
                     {onreleaseurl}
                   />
                 </div>
+                {#if msg.eventId === suggestionsEventId && visibleSuggestions.length > 0 && !composerLocked}
+                  <!--
+                    The bot's suggested replies: part of this message, under
+                    its bubble, only for the bot's newest message. A click
+                    sends the text as the person's reply. With two or more,
+                    a last chip says other answers are fine and puts the
+                    cursor in the box. Only the bot's own suggestions show.
+                  -->
+                  <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
+                    {#each visibleSuggestions as label (label)}
+                      <button
+                        type="button"
+                        class="suggested-reply"
+                        data-testid="suggested-reply"
+                        onclick={() => void sendSuggestion(label)}
+                      >{label}</button>
+                    {/each}
+                    {#if showSuggestionOther}
+                      <button
+                        type="button"
+                        class="suggested-reply suggested-reply-other"
+                        data-testid="suggested-reply-other"
+                        onclick={chooseOtherSuggestion}
+                      >{SUGGESTION_OTHER_LABEL}</button>
+                    {/if}
+                  </div>
+                {/if}
                 {#if (msg.replyCount ?? 0) > 0}
                   {@const preview = replyMetaFor(msg)}
                   <button
@@ -2016,16 +2187,22 @@
                       />
                     {/if}
                   </span>
-                  <button
-                    type="button"
-                    class="dm-quick-react-btn dm-quick-reply"
-                    data-testid="message-reply-quick"
-                    aria-label="Reply in thread"
-                    title="Reply in thread"
-                    onclick={() => openReply(msg.eventId)}
-                  >
-                    Reply
-                  </button>
+                  {#if onreply}
+                    <!-- Offered only where the host opens threads. A
+                         one-to-one conversation with a bot shows replies in
+                         line and passes no handler: a thread opened there was
+                         empty on an answer and showed a root twice. -->
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-reply"
+                      data-testid="message-reply-quick"
+                      aria-label="Reply in thread"
+                      title="Reply in thread"
+                      onclick={() => openReply(msg.eventId)}
+                    >
+                      Reply
+                    </button>
+                  {/if}
                   {#if copyableText(msg, "body")}
                     <button
                       type="button"
@@ -2065,24 +2242,6 @@
           {/if}
         {/each}
         {#if belowMessages}{@render belowMessages()}{/if}
-        {#if visibleSuggestions.length > 0 && !composerLocked}
-          <div class="suggested-replies" data-testid="suggested-replies" role="group" aria-label="Suggested replies">
-            {#each visibleSuggestions as label (label)}
-              <button
-                type="button"
-                class="suggested-reply"
-                data-testid="suggested-reply"
-                onclick={() => void sendSuggestion(label)}
-              >{label}</button>
-            {/each}
-            <button
-              type="button"
-              class="suggested-reply suggested-reply-other"
-              data-testid="suggested-reply-other"
-              onclick={chooseOtherSuggestion}
-            >{SUGGESTION_OTHER_LABEL}</button>
-          </div>
-        {/if}
         {/if}
       </div>
       </div>
@@ -2101,6 +2260,13 @@
   </div>
 
   {#if !headerOnly}
+  <!--
+    Pinned under the thread: the message box. It does not scroll with the
+    messages. When it grows or shrinks the scroller changes height; the effect
+    that holds the bottom keeps a reader at the newest message there, and
+    leaves a reader who scrolled up where they are. A bot's suggested replies
+    are not pinned here: they are part of the bot's message, in the thread.
+  -->
   <div class="dm-reply" class:is-locked={composerLocked}>
     <div class="dm-reply-composer">
       {#if showMentionPicker}
@@ -2340,6 +2506,12 @@
        for WebKit to take the hit. */
     background: color-mix(in srgb, var(--t1, #111) 1%, transparent);
     pointer-events: auto;
+  }
+
+  /* The host's strip under the header: the pane's full width, above the scroller. */
+  .conversation-strip {
+    flex: 0 0 auto;
+    min-width: 0;
   }
 
   .conversation-body {
@@ -3378,11 +3550,13 @@
     cursor: default;
   }
 
+  /* A message's suggested replies: under its bubble, in the message column. */
   .suggested-replies {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    margin: 4px 0 12px 44px;
+    margin: 6px 0 2px;
+    max-width: 100%;
   }
   .suggested-reply {
     font: inherit;

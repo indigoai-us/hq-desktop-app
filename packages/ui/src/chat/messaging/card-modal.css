@@ -1,0 +1,776 @@
+/*
+ * The modal a card opens, and the pieces a flow inside it is built from.
+ *
+ * The connection card at full size: brand wallpaper, scrim, dark glass. The
+ * panel takes the New Bot takeover card's corner, border and shadow; the
+ * buttons are the connection card's. Like both it is dark on art in the
+ * light and the dark app theme alike, so every color is set here for a dark
+ * surface and none is a theme variable.
+ *
+ * Plain classes, not scoped styles: the body and the footer are written by
+ * whoever opens the modal, and their markup has to pick these up.
+ *
+ * Readability does not depend on the art. Words sit on the glass panel (0.8
+ * over the scrim) or on a button with its own fill, the same rule as the
+ * card. Change the scrim, the glass or an ink together, never one alone.
+ *
+ * Blur budget (scripts/perf-budget-contract.test.ts). Two surfaces keep a
+ * backdrop blur, both allowlisted there: the title plate and the glass
+ * panel, over the modal's own still art, for as long as a person has the
+ * modal open. Nothing else here blurs: the full-window layer is a plain
+ * scrim, and the close button and the quiet buttons carry their frost as
+ * extra alpha in their own fill.
+ */
+
+.card-modal-layer {
+  position: fixed;
+  /* Above the conversation, the sidebar, the pinned widget, the takeover (90)
+     and the attachment tray. Below the app's confirm dialog (40000), which a
+     flow in here may open. */
+  z-index: 9000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  /* A plain scrim. The layer covers the whole window, so a blur here would
+     blur every pixel of the app behind the modal on every frame. */
+  background: rgba(9, 9, 11, 0.6);
+  animation: card-modal-fade 160ms ease-out both;
+}
+
+.card-modal {
+  --cm-ink: #fafafa;
+  --cm-muted: rgba(250, 250, 250, 0.76);
+  --cm-faint: rgba(250, 250, 250, 0.56);
+  --cm-line: rgba(255, 255, 255, 0.14);
+  --cm-accent: #c4a5ff;
+  --cm-ok: #4ade80;
+  --cm-warn: #fcd34d;
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(560px, 100%);
+  max-height: min(80vh, 100%);
+  min-height: 0;
+  padding: 6px;
+  overflow: hidden;
+  border: 1px solid var(--cm-line);
+  border-radius: 18px;
+  background: #09090b;
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: var(--cm-ink);
+  color-scheme: dark;
+  font-family:
+    "Geist",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  outline: none;
+  animation: card-modal-arrive 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.card-modal *,
+.card-modal *::before,
+.card-modal *::after {
+  box-sizing: border-box;
+}
+
+.card-modal-art {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+/* The scrim: darkest at the edges, like the takeover's shade. */
+.card-modal-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at center, rgba(9, 9, 11, 0), rgba(9, 9, 11, 0.34)),
+    rgba(9, 9, 11, 0.16);
+}
+
+/* The hero: the art, with the card's icon and title on a glass plate. */
+.card-modal-hero {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 108px;
+  padding: 0 0 2px 2px;
+}
+
+.card-modal-plate {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 14px 9px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(17, 17, 19, 0.68);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.card-modal-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(9, 9, 11, 0.46);
+  color: var(--cm-ink);
+}
+
+/* Slack's mark is in Slack's own colour (ConnectionCardIcon), so its box is
+   a light tile, the same tile a brand mark gets on the card. */
+.card-modal-icon[data-icon="slack"] {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: #fff;
+}
+
+.card-modal-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.card-modal-title {
+  margin: 0;
+  overflow: hidden;
+  color: var(--cm-ink);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One quiet line under the title: an app's website domain. */
+.card-modal-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--cm-muted);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The step indicator: the takeover's small squares, and the step's name. */
+.card-modal-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.card-modal-progress-marks {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.card-modal-progress-marks span {
+  width: 12px;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.card-modal-progress-marks span.is-done {
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.card-modal-progress-marks span.is-current {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.card-modal-progress-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cm-muted);
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-modal-close {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin: 2px 2px 0 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(9, 9, 11, 0.74);
+  color: rgba(250, 250, 250, 0.88);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.card-modal-close:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(9, 9, 11, 0.84);
+  color: var(--cm-ink);
+}
+
+.card-modal-close:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+/* The glass panel: the takeover card's treatment. The body scrolls inside it. */
+.card-modal-glass {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(17, 17, 19, 0.8);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+/* A fade over the first or the last visible line while more is past it. */
+.card-modal-glass::before,
+.card-modal-glass::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  right: 0;
+  height: 34px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.card-modal-glass::before {
+  top: 0;
+  background: linear-gradient(to top, rgba(17, 17, 19, 0), rgba(17, 17, 19, 0.92));
+}
+
+.card-modal-glass::after {
+  bottom: 0;
+  background: linear-gradient(to bottom, rgba(17, 17, 19, 0), rgba(17, 17, 19, 0.92));
+}
+
+.card-modal-glass[data-more-above="true"]::before,
+.card-modal-glass[data-more-below="true"]::after {
+  opacity: 1;
+}
+
+.card-modal-body {
+  flex: 1 1 auto;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  min-height: 0;
+  padding: 18px 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
+}
+
+.card-modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.card-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.card-modal-body::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.card-modal-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.card-modal-body:focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: -2px;
+  border-radius: 12px;
+}
+
+.card-modal-body p {
+  margin: 0;
+}
+
+/* The actions stand on the art, at the bottom, each with its own fill. */
+.card-modal-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 2px 2px;
+}
+
+/* ── Pieces ─────────────────────────────────────────────────────────── */
+
+/* A paragraph of quiet copy in the body. */
+.card-modal-copy {
+  margin: 0;
+  color: var(--cm-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* A short quiet note next to an action: where it opens, or where what was
+   typed goes. */
+.card-modal-hint {
+  margin: 0;
+  min-width: 0;
+  color: var(--cm-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* An action with its note on one row; the note wraps under it when narrow. */
+.card-modal-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+/* Buttons: the connection card's, a size up. */
+.card-modal-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--cm-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+
+.card-modal-btn:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* The takeover's primary action: near-white, dark words. */
+.card-modal-btn.is-primary {
+  border-color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.92);
+  color: #111113;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+.card-modal-btn.is-primary:hover:not(:disabled) {
+  border-color: #fff;
+  background: #fff;
+}
+
+.card-modal-btn.is-quiet {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(9, 9, 11, 0.74);
+  color: rgba(250, 250, 250, 0.88);
+}
+
+.card-modal-btn.is-quiet:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.4);
+  background: rgba(9, 9, 11, 0.84);
+  color: var(--cm-ink);
+}
+
+/* A smaller button, for the action at the end of a step row. */
+.card-modal-btn.is-small {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.card-modal-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* A disabled primary stays a solid button: see-through white over the art
+   would turn the color of whatever is behind it. */
+.card-modal-btn.is-primary:disabled {
+  border-color: #b4b4bb;
+  background: #b4b4bb;
+  color: #303036;
+  box-shadow: none;
+  opacity: 1;
+}
+
+.card-modal-btn:focus-visible,
+.card-modal-close:focus-visible {
+  outline: 2px solid var(--cm-accent);
+  outline-offset: 2px;
+}
+
+/* A numbered list of steps. Put CardModalStep rows inside. */
+.card-modal-step-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0 12px;
+  list-style: none;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(9, 9, 11, 0.46);
+}
+
+.card-modal-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 9px 0;
+}
+
+.card-modal-step + .card-modal-step {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.card-modal-step-num {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 50%;
+  color: var(--cm-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.card-modal-step-words {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.card-modal-step-text {
+  color: var(--cm-muted);
+  overflow-wrap: anywhere;
+}
+
+.card-modal-step-detail {
+  color: var(--cm-faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.card-modal-step-action {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A step with more under its row: the row on top, the rest lined up with
+   the words. */
+.card-modal-step[data-more="true"] {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  row-gap: 10px;
+  padding-bottom: 14px;
+}
+
+.card-modal-step-more {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.card-modal-step[data-state="current"] .card-modal-step-num {
+  border-color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.92);
+  color: #111113;
+}
+
+.card-modal-step[data-state="current"] .card-modal-step-text {
+  color: var(--cm-ink);
+  font-weight: 500;
+}
+
+.card-modal-step[data-state="done"] .card-modal-step-num {
+  border-color: color-mix(in srgb, var(--cm-ok) 60%, transparent);
+  background: color-mix(in srgb, #16a34a 22%, transparent);
+  color: var(--cm-ok);
+}
+
+.card-modal-step[data-state="todo"] .card-modal-step-text {
+  color: var(--cm-faint);
+}
+
+.card-modal-step[data-state="todo"] .card-modal-step-num {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: var(--cm-faint);
+}
+
+/* One line saying what is happening: working, done, or a problem. */
+.card-modal-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--cm-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.card-modal-status-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 19px;
+}
+
+.card-modal-status[data-kind="done"] {
+  color: var(--cm-ok);
+}
+
+.card-modal-status[data-kind="problem"] {
+  color: var(--cm-warn);
+}
+
+.card-modal-spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--cm-accent);
+  border-radius: 50%;
+  animation: card-modal-spin 0.8s linear infinite;
+}
+
+/* A single-line text field with its label, and a line for what is wrong. */
+.card-modal-field {
+  display: grid;
+  gap: 6px;
+}
+
+.card-modal-field-label {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.card-modal-field-input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(9, 9, 11, 0.5);
+  color: var(--cm-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.3;
+  transition: border-color 0.12s;
+}
+
+.card-modal-field-input::placeholder {
+  color: rgba(250, 250, 250, 0.44);
+}
+
+.card-modal-field-input:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.36);
+}
+
+.card-modal-field-input:focus-visible {
+  border-color: var(--cm-accent);
+  outline: 2px solid var(--cm-accent);
+  outline-offset: 1px;
+}
+
+.card-modal-field-input:disabled {
+  opacity: 0.55;
+}
+
+.card-modal-field[data-invalid="true"] .card-modal-field-input {
+  border-color: var(--cm-warn);
+}
+
+.card-modal-field-hint {
+  margin: 0;
+  color: var(--cm-faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.card-modal-field-error {
+  margin: 0;
+  color: var(--cm-warn);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Words for a screen reader only. */
+.card-modal-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes card-modal-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes card-modal-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes card-modal-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A narrow window: nearly full width, a shorter hero, actions that wrap. */
+@media (max-width: 520px) {
+  .card-modal-layer {
+    padding: 10px;
+  }
+
+  .card-modal {
+    max-height: min(88vh, 100%);
+    border-radius: 14px;
+  }
+
+  .card-modal-hero {
+    min-height: 88px;
+  }
+
+  .card-modal-plate,
+  .card-modal-glass {
+    border-radius: 9px;
+  }
+
+  .card-modal-body {
+    padding: 14px;
+  }
+
+  .card-modal-step {
+    flex-wrap: wrap;
+  }
+
+  .card-modal-step-words {
+    flex-basis: calc(100% - 32px);
+  }
+
+  .card-modal-step-action {
+    margin-left: 32px;
+  }
+
+  .card-modal-step[data-more="true"] {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .card-modal-step[data-more="true"] .card-modal-step-action {
+    grid-column: 2;
+    margin-left: 0;
+  }
+
+  .card-modal-step-more {
+    grid-column: 1 / -1;
+  }
+
+  .card-modal-foot .card-modal-btn {
+    flex: 1 1 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-modal-layer,
+  .card-modal {
+    animation: none;
+  }
+
+  .card-modal-btn,
+  .card-modal-close,
+  .card-modal-field-input,
+  .card-modal-glass::before,
+  .card-modal-glass::after {
+    transition: none;
+  }
+
+  /* Still says "working", without turning. */
+  .card-modal-spinner {
+    animation: none;
+    border-top-color: rgba(255, 255, 255, 0.2);
+    border-right-color: var(--cm-accent);
+    border-bottom-color: var(--cm-accent);
+  }
+}

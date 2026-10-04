@@ -6,6 +6,11 @@
  * retired company-header "Add bot" button and its create_agent card, and the
  * New bot flow's Cloud option — which creates a company-hosted bot by running
  * the server's own card sequence headlessly and landing in the bot's channel.
+ *
+ * The full-window New Bot takeover replaces that flow only for a company the
+ * `agents.desktop-agent-creation` flag is on for. Every test above the
+ * "New Bot takeover" block runs with no such company, which is the app's
+ * state for every company without the flag.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -178,6 +183,8 @@ function adapter(
     },
     agents: {
       getProvisionOptions: async () => ok(CLOUD_PROVISION_OPTIONS),
+      // The New Bot takeover's waiting screen reads the bot's status.
+      getStatus: async () => ok({ setupState: { phase: "provisioning" } }),
     },
     meetings: {
       listUpcoming: async () => ok([]),
@@ -193,6 +200,7 @@ function adapter(
     shell: {
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
     },
+    appShell: { logToFile: async () => ok(undefined) },
   } as unknown as PlatformAdapter;
 }
 
@@ -204,6 +212,8 @@ afterEach(async () => {
   component = null;
   host?.remove();
   takePendingChannelOpen();
+  // The New Bot takeover tests read what the shell stored for a bot.
+  window.localStorage?.clear?.();
 });
 
 async function settle(times = 8): Promise<void> {
@@ -603,6 +613,543 @@ describe("DesktopApp New bot: the Cloud option", () => {
     clickAnywhere('[data-testid="create-bot-next"]');
     await settle(10);
     expect(document.querySelector('[data-testid="chat-bot-where-cloud"]')).toBeNull();
+  }, 30_000);
+});
+
+/**
+ * The full-window New Bot flow is for companies with the
+ * `agents.desktop-agent-creation` flag. The shell reads the flag per company
+ * (`identity.hasCompanyFeature`), and a company without it keeps the "+"
+ * modal's own create, exactly as the "Cloud option" tests above describe it.
+ */
+describe("DesktopApp New bot takeover", () => {
+  const NEW_BOT_FLAG = "agents.desktop-agent-creation";
+  const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
+  const BOT_CONNECTION_CARDS_STORAGE_KEY = "hq.chat.botConnectionCards.v1";
+  const BOT_HELLO_ASKED_STORAGE_KEY = "hq.chat.botHelloAskedAt.v1";
+
+  const GLOBEX_WORKSPACE = {
+    ...ACME_WORKSPACE,
+    slug: "globex",
+    displayName: "Globex",
+    cloudUid: "cmp_globex",
+  } as const;
+
+  /** What production answers for `team:spend/add_agent` on a paid company. */
+  const OPENED = {
+    cardId: "team:spend",
+    actionId: "add_agent",
+    state: "open",
+    channelId: "chn_acme",
+    focusCardId: "create_agent",
+  };
+
+  /** The three turns of the server's create_agent card, as the "+" modal's create walks them. */
+  function cardTurns(companyUid: string) {
+    const turn = (cardId: string, fields: unknown[], actionId: string) => ({
+      v: 1,
+      type: "lifecycle_card",
+      cardId,
+      kind: "create_agent",
+      companyUid,
+      state: "open",
+      title: "Create an agent",
+      fields,
+      actions: [{ id: actionId, label: "Continue", style: "primary" }],
+      viewer: viewerOwner,
+    });
+    return [
+      turn(
+        "card_create_agent_1",
+        [
+          { id: "name", label: "Agent name", control: "text", required: true, value: "" },
+          { id: "handle", label: "Handle", control: "text", required: true, value: "" },
+        ],
+        "continue",
+      ),
+      turn(
+        "card_create_agent_2",
+        [
+          {
+            id: "runtime",
+            label: "Runtime",
+            control: "radio",
+            required: true,
+            value: "codex",
+            options: [
+              { id: "codex", label: "Codex" },
+              { id: "grok", label: "Grok" },
+            ],
+          },
+        ],
+        "continue",
+      ),
+      turn(
+        "card_create_agent_3",
+        [
+          { id: "runtime", label: "Runtime", control: "readonly", required: true, value: "codex" },
+          {
+            id: "size",
+            label: "Size",
+            control: "radio",
+            required: true,
+            value: "basic",
+            options: [{ id: "basic", label: "Basic" }],
+          },
+        ],
+        "create",
+      ),
+    ];
+  }
+
+  /** A server that walks the card's turns and mints `agt_polar` in `chn_polar`. */
+  function cardWalkServer(companyUid = "cmp_acme") {
+    const turns = cardTurns(companyUid);
+    let posted = [turns[0]!];
+    const runCompanyTabAction = vi.fn(async () =>
+      ok({ cardId: "card_create_agent_1", actionId: "add_agent", state: "open", channelId: "chn_acme" }),
+    );
+    const runCardAction = vi.fn(
+      async (args: { cardId: string; actionId: string; values?: Record<string, string> }) => {
+        if (args.cardId === "card_create_agent_1") {
+          posted = [...posted, turns[1]!];
+          return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+        }
+        if (args.cardId === "card_create_agent_2") {
+          posted = [...posted, turns[2]!];
+          return ok({ cardId: args.cardId, actionId: args.actionId, state: "done" });
+        }
+        return ok({
+          cardId: args.cardId,
+          actionId: args.actionId,
+          state: "done",
+          agentChannelId: "chn_polar",
+          agentUid: "agt_polar",
+        });
+      },
+    );
+    const fetchChannel = vi.fn(async () =>
+      ok({
+        messages: posted.map((card, i) => systemMessage(`evt_${i}`, card)).reverse(),
+        nextCursor: null,
+      }),
+    );
+    const getCompanyTab = vi.fn(async (_uid: string, tab: string) =>
+      ok(tab === "team" ? teamTab(true) : { tab, companyUid, viewer: viewerOwner, sections: [] }),
+    );
+    return { runCompanyTabAction, runCardAction, fetchChannel, getCompanyTab };
+  }
+
+  function stored(key: string): string {
+    return window.localStorage.getItem(key) ?? "";
+  }
+
+  async function openNewBot(): Promise<void> {
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
+    );
+    clickAnywhere('[data-testid="chat-new-message"]');
+    await settle(10);
+    clickAnywhere('[data-testid="chat-create-new-bot"]');
+    await settle(10);
+  }
+
+  /** The "+" modal's Cloud path: kind → home (Cloud) → details → Create. */
+  async function createInModal(name: string): Promise<void> {
+    clickAnywhere('[data-testid="create-bot-next"]');
+    await settle(10);
+    clickAnywhere('[data-testid="chat-bot-where-cloud"]');
+    await settle(10);
+    clickAnywhere('[data-testid="create-bot-next"]');
+    await settle(10);
+    const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    nameField.value = name;
+    nameField.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(10);
+    clickAnywhere('[data-testid="chat-bot-create"]');
+  }
+
+  /** The takeover: name → Continue → Create. */
+  async function createInTakeover(name: string): Promise<void> {
+    const input = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    input.value = name;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(10);
+    clickAnywhere('[data-testid="new-bot-continue-name"]');
+    await settle(10);
+    await vi.waitFor(() =>
+      expect(
+        document.querySelector<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.disabled,
+      ).toBe(false),
+    );
+    clickAnywhere('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+  }
+
+  it("opens the dark takeover before a cloud create action can run", async () => {
+    const runCompanyTabAction = vi.fn();
+    const hasCompanyFeature = vi.fn(async () => true);
+    mountApp(
+      adapter({ runCompanyTabAction }, { hasCompanyFeature }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE] },
+    );
+    await openNewBot();
+
+    // The flag was read for the one company a cloud bot can be made in.
+    expect(hasCompanyFeature).toHaveBeenCalledWith(NEW_BOT_FLAG, "cmp_acme");
+    const takeover = document.querySelector<HTMLElement>('[data-testid="new-bot-takeover"]');
+    expect(takeover?.getAttribute("role")).toBe("dialog");
+    expect(takeover?.getAttribute("aria-modal")).toBe("true");
+    expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
+    expect(takeover?.querySelectorAll(".new-bot-takeover-card")).toHaveLength(1);
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeNull();
+    expect(runCompanyTabAction).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("a company without the flag gets the in-modal flow: no takeover", async () => {
+    const hasCompanyFeature = vi.fn(async () => false);
+    mountApp(
+      adapter({ runCompanyTabAction: vi.fn() }, { hasCompanyFeature }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE] },
+    );
+    await openNewBot();
+
+    expect(hasCompanyFeature).toHaveBeenCalledWith(NEW_BOT_FLAG, "cmp_acme");
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  }, 30_000);
+
+  it("a flag read that fails gets the in-modal flow: no takeover", async () => {
+    const hasCompanyFeature = vi.fn(async (): Promise<boolean> => {
+      throw new Error("offline");
+    });
+    mountApp(
+      adapter({ runCompanyTabAction: vi.fn() }, { hasCompanyFeature }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE] },
+    );
+    await openNewBot();
+
+    expect(hasCompanyFeature).toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  }, 30_000);
+
+  it("a host that cannot read company flags gets the in-modal flow: no takeover", async () => {
+    // No `hasCompanyFeature` on the adapter at all.
+    mountApp(adapter({ runCompanyTabAction: vi.fn() }), COMPANY_ROW, {
+      companies: [ACME_WORKSPACE],
+    });
+    await openNewBot();
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  }, 30_000);
+
+  it("reads each company's flag once, however often the '+' modal is opened", async () => {
+    const hasCompanyFeature = vi.fn(async (_flag: string, companyUid: string) => companyUid === "cmp_globex");
+    mountApp(
+      adapter({ runCompanyTabAction: vi.fn() }, { hasCompanyFeature }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE, GLOBEX_WORKSPACE] },
+    );
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="chat-new-message"]')).toBeTruthy(),
+    );
+    await settle(10);
+    for (let i = 0; i < 4; i += 1) {
+      clickAnywhere('[data-testid="chat-new-message"]');
+      await settle(10);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle(10);
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+    }
+    const asked = hasCompanyFeature.mock.calls.map((call) => `${call[0]} ${call[1]}`).sort();
+    expect(asked).toEqual([`${NEW_BOT_FLAG} cmp_acme`, `${NEW_BOT_FLAG} cmp_globex`]);
+  }, 30_000);
+
+  it("in a mixed account, the takeover creates only in the company with the flag", async () => {
+    // Acme has no flag; Globex does. The takeover offers Globex alone, so it
+    // has no company step and its create goes to Globex.
+    const runCompanyTabAction = vi.fn(async () => ok({ ...OPENED, channelId: "chn_globex" }));
+    const runCardAction = vi.fn(async () =>
+      ok({ cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_nova" }),
+    );
+    const hasCompanyFeature = vi.fn(async (_flag: string, companyUid: string) => companyUid === "cmp_globex");
+    mountApp(
+      adapter({ runCompanyTabAction, runCardAction }, { hasCompanyFeature }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE, GLOBEX_WORKSPACE] },
+    );
+    await openNewBot();
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeTruthy();
+
+    await createInTakeover("Nova");
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledOnce());
+    expect(document.querySelector('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(runCompanyTabAction).toHaveBeenCalledWith(
+      expect.objectContaining({ companyUid: "cmp_globex", actionId: "add_agent" }),
+    );
+  }, 30_000);
+
+  it("the takeover's create sends surface, conversation and deferChannels in one action", async () => {
+    const runCompanyTabAction = vi.fn(async () => ok(OPENED));
+    const runCardAction = vi.fn(async (_args: { values?: Record<string, string> }) =>
+      ok({ cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_nova" }),
+    );
+    mountApp(
+      adapter({ runCompanyTabAction, runCardAction }, { hasCompanyFeature: async () => true }),
+      COMPANY_ROW,
+      { companies: [ACME_WORKSPACE] },
+    );
+    await openNewBot();
+    await createInTakeover("Nova");
+
+    await vi.waitFor(() => expect(runCardAction).toHaveBeenCalledOnce());
+    expect(runCardAction.mock.calls[0]![0]).toMatchObject({
+      channelId: "chn_acme",
+      cardId: "create_agent",
+      actionId: "create",
+      values: {
+        name: "Nova",
+        surface: "desktop_new_bot",
+        conversation: "dm",
+        deferChannels: "true",
+      },
+    });
+    // The bot is remembered as made in the new flow on this device.
+    await vi.waitFor(() => expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).toContain("agt_nova"));
+    expect(stored(BOT_CONNECTION_CARDS_STORAGE_KEY)).toContain("agt_nova");
+    await vi.waitFor(() =>
+      expect(document.querySelector('[data-testid="new-bot-waking-screen"]')?.textContent).toContain(
+        "Waking up Nova",
+      ),
+    );
+  }, 30_000);
+
+  it("a bot made in the takeover is asked for its first message once it can chat", async () => {
+    const runCompanyTabAction = vi.fn(async () => ok(OPENED));
+    const runCardAction = vi.fn(async () =>
+      ok({ cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_nova" }),
+    );
+    const sendDm = vi.fn(async (_uid: string, _body: string, _extras?: Record<string, unknown>) => ok({}));
+    const fetchDmThread = vi.fn(async () => ok({ messages: [], nextCursor: null }));
+    const value = adapter(
+      { runCompanyTabAction, runCardAction, sendDm, fetchDmThread },
+      { hasCompanyFeature: async () => true },
+    );
+    (value.agents as unknown as Record<string, unknown>).getStatus = async () =>
+      ok({ setupState: { phase: "ready" } });
+    mountApp(value, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await openNewBot();
+    await createInTakeover("Nova");
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendDm.mock.calls[0]![0]).toBe("agt_nova");
+    expect(sendDm.mock.calls[0]![2]).toEqual({
+      audience: "agent",
+      idempotencyKey: "new-bot-hello-agt_nova",
+    });
+    // B-8: the time of the request is kept on this device, so the bot's first
+    // message can be found later on a page that leaves the request out.
+    const before = Date.now();
+    await vi.waitFor(() => expect(stored(BOT_HELLO_ASKED_STORAGE_KEY)).toContain("agt_nova"));
+    const kept = JSON.parse(stored(BOT_HELLO_ASKED_STORAGE_KEY)) as {
+      accounts: Record<string, { asked: Record<string, number>; made: string[] }>;
+    };
+    // Kept for the account that is signed in, which is also recorded as the bot's maker here.
+    expect(Object.keys(kept.accounts)).toHaveLength(1);
+    const mine = Object.values(kept.accounts)[0]!;
+    expect(mine.made).toEqual(["agt_nova"]);
+    const asked = mine.asked.agt_nova!;
+    expect(asked).toBeGreaterThan(before - 60_000);
+    expect(asked).toBeLessThanOrEqual(Date.now());
+  }, 30_000);
+
+  it("a bot found after a create with no answer is registered like one that answered: connection record and first message (round 4, item 2)", async () => {
+    // The create's answer is lost, but the request made the bot. The sidebar
+    // finds it on the company's list and takes it up. The shell never saw an
+    // ok answer for it, and must still treat it as a bot made in this flow.
+    const runCompanyTabAction = vi.fn(async () => ok(OPENED));
+    const runCardAction = vi.fn(async (): Promise<never> => {
+      throw new Error("The request timed out.");
+    });
+    const sendDm = vi.fn(async (_uid: string, _body: string, _extras?: Record<string, unknown>) => ok({}));
+    const fetchDmThread = vi.fn(async () => ok({ messages: [], nextCursor: null }));
+    const value = adapter(
+      { runCompanyTabAction, runCardAction, sendDm, fetchDmThread },
+      { hasCompanyFeature: async () => true },
+    );
+    const agents = value.agents as unknown as Record<string, unknown>;
+    agents.getStatus = async () => ok({ setupState: { phase: "ready" } });
+    // The list read at the press has no Nova. Once the create was sent, it does.
+    const listMobileRoster = vi.fn(async (companyUid: string) =>
+      ok({
+        agents: runCardAction.mock.calls.length
+          ? [{ agentUid: "agt_nova", uid: "agt_nova", companyUid, name: "nova", displayName: "Nova", slug: "nova", setupPhase: "provisioning" }]
+          : [],
+      }),
+    );
+    agents.listMobileRoster = listMobileRoster;
+    mountApp(value, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await openNewBot();
+    await createInTakeover("Nova");
+
+    // One look, ten seconds after the lost answer.
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled(), { timeout: 25_000, interval: 100 });
+    expect(runCardAction).toHaveBeenCalledTimes(1);
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendDm.mock.calls[0]![0]).toBe("agt_nova");
+    expect(sendDm.mock.calls[0]![2]).toEqual({
+      audience: "agent",
+      idempotencyKey: "new-bot-hello-agt_nova",
+    });
+    expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).toContain("agt_nova");
+    expect(stored(BOT_CONNECTION_CARDS_STORAGE_KEY)).toContain("agt_nova");
+  }, 45_000);
+
+  it("the in-modal create sends none of surface, conversation or deferChannels, and opens the new bot's channel", async () => {
+    const server = cardWalkServer();
+    const sendDm = vi.fn(async () => ok({}));
+    const fetchDmThread = vi.fn(async () => ok({ messages: [], nextCursor: null }));
+    const hasCompanyFeature = vi.fn(async () => false);
+
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    try {
+      mountApp(
+        adapter({ ...server, sendDm, fetchDmThread }, { hasCompanyFeature }),
+        COMPANY_ROW,
+        { companies: [ACME_WORKSPACE] },
+      );
+      await openNewBot();
+      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+      await createInModal("Polar");
+
+      // The shell opens the bot's channel, as it does on main.
+      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      // The card is walked turn by turn. No turn carries the takeover's values.
+      expect(server.runCardAction).toHaveBeenCalledTimes(3);
+      for (const call of server.runCardAction.mock.calls) {
+        const values = call[0].values ?? {};
+        expect(values).not.toHaveProperty("surface");
+        expect(values).not.toHaveProperty("conversation");
+        expect(values).not.toHaveProperty("deferChannels");
+      }
+      expect(server.runCardAction.mock.calls[0]![0]).toMatchObject({
+        cardId: "card_create_agent_1",
+        actionId: "continue",
+        values: { name: "Polar", handle: "polar" },
+      });
+      expect(server.runCardAction.mock.calls[2]![0]).toMatchObject({
+        cardId: "card_create_agent_3",
+        actionId: "create",
+        values: { size: "basic", authMode: "subscription" },
+      });
+      // The modal closed and no takeover or waiting screen took its place.
+      expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeNull();
+      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+      expect(document.querySelector('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    }
+  }, 30_000);
+
+  it("a bot made in the modal gets no hello request and is not kept as a new-flow bot", async () => {
+    const server = cardWalkServer();
+    const sendDm = vi.fn(async () => ok({}));
+    const fetchDmThread = vi.fn(async () => ok({ messages: [], nextCursor: null }));
+    const getStatus = vi.fn(async () => ok({ setupState: { phase: "ready" } }));
+
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    try {
+      const value = adapter(
+        { ...server, sendDm, fetchDmThread },
+        { hasCompanyFeature: async () => false },
+      );
+      (value.agents as unknown as Record<string, unknown>).getStatus = getStatus;
+      mountApp(value, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+      await openNewBot();
+      await createInModal("Polar");
+      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      await settle(20);
+
+      // No first-message request on the bot-only lane, and no check for one.
+      expect(sendDm).not.toHaveBeenCalled();
+      expect(fetchDmThread).not.toHaveBeenCalled();
+      // Not a new-flow bot on this device: no sync-strip first download, no
+      // connection cards, no waking row, no hidden setup channel.
+      expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).not.toContain("agt_polar");
+      expect(stored(BOT_CONNECTION_CARDS_STORAGE_KEY)).not.toContain("agt_polar");
+      expect(stored("hq.chat.botSetupChannels.v1")).not.toContain("chn_polar");
+      expect(document.querySelector('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+      expect(document.querySelector('[data-conversation-id="dm:agt_polar"]')).toBeNull();
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    }
+  }, 30_000);
+
+  it("in a flagged company, 'create a local bot instead' then Cloud still uses the in-modal create", async () => {
+    const server = cardWalkServer();
+    const sendDm = vi.fn(async () => ok({}));
+    const local = adapter({ ...server, sendDm }, { hasCompanyFeature: async () => true });
+    (local as { bots?: unknown }).bots = {
+      list: async () => ok({ bots: [] }),
+      create: async () => ok({}),
+      start: async () => ok({}),
+      stop: async () => ok({}),
+      remove: async () => ok({}),
+    };
+
+    const opened: string[] = [];
+    const onOpen = (event: Event) => {
+      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
+    };
+    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    try {
+      mountApp(local, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+      await openNewBot();
+      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeTruthy();
+      clickAnywhere('[data-testid="new-bot-takeover-local"]');
+      await settle(10);
+      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+      expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+
+      await createInModal("Polar");
+      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      expect(server.runCardAction).toHaveBeenCalledTimes(3);
+      for (const call of server.runCardAction.mock.calls) {
+        const values = call[0].values ?? {};
+        expect(values).not.toHaveProperty("surface");
+        expect(values).not.toHaveProperty("conversation");
+        expect(values).not.toHaveProperty("deferChannels");
+      }
+      await settle(20);
+      expect(sendDm).not.toHaveBeenCalled();
+      expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).not.toContain("agt_polar");
+    } finally {
+      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
+    }
   }, 30_000);
 });
 

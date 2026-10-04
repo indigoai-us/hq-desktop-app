@@ -8,6 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.
+
+- New bot: for companies that have the new bot screen turned on, choosing New bot from the + menu now opens a full-window screen for creating a cloud bot. You pick the company, give the bot a name, choose its brain and machine size, and wait on a "Waking up" screen until the bot can chat. Cancel works at every step and removes a bot that was already being made. "Create a local bot instead" is on the same screen. If your plan cannot host another bot, the screen says so and links to the upgrade options. Companies without it keep the New bot steps in the + menu, which work as before.
+- A cloud bot made on the new screen opens in a direct message with you instead of its own channel. A direct message with any bot now reads as one conversation: the bot's answers show in line instead of under "1 reply", and the setup request the app sends to the bot for you is not shown.
+- A cloud bot's direct message shows connection cards under its messages for Slack and the other apps your company uses. Connect Slack opens in a window over the chat. Writing "Connect more tools" brings the cards back. Suggested replies appear under the bot's newest message.
+- While a cloud bot's copy of your company files is syncing, a slim strip under the header of its direct message shows how far along it is, and goes away once the files are up to date.
+- While a bot works on an answer in its direct message, the "working" row shows what the bot is doing, and it goes away when the answer arrives.
+- App logos on connection cards are the app's own brand mark, shipped inside HQ. An app HQ has no mark for shows a plain app icon. No logo is loaded from another site.
+
+## [0.10.388] — 2026-10-04
+
 - Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
 - First-launch telemetry can record whether sign-in was reached or which setup, update, or app-exit path diverted it; the measurement is off by default.
 - Updater restarts now carry a short-lived, version-checked marker through the GUI restart fallback when start-at-login is disabled.

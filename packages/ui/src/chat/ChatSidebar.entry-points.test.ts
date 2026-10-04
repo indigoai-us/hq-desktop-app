@@ -9,6 +9,11 @@
  * Every AI teammate is a bot. One "New bot" row opens the create-bot flow
  * (kind → home → details); the Home step picks Local (this Mac) or Cloud
  * (company bot, today's create-agent team action).
+ *
+ * The full-window New Bot takeover replaces that flow only when the host
+ * read the `agents.desktop-agent-creation` flag as on for at least one
+ * company (`newBotCompanyUids`), and it lists only those companies. Local
+ * creation keeps the create-bot flow and is linked from the takeover.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -18,6 +23,8 @@ import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
+import { takePendingChannelOpen } from "./open-target.js";
+import { takePendingConversation } from "./pending-conversation.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -55,8 +62,18 @@ const seedDirectory = [
 
 const okTarget: EntryPointResult = {
   ok: true,
-  target: { channelId: "setup", cardId: "card_create_company_2", cardKind: null },
+  target: {
+    channelId: "setup",
+    cardId: "card_create_company_2",
+    cardKind: null,
+  },
 };
+
+/**
+ * The "+" modal's own cloud create, for tests that drive the takeover. The
+ * takeover has its own create (`oncreatenewbot`) and must never run this one.
+ */
+const modalCreate = vi.fn(async (): Promise<EntryPointResult> => okTarget);
 
 const CLOUD_PROVISION_OPTIONS: AgentProvisionOptionsView = {
   defaultInstanceType: "t4g.medium",
@@ -96,7 +113,7 @@ function click(selector: string): void {
   el.click();
 }
 
-/** Kind step → Home step (Blank is preselected). */
+/** Kind step → Home step (Blank is preselected) for the unchanged local flow. */
 async function toHomeStep(): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
@@ -120,12 +137,16 @@ function mountSidebar(props: Record<string, unknown>): void {
 }
 
 async function openModal(): Promise<void> {
-  host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+  host
+    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!
+    .click();
   await settle();
 }
 
 beforeEach(() => {
   window.localStorage?.clear?.();
+  takePendingChannelOpen();
+  modalCreate.mockClear();
   host = document.createElement("div");
   host.className = "desktop-shell chat-shell";
   document.body.appendChild(host);
@@ -136,9 +157,12 @@ afterEach(async () => {
   component = null;
   host?.remove();
   document
-    .querySelectorAll('[data-testid="chat-create-modal"], [data-testid="chat-scope-menu"]')
+    .querySelectorAll(
+      '[data-testid="chat-create-modal"], [data-testid="chat-scope-menu"]',
+    )
     .forEach((node) => node.remove());
   window.localStorage?.clear?.();
+  takePendingChannelOpen();
 });
 
 describe("ChatSidebar lifecycle entry points", () => {
@@ -169,6 +193,10 @@ describe("ChatSidebar lifecycle entry points", () => {
       "chat-new-message",
     );
   });
+
+  // ── The "+" modal's Cloud option (main's flow) ──────────────────────────
+  // No company has the New Bot flag here: `newBotCompanyUids` is not passed,
+  // which is what a host shows before it has an answer and when it has none.
 
   it("New bot with only Cloud available opens on Cloud and creates in the one company", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
@@ -365,11 +393,272 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(error?.textContent).toContain("Only owners can add agents.");
   });
 
+  // ── The full-window New Bot takeover ───────────────────────────────────
+
+  it("New Bot in the plus menu opens the dark cloud takeover", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(async () => okTarget);
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await openModal();
+    const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
+    expect(row?.textContent).toContain("New bot");
+    row!.click();
+    await settle();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    const takeover = q('[data-testid="new-bot-takeover"]');
+    expect(takeover?.getAttribute("role")).toBe("dialog");
+    expect(takeover?.getAttribute("aria-modal")).toBe("true");
+    expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain(
+      "url(",
+    );
+    expect(takeover?.textContent).toContain("Enter a name");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
+    expect(oncreateagent).not.toHaveBeenCalled();
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+  });
+
+  it("offers the upgrade card instead of a waking screen when the company's plan cannot host a bot", async () => {
+    // Regression: the upgrade destination (a card, no bot) used to start the
+    // Waking up screen for a bot that was never created.
+    const oncreateagent = vi.fn(
+      async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: { channelId: "chn_indigo", cardId: "upgrade_plan", cardKind: null },
+      }),
+    );
+    const opened: Array<Record<string, unknown>> = [];
+    const onOpen = (event: Event) => {
+      opened.push((event as CustomEvent).detail as Record<string, unknown>);
+    };
+    window.addEventListener("hq:open-channel", onOpen);
+    try {
+      mountSidebar({
+        companies: [INDIGO],
+        // The modal's own create is a different function and stays unused.
+        oncreateagent: modalCreate,
+        oncreatenewbot: oncreateagent,
+        newBotCompanyUids: ["cmp_indigo"],
+      });
+      await settle();
+      await openModal();
+      click('[data-testid="chat-create-new-bot"]');
+      await settle();
+      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      name.value = "Nova";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-continue-name"]');
+      await settle();
+      click('[data-testid="new-bot-create-submit"]');
+      await settle();
+
+      expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+      expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+      const upgrade = q<HTMLElement>('[data-testid="new-bot-upgrade"]');
+      expect(upgrade?.textContent).toContain("Starter plan");
+      expect(upgrade?.textContent).toContain("create Nova");
+
+      click('[data-testid="new-bot-upgrade-open"]');
+      await settle();
+      expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+      // The sidebar's own boot-time open is `automatic`; only the person's is not.
+      const asked = opened.filter((detail) => detail.automatic !== true);
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toMatchObject({
+        channelId: "chn_indigo",
+        companyUid: "cmp_indigo",
+        focusCardId: "upgrade_plan",
+      });
+      expect(oncreateagent).toHaveBeenCalledTimes(1);
+      expect(modalCreate).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("hq:open-channel", onOpen);
+    }
+  });
+
+  it("reopens the current waking progress when its sidebar bot is clicked after close", async () => {
+    const oncreateagent = vi.fn(
+      async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: {
+          channelId: "chn_nova",
+          cardId: null,
+          cardKind: null,
+          agentUid: "agt_nova",
+        },
+      }),
+    );
+    mountSidebar({
+      companies: [INDIGO],
+      // The modal's own create is a different function and stays unused.
+      oncreateagent: modalCreate,
+      oncreatenewbot: oncreateagent,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: async () => ({
+        ok: true,
+        value: { setupState: { phase: "creating" } },
+      }),
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+
+    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    name.value = "Nova";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle();
+
+    const beforeClose = q<HTMLElement>('[data-testid="new-bot-waking-ring"]');
+    expect(beforeClose?.getAttribute("aria-valuenow")).toBe("8");
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+
+    // The bot's row is its direct message, and the channel an older server
+    // made for it never shows.
+    expect(q('[data-conversation-id="ch:chn_nova"]')).toBeNull();
+    const sidebarBot = q<HTMLButtonElement>(
+      '[data-conversation-id="dm:agt_nova"]',
+    );
+    const sidebarRing = q<HTMLElement>('[data-testid="chat-waking-bot-ring"]');
+    expect(sidebarBot?.textContent).toContain("Nova");
+    expect(sidebarRing?.style.getPropertyValue("--chat-waking-progress")).toBe(
+      "8%",
+    );
+    sidebarBot!.click();
+    await settle();
+
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain(
+      "Waking up Nova",
+    );
+    expect(
+      q('[data-testid="new-bot-waking-ring"]')?.getAttribute("aria-valuenow"),
+    ).toBe("8");
+    expect(oncreateagent).toHaveBeenCalledTimes(1);
+    expect(modalCreate).not.toHaveBeenCalled();
+  });
+
+  it("opens the bot's direct message after the live handoff, never a channel", async () => {
+    // Regression (owner walkthrough 2026-10-02): the hand-off landed in a
+    // "team channel" where the bot answered in threads. "See how sheister
+    // replies in a DM? That's the flow we want."
+    vi.useFakeTimers();
+    try {
+      const oncreateagent = vi.fn(
+        async (): Promise<EntryPointResult> => ({
+          ok: true,
+          target: {
+            channelId: "chn_nova",
+            cardId: null,
+            cardKind: null,
+            agentUid: "agt_nova",
+          },
+        }),
+      );
+      mountSidebar({
+        companies: [INDIGO],
+        seedDirectory: [],
+        // The modal's own create is a different function and stays unused.
+        oncreateagent: modalCreate,
+        oncreatenewbot: oncreateagent,
+        newBotCompanyUids: ["cmp_indigo"],
+        loadAgentStatus: async () => ({
+          ok: true,
+          value: { setupState: { phase: "ready" } },
+        }),
+      });
+      await settle();
+      await openModal();
+      click('[data-testid="chat-create-new-bot"]');
+      await settle();
+
+      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      name.value = "Nova";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-continue-name"]');
+      await settle();
+      click('[data-testid="new-bot-create-submit"]');
+      await settle(10);
+
+      await vi.advanceTimersByTimeAsync(350);
+      await settle();
+
+      expect(takePendingConversation()).toMatchObject({
+        personUid: "agt_nova",
+        displayName: "Nova",
+      });
+      expect(takePendingChannelOpen()?.channelId).not.toBe("chn_nova");
+      expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+      expect(modalCreate).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Cancel returns to the prior create surface", async () => {
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: async () => okTarget,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(document.activeElement?.getAttribute("data-testid")).toBe(
+      "chat-create-query",
+    );
+  });
+
+  it("links to the unchanged local creation flow from the takeover", async () => {
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "assistant",
+    }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: async () => okTarget,
+      newBotCompanyUids: ["cmp_indigo"],
+      oncreatebot,
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    click('[data-testid="new-bot-takeover-local"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expect(oncreatebot).not.toHaveBeenCalled();
+  });
+
   it("the company switcher ends with a New company row that runs the same flow", async () => {
     const oncreatecompany = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreatecompany });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     const menu = q('[data-testid="chat-scope-menu"]');
     expect(menu).toBeTruthy();
@@ -394,7 +683,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     );
     mountSidebar({ companies: [INDIGO], oncreatecompany });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     q<HTMLButtonElement>('[data-testid="chat-scope-new-company"]')!.click();
     await settle(10);
@@ -407,10 +698,227 @@ describe("ChatSidebar lifecycle entry points", () => {
   it("omits the switcher row without a host callback", async () => {
     mountSidebar({ companies: [INDIGO] });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     expect(q('[data-testid="chat-scope-menu"]')).toBeTruthy();
     expect(q('[data-testid="chat-scope-new-company"]')).toBeNull();
+  });
+});
+
+/**
+ * The full-window New Bot flow is for companies with the
+ * `agents.desktop-agent-creation` flag, and for no other. The host reads the
+ * flag and hands the answer down as `newBotCompanyUids`.
+ */
+describe("ChatSidebar New Bot takeover: only for companies with the flag", () => {
+  const GLOBEX = workspace("globex", "Globex", "cmp_globex");
+
+  /** Type a name in the takeover and move past its first step. */
+  async function nameTakeoverBot(name: string): Promise<void> {
+    const field = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    field.value = name;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+  }
+
+  /** The company grid's uids, in order. */
+  function takeoverCompanyUids(): string[] {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-testid="new-bot-company-grid"] [data-company-uid]',
+      ),
+    ).map((el) => el.dataset.companyUid ?? "");
+  }
+
+  it("with no flagged company, New bot opens the in-modal step and there is no takeover", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(async () => okTarget);
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: [],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+
+    // Main's flow: the modal stays, on its own first bot step.
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+
+    // And its Cloud option creates through the modal's own create.
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledTimes(1);
+    expect(oncreateagent).toHaveBeenCalledWith(
+      "cmp_acme",
+      expect.objectContaining({ runtime: "codex", size: "basic" }),
+    );
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+  });
+
+  it("does not offer the takeover when the host has no takeover create", async () => {
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  });
+
+  it("with one flagged company, opens the takeover for that company alone", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(
+      async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_nova" },
+      }),
+    );
+    mountSidebar({
+      // Two companies a cloud bot can be made in; only Acme has the flag.
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_acme"],
+      loadAgentStatus: async () => ({
+        ok: true,
+        value: { setupState: { phase: "creating" } },
+      }),
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+
+    // One company: no company step, and the create goes to that company.
+    await nameTakeoverBot("Nova");
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    expect(oncreatenewbot).toHaveBeenCalledWith(
+      "cmp_acme",
+      expect.objectContaining({ name: "Nova" }),
+    );
+    expect(oncreateagent).not.toHaveBeenCalled();
+  });
+
+  it("with a mixed account, the takeover lists only the flagged companies", async () => {
+    const oncreatenewbot = vi.fn(async () => okTarget);
+    mountSidebar({
+      companies: [INDIGO, ACME, GLOBEX],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot,
+      // Acme has no flag. The last uid is a company this person cannot add a
+      // bot to: a flag alone never puts a company on the list.
+      newBotCompanyUids: ["cmp_globex", "cmp_indigo", "cmp_elsewhere"],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    await nameTakeoverBot("Nova");
+    click('[data-testid="new-bot-continue-brain"]');
+    await settle();
+
+    expect(takeoverCompanyUids()).toEqual(["cmp_indigo", "cmp_globex"]);
+    expect(q('[data-testid="new-bot-company-grid"]')?.textContent).not.toContain("Acme");
+
+    click('[data-company-uid="cmp_globex"]');
+    await settle();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith(
+      "cmp_globex",
+      expect.objectContaining({ name: "Nova" }),
+    );
+  });
+
+  it("a flag for a company the person cannot add a bot to opens no takeover", async () => {
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: async () => okTarget,
+      newBotCompanyUids: ["cmp_elsewhere"],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  });
+
+  it("from the takeover, 'create a local bot instead' then Cloud uses the modal's own create", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(async () => okTarget);
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "assistant",
+    }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent,
+      oncreatenewbot,
+      oncreatebot,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    click('[data-testid="new-bot-takeover-local"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-where-cloud"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledTimes(1);
+    expect(oncreateagent).toHaveBeenCalledWith(
+      "cmp_indigo",
+      expect.objectContaining({ runtime: "codex", size: "basic" }),
+    );
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+    expect(oncreatebot).not.toHaveBeenCalled();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+  });
+
+  it("names no company when the person has none", async () => {
+    const onagentcompanies = vi.fn();
+    mountSidebar({ companies: [], seedDirectory: [], onagentcompanies });
+    await settle();
+    expect(onagentcompanies).toHaveBeenLastCalledWith([]);
   });
 });
 
@@ -423,18 +931,28 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
   });
 
   it("walks kind → home → details and submits name, runtime, and pre-approval to the host", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "assistant",
+    }));
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
-    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, company, or bot");
+    expect(plus?.getAttribute("aria-label")).toBe(
+      "New message, channel, company, or bot",
+    );
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
     await toHomeStep();
     // Only a local host here → Local is checked and Cloud is not offered at all.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      q<HTMLButtonElement>(
+        '[data-testid="chat-bot-where-local"]',
+      )?.getAttribute("aria-checked"),
+    ).toBe("true");
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
     click('[data-testid="chat-bot-runtime-grok"]');
     await settle();
@@ -443,16 +961,26 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     expect(name.value).toBe("assistant");
-    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe("assistant");
-    expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe("thinks with Grok");
+    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe(
+      "assistant",
+    );
+    expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe(
+      "thinks with Grok",
+    );
     click('[data-testid="chat-bot-create"]');
     await settle(10);
-    expect(oncreatebot).toHaveBeenCalledWith({ name: "assistant", runtime: "grok", autoApprove: true }, {});
+    expect(oncreatebot).toHaveBeenCalledWith(
+      { name: "assistant", runtime: "grok", autoApprove: true },
+      {},
+    );
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
   it("shows the host's reason inline and stays open when creation fails", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: false as const, reason: "Claude Code is not signed in." }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: false as const,
+      reason: "Claude Code is not signed in.",
+    }));
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
     await openModal();
@@ -460,17 +988,27 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     // ⌘↵ creates from the first step once the draft is complete.
     q('[data-testid="chat-create-bot-step"]')!.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
+      new KeyboardEvent("keydown", {
+        key: "Enter",
+        metaKey: true,
+        bubbles: true,
+      }),
     );
     await settle(10);
     expect(oncreatebot).toHaveBeenCalledTimes(1);
-    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain(
+      "not signed in",
+    );
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
   });
 
   it("takes a free-form name, blocks a taken handle, gates on a signed-in runtime, and never caps the bot count", async () => {
-    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "x" }));
+    const oncreatebot = vi.fn(async () => ({
+      ok: true as const,
+      agentUid: "agt_new",
+      name: "x",
+    }));
     // No per-person limit: the row stays enabled no matter how many bots exist.
     mountSidebar({ companies: [INDIGO], oncreatebot });
     await settle();
@@ -490,15 +1028,28 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await openModal();
     await toHomeStep();
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-runtime-codex"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
+    expect(
+      q<HTMLButtonElement>(
+        '[data-testid="chat-bot-runtime-codex"]',
+      )?.getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!
+        .textContent,
+    ).toContain("not signed in");
     click('[data-testid="chat-bot-runtime-claude"]');
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Claude Code is not signed in");
+    expect(
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
+      "Claude Code is not signed in",
+    );
     click('[data-testid="chat-bot-runtime-codex"]');
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+    ).toBe(false);
     click('[data-testid="create-bot-next"]');
     await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
@@ -506,32 +1057,48 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     name.value = "Dr Love";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
-    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe("@dr-love");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
+    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe(
+      "@dr-love",
+    );
     // An emoji-only name has nothing to slugify: the handle is what blocks.
     name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("no letters or digits");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
+      "no letters or digits",
+    );
     // The handle field opens on its own so the block is fixable in place.
     const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
     handle.value = "rocket";
     handle.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
     handle.value = "";
     handle.dispatchEvent(new Event("input", { bubbles: true }));
     name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain("handle @scout");
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
+      "handle @scout",
+    );
     // A free name clears the block.
     name.value = "assistant";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(false);
     expect(oncreatebot).not.toHaveBeenCalled();
   });
 });
@@ -540,7 +1107,22 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
   it("finds a local bot by name even though the contacts roster omits it", async () => {
     mountSidebar({
       companies: [INDIGO],
-      localBots: [{ name: "scout", agentUid: "agt_01SCOUT", ownerUid: "prs_me", runtime: "claude", state: "running", pid: 1, processAlive: true, online: true, lastHeartbeatAt: null, daemonInstalled: true, daemonLoaded: true, dir: "/tmp/scout" }],
+      localBots: [
+        {
+          name: "scout",
+          agentUid: "agt_01SCOUT",
+          ownerUid: "prs_me",
+          runtime: "claude",
+          state: "running",
+          pid: 1,
+          processAlive: true,
+          online: true,
+          lastHeartbeatAt: null,
+          daemonInstalled: true,
+          daemonLoaded: true,
+          dir: "/tmp/scout",
+        },
+      ],
     });
     await settle();
     await openModal();
@@ -548,7 +1130,11 @@ describe("ChatSidebar offers the user's local bots in the '+' modal", () => {
     query.value = "scout";
     query.dispatchEvent(new Event("input", { bubbles: true }));
     await settle(30);
-    await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain("scout"));
+    await vi.waitFor(() =>
+      expect(q('[data-testid="chat-create-modal"]')?.textContent).toContain(
+        "scout",
+      ),
+    );
   });
 });
 
@@ -593,14 +1179,253 @@ describe("ChatSidebar company switcher — in-modal company creation", () => {
     const oncreatecompany = vi.fn(async () => okTarget);
     mountSidebar({ companies: [INDIGO, ACME], oncreatecompany, companyCreate });
     await settle();
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!
+      .click();
     await settle();
     click('[data-testid="chat-scope-new-company"]');
     await settle(10);
     expect(q('[data-testid="chat-create-company-step"]')).toBeTruthy();
     expect(
-      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')?.value,
+      q<HTMLInputElement>('[data-testid="chat-create-company-field-name"]')
+        ?.value,
     ).toBe("");
     expect(oncreatecompany).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Review G-1: "New bot" follows where the person stands.
+ *
+ * One company with the flag used to send "New bot" to the takeover for every
+ * company. A person in Indigo (flag on) and Acme (flag off), looking at
+ * Acme, got the takeover, which listed Indigo alone, skipped the company
+ * step without naming it, and made a billed bot in Indigo.
+ */
+describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)", () => {
+  const GLOBEX = workspace("globex", "Globex", "cmp_globex");
+  const created = async (): Promise<EntryPointResult> => ({
+    ok: true,
+    target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_nova" },
+  });
+  const STATUS = async () => ({ ok: true, value: { setupState: { phase: "creating" } } });
+
+  /** Press "+" then "New bot". */
+  async function pressNewBot(): Promise<void> {
+    await openModal();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+  }
+
+  async function nameTakeoverBot(name: string): Promise<void> {
+    const field = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    field.value = name;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+  }
+
+  function targetLine(): string {
+    return q('[data-testid="new-bot-target-company"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+  }
+
+  it("looking at a company without the flag, New bot never creates in the company that has it", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      scopeUid: "cmp_acme",
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+
+    // Whatever opened, go through it the way a person would: name, then create.
+    if (q('[data-testid="new-bot-name"]')) {
+      await nameTakeoverBot("Nova");
+      q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.click();
+      await settle(10);
+    }
+    // No bot was made in Indigo, the company the person was not looking at.
+    expect((oncreatenewbot.mock.calls as unknown[][]).map((call) => call[0])).toEqual([]);
+
+    // What opened is the "+" window's own flow, as on main.
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+
+    // And its Cloud create carries the company the person picks there.
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledTimes(1);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ runtime: "codex" }));
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+  });
+
+  it("looking at a company with the flag, opens the takeover for that company and names it before Create", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      // Globex has the flag too, and is not the company in view.
+      companies: [INDIGO, ACME, GLOBEX],
+      scopeUid: "cmp_indigo",
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo", "cmp_globex"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    // The way to another company, or to a bot on this computer, says what it is for.
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create in another company");
+
+    await nameTakeoverBot("Nova");
+    // One target, so nothing to pick. It is named where Create is pressed.
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+    expect(oncreateagent).not.toHaveBeenCalled();
+  });
+
+  it("with all companies in view and one with the flag, the takeover names that company and offers the way to the others", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      oncreatebot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Another company or a local bot");
+
+    await nameTakeoverBot("Nova");
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+    expect(oncreateagent).not.toHaveBeenCalled();
+  });
+
+  it("the way to the others opens the '+' window's bot step, where Acme can be chosen", async () => {
+    const oncreateagent = vi.fn(async () => okTarget);
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await pressNewBot();
+    click('[data-testid="new-bot-takeover-local"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await settle(10);
+    expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", expect.objectContaining({ runtime: "codex" }));
+    expect(oncreatenewbot).not.toHaveBeenCalled();
+  });
+
+  it("with all companies in view and several with the flag, the company is chosen and named on the last step", async () => {
+    const oncreatenewbot = vi.fn(created);
+    mountSidebar({
+      companies: [INDIGO, ACME, GLOBEX],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot,
+      newBotCompanyUids: ["cmp_indigo", "cmp_globex"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    await nameTakeoverBot("Nova");
+    click('[data-testid="new-bot-continue-brain"]');
+    await settle();
+
+    // Only the companies with the flag are listed, and the line follows the pick.
+    expect(q('[data-testid="new-bot-company-grid"]')?.textContent).not.toContain("Acme");
+    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    click('[data-company-uid="cmp_globex"]');
+    await settle();
+    expect(targetLine()).toBe("Nova will be created in Globex.");
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_globex", expect.objectContaining({ name: "Nova" }));
+  });
+
+  it("a person with one company in total is not asked or told which company", async () => {
+    const oncreatenewbot = vi.fn(created);
+    const oncreatebot = vi.fn(async () => ({ ok: true as const, agentUid: "agt_new", name: "assistant" }));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot,
+      oncreatebot,
+      newBotCompanyUids: ["cmp_indigo"],
+      loadAgentStatus: STATUS,
+    });
+    await settle();
+    await pressNewBot();
+    // No other company to send them to: the button is about a local bot only.
+    expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create a local bot instead");
+    await nameTakeoverBot("Nova");
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
+    expect(q('[data-testid="new-bot-target-company"]')).toBeNull();
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(10);
+    expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
+  });
+
+  it("follows the company in view when the person changes it", async () => {
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: vi.fn(created),
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    // The sidebar starts on all companies, where New bot would open the
+    // takeover. The person switches it to Acme, which has no flag.
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    const acme = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="chat-scope-menu"] [role="menuitemradio"]')).find(
+      (option) => option.textContent?.includes("Acme"),
+    );
+    expect(acme).toBeTruthy();
+    acme!.click();
+    await settle();
+    await pressNewBot();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   });
 });
