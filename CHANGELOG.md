@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
 - When your setup bot sees that you already use Claude Code or Codex a lot on this computer, its first message asks whether you want to continue setup there, and shows two buttons under it: "Continue in Claude Code" (or Codex) opens your HQ folder in that tool with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. Needs the hq-cli release that sends the offer.
