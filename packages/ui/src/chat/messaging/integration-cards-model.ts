@@ -198,11 +198,21 @@ export function connectionForItem(
 }
 
 /**
+ * How far ahead of `now` a press may be dated and still count. The press is
+ * stamped with the device's clock at the moment of the press; the `now` a
+ * host passes can be its card clock, which moves only on its checks every few
+ * seconds. So a press can be a little newer than that `now`, never more.
+ */
+export const PRESS_CLOCK_SKEW_MS = 5_000;
+
+/**
  * Whether a connection is the answer to a Connect press on this device, so
  * the bot may be given it with no second press. All three must hold:
  *
  * - the press is still waiting and is not stale: it was made at most
- *   {@link CONNECTING_TIMEOUT_MS} ago;
+ *   {@link CONNECTING_TIMEOUT_MS} ago, and not in the future (a time ahead of
+ *   `now` by more than {@link PRESS_CLOCK_SKEW_MS} is not a press this device
+ *   made: such a record would never go stale);
  * - the connection was made after the press, by the list's own `createdAt`;
  * - the list says the connection's domain is exactly the card's.
  *
@@ -219,6 +229,7 @@ export function connectionAnswersPress(
 ): boolean {
   if (!entry || entry.state !== "connecting" || !connection) return false;
   if (!Number.isFinite(entry.since) || now - entry.since > CONNECTING_TIMEOUT_MS) return false;
+  if (entry.since - now > PRESS_CLOCK_SKEW_MS) return false;
   const createdAt = Date.parse(connection.createdAt);
   if (!Number.isFinite(createdAt) || createdAt <= entry.since) return false;
   const wanted = normalizeConnectDomain(domain);

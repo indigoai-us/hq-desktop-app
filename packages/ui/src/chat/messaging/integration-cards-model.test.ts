@@ -4,6 +4,7 @@ import {
   APP_TIMEOUT_NOTE,
   MAX_BRIEF_CHARS,
   MAX_FALLBACK_APPS,
+  PRESS_CLOCK_SKEW_MS,
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
@@ -192,6 +193,22 @@ describe("connectionForDomain and botCanUse", () => {
     expect(connectionAnswersPress(entry, made(), "api.linear.app", NOW)).toBe(false);
     expect(connectionAnswersPress(entry, made(), "linear.com", NOW)).toBe(false);
     expect(connectionAnswersPress(entry, made({ installation: { displayName: "Linear" } }), "linear.app", NOW)).toBe(false);
+    // A press dated in the future is no press: a record whose time is ahead of
+    // this device's clock (edited storage, a clock set back) would otherwise
+    // never go stale, and any connection made before that time would be shut
+    // out while one made after it is handed over.
+    const ahead = (ms: number) => ({ state: "connecting" as const, since: NOW + ms });
+    const after = (ms: number) => made({ createdAt: new Date(NOW + ms + 1_000).toISOString() });
+    expect(connectionAnswersPress(ahead(60_000), after(60_000), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(ahead(86_400_000), after(86_400_000), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(ahead(PRESS_CLOCK_SKEW_MS + 1), after(PRESS_CLOCK_SKEW_MS + 1), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress({ state: "connecting", since: Number.POSITIVE_INFINITY }, made(), "linear.app", NOW)).toBe(false);
+    // The host's clock for the cards moves on its checks, so a press can be a
+    // few seconds newer than the "now" it passes. That much is allowed.
+    expect(PRESS_CLOCK_SKEW_MS).toBe(5_000);
+    expect(connectionAnswersPress(ahead(PRESS_CLOCK_SKEW_MS), after(PRESS_CLOCK_SKEW_MS), "linear.app", NOW)).toBe(true);
+    expect(connectionAnswersPress(ahead(2_000), after(2_000), "linear.app", NOW)).toBe(true);
+    expect(connectionAnswersPress(ahead(0), after(0), "linear.app", NOW)).toBe(true);
     // No press, a "Not now", no connection.
     expect(connectionAnswersPress(null, made(), "linear.app", NOW)).toBe(false);
     expect(connectionAnswersPress({ state: "declined", since }, made(), "linear.app", NOW)).toBe(false);
