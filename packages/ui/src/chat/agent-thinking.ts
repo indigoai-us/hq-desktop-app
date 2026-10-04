@@ -495,6 +495,27 @@ export function parseDmAgentStatusWake(raw: unknown): DmAgentStatusWake | null {
   };
 }
 
+/**
+ * The messages a DM status is judged and pinned against: the timeline the
+ * app holds for that DM, plus the bot's newest message announced by a wake
+ * (`announcedAt`, ISO time), which the timeline may not hold yet. A DM that
+ * is not open may have no timeline in the app at all, and one that is open
+ * can be a page behind the wake.
+ *
+ * Both the late-status check and the pin read this one list, so a status
+ * created after an announced reply is pinned to that reply: the reply
+ * arriving on the next page then cannot end the row the newer status began.
+ */
+export function heldDmMessages<M extends { fromPersonUid?: string | null; createdAt?: string | null }>(
+  timeline: ReadonlyArray<M>,
+  agentUid: string,
+  announcedAt: string | null | undefined,
+): ReadonlyArray<M | { fromPersonUid: string; createdAt: string }> {
+  const at = (announcedAt ?? '').trim();
+  if (!at || Number.isNaN(Date.parse(at))) return timeline;
+  return [...timeline, { fromPersonUid: agentUid.trim(), createdAt: at }];
+}
+
 /** When a DM status was created (ms): the bot's `sentAt` when the wake has
  * one, else the server's publish time. NaN when neither parses. */
 export function dmAgentStatusCreatedAt(wake: DmAgentStatusWake): number {

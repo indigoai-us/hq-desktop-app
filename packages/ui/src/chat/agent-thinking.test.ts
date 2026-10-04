@@ -22,6 +22,7 @@ import {
   applyAgentStatus,
   parseAgentStatusWake,
   applyDmAgentStatus,
+  heldDmMessages,
   parseDmAgentStatusWake,
   dmAgentStatusCreatedAt,
   endStatusSilent,
@@ -582,6 +583,29 @@ describe("a bot's status in its DM drives the DM row", () => {
     expect(applyDmAgentStatus([], wake(30), 'Nova', [msg(4), msg(10)], 1)[0]!.afterMs).toBe(ms(10));
     // No message from the bot yet: nothing to pin to.
     expect(applyDmAgentStatus([], wake(30), 'Nova', [], 1)[0]!.afterMs).toBeUndefined();
+  });
+
+  it('B-7: pins to the newer of the timeline and the reply a wake announced', () => {
+    // The timeline holds the bot's message at 10 s; a wake announced one at 40 s.
+    const held = heldDmMessages([msg(4), msg(10)], NOVA, t(40));
+    expect(newestMessageAtFrom(held, NOVA)).toBe(ms(40));
+    // A status created after the announced reply is a new stretch of work,
+    // pinned to that reply: the reply arriving on a page does not end the row.
+    const rows = applyDmAgentStatus([], wake(45), 'Nova', held, 1, { afterMs: newestMessageAtFrom(held, NOVA) });
+    expect(rows[0]!.afterMs).toBe(ms(40));
+    expect(clearRows(rows, [msg(10), msg(40)])).toHaveLength(1);
+    expect(clearRows(rows, [msg(10), msg(40), msg(50)])).toHaveLength(0);
+    // A status from before the announced reply is late.
+    const none: ThinkingEntry[] = [];
+    expect(applyDmAgentStatus(none, wake(39), 'Nova', held, 1)).toBe(none);
+    // The timeline wins when it is the newer one, and nothing announced adds nothing.
+    expect(newestMessageAtFrom(heldDmMessages([msg(60)], NOVA, t(40)), NOVA)).toBe(ms(60));
+    const timeline = [msg(10)];
+    expect(heldDmMessages(timeline, NOVA, undefined)).toBe(timeline);
+    expect(heldDmMessages(timeline, NOVA, '  ')).toBe(timeline);
+    expect(heldDmMessages(timeline, NOVA, 'not a time')).toBe(timeline);
+    // No timeline at all: the announced reply alone is the pin.
+    expect(newestMessageAtFrom(heldDmMessages([], NOVA, t(40)), NOVA)).toBe(ms(40));
   });
 
   it('refreshes an existing pinned row without dropping the pin', () => {

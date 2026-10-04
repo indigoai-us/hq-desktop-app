@@ -448,6 +448,7 @@
     agentDisplayName,
     applyAgentStatus,
     applyDmAgentStatus,
+    heldDmMessages,
     endStatusSilentAll,
     statusSilenceClockRestarts,
     stoppedRespondingApplies,
@@ -7809,9 +7810,8 @@
       const rowId = `dm:${wake.agentUid}`;
       const timeline = liveTimelineId === rowId ? liveTimeline : (timelineCache.get(rowId) ?? []);
       // Plus the bot's newest message announced by a wake, for a DM whose
-      // timeline the app does not hold.
-      const seenAt = botDmMessageSeenAt.get(wake.agentUid);
-      const held = seenAt ? [...timeline, { fromPersonUid: wake.agentUid, createdAt: seenAt }] : timeline;
+      // timeline the app does not hold or that is a page behind the wake.
+      const held = heldDmMessages(timeline, wake.agentUid, botDmMessageSeenAt.get(wake.agentUid));
       const current = thinkingByRow[rowId] ?? [];
       // The name the DM already goes by, when the app has one.
       const name =
@@ -7821,8 +7821,12 @@
           liveNames: displayNameByUid,
           fallback: localBots.find((bot) => bot.agentUid === wake.agentUid)?.name,
         });
+      // The pin is the bot's newest message known either way: the timeline's
+      // or the announced one, whichever is newer. Pinned to the timeline
+      // alone, a reply already announced (and older than this status) ended
+      // the row when its page arrived.
       const next = applyDmAgentStatus(current, wake, name, held, Date.now(), {
-        afterMs: botPinFor(rowId, wake.agentUid) ?? newestMessageAtFrom(held, wake.agentUid),
+        afterMs: newestMessageAtFrom(held, wake.agentUid),
       });
       if (next !== current) thinkingByRow = { ...thinkingByRow, [rowId]: next };
     });

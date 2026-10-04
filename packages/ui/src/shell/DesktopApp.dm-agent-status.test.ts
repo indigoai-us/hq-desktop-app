@@ -533,6 +533,38 @@ describe("DesktopApp: a bot's status in its DM", () => {
   });
 });
 
+describe("DesktopApp: a status after a reply the app has only heard about (B-7)", () => {
+  it("pins the row to the announced reply, so that reply arriving on a page does not end it", async () => {
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+
+    // A wake announces the bot's reply. The page read it triggers is a step
+    // behind and does not carry the reply yet.
+    const repliedAt = Date.now() + 5_000;
+    wakes.emit("dm:new-message", { fromPersonUid: NOVA, eventId: "e9", createdAt: iso(repliedAt), direction: "in" });
+    await settle(20);
+    expect(threadText()).not.toContain("Done.");
+
+    // The bot starts on something new after that reply.
+    await botStatus(wakes, "Working", repliedAt + 2_000);
+    expect(thinkingRow()?.textContent).toContain("Nova: Working");
+
+    // The reply lands on the next page. It is older than the status: the bot
+    // is still working, and the row stays.
+    w.thread = [{ eventId: "e9", fromPersonUid: NOVA, fromDisplayName: "Nova", body: "Done.", createdAt: iso(repliedAt) }, ...w.thread];
+    await pageFetch(wakes);
+    expect(threadText()).toContain("Done.");
+    expect(thinkingRow(), "the announced reply does not end the row a newer status began").not.toBeNull();
+    expect(thinkingLog()).toEqual([]);
+
+    // The answer to the new work ends it.
+    w.thread = [{ eventId: "e10", fromPersonUid: NOVA, fromDisplayName: "Nova", body: "And the second thing.", createdAt: iso(repliedAt + 9_000) }, ...w.thread];
+    await pageFetch(wakes);
+    expect(thinkingRow()).toBeNull();
+    expect(thinkingLog()).toEqual([endedLine("newer-message", "yes")]);
+  });
+});
+
 describe("DesktopApp: a bot's status for a DM that is not open", () => {
   it("is late when the bot's reply was announced by a wake, though the app holds no timeline for that DM", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
