@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 
 - Held sign-in receipts now read the sign-in token from the same home directory they were held in, so a session in another home directory can no longer send or drop them.
 - First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
