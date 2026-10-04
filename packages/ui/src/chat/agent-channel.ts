@@ -324,7 +324,7 @@ export function agentHelloEventId(
 /**
  * Whether a direct message is with a cloud bot whose conversation gets what
  * the app adds for one: connection cards, suggested replies, the file sync
- * strip, and the app's hidden notices to the bot.
+ * status in the header, and the app's hidden notices to the bot.
  *
  * An `agt_` uid alone does not say so. A teammate's local bot, the person's
  * own local bot on another Mac and a bot from outside the company all have
