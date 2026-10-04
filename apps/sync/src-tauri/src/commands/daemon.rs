@@ -10303,6 +10303,35 @@ mod tests {
     }
 
     #[test]
+    fn watcher_exit_20_with_pre_holder_format_line_keeps_owner_and_pid() {
+        // Runners published before hq-cloud #837 print only owner and pid. The
+        // refusal must still classify, keep both fields, and report the fields it
+        // does not carry as `unknown` rather than dropping the holder evidence.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123); exiting."),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "exit_class"), "already_owned");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_owner"), "hq-daemon");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_pid"), "123");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_process"), "unknown");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_started_at"), "unknown");
+        assert!(capture.message.starts_with("auto-sync watcher refused:"));
+    }
+
+    #[test]
     fn watcher_exit_20_with_empty_stderr_stays_visible_as_already_owned() {
         let mut effects = RecordingWatcherEffects::default();
         handle_watcher_exit_with_effects(

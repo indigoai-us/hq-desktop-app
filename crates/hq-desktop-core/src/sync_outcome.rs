@@ -5580,19 +5580,47 @@ mod tests {
             parse_watch_owner_holder_fields(line),
             Some(WatchOwnerHolderFields {
                 owner: "hq-daemon".to_string(),
-                pid: 1234,
+                pid: "1234".to_string(),
                 process_name: "sync-runner",
                 started_at: "2026-10-04T08:10:11.123Z".to_string(),
             })
         );
 
-        for unsafe_line in [
-            "[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.",
-            "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.",
-            "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=secret); exiting.",
+        // An unsafe value is replaced by `unknown`; the other fields survive and
+        // the unsafe text never appears in the result.
+        for (unsafe_line, secret) in [
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.", "/private/path"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.", "/private/secret"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=secret); exiting.", "secret"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=-7, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.", "-7"),
         ] {
-            assert_eq!(parse_watch_owner_holder_fields(unsafe_line), None);
+            let fields = parse_watch_owner_holder_fields(unsafe_line).expect("refusal line keeps holder evidence");
+            assert!(!format!("{fields:?}").contains(secret), "{secret} leaked from {unsafe_line}");
         }
+        let unsafe_owner = parse_watch_owner_holder_fields("[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.").unwrap();
+        assert_eq!(unsafe_owner.owner, "unknown");
+        assert_eq!(unsafe_owner.pid, "1234");
+        let unsafe_process = parse_watch_owner_holder_fields("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.").unwrap();
+        assert_eq!(unsafe_process.process_name, "unknown");
+        assert_eq!(unsafe_process.started_at, "2026-10-04T08:10:11.123Z");
+
+        assert_eq!(parse_watch_owner_holder_fields("later diagnostic 3"), None);
+    }
+
+    #[test]
+    fn watch_owner_holder_fields_read_unknown_for_pre_holder_format_line() {
+        // Runners before hq-cloud #837 print only owner and pid.
+        assert_eq!(
+            parse_watch_owner_holder_fields(
+                "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123); exiting."
+            ),
+            Some(WatchOwnerHolderFields {
+                owner: "hq-daemon".to_string(),
+                pid: "123".to_string(),
+                process_name: "unknown",
+                started_at: "unknown".to_string(),
+            })
+        );
     }
 
     #[test]
