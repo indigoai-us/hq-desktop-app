@@ -2,6 +2,9 @@
 
 // The sync strip: one line drawn from plain facts about a bot's file sync.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 
@@ -53,6 +56,21 @@ const title = () => host!.querySelector('[data-testid="bot-sync-title"]')?.textC
 const detail = () => host!.querySelector('[data-testid="bot-sync-detail"]')?.textContent ?? "";
 const amount = () => host!.querySelector('[data-testid="bot-sync-amount"]');
 const glyph = () => host!.querySelector<SVGElement>('[data-testid="bot-sync-icon"] svg');
+const fill = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]');
+const fillWidth = () => parseFloat(fill()!.style.width);
+
+/** The bar is never an animated sweep: no class or style on the track or fill drives a motion. */
+function expectStillBar(): void {
+  const track = bar()!;
+  for (const el of [track, fill()!]) {
+    // Svelte's own scoping class aside, the bar carries only its base class.
+    for (const name of Array.from(el.classList).filter((name) => !name.startsWith("svelte-"))) {
+      expect(["bot-sync-track", "bot-sync-fill"]).toContain(name);
+    }
+    expect(el.getAttribute("style") ?? "").not.toMatch(/animation|transform/);
+  }
+  expect(track.classList.contains("is-unknown")).toBe(false);
+}
 
 describe("BotSyncWidget", () => {
   it("is not there without facts", () => {
@@ -73,7 +91,7 @@ describe("BotSyncWidget", () => {
     expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
   });
 
-  it("the live run: 10 of 10 planned and not finished reads 'Preparing.' with the files so far, no percent, a shimmering line", () => {
+  it("the live run: 10 of 10 planned and not finished reads 'Preparing.' with the files so far, no percent, an empty still bar", () => {
     render(syncing({ filesDone: 10, filesTotal: 10, phase: "pull" }));
     const el = widget()!;
     expect(el.dataset.state).toBe("syncing");
@@ -83,10 +101,31 @@ describe("BotSyncWidget", () => {
     expect(el.textContent).not.toMatch(/\d+%/);
     expect(el.textContent).not.toContain("99");
     const progress = bar()!;
-    expect(progress.classList.contains("is-unknown")).toBe(true);
     expect(progress.hasAttribute("aria-valuenow")).toBe(false);
     expect(progress.getAttribute("aria-valuetext")).toBe("10 files so far");
+    expect(fillWidth()).toBe(0);
+    expectStillBar();
     expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
+  });
+
+  it("the live box: 10 of 68,322 is a nearly empty determinate bar and the counts in words", () => {
+    render(syncing({ filesDone: 10, filesTotal: 68_322, phase: "pull" }));
+    expect(detail()).toBe("Pulling files down. 10 of 68,322 files");
+    expect(amount()?.textContent).toBe("<1%");
+    expect(bar()!.getAttribute("aria-valuenow")).toBe("0");
+    expect(bar()!.getAttribute("aria-valuetext")).toBe("10 of 68,322 files");
+    const width = fillWidth();
+    expect(width).toBeCloseTo((10 / 68_322) * 100, 6);
+    expect(width).toBeGreaterThan(0);
+    expect(width).toBeLessThan(1);
+    expectStillBar();
+  });
+
+  it("the stylesheet has no sweeping bar animation in any state", () => {
+    const source = readFileSync(join(import.meta.dirname, "BotSyncWidget.svelte"), "utf8");
+    expect(source).not.toMatch(/is-unknown|bot-sync-travel|translateX/);
+    // The only keyframes left turn the small glyph, not the bar.
+    expect(source.match(/@keyframes\s+[\w-]+/g)).toEqual(["@keyframes bot-sync-spin"]);
   });
 
   it("announces the words politely, and the bar is a real progress bar", () => {
@@ -107,7 +146,8 @@ describe("BotSyncWidget", () => {
     expect(words.contains(progress)).toBe(false);
     expect(words.contains(amount()!)).toBe(false);
     expect(amount()?.textContent).toBe("31%");
-    expect(progress.querySelector<HTMLElement>(".bot-sync-fill")!.style.width).toBe("31%");
+    expect(fillWidth()).toBeCloseTo((128 / 412) * 100, 6);
+    expectStillBar();
     // The glyph is decoration a screen reader skips.
     expect(host!.querySelector('[data-testid="bot-sync-icon"]')?.getAttribute("aria-hidden")).toBe("true");
   });
@@ -119,26 +159,28 @@ describe("BotSyncWidget", () => {
     expect(order).toEqual(["bot-sync-icon", "status", "bot-sync-amount", "bot-sync-progress"]);
   });
 
-  it("shows no percent in words while the bar is an estimate", () => {
+  it("before any counts: 'Preparing.', no percent, and the empty track with no fill", () => {
     render(syncing());
+    expect(detail()).toBe("Preparing.");
     expect(amount()).toBeNull();
     expect(widget()!.textContent).not.toMatch(/\d/);
-    const now = Number(bar()!.getAttribute("aria-valuenow"));
-    expect(now).toBeGreaterThan(0);
-    expect(now).toBeLessThan(100);
+    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
     expect(bar()!.getAttribute("aria-valuetext")).toBeNull();
+    expect(fillWidth()).toBe(0);
+    expectStillBar();
   });
 
   it("leaves aria-valuenow out when there is no honest number", () => {
     render(syncing({ startedAt: null }));
     const progress = bar()!;
     expect(progress.hasAttribute("aria-valuenow")).toBe(false);
-    expect(progress.classList.contains("is-unknown")).toBe(true);
+    expect(fillWidth()).toBe(0);
+    expectStillBar();
     expect(widget()!.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
   });
 
-  it("a stale sync: 'Still syncing.', a shimmering line, no number, and a glyph that holds still", () => {
+  it("a stale sync: 'Still syncing.', an empty still bar, no number, and a glyph that holds still", () => {
     render({ state: "stale", startedAt: NOW - 40 * 60_000, endedAt: null, filesDone: 412, filesTotal: 412 });
     const el = widget()!;
     expect(el.dataset.state).toBe("stale");
@@ -147,19 +189,24 @@ describe("BotSyncWidget", () => {
     expect(el.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
     const progress = bar()!;
-    expect(progress.classList.contains("is-unknown")).toBe(true);
     expect(progress.hasAttribute("aria-valuenow")).toBe(false);
+    expect(fillWidth()).toBe(0);
+    expectStillBar();
     expect(glyph()!.classList.contains("bot-sync-spin")).toBe(false);
   });
 
-  it("moves an estimated bar forward as time passes", async () => {
-    render(syncing({ startedAt: NOW }));
-    const before = Number(bar()!.getAttribute("aria-valuenow"));
+  it("does not move the bar with time; it moves only when new counts arrive", async () => {
+    const { props } = render(syncing({ startedAt: NOW }));
+    expect(fillWidth()).toBe(0);
     await vi.advanceTimersByTimeAsync(120_000);
     flushSync();
-    const after = Number(bar()!.getAttribute("aria-valuenow"));
-    expect(after).toBeGreaterThan(before);
-    expect(after).toBeLessThan(100);
+    expect(fillWidth()).toBe(0);
+    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
+    props.facts = syncing({ startedAt: NOW, filesDone: 100, filesTotal: 400 });
+    await settle();
+    expect(fillWidth()).toBe(25);
+    expect(bar()!.getAttribute("aria-valuenow")).toBe("25");
+    expectStillBar();
   });
 
   it("appears when a sync starts in an open conversation", async () => {
@@ -178,6 +225,8 @@ describe("BotSyncWidget", () => {
     expect(widget()!.dataset.state).toBe("done");
     expect(title()).toBe("Files are up to date.");
     expect(bar()!.getAttribute("aria-valuenow")).toBe("100");
+    expect(fillWidth()).toBe(100);
+    expectStillBar();
     expect(amount()).toBeNull();
     await vi.advanceTimersByTimeAsync(BOT_SYNC_DONE_VISIBLE_MS - 1_500);
     flushSync();

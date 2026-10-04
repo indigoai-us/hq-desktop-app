@@ -204,16 +204,17 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(host.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(false);
   });
 
-  it("shows an estimated bar and no percent when the server sends no counts", async () => {
+  it("shows an empty, still bar and no percent when the server sends no counts", async () => {
     const w = world({ status: () => statusOf({ status: "running" }) });
     await mountNewBotDm(w);
     await vi.waitFor(() => expect(widget()).not.toBeNull());
     expect(widget()!.dataset.state).toBe("syncing");
+    expect(widget()!.textContent).toContain("Preparing.");
     expect(amount()).toBeNull();
     expect(widget()!.textContent).not.toMatch(/\d/);
-    const now = Number(bar()!.getAttribute("aria-valuenow"));
-    expect(now).toBeGreaterThan(0);
-    expect(now).toBeLessThan(100);
+    expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.classList.contains("is-unknown")).toBe(false);
   });
 
   it("is a strip directly under the header, above the thread with the bot's suggested replies in it, and the message box", async () => {
@@ -272,7 +273,8 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(el.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.classList.contains("is-unknown")).toBe(true);
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.classList.contains("is-unknown")).toBe(false);
   });
 
   it("the live run (Big Nuts, 2026-10-03): 10 of 10 planned, refreshed every second, not finished, reads 'Preparing.' and no percent", async () => {
@@ -290,7 +292,8 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(el.textContent).not.toMatch(/\d+%|99/);
     expect(amount()).toBeNull();
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.classList.contains("is-unknown")).toBe(true);
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.classList.contains("is-unknown")).toBe(false);
     expect(bar()!.getAttribute("aria-valuetext")).toBe("10 files so far");
   });
 

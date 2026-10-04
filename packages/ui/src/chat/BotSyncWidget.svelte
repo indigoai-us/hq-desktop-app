@@ -17,8 +17,10 @@
    * One line: a sync glyph that turns while the sync is running, the title,
    * the short status line in the muted ink (the phase and the counts, or
    * "Preparing."), and the percent at the right when there is an honest one.
-   * The progress bar is a two pixel line along the strip's bottom edge; with
-   * no number it shimmers instead. No border, no shadow, no panel: a faint
+   * The progress bar is a two pixel line along the strip's bottom edge. It is
+   * always determinate: filled to the real fraction done, or an empty track
+   * while no honest total is known. It never sweeps or shimmers; only its
+   * width eases when the number changes. No border, no shadow, no panel: a faint
    * tint of the accent over the pane, from the theme's own tokens, so it
    * reads in both themes. The copy is the same for every sync, first or
    * later, and never names the bot.
@@ -34,7 +36,7 @@
 
   let { facts }: Props = $props();
 
-  /** How often an estimated bar moves, and how soon "up to date" is noticed gone. */
+  /** How soon "up to date" is noticed gone. */
   const CLOCK_MS = 1_000;
   /** The height and opacity transitions below, plus a little. The strip leaves the page after it. */
   const CLOSE_MS = 320;
@@ -133,7 +135,7 @@
             </svg>
           {/if}
         </span>
-        <!-- Only the words are announced. The bar moves every second and is not. -->
+        <!-- Only the words are announced. The bar is not. -->
         <div class="bot-sync-words" role="status" aria-live="polite">
           <span class="bot-sync-title" data-testid="bot-sync-title">{shown.title}</span>
           {#if shown.detail}
@@ -146,7 +148,6 @@
         {#if shown.state !== "failed"}
           <div
             class="bot-sync-track"
-            class:is-unknown={shown.progress === null}
             data-testid="bot-sync-progress"
             role="progressbar"
             aria-label={shown.title}
@@ -155,7 +156,7 @@
             aria-valuenow={shown.progress ?? undefined}
             aria-valuetext={shown.counts ?? undefined}
           >
-            <span class="bot-sync-fill" style:width={`${shown.progress ?? 100}%`}></span>
+            <span class="bot-sync-fill" data-testid="bot-sync-fill" style:width={`${shown.fill}%`}></span>
           </div>
         {/if}
       </div>
@@ -271,20 +272,6 @@
     background: var(--bs-tone);
     transition: width 0.6s ease;
   }
-  /* No honest number: a soft band travels the line, and no width is claimed. */
-  .bot-sync-track.is-unknown .bot-sync-fill {
-    width: 34% !important;
-    opacity: 0.85;
-    animation: bot-sync-travel 1.8s ease-in-out infinite;
-  }
-  @keyframes bot-sync-travel {
-    from {
-      transform: translateX(-110%);
-    }
-    to {
-      transform: translateX(310%);
-    }
-  }
   @media (prefers-reduced-motion: reduce) {
     .bot-sync-slot,
     .bot-sync-fill {
@@ -292,13 +279,6 @@
     }
     .bot-sync-spin {
       animation: none;
-    }
-    /* A still, full, faint line instead of a moving band. */
-    .bot-sync-track.is-unknown .bot-sync-fill {
-      width: 100% !important;
-      opacity: 0.35;
-      animation: none;
-      transform: none;
     }
   }
 </style>
