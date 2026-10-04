@@ -6,6 +6,8 @@ import {
   CHECKOUT_DISABLED_REASON,
   CHECKOUT_FAILED_REASON,
   createFirstRunCompanyApi,
+  deriveCompanyHandle,
+  slugifyCompanyName,
   isCheckoutReturnFor,
   isProvisionedCompanyEntity,
   readCompanyProvisioned,
@@ -497,5 +499,73 @@ describe('workforce checkout', () => {
     expect(isCheckoutReturnFor({ companyUid: 'cmp_other', checkout: 'done' }, 'cmp_new')).toBe(false);
     expect(isCheckoutReturnFor({ companyUid: 'cmp_new', checkout: '' }, 'cmp_new')).toBe(false);
     expect(isCheckoutReturnFor(null, 'cmp_new')).toBe(false);
+  });
+});
+
+describe('company handle from the name', () => {
+  const rule = {
+    pattern: '^[a-z][a-z0-9-]{1,38}[a-z0-9]$',
+    minLength: 3,
+    maxLength: 40,
+    description: 'Lowercase letters, numbers and dashes.',
+  };
+
+  it('slugifies names', () => {
+    expect(slugifyCompanyName('Acme Studio')).toBe('acme-studio');
+    expect(slugifyCompanyName('  Café  Société!! ')).toBe('cafe-societe');
+    expect(slugifyCompanyName('東京')).toBe('');
+    expect(slugifyCompanyName('a'.repeat(60))).toHaveLength(40);
+  });
+
+  it('uses the plain slug when it fits the rule', () => {
+    expect(deriveCompanyHandle('Acme Studio', rule)).toBe('acme-studio');
+    expect(deriveCompanyHandle('Acme Studio', null)).toBe('acme-studio');
+  });
+
+  it('numbers later attempts for a taken handle', () => {
+    expect(deriveCompanyHandle('Acme', rule, 1)).toBe('acme-2');
+    expect(deriveCompanyHandle('Acme', rule, 2)).toBe('acme-3');
+    expect(deriveCompanyHandle('a'.repeat(60), rule, 1)).toBe(`${'a'.repeat(38)}-2`);
+  });
+
+  it('pads a name the rule rejects instead of asking for a handle', () => {
+    expect(deriveCompanyHandle('3M', rule)).toBe('hq-3m');
+    expect(deriveCompanyHandle('Al', rule)).toBe('al-hq');
+  });
+
+  it('is null when the name has nothing to make a handle from', () => {
+    expect(deriveCompanyHandle('!!!', rule)).toBeNull();
+    expect(deriveCompanyHandle('東京', rule)).toBeNull();
+    expect(deriveCompanyHandle('', null)).toBeNull();
+  });
+});
+
+describe('plan already picked on the website', () => {
+  const priorPlanOf = (result: Awaited<ReturnType<typeof resolveFirstRunCompanyRoute>>) =>
+    result && 'route' in result ? result.priorPlan : undefined;
+  it('reports it alongside the route, and null when nothing was sent', async () => {
+    const picked = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) =>
+        url === '/membership/me' ? { memberships: [], planIntent: 'free' } : { invites: [] },
+      invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
+    });
+    expect(priorPlanOf(picked)).toBe('starter');
+
+    const viaVisitor = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => {
+        if (url === '/membership/me') return { memberships: [] };
+        if (url.startsWith('/membership/me?anonId=')) return { webIdentity: { samePerson: true, plan: 'team' } };
+        return { invites: [] };
+      },
+      invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
+      anonId: 'anon_1',
+    });
+    expect(priorPlanOf(viaVisitor)).toBe('workforce');
+
+    const none = await resolveFirstRunCompanyRoute({
+      hqProJson: async (_method, url) => (url === '/membership/me' ? { memberships: [] } : { invites: [] }),
+      invoke: (async () => ({ workspaces: [] })) as unknown as InvokeFn,
+    });
+    expect(priorPlanOf(none)).toBeNull();
   });
 });

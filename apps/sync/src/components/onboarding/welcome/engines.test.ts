@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createFolderEngine,
   createOrbitEngine,
+  createPanelEngine,
   createReadyEngine,
   orbitGaps,
   skylineBand,
@@ -193,5 +194,53 @@ describe('createReadyEngine layout', () => {
     const altTop = parseFloat(refs.alt.style.top);
     expect(altTop + 18).toBeLessThanOrEqual(560 - skylineBand(560));
     expect(parseFloat(refs.copy.style.top)).toBeGreaterThanOrEqual(56);
+  });
+});
+
+describe('createPanelEngine', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('centres the panel again when its content grows after it is shown', () => {
+    vi.stubGlobal('innerHeight', 686);
+    const observers: Array<{ callback: () => void; disconnected: boolean }> = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        entry: { callback: () => void; disconnected: boolean };
+        constructor(callback: () => void) {
+          this.entry = { callback, disconnected: false };
+          observers.push(this.entry);
+        }
+        observe() {}
+        disconnect() {
+          this.entry.disconnected = true;
+        }
+      },
+    );
+    const block = sized(document.createElement('div'), 560, 80);
+    const engine = createPanelEngine(block, { reveal: () => {} });
+    engine.enter(0);
+    // The short "Getting things ready…" block sits in the middle.
+    expect(block.style.top).toBe(`${Math.round((686 - 80) / 2)}px`);
+
+    // The form arrives: the block is now 470px tall.
+    sized(block, 560, 470);
+    observers[0]!.callback();
+    expect(block.style.top).toBe(`${Math.round((686 - 470) / 2)}px`);
+    // Never above the title bar band, even when taller than the window.
+    sized(block, 560, 900);
+    observers[0]!.callback();
+    expect(block.style.top).toBe('56px');
+
+    // A panel that is no longer on show is left alone.
+    engine.exit?.();
+    sized(block, 560, 100);
+    observers[0]!.callback();
+    expect(block.style.top).toBe('56px');
+
+    engine.destroy?.();
+    expect(observers[0]!.disconnected).toBe(true);
   });
 });
