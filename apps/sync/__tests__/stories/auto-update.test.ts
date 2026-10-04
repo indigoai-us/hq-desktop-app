@@ -113,11 +113,11 @@ describe('master automatic-updates switch', () => {
 
     expect(cliUpdateCore).toContain('pub struct AsyncSingleFlight');
     expect(normalize(command)).toContain(
-      '.run(move || install_hq_cli_update_once(app)) .await',
+      '.run(move || async move { Ok(install_hq_cli_update_once(app, retry_attempt).await) }) .await',
     );
     expect(command).not.toContain('non_convergent_cli_version()');
     expect(oneShot).toContain('let non_convergent_version = non_convergent_cli_version();');
-    expect(oneShot).toContain('run_npm_install_with_retries(&npm');
+    expect(oneShot).toContain('run_npm_install_with_retry_attempt(\n        &npm');
   });
 
   it('the CLI auto-installer cannot loop on an install that never converges', () => {
@@ -155,10 +155,14 @@ describe('master automatic-updates switch', () => {
     //    which, for the very pnpm/Homebrew layouts this guards, reports the copy
     //    npm just wrote while the resolved executable is untouched. That trades
     //    a loud reinstall loop for a silent "up to date" lie.
-    const installCall = 'run_npm_install_with_retries(&npm';
+    const installCall = 'run_npm_install_with_retry_attempt(\n        &npm';
     const afterInstall = cliUpdate.slice(cliUpdate.indexOf(installCall));
-    expect(afterInstall).toContain('let post_install_hq = paths::resolve_bin("hq");');
-    expect(afterInstall).toContain('resolved_hq_version(&hq)');
+    const finalizeStart = cliUpdate.indexOf('async fn finalize_convergence(');
+    const reaimStart = cliUpdate.indexOf('/// Build a one-shot re-aim', finalizeStart);
+    const finalize = cliUpdate.slice(finalizeStart, reaimStart);
+    expect(afterInstall).toContain('finalize_convergence(');
+    expect(finalize).toContain('let post_install_hq = paths::resolve_bin("hq");');
+    expect(finalize).toContain('resolved_hq_version(&hq)');
     expect(afterInstall).toContain('before_version.as_deref()');
     // The gate must be fed the execution-bound probe, never `get_local_version`'s
     // `npm root -g` fallback — that reading moves to `latest` for exactly the
@@ -208,10 +212,10 @@ describe('master automatic-updates switch', () => {
       'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);',
     );
     expect(normalizedCliUpdate).toContain(
-      'InstallExecutor::Pnpm => { install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await }',
+      'InstallExecutor::Pnpm => { install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked) .await .map_err(Into::into) }',
     );
     expect(normalizedCliUpdate).toContain(
-      'InstallExecutor::Bun => { install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await }',
+      'InstallExecutor::Bun => { install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked) .await .map_err(Into::into) }',
     );
     // Convergence is judged by re-resolving the binary the app executes, the
     // same rule the npm branch follows — not by trusting pnpm's zero exit.
@@ -245,7 +249,7 @@ describe('master automatic-updates switch', () => {
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
     // the version the app compares against is the version it installs.
     const npmBranchStart = cliUpdate.indexOf('let prefix = if first_install {');
-    const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
+    const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retry_attempt(\n        &npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
     expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);
     const npmBranch = cliUpdate.slice(npmBranchStart, npmBranchEnd);
