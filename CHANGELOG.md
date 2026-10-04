@@ -9,13 +9,24 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 - Setup no longer says "Claude Code is installed. Sign in to finish." on a Mac that has only the Claude desktop app. Setup needs Claude Code itself, so it now shows "Install Claude", which installs Claude Code and opens its sign-in in one step. Codex works the same way with the ChatGPT app. HQ now also finds the Codex that comes inside current versions of the ChatGPT app, so people with the ChatGPT app can sign in to Codex without installing it separately. If a sign-in check still fails, the message names Claude Code or Codex and says to make sure it is installed. The coding-tool step on the welcome channel now only installs and signs in to Claude Code or Codex: the "Set up with Claude" and "Set up with ChatGPT" buttons and the "Already use Claude Code or Codex?" card are gone from it. The setup assistant offers to continue in Claude or Codex itself, and the Launch menu in the top right still opens your HQ folder in either one.
 
+- Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
+- First-launch join-key rollout assignments now use the public flag resolver.
+- CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
+- Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
+
+- Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
+- Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
+
+## [0.10.390] — 2026-10-04
 
 - Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
 
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
+
+- HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
 
 ## [0.10.389] — 2026-10-04
 

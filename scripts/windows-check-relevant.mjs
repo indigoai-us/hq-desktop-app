@@ -42,7 +42,6 @@ export const WINDOWS_RELEVANT_PATTERNS = [
   "apps/sync/package.json",
   "apps/sync/pnpm-lock.yaml",
   "apps/sync/pnpm-workspace.yaml",
-  "imports/hq-installer-react/**",
   "crates/**",
   "Cargo.toml",
   "Cargo.lock",

@@ -31,7 +31,7 @@ const onboardingFlags = vi.hoisted(() => ({
 }));
 
 const httpFetch = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
     ok: true,
     status: 200,
     json: async () => ({}),
@@ -2028,14 +2028,14 @@ describe('anonymous installer step pings', () => {
 
   it('uses the persisted install id for the anonymous ping and onboarding session when the first-launch flag is on', async () => {
     const installAttemptId = '22222222-2222-4222-8222-222222222222';
-    httpFetch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        key: 'desktop.first-launch-signin-reach-telemetry-v1',
-        enabled: true,
-      }),
-      text: async () => '',
+    httpFetch.mockImplementation(async (input) => {
+      const key = new URL(String(input)).searchParams.get('key');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ key, enabled: true }),
+        text: async () => '',
+      };
     });
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: true });
     stubOnboardingInvoke({
@@ -2094,10 +2094,139 @@ describe('anonymous installer step pings', () => {
       'desktop.first-launch-signin-reach-telemetry-v1',
     );
     expect(publicFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+    const joinKeyFlagRequest = httpFetch.mock.calls.find((call) => {
+      const [url] = call as unknown as [string, RequestInit];
+      return String(url).includes('/v1/flags/resolve-public') &&
+        new URL(String(url)).searchParams.get('key') === 'desktop.first-launch-join-key-v1';
+    });
+    expect(joinKeyFlagRequest).toBeDefined();
+    const joinKeyFlagUrl = new URL(
+      String((joinKeyFlagRequest as unknown as [string, RequestInit])[0]),
+    );
+    expect(joinKeyFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
+    expect(onboardingFlags.hasFeature).not.toHaveBeenCalledWith(
       'desktop.first-launch-join-key-v1',
     );
   });
+
+  it.each(['error', 'timeout'] as const)(
+    'keeps the first-launch join key off when the public resolver has a %s',
+    async (failure) => {
+      const installAttemptId = '22222222-2222-4222-8222-222222222222';
+      httpFetch.mockImplementation(async (input) => {
+        const key = new URL(String(input)).searchParams.get('key');
+        if (key === 'desktop.first-launch-join-key-v1' && failure === 'timeout') {
+          return new Promise<never>(() => {});
+        }
+        if (failure === 'error') throw new Error('public resolver unavailable');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ key, enabled: false }),
+          text: async () => '',
+        };
+      });
+      stubOnboardingInvoke({
+        is_first_run: () => true,
+        desktop_install_attempt_id: () => installAttemptId,
+      });
+      component = mount(OnboardingWizard, {
+        target: host,
+        props: { initialStep: 0 },
+      });
+      if (failure === 'timeout') {
+        await flush();
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.some(
+          ([command, args]) =>
+            command === 'emit_desktop_operational_telemetry' &&
+            (args as {
+              eventName?: string;
+              properties?: { step?: string; action?: string };
+            }).eventName === 'desktop_onboarding_step' &&
+            (args as {
+              properties?: { step?: string; action?: string };
+            }).properties?.step === 'welcome-signin',
+        ),
+      );
+
+      const joinKeyRequest = httpFetch.mock.calls.find((call) => {
+        const [url] = call as unknown as [string, RequestInit];
+        return new URL(String(url)).searchParams.get('key') === 'desktop.first-launch-join-key-v1';
+      });
+      expect(joinKeyRequest).toBeDefined();
+      expect(onboardingFlags.hasFeature).not.toHaveBeenCalledWith(
+        'desktop.first-launch-join-key-v1',
+      );
+      const firstWelcomeEvent = tauri.invoke.mock.calls.find(
+        ([command, args]) =>
+          command === 'emit_desktop_operational_telemetry' &&
+          (args as {
+            eventName?: string;
+            properties?: { step?: string };
+          }).eventName === 'desktop_onboarding_step' &&
+          (args as {
+            properties?: { step?: string };
+          }).properties?.step === 'welcome-signin',
+      )?.[1] as { sessionId?: string } | undefined;
+      expect(firstWelcomeEvent?.sessionId).not.toBe(installAttemptId);
+    },
+  );
+
+  it.each([
+    ['missing', (): string | null => null],
+    ['non-UUID', (): string | null => 'not-a-uuid'],
+    ['unreadable', (): string | null => { throw new Error('native id unavailable'); }],
+  ] as const)(
+    'leaves the first-launch join key off when the persisted install id is %s',
+    async (_condition, readInstallAttemptId) => {
+      httpFetch.mockImplementation(async (input) => {
+        const key = new URL(String(input)).searchParams.get('key');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ key, enabled: true }),
+          text: async () => '',
+        };
+      });
+      stubOnboardingInvoke({
+        is_first_run: () => true,
+        desktop_install_attempt_id: readInstallAttemptId,
+      });
+      component = mount(OnboardingWizard, {
+        target: host,
+        props: { initialStep: 0 },
+      });
+
+      await flushUntil(() =>
+        tauri.invoke.mock.calls.filter(
+          ([command, args]) =>
+            command === 'emit_desktop_operational_telemetry' &&
+            (args as {
+              eventName?: string;
+              properties?: { step?: string; action?: string };
+            }).eventName === 'desktop_onboarding_step' &&
+            (args as {
+              properties?: { step?: string; action?: string };
+            }).properties?.step === 'welcome-signin' &&
+            (args as {
+              properties?: { step?: string; action?: string };
+            }).properties?.action === 'entered',
+        ).length === 2,
+      );
+
+      expect(httpFetch.mock.calls.some((call) => {
+        const [url] = call as unknown as [string, RequestInit];
+        return new URL(String(url)).searchParams.get('key') === 'desktop.first-launch-join-key-v1';
+      })).toBe(false);
+      expect(onboardingFlags.hasFeature).not.toHaveBeenCalledWith(
+        'desktop.first-launch-join-key-v1',
+      );
+    },
+  );
 
   it('keeps both welcome-signin entered rows on first launch when the join-key flag is off', async () => {
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });

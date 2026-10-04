@@ -763,7 +763,7 @@ pub fn personalize_hq() -> Result<(), String> {
 pub async fn import_existing_setup() -> Result<(), String> {
     crate::util::logfile::log(
         "import",
-        "import stage skipped — existing-setup import not yet wired (see imports/hq-installer-react/src/lib/import-existing.ts)",
+        "import stage skipped — existing-setup import not yet wired",
     );
     // TODO: wire the import mechanism and verification before porting the
     // installer scan/spawn process from import-existing.ts.

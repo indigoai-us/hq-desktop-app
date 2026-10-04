@@ -72,6 +72,30 @@ function conversationApi(messages: ConversationMessageWire[]): ConversationApi {
 }
 
 describe("US-001: Wire reply fields and hide replies from the main timeline", () => {
+  it("Given an untagged agt_ reply, when humanOnly is enabled, then it remains in the conversation", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ConversationView, {
+      target: host,
+      props: {
+        api: conversationApi([
+          {
+            eventId: "evt_reader_facing_agent",
+            body: "agent summary for people",
+            createdAt: "2026-08-17T03:00:00.000Z",
+            fromPersonUid: "agt_scout",
+            fromDisplayName: "Scout",
+          },
+        ]),
+        row: channelRow,
+        humanOnly: true,
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("agent summary for people");
+    });
+  });
+
   it("Given a channel page that includes one root and one reply, when the conversation opens, then only the root body is visible in the main timeline", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
