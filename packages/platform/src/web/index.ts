@@ -9,10 +9,14 @@
 
 import {
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
+  INTEGRATION_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
+  integrationAppRefBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -20,10 +24,13 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
+  withHttpStatus,
+  withoutSecret,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
+  type IntegrationOAuthStart,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -245,6 +252,9 @@ export const WEB_PATHS = {
   agentPauseJob: AGENT_PATHS.pauseJob,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
+  agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
+  agentReauth: AGENT_PATHS.reauth,
+  agentLoginCode: AGENT_PATHS.loginCode,
   agentDeprovision: AGENT_PATHS.deprovision,
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
@@ -532,8 +542,17 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
+    return (await this.requestAttempt<T>(method, path, body)).result;
+  }
+
+  /** {@link request}, with the HTTP status of the answer the caller ends up with. */
+  private requestAttempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<WebAttempt<T>> {
     let lambdaInvokeRetried = false;
-    const attempted = await retryThrottled<WebAttempt<T>>(
+    return retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
       (outcome) => {
         if (
@@ -553,7 +572,24 @@ export class WebPlatformAdapter implements PlatformAdapter {
       },
       this.requestPolicy,
     );
-    return attempted.result;
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code.
+   */
+  private postWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    return this.requestWithStatus<T>("POST", path, body);
+  }
+
+  /** {@link request}, with the HTTP status on a failure. */
+  private async requestWithStatus<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await this.requestAttempt<T>(method, path, body);
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   private async attempt<T>(
@@ -639,6 +675,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
         : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+    // The browser build has no company flag source: every company flag is off.
+    hasCompanyFeature: () => Promise.resolve(false),
     subscribeFeature: (flag, onChange) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? () => {}
@@ -817,6 +855,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
         body,
         ...(extras?.attachments && extras.attachments.length > 0
           ? { attachments: extras.attachments }
+          : {}),
+        ...(extras?.audience ? { audience: extras.audience } : {}),
+        ...(extras?.idempotencyKey?.trim()
+          ? { idempotencyKey: extras.idempotencyKey.trim() }
           : {}),
       }),
     // Mirrors the Rust `build_compose_payload` contract: exactly one
@@ -1001,7 +1043,19 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly agents: PlatformAdapter["agents"] = {
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
-    getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
+    getStatus: (agentUid, brain) => this.get(WEB_PATHS.agentStatus(agentUid, brain)),
+    restartBrainApproval: (agentUid, brain) =>
+      this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
+    submitClaudeLoginCode: (agentUid, code) =>
+      this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    attachSlack: (agentUid) =>
+      this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
+    // The token goes in the body only. The path names the bot, nothing else.
+    submitSlackAppToken: async (agentUid, appToken) =>
+      withoutSecret(
+        await this.postWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+        appToken,
+      ),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
@@ -1011,12 +1065,34 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
     stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
     start: (agentUid) => this.post(WEB_PATHS.agentStart(agentUid)),
-    deprovision: (agentUid) =>
-      this.request("DELETE", WEB_PATHS.agentDeprovision(agentUid)),
+    retryProvisioning: (agentUid) =>
+      this.post(WEB_PATHS.agentRetryProvisioning(agentUid)),
+    deprovision: (agentUid, options) =>
+      this.request(
+        "DELETE",
+        WEB_PATHS.agentDeprovision(agentUid, options?.confirmDestroyInstanceId),
+      ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+  };
+
+  readonly integrations: PlatformAdapter["integrations"] = {
+    listConnections: (companyUid) =>
+      this.get(INTEGRATION_PATHS.connections(companyUid)),
+    grantConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    catalogSearch: (companyUid, query, limit) =>
+      this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+    // No redirectUri: the server's default lands on the console's callback.
+    startOAuth: (input) =>
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+    // The key goes in the body only, and is taken out of any failure's text.
+    install: async (input) =>
+      withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
+    blueprint: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {

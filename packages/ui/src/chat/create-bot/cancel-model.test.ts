@@ -1,0 +1,623 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  beginBotRemoval,
+  botRemovalDismissLabel,
+  botRemovalKeepsBot,
+  botRemovalLine,
+  botRemovalRetryLabel,
+  canRetryBotRemoval,
+  cancelBotConfirmCopy,
+  loadAccountBotRemovals,
+  loadAccountRemovedBots,
+  loadOpenBotRemovals,
+  loadRemovedBots,
+  readBotRemovalAnswer,
+  readCancelledCreate,
+  rememberRemovedBot,
+  resolveCancelledCreate,
+  runBotRemoval,
+  saveOpenBotRemovals,
+  startBotRemoval,
+  type BotRemoval,
+  type BotRemovalPhase,
+  type CancelledCreateAnswer,
+  type CancelledCreateLookup,
+  type BotRemovalProblem,
+} from "./cancel-model.js";
+
+const noWait = async (): Promise<void> => {};
+
+/** The long dash, which screen copy never uses. Built from its code so this file has none. */
+const LONG_DASH = String.fromCharCode(0x2014);
+
+function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value); },
+  };
+}
+
+describe("readBotRemovalAnswer", () => {
+  it("says removed only on the server's own word", () => {
+    expect(readBotRemovalAnswer({ ok: true, value: { terminal: true } })).toEqual({ kind: "removed" });
+    expect(
+      readBotRemovalAnswer({ ok: true, value: { terminal: false, setupState: { phase: "deprovisioned" } } }),
+    ).toEqual({ kind: "removed" });
+    // Removal started and has more to do.
+    expect(
+      readBotRemovalAnswer({ ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }),
+    ).toEqual({ kind: "working" });
+    // A success that does not say the bot is gone is not treated as gone.
+    expect(readBotRemovalAnswer({ ok: true, value: {} })).toEqual({ kind: "working" });
+    expect(readBotRemovalAnswer({ ok: true })).toEqual({ kind: "working" });
+  });
+
+  it("reads the refusals the server can answer with", () => {
+    expect(
+      readBotRemovalAnswer({ ok: false, code: "STEP_ALREADY_IN_PROGRESS" }),
+    ).toEqual({ kind: "busy" });
+    expect(
+      readBotRemovalAnswer({ ok: false, code: "AGENTS_V2_BOX_PROTECTED", instanceId: "i-0abc1234def567890" }),
+    ).toEqual({ kind: "name-machine", instanceId: "i-0abc1234def567890" });
+    // The same refusal without the machine cannot be answered.
+    expect(readBotRemovalAnswer({ ok: false, code: "AGENTS_V2_BOX_PROTECTED" })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "http-403" })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(
+      readBotRemovalAnswer({ ok: false, code: "TEAM_SETUP_AGENT_PROTECTED" }),
+    ).toEqual({ kind: "refused", problem: "plan-bot" });
+  });
+
+  it("reads a 403 that carries a code of its own as not allowed (review A-I9)", () => {
+    // A refusal whose body has a code arrives under that code, not "http-403".
+    // It used to read as a plain failure: three tries, then "It still exists".
+    expect(readBotRemovalAnswer({ ok: false, code: "FORBIDDEN", status: 403 })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "SOME_NEW_CODE", status: 403 })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "FORBIDDEN" })).toEqual({ kind: "refused", problem: "not-allowed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "REMOVE_NOT_ALLOWED" })).toEqual({ kind: "refused", problem: "not-allowed" });
+    // The refusals with a meaning of their own keep it, whatever their status.
+    expect(readBotRemovalAnswer({ ok: false, code: "TEAM_SETUP_AGENT_PROTECTED", status: 403 })).toEqual({ kind: "refused", problem: "plan-bot" });
+    expect(readBotRemovalAnswer({ ok: false, code: "STEP_ALREADY_IN_PROGRESS", status: 409 })).toEqual({ kind: "busy" });
+  });
+
+  it("reads a bot the server no longer has as removed (review A-I9)", () => {
+    // This test used to assert the opposite: a 404 counted as a failure, so a
+    // bot that was already gone read "We couldn't remove Nova. It still
+    // exists." That is the behaviour the review asked to change.
+    expect(readBotRemovalAnswer({ ok: false, code: "http-404" })).toEqual({ kind: "removed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "AGENT_NOT_FOUND", status: 404 })).toEqual({ kind: "removed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "AGENT_NOT_FOUND" })).toEqual({ kind: "removed" });
+  });
+
+  it("treats everything else as a failure", () => {
+    expect(readBotRemovalAnswer({ ok: false, code: "http-502" })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "http-500", status: 500 })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer({ ok: false, code: "network" })).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer(null)).toEqual({ kind: "failed" });
+    expect(readBotRemovalAnswer(undefined)).toEqual({ kind: "failed" });
+  });
+});
+
+describe("runBotRemoval", () => {
+  it("removes a bot the server takes down in one request", async () => {
+    const remove = vi.fn(async () => ({ ok: true, value: { terminal: true } }));
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("agt_nova", undefined);
+  });
+
+  it("names the running computer when the server asks for it, then keeps naming it", async () => {
+    const answers = [
+      { ok: false, code: "AGENTS_V2_BOX_PROTECTED", instanceId: "i-0abc1234def567890" },
+      { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } },
+      { ok: true, value: { terminal: true } },
+    ];
+    const remove = vi.fn(async () => answers.shift());
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove.mock.calls).toEqual([
+      ["agt_nova", undefined],
+      ["agt_nova", { confirmDestroyInstanceId: "i-0abc1234def567890" }],
+      ["agt_nova", { confirmDestroyInstanceId: "i-0abc1234def567890" }],
+    ]);
+  });
+
+  it("stops when naming the computer does not help", async () => {
+    const remove = vi.fn(async () => ({
+      ok: false,
+      code: "AGENTS_V2_BOX_PROTECTED",
+      instanceId: "i-0abc1234def567890",
+    }));
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("error");
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits and asks again while the server is busy with a setup step", async () => {
+    const sleep = vi.fn(noWait);
+    const answers = [
+      { ok: false, code: "STEP_ALREADY_IN_PROGRESS" },
+      { ok: false, code: "STEP_ALREADY_IN_PROGRESS" },
+      { ok: true, value: { terminal: true } },
+    ];
+    const remove = vi.fn(async () => answers.shift());
+    await expect(runBotRemoval("agt_nova", remove, { sleep, retryMs: 250 })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(250);
+  });
+
+  it("gives up after three failed requests in a row, and a thrown request counts as one", async () => {
+    let calls = 0;
+    const remove = vi.fn(async () => {
+      calls += 1;
+      if (calls === 2) throw new Error("offline");
+      return { ok: false, code: "http-502" };
+    });
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("error");
+    expect(remove).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not report removed, or failed, when the server never finishes (review A-I9)", async () => {
+    // This test used to expect "error" after `maxRequests` answers of "still
+    // removing". A removal the server accepted is not a failure, so those
+    // answers now have their own allowance and their own outcome.
+    const remove = vi.fn(async () => ({ ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }));
+    await expect(
+      runBotRemoval("agt_nova", remove, { sleep: noWait, maxRequests: 5, maxWorkingRequests: 9 }),
+    ).resolves.toBe("still-removing");
+    expect(remove).toHaveBeenCalledTimes(9);
+  });
+
+  it("sits through a teardown longer than three minutes and then says removed", async () => {
+    // 36 answers at 5 seconds was the whole allowance. A computer that takes
+    // longer to go was reported as "We couldn't remove Nova. It still exists."
+    let calls = 0;
+    const remove = vi.fn(async () => {
+      calls += 1;
+      return calls <= 60
+        ? { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } }
+        : { ok: true, value: { terminal: true, setupState: { phase: "deprovisioned" } } };
+    });
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(61);
+  });
+
+  it("still gives up on a server that stays busy, and counts those apart from a teardown under way", async () => {
+    const answers: unknown[] = [
+      { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } },
+      { ok: true, value: { terminal: false, setupState: { phase: "deprovisioning" } } },
+    ];
+    const remove = vi.fn(async () => answers.shift() ?? { ok: false, code: "STEP_ALREADY_IN_PROGRESS" });
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait, maxRequests: 4 })).resolves.toBe("error");
+    // Two "still removing" answers, then the four busy ones the run allows.
+    expect(remove).toHaveBeenCalledTimes(6);
+  });
+
+  it("says removed when the server no longer has the bot", async () => {
+    const remove = vi.fn(async () => ({ ok: false, reason: "error", code: "http-404", status: 404 }));
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not keep asking when the server will not remove the bot for this person", async () => {
+    const remove = vi.fn(async () => ({ ok: false, code: "http-403" }));
+    await expect(runBotRemoval("agt_nova", remove, { sleep: noWait })).resolves.toBe("not-allowed");
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    const planBot = vi.fn(async () => ({ ok: false, code: "TEAM_SETUP_AGENT_PROTECTED" }));
+    await expect(runBotRemoval("agt_nova", planBot, { sleep: noWait })).resolves.toBe("plan-bot");
+    expect(planBot).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks nothing for a bot with no id", async () => {
+    const remove = vi.fn();
+    await expect(runBotRemoval("  ", remove, { sleep: noWait })).resolves.toBe("unknown-bot");
+    expect(remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("a removal run that must not outlive its sidebar (review item 3)", () => {
+  const WORKING = { ok: true, value: { setupState: { phase: "deprovisioning" } } };
+  const GONE = { ok: true, value: { terminal: true } };
+
+  it("asks nothing more once it is stopped, and decides nothing", async () => {
+    const controller = new AbortController();
+    const remove = vi.fn(async () => {
+      if (remove.mock.calls.length === 2) controller.abort();
+      return WORKING;
+    });
+    const outcome = await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal });
+
+    expect(outcome).toBe("stopped");
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends no request at all when it is stopped before it starts", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const remove = vi.fn(async () => WORKING);
+    expect(await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal })).toBe("stopped");
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("still reports removed when the server says so as the run is stopped", async () => {
+    const controller = new AbortController();
+    const remove = vi.fn(async () => {
+      controller.abort();
+      return GONE;
+    });
+    expect(await runBotRemoval("agt_nova", remove, { sleep: noWait, signal: controller.signal })).toBe("removed");
+  });
+
+  it("ends its wait at once when stopped, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const remove = vi.fn(async () => WORKING);
+      const run = runBotRemoval("agt_nova", remove, { retryMs: 5_000, signal: controller.signal });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      controller.abort();
+      expect(await run).toBe("stopped");
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(remove).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks nothing while the window is hidden, and goes on when it can be seen", async () => {
+    let show!: () => void;
+    let hidden = false;
+    const whenVisible = vi.fn(() => (hidden ? new Promise<void>((resolve) => { show = resolve; }) : Promise.resolve()));
+    const remove = vi.fn(async () => {
+      if (remove.mock.calls.length === 1) hidden = true;
+      return remove.mock.calls.length >= 3 ? GONE : WORKING;
+    });
+    const run = runBotRemoval("agt_nova", remove, { sleep: noWait, whenVisible });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // One request went out before the window was hidden. None since.
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    hidden = false;
+    show();
+    expect(await run).toBe("removed");
+    expect(remove).toHaveBeenCalledTimes(3);
+  });
+
+  it("waits on the document by default: hidden holds the run, visible lets it go on", async () => {
+    const page = Object.assign(new EventTarget(), { hidden: true });
+    vi.stubGlobal("document", page);
+    try {
+      const remove = vi.fn(async () => GONE);
+      const run = runBotRemoval("agt_nova", remove, { sleep: noWait });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(remove).not.toHaveBeenCalled();
+
+      page.hidden = false;
+      page.dispatchEvent(new Event("visibilitychange"));
+      expect(await run).toBe("removed");
+      expect(remove).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps one run per bot: starting a second stops the first", async () => {
+    const releases: Array<(answer: unknown) => void> = [];
+    const remove = vi.fn(() => new Promise<unknown>((resolve) => { releases.push(resolve); }));
+    const first = startBotRemoval("agt_nova", remove, { sleep: noWait });
+    await Promise.resolve();
+    const second = startBotRemoval(" agt_nova ", remove, { sleep: noWait });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(remove).toHaveBeenCalledTimes(2);
+
+    // The first run's request comes back "still working": it asks no more.
+    releases[0]!(WORKING);
+    expect(await first.done).toBe("stopped");
+    releases[1]!(WORKING);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(remove).toHaveBeenCalledTimes(3);
+    releases[2]!(GONE);
+    expect(await second.done).toBe("removed");
+    // A run for another bot is not touched.
+    const other = startBotRemoval("agt_vega", async () => GONE, { sleep: noWait });
+    expect(await other.done).toBe("removed");
+  });
+
+  it("stops when asked to", async () => {
+    const remove = vi.fn(async () => WORKING);
+    const run = startBotRemoval("agt_nova", remove, { sleep: noWait });
+    run.stop();
+    expect(await run.done).toBe("stopped");
+    const asked = remove.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(remove.mock.calls.length).toBe(asked);
+    expect(asked).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("what the person reads", () => {
+  const phases: Array<[BotRemovalPhase, BotRemovalProblem | null]> = [
+    ["stopping", null],
+    ["removing", null],
+    ["removed", null],
+    ["not-created", null],
+    ["failed", "error"],
+    ["failed", "not-allowed"],
+    ["failed", "plan-bot"],
+    ["failed", "unknown-bot"],
+    ["failed", "still-removing"],
+  ];
+
+  it("names the bot on every line, in plain words", () => {
+    for (const [phase, problem] of phases) {
+      const line = botRemovalLine({ name: "Nova", phase, problem });
+      expect(line).toContain("Nova");
+      expect(line).not.toContain(LONG_DASH);
+      expect(line).not.toMatch(/deprovision|decommission|instance|identity|membership|vault|runtime|step/i);
+    }
+  });
+
+  it("never says removed for a bot that still exists", () => {
+    expect(botRemovalLine({ name: "Nova", phase: "removed", problem: null })).toBe("Nova was removed.");
+    for (const [phase, problem] of phases.filter(([value]) => value !== "removed")) {
+      expect(botRemovalLine({ name: "Nova", phase, problem })).not.toContain("was removed");
+    }
+    expect(botRemovalLine({ name: "Nova", phase: "failed", problem: "error" })).toBe(
+      "We couldn't remove Nova. It still exists.",
+    );
+  });
+
+  it("says a bot the server is still taking down is on its way out, and never offers to keep it (review A-I9)", () => {
+    const stillRemoving = { name: "Nova", agentUid: "agt_nova", phase: "failed" as const, problem: "still-removing" as const };
+    expect(botRemovalLine(stillRemoving)).toBe("Nova is still being removed. This is taking longer than usual.");
+    expect(canRetryBotRemoval(stillRemoving)).toBe(true);
+    expect(botRemovalRetryLabel(stillRemoving)).toBe("Check again");
+    expect(botRemovalRetryLabel({ problem: "error" })).toBe("Try again");
+    // "Keep Nova" used to be offered here, and it started a waiting screen
+    // for a bot that was being taken down.
+    expect(botRemovalDismissLabel(stillRemoving)).toBe("OK");
+    expect(botRemovalKeepsBot(stillRemoving)).toBe(false);
+    expect(botRemovalKeepsBot({ ...stillRemoving, problem: "error" })).toBe(true);
+    expect(botRemovalKeepsBot({ ...stillRemoving, problem: "not-allowed" })).toBe(false);
+  });
+
+  it("offers Try again only when asking again can help", () => {
+    const base = { agentUid: "agt_nova", phase: "failed" as const };
+    expect(canRetryBotRemoval({ ...base, problem: "error" })).toBe(true);
+    expect(canRetryBotRemoval({ ...base, problem: "not-allowed" })).toBe(false);
+    expect(canRetryBotRemoval({ ...base, problem: "plan-bot" })).toBe(false);
+    expect(canRetryBotRemoval({ agentUid: "", phase: "failed", problem: "unknown-bot" })).toBe(false);
+    expect(canRetryBotRemoval({ agentUid: "agt_nova", phase: "removing", problem: null })).toBe(false);
+  });
+
+  it("says the bot is kept when a removal that could be asked again is put away", () => {
+    const base = { name: "Nova", agentUid: "agt_nova", phase: "failed" as const };
+    expect(botRemovalDismissLabel({ ...base, problem: "error" })).toBe("Keep Nova");
+    expect(botRemovalDismissLabel({ ...base, problem: "not-allowed" })).toBe("OK");
+    expect(botRemovalDismissLabel({ ...base, problem: "plan-bot" })).toBe("OK");
+    expect(botRemovalDismissLabel({ ...base, agentUid: "", problem: "unknown-bot" })).toBe("OK");
+  });
+
+  it("asks before removing a bot that exists, naming the bot and the company", () => {
+    const copy = cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme" });
+    expect(copy.title).toBe("Cancel Nova?");
+    expect(copy.body).toContain("Nova will be removed from Acme");
+    expect(copy.confirm).toBe("Remove Nova");
+    expect(copy.keep).toBe("Keep Nova");
+    expect(`${copy.title} ${copy.body}`).not.toContain(LONG_DASH);
+  });
+});
+
+describe("Cancel for a person who may not remove the bot (review A-I8)", () => {
+  it("says who can remove it and offers to close, with no promise of removal", () => {
+    const copy = cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme", canRemove: false });
+    expect(copy).toEqual({
+      title: "You can't remove Nova",
+      body: "Nova has already been created in Acme. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova.",
+      confirm: "Close",
+      keep: "Keep waiting",
+    });
+    expect(`${copy.title} ${copy.body} ${copy.confirm}`).not.toMatch(/will be removed|Remove Nova|undone/);
+    expect(`${copy.title} ${copy.body}`).not.toContain(LONG_DASH);
+    expect(cancelBotConfirmCopy({ name: "Nova", canRemove: false }).body).toBe(
+      "Nova has already been created. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova.",
+    );
+  });
+
+  it("keeps the removal wording when the person may remove it, or when that is not known", () => {
+    expect(cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme", canRemove: true }).confirm).toBe("Remove Nova");
+    expect(cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme" }).confirm).toBe("Remove Nova");
+  });
+});
+
+describe("cancelled bots across restarts", () => {
+  it("starts a cancel in the right phase", () => {
+    expect(beginBotRemoval({ name: "Nova", companyUid: "cmp_acme" }).phase).toBe("stopping");
+    expect(beginBotRemoval({ name: "Nova", companyUid: "cmp_acme", agentUid: "agt_nova" }).phase).toBe("removing");
+  });
+
+  it("keeps bots that still exist and are known by id, and nothing else", () => {
+    const storage = memoryStorage();
+    const removing = beginBotRemoval({ name: "Nova", companyUid: "cmp_acme", agentUid: "agt_nova", brain: "claude", hadRow: true });
+    const failed: BotRemoval = {
+      ...beginBotRemoval({ name: "Rex", companyUid: "cmp_acme", agentUid: "agt_rex" }),
+      phase: "failed",
+      problem: "not-allowed",
+    };
+    const stopping = beginBotRemoval({ name: "Ivy", companyUid: "cmp_acme" });
+    const removed: BotRemoval = { ...beginBotRemoval({ name: "Old", companyUid: "cmp_acme", agentUid: "agt_old" }), phase: "removed" };
+    saveOpenBotRemovals([removing, failed, stopping, removed], storage);
+
+    const loaded = loadOpenBotRemovals(storage);
+    expect(loaded.map((removal) => [removal.agentUid, removal.phase, removal.problem, removal.hadRow, removal.brain])).toEqual([
+      ["agt_nova", "removing", null, true, "claude"],
+      ["agt_rex", "failed", "not-allowed", false, null],
+    ]);
+  });
+
+  it("reads nothing from missing or damaged storage", () => {
+    expect(loadOpenBotRemovals(null)).toEqual([]);
+    expect(loadOpenBotRemovals({ getItem: () => "{not json" })).toEqual([]);
+    expect(loadRemovedBots({ getItem: () => "{not json" })).toEqual([]);
+  });
+
+  it("remembers removed bots once each", () => {
+    const storage = memoryStorage();
+    let uids = rememberRemovedBot([], "agt_nova", storage);
+    uids = rememberRemovedBot(uids, "agt_nova", storage);
+    uids = rememberRemovedBot(uids, "agt_rex", storage);
+    expect(uids).toEqual(["agt_rex", "agt_nova"]);
+    expect(loadRemovedBots(storage)).toEqual(["agt_rex", "agt_nova"]);
+  });
+});
+
+describe("what a cancelled create made (review A-C5)", () => {
+  const CREATED: CancelledCreateAnswer = { ok: true, target: { cardId: null, channelId: "", agentUid: "agt_woah" } };
+  const UPGRADE: CancelledCreateAnswer = { ok: true, target: { cardId: "card_upgrade", channelId: "chn_team" } };
+  const REFUSED: CancelledCreateAnswer = { ok: false, reason: "A bot with that name already exists in this company. Try a different name." };
+  const NO_ANSWER: CancelledCreateAnswer = { ok: false, reason: "The request timed out.", outcomeUnknown: true };
+  const FOUND: CancelledCreateLookup = { kind: "found", agentUid: "agt_woah" };
+  const ABSENT: CancelledCreateLookup = { kind: "absent" };
+
+  it("reads the create's own answer for what it says", () => {
+    expect(readCancelledCreate(CREATED)).toEqual({ kind: "created", agentUid: "agt_woah", channelId: "" });
+    expect(readCancelledCreate({ ok: true, target: { channelId: " chn_old " } })).toEqual({
+      kind: "created",
+      agentUid: "",
+      channelId: "chn_old",
+    });
+    expect(readCancelledCreate(UPGRADE)).toEqual({ kind: "not-created" });
+    expect(readCancelledCreate(REFUSED)).toEqual({ kind: "not-created" });
+    expect(readCancelledCreate({ ok: true, target: {} })).toEqual({ kind: "not-created" });
+  });
+
+  it("never reads silence as nothing created", () => {
+    expect(readCancelledCreate(NO_ANSWER)).toEqual({ kind: "unknown" });
+    expect(readCancelledCreate(null)).toEqual({ kind: "unknown" });
+    expect(readCancelledCreate(undefined)).toEqual({ kind: "unknown" });
+  });
+
+  it("does not look when the create's own answer says what was made", async () => {
+    const lookup = vi.fn(async () => FOUND);
+    expect(await resolveCancelledCreate(REFUSED, lookup, { sleep: noWait })).toEqual({ kind: "not-created" });
+    expect(await resolveCancelledCreate(UPGRADE, lookup, { sleep: noWait })).toEqual({ kind: "not-created" });
+    expect(await resolveCancelledCreate(CREATED, lookup, { sleep: noWait })).toMatchObject({ kind: "created" });
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("looks for the bot after no answer, waits first, and takes the bot it finds", async () => {
+    const waits: number[] = [];
+    const lookup = vi.fn(async () => FOUND);
+    const outcome = await resolveCancelledCreate(NO_ANSWER, lookup, {
+      sleep: async (ms) => { waits.push(ms); },
+    });
+
+    expect(outcome).toEqual({ kind: "created", agentUid: "agt_woah", channelId: "" });
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(waits).toEqual([10_000]);
+  });
+
+  it("looks three times, at about 10, 20 and 40 s, and stays unknown when the bot is never there", async () => {
+    const waits: number[] = [];
+    const lookup = vi
+      .fn<() => Promise<CancelledCreateLookup>>()
+      .mockResolvedValueOnce(ABSENT)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ kind: "unreadable" });
+    const outcome = await resolveCancelledCreate(null, lookup, {
+      sleep: async (ms) => { waits.push(ms); },
+    });
+
+    // Not found is not "nothing was created": the request may never have
+    // arrived, or may still be running.
+    expect(outcome).toEqual({ kind: "unknown" });
+    expect(lookup).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([10_000, 20_000, 40_000]);
+  });
+
+  it("takes a bot that shows up on a later look", async () => {
+    const lookup = vi
+      .fn<() => Promise<CancelledCreateLookup>>()
+      .mockResolvedValueOnce(ABSENT)
+      .mockResolvedValueOnce(FOUND);
+
+    expect(await resolveCancelledCreate(NO_ANSWER, lookup, { sleep: noWait })).toEqual({
+      kind: "created",
+      agentUid: "agt_woah",
+      channelId: "",
+    });
+    expect(lookup).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops looking, and claims nothing, when a bot has the handle but nothing shows this create made it", async () => {
+    const lookup = vi.fn(async (): Promise<CancelledCreateLookup> => ({ kind: "unproven" }));
+    expect(await resolveCancelledCreate(NO_ANSWER, lookup, { sleep: noWait })).toEqual({ kind: "unknown" });
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops looking once nobody waits for the outcome", async () => {
+    const lookup = vi.fn(async () => ABSENT);
+    let looks = 0;
+    const outcome = await resolveCancelledCreate(NO_ANSWER, lookup, {
+      sleep: noWait,
+      stopped: () => (looks += 1) > 1,
+    });
+    expect(outcome).toEqual({ kind: "unknown" });
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays unknown when there is no way to look", async () => {
+    expect(await resolveCancelledCreate(NO_ANSWER, null, { sleep: noWait })).toEqual({ kind: "unknown" });
+  });
+
+  it("tells the person it could not confirm, and does not say nothing was created", () => {
+    const line = botRemovalLine({ name: "Woah", phase: "unconfirmed", problem: null });
+    expect(line).toBe(
+      "We couldn't confirm whether Woah was created. If it shows up in your bots, remove it from Settings, under Bots.",
+    );
+    expect(line).not.toContain("Nothing was created");
+    expect(line).not.toContain(LONG_DASH);
+    expect(canRetryBotRemoval({ phase: "unconfirmed", agentUid: "", problem: null })).toBe(false);
+  });
+});
+
+describe("cancelled bots are kept for the account (round 4, item 1)", () => {
+  const removing = (agentUid: string): BotRemoval => beginBotRemoval({ name: agentUid, companyUid: "cmp_indigo", agentUid, hadRow: true });
+
+  it("reads the account's list, and takes over once what the old per-company place still holds", () => {
+    const account = memoryStorage();
+    const legacy = memoryStorage();
+    saveOpenBotRemovals([removing("agt_a")], account);
+    saveOpenBotRemovals([removing("agt_a"), removing("agt_b")], legacy);
+
+    expect(loadAccountBotRemovals(account, legacy).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+    // Written to the account, and gone from the old place.
+    expect(loadOpenBotRemovals(account).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+    expect(loadOpenBotRemovals(legacy)).toEqual([]);
+    // A second read finds nothing more to take over.
+    expect(loadAccountBotRemovals(account, legacy).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+  });
+
+  it("reads the account's list alone when there is no old place", () => {
+    const account = memoryStorage();
+    saveOpenBotRemovals([removing("agt_a")], account);
+    expect(loadAccountBotRemovals(account, null).map((entry) => entry.agentUid)).toEqual(["agt_a"]);
+    expect(loadAccountBotRemovals(null, null)).toEqual([]);
+  });
+
+  it("does the same for the bots that were removed", () => {
+    const account = memoryStorage();
+    const legacy = memoryStorage();
+    rememberRemovedBot([], "agt_x", account);
+    rememberRemovedBot(["agt_x"], "agt_y", legacy);
+
+    expect(loadAccountRemovedBots(account, legacy).sort()).toEqual(["agt_x", "agt_y"]);
+    expect(loadRemovedBots(account).sort()).toEqual(["agt_x", "agt_y"]);
+    expect(loadRemovedBots(legacy)).toEqual([]);
+  });
+});

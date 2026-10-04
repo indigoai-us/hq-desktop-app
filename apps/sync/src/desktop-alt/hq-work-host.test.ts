@@ -7,6 +7,51 @@ import {
 } from './hq-work-host';
 
 describe('subscribeHqWorkNativeWakes', () => {
+  it('forwards a native agent status by shape: channel to agent:status, DM to agent:dm-status', async () => {
+    const listeners = new Map<string, (event: { payload: unknown }) => void>();
+    const listen: TauriEventListener = async (event, handler) => {
+      listeners.set(event, handler as (event: { payload: unknown }) => void);
+      return () => listeners.delete(event);
+    };
+    const emit = vi.fn();
+    const onNotificationWake = vi.fn();
+    const dispose = await subscribeHqWorkNativeWakes({
+      listen,
+      wakes: { emit, on: () => () => {} } as unknown as ChatWakeBus,
+      scope: () => ({ personUid: 'prs_ada', companyUids: new Set(['cmp_indigo']) }),
+      onNotificationWake,
+    });
+
+    const agentStatus = listeners.get('agent:status');
+    expect(agentStatus).toBeTypeOf('function');
+    const ts = '2026-10-03T10:00:00.000Z';
+    const sentAt = '2026-10-03T09:59:58.000Z';
+    agentStatus?.({ payload: { channelId: 'chn_1', agentUid: 'agt_nova', status: 'reading', ts } });
+    agentStatus?.({
+      payload: { agentUid: 'agt_nova', withPersonUid: 'prs_ada', status: 'Searching the web', ts, sentAt, rootEventId: 'evt_root' },
+    });
+    agentStatus?.({ payload: { agentUid: 'agt_nova', status: 'no place to put this', ts } });
+
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenNthCalledWith(1, 'agent:status', {
+      channelId: 'chn_1',
+      agentUid: 'agt_nova',
+      status: 'reading',
+      ts,
+    });
+    expect(emit).toHaveBeenNthCalledWith(2, 'agent:dm-status', {
+      agentUid: 'agt_nova',
+      withPersonUid: 'prs_ada',
+      status: 'Searching the web',
+      ts,
+      sentAt,
+      rootEventId: 'evt_root',
+    });
+    // A status is ephemeral text: it is not a notification.
+    expect(onNotificationWake).not.toHaveBeenCalled();
+    dispose();
+  });
+
   it('forwards separate id-less channel unread snapshots inside the dedupe window', async () => {
     const listeners = new Map<string, (event: { payload: unknown }) => void>();
     const listen: TauriEventListener = async (event, handler) => {
