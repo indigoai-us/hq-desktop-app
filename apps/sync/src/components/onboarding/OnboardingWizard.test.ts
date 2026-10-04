@@ -2083,11 +2083,13 @@ describe('anonymous installer step pings', () => {
     expect(welcomeEntries).toHaveLength(1);
     expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
       .toBe('reached-signin');
-    const publicFlagRequest = httpFetch.mock.calls.find(([url]) =>
-      String(url).includes('/v1/flags/resolve-public'),
+    const publicFlagRequest = httpFetch.mock.calls.find((call) =>
+      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
     );
     expect(publicFlagRequest).toBeDefined();
-    const publicFlagUrl = new URL(String(publicFlagRequest?.[0]));
+    const publicFlagUrl = new URL(
+      String((publicFlagRequest as unknown as [string, RequestInit])[0]),
+    );
     expect(publicFlagUrl.searchParams.get('key')).toBe(
       'desktop.first-launch-signin-reach-telemetry-v1',
     );
