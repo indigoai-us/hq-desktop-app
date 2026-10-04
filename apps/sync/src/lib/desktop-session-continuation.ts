@@ -31,9 +31,6 @@
 /** The protocol version this build implements. */
 export const SUPPORTED_PROTOCOL_VERSION = 1;
 
-/** How long a fetched config is trusted before it is fetched again. */
-export const CONFIG_CACHE_TTL_MS = 120_000;
-
 /** Most receipts held for a backend that is not answering. */
 export const MAX_QUEUED_RECEIPTS = 50;
 
