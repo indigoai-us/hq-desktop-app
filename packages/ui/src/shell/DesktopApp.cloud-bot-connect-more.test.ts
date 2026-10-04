@@ -389,7 +389,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
       ["slack", null, "offered"],
       ["integration", "linear.app", "connected"],
     ]);
-    expect(cardIn(message("e6"), "integration").textContent).toContain("Connected. Let Nova use it?");
+    expect(cardIn(message("e6"), "integration").textContent).toContain("Let Nova use it?");
     // No catalog lookup for an app that is connected.
     expect(w.catalogSearch).not.toHaveBeenCalled();
     expect(cardsIn(message("e2"))).toHaveLength(2);

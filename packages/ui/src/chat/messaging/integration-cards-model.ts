@@ -380,14 +380,17 @@ export function integrationCardView(
   if (connection) {
     const usable = botCanUse(connection, input.record);
     const own = input.facts?.viewerUid !== "" && connection.createdBy === input.facts?.viewerUid;
+    // Every connected card carries the "Connected" mark in its header, so the
+    // line under it says what is true beyond that and never opens with the
+    // same word.
     if (usable) {
-      return { ...base, state: "connected", line: `Connected. ${bot} can use it.`, primaryLabel: null, primaryAction: "allow", mark: "Connected", note: hostNote };
+      return { ...base, state: "connected", line: `${bot} can use it.`, primaryLabel: null, primaryAction: "allow", mark: "Connected", note: hostNote };
     }
     if (own) {
       return {
         ...base,
         state: "connected",
-        line: `Connected. Let ${bot} use it?`,
+        line: `Let ${bot} use it?`,
         primaryLabel: `Let ${bot} use it`,
         primaryAction: "allow",
         primaryPending: pending("allow", connection.id),
@@ -398,7 +401,7 @@ export function integrationCardView(
     return {
       ...base,
       state: "connected",
-      line: `Connected by a teammate. Ask them to share it with ${bot}.`,
+      line: `A teammate connected this. Ask them to share it with ${bot}.`,
       primaryLabel: null,
       primaryAction: "allow",
       mark: "Connected",

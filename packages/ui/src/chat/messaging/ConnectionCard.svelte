@@ -25,10 +25,11 @@
    * both app themes, so no color here comes from a theme variable.
    *
    * Every card is one fixed height in every state (`--cc-height` below): the
-   * header row (logo, name, status), one line of copy (and under it, on an
-   * offered app's card, the bot's one-line reason), the button strip at the
-   * bottom. What does not fit scrolls inside the glass panel: the tools
-   * card's rows. The header, the line and the button strip never move.
+   * header row (logo, name, status), the app's sentence on up to two rows
+   * (and under it, on an offered app's card, the bot's one-line reason), the
+   * button strip at the bottom. What does not fit scrolls inside the glass
+   * panel: the tools card's rows. The header, the sentence and the button
+   * strip never move.
    */
   import { onDestroy } from "svelte";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
@@ -184,7 +185,7 @@
         </span>
       {/if}
     </div>
-    <!-- One line of copy, cut with an ellipsis past it so the card keeps its height; the title holds all of it. -->
+    <!-- The app's sentence, on up to two rows, cut with an ellipsis past that so the card keeps its height; the title holds all of it. -->
     <div class="connection-card-line" data-testid="connection-card-line" title={view.line}>{view.line}</div>
     {#if view.reason}
       <!-- The bot's own reason, under the app's sentence and named as the bot's. One line, the rest in the title. -->
@@ -290,8 +291,9 @@
     --cc-ok: #4ade80;
     --cc-warn: #fcd34d;
     /* The one height of every connection card, in every state: the header
-       row, one line of copy and a note on the glass, the button strip at the
-       bottom, the art behind. Rows that do not fit scroll inside the glass. */
+       row, the sentence (two rows at most) and a note on the glass, the
+       button strip at the bottom, the art behind. Rows that do not fit
+       scroll inside the glass. */
     --cc-height: 168px;
     position: relative;
     isolation: isolate;
@@ -430,7 +432,7 @@
     color: var(--cc-ok);
     white-space: nowrap;
   }
-  /* The copy is one line and the note two at most, then an ellipsis: neither
+  /* The sentence and the note are two rows at most, then an ellipsis: neither
      ever grows the card. The title attribute holds the whole sentence. */
   .connection-card-line,
   .connection-card-reason,
@@ -443,9 +445,12 @@
     overflow: hidden;
     overflow-wrap: anywhere;
   }
+  /* Two rows, so a sentence that carries an instruction ("Ask them to share
+     it with ...") is read whole on a narrow card instead of being cut after
+     its first words. */
   .connection-card-line {
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
     font-size: 12px;
     line-height: 1.45;
     color: var(--cc-muted);
