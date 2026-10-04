@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount } from "svelte";
 import CorePopover from "./CorePopover.svelte";
 import { resetUpdateStore } from "../settings/update-store.svelte";
+import type { PlatformAdapter } from "@hq/platform";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -45,7 +46,7 @@ function makeAdapter(returnNudge: { flag?: boolean; eligibility?: unknown } = {}
     shell: {
       openClaudeCodeLink: async () => ok(undefined),
     },
-  } as never;
+  } as unknown as PlatformAdapter;
 }
 
 function mountPopover(props: Record<string, unknown>): HTMLElement {
