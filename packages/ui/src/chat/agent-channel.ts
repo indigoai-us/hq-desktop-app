@@ -316,6 +316,52 @@ export function agentHelloEventId(
   return row?.eventId?.trim() || null;
 }
 
+/**
+ * Whether a page of a direct message holds the conversation from its first
+ * row, so "the bot's first row after a time" can be read off it. A read that
+ * asked only for rows after a point does not, nor does a page that came with
+ * a cursor to earlier rows. A page the server filtered for people
+ * (`serverView`) holds the start when it has no cursor. Any other page holds
+ * it only when it came back with fewer rows than were asked for.
+ */
+export function dmPageHoldsStart(input: {
+  /** Rows on the page as the server sent it, before anything is left out. */
+  rowCount: number;
+  /** How many rows were asked for. */
+  limit: number;
+  nextCursor: string | null | undefined;
+  /** The server filtered and paged it (`view: "human"`). */
+  serverView: boolean;
+  /** The read asked for rows after a point (`since`) or before one (`cursor`). */
+  partial?: boolean;
+}): boolean {
+  if (input.partial) return false;
+  if ((input.nextCursor ?? "").trim()) return false;
+  if (input.serverView) return true;
+  return Number.isFinite(input.rowCount) && input.rowCount < input.limit;
+}
+
+/**
+ * The bot's first message, found by when the app asked for it: the bot's
+ * first row written after the hello request went out.
+ *
+ * For a timeline that does not carry the request itself. A page the server
+ * filtered for people leaves the request out, and so does the timeline the
+ * conversation shows. `askedAtMs` is the time kept on this device
+ * (cloud-bot-hello-asked.ts). It names a message only when the rows hold the
+ * conversation from its start (`holdsStart`): in a later window of a long
+ * conversation the first row after that time is some other message, and the
+ * cards must not move under it.
+ */
+export function agentHelloEventIdByAskTime(
+  rows: ReadonlyArray<HelloRow>,
+  input: { agentUid: string; askedAtMs: number | null | undefined; holdsStart: boolean },
+): string | null {
+  if (!input.holdsStart) return null;
+  if (typeof input.askedAtMs !== "number" || !Number.isFinite(input.askedAtMs)) return null;
+  return agentHelloEventId(rows, { agentUid: input.agentUid, askedAtMs: input.askedAtMs });
+}
+
 export interface AgentChatReadiness {
   /** The bot can receive a message and answer it. */
   chatReady: boolean;

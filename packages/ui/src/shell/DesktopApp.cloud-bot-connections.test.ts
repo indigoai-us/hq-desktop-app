@@ -12,6 +12,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
 import { BOT_CONNECTION_CARDS_STORAGE_KEY, SLACK_ADMIN_LINE } from "../chat/messaging/connection-card-model.js";
+import { BOT_HELLO_ASKED_STORAGE_KEY } from "../chat/cloud-bot-hello-asked.js";
 import { brandMarkFor } from "../chat/messaging/app-brand-marks.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
@@ -185,7 +186,7 @@ async function settle(times = 10): Promise<void> {
 const DM_ROW = (peerUid: string): ConversationRow =>
   ({ id: `dm:${peerUid}`, kind: "dm", title: "Nova", personUid: peerUid, companyUid: null }) as ConversationRow;
 
-async function mountRow(w: World, row: ConversationRow, waitForText: string): Promise<void> {
+async function mountRow(w: World, row: ConversationRow, waitForText: string, wakes = createChatWakeBus()): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -198,7 +199,7 @@ async function mountRow(w: World, row: ConversationRow, waitForText: string): Pr
       initialRow: row,
       companies: w.companies,
       onopenurl: w.openUrl,
-      wakes: createChatWakeBus(),
+      wakes,
       coreFixtures: false,
     },
   });
@@ -536,6 +537,83 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     await settle(20);
     expect(cards()).toHaveLength(0);
     expect(w.listConnections).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * B-8: a page the server filtered for people leaves the app's hello request
+ * out, so the bot's first message could not be found on it. A person who
+ * typed before the hello arrived never got the cards under it. The time the
+ * request was sent is kept on this device and names the message instead.
+ */
+describe("DesktopApp connection cards: the hello found by when it was asked for (B-8)", () => {
+  const ASKED = Date.parse("2026-10-02T13:53:50.000Z");
+  const TYPED: Row = { eventId: "e1b", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: "Are you there?", createdAt: "2026-10-02T13:54:05.000Z" };
+  const HELLO: Row = { eventId: "e2", fromPersonUid: NOVA, fromDisplayName: "Nova", body: "Hi Corey, I am Nova.", createdAt: "2026-10-02T13:54:20.000Z" };
+  const storedHello = (): string | undefined =>
+    JSON.parse(window.localStorage.getItem(BOT_CONNECTION_CARDS_STORAGE_KEY) ?? "{}")[NOVA]?.helloEventId;
+  const cardsUnder = (eventId: string): HTMLElement[] => [
+    ...(host
+      .querySelector<HTMLElement>(`[data-testid="conversation-message"][data-event-id="${eventId}"]`)
+      ?.querySelectorAll<HTMLElement>('[data-testid="connection-card"]') ?? []),
+  ];
+  function seedAsked(atMs: number | null): void {
+    window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+    if (atMs !== null) window.localStorage.setItem(BOT_HELLO_ASKED_STORAGE_KEY, JSON.stringify({ [NOVA]: atMs }));
+  }
+
+  it("puts the cards under the bot's first message on a page with no request row", async () => {
+    seedAsked(ASKED);
+    // Newest first, as a page filtered for people: the request is not on it.
+    const w = world({ thread: [HELLO, TYPED] });
+    await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
+    await vi.waitFor(() => expect(storedHello()).toBe("e2"));
+    await vi.waitFor(() => expect(cardsUnder("e2").map((el) => el.dataset.target)).toEqual(["slack"]));
+    // Once the message is known, the time is no longer kept.
+    await vi.waitFor(() => expect(window.localStorage.getItem(BOT_HELLO_ASKED_STORAGE_KEY)).toBe("{}"));
+  });
+
+  it("finds it when the hello arrives after the person typed", async () => {
+    seedAsked(ASKED);
+    const w = world({ thread: [TYPED] });
+    const wakes = createChatWakeBus();
+    await mountRow(w, DM_ROW(NOVA), "Are you there?", wakes);
+    await settle(20);
+    expect(storedHello()).toBeUndefined();
+    expect(cards()).toHaveLength(0);
+
+    w.thread = [HELLO, TYPED];
+    wakes.emit("dm:new-message", { fromPersonUid: NOVA, eventId: "e2", createdAt: String(HELLO.createdAt), direction: "in" });
+    await vi.waitFor(() => expect(threadText()).toContain("Hi Corey, I am Nova."));
+    await vi.waitFor(() => expect(storedHello()).toBe("e2"));
+    await vi.waitFor(() => expect(cardsUnder("e2").map((el) => el.dataset.target)).toEqual(["slack"]));
+  });
+
+  it("names no message without the time: the page alone cannot say which row is the hello", async () => {
+    seedAsked(null);
+    const w = world({ thread: [HELLO, TYPED] });
+    await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
+    await settle(40);
+    expect(storedHello()).toBeUndefined();
+    expect(cards()).toHaveLength(0);
+  });
+
+  it("names no message on a full page of a long conversation: its first bot row is not the hello", async () => {
+    seedAsked(ASKED);
+    // Fifty rows, newest first, none of them the request: the conversation goes back further.
+    const page: Row[] = Array.from({ length: 50 }, (_, i) => ({
+      eventId: `m${i}`,
+      fromPersonUid: i % 2 === 0 ? NOVA : "prs_me",
+      fromDisplayName: i % 2 === 0 ? "Nova" : "Corey",
+      body: i === 0 ? "Newest from Nova." : `Row ${i}`,
+      createdAt: new Date(Date.parse("2026-10-03T10:00:00.000Z") - i * 60_000).toISOString(),
+    }));
+    const w = world({ thread: page });
+    await mountRow(w, DM_ROW(NOVA), "Newest from Nova.");
+    await settle(40);
+    expect(storedHello()).toBeUndefined();
+    expect(cards()).toHaveLength(0);
+    expect(window.localStorage.getItem(BOT_HELLO_ASKED_STORAGE_KEY)).toContain(NOVA);
   });
 });
 

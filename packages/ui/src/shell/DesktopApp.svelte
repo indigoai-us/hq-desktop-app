@@ -210,6 +210,8 @@
     agentCatchingUpLine,
     agentHelloArrived,
     agentHelloEventId,
+    agentHelloEventIdByAskTime,
+    dmPageHoldsStart,
     buildAgentConnectMoreRequest,
     buildAgentHelloRequest,
     buildAgentSlackConnectedNotice,
@@ -223,6 +225,13 @@
     type AgentChatReadiness,
   } from "../chat/agent-channel.js";
   import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
+  import {
+    loadHelloAsked,
+    saveHelloAsked,
+    withHelloAsked,
+    withoutHelloAsked,
+    type HelloAskedTimes,
+  } from "../chat/cloud-bot-hello-asked.js";
   import {
     CONVERSATION_BOOT_GRACE_MS,
     DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -4055,6 +4064,7 @@
     }
     setBotSyncFacts(uid, null);
     forgetBotConnections(uid);
+    forgetHelloAsked(uid);
     chosenItemsByBot.delete(uid);
   }
   /**
@@ -4093,6 +4103,9 @@
       ...cloudBotHelloPending,
       [uid]: { name: session.name, askedAt: cloudBotHelloPending[uid]?.askedAt ?? askedAt },
     };
+    // Kept on this device, so the bot's first message can still be found on a
+    // page that leaves the request out (see `helloAskedAtByUid`).
+    rememberHelloAsked(uid, askedAt);
     return true;
   }
   async function cloudBotHelloArrived(session: { agentUid: string; helloAskedAt?: number | null }): Promise<boolean> {
@@ -4632,8 +4645,12 @@
           ok: res.ok,
           ms: Math.round(performance.now() - started),
         });
-        // The raw page still holds the app's hello request; the timeline
-        // built from it does not.
+        // A page the server did not filter still holds the app's hello
+        // request, and the bot's first message is the row after it. A page
+        // filtered for people (`view=human`) leaves the request out, as does
+        // the timeline built from any page: for those the first message is
+        // found by the time the request was sent (the effect under
+        // `helloAskedAtByUid`).
         if (res.ok) rememberCloudBotHello(row.personUid, normalizeConversationMessages(res.value));
         return res.ok ? res.value : null;
       }
@@ -4676,6 +4693,14 @@
    * behaviour (local filter, bounded auto-fetch, no DM paging).
    */
   let historyServerView = $state<Record<string, boolean>>({});
+  /** Rows asked for on a history page. */
+  const HISTORY_PAGE_LIMIT = 50;
+  /**
+   * Row id to whether the history read so far holds the conversation from its
+   * first row (agent-channel.ts, `dmPageHoldsStart`). Kept for a direct
+   * message with a bot only.
+   */
+  let historyStartHeld = $state<Record<string, boolean>>({});
 
   /** History requests ask for the server-side human view only once the flag is confirmed on. */
   function wantsServerHumanView(): boolean {
@@ -4691,6 +4716,16 @@
     const page = timelinePageFromPayload(raw);
     const serverView = page.view === HUMAN_HISTORY_VIEW;
     historyServerView[row.id] = serverView;
+    // Whether the timeline now reaches the conversation's first row. Read
+    // only for a direct message with a bot whose first message is not known.
+    if (row.kind === "dm" && (row.personUid ?? "").startsWith("agt_")) {
+      historyStartHeld[row.id] = dmPageHoldsStart({
+        rowCount: normalizeConversationMessages(raw).length,
+        limit: HISTORY_PAGE_LIMIT,
+        nextCursor: page.nextCursor,
+        serverView,
+      });
+    }
     // Without the echo a 1:1 DM keeps no cursor, as before this option
     // existed. With it, the server's cursor is the only paging signal.
     const next = row.channelId || serverView ? (page.nextCursor ?? null) : null;
@@ -4969,6 +5004,51 @@
     if (!record || record.helloEventId) return;
     const injected = messagesByRow?.(row) ?? [];
     if (injected.length > 0) untrack(() => rememberCloudBotHello(uid, injected));
+  });
+  /**
+   * When each bot made here was asked for its first message, kept on this
+   * device (cloud-bot-hello-asked.ts). A page filtered for people leaves the
+   * hello request out, and the takeover that knew the time is gone once the
+   * person is in the conversation. A person who typed before the bot's hello
+   * arrived would otherwise never get the cards under it.
+   */
+  let helloAskedAtByUid = $state.raw<HelloAskedTimes>(loadHelloAsked(connectionStorage()));
+  function rememberHelloAsked(agentUid: string, atMs: number): void {
+    const next = withHelloAsked(helloAskedAtByUid, agentUid, atMs);
+    if (next === helloAskedAtByUid) return;
+    helloAskedAtByUid = next;
+    saveHelloAsked(connectionStorage(), next);
+  }
+  function forgetHelloAsked(agentUid: string): void {
+    const next = withoutHelloAsked(helloAskedAtByUid, agentUid);
+    if (next === helloAskedAtByUid) return;
+    helloAskedAtByUid = next;
+    saveHelloAsked(connectionStorage(), next);
+  }
+  // The bot's first message by the time it was asked for: its first row
+  // written after the request went out, read off the loaded conversation
+  // once that reaches back to its first row. Runs again as rows arrive, so a
+  // hello that lands after the person typed is found when it lands.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const row = selectedRow;
+    if (!uid || !row || liveTimelineId !== row.id || timelineHydrating) return;
+    const record = connectionRecords[uid];
+    if (!record || record.helloEventId) return;
+    const askedAtMs = helloAskedAtByUid[uid];
+    if (askedAtMs === undefined) return;
+    const helloEventId = agentHelloEventIdByAskTime(liveTimeline, {
+      agentUid: uid,
+      askedAtMs,
+      holdsStart: historyStartHeld[row.id] === true,
+    });
+    if (helloEventId) untrack(() => setBotConnectionRecord(uid, { ...record, helloEventId }));
+  });
+  // Once the first message is known the time has done its job.
+  $effect(() => {
+    for (const uid of Object.keys(helloAskedAtByUid)) {
+      if (connectionRecords[uid]?.helloEventId) untrack(() => forgetHelloAsked(uid));
+    }
   });
 
   /** A message of the open bot already carries a `connect` block of its own. */
