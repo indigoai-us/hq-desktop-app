@@ -184,7 +184,6 @@
     dispatchPostReadyAction,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
-    FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -192,8 +191,7 @@
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
   import {
-    firstLaunchSignInReachOutcomeWasRecorded,
-    markFirstLaunchSignInReachRecorded,
+    resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
   import {
@@ -1176,21 +1174,9 @@
     return firstLaunchJoinKeyFlagPromise;
   }
 
-  function resolveFirstLaunchSignInReachEnabled(): Promise<boolean> {
+  function resolveFirstLaunchSignInReachEnabled(visitorId: string): Promise<boolean> {
     if (!firstLaunchSignInReachFlagPromise) {
-      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG).then(
-        (result) => {
-          if (!result.ok) {
-            console.warn('onboarding: sign-in reach flag unavailable; leaving telemetry off', result.reason, result.code);
-            return false;
-          }
-          return result.value === true;
-        },
-        (error) => {
-          console.warn('onboarding: sign-in reach flag failed; leaving telemetry off', error);
-          return false;
-        },
-      );
+      const flag = resolveFirstLaunchSignInReachFlag(visitorId);
       firstLaunchSignInReachFlagPromise = resolveFlagWithTimeout(flag, 2_000)
         .then((enabled) => enabled)
         .catch((error) => {
@@ -1219,14 +1205,18 @@
         const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
         );
-        const firstLaunchSignInReachEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
-          firstLaunch ? resolveFirstLaunchSignInReachEnabled() : false,
+        const reachVisitorIdPromise = firstLaunchPromise.then((firstLaunch) =>
+          firstLaunch ? loadInstallAttemptId() : null,
         );
-        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled] = await Promise.all([
+        const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
+          visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,
+        );
+        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled, reachVisitorId] = await Promise.all([
           firstLaunchPromise,
           contextPromise,
           firstLaunchJoinKeyEnabledPromise,
           firstLaunchSignInReachEnabledPromise,
+          reachVisitorIdPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
           firstLaunch,
@@ -1244,7 +1234,7 @@
           | 'consent-only-skip'
           | undefined;
         if (signInReachEnabled) {
-          reachInstallAttemptId = installAttemptId ?? await loadInstallAttemptId();
+          reachInstallAttemptId = installAttemptId ?? reachVisitorId;
           if (reachInstallAttemptId) {
             signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
               ? 'reached-signin'
@@ -1257,10 +1247,7 @@
                     : 'existing-session-skip';
           }
         }
-        const receiptReachOutcome = signInReachOutcome &&
-          !firstLaunchSignInReachOutcomeWasRecorded()
-          ? signInReachOutcome
-          : undefined;
+        const receiptReachOutcome = signInReachOutcome;
         const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined;
         const firstLaunchReceiptRecorded = context
           ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
@@ -1268,8 +1255,7 @@
           : firstLaunch &&
             onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId);
         if (signInReachOutcome && context?.suppressFirstLaunchTelemetry !== true) {
-          if (firstLaunchReceiptRecorded && receiptReachOutcome) markFirstLaunchSignInReachRecorded();
-          else recordFirstLaunchSignInReachOutcome(signInReachOutcome);
+          recordFirstLaunchSignInReachOutcome(signInReachOutcome);
         }
         return { context, firstLaunchReceiptRecorded, installAttemptId };
       })()

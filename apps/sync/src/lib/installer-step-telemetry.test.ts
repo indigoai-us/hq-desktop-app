@@ -196,6 +196,26 @@ describe('pingInstallerStep', () => {
     expect(invokeCommand).toHaveBeenCalledWith('device_fingerprint');
   });
 
+  it('omits device identity when requested for pre-auth reach telemetry', async () => {
+    const fetchFn = vi.fn(async () => makeResponse(200));
+    const invokeCommand = vi.fn(async () => 'hashed-mac-abc');
+
+    await expect(pingInstallerStep({
+      installSessionId: '22222222-2222-4222-8222-222222222222',
+      step: 'first-launch-signin-reach:quit',
+      includeDeviceId: false,
+      fetch: fetchFn,
+      invokeCommand,
+    })).resolves.toBe(true);
+    expect(invokeCommand).not.toHaveBeenCalled();
+    expect(posted(fetchFn).body).toEqual(expect.objectContaining({
+      installSessionId: '22222222-2222-4222-8222-222222222222',
+      step: 'first-launch-signin-reach:quit',
+    }));
+    expect('deviceId' in posted(fetchFn).body).toBe(false);
+    expect('personUid' in posted(fetchFn).body).toBe(false);
+  });
+
   it('omits personUid before sign-in and includes it after a prs_* uid is known', async () => {
     const fetchFn = vi.fn(async () => makeResponse(200));
     const invokeCommand = vi.fn(async () => 'hashed-mac-abc');
@@ -257,7 +277,7 @@ describe('pingInstallerStep', () => {
         },
         invokeCommand: async () => '',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 
   it('never throws on a non-200 response', async () => {
@@ -268,7 +288,7 @@ describe('pingInstallerStep', () => {
         fetch: async () => makeResponse(500),
         invokeCommand: async () => 'id',
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
   });
 
   it('does not POST when the endpoint is disabled', async () => {

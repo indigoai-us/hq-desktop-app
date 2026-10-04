@@ -2028,6 +2028,15 @@ describe('anonymous installer step pings', () => {
 
   it('uses the persisted install id for the anonymous ping and onboarding session when the first-launch flag is on', async () => {
     const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    httpFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        key: 'desktop.first-launch-signin-reach-telemetry-v1',
+        enabled: true,
+      }),
+      text: async () => '',
+    });
     onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: true });
     stubOnboardingInvoke({
       is_first_run: () => true,
@@ -2038,9 +2047,15 @@ describe('anonymous installer step pings', () => {
       props: { initialStep: 0 },
     });
 
-    await flushUntil(() => httpFetch.mock.calls.length > 0);
+    const isInstallerPing = (call: unknown[]) => {
+      const [url] = call as [string, RequestInit];
+      return String(url).includes('/v1/installer/step');
+    };
+    await flushUntil(() => httpFetch.mock.calls.some(isInstallerPing));
 
-    const init = (httpFetch.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const installPing = httpFetch.mock.calls.find(isInstallerPing);
+    expect(installPing).toBeDefined();
+    const init = (installPing as unknown as [string, RequestInit])[1];
     const body = JSON.parse(String(init.body)) as { installSessionId: string };
     const onboardingEvent = tauri.invoke.mock.calls
       .filter(
@@ -2068,9 +2083,15 @@ describe('anonymous installer step pings', () => {
     expect(welcomeEntries).toHaveLength(1);
     expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
       .toBe('reached-signin');
-    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+    const publicFlagRequest = httpFetch.mock.calls.find(([url]) =>
+      String(url).includes('/v1/flags/resolve-public'),
+    );
+    expect(publicFlagRequest).toBeDefined();
+    const publicFlagUrl = new URL(String(publicFlagRequest?.[0]));
+    expect(publicFlagUrl.searchParams.get('key')).toBe(
       'desktop.first-launch-signin-reach-telemetry-v1',
     );
+    expect(publicFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
       'desktop.first-launch-join-key-v1',
     );

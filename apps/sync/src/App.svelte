@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { fetch as tauriHttpFetch } from '@tauri-apps/plugin-http';
   import {
     createSyncPlatformAdapter,
-    FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     POST_READY_ACTION_TELEMETRY_FLAG,
     type Json,
   } from '@hq/platform';
@@ -70,13 +70,13 @@
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import {
-    emitDesktopOperationalTelemetryStrict,
     emitDesktopTelemetry,
   } from './lib/desktop-telemetry';
   import {
     createFirstLaunchSignInReachReporter,
     setFirstLaunchSignInReachReporter,
     startupOutcomeForLifecycle,
+    resolveFirstLaunchSignInReachFlag,
   } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
@@ -114,15 +114,13 @@
         'suppressFirstLaunchTelemetry' in context &&
         context.suppressFirstLaunchTelemetry === true;
     },
-    isEnabled: async () => {
-      const result = await traySyncAdapter.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
-      return result.ok && result.value === true;
+    isEnabled: async (visitorId) => {
+      return resolveFirstLaunchSignInReachFlag(visitorId, tauriHttpFetch);
     },
     getInstallAttemptId: async () => {
       const value = await invoke<unknown>('desktop_install_attempt_id');
       return typeof value === 'string' ? value : null;
     },
-    emit: (event) => emitDesktopOperationalTelemetryStrict(event),
     warn: (message, error) => console.warn(message, error),
   });
   setFirstLaunchSignInReachReporter(firstLaunchSignInReachReporter);
