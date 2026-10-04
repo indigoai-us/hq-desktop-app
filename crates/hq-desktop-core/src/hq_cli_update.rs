@@ -19207,6 +19207,18 @@ mod tests {
             assert_eq!(actual.kind.tag_value(), expected_kind);
             assert_eq!(actual.evidence, expected_evidence);
         }
+        // The command boundary decodes captured stderr lossily and trims it
+        // before calling the core classifier; stable ASCII crash markers survive
+        // that production transform.
+        let captured = String::from_utf8_lossy(
+            b"\r\nFATAL ERROR: JavaScript heap out of memory\r\n",
+        )
+        .trim()
+        .to_string();
+        assert_eq!(
+            node_crash_kind(Some(134), &captured).kind.tag_value(),
+            "v8_heap_oom"
+        );
 
         assert_eq!(
             node_crash_kind(Some(134), "npm error code E404").kind.tag_value(),
