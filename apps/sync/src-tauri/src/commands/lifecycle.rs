@@ -303,7 +303,11 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+                classified,
+                tools_present,
+                launch_agent_relaunch,
+            )
         };
         let require_local_toolchain_demoted = !evidence_unreadable
             && classified.state != verdict.state
