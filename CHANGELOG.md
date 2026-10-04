@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- An updater restart with a previously completed install and temporarily unresolved local tools now resumes setup repair instead of reopening first-run onboarding.
 - Unexpected watcher-exit reports now include the runner phase and elapsed-time bucket as searchable Sentry tags.
 - Held sign-in receipts keep the home directory captured before token resolution, preventing a profile switch from redirecting the pending event.
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
