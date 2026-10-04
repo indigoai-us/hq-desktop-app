@@ -67,6 +67,22 @@ describe("TauriPlatformAdapter member removal", () => {
   });
 });
 
+describe("TauriPlatformAdapter first-week return nudge", () => {
+  it("reads the membership-scoped eligibility route through hq_pro_fetch", async () => {
+    const { adapter, calls } = makeAdapter({ eligible: false, dayIndex: 2, reason: "used_today" });
+    const res = await adapter.company.getFirstWeekReturnNudge("cmp_team/a");
+    expect(res).toMatchObject({ ok: true, value: { eligible: false, dayIndex: 2, reason: "used_today" } });
+    expect(calls[0]).toEqual({
+      cmd: "hq_pro_fetch",
+      args: {
+        url: "/membership/first-week-return-nudge?companyUid=cmp_team%2Fa",
+        method: "GET",
+        body: null,
+      },
+    });
+  });
+});
+
 describe("TauriPlatformAdapter channel delete", () => {
   it("routes deleteChannel as a DELETE on the channel path through hq_pro_fetch", async () => {
     const { adapter, calls } = makeAdapter({ deleted: "chn_1" });
