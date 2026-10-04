@@ -365,6 +365,11 @@
      */
     loadCompanyBots?: ((companyUid: string) => Promise<unknown>) | null;
     /**
+     * A bot found after a create with no answer was taken up as that create's
+     * own. The host registers it as it does a create that answered.
+     */
+    onbotadopted?: ((agentUid: string, draft: CloudBotDraft) => void) | null;
+    /**
      * Test seam: how long a cancelled create with no answer waits before each
      * look at the company's bots.
      */
@@ -543,6 +548,7 @@
     onbotremoved = null,
     botRemovalRetryMs = undefined,
     loadCompanyBots = null,
+    onbotadopted = null,
     botCreateLookupMs = undefined,
     sendBotHello = null,
     checkBotHello = null,
@@ -2253,6 +2259,8 @@
             target: { channelId: "", cardId: null, cardKind: null, agentUid: found },
           };
           rememberCreatedBot(companyUid, draft, adopted);
+          // The host never saw this create answer, so it is told here.
+          onbotadopted?.(found, draft);
           return adopted;
         }
         if (unknown) {

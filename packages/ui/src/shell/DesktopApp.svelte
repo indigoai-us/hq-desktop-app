@@ -7723,20 +7723,27 @@
       companyUid,
       draft,
     );
-    if (result.ok) {
-      const title = draft.title?.trim() ?? "";
-      const agentUid = result.target.agentUid?.trim() ?? "";
-      if (agentUid && !newCloudBotUids.includes(agentUid)) setNewCloudBots([agentUid, ...newCloudBotUids]);
-      if (agentUid) startBotConnections(agentUid);
-      if (title && agentUid) {
-        void saveNewBotProfile(agentUid, { title });
-      } else if (title) {
-        // The bot exists; only its subtitle is missing, and nothing here
-        // names the profile to write it to.
-        console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
-      }
-    }
+    if (result.ok) registerNewCloudBot(result.target.agentUid ?? "", draft);
     return result;
+  }
+
+  /**
+   * Remember a bot as made in the new flow on this device. Called for a create
+   * that answered, and by the sidebar for a bot it found after a create with
+   * no answer: both are the same bot to everything that reads this.
+   */
+  function registerNewCloudBot(uid: string, draft: CloudBotDraft): void {
+    const title = draft.title?.trim() ?? "";
+    const agentUid = uid.trim();
+    if (agentUid && !newCloudBotUids.includes(agentUid)) setNewCloudBots([agentUid, ...newCloudBotUids]);
+    if (agentUid) startBotConnections(agentUid);
+    if (title && agentUid) {
+      void saveNewBotProfile(agentUid, { title });
+    } else if (title) {
+      // The bot exists; only its subtitle is missing, and nothing here
+      // names the profile to write it to.
+      console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
+    }
   }
 
   // ── Which companies get the full-window New Bot flow ─────────────────────
@@ -11103,6 +11110,7 @@
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
           removeAgent={(agentUid, options) => adapter.agents.deprovision(agentUid, options)}
           loadCompanyBots={(companyUid) => adapter.agents.listMobileRoster(companyUid)}
+          onbotadopted={registerNewCloudBot}
           onbotremoved={forgetRemovedCloudBot}
           sendBotHello={sendCloudBotHello}
           checkBotHello={cloudBotHelloArrived}

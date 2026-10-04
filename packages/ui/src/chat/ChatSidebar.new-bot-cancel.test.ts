@@ -749,6 +749,47 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(keysKept()).toEqual([]);
   });
 
+  it("tells the host about a bot it took up, with the draft, so the host registers it (round 4, item 2)", async () => {
+    // The host registers a bot when its own create call answers ok. A bot
+    // found by the look never gets that answer, so the sidebar names it.
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(NO_ANSWER);
+    const onbotadopted = vi.fn<(agentUid: string, draft: CloudBotDraft) => void>();
+    mountSidebar({ oncreatenewbot, loadCompanyBots, onbotadopted });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+
+    expect(onbotadopted).toHaveBeenCalledTimes(1);
+    expect(onbotadopted.mock.calls[0]![0]).toBe("agt_woah");
+    expect(onbotadopted.mock.calls[0]![1]).toMatchObject({ name: "Woah" });
+  });
+
+  it("does not tell the host about a bot when the look found none", async () => {
+    const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer());
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(created("agt_woah"));
+    const onbotadopted = vi.fn<(agentUid: string, draft: CloudBotDraft) => void>();
+    mountSidebar({ oncreatenewbot, loadCompanyBots, onbotadopted });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(createError()).toContain("We didn't hear back"));
+    // A create that answers is registered by the host's own create call.
+    click('[data-testid="new-bot-create-submit"]');
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy());
+
+    expect(onbotadopted).not.toHaveBeenCalled();
+  });
+
   it("lets the person send it again once the look found no bot", async () => {
     const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer(rosterRow("agt_old", "scout")));
     const oncreatenewbot = vi

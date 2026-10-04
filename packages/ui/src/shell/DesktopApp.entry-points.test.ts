@@ -970,6 +970,48 @@ describe("DesktopApp New bot takeover", () => {
     expect(asked).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 
+  it("a bot found after a create with no answer is registered like one that answered: connection record and first message (round 4, item 2)", async () => {
+    // The create's answer is lost, but the request made the bot. The sidebar
+    // finds it on the company's list and takes it up. The shell never saw an
+    // ok answer for it, and must still treat it as a bot made in this flow.
+    const runCompanyTabAction = vi.fn(async () => ok(OPENED));
+    const runCardAction = vi.fn(async (): Promise<never> => {
+      throw new Error("The request timed out.");
+    });
+    const sendDm = vi.fn(async (_uid: string, _body: string, _extras?: Record<string, unknown>) => ok({}));
+    const fetchDmThread = vi.fn(async () => ok({ messages: [], nextCursor: null }));
+    const value = adapter(
+      { runCompanyTabAction, runCardAction, sendDm, fetchDmThread },
+      { hasCompanyFeature: async () => true },
+    );
+    const agents = value.agents as unknown as Record<string, unknown>;
+    agents.getStatus = async () => ok({ setupState: { phase: "ready" } });
+    // The list read at the press has no Nova. Once the create was sent, it does.
+    const listMobileRoster = vi.fn(async (companyUid: string) =>
+      ok({
+        agents: runCardAction.mock.calls.length
+          ? [{ agentUid: "agt_nova", uid: "agt_nova", companyUid, name: "nova", displayName: "Nova", slug: "nova", setupPhase: "provisioning" }]
+          : [],
+      }),
+    );
+    agents.listMobileRoster = listMobileRoster;
+    mountApp(value, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await openNewBot();
+    await createInTakeover("Nova");
+
+    // One look, ten seconds after the lost answer.
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled(), { timeout: 25_000, interval: 100 });
+    expect(runCardAction).toHaveBeenCalledTimes(1);
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendDm.mock.calls[0]![0]).toBe("agt_nova");
+    expect(sendDm.mock.calls[0]![2]).toEqual({
+      audience: "agent",
+      idempotencyKey: "new-bot-hello-agt_nova",
+    });
+    expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).toContain("agt_nova");
+    expect(stored(BOT_CONNECTION_CARDS_STORAGE_KEY)).toContain("agt_nova");
+  }, 45_000);
+
   it("the in-modal create sends none of surface, conversation or deferChannels, and opens the new bot's channel", async () => {
     const server = cardWalkServer();
     const sendDm = vi.fn(async () => ok({}));
