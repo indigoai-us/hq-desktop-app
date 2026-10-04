@@ -353,4 +353,42 @@ mod tests {
         assert!(build_authorize_page_url("https://evil.example/oauth2/authorize?client_id=7acei2c8v870enheptb1j5foln&redirect_uri=http://localhost:53682/callback").is_none());
         assert!(build_authorize_page_url("https://example.com/login").is_none());
     }
+
+    #[test]
+    fn referral_start_url_wraps_the_authorize_page_in_the_marketing_contract_shape() {
+        let cognito = sample_cognito_url();
+        let page = build_authorize_page_url(&cognito).expect("page url");
+        let link = "DUMMY_LINK_NONCE_22CHARS";
+        let install = "11111111-1111-4111-8111-111111111111";
+        let start = crate::desktop_signin_link::signin_start_url(
+            &page,
+            link,
+            Some(install),
+            None,
+        )
+        .expect("start url");
+        let url = Url::parse(&start).unwrap();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("hqforwork.com"));
+        assert_eq!(url.path(), "/api/desktop/signin-start");
+        let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs.get("link").map(String::as_str), Some(link));
+        assert_eq!(pairs.get("referralProtocol").map(String::as_str), Some("1"));
+        assert_eq!(pairs.get("install").map(String::as_str), Some(install));
+        let authorize = pairs.get("authorize").expect("authorize query");
+        let authorize_url = Url::parse(authorize).unwrap();
+        assert_eq!(authorize_url.origin().ascii_serialization(), "https://hqforwork.com");
+        assert_eq!(authorize_url.path(), "/authorize/desktop");
+        assert_eq!(
+            authorize_url
+                .query_pairs()
+                .find(|(k, _)| k == "client_id")
+                .map(|(_, v)| v.into_owned())
+                .as_deref(),
+            Some(COGNITO_CLIENT_ID)
+        );
+        assert!(authorize.contains("code_challenge_method=S256"));
+        assert!(!authorize.contains("amazoncognito.com"));
+        assert!(!start.contains("/oauth2/authorize"));
+    }
 }
