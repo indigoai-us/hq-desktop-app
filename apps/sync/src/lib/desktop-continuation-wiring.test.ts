@@ -194,7 +194,10 @@ describe('the first-run wizard never opens the browser on its own', () => {
       onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
     expect(record).toContain('onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)');
-    expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
+    expect(record).toContain('const anonId = await resolveFirstLaunchDeviceKey()');
+    expect(record).toContain('recordReceipt(deps, launchReceipt(deps, anonId))');
+    expect(record).toContain('hasFeature(FIRST_LAUNCH_DEVICE_KEY_FLAG)');
+    expect(record).toContain("invokeCommand<string | null>('web_visitor_anon_id')");
     expect(record).toContain('flushReceipts(deps)');
     expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
     expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
