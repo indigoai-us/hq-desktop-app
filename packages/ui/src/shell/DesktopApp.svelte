@@ -839,13 +839,6 @@
     self?: SelfIdentity | null;
     /** Native account partition for renderer persistence and async guards. */
     tenantAccountId?: string | null;
-    /**
-     * Agents the user has a real conversation with. Creating an agent
-     * announces it to the whole company, so an `agt_*` rail row stays hidden
-     * until it messages the user; a host with its own record of past agent
-     * conversations seeds it here.
-     */
-    engagedAgentUids?: readonly string[] | null;
     /** Monotonic native auth-session generation. A new value remounts the host. */
     tenantGeneration?: number;
     /**
@@ -1088,7 +1081,6 @@
     onsignin,
     self = null,
     tenantAccountId = null,
-    engagedAgentUids = null,
     tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
@@ -11081,7 +11073,6 @@
           selectedId={selectedRow?.id ?? null}
           scopeUid={tenantCompanyId}
           {tenantAccountId}
-          {engagedAgentUids}
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}

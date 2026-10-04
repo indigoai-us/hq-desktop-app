@@ -16,11 +16,6 @@ import {
 } from "./channels";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
-import {
-  filterAgentStubRows,
-  type AgentVisibilityOptions,
-} from "./agent-stubs";
-import { automatedAgentJoinNoticeKey } from "../inbox/automated-notices";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
@@ -540,13 +535,6 @@ export interface DmContactInput {
    */
   unreadCount?: number | null;
   /**
-   * True when the ONLY inbound event we have seen for this agent is the
-   * server's membership announcement ("🤖 Izzy (an agent) just joined
-   * Indigo."). A join notice is not a conversation, so it neither stamps
-   * activity nor lights an unread badge.
-   */
-  agentJoinOnly?: boolean;
-  /**
    * Audience of the last message: "human" | "agent" | "both". Absent on
    * older servers. US-006 reads this to decide whether to show or suppress
    * the preview in the DM rail (default: hide agent-only previews).
@@ -644,37 +632,10 @@ export interface InboxEventInput {
   fromEmail?: string | null;
   fromDisplayName?: string | null;
   createdAt?: string | null;
-  /**
-   * Message body, when the source carries one (the notify inbox page does;
-   * the pair-unread activity rollup and the `dm:new-message` wake do not).
-   * Present bodies let the merge recognise — and refuse to stamp — the
-   * automated agent join announcement.
-   */
+  /** Message body, when the source carries one. */
   body?: string | null;
   details?: string | null;
   prompt?: string | null;
-}
-
-/**
- * True when this inbox event is the server-authored agent membership
- * announcement rather than a message the agent actually sent the user.
- * Events with no body are NOT join notices — an unknown body is treated as a
- * real message so a windowed feed never hides a live conversation.
- */
-export function isAgentJoinNoticeEvent(event: InboxEventInput): boolean {
-  const body = (event.body ?? "").trim();
-  if (!body) return false;
-  return (
-    automatedAgentJoinNoticeKey({
-      kind: "dm",
-      body,
-      fromPersonUid: event.fromPersonUid,
-      fromEmail: event.fromEmail,
-      fromDisplayName: event.fromDisplayName,
-      details: event.details,
-      prompt: event.prompt,
-    }) !== null
-  );
 }
 
 export interface PairUnreadInput {
@@ -693,19 +654,9 @@ export function mergeContactsWithInbox(
   pairUnreads: readonly PairUnreadInput[] = [],
 ): DmContactInput[] {
   const latest = new Map<string, InboxEventInput>();
-  /** Agents whose only inbound event in this batch is the join announcement. */
-  const joinNoticeOnly = new Set<string>();
   for (const event of inboxEvents) {
     const uid = (event.fromPersonUid ?? "").trim();
     if (!uid) continue;
-    // A membership announcement is not a message. Record who announced, but
-    // never let it stamp activity — that stamp is what puts a never-used bot
-    // at the top of TODAY on every teammate's rail.
-    if (isAgentJoinNoticeEvent(event)) {
-      if (!latest.has(uid)) joinNoticeOnly.add(uid);
-      continue;
-    }
-    joinNoticeOnly.delete(uid);
     const prev = latest.get(uid);
     if (!prev || String(event.createdAt ?? "") > String(prev.createdAt ?? "")) {
       latest.set(uid, event);
@@ -745,9 +696,6 @@ export function mergeContactsWithInbox(
       lastMessageAt: at ?? contact.lastMessageAt,
       lastActivityAt: at ?? contact.lastActivityAt,
       ...(unread.has(uid) ? { unreadCount: unread.get(uid) } : {}),
-      ...(joinNoticeOnly.has(uid) && !contact.lastMessageAt
-        ? { agentJoinOnly: true }
-        : {}),
     });
   }
   for (const [uid, event] of latest) {
@@ -770,15 +718,7 @@ export function mergeContactsWithInbox(
     out.push({
       personUid: uid,
       unreadCount: count,
-      ...(joinNoticeOnly.has(uid) ? { agentJoinOnly: true } : {}),
     });
-  }
-  // An agent that only ever announced itself is still a contact (it must be
-  // findable in the typeahead) — just never a conversation.
-  for (const uid of joinNoticeOnly) {
-    if (seen.has(uid)) continue;
-    seen.add(uid);
-    out.push({ personUid: uid, agentJoinOnly: true });
   }
   return out;
 }
@@ -910,14 +850,6 @@ export interface NormalizeOptions {
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
   recentDms?: ReadonlySet<string> | readonly string[];
-  /**
-   * Agent uids with proven real-message evidence (`hq.chat.agent-engaged`).
-   * An agent with no entry here and no user-side interaction is a directory
-   * stub, not a conversation — see `agent-stubs.ts`.
-   */
-  engagedAgentUids?: ReadonlySet<string> | readonly string[];
-  /** The user's own agents (local bots + owned cloud bots) — always visible. */
-  ownAgentUids?: ReadonlySet<string> | readonly string[];
   now?: number;
   /** Local project id → title so provisioned "Project slug hash" rows read as names. */
   projectTitles?: ReadonlyArray<{
@@ -1046,14 +978,7 @@ export function normalizeDm(
   const humanMessageActivity = parseActivityMs(contact.lastHumanMessageAt);
   const localDot =
     contact.activityDot === true || dmDots.has(contact.personUid);
-  // A membership announcement must never read as an unread message. Suppress
-  // both the badge and the dot for an agent with no real conversation, so any
-  // surface that still renders the row (search, palette, deep link) agrees
-  // with the rail.
-  const joinNoticeOnlyAgent =
-    isAgentUid(contact.personUid) &&
-    !contactHasConversation(contact, options);
-  const serverUnread = joinNoticeOnlyAgent ? 0 : contact.unreadCount;
+  const serverUnread = contact.unreadCount;
   const hasServerUnread =
     typeof serverUnread === "number" && Number.isFinite(serverUnread);
   const unreadCount =
@@ -1062,13 +987,11 @@ export function normalizeDm(
       : undefined;
   // Numeric badge replaces the server-driven dot; local dots still apply when
   // the server says zero (or when the field is absent and only local dots exist).
-  const unreadDot = joinNoticeOnlyAgent
-    ? false
-    : hasServerUnread
-      ? (serverUnread as number) > 0
-        ? false
-        : localDot
-      : localDot;
+  const unreadDot = hasServerUnread
+    ? (serverUnread as number) > 0
+      ? false
+      : localDot
+    : localDot;
 
   return {
     id,
@@ -1145,18 +1068,6 @@ export function contactHasConversation(
   contact: DmContactInput,
   options: NormalizeOptions = {},
 ): boolean {
-  // Agents are held to a stricter rule than people: creating one announces it
-  // to the whole company, so a timestamp or an unread on an `agt_*` contact is
-  // evidence that the agent EXISTS, not that it ever talked to this user. The
-  // announcement itself is the "1" badge everyone was seeing. Only a proven
-  // real message, or the user opening/starting the thread, makes it a row.
-  if (isAgentUid(contact.personUid)) {
-    return (
-      toIdSet(options.engagedAgentUids).has(contact.personUid) ||
-      toIdSet(options.recentDms).has(contact.personUid) ||
-      toIdSet(options.ownAgentUids).has(contact.personUid)
-    );
-  }
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -1195,17 +1106,7 @@ export function normalizeConversations(
     seen.add(row.id);
     deduped.push(row);
   }
-  // Agent rows (DM stubs AND provisioning channels) drop out unless they have
-  // a real conversation or a pin. Applied here, after dedupe, so every caller
-  // and every company scope — including "All" — gets the same rail.
-  const visible = filterAgentStubRows(deduped, {
-    engagedAgentUids: options.engagedAgentUids,
-    recentDmUids: options.recentDms,
-    ownAgentUids: options.ownAgentUids,
-    includeAgentsWithoutConversation:
-      options.includeContactsWithoutConversation === true,
-  } satisfies AgentVisibilityOptions);
-  return collapseDuplicateGroupRows(collapseDuplicateDmRows(visible));
+  return collapseDuplicateGroupRows(collapseDuplicateDmRows(deduped));
 }
 
 /**
