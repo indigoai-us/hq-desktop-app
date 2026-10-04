@@ -224,6 +224,12 @@
   } from "../chat/agent-channel.js";
   import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
   import {
+    AGENT_CHAT_READY_POLL_MS,
+    nextReadinessPollMs,
+    readinessReadDenied,
+    type ReadinessRead,
+  } from "./agent-readiness-poll.js";
+  import {
     loadHelloAsked,
     saveHelloAsked,
     withHelloAsked,
@@ -3904,8 +3910,11 @@
   const agentSetupPending = $derived(
     isAgentChannel && provisioning.state === "pending" && agentChatState?.chatReady !== true,
   );
-  const AGENT_CHAT_READY_POLL_MS = 5_000;
-  const AGENT_CATCHING_UP_POLL_MS = 30_000;
+  // Asked while the bot's channel is open and its setup is not finished.
+  // When to ask again, and when to stop, is decided in
+  // agent-readiness-poll.ts: a setup that failed, a bot that is gone and a
+  // refused read all stop it, and reads that keep failing wait longer each
+  // time. It used to ask every 5 s for as long as the channel stayed open.
   $effect(() => {
     const uid = agentChannelUid;
     const pending = provisioning.state === "pending";
@@ -3914,20 +3923,27 @@
     if (!pending && !known?.catchingUp) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
     const check = async (): Promise<void> => {
-      let next: AgentChatReadiness | null = null;
+      let read: ReadinessRead = { kind: "failed" };
       try {
         const result = await adapter.agents.getStatus(uid);
         if (stopped) return;
         if (result.ok) {
-          next = agentChatReadiness(result.value);
+          const next = agentChatReadiness(result.value);
+          read = { kind: "status", readiness: next };
           agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+        } else if (readinessReadDenied(result)) {
+          read = { kind: "denied" };
         }
       } catch {
-        // Keep the last known state and ask again.
+        // Keep the last known state and ask again, less often each time.
       }
-      if (stopped || (next?.chatReady && !next.catchingUp)) return;
-      timer = setTimeout(() => void check(), next?.chatReady ? AGENT_CATCHING_UP_POLL_MS : AGENT_CHAT_READY_POLL_MS);
+      if (stopped) return;
+      failures = read.kind === "failed" ? failures + 1 : 0;
+      const wait = nextReadinessPollMs(read, failures);
+      if (wait === null) return;
+      timer = setTimeout(() => void check(), wait);
     };
     void check();
     return () => {
@@ -4032,6 +4048,7 @@
     if (!uid) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
     const check = async (): Promise<void> => {
       const madeHere = untrack(() => newCloudBotUids).includes(uid);
       let next: AgentChatReadiness | null = null;
@@ -4062,10 +4079,12 @@
       // Nothing known and nothing readable: this person may not read the
       // bot's status. Do not keep asking.
       if (!readable && !madeHere && !untrack(() => botSyncByUid[uid])) return;
-      timer = setTimeout(
-        () => void check(),
-        madeHere && next?.chatReady !== true ? AGENT_CHAT_READY_POLL_MS : BOT_SYNC_POLL_MS,
-      );
+      // A read that keeps failing (the bot was removed, the network is down)
+      // is asked less often each time, never every 5 s for ever.
+      failures = readable ? 0 : failures + 1;
+      const usual = madeHere && next?.chatReady !== true ? AGENT_CHAT_READY_POLL_MS : BOT_SYNC_POLL_MS;
+      const wait = readable ? usual : Math.max(usual, nextReadinessPollMs({ kind: "failed" }, failures) ?? usual);
+      timer = setTimeout(() => void check(), wait);
     };
     void check();
     return () => {
