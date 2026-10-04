@@ -5125,6 +5125,8 @@
       botName,
       record,
       slack: facts?.status != null ? slackFactsFromStatus(facts.status) : null,
+      /** The server refused this person the bot's status: only an admin may connect it to Slack. */
+      slackDenied: facts?.slackDenied === true,
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
       /** The company's connections as the integration cards read them. */
       company,
@@ -5138,7 +5140,10 @@
       notes: {
         slack:
           pressed.slack ??
-          (facts?.slackFailed && facts.status == null ? "Could not check Slack right now. You can still connect it." : null),
+          // A refusal is not a failed check: the card says who can connect Slack.
+          (facts?.slackFailed && !facts.slackDenied && facts.status == null
+            ? "Could not check Slack right now. You can still connect it."
+            : null),
         tools:
           pressed.tools ??
           (facts?.toolsFailed && facts.connections == null

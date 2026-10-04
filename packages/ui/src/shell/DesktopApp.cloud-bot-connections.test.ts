@@ -9,7 +9,7 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
-import { BOT_CONNECTION_CARDS_STORAGE_KEY } from "../chat/messaging/connection-card-model.js";
+import { BOT_CONNECTION_CARDS_STORAGE_KEY, SLACK_ADMIN_LINE } from "../chat/messaging/connection-card-model.js";
 import { brandMarkFor } from "../chat/messaging/app-brand-marks.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
@@ -413,6 +413,39 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
 
   // Connecting Slack happens in the card's modal, never on a page in the
   // browser. The flow itself is in DesktopApp.cloud-bot-slack-connect.test.ts.
+  it("says to ask a company admin, with no Connect button, when the person may not read the bot's status", async () => {
+    // I16: the server answers a member 403 (or 404) for the bot's status.
+    for (const code of ["http-403", "http-404"]) {
+      window.localStorage.clear();
+      const w = world({
+        getStatus: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code, message: "no" })),
+      });
+      window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+      await mountRow(w, { ...DM_ROW(NOVA), companyUid: COMPANY } as ConversationRow, "Hi Corey, I am Nova.");
+      await vi.waitFor(() => expect(cards().length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(card("slack").textContent).toContain(SLACK_ADMIN_LINE("Nova")));
+      expect(SLACK_ADMIN_LINE("Nova")).toBe("Ask a company admin to connect Nova to Slack.");
+      expect(primary("slack")).toBeNull();
+      expect(decline("slack")).toBeNull();
+      // A refusal is not a failed check: the card does not also say it could not check.
+      expect(note("slack")).toBe("");
+      expect(card("slack").textContent).not.toContain("Could not check Slack");
+      await unmountShell();
+    }
+  });
+
+  it("still offers Connect Slack, with the could-not-check note, when the status read fails for another reason", async () => {
+    const w = world({
+      getStatus: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-500", message: "boom" })),
+    });
+    window.localStorage.setItem(NEW_BOTS_KEY, JSON.stringify([NOVA]));
+    await mountRow(w, { ...DM_ROW(NOVA), companyUid: COMPANY } as ConversationRow, "Hi Corey, I am Nova.");
+    await vi.waitFor(() => expect(cards().length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(note("slack")).toBe("Could not check Slack right now. You can still connect it."));
+    expect(card("slack").textContent).not.toContain(SLACK_ADMIN_LINE("Nova"));
+    expect(primary("slack")).not.toBeNull();
+  });
+
   it("opens no page from Connect Slack: the card opens its modal, and opening it starts nothing", async () => {
     const w = world();
     await mountNewBotDm(w);
