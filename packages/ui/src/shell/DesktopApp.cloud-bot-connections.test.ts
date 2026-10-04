@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -534,6 +536,39 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     await settle(20);
     expect(cards()).toHaveLength(0);
     expect(w.listConnections).not.toHaveBeenCalled();
+  });
+});
+
+describe("DesktopApp connection cards: whose messages draw them (I13)", () => {
+  it("draws no cards under the person's own message that carries a connect block", async () => {
+    // The person pasted the bot's block back (an example, a quote). It is
+    // their text: no live Connect buttons under their own name.
+    const pasted = `Like this?${fence([{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] }])}`;
+    const w = world({
+      connections: [connection()],
+      thread: [
+        { eventId: "e3", fromPersonUid: "prs_me", fromDisplayName: "Corey", body: pasted, createdAt: "2026-10-02T13:55:00.000Z" },
+        ...thread(NOVA),
+      ],
+    });
+    await mountNewBotDm(w);
+    const mine = host.querySelector<HTMLElement>('[data-testid="conversation-message"][data-event-id="e3"]')!;
+    expect(mine).not.toBeNull();
+    expect(mine.querySelectorAll('[data-testid="connection-card"]')).toHaveLength(0);
+    // The bot's own hello still has its cards.
+    const hello = host.querySelector<HTMLElement>('[data-testid="conversation-message"][data-event-id="e2"]')!;
+    expect(hello.querySelectorAll('[data-testid="connection-card"]').length).toBeGreaterThan(0);
+  });
+
+  it("the shell names the bot whose messages may draw cards", () => {
+    // The conversation falls back to the suggestions bot when the host names
+    // none. The shell names the open cloud bot itself, so the rule does not
+    // depend on that fallback.
+    const source = readFileSync(join(import.meta.dirname, "DesktopApp.svelte"), "utf8");
+    const start = source.indexOf("const cloudBotConnections = $derived.by(");
+    expect(start).toBeGreaterThan(-1);
+    const block = source.slice(start, source.indexOf("cardsFor: (message) =>", start));
+    expect(block).toContain("botUid: input.uid,");
   });
 });
 

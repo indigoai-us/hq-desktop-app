@@ -5162,6 +5162,8 @@
     if (!input || !cloudBotCardsShown) return null;
     const browseUrl = input.companyUid ? companyIntegrationsUrl(companySlugForUid(input.companyUid)) : null;
     return {
+      // Only this bot's own messages draw cards (connection-card-model.ts, `messageMayDrawCards`).
+      botUid: input.uid,
       cardsFor: (message) => {
         const at = Date.parse(message.createdAt ?? "");
         const messageAt = Number.isFinite(at) ? at : null;
