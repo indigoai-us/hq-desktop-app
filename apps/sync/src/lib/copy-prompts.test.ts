@@ -145,6 +145,72 @@ describe('buildPrompt', () => {
       expect(out).toContain('code 3');
     });
 
+    it('gives a disk-full recovery path with bounded capacity values', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: {
+          exitCode: 1,
+          logTail: 'error: insufficient free space for safety snapshot (need 17179869184 bytes, have 5368709120).\nHQ_RESCUE_FAILURE_KIND=disk_full',
+          logPath: '/private/install/hq-sync.log',
+        },
+      });
+      expect(out).toContain(
+        'My HQ menubar update stopped before changing anything because there was not enough free space for the safety snapshot.',
+      );
+      expect(out).toContain('The snapshot needs at least 16.0 GiB free; 5.0 GiB is available.');
+      expect(out).toContain(
+        'Please free at least 16.0 GiB, then retry the update with `/update-hq`.',
+      );
+      expect(out).not.toContain('/private/install/hq-sync.log');
+      expect(out).not.toContain('Last log lines:');
+    });
+
+    it('guides recovery of unresolved safety snapshots', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: {
+          exitCode: 1,
+          logTail: [
+            'error: safety snapshot circuit breaker is open: two interrupted updates still need recovery proof.',
+            'HQ kept their pre-update snapshots because those updates started changing the release-managed tree but did not finish.',
+            'HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker',
+          ].join('\n'),
+        },
+      });
+      expect(out).toContain(
+        'Earlier safety snapshots are being kept because interrupted updates still need recovery proof.',
+      );
+      expect(out).toContain(
+        'Run `hq-rescue --recover-snapshots` from the HQ root to inspect them.',
+      );
+      expect(out).toContain(
+        'It removes only snapshots proven superseded by a later completed-good rescue.',
+      );
+      expect(out).toContain(
+        'For each unresolved snapshot, run `hq-rescue --recover-snapshots --restore-snapshot <snapshot>` to restore every captured root and recorded link. Then, in a separate command, run `hq-rescue --recover-snapshots --verify-restored-snapshot <snapshot>` before retrying.',
+      );
+      expect(out).toContain('Do not delete unresolved snapshots by hand.');
+      expect(out).toContain(
+        'Repair the release source if needed, then retry the update with `/update-hq`.',
+      );
+    });
+
+    it('keeps the existing generic prompt unchanged for other failures', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: { exitCode: 3, logTail: 'fatal: clone failed', logPath: '/tmp/hq-sync-abc.log' },
+      });
+      expect(out).toBe([
+        "My HQ menubar tried to update HQ core for me and it didn't finish.",
+        "I'm not sure which hq-core version I'm on.",
+        'It was pulling the latest hq-core release.',
+        'The rescue script exited with code 3.',
+        '\nLast log lines:\nfatal: clone failed',
+        'Full log: `/tmp/hq-sync-abc.log`',
+        "Please walk me through a guided update with `/update-hq`. First read the log above (and `~/.hq/logs/hq-sync.log`, last 100 lines) to see why the in-app rescue failed, then check `git status` in my HQ root for uncommitted local changes the overlay would clobber — if there are any, help me stash or commit them before updating. Then run `/update-hq` to pull the latest hq-core release and confirm the footer version row matches the target once it completes. Don't force-overwrite locked-core drift without showing me what changes first.",
+      ].join('\n'));
+    });
+
     it('handles the staging channel variant', () => {
       const out = buildPrompt({
         kind: 'hq-core-update-failed',

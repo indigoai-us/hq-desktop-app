@@ -66,6 +66,53 @@ function num(issue: Issue, key: string): number {
   return typeof v === 'number' ? v : 0;
 }
 
+function snapshotCapacityLine(
+  logTail: string,
+): { needed: string; available: string } | undefined {
+  const match =
+    /error: insufficient free space for safety snapshot \(need (\d+) bytes, have (\d+)\)\./.exec(
+      logTail,
+    );
+  if (!match) return undefined;
+
+  const neededBytes = Number(match[1]);
+  const availableBytes = Number(match[2]);
+  if (!Number.isSafeInteger(neededBytes) || !Number.isSafeInteger(availableBytes)) {
+    return undefined;
+  }
+
+  const gib = 1024 ** 3;
+  const neededTenths = Math.ceil((neededBytes / gib) * 10);
+  const availableTenths = Math.floor((availableBytes / gib) * 10);
+  return {
+    needed: `${(neededTenths / 10).toFixed(1)} GiB`,
+    available: `${(availableTenths / 10).toFixed(1)} GiB`,
+  };
+}
+
+function diskFullUpdatePrompt(logTail: string): string {
+  const capacity = snapshotCapacityLine(logTail);
+  return [
+    'My HQ menubar update stopped before changing anything because there was not enough free space for the safety snapshot.',
+    capacity
+      ? `The snapshot needs at least ${capacity.needed} free; ${capacity.available} is available.`
+      : '',
+    capacity
+      ? `Please free at least ${capacity.needed}, then retry the update with \`/update-hq\`.`
+      : 'Please free some space, then retry the update with `/update-hq`.',
+  ].filter(Boolean).join('\n');
+}
+
+function snapshotRecoveryUpdatePrompt(): string {
+  return [
+    'Earlier safety snapshots are being kept because interrupted updates still need recovery proof.',
+    'Run `hq-rescue --recover-snapshots` from the HQ root to inspect them. It removes only snapshots proven superseded by a later completed-good rescue.',
+    'For each unresolved snapshot, run `hq-rescue --recover-snapshots --restore-snapshot <snapshot>` to restore every captured root and recorded link. Then, in a separate command, run `hq-rescue --recover-snapshots --verify-restored-snapshot <snapshot>` before retrying.',
+    'Do not delete unresolved snapshots by hand.',
+    'Repair the release source if needed, then retry the update with `/update-hq`.',
+  ].join('\n');
+}
+
 const builders: Record<IssueKind, (i: Issue) => string> = {
   'sync-conflict': (i) => {
     const count = num(i, 'count');
@@ -313,6 +360,20 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'hq-core-update-failed': (i) => {
     const exitCode = num(i, 'exitCode');
     const logTail = val(i, 'logTail');
+    if (
+      logTail.includes('HQ_RESCUE_FAILURE_KIND=disk_full') ||
+      logTail.includes('error: insufficient free space for safety snapshot (need ')
+    ) {
+      return diskFullUpdatePrompt(logTail);
+    }
+    if (
+      logTail.includes('HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker') ||
+      logTail.includes(
+        'error: safety snapshot circuit breaker is open: two interrupted updates still need recovery proof.',
+      )
+    ) {
+      return snapshotRecoveryUpdatePrompt();
+    }
     const logPath = val(i, 'logPath');
     const channel = val(i, 'channel');
     const target = val(i, 'targetVersion');
