@@ -118,10 +118,12 @@
   import {
     ROW_SETTLE_MS,
     appChosenItems,
+    botCanUse,
     catalogMatchFor,
     companyAppsBrief,
     connectFailureSentence,
     connectRowReady,
+    connectionAnswersPress,
     connectionForDomain,
     domainsToLookUp,
     integrationCardView,
@@ -131,7 +133,6 @@
     type CompanyConnections,
   } from "../chat/messaging/integration-cards-model.js";
   import { connectionCardArt, integrationCardArt } from "../chat/messaging/connection-card-art.js";
-  import { appConnectFinish } from "./app-connect-finish.js";
   import { slackStatusDenied } from "../chat/messaging/slack-connect-model.js";
   import {
     cardModalContentFor,
@@ -5321,6 +5322,17 @@
       if (entry.state !== "connecting") continue;
       const connection = connectionForDomain(company, domain);
       if (!connection) continue;
+      // Only a connection that answers a press made just now is finished for
+      // the person: the press is at most CONNECTING_TIMEOUT_MS old, the
+      // connection was made after it, and its listed domain is exactly the
+      // card's (`connectionAnswersPress`). A record left in storage from an
+      // earlier day, or one whose connection was already there, is forgotten:
+      // nothing is shared and nothing is sent, and the card shows the
+      // connection with its explicit "Let {bot} use it" button.
+      if (!connectionAnswersPress(entry, connection, domain, Date.now())) {
+        untrack(() => setBotConnectionRecord(input.uid, forgetAppCard(connectionRecords[input.uid], domain)));
+        continue;
+      }
       untrack(() => void finishAppConnect(input.uid, domain, connection, company));
     }
   });
@@ -5652,20 +5664,11 @@
   /** Connects being finished, so the list arriving twice does not grant twice. */
   const appConnectsFinishing = new Set<string>();
   /**
-   * The list shows an app whose card on this device says "connecting".
-   *
-   * The bot is let in with no second press only when the connection is the
-   * answer to a press made just now (`appConnectFinish`): the press is at
-   * most CONNECTING_TIMEOUT_MS old, the connection was made after it, by this
-   * person, and its listed domain is exactly the card's. Then the bot gets
-   * it at once and is told; if the share fails the card falls back to its
-   * "Let {bot} use it" button. Already usable: the bot is only told.
-   *
-   * Anything else is not an answer: a record left in storage from an earlier
-   * day, a connection that was already there, one a teammate made, a domain
-   * that only resembles the card's. The record is forgotten, nothing is
-   * shared and nothing is sent. The card then shows the connection with its
-   * explicit "Let {bot} use it" button.
+   * The list shows an app whose card was waiting for the browser, and the
+   * connection answers the press (the effect above checked that). Created by
+   * this person: let the bot use it at once and tell it; if the share fails
+   * the card falls back to its "Let {bot} use it" button. Already usable: tell
+   * the bot. Connected by someone else: the card says so, nothing is sent.
    */
   async function finishAppConnect(agentUid: string, domain: string, connection: CompanyConnection, company: CompanyConnections): Promise<void> {
     const key = `${agentUid}:${domain}`;
@@ -5674,17 +5677,10 @@
     try {
       const companyUid = cardCompanyUid(agentUid);
       const record = connectionRecords[agentUid] ?? null;
-      const finish = appConnectFinish({
-        entry: record?.apps?.[domain.trim().toLowerCase()],
-        connection,
-        domain,
-        company,
-        record,
-        now: Date.now(),
-      });
-      if (finish === "grant" && companyUid) {
+      const own = company.viewerUid !== "" && connection.createdBy === company.viewerUid;
+      if (own && companyUid && !botCanUse(connection, record)) {
         await grantAndAnnounce(agentUid, companyUid, connection, appNoteKey(domain));
-      } else if (finish === "announce") {
+      } else if (own) {
         await announceToolToBot(agentUid, { ...connection, isNew: true, granted: false, byViewer: true });
       }
       setBotConnectionRecord(agentUid, forgetAppCard(connectionRecords[agentUid], domain));
