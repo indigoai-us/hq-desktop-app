@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Add an Add member action to project boards for active company members.
+- Held sign-in receipts keep the home directory captured before token resolution, preventing a profile switch from redirecting the pending event.
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
 - Background first-launch and sign-in telemetry flushes stay bound to the home
   directory that scheduled them, so delayed sends cannot consume another
