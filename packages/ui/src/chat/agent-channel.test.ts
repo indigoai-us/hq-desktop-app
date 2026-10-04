@@ -285,7 +285,8 @@ describe("the new bot's first message", () => {
   it("carries the apps section when the list was read, says so when it is empty, and leaves it out when it was not", () => {
     const brief = "- Linear (linear.app): connected, not shared with you, 12 recent calls\n- Notion (notion.so): connected, you can use it";
     const withApps = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: brief });
-    expect(withApps).toContain(`The company's connected apps:\n${brief}\n`);
+    // The apps list is the last thing in the request.
+    expect(withApps.endsWith(`\nThe company's connected apps:\n${brief}`)).toBe(true);
     expectNoCardTeaching(withApps);
     const empty = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: "" });
     expect(empty).toContain("The company has no connected apps yet.");
@@ -300,9 +301,9 @@ describe("the new bot's first message", () => {
 
   it("states whether the bot is in Slack as one fact line in the bot's terms, and nothing when that is not known", () => {
     const notYet = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true, companyApps: "", inSlack: false });
-    expect(notYet).toContain("The company files are still downloading in the background.\nYou are not in Slack yet.\nThe company has no connected apps yet.\n");
+    expect(notYet.endsWith("The company files are still downloading in the background.\nYou are not in Slack yet.\nThe company has no connected apps yet.")).toBe(true);
     const inSlack = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, inSlack: true });
-    expect(inSlack).toContain("so you can help.\nYou are in Slack.\nDo not mention this message.");
+    expect(inSlack.endsWith("so you can help.\nYou are in Slack.")).toBe(true);
     const unknown = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
     expect(unknown).not.toContain("Slack");
     expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, inSlack: null })).toBe(unknown);
@@ -337,10 +338,38 @@ describe("the new bot's first message", () => {
     expect(text.length).toBeLessThan(3500);
   });
 
-  it("ends with the ask not to mention the request, with no long dash", () => {
+  it("ends with its last fact, with no closing prohibition and no long dash", () => {
+    // Rewritten 2026-10-04: this pinned a last line "Do not mention this
+    // message." The owner's standing rule is that the app gives a bot facts
+    // and positive asks only. The fact that carries the same meaning stays:
+    // "{person} cannot see this message."
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true, companyApps: "gmail: connected" });
-    expect(text.endsWith("Do not mention this message.")).toBe(true);
+    expect(text.endsWith("The company's connected apps:\ngmail: connected")).toBe(true);
+    expect(text).toContain("Stefan cannot see this message.");
     expect(text).not.toContain("\u2014");
+    // With nothing after the ask, the request ends with the ask, and no stray line break.
+    const bare = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
+    expect(bare.endsWith("say hello and offer what Stefan could connect so you can help.")).toBe(true);
+    expect(buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true }).endsWith("still downloading in the background.")).toBe(true);
+  });
+
+  it("tells a bot facts and positive asks only: no request or notice carries a prohibition", () => {
+    const texts = [
+      buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true, companyApps: "- Linear (linear.app): connected, you can use it", inSlack: false }),
+      buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: "", inSlack: true }),
+      buildAgentHelloRequest({ personName: " ", filesStillDownloading: false }),
+      buildAgentToolConnectedNotice({ personName: "Stefan", name: "Linear", provider: "factory:linear", connectionId: "acct_1" }),
+      buildAgentToolConnectedNotice({ personName: " ", name: "Notion", connectionId: "acct_2" }),
+      buildAgentSlackConnectedNotice({ personName: "Stefan", botName: "Nova" }),
+      buildAgentSlackConnectedNotice({ personName: "Stefan" }),
+    ];
+    for (const text of texts) {
+      expect(text).not.toMatch(/\bdo not\b|\bdon't\b|\bnever\b|\bmust not\b|\bthere is no\b|\bno --\w+ flag\b|\bonly from\b/i);
+      expect(text).not.toMatch(/mention this message/i);
+      // The fact that the person does not see the request is still stated.
+      expect(text).toMatch(/cannot see this message\./);
+      expect(text).toBe(text.trimEnd());
+    }
   });
 
   const JOINED = { fromPersonUid: "agt_nova", body: "Nova (an agent) just joined Acme.", createdAt: "2026-10-02T13:50:42.000Z" };
@@ -505,11 +534,19 @@ describe("the hidden notices to a bot", () => {
   it("tool notice names the app, its connection and how to read what it offers", () => {
     expect(tool).toContain("Stefan just connected Linear for the company and allowed you to use it (linear, connection acct_01LINEAR).");
     expect(tool).toContain("Stefan cannot see this message.");
-    expect(tool).toContain("run `hq integrations tools --connection acct_01LINEAR --json` (the flag is --connection, there is no --app flag)");
-    expect(tool).toContain("say you can now use Linear, and offer two or three first jobs you could do with it, drawn only from the methods you just listed");
+    // Rewritten 2026-10-04: three lines here were prohibitions ("there is no
+    // --app flag", "do not suggest jobs", "Do not mention this message.").
+    // Each now states the form that works or what to do in that case.
+    expect(tool).toContain(
+      "run `hq integrations tools --connection acct_01LINEAR --json` (the connection is named by the --connection flag and its id, exactly as written here)",
+    );
+    expect(tool).toContain("say you can now use Linear, and offer two or three first jobs you could do with it, each one taken from the methods you just listed");
     expect(tool).toContain("each item written as Stefan's request and under 80 characters");
-    expect(tool).toContain("say that you can see Linear but cannot read what it offers yet, and do not suggest jobs");
-    expect(tool.endsWith("Do not mention this message.")).toBe(true);
+    expect(
+      tool.endsWith(
+        "If the list does not come back, write one sentence instead: that you can see Linear and are waiting to read what it offers, and that Stefan can ask you to look again.",
+      ),
+    ).toBe(true);
   });
 
   it("tool notice works without a provider or a person's name", () => {
@@ -539,7 +576,8 @@ describe("the hidden notices to a bot", () => {
     );
     expect(slack).toContain("Then offer two or three things you can do there");
     expect(slack).toContain("post a daily summary to a channel, answer questions in a channel, send Stefan a reminder");
-    expect(slack.endsWith("Do not mention this message.")).toBe(true);
+    // It ends with the suggestions example (rewritten 2026-10-04: was "Do not mention this message.").
+    expect(slack.endsWith('{"v":1,"blocks":[{"kind":"suggestions","items":["...","..."]}]}\n```')).toBe(true);
   });
 
   it("Slack notice names the invite command without a handle when the bot's name is unknown, and keeps a hostile name on one line", () => {
