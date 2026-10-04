@@ -1665,6 +1665,69 @@ pub struct RunnerFatalSignature {
     pub exit_producer: &'static str,
 }
 
+/// Bounded, content-safe holder identity emitted by hq-cloud on watch-owner
+/// contention. Values are copied only after each field passes its own shape
+/// check; arbitrary command lines and paths never leave the process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchOwnerHolderFields {
+    pub owner: String,
+    pub pid: u32,
+    pub process_name: &'static str,
+    pub started_at: String,
+}
+
+pub fn parse_watch_owner_holder_fields(line: &str) -> Option<WatchOwnerHolderFields> {
+    let (_, rest) = line.split_once("already owned for this HQ root (")?;
+    let fields = rest.split_once(");")?.0;
+    let mut owner = None;
+    let mut pid = None;
+    let mut process_name = None;
+    let mut started_at = None;
+    for field in fields.split(", ") {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "owner"
+                if !value.is_empty()
+                    && value.len() <= 64
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    }) =>
+            {
+                owner = Some(value.to_string())
+            }
+            "pid" => pid = value.parse::<u32>().ok().filter(|pid| *pid > 0),
+            "process" if value == "sync-runner" => process_name = Some("sync-runner"),
+            "startedAt" if is_bounded_utc_timestamp(value) => started_at = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    Some(WatchOwnerHolderFields {
+        owner: owner?,
+        pid: pid?,
+        process_name: process_name?,
+        started_at: started_at?,
+    })
+}
+
+fn is_bounded_utc_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (20..=24).contains(&bytes.len())
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'T')
+        && bytes.get(13) == Some(&b':')
+        && bytes.get(16) == Some(&b':')
+        && bytes.last() == Some(&b'Z')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7) && *byte == b'-'
+                || index == 10 && *byte == b'T'
+                || matches!(index, 13 | 16) && *byte == b':'
+                || index == bytes.len() - 1 && *byte == b'Z'
+                || index == 19 && *byte == b'.'
+                || byte.is_ascii_digit()
+        })
+}
+
 /// Fixed allow-list of libuv/Win32 syscall identifiers that libuv's
 /// `uv_fatal_error` names in its `<syscall>: (<errno>) <message>` output. Only
 /// these canonical spellings may ever leave the process as a
@@ -2262,6 +2325,8 @@ pub fn should_synthesize_all_complete(
 /// or scheduled sync is already mid-run — not a failure, so the menubar must
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
+/// A watch-mode runner refused because a live owner already holds this root.
+pub const RUNNER_ALREADY_OWNED_EXIT: i32 = 20;
 
 /// Exit code returned by hq-cloud's `TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`
 /// retry contract. hq-cloud uses it at the auth-refresh return site, both
@@ -2838,7 +2903,9 @@ pub fn watcher_exit_class(
     node_fatal: bool,
     memory_attributed: bool,
 ) -> &'static str {
-    if memory_attributed {
+    if code == Some(RUNNER_ALREADY_OWNED_EXIT) && signal.is_none() {
+        "already_owned"
+    } else if memory_attributed {
         "runner_memory"
     } else if code == Some(0xC000_0005u32 as i32) {
         "access_violation"
@@ -4806,6 +4873,12 @@ mod tests {
     #[test]
     fn watcher_exit_class_groups_known_native_and_node_fatal_exits() {
         assert_eq!(
+            watcher_exit_class(Some(RUNNER_ALREADY_OWNED_EXIT), None, false, false),
+            "already_owned"
+        );
+        assert_eq!(watcher_exit_class(Some(19), None, false, false), "other");
+        assert_eq!(watcher_exit_class(Some(21), None, false, false), "other");
+        assert_eq!(
             watcher_exit_class(Some(0xC000_0005u32 as i32), None, false, false),
             "access_violation"
         );
@@ -5498,6 +5571,28 @@ mod tests {
         assert_eq!(token, "libuv_assert");
         assert!(!token.contains("Ada"));
         assert!(!token.contains("secret-plan"));
+    }
+
+    #[test]
+    fn watch_owner_holder_fields_accept_only_bounded_safe_identity() {
+        let line = "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.";
+        assert_eq!(
+            parse_watch_owner_holder_fields(line),
+            Some(WatchOwnerHolderFields {
+                owner: "hq-daemon".to_string(),
+                pid: 1234,
+                process_name: "sync-runner",
+                started_at: "2026-10-04T08:10:11.123Z".to_string(),
+            })
+        );
+
+        for unsafe_line in [
+            "[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.",
+            "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.",
+            "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=secret); exiting.",
+        ] {
+            assert_eq!(parse_watch_owner_holder_fields(unsafe_line), None);
+        }
     }
 
     #[test]
