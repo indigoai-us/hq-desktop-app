@@ -2858,10 +2858,14 @@ async fn install_hq_cli_update_once(
         }
         return match executor {
             InstallExecutor::Pnpm => {
-                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Bun => {
-                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Npm => unreachable!("npm handled below"),
         };
@@ -3258,9 +3262,9 @@ async fn install_hq_cli_update_once(
         &latest,
         prefix.as_deref(),
         already_blocked,
+        retry_attempt,
     )
     .await
-    .map_err(HqCliUpdateFailure::Other)
 }
 
 /// Whether a failed install is a shape HQ can self-heal by installing its managed
@@ -3476,7 +3480,8 @@ async fn finalize_convergence(
     latest: &str,
     prefix: Option<&str>,
     already_blocked: bool,
-) -> Result<HqCliUpdateInfo, String> {
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
         let hq = post_install_hq.clone();
@@ -3565,7 +3570,8 @@ async fn finalize_convergence(
                 &managed_roots,
                 &post_install_hq,
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3596,7 +3602,8 @@ async fn finalize_convergence(
                 delivered_version.as_deref(),
                 resolved.as_deref(),
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3646,7 +3653,7 @@ async fn finalize_convergence(
     }
 
     log("hq-cli-update", &outcome.log_line);
-    let result = apply_post_install_with_app(app, &outcome);
+    let result = apply_post_install_with_app(app, &outcome).map_err(Into::into);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
     // never the durable blocking marker), so a persistent installer-unaimed or
     // resolution-shortfall shape reports once per `latest` instead of on every
@@ -3764,9 +3771,9 @@ async fn executed_copy_reaim_and_refinalize(
                             latest,
                             Some(&aim.prefix),
                             already_blocked,
+                            retry_attempt,
                         ))
-                        .await
-                        .map_err(HqCliUpdateFailure::Other);
+                        .await;
                     }
                     if !install_exit_ok {
                         log(
