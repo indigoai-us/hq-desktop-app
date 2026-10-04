@@ -31,7 +31,7 @@ const onboardingFlags = vi.hoisted(() => ({
 }));
 
 const httpFetch = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => ({
     ok: true,
     status: 200,
     json: async () => ({}),
@@ -2177,9 +2177,9 @@ describe('anonymous installer step pings', () => {
   );
 
   it.each([
-    ['missing', () => null],
-    ['non-UUID', () => 'not-a-uuid'],
-    ['unreadable', () => { throw new Error('native id unavailable'); }],
+    ['missing', (): string | null => null],
+    ['non-UUID', (): string | null => 'not-a-uuid'],
+    ['unreadable', (): string | null => { throw new Error('native id unavailable'); }],
   ] as const)(
     'leaves the first-launch join key off when the persisted install id is %s',
     async (_condition, readInstallAttemptId) => {
