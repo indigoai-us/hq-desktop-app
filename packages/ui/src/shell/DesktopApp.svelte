@@ -4048,18 +4048,44 @@
       : null,
   );
   const dmCloudBotSync = $derived(dmCloudBotUid ? (botSyncByUid[dmCloudBotUid] ?? null) : null);
+  /**
+   * Whether a failed status read is the server refusing it: this person may
+   * not read the bot's status (403), or the server will not say there is such
+   * a bot (404, which is also its answer to a plain member). Only these end
+   * the asking. Anything else is a read that did not get through: the
+   * network, a timeout, a 5xx, a 401 while the sign-in is being refreshed.
+   * Those say nothing about the bot and are tried again.
+   */
+  function botStatusReadRefused(result: unknown): boolean {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+    const rec = result as Record<string, unknown>;
+    if (rec.ok !== false) return false;
+    const code = typeof rec.code === "string" ? rec.code.trim().toLowerCase() : "";
+    return rec.status === 403 || rec.status === 404 || code === "http-403" || code === "http-404";
+  }
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // read fails, which means no widget and never an error in the chat. The
-  // first answer is also what says the bot is a cloud bot.
+  // server refuses the read, which means no widget and never an error in the
+  // chat. The first answer is also what says the bot is a cloud bot.
+  //
+  // Only a refusal ends the asking. A read that fails any other way is tried
+  // again, sooner at first and less often each time, and at once when the
+  // window comes back to the front or the network returns: one failed read
+  // must not leave an owner's conversation without its cards until they
+  // leave it and come back.
   $effect(() => {
     const uid = dmCloudBotCandidateUid;
     if (!uid) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let failures = 0;
+    let inFlight = false;
+    /** The server refused the read: nothing more is asked while this conversation stays open. */
+    let refused = false;
     const check = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
       const madeHere = untrack(() => newCloudBotUids).includes(uid);
       let next: AgentChatReadiness | null = null;
       let readable = false;
@@ -4081,25 +4107,49 @@
               setNewCloudBots(untrack(() => newCloudBotUids).filter((id) => id !== uid));
             }
           }
+        } else if (botStatusReadRefused(result)) {
+          // Refused, with nothing known about the bot from before: this
+          // person may not read its status. Do not keep asking.
+          refused = !madeHere && !untrack(() => botSyncByUid[uid]);
         }
       } catch {
-        // Keep the last known state and ask again.
+        // The read did not get through. Keep the last known state and ask again.
+      } finally {
+        inFlight = false;
       }
-      if (stopped) return;
-      // Nothing known and nothing readable: this person may not read the
-      // bot's status. Do not keep asking.
-      if (!readable && !madeHere && !untrack(() => botSyncByUid[uid])) return;
+      if (stopped || refused) return;
       // A read that keeps failing (the bot was removed, the network is down)
       // is asked less often each time, never every 5 s for ever.
       failures = readable ? 0 : failures + 1;
       const usual = madeHere && next?.chatReady !== true ? AGENT_CHAT_READY_POLL_MS : BOT_SYNC_POLL_MS;
-      const wait = readable ? usual : Math.max(usual, nextReadinessPollMs({ kind: "failed" }, failures) ?? usual);
+      const backoff = nextReadinessPollMs({ kind: "failed" }, failures) ?? usual;
+      // Until the server has answered once nothing of a cloud bot's shows, so
+      // the next try does not wait for the slow timer.
+      const answered = untrack(() => cloudBotStatusRead)[uid] === true;
+      const wait = readable ? usual : answered ? Math.max(usual, backoff) : backoff;
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => void check(), wait);
     };
+    // The window is back, or the network is: a read that has not been
+    // answered yet is made now instead of at the end of its wait.
+    const retryNow = (): void => {
+      if (stopped || refused || inFlight) return;
+      if (untrack(() => cloudBotStatusRead)[uid]) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      void check();
+    };
     void check();
+    window.addEventListener("focus", retryNow);
+    window.addEventListener("online", retryNow);
+    document.addEventListener("visibilitychange", retryNow);
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      window.removeEventListener("focus", retryNow);
+      window.removeEventListener("online", retryNow);
+      document.removeEventListener("visibilitychange", retryNow);
     };
   });
 
