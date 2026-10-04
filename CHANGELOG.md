@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 - Unexpected watcher-exit reports now include the runner phase and elapsed-time bucket as searchable Sentry tags.
 - Held sign-in receipts keep the home directory captured before token resolution, preventing a profile switch from redirecting the pending event.
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
@@ -452,7 +453,6 @@ The release moves it under the version it ships in.
 
 ## [0.10.356] — 2026-09-29
 
-- Work app and platform API GET requests retry once after the generic Lambda-invoke 504 response when its body has no function request ID; API Gateway's own response header does not suppress the retry.
 - If a Core update overlaps an active HQ change, HQ defers it and retries on a later check instead of reporting an update failure.
 - Pin the third-party actions used by the release monitor and UI-only publish workflow to their resolved commits.
 - The optional setup-stage timeout mitigation is off until enabled in hq-flags. When enabled, dependency install, template download and extraction, and search indexing timers restart when that stage reports progress and still stop at a maximum elapsed time.
