@@ -22,3 +22,14 @@ describe("DesktopApp: the read Cancel uses to look a bot up", () => {
     expect(AGENT_PATHS.mobileRoster("cmp_indigo")).toBe("/v1/agents/mobile-roster?companyUid=cmp_indigo");
   });
 });
+
+describe("DesktopApp: the key a bot's hello request is sent under (review item 8)", () => {
+  it("sends the request under the key kept with the session, else the bot's own", () => {
+    const send = source.slice(
+      source.indexOf("async function sendCloudBotHello("),
+      source.indexOf("async function cloudBotHelloArrived("),
+    );
+    expect(send).toContain("idempotencyKey: session.helloKey?.trim() || helloRequestKey(uid),");
+    expect(send).not.toContain("`new-bot-hello-");
+  });
+});

@@ -1580,6 +1580,63 @@ describe("Bots that are starting outlive the sidebar (review A-C2)", () => {
     expect(wakingStored().map((entry) => entry.agentUid)).toEqual(["agt_later"]);
   });
 
+  it("asks a restored bot that can chat for its first message, without a click on its row (review item 8)", async () => {
+    const CHAT_READY = { ok: true, value: { setupState: { phase: "ready", steps: [] } } };
+    seedWaking([{ ...SEEDED, agentUid: "agt_later", name: "Later", startedAt: Date.now() - 60_000 }]);
+    const sendBotHello = vi.fn(async (_session: { agentUid: string; helloKey?: string | null }) => true);
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      loadAgentStatus: async () => CHAT_READY,
+      sendBotHello,
+    });
+
+    await vi.waitFor(() => expect(sendBotHello).toHaveBeenCalledTimes(1));
+    expect(sendBotHello.mock.calls[0]?.[0]).toMatchObject({ agentUid: "agt_later", helloKey: "new-bot-hello-agt_later" });
+    // Asked: the bot is no longer starting, and nothing is left to restore.
+    await vi.waitFor(() => expect(wakingStored()).toEqual([]));
+    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+  });
+
+  it("writes the request down before it is sent, and keeps the bot's row when it could not be sent", async () => {
+    const CHAT_READY = { ok: true, value: { setupState: { phase: "ready", steps: [] } } };
+    seedWaking([{ ...SEEDED, agentUid: "agt_later", name: "Later", startedAt: Date.now() - 60_000 }]);
+    let sent!: (ok: boolean) => void;
+    const sendBotHello = vi.fn(() => new Promise<boolean>((resolve) => { sent = resolve; }));
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      loadAgentStatus: async () => CHAT_READY,
+      sendBotHello,
+    });
+    await vi.waitFor(() => expect(sendBotHello).toHaveBeenCalledTimes(1));
+
+    // The request is still out, and the mark is already in storage.
+    expect(wakingStored()).toMatchObject([
+      { agentUid: "agt_later", helloAskingAt: expect.any(Number), helloKey: "new-bot-hello-agt_later", helloAskedAt: null },
+    ]);
+
+    sent(false);
+    await settle(12);
+    expect(q('[data-conversation-id="dm:agt_later"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(wakingStored()).toMatchObject([{ agentUid: "agt_later", helloKey: "new-bot-hello-agt_later" }]);
+  });
+
+  it("leaves a restored bot of another company to the sidebar that shows that company", async () => {
+    const CHAT_READY = { ok: true, value: { setupState: { phase: "ready", steps: [] } } };
+    seedWaking([{ ...SEEDED, agentUid: "agt_later", name: "Later", startedAt: Date.now() - 60_000 }]);
+    const sendBotHello = vi.fn(async () => true);
+    const props = { oncreatenewbot: async () => created("agt_other"), loadAgentStatus: async () => CHAT_READY, sendBotHello };
+    // This sidebar shows Acme. The bot is Indigo's.
+    mountSidebar({ ...props, tenantCompanyId: "cmp_acme", scopeUid: "cmp_acme" });
+    await settle(12);
+    expect(sendBotHello).not.toHaveBeenCalled();
+
+    // The person switches to Indigo: the sidebar is rebuilt for it.
+    await unmount(component!);
+    mountSidebar({ ...props, tenantCompanyId: "cmp_indigo", scopeUid: "cmp_indigo" });
+    await vi.waitFor(() => expect(sendBotHello).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps a bot whose status could not be read, and forgets one that has been starting for a day", async () => {
     seedWaking([
       { ...SEEDED, startedAt: Date.now() - 60_000 },

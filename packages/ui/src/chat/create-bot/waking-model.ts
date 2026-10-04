@@ -162,6 +162,15 @@ export interface WakingBotSession {
   finishEstimateMs?: number;
   /** When the bot's setup first said it can chat. */
   chatReadyAt?: number | null;
+  /**
+   * When the app began to ask the bot to say hello. Written down before the
+   * request leaves, so a screen that goes away while it is out leaves a mark:
+   * the next screen sends the same request again, under the same key, and
+   * not a second one of its own.
+   */
+  helloAskingAt?: number | null;
+  /** The key the hello request is sent under, kept with the mark above. */
+  helloKey?: string | null;
   /** When the app asked the bot to say hello in the direct message. */
   helloAskedAt?: number | null;
   /** When the bot's first message was seen. The person is taken to chat then. */
@@ -390,12 +399,36 @@ export function applyWakingStatus(
   return { ...next, progress: phase === "ready" ? 100 : stageProgress(next, now) };
 }
 
-/** The app has sent the bot its request to say hello. */
+/** The key a bot's hello request is sent under. One per bot, so the server takes it once. */
+export function helloRequestKey(agentUid: string): string {
+  return `new-bot-hello-${agentUid.trim()}`;
+}
+
+/**
+ * The app is about to ask the bot to say hello. The mark and the key are
+ * set once and never moved: a later attempt is the same request.
+ */
+export function markWakingHelloAsking(
+  session: WakingBotSession,
+  now: number = Date.now(),
+): WakingBotSession {
+  return {
+    ...session,
+    helloAskingAt: session.helloAskingAt ?? now,
+    helloKey: session.helloKey?.trim() || helloRequestKey(session.agentUid),
+  };
+}
+
+/**
+ * The app has sent the bot its request to say hello. The time kept is when
+ * the request was begun, when that was written down: the bot's answer is
+ * looked for from then on.
+ */
 export function recordWakingHelloAsked(
   session: WakingBotSession,
   now: number = Date.now(),
 ): WakingBotSession {
-  return { ...session, helloAskedAt: session.helloAskedAt ?? now };
+  return { ...session, helloAskedAt: session.helloAskedAt ?? session.helloAskingAt ?? now };
 }
 
 /** The bot's first message is in the conversation: hand the person over. */

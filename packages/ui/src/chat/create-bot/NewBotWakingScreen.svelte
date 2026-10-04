@@ -5,6 +5,7 @@
     applyWakingStatus,
     awaitingHello,
     recordWakingHello,
+    markWakingHelloAsking,
     recordWakingHelloAsked,
     SIGN_IN_CONFIRM_LATE_MS,
     SIGN_IN_CONFIRM_SLOW_MS,
@@ -126,6 +127,11 @@
     let next = current;
     try {
       if (next.helloAskedAt == null) {
+        // Written down before the request leaves. If this screen goes away
+        // while it is out, the next one sends the same request under the
+        // same key, and not a second request of its own.
+        next = markWakingHelloAsking(next);
+        onupdate(next);
         if (!(await sendHello(next))) return next;
         next = recordWakingHelloAsked(next);
       }

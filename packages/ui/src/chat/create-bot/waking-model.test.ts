@@ -8,6 +8,8 @@ import {
   recordWakingCheckFailure,
   recordWakingHello,
   recordWakingHelloAsked,
+  helloRequestKey,
+  markWakingHelloAsking,
   reopenWakingSession,
   resumeWakingSession,
   SIGN_IN_CONFIRM_LATE_MS,
@@ -389,5 +391,29 @@ describe("waking model", () => {
     const retried = resumeWakingSession({ ...session(), phase: "failed", chatReadyAt: STARTED + 5_000 }, STARTED + 10_000);
     expect(retried.chatReadyAt).toBeNull();
     expect(retried).toMatchObject({ agentUid: "agt_nova", channelId: "chn_nova", phase: "waking", consecutiveCheckFailures: 0 });
+  });
+});
+
+describe("the hello request is marked before it is sent (review item 8)", () => {
+  it("has one key per bot", () => {
+    expect(helloRequestKey(" agt_nova ")).toBe("new-bot-hello-agt_nova");
+  });
+
+  it("marks the session with the time and the key, once", () => {
+    const first = markWakingHelloAsking(session(), STARTED + 50_000);
+    expect(first).toMatchObject({ helloAskingAt: STARTED + 50_000, helloKey: "new-bot-hello-agt_nova" });
+    // Not asked yet: the request has only begun.
+    expect(first.helloAskedAt ?? null).toBeNull();
+
+    // A later screen marks nothing new: it is the same request.
+    const again = markWakingHelloAsking({ ...first, helloKey: "kept-key" }, STARTED + 90_000);
+    expect(again).toMatchObject({ helloAskingAt: STARTED + 50_000, helloKey: "kept-key" });
+  });
+
+  it("counts the request from when it was begun", () => {
+    const marked = markWakingHelloAsking(session(), STARTED + 50_000);
+    expect(recordWakingHelloAsked(marked, STARTED + 58_000).helloAskedAt).toBe(STARTED + 50_000);
+    // Without a mark, from when it is recorded, as before.
+    expect(recordWakingHelloAsked(session(), STARTED + 58_000).helloAskedAt).toBe(STARTED + 58_000);
   });
 });

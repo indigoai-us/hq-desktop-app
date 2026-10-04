@@ -187,6 +187,7 @@
     type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
   import { createNewBotCompanyFlags } from "../chat/create-bot/new-bot-companies.js";
+  import { helloRequestKey } from "../chat/create-bot/waking-model.js";
   import {
     openCreateCompanyDraft,
     submitCreateCompany,
@@ -4131,7 +4132,12 @@
    * Only a bot made in the New Bot flow is asked: the first message is that
    * flow's hand-off, and no other bot expects the request.
    */
-  async function sendCloudBotHello(session: { agentUid: string; name: string }): Promise<boolean> {
+  async function sendCloudBotHello(session: {
+    agentUid: string;
+    name: string;
+    /** The key the request was first begun under (waking-model.ts). */
+    helloKey?: string | null;
+  }): Promise<boolean> {
     const uid = session.agentUid.trim();
     if (!uid || !madeInNewBotFlow(uid)) return false;
     // The bot's status, then the company's connections for the bot to choose
@@ -4145,7 +4151,10 @@
       companyUidHint: selectedRow?.kind === "dm" && selectedRow.personUid === uid ? selectedRow.companyUid : null,
     });
     const askedAt = Date.now();
-    const result = await adapter.messaging.sendDm(uid, hello.body, { audience: "agent", idempotencyKey: `new-bot-hello-${uid}` });
+    const result = await adapter.messaging.sendDm(uid, hello.body, {
+      audience: "agent",
+      idempotencyKey: session.helloKey?.trim() || helloRequestKey(uid),
+    });
     if (!result.ok) return false;
     // The first ask is the one that counts: a repeat is the same request to the server.
     cloudBotHelloPending = {

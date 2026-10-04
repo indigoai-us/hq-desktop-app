@@ -124,6 +124,7 @@ export function loadWakingSessions(
     const estimateMs = time(item.estimateMs);
     const signedInAt = time(item.signedInAt);
     const helloAskedAt = time(item.helloAskedAt);
+    const helloKey = text(item.helloKey);
     const phase = item.phase === "failed" ? "failed" : "waking";
     const session: WakingBotSession = {
       agentUid,
@@ -146,6 +147,9 @@ export function loadWakingSessions(
       // begun, and it begins when the screen is opened again.
       chatReadyAt: helloAskedAt !== null ? time(item.chatReadyAt) : null,
       helloAskedAt,
+      // A hello request that was begun: the next screen sends that same request.
+      helloAskingAt: time(item.helloAskingAt),
+      helloKey: helloKey || null,
     };
     if (!wakingSessionCurrent(session, now)) continue;
     seen.add(agentUid);
@@ -177,6 +181,9 @@ export function serializeWakingSessions(
       askedApproval: session.askedApproval === true,
       chatReadyAt: session.helloAskedAt != null ? session.chatReadyAt ?? null : null,
       helloAskedAt: session.helloAskedAt ?? null,
+      // A hello request that was begun, and its key. Only written when there is one.
+      ...(session.helloAskingAt != null ? { helloAskingAt: session.helloAskingAt } : {}),
+      ...(session.helloKey ? { helloKey: session.helloKey } : {}),
     }));
   return JSON.stringify(rows);
 }
@@ -194,6 +201,11 @@ export interface WakingSessionStore {
    * about these before it goes on showing them as starting.
    */
   takeRestored(): string[];
+  /**
+   * Hand a restored bot back, unchecked: this sidebar is not showing its
+   * company. The sidebar that does will take it.
+   */
+  deferRestored(agentUid: string): void;
 }
 
 function createStore(storage: SessionStorage | null): WakingSessionStore {
@@ -265,6 +277,9 @@ function createStore(storage: SessionStorage | null): WakingSessionStore {
       const out = [...restored].filter((agentUid) => live.has(agentUid));
       restored.clear();
       return out;
+    },
+    deferRestored(agentUid) {
+      if (agentUid.trim()) restored.add(agentUid.trim());
     },
   };
 }

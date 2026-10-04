@@ -478,6 +478,53 @@ describe("NewBotWakingScreen", () => {
       expect(retryAgent).not.toHaveBeenCalled();
     });
 
+    it("writes the request down, with its key, before the request leaves (review item 8)", async () => {
+      let sent!: (ok: boolean) => void;
+      const sendHello = vi.fn((_session: { agentUid: string; helloKey?: string | null }) => new Promise<boolean>((resolve) => { sent = resolve; }));
+      const checkHello = vi.fn(async () => false);
+      const { onupdate } = render(undefined, { getStatus: async () => CHAT_READY, sendHello, checkHello });
+      await settle();
+      await settle();
+
+      // The request is out and has not come back. The mark is already saved.
+      expect(sendHello).toHaveBeenCalledTimes(1);
+      const marked = onupdate.mock.calls.at(-1)?.[0];
+      expect(marked).toMatchObject({ helloAskingAt: expect.any(Number), helloKey: "new-bot-hello-agt_nova" });
+      expect(marked.helloAskedAt ?? null).toBeNull();
+      // The request carries the same key.
+      expect(sendHello.mock.calls[0]?.[0]).toMatchObject({ helloKey: "new-bot-hello-agt_nova" });
+
+      sent(true);
+      await settle();
+      await settle();
+      const asked = onupdate.mock.calls.at(-1)?.[0];
+      // Counted from when it was begun, not from when it came back.
+      expect(asked.helloAskedAt).toBe(marked.helloAskingAt);
+    });
+
+    it("a screen that takes over a request that was begun sends that same request, not a second one", async () => {
+      // The first screen went away while its request was out. Nothing says
+      // whether the request arrived.
+      const begun = {
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova", now: Date.now() - 200_000 }),
+        helloAskingAt: Date.now() - 60_000,
+        helloKey: "new-bot-hello-agt_nova",
+      };
+      const sendHello = vi.fn(async (_session: { agentUid: string; helloKey?: string | null; helloAskingAt?: number | null }) => true);
+      const checkHello = vi.fn(async () => false);
+      const { onupdate } = render(begun, { getStatus: async () => CHAT_READY, sendHello, checkHello });
+      await settle();
+      await settle();
+
+      expect(sendHello).toHaveBeenCalledTimes(1);
+      expect(sendHello.mock.calls[0]?.[0]).toMatchObject({
+        helloKey: "new-bot-hello-agt_nova",
+        helloAskingAt: begun.helloAskingAt,
+      });
+      // The bot's answer is looked for from the first attempt on.
+      expect(onupdate.mock.calls.at(-1)?.[0]).toMatchObject({ helloAskedAt: begun.helloAskingAt });
+    });
+
     it("hands over as soon as the first message is seen, without asking twice", async () => {
       const asked = {
         ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova", now: Date.now() - 200_000 }),

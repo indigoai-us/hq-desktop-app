@@ -53,7 +53,7 @@
     type ChatWakeBus,
   } from "./chat-api";
   import { CLOUD_BOT_NAME_TAKEN_REASON, type CloudBotDraft, type EntryPointResult } from "./lifecycle-entry-points.js";
-  import { beginWakingSession, reopenWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
+  import { beginWakingSession, markWakingHelloAsking, reopenWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
   import {
     upsertWakingSession,
     wakingSessionKey,
@@ -1968,6 +1968,35 @@
     changeWakingBots((sessions) => withoutWakingSession(sessions, key));
   }
 
+  /** True when this sidebar shows the session's company: all companies, or that one. */
+  function wakingBotInScope(session: Pick<WakingBotSession, "companyUid">): boolean {
+    const scoped = (tenantCompanyId ?? "").trim();
+    return !scoped || scoped === "all" || !session.companyUid || session.companyUid === scoped;
+  }
+
+  /**
+   * Ask a restored bot that can chat for its first message. The request is
+   * marked on the session before it leaves, with its key, so whatever asks
+   * next (this sidebar again, or the bot's waiting screen) sends the same
+   * request. Once it is sent the bot is no longer starting: it has its
+   * conversation, where its first message arrives.
+   */
+  async function askRestoredBot(agentUid: string): Promise<void> {
+    const send = sendBotHello;
+    const held = wakingStore.get().find((candidate) => candidate.agentUid === agentUid);
+    if (!send || !held || held.phase !== "waking" || held.helloAskedAt != null) return;
+    const asking = markWakingHelloAsking(held);
+    changeWakingBots((sessions) => upsertWakingSession(sessions, asking));
+    let sent = false;
+    try {
+      sent = await send(asking);
+    } catch {
+      sent = false;
+    }
+    // Not sent: the bot keeps its row, and opening it asks again under the same key.
+    if (sent) endWakingBot(asking);
+  }
+
   /**
    * A restart can outlast a bot. Ask the server once about each bot read
    * back from storage: one that is gone, or that can chat and was already
@@ -1987,9 +2016,18 @@
               (answer.value as { setupState?: { phase?: unknown } } | null)?.setupState?.phase ?? "",
             ).toLowerCase();
             const gone = phase === "deprovisioning" || phase === "deprovisioned";
-            const live = agentChatReadiness(answer.value).chatReady && session.helloAskedAt != null;
+            const chatReady = agentChatReadiness(answer.value).chatReady;
+            const live = chatReady && session.helloAskedAt != null;
             if (gone) forgetKeysOfRemovedBot(session.companyUid, session.name);
             if (gone || live) endWakingBot(session);
+            else if (chatReady) {
+              // It can chat and was never asked for its first message. Ask
+              // now, without waiting for a click on its row, when this
+              // sidebar is showing its company. Otherwise the sidebar that
+              // does show it will.
+              if (wakingBotInScope(session)) void askRestoredBot(agentUid);
+              else wakingStore.deferRestored(agentUid);
+            }
             return;
           }
           const stop = wakingStopFromFailure(result);

@@ -164,6 +164,36 @@ describe("what is written down", () => {
   });
 });
 
+describe("a hello request that was begun (review item 8)", () => {
+  it("is written down with its key, and read back", () => {
+    const text = serializeWakingSessions([
+      session("agt_nova", { startedAt: NOW, helloAskingAt: NOW + 40_000, helloKey: "new-bot-hello-agt_nova" }),
+    ], NOW + 50_000);
+    expect(JSON.parse(text)[0]).toMatchObject({ helloAskingAt: NOW + 40_000, helloKey: "new-bot-hello-agt_nova", helloAskedAt: null });
+
+    const [restored] = loadWakingSessions({ getItem: () => text }, NOW + 60_000);
+    expect(restored).toMatchObject({ helloAskingAt: NOW + 40_000, helloKey: "new-bot-hello-agt_nova", helloAskedAt: null });
+  });
+
+  it("reads a session without one as having none", () => {
+    const text = serializeWakingSessions([session("agt_nova", { startedAt: NOW })], NOW);
+    expect("helloAskingAt" in JSON.parse(text)[0]).toBe(false);
+    const [restored] = loadWakingSessions({ getItem: () => text }, NOW);
+    expect(restored).toMatchObject({ helloAskingAt: null, helloKey: null });
+  });
+
+  it("hands a restored bot out again when the first sidebar gave it back", () => {
+    resetWakingSessionStores();
+    const storage = memoryStorage();
+    storage.setItem(WAKING_BOTS_STORAGE_KEY, serializeWakingSessions([session("agt_nova", { startedAt: Date.now() })]));
+    const store = wakingSessionStore("acct_1", storage);
+    expect(store.takeRestored()).toEqual(["agt_nova"]);
+    expect(store.takeRestored()).toEqual([]);
+    store.deferRestored("agt_nova");
+    expect(store.takeRestored()).toEqual(["agt_nova"]);
+  });
+});
+
 describe("the account's list", () => {
   it("is one list for every sidebar of the account, and each hears of every change", () => {
     const storage = memoryStorage();
