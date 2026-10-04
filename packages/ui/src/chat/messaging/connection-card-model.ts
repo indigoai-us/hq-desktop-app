@@ -396,8 +396,8 @@ export interface SlackFacts {
   stage?: SlackPendingStage;
   /**
    * `pending` at the last step only: what the server is waiting on before it
-   * finishes, when the status says (slack-status.ts). The bot's file sync,
-   * or the setup's audit.
+   * finishes, when the status says (slack-status.ts): the setup's audit.
+   * The bot's file sync is never one.
    */
   wait?: SlackSetupWaitKind | null;
 }
@@ -435,8 +435,6 @@ export function slackFactsFromStatus(json: unknown): SlackFacts {
 
 /** The card's line while the server finishes the setup on the bot's computer. */
 export const SLACK_CARD_AUDIT_WAIT_HINT = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
-/** The card's line while the server waits for the bot's file sync before it finishes. */
-export const SLACK_CARD_SYNC_WAIT_HINT = "Slack connects after your company's files finish syncing.";
 
 /** The Slack card's one-line hint for what a setup that is not finished waits for. */
 export function slackPendingHint(
@@ -447,7 +445,6 @@ export function slackPendingHint(
   const bot = botName.trim() || "your bot";
   if (stage === "approve") return `Approve ${bot} in Slack.`;
   if (stage === "token") return "Paste the token to finish.";
-  if (wait === "sync") return SLACK_CARD_SYNC_WAIT_HINT;
   if (wait === "audit") return SLACK_CARD_AUDIT_WAIT_HINT;
   return "Connecting.";
 }

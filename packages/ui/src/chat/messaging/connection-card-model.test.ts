@@ -286,7 +286,8 @@ describe("slackFactsFromStatus", () => {
       setupState: { phase: "ready", steps },
       agent: { channels: { slack }, channelDiagnostics: { slack: { inboundCapability: "socket-mode-degraded" } } },
     });
-    expect(slackFactsFromStatus(at(stored, waitingOnSync))).toEqual({ state: "pending", stage: "finishing", wait: "sync" });
+    // The bot's file sync is not a wait: no wait field, the ordinary pending state.
+    expect(slackFactsFromStatus(at(stored, waitingOnSync))).toEqual({ state: "pending", stage: "finishing" });
     expect(slackFactsFromStatus(at(stored, auditStuck))).toEqual({ state: "pending", stage: "finishing", wait: "audit" });
     // Nothing of the kind in the steps: no wait field at all.
     expect(slackFactsFromStatus(at(stored, []))).toEqual({ state: "pending", stage: "finishing" });
@@ -559,10 +560,6 @@ describe("connectionCardView: Slack", () => {
   it("says at the last step what the server waits on, when the status says", () => {
     const lines: Array<[SlackFacts, string]> = [
       [
-        { state: "pending", stage: "finishing", wait: "sync" },
-        "Setup is not finished. Slack connects after your company's files finish syncing.",
-      ],
-      [
         { state: "pending", stage: "finishing", wait: "audit" },
         "Setup is not finished. HQ is finishing the setup on the bot's machine. This can take a few minutes.",
       ],
@@ -579,8 +576,36 @@ describe("connectionCardView: Slack", () => {
       "HQ is finishing the setup on the bot's machine. This can take a few minutes.",
     );
     // Only the last step reads the wait.
-    expect(slackPendingHint("token", "Nova", "sync")).toBe("Paste the token to finish.");
+    expect(slackPendingHint("token", "Nova", "audit")).toBe("Paste the token to finish.");
     expect(slackPendingHint("approve", "Nova", "audit")).toBe("Approve Nova in Slack.");
+  });
+
+  it("says the ordinary pending line while the install is pending, the audit waits, and the first sync is live", () => {
+    const fresh = new Date(NOW - 30_000).toISOString();
+    const status = {
+      setupState: {
+        phase: "ready",
+        steps: [
+          { name: "channels", status: "done" },
+          { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-sync" },
+          { name: "runtime-install", status: "pending" },
+        ],
+      },
+      agent: {
+        runtime: {
+          firstSync: { phase: "pull", filesTotal: 68042, filesDone: 1200, startedAt: new Date(NOW - 60_000).toISOString(), updatedAt: fresh },
+          lastHeartbeat: { at: fresh, components: { sync: "degraded", slack: "ok" } },
+        },
+        channels: { slack: { workspace: "acme", teamId: "T0ACME", appId: "A0TEST", connectionMode: "socket" } },
+        channelDiagnostics: { slack: { inboundCapability: "socket-mode-degraded" } },
+      },
+    };
+    const slack = slackFactsFromStatus(status);
+    expect(slack).toEqual({ state: "pending", stage: "finishing" });
+    const view = connectionCardView("slack", input({ slack }));
+    expect(view.state).toBe("connecting");
+    expect(view.line).toBe("Setup is not finished. Connecting.");
+    expect(view.line).not.toMatch(/sync/i);
   });
 
   it("never times a setup out while the server has one", () => {

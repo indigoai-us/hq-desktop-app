@@ -10,8 +10,7 @@
  * person approves the bot in Slack. For most bots Slack then needs one token
  * that only a person can make on Slack's site; the server says when it wants
  * it. Then the server finishes the setup on the bot's computer, which takes
- * a minute or two, or longer when the bot is still downloading the company's
- * files.
+ * a minute or two. It does not wait for the bot's file sync.
  *
  * WHAT IS TRUE comes from the server every time: the bot's status answer.
  * "Connected" is the same test the Slack card uses (`slackFactsFromStatus`),
@@ -20,7 +19,6 @@
  * Every sentence a person reads in the flow is in this file.
  */
 
-import { advanceBotSync, botSyncView, observeBotSync } from "../bot-sync-model.js";
 import type { CardModalStepState, CardModalSteps } from "./card-modal.js";
 import { slackFactsFromStatus } from "./connection-card-model.js";
 import {
@@ -29,7 +27,7 @@ import {
   slackRowFromAttach,
   slackRowFromStatus,
   slackRowStage,
-  slackSetupWaitWithSync,
+  slackSetupWaitFromSteps,
   type SlackRow,
   type SlackSetupWait,
 } from "./slack-status.js";
@@ -76,7 +74,7 @@ export const SLACK_APPROVE_DETAIL = "Slack opens in your browser. Click Allow, t
 export const SLACK_APPROVE_NO_LINK_DETAIL = "Waiting for the link from Slack. This screen updates by itself.";
 export const SLACK_TOKEN_CHECKING = "Checking the token with Slack.";
 export const SLACK_STARTING = "Setting things up in Slack.";
-/** The last step while the setup's audit has stopped on something other than the file sync. */
+/** The last step while the setup's audit has stopped on something of its own. */
 export const SLACK_AUDIT_WAIT_SENTENCE = "HQ is finishing the setup on the bot's machine. This can take a few minutes.";
 /** The one thing a person types on Slack's page. The modal offers it with a Copy button. */
 export const SLACK_TOKEN_SCOPE = "connections:write";
@@ -135,18 +133,12 @@ export function slackFinishingSentence(botName: string, slow: boolean): string {
     : `Connecting ${bot} to Slack. This usually takes a minute or two.`;
 }
 
-/** The last step while the bot's computer is still downloading the company's files. */
-export function slackSyncWaitSentence(percent: number | null): string {
-  const amount = typeof percent === "number" && Number.isFinite(percent) ? ` (${Math.round(percent)}%)` : "";
-  return `Slack connects after your company's files finish syncing${amount}. You can close this; the Slack card updates on its own.`;
-}
-
 /**
- * The line under the last step: what the server is waiting on when the
- * status says, else the ordinary line for how long it has been.
+ * The line under the last step: the audit's line when the status says the
+ * audit has stopped, else the ordinary line for how long it has been. The
+ * bot's file sync never changes it.
  */
 export function slackLastStepSentence(botName: string, wait: SlackSetupWait | null, slow: boolean): string {
-  if (wait?.kind === "sync") return slackSyncWaitSentence(wait.percent);
   if (wait?.kind === "audit") return SLACK_AUDIT_WAIT_SENTENCE;
   return slackFinishingSentence(botName, slow);
 }
@@ -373,20 +365,6 @@ function stepsFor(stage: SlackConnectStage, withToken: boolean, bot: string): Sl
   }));
 }
 
-/**
- * The bot's file sync as the sync strip reads it: whether the first download
- * is live now, and its percent when the strip would show one. The strip's
- * own functions do the reading, so the two surfaces cannot disagree.
- */
-function syncFromStatus(status: unknown, now: number): { live: boolean; percent: number | null } {
-  const observation = observeBotSync(status, now);
-  const strip = botSyncView(advanceBotSync(null, observation, now), { now });
-  return {
-    live: observation.state === "syncing",
-    percent: strip.visible && strip.state === "syncing" && strip.amount !== null ? strip.progress : null,
-  };
-}
-
 /** Build what the modal draws. Pure: same input, same view. */
 export function slackConnectView(input: SlackConnectInput): SlackConnectView {
   const bot = botOf(input.botName);
@@ -446,7 +424,7 @@ export function slackConnectView(input: SlackConnectInput): SlackConnectView {
 
   const since = input.waitingSince ?? accepted;
   const slow = stage === "finishing" && typeof since === "number" && input.now - since > SLACK_FINISHING_SLOW_MS;
-  const wait = stage === "finishing" ? slackSetupWaitWithSync(input.status, syncFromStatus(input.status, input.now)) : null;
+  const wait = stage === "finishing" ? slackSetupWaitFromSteps(input.status) : null;
 
   return {
     stage,

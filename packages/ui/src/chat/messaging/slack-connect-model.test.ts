@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { slackFactsFromStatus } from "./connection-card-model.js";
@@ -23,7 +26,6 @@ import {
   slackFinishingSentence,
   slackLastStepSentence,
   slackStatusDenied,
-  slackSyncWaitSentence,
   slackTokenSteps,
   slackTokenWhySentence,
   type SlackBlockedReason,
@@ -445,35 +447,44 @@ describe("slackConnectView: what the server waits on at the last step", () => {
     lastHeartbeat: { at: FRESH, components: { sync: "degraded", slack: "ok" } },
   };
 
-  it("says Slack waits on the file sync, with the live percent, when the install waits on the audit", () => {
+  it("says the ordinary connecting line while the install is pending, the audit waits, and the first sync is live", () => {
+    // The state of the 2026-10-03 walkthrough: Slack connected while the
+    // sync had barely started. The sync is not what Slack waits on.
     const v = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: LIVE_SYNC }) });
     expect(v.stage).toBe("finishing");
-    expect(v.wait).toEqual({ kind: "sync", percent: 88 });
-    expect(v.finishingSentence).toBe(
-      "Slack connects after your company's files finish syncing (88%). You can close this; the Slack card updates on its own.",
-    );
+    expect(v.wait).toBeNull();
+    expect(v.slow).toBe(false);
+    expect(v.finishingSentence).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
+    expect(v.finishingSentence).not.toMatch(/sync|%/i);
   });
 
-  it("says the same without a number when the status has no live count", () => {
-    const v = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS }) });
-    expect(v.wait).toEqual({ kind: "sync", percent: null });
-    expect(v.finishingSentence).toBe(
-      "Slack connects after your company's files finish syncing. You can close this; the Slack card updates on its own.",
-    );
-    // A snapshot nobody has refreshed is not a live count.
+  it("says the same whatever the sync is doing: no steps, no live count, a stale count, a finished sync", () => {
     const stale = { ...LIVE_SYNC, firstSync: { ...LIVE_SYNC.firstSync, updatedAt: new Date(NOW - 20 * 60_000).toISOString() } };
-    expect(view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: stale }) }).wait).toEqual({ kind: "sync", percent: null });
+    const synced = { ...LIVE_SYNC, syncOkAt: FRESH };
+    const statuses = [
+      finishing({ steps: WAITING_ON_SYNC_STEPS }),
+      finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: stale }),
+      finishing({ runtime: LIVE_SYNC }),
+      finishing({ runtime: synced }),
+      finishing({ steps: [{ name: "audit", status: "waiting" }, { name: "runtime-install", status: "pending" }], runtime: LIVE_SYNC }),
+    ];
+    for (const status of statuses) {
+      const v = view({ status });
+      expect(v.stage).toBe("finishing");
+      expect(v.wait).toBeNull();
+      expect(v.finishingSentence).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
+    }
   });
 
-  it("reads the sync wait from a live first download alone, when the steps say nothing", () => {
-    const v = view({ status: finishing({ runtime: LIVE_SYNC }) });
-    expect(v.wait).toEqual({ kind: "sync", percent: 88 });
-    // Once a sync has finished well the download is not what the server waits on.
-    const synced = { ...LIVE_SYNC, syncOkAt: FRESH };
-    expect(view({ status: finishing({ runtime: synced }) }).wait).toBeNull();
-    // A snapshot that has gone quiet is not live.
-    const quiet = { firstSync: LIVE_SYNC.firstSync, lastHeartbeat: { at: new Date(NOW - 10 * 60_000).toISOString(), components: {} } };
-    expect(view({ status: finishing({ runtime: quiet }) }).wait).toBeNull();
+  it("says the calmer line after three minutes in that state, still without a word about the sync", () => {
+    const v = view({
+      status: finishing({ steps: WAITING_ON_SYNC_STEPS, runtime: LIVE_SYNC }),
+      waitingSince: NOW - SLACK_FINISHING_SLOW_MS - 1,
+    });
+    expect(v.slow).toBe(true);
+    expect(v.wait).toBeNull();
+    expect(v.finishingSentence).toBe("Still connecting. You can close this. The Slack card updates when Nova is in Slack.");
+    expect(v.finishingSentence).not.toMatch(/sync|%/i);
   });
 
   it("says HQ is finishing the setup when the audit has stopped on something other than the sync", () => {
@@ -487,14 +498,18 @@ describe("slackConnectView: what the server waits on at the last step", () => {
     expect(SLACK_AUDIT_WAIT_SENTENCE).toBe(v.finishingSentence);
   });
 
-  it("wins over the calmer long-wait line, and is never shown outside the last step", () => {
-    const long = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS }), waitingSince: NOW - SLACK_FINISHING_SLOW_MS - 1 });
+  it("keeps the audit's line over the calmer long-wait line, and never shows a wait outside the last step", () => {
+    const auditSteps = [
+      { name: "audit", status: "waiting", lastError: "NEW_BOX_AUDIT_PENDING: box blueprint failed: component-brain" },
+      { name: "runtime-install", status: "pending" },
+    ];
+    const long = view({ status: finishing({ steps: auditSteps }), waitingSince: NOW - SLACK_FINISHING_SLOW_MS - 1 });
     expect(long.slow).toBe(true);
-    expect(long.finishingSentence).toBe(slackSyncWaitSentence(null));
-    const connected = view({ status: finishing({ steps: WAITING_ON_SYNC_STEPS, capability: "socket-mode" }) });
+    expect(long.finishingSentence).toBe(SLACK_AUDIT_WAIT_SENTENCE);
+    const connected = view({ status: finishing({ steps: auditSteps, capability: "socket-mode" }) });
     expect(connected.stage).toBe("connected");
     expect(connected.wait).toBeNull();
-    const atToken = finishing({ steps: WAITING_ON_SYNC_STEPS });
+    const atToken = finishing({ steps: auditSteps });
     const token = { ...atToken, agent: { ...atToken.agent, channels: { slack: { ...STORED, appTokenPendingUrl: APP } } } };
     expect(view({ status: token }).stage).toBe("token");
     expect(view({ status: token }).wait).toBeNull();
@@ -506,7 +521,7 @@ describe("slackConnectView: what the server waits on at the last step", () => {
     expect(v.wait).toBeNull();
     expect(v.finishingSentence).toBe("Connecting Nova to Slack. This usually takes a minute or two.");
     expect(slackLastStepSentence("Nova", null, false)).toBe(v.finishingSentence);
-    expect(slackLastStepSentence("Nova", { kind: "sync", percent: 12.6 }, true)).toBe(slackSyncWaitSentence(13));
+    expect(slackLastStepSentence("Nova", null, true)).toBe(slackFinishingSentence("Nova", true));
     expect(slackLastStepSentence("Nova", { kind: "audit" }, true)).toBe(SLACK_AUDIT_WAIT_SENTENCE);
   });
 });
@@ -707,8 +722,6 @@ describe("the words of the flow", () => {
     const everything = [
       slackConnectTitle("Nova"),
       SLACK_APPROVE_DETAIL,
-      slackSyncWaitSentence(42),
-      slackSyncWaitSentence(null),
       SLACK_AUDIT_WAIT_SENTENCE,
       slackTokenWhySentence("Nova"),
       ...slackTokenSteps("Nova").map((step) => step.text),
@@ -728,5 +741,32 @@ describe("the words of the flow", () => {
       ...(view({ status: WAITING_FOR_APPROVAL }).indicator?.labels ?? []),
     ].join("\n");
     expect(everything).not.toMatch(/\u2014|\u2013|OAuth|socket|manifest|webhook|API\b/i);
+  });
+});
+
+describe("the old sync wait is gone from the product", () => {
+  // Slack does not wait for the bot's file sync, so no surface may say it
+  // does. The phrase is built from its halves so this file is not a match.
+  const PHRASE = ["finish", "syncing"].join(" ");
+  const REPO = fileURLToPath(new URL("../../../../..", import.meta.url));
+  const SKIP = new Set(["node_modules", "dist", "target", "build", "gen"]);
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP.has(entry) || entry.startsWith(".")) continue;
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full, out);
+      else if (/\.(ts|js|svelte|html|rs|md)$/.test(entry)) out.push(full);
+    }
+    return out;
+  }
+
+  it("has no line that says Slack waits for the files to sync, under packages/ui/src or apps", () => {
+    const roots = [join(REPO, "packages", "ui", "src"), join(REPO, "apps")];
+    for (const root of roots) expect(existsSync(root)).toBe(true);
+    const files = roots.flatMap((root) => walk(root));
+    expect(files.length).toBeGreaterThan(100);
+    const hits = files.filter((file) => readFileSync(file, "utf8").toLowerCase().includes(PHRASE));
+    expect(hits).toEqual([]);
   });
 });

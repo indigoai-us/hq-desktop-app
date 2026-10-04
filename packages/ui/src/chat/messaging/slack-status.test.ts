@@ -11,7 +11,6 @@ import {
   slackRowFromStatus,
   slackRowStage,
   slackSetupWaitFromSteps,
-  slackSetupWaitWithSync,
 } from "./slack-status.js";
 
 const INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0TEST";
@@ -233,11 +232,20 @@ describe("what the server waits on at the last step", () => {
     agent: { runtime, channels: slack === undefined ? null : { slack }, channelDiagnostics: { slack: { inboundCapability: capability } } },
   });
 
-  it("is the sync while the install waits on an audit that names the sync", () => {
-    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync))).toEqual({ kind: "sync", percent: null });
-    // The audit may carry no error at all and still be the sync wait.
+  it("is nothing while the install waits on an audit that names the sync: the sync does not hold Slack up", () => {
+    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync))).toBeNull();
+    // Nor when the audit carries no error at all.
     const noError = [{ name: "audit", status: "waiting" }, { name: "runtime-install", status: "pending" }];
-    expect(slackSetupWaitFromSteps(at(STORED, noError))).toEqual({ kind: "sync", percent: null });
+    expect(slackSetupWaitFromSteps(at(STORED, noError))).toBeNull();
+    // Whatever the case of the name, and whatever the audit's status.
+    const failed = [{ name: "audit", status: "failed", lastError: "box blueprint failed: Component-Sync" }, { name: "runtime-install", status: "pending" }];
+    expect(slackSetupWaitFromSteps(at(STORED, failed))).toBeNull();
+  });
+
+  it("is nothing while the first download is live, with or without the steps", () => {
+    const downloading = { firstSync: { phase: "pull", filesTotal: 10, filesDone: 4 } };
+    expect(slackSetupWaitFromSteps(at(STORED, [], undefined, downloading))).toBeNull();
+    expect(slackSetupWaitFromSteps(at(STORED, waitingOnSync, undefined, downloading))).toBeNull();
   });
 
   it("is the audit when its error names something other than the sync", () => {
@@ -271,28 +279,9 @@ describe("what the server waits on at the last step", () => {
     expect(slackSetupWaitFromSteps(null)).toBeNull();
   });
 
-  it("adds the live percent to a sync wait read from the steps", () => {
-    expect(slackSetupWaitWithSync(at(STORED, waitingOnSync), { live: true, percent: 88 })).toEqual({ kind: "sync", percent: 88 });
-    expect(slackSetupWaitWithSync(at(STORED, waitingOnSync), { live: false, percent: null })).toEqual({ kind: "sync", percent: null });
-  });
-
-  it("reads a sync wait from a live first download with no good sync yet, when the steps say nothing", () => {
-    const downloading = { firstSync: { phase: "pull", filesTotal: 10, filesDone: 4 } };
-    expect(slackSetupWaitWithSync(at(STORED, [], undefined, downloading), { live: true, percent: 40 })).toEqual({ kind: "sync", percent: 40 });
-    // Not live: a frozen snapshot is not a wait.
-    expect(slackSetupWaitWithSync(at(STORED, [], undefined, downloading), { live: false, percent: null })).toBeNull();
-    // A sync that finished well: the download is over.
-    const synced = { ...downloading, syncOkAt: "2026-10-03T16:00:00.000Z" };
-    expect(slackSetupWaitWithSync(at(STORED, [], undefined, synced), { live: true, percent: 40 })).toBeNull();
-    // No snapshot at all.
-    expect(slackSetupWaitWithSync(at(STORED, []), { live: true, percent: 40 })).toBeNull();
-    // Connected: nothing to wait on.
-    expect(slackSetupWaitWithSync(at(STORED, [], "socket-mode", downloading), { live: true, percent: 40 })).toBeNull();
-  });
-
   it("keeps the audit over a live download", () => {
     const steps = [{ name: "audit", status: "waiting", lastError: OTHER_ERROR }, { name: "runtime-install", status: "pending" }];
     const downloading = { firstSync: { phase: "pull", filesTotal: 10, filesDone: 4 } };
-    expect(slackSetupWaitWithSync(at(STORED, steps, undefined, downloading), { live: true, percent: 40 })).toEqual({ kind: "audit" });
+    expect(slackSetupWaitFromSteps(at(STORED, steps, undefined, downloading))).toEqual({ kind: "audit" });
   });
 });

@@ -361,9 +361,12 @@ describe("the Connect Slack modal: each stage", () => {
     expect(stage()).toBe("connected");
   });
 
-  it("says in the last step that Slack waits on the file sync, with the live percent, and lets the person close", async () => {
+  it("says the ordinary connecting line in the last step while the bot's first file sync is still live", async () => {
+    // The state of the 2026-10-03 walkthrough: the install pending, the
+    // audit waiting, the first download barely started. Slack does not wait
+    // on the sync, so the modal says nothing about it.
     const fresh = new Date(clock - 30_000).toISOString();
-    const waitingOnSync = {
+    const syncStillLive = {
       setupState: {
         phase: "ready",
         steps: [
@@ -375,28 +378,31 @@ describe("the Connect Slack modal: each stage", () => {
       agent: {
         ...TOKEN_STORED.agent,
         runtime: {
-          firstSync: { phase: "pull", filesTotal: 68042, filesDone: 60268, startedAt: new Date(clock - 600_000).toISOString(), updatedAt: fresh },
+          firstSync: { phase: "pull", filesTotal: 68042, filesDone: 1200, startedAt: new Date(clock - 60_000).toISOString(), updatedAt: fresh },
           lastHeartbeat: { at: fresh, components: { sync: "degraded", slack: "ok" } },
         },
       },
     };
-    render({ status: waitingOnSync });
+    render({ status: syncStillLive });
+    await settle();
     expect(stage()).toBe("finishing");
-    expect(byId("slack-connect-waiting")!.dataset.wait).toBe("sync");
-    expect(statusLines()).toEqual([
-      "working:Slack connects after your company's files finish syncing (88%). You can close this; the Slack card updates on its own.",
-    ]);
+    expect(byId("slack-connect-waiting")!.dataset.wait).toBeUndefined();
+    expect(statusLines()).toEqual(["working:Connecting Nova to Slack. This usually takes a minute or two."]);
+    expect(dialog().textContent).not.toMatch(/sync|%/i);
     expect(footerButtons()).toEqual(["Close"]);
     expect(closeX().disabled).toBe(false);
-    // The number follows the status.
-    const further = { ...waitingOnSync, agent: { ...waitingOnSync.agent, runtime: { ...waitingOnSync.agent.runtime, firstSync: { ...waitingOnSync.agent.runtime.firstSync, filesDone: 68000 } } } };
+    // The sync moving on changes nothing the modal says.
+    const further = { ...syncStillLive, agent: { ...syncStillLive.agent, runtime: { ...syncStillLive.agent.runtime, firstSync: { ...syncStillLive.agent.runtime.firstSync, filesDone: 68000 } } } };
     await check(further);
-    expect(statusLines()[0]).toContain("(99%)");
-    // Even after a long wait this line stays: it says more than the calmer one.
+    expect(statusLines()).toEqual(["working:Connecting Nova to Slack. This usually takes a minute or two."]);
+    // After a long wait it is the calmer line, still without the sync.
     clock += SLACK_FINISHING_SLOW_MS + 1_000;
     await check(further);
     expect(byId("slack-connect-waiting")!.dataset.slow).toBe("true");
-    expect(statusLines()[0]).toContain("finish syncing (99%)");
+    expect(statusLines()).toEqual([
+      "working:Still connecting. You can close this. The Slack card updates when Nova is in Slack.",
+    ]);
+    expect(dialog().textContent).not.toMatch(/sync|%/i);
     // And it ends by itself.
     await check(CONNECTED);
     expect(stage()).toBe("connected");
