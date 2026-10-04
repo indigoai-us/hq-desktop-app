@@ -329,8 +329,16 @@ export function beginBotRemoval(input: {
   };
 }
 
-/** What the confirmation dialog says before a bot that exists is removed. */
-export function cancelBotConfirmCopy(input: { name: string; companyLabel?: string | null }): {
+/**
+ * What the confirmation dialog says when Cancel is pressed for a bot that
+ * exists.
+ *
+ * Removing a bot is for an owner or admin of its company; the server refuses
+ * everyone else. A person who created the bot but cannot remove it
+ * (`canRemove: false`) is not promised a removal: the dialog says who can
+ * remove it, and its action closes the screen and leaves the bot as it is.
+ */
+export function cancelBotConfirmCopy(input: { name: string; companyLabel?: string | null; canRemove?: boolean }): {
   title: string;
   body: string;
   confirm: string;
@@ -338,6 +346,14 @@ export function cancelBotConfirmCopy(input: { name: string; companyLabel?: strin
 } {
   const name = input.name.trim() || "this bot";
   const company = (input.companyLabel ?? "").trim();
+  if (input.canRemove === false) {
+    return {
+      title: `You can't remove ${name}`,
+      body: `${name} has already been created${company ? ` in ${company}` : ""}. Only an owner or admin of this company can remove a bot. Ask one of them to remove ${name}.`,
+      confirm: "Close",
+      keep: "Keep waiting",
+    };
+  }
   return {
     title: `Cancel ${name}?`,
     body: `${name} will be removed${company ? ` from ${company}` : ""}, along with its computer and its files. This can't be undone.`,

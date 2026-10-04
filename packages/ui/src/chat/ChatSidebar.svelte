@@ -1889,6 +1889,21 @@
     void runRemoval(removalId);
   }
 
+  /**
+   * False only when this person is known to be neither owner nor admin of
+   * that company. The server allows nobody else to remove a bot, so Cancel
+   * must not promise them a removal. A company this list does not know says
+   * nothing either way, and the server decides.
+   */
+  function canRemoveBotIn(companyUid: string): boolean {
+    if (isAdmin === true) return true;
+    const uid = companyUid.trim();
+    const role = ((companies ?? []).find((company) => (company.cloudUid ?? "").trim() === uid)?.role ?? "")
+      .trim()
+      .toLowerCase();
+    return !role || role === "owner" || role === "admin";
+  }
+
   /** The person confirmed that a bot that is starting should be removed. */
   function cancelWakingBot(session: WakingBotSession): void {
     const agentUid = session.agentUid.trim();
@@ -4243,6 +4258,8 @@
       wakingSession={wakingBot}
       onwaking={beginWakingBot}
       onwakingchange={updateWakingBot}
+      onwakingdone={() => updateWakingBot(null)}
+      canRemoveBot={canRemoveBotIn}
       onopenchat={openWakingBotChat}
       onclosewaking={() => { newBotOpen = false; }}
       onupgrade={openUpgradeFromTakeover}

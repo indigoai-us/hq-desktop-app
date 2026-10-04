@@ -282,6 +282,28 @@ describe("what the person reads", () => {
   });
 });
 
+describe("Cancel for a person who may not remove the bot (review A-I8)", () => {
+  it("says who can remove it and offers to close, with no promise of removal", () => {
+    const copy = cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme", canRemove: false });
+    expect(copy).toEqual({
+      title: "You can't remove Nova",
+      body: "Nova has already been created in Acme. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova.",
+      confirm: "Close",
+      keep: "Keep waiting",
+    });
+    expect(`${copy.title} ${copy.body} ${copy.confirm}`).not.toMatch(/will be removed|Remove Nova|undone/);
+    expect(`${copy.title} ${copy.body}`).not.toContain(LONG_DASH);
+    expect(cancelBotConfirmCopy({ name: "Nova", canRemove: false }).body).toBe(
+      "Nova has already been created. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova.",
+    );
+  });
+
+  it("keeps the removal wording when the person may remove it, or when that is not known", () => {
+    expect(cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme", canRemove: true }).confirm).toBe("Remove Nova");
+    expect(cancelBotConfirmCopy({ name: "Nova", companyLabel: "Acme" }).confirm).toBe("Remove Nova");
+  });
+});
+
 describe("cancelled bots across restarts", () => {
   it("starts a cancel in the right phase", () => {
     expect(beginBotRemoval({ name: "Nova", companyUid: "cmp_acme" }).phase).toBe("stopping");

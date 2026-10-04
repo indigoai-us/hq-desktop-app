@@ -3,7 +3,7 @@
   import glassWhiteboard from "./assets/new-bot-wallpapers/glass-whiteboard.jpg";
   import nodeConstellation from "./assets/new-bot-wallpapers/node-constellation.jpg";
   import roadSunrise from "./assets/new-bot-wallpapers/road-sunrise.jpg";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
   import type { CloudBotDraft, EntryPointResult } from "../lifecycle-entry-points.js";
@@ -46,7 +46,10 @@
     checkHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     wakingSession?: WakingBotSession | null;
     onwaking?: ((session: WakingBotSession) => void) | null;
-    onwakingchange?: ((session: WakingBotSession | null) => void) | null;
+    /** The session moved on: a new status, a retry, a stop. */
+    onwakingchange?: ((session: WakingBotSession) => void) | null;
+    /** The bot is live and the wait for it is over. The host stops tracking this session. */
+    onwakingdone?: ((session: WakingBotSession) => void) | null;
     onopenchat?: ((session: WakingBotSession) => void) | null;
     onclosewaking?: (() => void) | null;
     /** Cancel was pressed while the create request was still out. */
@@ -56,6 +59,12 @@
      * this the waiting screen offers only the way out that keeps the bot.
      */
     oncancelbot?: ((session: WakingBotSession) => void) | null;
+    /**
+     * False when this person is known to be neither owner nor admin of that
+     * company: the server would refuse their removal. Cancel then says who
+     * can remove the bot and closes the screen, and promises nothing.
+     */
+    canRemoveBot?: ((companyUid: string) => boolean) | null;
     /** Cancelled bots and where their removal stands. */
     removals?: readonly BotRemoval[];
     onretryremoval?: ((id: string) => void) | null;
@@ -99,10 +108,12 @@
     wakingSession = null,
     onwaking = null,
     onwakingchange = null,
+    onwakingdone = null,
     onopenchat = null,
     onclosewaking = null,
     oncancelcreate = null,
     oncancelbot = null,
+    canRemoveBot = null,
     removals = [],
     onretryremoval = null,
     ondismissremoval = null,
@@ -163,11 +174,16 @@
   /** A hand-off to chat that arrived while the confirmation dialog was open. */
   let heldReadySession: WakingBotSession | null = null;
   const cancelsBot = $derived(!!oncancelbot);
+  /** Whether the person the question is put to may remove that bot. */
+  const confirmCanRemove = $derived(
+    confirmSession && canRemoveBot ? canRemoveBot(confirmSession.companyUid) : true,
+  );
   const confirmCopy = $derived(
     confirmSession
       ? cancelBotConfirmCopy({
           name: confirmSession.name,
           companyLabel: companies.find((company) => company.companyUid === confirmSession?.companyUid)?.label ?? null,
+          canRemove: confirmCanRemove,
         })
       : null,
   );
@@ -257,6 +273,22 @@
     if (held) updateWaking(held);
   }
 
+  /**
+   * The dialog's action for a person who may not remove the bot: close the
+   * screen. The bot is left as it is and keeps its row; nothing is removed.
+   */
+  function leaveBot(): void {
+    confirmSession = null;
+    const held = heldReadySession;
+    heldReadySession = null;
+    // The bot became live while the question was open: closing is the hand-off.
+    if (held) {
+      finishHandoff(held);
+      return;
+    }
+    closeWaking();
+  }
+
   function removeBot(): void {
     const session = confirmSession;
     confirmSession = null;
@@ -298,28 +330,57 @@
       onwakingchange?.(session);
       if (readyHandoffTimer) clearTimeout(readyHandoffTimer);
       const handoffDelay = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 350;
-      readyHandoffTimer = setTimeout(() => {
-        readyHandoffTimer = null;
-        localWakingSession = null;
-        ignoreExternalWakingSession = true;
-        onwakingchange?.(null);
-        onopenchat?.(session);
-        onclosewaking?.();
-      }, handoffDelay);
+      readyHandoffTimer = setTimeout(() => finishHandoff(session), handoffDelay);
       return;
     }
     localWakingSession = session;
     onwakingchange?.(session);
   }
 
-  function closeWaking(): void {
+  /**
+   * The bot is live: end the wait and take the person to the conversation.
+   * Runs once the short "is live" moment has passed, or at once when the
+   * person leaves during that moment.
+   */
+  function finishHandoff(session: WakingBotSession): void {
     if (readyHandoffTimer) {
       clearTimeout(readyHandoffTimer);
       readyHandoffTimer = null;
     }
-    if (activeWakingSession) onwakingchange?.(activeWakingSession);
+    localWakingSession = null;
+    ignoreExternalWakingSession = true;
+    onwakingdone?.(session);
+    onopenchat?.(session);
     onclosewaking?.();
   }
+
+  function closeWaking(): void {
+    const session = activeWakingSession;
+    // Leaving in the moment before the hand-off (Escape, Close): the bot is
+    // live, so leaving is the hand-off, done now. Stopping the timer and
+    // walking away used to leave a session that said "ready" for ever.
+    if (session?.phase === "ready") {
+      finishHandoff(session);
+      return;
+    }
+    if (readyHandoffTimer) {
+      clearTimeout(readyHandoffTimer);
+      readyHandoffTimer = null;
+    }
+    if (session) onwakingchange?.(session);
+    onclosewaking?.();
+  }
+
+  // The takeover can go away while the hand-off timer is still out (the host
+  // closed it). The timer must not fire into a screen that is gone, and the
+  // host must not be left tracking a bot that is already live.
+  onDestroy(() => {
+    if (!readyHandoffTimer) return;
+    clearTimeout(readyHandoffTimer);
+    readyHandoffTimer = null;
+    const session = localWakingSession;
+    if (session?.phase === "ready") onwakingdone?.(session);
+  });
 
   /**
    * Try again for a bot that failed to start. One request at a time: a
@@ -487,12 +548,22 @@
             use:focusOnMount
             onclick={keepBot}
           >{confirmCopy.keep}</button>
-          <button
-            type="button"
-            class="new-bot-confirm-remove"
-            data-testid="new-bot-cancel-remove"
-            onclick={removeBot}
-          >{confirmCopy.confirm}</button>
+          {#if confirmCanRemove}
+            <button
+              type="button"
+              class="new-bot-confirm-remove"
+              data-testid="new-bot-cancel-remove"
+              onclick={removeBot}
+            >{confirmCopy.confirm}</button>
+          {:else}
+            <!-- Not theirs to remove: the action closes the screen. -->
+            <button
+              type="button"
+              class="new-bot-waking-secondary"
+              data-testid="new-bot-cancel-leave"
+              onclick={leaveBot}
+            >{confirmCopy.confirm}</button>
+          {/if}
         </div>
       </div>
     </div>

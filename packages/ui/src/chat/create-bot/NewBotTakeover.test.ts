@@ -247,6 +247,7 @@ describe("NewBotTakeover", () => {
     const onopenchat = vi.fn();
     const onclosewaking = vi.fn();
     const onwakingchange = vi.fn();
+    const onwakingdone = vi.fn();
     render({
       wakingSession: beginWakingSession({
         agentUid: "agt_nova",
@@ -261,6 +262,7 @@ describe("NewBotTakeover", () => {
       onopenchat,
       onclosewaking,
       onwakingchange,
+      onwakingdone,
     });
     await settle();
 
@@ -269,8 +271,13 @@ describe("NewBotTakeover", () => {
         ?.textContent,
     ).toContain("Nova is live");
     expect(onopenchat).not.toHaveBeenCalled();
+    expect(onwakingdone).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(350);
-    expect(onwakingchange).toHaveBeenCalledWith(null);
+    // The end of the wait names its bot. It used to be `onwakingchange(null)`,
+    // which could only clear a single slot; sessions are per bot now.
+    expect(onwakingdone).toHaveBeenCalledTimes(1);
+    expect(onwakingdone).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
+    expect(onwakingchange).not.toHaveBeenCalledWith(null);
     expect(onopenchat).toHaveBeenCalledWith(
       expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }),
     );

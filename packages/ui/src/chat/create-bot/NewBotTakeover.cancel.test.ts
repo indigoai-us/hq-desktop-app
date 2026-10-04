@@ -348,6 +348,147 @@ describe("Cancel for a bot that exists", () => {
   });
 });
 
+describe("Cancel for a person who may not remove the bot (review A-I8)", () => {
+  // Removing a bot is for an owner or admin of its company. A member who
+  // created one was asked "Nova will be removed ... This can't be undone",
+  // and the server then refused.
+  it("says who can remove the bot, promises nothing, and closes the screen", async () => {
+    const oncancelbot = vi.fn();
+    const onclosewaking = vi.fn();
+    const onwakingchange = vi.fn();
+    const canRemoveBot = vi.fn(() => false);
+    render({ ...CREATE_PROPS, wakingSession: wakingSession(), getStatus: null, oncancelbot, canRemoveBot, onclosewaking, onwakingchange });
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+
+    expect(canRemoveBot).toHaveBeenCalledWith("cmp_acme");
+    const dialog = q('[data-testid="new-bot-cancel-confirm"]')!;
+    expect(dialog.querySelector("h2")?.textContent).toBe("You can't remove Nova");
+    expect(dialog.querySelector("#new-bot-confirm-body")?.textContent).toBe(
+      "Nova has already been created in Acme. Only an owner or admin of this company can remove a bot. Ask one of them to remove Nova.",
+    );
+    expect(dialog.textContent).not.toMatch(/will be removed|can't be undone/);
+    expect(q('[data-testid="new-bot-cancel-remove"]')).toBeNull();
+    expect(q('[data-testid="new-bot-cancel-keep"]')?.textContent?.trim()).toBe("Keep waiting");
+    expect(q('[data-testid="new-bot-cancel-leave"]')?.textContent?.trim()).toBe("Close");
+
+    click('[data-testid="new-bot-cancel-leave"]');
+    await settle();
+    expect(oncancelbot).not.toHaveBeenCalled();
+    expect(onclosewaking).toHaveBeenCalledOnce();
+    // The bot is left as it is: its session goes back to the host unchanged.
+    expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "waking" }));
+  });
+
+  it("goes back to the waiting screen on Keep waiting", async () => {
+    const oncancelbot = vi.fn();
+    const onclosewaking = vi.fn();
+    render({ ...CREATE_PROPS, wakingSession: wakingSession(), getStatus: null, oncancelbot, canRemoveBot: () => false, onclosewaking });
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    click('[data-testid="new-bot-cancel-keep"]');
+    await settle();
+    expect(q('[data-testid="new-bot-cancel-confirm"]')).toBeNull();
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy();
+    expect(onclosewaking).not.toHaveBeenCalled();
+    expect(oncancelbot).not.toHaveBeenCalled();
+  });
+
+  it("still offers removal to an owner or admin, and to a person whose role is not known", async () => {
+    const oncancelbot = vi.fn();
+    render({ ...CREATE_PROPS, wakingSession: wakingSession(), getStatus: null, oncancelbot, canRemoveBot: () => true });
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-cancel-confirm"]')?.textContent).toContain("Nova will be removed from Acme");
+    click('[data-testid="new-bot-cancel-remove"]');
+    await settle();
+    expect(oncancelbot).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova" }));
+  });
+});
+
+describe("Leaving during the hand-off to chat (review A-I11)", () => {
+  // For 350 ms the screen says the bot is live, then opens the chat. Escape
+  // or Close in that moment stopped the timer and left: the bot's session
+  // stayed "ready" for ever, with a row that reopened a finished screen.
+  async function reachHandoff(extra: Record<string, unknown> = {}) {
+    vi.useFakeTimers();
+    const calls = { onopenchat: vi.fn(), onclosewaking: vi.fn(), onwakingdone: vi.fn(), onwakingchange: vi.fn() };
+    render({
+      ...CREATE_PROPS,
+      wakingSession: wakingSession(),
+      getStatus: async () => ({ ok: true, value: { setupState: { phase: "ready" } } }),
+      ...calls,
+      ...extra,
+    });
+    await settle();
+    expect(q('[data-testid="new-bot-waking-status"]')?.textContent).toContain("Nova is live");
+    expect(calls.onopenchat).not.toHaveBeenCalled();
+    return calls;
+  }
+
+  it("finishes the hand-off at once on Escape", async () => {
+    const calls = await reachHandoff();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle();
+
+    expect(calls.onwakingdone).toHaveBeenCalledTimes(1);
+    expect(calls.onwakingdone).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
+    expect(calls.onopenchat).toHaveBeenCalledTimes(1);
+    expect(calls.onclosewaking).toHaveBeenCalledTimes(1);
+    // The timer was stopped with it: nothing happens twice.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(calls.onwakingdone).toHaveBeenCalledTimes(1);
+    expect(calls.onopenchat).toHaveBeenCalledTimes(1);
+    expect(calls.onclosewaking).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes the hand-off at once on the screen's own Close", async () => {
+    const calls = await reachHandoff();
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    expect(calls.onwakingdone).toHaveBeenCalledTimes(1);
+    expect(calls.onopenchat).toHaveBeenCalledTimes(1);
+    expect(calls.onclosewaking).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the timer when the takeover goes away, and tells the host the wait is over", async () => {
+    const calls = await reachHandoff();
+    await unmount(component!);
+    component = null;
+
+    expect(calls.onwakingdone).toHaveBeenCalledTimes(1);
+    expect(calls.onwakingdone).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "ready" }));
+    // The person did not ask to open the chat, and the screen is gone.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(calls.onopenchat).not.toHaveBeenCalled();
+    expect(calls.onclosewaking).not.toHaveBeenCalled();
+    expect(calls.onwakingdone).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands off a session that was already ready when the takeover opened", async () => {
+    const onopenchat = vi.fn();
+    const onwakingdone = vi.fn();
+    const onclosewaking = vi.fn();
+    render({
+      ...CREATE_PROPS,
+      wakingSession: wakingSession({ phase: "ready", progress: 100 }),
+      getStatus: null,
+      onopenchat,
+      onwakingdone,
+      onclosewaking,
+    });
+    await settle();
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await settle();
+    expect(onwakingdone).toHaveBeenCalledTimes(1);
+    expect(onopenchat).toHaveBeenCalledWith(expect.objectContaining({ agentUid: "agt_nova" }));
+    expect(onclosewaking).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("Leaving the waiting screen", () => {
   it("keeps the bot: no question, no removal", async () => {
     const oncancelbot = vi.fn();

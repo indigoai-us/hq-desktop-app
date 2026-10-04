@@ -499,6 +499,44 @@ describe("Cancel for a bot that is starting", () => {
   });
 });
 
+describe("Cancel for a member who may not remove bots (review A-I8)", () => {
+  it("does not offer removal, sends none, and leaves the bot starting", async () => {
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({
+      companies: [{ ...INDIGO, role: "member" }],
+      oncreatenewbot: async () => created("agt_nova"),
+      removeAgent,
+    });
+    await settle();
+    await startBot("Nova");
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    const dialog = q('[data-testid="new-bot-cancel-confirm"]')!;
+    expect(dialog.textContent).toContain("You can't remove Nova");
+    expect(dialog.textContent).toContain("Only an owner or admin of this company can remove a bot.");
+    expect(q('[data-testid="new-bot-cancel-remove"]')).toBeNull();
+
+    click('[data-testid="new-bot-cancel-leave"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    expect(removeAgent).not.toHaveBeenCalled();
+    expect(q('[data-conversation-id="dm:agt_nova"] [data-testid="chat-waking-bot-ring"]')).toBeTruthy();
+    expect(stored(OPEN_BOT_REMOVALS_STORAGE_KEY)).toEqual([]);
+  });
+
+  it.each(["owner", "admin"])("still offers removal to an %s", async (role) => {
+    const removeAgent = vi.fn(async () => REMOVED);
+    mountSidebar({ companies: [{ ...INDIGO, role }], oncreatenewbot: async () => created("agt_nova"), removeAgent });
+    await settle();
+    await startBot("Nova");
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-cancel-confirm"]')?.textContent).toContain("Nova will be removed from Indigo");
+    expect(q('[data-testid="new-bot-cancel-remove"]')).toBeTruthy();
+  });
+});
+
 describe("Leaving the waiting screen", () => {
   it("sends no removal and the bot keeps its sidebar row", async () => {
     const removeAgent = vi.fn(async () => REMOVED);
