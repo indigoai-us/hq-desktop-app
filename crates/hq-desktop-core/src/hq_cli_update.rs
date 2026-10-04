@@ -8613,17 +8613,48 @@ pub fn report_npm_cache_setup_failure(category: &'static str) {
     );
 }
 
+/// Why an automatic HQ CLI update attempt failed, for retry scheduling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoUpdateFailureKind {
+    PackageUseLeaseTimeout,
+    Other,
+}
+
+/// A package-use lease timeout earns up to three retries ten minutes apart;
+/// every other failure waits for the regular check.
+pub fn auto_update_retry_delay(
+    failure: AutoUpdateFailureKind,
+    retries_scheduled: u8,
+) -> Option<Duration> {
+    (failure == AutoUpdateFailureKind::PackageUseLeaseTimeout && retries_scheduled < 3)
+        .then_some(Duration::from_secs(10 * 60))
+}
+
+pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
+    match attempt {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        _ => "3",
+    }
+}
+
 /// Report a bounded timeout while waiting for active HQ CLI processes to
 /// release the package-use lease. The fixed message, tag, and fingerprint
 /// intentionally exclude local paths and process details.
 pub fn report_package_use_lease_timeout(
     summary: &crate::package_use_lease::PackageUseLeaseTimeoutSummary,
+    retry_attempt: u8,
 ) {
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("install_failure_kind", "package_use_lease_timeout");
             scope.set_tag("hq_cli_update_stage", "package_use_lease_timeout");
+            scope.set_tag(
+                "lease_retry_attempt",
+                package_use_lease_retry_attempt_tag(retry_attempt),
+            );
             scope.set_tag(
                 "holder_live_count_bucket",
                 summary.live_holder_count.as_tag(),
@@ -9606,8 +9637,9 @@ mod tests {
             holder_version: HolderVersionBucket::Pre53424,
             oldest_holder_age: HolderAgeBucket::From1hTo24h,
         };
-        let events =
-            sentry::test::with_captured_events(|| report_package_use_lease_timeout(&summary));
+        let events = sentry::test::with_captured_events(|| {
+            report_package_use_lease_timeout(&summary, 0)
+        });
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.level, sentry::Level::Error);
@@ -9620,6 +9652,7 @@ mod tests {
             event.tags["hq_cli_update_stage"],
             "package_use_lease_timeout"
         );
+        assert_eq!(event.tags["lease_retry_attempt"], "0");
         assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
@@ -9635,6 +9668,43 @@ mod tests {
         let message = event.message.as_deref().expect("static event message");
         assert!(!message.contains('/') && !message.contains('\\'));
         assert!(event.extra.is_empty());
+    }
+
+    #[test]
+    fn package_use_lease_retry_schedule_is_bounded_and_only_has_timeout_delays() {
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 0),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 1),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 2),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 3),
+            None
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, u8::MAX),
+            None
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::Other, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn package_use_lease_retry_attempt_tag_has_only_fixed_values() {
+        assert_eq!(package_use_lease_retry_attempt_tag(0), "0");
+        assert_eq!(package_use_lease_retry_attempt_tag(1), "1");
+        assert_eq!(package_use_lease_retry_attempt_tag(2), "2");
+        assert_eq!(package_use_lease_retry_attempt_tag(3), "3");
+        assert_eq!(package_use_lease_retry_attempt_tag(u8::MAX), "3");
     }
 
     #[test]
