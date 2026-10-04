@@ -1666,25 +1666,35 @@ pub struct RunnerFatalSignature {
 }
 
 /// Bounded, content-safe holder identity emitted by hq-cloud on watch-owner
-/// contention. Values are copied only after each field passes its own shape
-/// check; arbitrary command lines and paths never leave the process.
+/// contention. Each field is copied only after it passes its own shape check;
+/// a field that is missing (runners before hq-cloud #837 print only owner and
+/// pid) or fails its check reads `unknown`, so arbitrary command lines and paths
+/// never leave the process and the remaining evidence is never dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchOwnerHolderFields {
     pub owner: String,
-    pub pid: u32,
+    pub pid: String,
     pub process_name: &'static str,
     pub started_at: String,
 }
 
+const UNKNOWN_HOLDER_FIELD: &str = "unknown";
+
+/// Parses the holder fields of an hq-cloud owner-refusal line. Returns `None`
+/// only when `line` is not a refusal line.
 pub fn parse_watch_owner_holder_fields(line: &str) -> Option<WatchOwnerHolderFields> {
     let (_, rest) = line.split_once("already owned for this HQ root (")?;
-    let fields = rest.split_once(");")?.0;
-    let mut owner = None;
-    let mut pid = None;
-    let mut process_name = None;
-    let mut started_at = None;
+    let fields = rest.split_once(");").map_or(rest, |(fields, _)| fields);
+    let mut holder = WatchOwnerHolderFields {
+        owner: UNKNOWN_HOLDER_FIELD.to_string(),
+        pid: UNKNOWN_HOLDER_FIELD.to_string(),
+        process_name: UNKNOWN_HOLDER_FIELD,
+        started_at: UNKNOWN_HOLDER_FIELD.to_string(),
+    };
     for field in fields.split(", ") {
-        let (key, value) = field.split_once('=')?;
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
         match key {
             "owner"
                 if !value.is_empty()
@@ -1693,20 +1703,19 @@ pub fn parse_watch_owner_holder_fields(line: &str) -> Option<WatchOwnerHolderFie
                         byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
                     }) =>
             {
-                owner = Some(value.to_string())
+                holder.owner = value.to_string()
             }
-            "pid" => pid = value.parse::<u32>().ok().filter(|pid| *pid > 0),
-            "process" if value == "sync-runner" => process_name = Some("sync-runner"),
-            "startedAt" if is_bounded_utc_timestamp(value) => started_at = Some(value.to_string()),
+            "pid" => {
+                if let Some(pid) = value.parse::<u32>().ok().filter(|pid| *pid > 0) {
+                    holder.pid = pid.to_string();
+                }
+            }
+            "process" if value == "sync-runner" => holder.process_name = "sync-runner",
+            "startedAt" if is_bounded_utc_timestamp(value) => holder.started_at = value.to_string(),
             _ => {}
         }
     }
-    Some(WatchOwnerHolderFields {
-        owner: owner?,
-        pid: pid?,
-        process_name: process_name?,
-        started_at: started_at?,
-    })
+    Some(holder)
 }
 
 fn is_bounded_utc_timestamp(value: &str) -> bool {

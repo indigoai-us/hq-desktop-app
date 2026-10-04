@@ -2222,9 +2222,13 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
         ),
-        "watch_owner_holder_pid" => Some(value.parse::<u32>().is_ok_and(|pid| pid > 0)),
-        "watch_owner_holder_process" => Some(value == "sync-runner"),
-        "watch_owner_holder_started_at" => Some(valid_watch_owner_started_at(value)),
+        "watch_owner_holder_pid" => Some(
+            value == "unknown" || value.parse::<u32>().is_ok_and(|pid| pid > 0),
+        ),
+        "watch_owner_holder_process" => Some(matches!(value, "sync-runner" | "unknown")),
+        "watch_owner_holder_started_at" => Some(
+            value == "unknown" || valid_watch_owner_started_at(value),
+        ),
         "stderr_cause" => Some(matches!(
             value,
             "libuv_assert"

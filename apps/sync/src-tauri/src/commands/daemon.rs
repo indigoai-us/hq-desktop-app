@@ -4838,7 +4838,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(holder) = last_stderr.and_then(parse_watch_owner_holder_fields) {
         tags.extend([
             ("watch_owner_holder_owner", holder.owner),
-            ("watch_owner_holder_pid", holder.pid.to_string()),
+            ("watch_owner_holder_pid", holder.pid),
             (
                 "watch_owner_holder_process",
                 holder.process_name.to_string(),
@@ -15638,7 +15638,7 @@ mod tests {
             parse_watch_owner_holder_fields(selected)
                 .expect("holder fields retained")
                 .pid,
-            123
+            "123"
         );
         assert_eq!(tail.len(), WATCHER_STDERR_TAIL_CAP);
     }
