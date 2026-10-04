@@ -22,6 +22,16 @@
     const end = horizonRow - radius * 1.2;
     return start + (end - start) * eased;
   }
+
+  /**
+   * How fast the drawn sun closes on its target, per second (an exponential
+   * ease). While the create request is in flight the target is set once and
+   * the sun creeps to it over a few seconds; every other mode follows real
+   * progress briskly.
+   */
+  export function dawnEaseRate(mode: DawnMode): number {
+    return mode === "creating" ? 0.6 : 2.4;
+  }
 </script>
 
 <script lang="ts">
@@ -83,7 +93,7 @@
     function draw(now: number): void {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      shown = still ? target : shown + (target - shown) * (1 - Math.exp(-dt * 2.4));
+      shown = still ? target : shown + (target - shown) * (1 - Math.exp(-dt * dawnEaseRate(currentMode)));
       const failed = currentMode === "failed";
       const ready = currentMode === "ready";
       const waiting = currentMode === "waiting";

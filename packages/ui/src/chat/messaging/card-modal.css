@@ -13,6 +13,13 @@
  * Readability does not depend on the art. Words sit on the glass panel (0.8
  * over the scrim) or on a button with its own fill, the same rule as the
  * card. Change the scrim, the glass or an ink together, never one alone.
+ *
+ * Blur budget (scripts/perf-budget-contract.test.ts). Two surfaces keep a
+ * backdrop blur, both allowlisted there: the title plate and the glass
+ * panel, over the modal's own still art, for as long as a person has the
+ * modal open. Nothing else here blurs: the full-window layer is a plain
+ * scrim, and the close button and the quiet buttons carry their frost as
+ * extra alpha in their own fill.
  */
 
 .card-modal-layer {
@@ -27,9 +34,9 @@
   padding: 24px;
   overflow: hidden;
   overscroll-behavior: contain;
+  /* A plain scrim. The layer covers the whole window, so a blur here would
+     blur every pixel of the app behind the modal on every frame. */
   background: rgba(9, 9, 11, 0.6);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
   animation: card-modal-fade 160ms ease-out both;
 }
 
@@ -212,17 +219,15 @@
   padding: 0;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
-  background: rgba(9, 9, 11, 0.6);
+  background: rgba(9, 9, 11, 0.74);
   color: rgba(250, 250, 250, 0.88);
   cursor: pointer;
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   transition: border-color 0.12s, background 0.12s, color 0.12s;
 }
 
 .card-modal-close:hover:not(:disabled) {
   border-color: rgba(255, 255, 255, 0.4);
-  background: rgba(9, 9, 11, 0.72);
+  background: rgba(9, 9, 11, 0.84);
   color: var(--cm-ink);
 }
 
@@ -381,15 +386,13 @@
 
 .card-modal-btn.is-quiet {
   border-color: rgba(255, 255, 255, 0.14);
-  background: rgba(9, 9, 11, 0.6);
+  background: rgba(9, 9, 11, 0.74);
   color: rgba(250, 250, 250, 0.88);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .card-modal-btn.is-quiet:hover:not(:disabled) {
   border-color: rgba(255, 255, 255, 0.4);
-  background: rgba(9, 9, 11, 0.72);
+  background: rgba(9, 9, 11, 0.84);
   color: var(--cm-ink);
 }
 

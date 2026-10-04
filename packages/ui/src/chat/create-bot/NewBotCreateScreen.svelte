@@ -60,9 +60,12 @@
   $effect(() => { const uid = companyUid.trim(); const generation = ++quoteGeneration; options = null; quoteStatus = uid ? "loading" : "error"; if (!uid) return; let active = true; void loadProvisionOptions(uid).then((result) => { if (!active || generation !== quoteGeneration || !result.ok || !Array.isArray(result.value.options)) { if (active && generation === quoteGeneration) quoteStatus = "error"; return; } options = result.value; quoteStatus = "ready"; chooseSizeAfterLoad(result.value); }).catch(() => { if (active && generation === quoteGeneration) quoteStatus = "error"; }); return () => { active = false; }; });
   $effect(() => { focusStep(); });
   // The sun starts low and creeps while the create request is in flight; the
-  // Waking up screen takes over from the same low position.
-  let creatingProgress = $state(2);
-  $effect(() => { if (!busy) { creatingProgress = 2; return; } const timer = setInterval(() => { creatingProgress = Math.min(8, creatingProgress + 0.5); }, 400); return () => clearInterval(timer); });
+  // Waking up screen takes over from the same low position. One state change,
+  // no timer: the drawing is mounted at the low mark, then told the high one,
+  // and its own frame loop eases the sun there (slowly in "creating" mode).
+  const CREATING_FROM = 2; const CREATING_TO = 8;
+  let creatingProgress = $state(CREATING_FROM);
+  $effect(() => { creatingProgress = busy ? CREATING_TO : CREATING_FROM; });
   async function submit(): Promise<void> { attempted = true; refusal = null; if (!canCreate || busy) return; busy = true; const result = await oncreate(companyUid, { name: name.trim(), handle: derivedHandle, runtime, size: selectedSize as "basic" | "power" | "dev", authMode: "subscription" }).catch((): EntryPointResult => ({ ok: false, blocked: false, reason: "We couldn't create this bot. Try again in a moment." }));
     // Cancel was pressed while this request was out. The person has moved on:
     // no waiting screen, no message, nothing of this attempt left on screen.

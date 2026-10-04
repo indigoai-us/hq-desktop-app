@@ -264,12 +264,37 @@ describe("NewBotCreateScreen", () => {
     const bar = creating?.querySelector("[role='progressbar']");
     expect(bar?.getAttribute("aria-label")).toBe("Creating Polar");
     expect(bar?.getAttribute("data-mode")).toBe("creating");
+    // The sun is told its mark once and eases there in its own frame loop.
+    expect(bar?.getAttribute("aria-valuenow")).toBe("8");
     finish({
       ok: true,
       target: { channelId: "chn_bot", cardId: null, cardKind: null },
     });
     await settle();
     expect(oncomplete).toHaveBeenCalledTimes(1);
+  });
+  it("creeps the creating sun with one state change, never a repeating timer", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval");
+    try {
+      let finish: (value: unknown) => void = () => {};
+      const oncreate = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+      render({ oncreate });
+      await settle();
+      await advanceName();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
+      await settle();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
+      await settle();
+      const bar = document.querySelector("[data-testid='new-bot-creating'] [role='progressbar']");
+      expect(bar?.getAttribute("aria-valuenow")).toBe("8");
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      expect(bar?.getAttribute("aria-valuenow")).toBe("8");
+      expect(interval).not.toHaveBeenCalled();
+      finish({ ok: true, target: { channelId: "chn_bot", cardId: null, cardKind: null } });
+      await settle();
+    } finally {
+      interval.mockRestore();
+    }
   });
   async function openCompanyStep(): Promise<void> {
     await settle();

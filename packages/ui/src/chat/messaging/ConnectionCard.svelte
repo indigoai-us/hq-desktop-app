@@ -264,10 +264,16 @@
    * Readability does not depend on the art. Words sit on the glass panel, or
    * on a button with its own fill. The brightest pixel in either wallpaper is
    * pure white (a star). Through the scrim (0.16 at its lightest) and the
-   * glass (0.68) it comes out at about rgb(81, 81, 82), and the faintest words
-   * (the muted line, the green mark, the amber note) stay above 4.5:1 on that
-   * even before the blur evens it out. Change the scrim, the glass or an ink
-   * together, never one alone.
+   * glass (0.78) it comes out at about rgb(61, 61, 62), and the faintest words
+   * (the muted line, the green mark, the amber note) stay above 4.5:1 on that.
+   * Change the scrim, the glass or an ink together, never one alone.
+   *
+   * No backdrop-filter anywhere on a card. Cards sit in the scrolling
+   * timeline, so a blur here is a per-frame GPU blur for every card on screen
+   * on every scroll tick (scripts/perf-budget-contract.test.ts). The glass and
+   * the quiet button carry the frost as extra alpha in their own fill instead:
+   * the art behind them is the card's own and never moves, so a static fill
+   * reads the same.
    */
   .connection-card {
     --cc-ink: #fafafa;
@@ -329,12 +335,10 @@
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 5px;
-    background: rgba(17, 17, 19, 0.68);
+    background: rgba(17, 17, 19, 0.78);
     box-shadow:
       0 4px 14px rgba(0, 0, 0, 0.3),
       inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
   }
   .connection-card[data-state="connecting"] {
     border-color: var(--cc-accent);
@@ -347,7 +351,7 @@
   }
   .connection-card[data-state="connected"] .connection-card-glass {
     border-color: color-mix(in srgb, var(--cc-ok) 30%, transparent);
-    background: color-mix(in srgb, #16a34a 10%, rgba(17, 17, 19, 0.74));
+    background: color-mix(in srgb, #16a34a 10%, rgba(17, 17, 19, 0.82));
   }
   /* Declined recedes: the art goes grey and dark, the border dashed, the
      title and icon dimmer. The words keep the muted ink, which stays well
@@ -362,7 +366,7 @@
   }
   .connection-card[data-state="declined"] .connection-card-glass {
     border-color: rgba(255, 255, 255, 0.07);
-    background: rgba(17, 17, 19, 0.5);
+    background: rgba(17, 17, 19, 0.6);
     box-shadow: none;
   }
   .connection-card-head {
@@ -568,14 +572,12 @@
   }
   .connection-card-btn.is-quiet {
     color: rgba(250, 250, 250, 0.88);
-    background: rgba(9, 9, 11, 0.6);
+    background: rgba(9, 9, 11, 0.74);
     border-color: rgba(255, 255, 255, 0.14);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
   }
   .connection-card-btn.is-quiet:hover:not(:disabled) {
     color: var(--cc-ink);
-    background: rgba(9, 9, 11, 0.72);
+    background: rgba(9, 9, 11, 0.84);
     border-color: rgba(255, 255, 255, 0.4);
   }
   .connection-card-btn:disabled {

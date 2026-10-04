@@ -371,6 +371,17 @@ export function botSyncNeedsClock(facts: BotSyncFacts | null | undefined, now: n
   return botSyncView(facts, { now }).visible;
 }
 
+/**
+ * When a strip that needs a clock stops needing it: the moment "up to date"
+ * has been shown long enough, as a time in ms. Null when no clock is needed.
+ * The strip sets one timer to this moment instead of polling for it.
+ */
+export function botSyncHideDeadline(facts: BotSyncFacts | null | undefined, now: number): number | null {
+  if (!botSyncNeedsClock(facts, now)) return null;
+  const endedAt = finite(facts?.endedAt);
+  return endedAt === null ? null : endedAt + BOT_SYNC_DONE_VISIBLE_MS;
+}
+
 // ── Reading the bot's status answer ──────────────────────────────────────
 
 /** What one status answer says about the bot's sync right now. */
