@@ -21,8 +21,6 @@ repository's full git history was preserved under its destination subdirectory v
   sync. Renamed to `apps/hq-desktop-app/` once the port stabilizes.
 - `crates/` — shared Rust crates (auth/vault, cloud, process, platform seam, updater,
   telemetry, hq-content, installer-setup, sync-core). Extracted incrementally.
-- `imports/hq-installer-react/` — **temporary** port source: the React installer, kept
-  read-only until its flow, native commands, tests, and assets are absorbed, then deleted.
 - `imports/hq-sync-win/` — **temporary** port source: the Windows sync fork, kept until
   its platform deltas (`new_files`, `rescue_script_cache`, Windows backends) are folded
   into `apps/sync`, then deleted.
