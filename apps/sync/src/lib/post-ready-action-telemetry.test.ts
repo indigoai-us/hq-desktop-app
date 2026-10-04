@@ -87,7 +87,25 @@ describe('post-ready action telemetry', () => {
 
     expect(await setup.tracker.record('close_window')).toBe(false);
     expect(await setup.tracker.record('start_sync')).toBe(false);
+    expect(await setup.tracker.recordReturnNudge('shown', { companyUid: 'cmp_company' })).toBe(false);
     expect(setup.emit).not.toHaveBeenCalled();
+  });
+
+  it('records only the bounded return nudge outcome on the existing post-ready event', async () => {
+    const setup = makeTracker();
+    markPostReadyActionReady(setup.storage);
+
+    for (const value of ['shown', 'clicked', 'dismissed'] as const) {
+      expect(await setup.tracker.recordReturnNudge(value, { companyUid: 'cmp_company' })).toBe(true);
+    }
+    expect(setup.emit).toHaveBeenCalledTimes(3);
+    expect(setup.emit.mock.calls.map(([event]) => event.properties.returnNudge)).toEqual([
+      'shown', 'clicked', 'dismissed',
+    ]);
+    for (const [event] of setup.emit.mock.calls) {
+      expect(event.eventName).toBe('desktop_post_ready_action');
+      expect(event.idempotencyKey).toMatch(/return-nudge\.cmp_company\.\d{4}-\d{2}-\d{2}\.(shown|clicked|dismissed)$/);
+    }
   });
 
   it('sends only the allow-listed identity and environment fields, never folder names or paths', async () => {

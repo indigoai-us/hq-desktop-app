@@ -125,6 +125,7 @@
         action?: unknown;
         companyUid?: unknown;
         companySlug?: unknown;
+        returnNudge?: unknown;
       }>
     ).detail;
     if (!detail || !isPostReadyAction(detail.action)) return;
@@ -132,6 +133,15 @@
       ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
       ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
     };
+    if (detail.returnNudge === 'shown' || detail.returnNudge === 'clicked' || detail.returnNudge === 'dismissed') {
+      if (typeof detail.companyUid !== 'string') return;
+      void postReadyTelemetry.then((telemetry) =>
+        telemetry.recordReturnNudge(detail.returnNudge as 'shown' | 'clicked' | 'dismissed', {
+          companyUid: detail.companyUid as string,
+        }),
+      );
+      return;
+    }
     void postReadyTelemetry.then((telemetry) =>
       telemetry.record(
         detail.action as Parameters<typeof telemetry.record>[0],

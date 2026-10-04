@@ -17,14 +17,18 @@ afterEach(async () => {
   component = null;
   host?.remove();
   resetUpdateStore();
+  localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_test");
 });
 
 const ok = (value: unknown) => ({ ok: true as const, value });
 
-function makeAdapter() {
+function makeAdapter(returnNudge: { flag?: boolean; eligibility?: unknown } = {}) {
   return {
-    kind: "tauri",
+    kind: "desktop",
     isAvailable: () => true,
+    identity: { hasFeature: vi.fn(async () => ok(returnNudge.flag === true)) },
+    company: { getFirstWeekReturnNudge: vi.fn(async () => ok(returnNudge.eligibility ?? { eligible: false, dayIndex: null, reason: "unknown" })) },
+    sync: { startSync: vi.fn(async () => ok(undefined)) },
     packages: {
       listPackagesCached: async () => ok(null),
       listPackages: async () => ok({ packs: { installed: [] } }),
@@ -170,5 +174,86 @@ describe("CorePopover sync trouble notices (PL-02)", () => {
     expect(text(row)).toContain("Copy diagnose prompt");
     expect(row?.getAttribute("title")).toBe("Indigo is unreachable");
     expect(row?.getAttribute("title")).not.toContain("cmp_");
+  });
+});
+
+describe("CorePopover first-week return nudge", () => {
+  const workspaces = [{ uid: "cmp_test", slug: "indigo", name: "Indigo" }];
+  const eligible = { eligible: true, dayIndex: 2, reason: "eligible" };
+
+  it("stays hidden when the feature flag is off", async () => {
+    const adapter = makeAdapter({ flag: false, eligibility: eligible });
+    mountPopover({ adapter, workspaces });
+    await vi.waitFor(() => expect(adapter.identity.hasFeature).toHaveBeenCalledOnce());
+    expect(adapter.company.getFirstWeekReturnNudge).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).toBeNull();
+  });
+
+  it.each([
+    ["day zero", { eligible: false, dayIndex: 0, reason: "outside_window" }],
+    ["day seven", { eligible: false, dayIndex: 7, reason: "outside_window" }],
+    ["paid company", { eligible: false, dayIndex: null, reason: "not_free" }],
+    ["real use today", { eligible: false, dayIndex: 2, reason: "used_today" }],
+  ])("stays hidden for %s", async (_label, eligibility) => {
+    const adapter = makeAdapter({ flag: true, eligibility });
+    mountPopover({ adapter, workspaces });
+    await vi.waitFor(() => expect(adapter.company.getFirstWeekReturnNudge).toHaveBeenCalledOnce());
+    expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).toBeNull();
+  });
+
+  it("shows in the existing status header once per UTC day and starts the existing sync action", async () => {
+    const adapter = makeAdapter({ flag: true, eligibility: eligible });
+    const outcomes = vi.fn();
+    const listener = (event: Event) => outcomes((event as CustomEvent).detail);
+    window.addEventListener("hq:desktop-post-ready-action", listener);
+    mountPopover({ adapter, workspaces });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).not.toBeNull());
+    expect(host.querySelector('[data-testid="core-popover-sync-status"]')?.contains(host.querySelector('[data-testid="core-popover-return-nudge"]'))).toBe(true);
+    expect(outcomes).toHaveBeenCalledWith(expect.objectContaining({ returnNudge: "shown", companyUid: "cmp_test" }));
+
+    host.querySelector<HTMLButtonElement>('[data-testid="core-popover-return-nudge-sync"]')!.click();
+    await vi.waitFor(() => expect(adapter.sync.startSync).toHaveBeenCalledOnce());
+    expect(outcomes).toHaveBeenCalledWith(expect.objectContaining({ returnNudge: "clicked" }));
+
+    await unmount(component!);
+    component = null;
+    mountPopover({ adapter, workspaces });
+    await vi.waitFor(() => expect(adapter.identity.hasFeature).toHaveBeenCalledTimes(2));
+    expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).toBeNull();
+    expect(adapter.company.getFirstWeekReturnNudge).toHaveBeenCalledTimes(1);
+
+    window.removeEventListener("hq:desktop-post-ready-action", listener);
+  });
+
+  it("continues to another eligible company when the first was already shown today", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    localStorage.setItem("hq:desktop:first-week-return-nudge:v1:cmp_prior", today);
+    const adapter = makeAdapter({ flag: true, eligibility: eligible });
+    mountPopover({
+      adapter,
+      workspaces: [
+        { uid: "cmp_prior", slug: "prior", name: "Prior" },
+        { uid: "cmp_next", slug: "next", name: "Next" },
+      ],
+    });
+    await vi.waitFor(() => expect(adapter.company.getFirstWeekReturnNudge).toHaveBeenCalledTimes(2));
+    host.querySelector<HTMLButtonElement>('[data-testid="core-popover-return-nudge-sync"]')!.click();
+    await vi.waitFor(() => expect(adapter.sync.startSync).toHaveBeenCalledWith("next"));
+    localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_prior");
+    localStorage.removeItem("hq:desktop:first-week-return-nudge:v1:cmp_next");
+  });
+
+  it("records dismissal in the existing event and hides the line", async () => {
+    const adapter = makeAdapter({ flag: true, eligibility: eligible });
+    const outcomes = vi.fn();
+    const listener = (event: Event) => outcomes((event as CustomEvent).detail);
+    window.addEventListener("hq:desktop-post-ready-action", listener);
+    mountPopover({ adapter, workspaces });
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="core-popover-return-nudge-dismiss"]')).not.toBeNull());
+    host.querySelector<HTMLButtonElement>('[data-testid="core-popover-return-nudge-dismiss"]')!.click();
+    flushSync();
+    expect(host.querySelector('[data-testid="core-popover-return-nudge"]')).toBeNull();
+    expect(outcomes).toHaveBeenCalledWith(expect.objectContaining({ returnNudge: "dismissed" }));
+    window.removeEventListener("hq:desktop-post-ready-action", listener);
   });
 });

@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 

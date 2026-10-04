@@ -31,6 +31,7 @@ export interface PostReadyActionEvent {
     companyUid: string;
     appVersion: string;
     os: 'macos' | 'windows' | 'linux';
+    returnNudge?: 'shown' | 'clicked' | 'dismissed';
   };
 }
 
@@ -58,6 +59,10 @@ export interface PostReadyActionTelemetry {
   record(
     action: PostReadyAction,
     scope?: { companyUid?: string; companySlug?: string },
+  ): Promise<boolean>;
+  recordReturnNudge(
+    value: 'shown' | 'clicked' | 'dismissed',
+    scope: { companyUid: string },
   ): Promise<boolean>;
 }
 
@@ -203,7 +208,64 @@ export function createPostReadyActionTelemetry(
     return pending;
   }
 
-  return { record };
+  async function recordReturnNudge(
+    value: 'shown' | 'clicked' | 'dismissed',
+    scope: { companyUid: string },
+  ): Promise<boolean> {
+    state = loadState(storage);
+    if (!['shown', 'clicked', 'dismissed'].includes(value) || !beginFirstSessionIfReady()) return false;
+    const pending = operation.then(async () => {
+      if (!beginFirstSessionIfReady()) return false;
+      let enabled = false;
+      try {
+        enabled = await options.isFlagEnabled();
+      } catch (err) {
+        console.warn('[post-ready telemetry] flag lookup failed:', err);
+        return false;
+      }
+      if (!enabled) return false;
+      let identity: Awaited<ReturnType<typeof options.getIdentity>>;
+      try {
+        identity = await options.getIdentity(scope);
+      } catch (err) {
+        console.warn('[post-ready telemetry] identity lookup failed:', err);
+        return false;
+      }
+      const personUid = identity?.personUid.trim() ?? '';
+      const companyUid = identity?.companyUid?.trim() ?? '';
+      if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || companyUid !== scope.companyUid || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) return false;
+      const sessionId = state.sessionId;
+      if (!sessionId) return false;
+      const utcDay = new Date().toISOString().slice(0, 10);
+      try {
+        await emit({
+          eventName: 'desktop_post_ready_action',
+          sessionId,
+          idempotencyKey: `post-ready.${sessionId}.return-nudge.${companyUid}.${utcDay}.${value}`,
+          companyUid,
+          properties: {
+            action: 'start_sync',
+            personUid,
+            companyUid,
+            appVersion: options.appVersion.trim() || 'unknown',
+            os: options.os,
+            returnNudge: value,
+          },
+        });
+        return true;
+      } catch (err) {
+        console.warn('[post-ready telemetry] return nudge delivery failed:', err);
+        return false;
+      }
+    });
+    operation = pending.then(() => false, (err) => {
+      console.warn('[post-ready telemetry] return nudge processing failed:', err);
+      return false;
+    });
+    return pending;
+  }
+
+  return { record, recordReturnNudge };
 }
 
 export function isPostReadyAction(value: unknown): value is PostReadyAction {
