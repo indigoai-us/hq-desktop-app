@@ -195,6 +195,7 @@
     resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
+  import { resolveFirstLaunchPublicFlag } from '../../lib/first-launch-public-flag';
   import {
     classifyInviteError,
     hqProErrorCode,
@@ -1136,28 +1137,11 @@
     }
   }
 
-  function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
+  function resolveFirstLaunchJoinKeyEnabled(visitorId: string | null): Promise<boolean> {
     if (!firstLaunchJoinKeyFlagPromise) {
-      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_JOIN_KEY_FLAG).then(
-        (result) => {
-          if (!result.ok) {
-            console.warn(
-              'onboarding: first-launch join-key flag unavailable; leaving fallback off',
-              result.reason,
-              result.code,
-            );
-            return false;
-          }
-          return result.value === true;
-        },
-        (error) => {
-          console.warn(
-            'onboarding: first-launch join-key flag failed; leaving fallback off',
-            error,
-          );
-          return false;
-        },
-      );
+      const flag = visitorId
+        ? resolveFirstLaunchPublicFlag(FIRST_LAUNCH_JOIN_KEY_FLAG, visitorId)
+        : Promise.resolve(false);
       firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
         (enabled) => {
           firstLaunchJoinKeyEnabled = enabled;
@@ -1206,11 +1190,14 @@
             return firstLaunch;
           });
         const contextPromise = loadContinuationContext();
-        const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
-          firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
-        );
         const reachVisitorIdPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? loadInstallAttemptId() : null,
+        );
+        const firstLaunchJoinKeyEnabledPromise = Promise.all([
+          firstLaunchPromise,
+          reachVisitorIdPromise,
+        ]).then(([firstLaunch, visitorId]) =>
+          firstLaunch ? resolveFirstLaunchJoinKeyEnabled(visitorId) : false,
         );
         const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
           visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,

@@ -62,7 +62,6 @@ describe("paths that need the Windows gate", () => {
     "apps/sync/package.json",
     "apps/sync/pnpm-lock.yaml",
     "crates/hq-desktop-core/src/paths.rs",
-    "imports/hq-installer-react/src/App.tsx",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
@@ -85,6 +84,7 @@ describe("paths that need the Windows gate", () => {
 
 describe("paths that do not need the Windows gate", () => {
   const irrelevant = [
+    "imports/hq-installer-react/src/App.tsx",
     ".githooks/pre-push",
     "scripts/pre-push-tag-cooldown.test.ts",
     "scripts/version-app.ts",
@@ -251,7 +251,6 @@ describe("the workflow keeps both required checks reachable", () => {
       "apps/sync/package.json",
       "apps/sync/pnpm-lock.yaml",
       "apps/sync/pnpm-workspace.yaml",
-      "imports/hq-installer-react/**",
       "crates/**",
       "Cargo.toml",
       "Cargo.lock",

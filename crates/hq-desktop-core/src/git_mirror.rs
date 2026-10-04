@@ -5183,23 +5183,15 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Own process group so the CPU throttle can address git and anything it
-    // spawns (hooks, credential helpers) without touching the rest of HQ.
+    // Own process group so timeout cleanup can address Git and descendants
+    // (hooks, credential helpers) without touching the rest of HQ.
     put_git_in_own_process_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("spawn git: {e}"))?;
 
-    // The mirror's `git add -A` hashes every changed file on a tree that can
-    // hold hundreds of thousands of them, so it is the other half of what an
-    // operator feels as "HQ is eating my machine". It shares one budget with
-    // the sync runner rather than getting its own, so a mirror pass overlapping
-    // a sync tightens both instead of doubling the ceiling. The guard is dropped
-    // when this function returns — including the timeout-kill path — and its
-    // drop resumes the group, so a stopped git is never left behind.
-    //
-    // Throttling multiplies wall time, so `timeout` is now a ceiling on elapsed
-    // time for work that runs at a fraction of full speed. That is deliberate:
-    // GIT_INDEX_TIMEOUT is minutes and the throttled commands are seconds.
-    let _cpu_throttle = crate::cpu_throttle::CpuThrottle::attach(child.id() as i32);
+    // Mirror Git commands can write the index and hold `.git/index.lock`.
+    // Do not register this process group with CpuThrottle: SIGSTOP while Git
+    // holds the lock delays its release and can wedge later mirror passes.
+    // `wait_with_timeout` below still gives every Git command a hard ceiling.
 
     // Drain both pipes on their own threads. Polling `try_wait` while the
     // child blocks on a full pipe buffer would hang until the timeout even
@@ -5312,6 +5304,22 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn mirror_git_processes_are_not_stopped_while_they_can_hold_index_lock() {
+        let source = include_str!("git_mirror.rs");
+        let git_output = source
+            .split("fn git_output(")
+            .nth(1)
+            .expect("git_output definition is present")
+            .split("\nfn ")
+            .next()
+            .expect("git_output body is present");
+        assert!(
+            !git_output.contains("CpuThrottle::attach"),
+            "git_output must not attach mirror Git to CpuThrottle: Git can retain .git/index.lock while SIGSTOP'd"
+        );
     }
 
     fn set_probe_override(value: Option<(bool, bool)>) {
