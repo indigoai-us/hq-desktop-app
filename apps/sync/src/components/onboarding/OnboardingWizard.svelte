@@ -139,6 +139,7 @@
   import { inviteFailedEvent, inviteSentEvent, planSelectedEvent } from '../../lib/cdp-funnel-events';
   import {
     createOnboardingStepTelemetry,
+    type InviteStepHiddenReason,
     type OnboardingAction,
     type OnboardingFlow,
     type RecordOnboardingStep,
@@ -460,6 +461,7 @@
   let leavingExplainers = false;
   let companyStepCompanyUid: string | null = null;
   let inviteTeammateContext: { companyUid: string; personUid: string } | null = null;
+  let inviteStepHiddenTelemetryRecorded = false;
   let inviteCreatedForEmail: string | null = null;
   let inviteEmail = $state('');
   let inviteSending = $state(false);
@@ -596,7 +598,9 @@
     const stepId = stepIdFor(step);
     const companyUid =
       stepId === 'invite-teammate'
-        ? inviteTeammateContext?.companyUid
+        ? (typeof details.companyUid === 'string'
+            ? details.companyUid
+            : inviteTeammateContext?.companyUid ?? companyStepCompanyUid ?? undefined)
         : stepId === 'company'
           ? (companyStepCompanyUid ?? undefined)
           : undefined;
@@ -1550,15 +1554,15 @@
     return onboardingHqProJson(method, url, body);
   }
 
-  async function resolveInviteTeammateContext(): Promise<{
-    companyUid: string;
-    personUid: string;
-  } | null> {
+  async function resolveInviteTeammateContext(): Promise<
+    | { context: { companyUid: string; personUid: string } }
+    | { context: null; hiddenReason: InviteStepHiddenReason }
+  > {
     try {
       const membershipPayload = await readMembershipMe();
       const rawMemberships = membershipPayload.memberships;
       if (!Array.isArray(rawMemberships) || !rawMemberships.every(isRecord)) {
-        return null;
+        return { context: null, hiddenReason: 'no_invite_context' };
       }
       const activeCompanyMemberships = rawMemberships.filter(
         (membership) =>
@@ -1573,7 +1577,9 @@
           ),
         ),
       ];
-      if (activeCompanyUids.length !== 1) return null;
+      if (activeCompanyUids.length !== 1) {
+        return { context: null, hiddenReason: 'no_invite_context' };
+      }
 
       const companyUid = activeCompanyUids[0]!;
       const ownMemberships = activeCompanyMemberships.filter(
@@ -1584,7 +1590,7 @@
         typeof ownMemberships[0]?.personUid !== 'string' ||
         !ownMemberships[0].personUid.startsWith('prs_')
       ) {
-        return null;
+        return { context: null, hiddenReason: 'no_invite_context' };
       }
       const personUid = ownMemberships[0].personUid;
 
@@ -1593,7 +1599,9 @@
         `/membership/company/${encodeURIComponent(companyUid)}`,
       );
       const rawMembers = rosterPayload.members;
-      if (!Array.isArray(rawMembers) || !rawMembers.every(isRecord)) return null;
+      if (!Array.isArray(rawMembers) || !rawMembers.every(isRecord)) {
+        return { context: null, hiddenReason: 'no_invite_context' };
+      }
       const activeMembers = rawMembers.filter((member) => member.status === 'active');
       if (
         activeMembers.length !== 1 ||
@@ -1601,12 +1609,12 @@
         (typeof activeMembers[0]?.companyUid === 'string' &&
           activeMembers[0].companyUid !== companyUid)
       ) {
-        return null;
+        return { context: null, hiddenReason: 'no_invite_context' };
       }
-      return { companyUid, personUid };
+      return { context: { companyUid, personUid } };
     } catch (error) {
       console.warn('onboarding: invite teammate eligibility lookup failed', error);
-      return null;
+      return { context: null, hiddenReason: 'lookup_failed' };
     }
   }
 
@@ -2766,10 +2774,11 @@
     ]);
     // Resolve invite eligibility after the company route has completed its
     // retry so it can use the recovered shared membership response.
-    const inviteContext =
+    const inviteResolution =
       firstRunCompanyPath !== null && 'route' in firstRunCompanyPath
         ? await resolveInviteTeammateContext()
         : null;
+    const inviteContext = inviteResolution?.context ?? null;
     if (!stillCurrent()) return;
     if (firstRunCompanyPath && 'route' in firstRunCompanyPath) {
       companyPath = firstRunCompanyPath.route;
@@ -2779,6 +2788,17 @@
       recordCompanyRoute(firstRunCompanyPath.route, firstRunCompanyPath.summary);
       inviteTeammateContext = inviteContext;
       showInviteTeammateStep = inviteContext !== null;
+      if (
+        inviteResolution &&
+        inviteResolution.context === null &&
+        !inviteStepHiddenTelemetryRecorded
+      ) {
+        inviteStepHiddenTelemetryRecorded = true;
+        recordStep(INVITE_TEAMMATE_STEP_INDEX, 'skipped', {
+          outcome: inviteResolution.hiddenReason,
+          ...(companyStepCompanyUid ? { companyUid: companyStepCompanyUid } : {}),
+        });
+      }
       companyRouteResolved = true;
       return;
     }

@@ -56,6 +56,36 @@ describe('onboarding step telemetry', () => {
     });
   }
 
+  it('keeps only the closed invite-step hidden reasons', () => {
+    for (const outcome of ['no_invite_context', 'lookup_failed']) {
+      const properties = desktopPropertiesForOnboardingStep({
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        occurredAt: '2026-10-04T00:00:00.000Z',
+        properties: {
+          step: 'invite-teammate',
+          action: 'skipped',
+          outcome,
+          surface: 'desktop_installer',
+          platform: 'macos',
+        },
+      });
+      expect(properties.outcome).toBe(outcome);
+    }
+
+    const unknown = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'skipped',
+        outcome: 'private failure details',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(unknown).not.toHaveProperty('outcome');
+  });
+
   it('keeps only matching bounded first-launch sign-in reach outcomes', () => {
     const reached = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',
