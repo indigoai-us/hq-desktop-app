@@ -119,6 +119,26 @@ export interface ThinkingEntry {
   /** The DM thread root the agent said it is working in, kept for a later
    * per-thread indicator. It does not change where the row draws. */
   rootEventId?: string;
+  /** The event id of the person's message whose send started (or last
+   * restarted) this row, when a send did. It lets the "stopped responding"
+   * sentence recognise that message by identity, with no clock involved
+   * (see {@link stoppedRespondingApplies}). */
+  askedEventId?: string;
+}
+
+/** What `startThinking` may be told about the start. */
+export interface StartThinkingOpts {
+  afterMs?: number;
+  detail?: string;
+  /**
+   * The person just sent this agent a message: a new ask. The row remembers
+   * the sent message's event id (when the send returned one) and forgets
+   * when the agent last reported a status. That status belonged to the work
+   * before this message, and counting the agent's silence from it would end
+   * the row moments after the person wrote. The 90 s rule applies again from
+   * the agent's next status.
+   */
+  asked?: { eventId?: string | null };
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
@@ -139,9 +159,10 @@ export function startThinking(
   entries: ThinkingEntry[],
   agent: { agentUid: string; agentName: string },
   now: number,
-  opts?: { afterMs?: number; detail?: string },
+  opts?: StartThinkingOpts,
 ): ThinkingEntry[] {
   const detail = opts?.detail?.trim();
+  const askedEventId = opts?.asked?.eventId?.trim() || undefined;
   const idx = entries.findIndex((e) => e.agentUid === agent.agentUid);
   const pinned =
     opts?.afterMs !== undefined && Number.isFinite(opts.afterMs)
@@ -157,18 +178,30 @@ export function startThinking(
     ...(pinned !== undefined ? { afterMs: pinned } : {}),
     ...(detail ? { detail } : {}),
   };
-  if (idx < 0) return [...entries, { ...next, since: now }];
+  if (idx < 0) return [...entries, { ...next, since: now, ...(askedEventId ? { askedEventId } : {}) }];
   const copy = entries.slice();
   // A restart is the same stretch of work continuing (a fresh status, or a
   // follow-up mention while the agent is still going), so the elapsed counter
   // carries on from when it started rather than resetting to zero. What the
   // agent last reported about itself (when, and in which thread) stays too.
   const prev = entries[idx]!;
+  if (opts?.asked) {
+    // The person wrote again (see StartThinkingOpts.asked): the row is now
+    // for that message, and the silence clock waits for the next status.
+    copy[idx] = {
+      ...next,
+      since: prev.since ?? prev.startedAt,
+      ...(prev.rootEventId ? { rootEventId: prev.rootEventId } : {}),
+      ...(askedEventId ? { askedEventId } : {}),
+    };
+    return copy;
+  }
   copy[idx] = {
     ...next,
     since: prev.since ?? prev.startedAt,
     ...(prev.lastStatusAt !== undefined ? { lastStatusAt: prev.lastStatusAt } : {}),
     ...(prev.rootEventId ? { rootEventId: prev.rootEventId } : {}),
+    ...(prev.askedEventId ? { askedEventId: prev.askedEventId } : {}),
   };
   return copy;
 }
@@ -519,21 +552,132 @@ export function applyDmAgentStatus(
  * `silentAfterMs`: no further status, and no message (a message from the
  * agent ends the row by itself). Rows that never received a status are left
  * to `tick`. Same array when nothing ended.
+ *
+ * `clockRestartedAt` is the last moment the app could not have heard a
+ * status (the window was hidden, the Mac slept, the wake connection was
+ * down; see {@link statusSilenceClockRestarts}). The quiet is counted from
+ * the later of that and the row's last status, so a gap in listening is
+ * never read as the agent going quiet.
  */
 export function endStatusSilent(
   entries: ThinkingEntry[],
   now: number,
   silentAfterMs: number = STATUS_SILENT_AFTER_MS,
+  clockRestartedAt?: number,
 ): ThinkingEntry[] {
+  const floor = clockRestartedAt !== undefined && Number.isFinite(clockRestartedAt) ? clockRestartedAt : Number.NEGATIVE_INFINITY;
   const kept = entries.filter(
-    (entry) => entry.lastStatusAt === undefined || now - entry.lastStatusAt < silentAfterMs,
+    (entry) => entry.lastStatusAt === undefined || now - Math.max(entry.lastStatusAt, floor) < silentAfterMs,
   );
   return kept.length === entries.length ? entries : kept;
+}
+
+/**
+ * A gap between two silence checks longer than this means the checks did not
+ * run for a while (the Mac slept, the webview was suspended). The checks run
+ * every 5 s, so three missed in a row is not ordinary timer jitter.
+ */
+export const STATUS_SILENCE_CHECK_GAP_MS = 15_000;
+
+/**
+ * Whether this silence check must restart the 90 s clock instead of ending
+ * rows. Status wakes ride MQTT at QoS 0: while the app was not listening,
+ * statuses were lost, and a row must not end with "stopped responding"
+ * because of that.
+ *
+ * The clock restarts when the window is hidden now, and on the first check
+ * after a stretch in which the checks did not run. The host also restarts it
+ * when the window becomes visible again and when the wake connection
+ * reconnects. After a restart the bot has the full 90 s to report again or
+ * to answer.
+ */
+export function statusSilenceClockRestarts(input: {
+  now: number;
+  /** When the previous check ran (ms), or null for the first one. */
+  previousCheckAt: number | null;
+  /** The window is hidden right now. */
+  hidden: boolean;
+  gapMs?: number;
+}): boolean {
+  if (input.hidden) return true;
+  if (input.previousCheckAt === null) return false;
+  return input.now - input.previousCheckAt > (input.gapMs ?? STATUS_SILENCE_CHECK_GAP_MS);
 }
 
 /** What the conversation says once a row ended because the bot went quiet. */
 export function stoppedRespondingLine(agentName: string): string {
   return `${agentName.trim() || 'Bot'} stopped responding. Try again.`;
+}
+
+/** What the app keeps about a DM row that ended because its bot went quiet. */
+export interface StoppedResponding {
+  /** The name on the row. */
+  name: string;
+  /** When the row began (local ms). */
+  since: number;
+  /** The person's message whose send started the row, when a send did. */
+  askedEventId?: string;
+}
+
+/** The record to keep for a row that just ended for silence. */
+export function stoppedRespondingFrom(entry: ThinkingEntry): StoppedResponding {
+  return {
+    name: entry.agentName,
+    since: entry.since ?? entry.startedAt,
+    ...(entry.askedEventId ? { askedEventId: entry.askedEventId } : {}),
+  };
+}
+
+/**
+ * Whether the DM says "<Name> stopped responding. Try again." for a row that
+ * ended because its bot went quiet.
+ *
+ * It says so only when the person's own message is the newest message in the
+ * conversation: the person asked, the bot said it was working, and nothing
+ * came back. In every other case the row ends silently:
+ *
+ * - the newest message is the bot's: it answered, or at least wrote last;
+ * - the newest message is newer than the row's start: something happened in
+ *   the conversation after the row began, so the row was not about it;
+ * - the conversation is not loaded, has no message, or the order cannot be
+ *   told (a bot message with no readable time).
+ *
+ * `messages` are the rows the person can see (any order). Whose message is
+ * newest is decided between server times only. The one comparison against a
+ * local time (`since`) is skipped when the newest message is the very
+ * message whose send started the row (`askedEventId`); otherwise a clock
+ * that disagrees with the server can only turn the sentence off, or leave it
+ * on under a message of the person's that is still the last one.
+ */
+export function stoppedRespondingApplies(
+  note: StoppedResponding,
+  messages: ReadonlyArray<{
+    eventId?: string | null;
+    fromPersonUid?: string | null;
+    createdAt?: string | null;
+  }>,
+  who: { agentUid: string; selfUid: string | null | undefined },
+): boolean {
+  const agentUid = who.agentUid.trim();
+  const selfUid = (who.selfUid ?? '').trim();
+  if (!agentUid || !selfUid || selfUid === agentUid) return false;
+  let newest: { eventId: string; from: string; at: number } | null = null;
+  for (const msg of messages) {
+    const from = (msg.fromPersonUid ?? '').trim();
+    const at = msg.createdAt ? Date.parse(msg.createdAt) : Number.NaN;
+    if (Number.isNaN(at)) {
+      // A bot message that cannot be placed in time may be its answer.
+      if (from === agentUid) return false;
+      continue;
+    }
+    // On a tie the bot's message counts as the newer one.
+    if (!newest || at > newest.at || (at === newest.at && from === agentUid)) {
+      newest = { eventId: (msg.eventId ?? '').trim(), from, at };
+    }
+  }
+  if (!newest || newest.from !== selfUid) return false;
+  if (note.askedEventId && newest.eventId === note.askedEventId) return true;
+  return newest.at <= note.since;
 }
 
 // ---------------------------------------------------------------------------
@@ -645,7 +789,7 @@ export function startThinkingIn(
   rowId: string,
   agent: { agentUid: string; agentName: string },
   now: number,
-  opts?: { afterMs?: number },
+  opts?: Pick<StartThinkingOpts, 'afterMs' | 'asked'>,
 ): ThinkingByRow {
   return { ...map, [rowId]: startThinking(map[rowId] ?? [], agent, now, opts) };
 }
@@ -671,11 +815,12 @@ export function endStatusSilentAll(
   map: ThinkingByRow,
   now: number,
   silentAfterMs: number = STATUS_SILENT_AFTER_MS,
+  clockRestartedAt?: number,
 ): ThinkingByRow {
   const out: ThinkingByRow = {};
   let changed = false;
   for (const [rowId, entries] of Object.entries(map)) {
-    const next = endStatusSilent(entries, now, silentAfterMs);
+    const next = endStatusSilent(entries, now, silentAfterMs, clockRestartedAt);
     if (next !== entries) changed = true;
     if (next.length > 0) out[rowId] = next;
   }

@@ -449,7 +449,12 @@
     applyAgentStatus,
     applyDmAgentStatus,
     endStatusSilentAll,
+    statusSilenceClockRestarts,
+    stoppedRespondingApplies,
+    stoppedRespondingFrom,
     stoppedRespondingLine,
+    STATUS_SILENT_AFTER_MS,
+    type StoppedResponding,
     dropRow,
     isAgentUid,
     newestMessageAtFrom,
@@ -4361,11 +4366,13 @@
 
   /**
    * Bots whose DM row ended because they went quiet after reporting a status
-   * (agent uid to the name shown and the newest bot message known then). The
-   * DM says so in place of the row until something newer happens there: a
+   * (agent uid to the name shown, when the row began, and the person's
+   * message the row was for). The DM says so in place of the row only while
+   * the person's own message is the newest one there
+   * (`stoppedRespondingApplies`), and until something newer happens: a
    * message from the bot, a fresh status, or the person writing again.
    */
-  let stoppedRespondingByUid = $state<Record<string, { name: string; afterMs: number }>>({});
+  let stoppedRespondingByUid = $state<Record<string, StoppedResponding>>({});
   /**
    * The newest message each bot is known to have sent in its DM, from the
    * wakes that announced them (agent uid to ISO time). A DM that is not open
@@ -4373,24 +4380,71 @@
    * bot's reply must be recognised as late there too.
    */
   const botDmMessageSeenAt = new Map<string, string>();
+  /**
+   * The 90 s of quiet are counted from no earlier than this (local ms).
+   * Status wakes ride MQTT at QoS 0, so while the app was not listening (the
+   * window hidden, the Mac asleep, the wake connection down) statuses were
+   * lost, and that gap must not read as the bot going quiet. Moved to "now"
+   * whenever listening resumes; the bot then has the full 90 s again.
+   */
+  let statusSilenceClockAt = 0;
+  /** When the silence check last ran (ms), to notice a stretch it did not run in. */
+  let statusSilenceCheckedAt: number | null = null;
+  function restartStatusSilenceClock(now: number = Date.now()): void {
+    statusSilenceClockAt = now;
+  }
   /** End rows whose bot reported a status and then sent nothing for 90 s. */
   function endSilentThinking(now: number): void {
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    const restarts = statusSilenceClockRestarts({ now, previousCheckAt: statusSilenceCheckedAt, hidden });
+    statusSilenceCheckedAt = now;
+    if (restarts) {
+      // Not listening just now, or back from a stretch of not running: no
+      // row ends on this check, and the 90 s start over.
+      restartStatusSilenceClock(now);
+      return;
+    }
     const prev = thinkingByRow;
-    const next = endStatusSilentAll(prev, now);
+    const next = endStatusSilentAll(prev, now, STATUS_SILENT_AFTER_MS, statusSilenceClockAt);
     if (next === prev) return;
     const stopped = { ...stoppedRespondingByUid };
     for (const { rowId, entry } of endedBotDmThinking(prev, next)) {
       if (rowId !== `dm:${entry.agentUid}`) continue;
-      // The row's own pin first: a bot message newer than it is an answer,
-      // even one that only hid the row and had not removed it yet.
-      stopped[entry.agentUid] = {
-        name: entry.agentName,
-        afterMs: entry.afterMs ?? botPinFor(rowId, entry.agentUid) ?? entry.lastStatusAt ?? now,
-      };
+      // Whether the DM says anything is decided against the conversation
+      // itself, each time it is drawn (`stoppedRespondingNote`).
+      stopped[entry.agentUid] = stoppedRespondingFrom(entry);
     }
     stoppedRespondingByUid = stopped;
     setThinking(next, "status-silent");
   }
+  // Listening resumed: the window is visible again, the network is back, or
+  // the wake connection reconnected or caught up. The first check after any
+  // of these ends no row; the silence clock starts over.
+  onMount(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState === "visible") restartStatusSilenceClock();
+    };
+    const onOnline = (): void => restartStatusSilenceClock();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+    };
+  });
+  $effect(() => {
+    const bus = wakes;
+    if (!bus) return;
+    const unsubs = [
+      bus.on("mesh:connection", ({ state }) => {
+        if (state === "connected") restartStatusSilenceClock();
+      }),
+      bus.on("mesh:catchup", () => restartStatusSilenceClock()),
+    ];
+    return () => {
+      for (const off of unsubs) off();
+    };
+  });
   // A row for that bot in its DM is the newer event: the sentence goes away.
   $effect(() => {
     const map = thinkingByRow;
@@ -4404,16 +4458,22 @@
       stoppedRespondingByUid = rest;
     });
   });
-  /** The sentence under the open DM, or null. A message from the bot newer
-   *  than the one known when its row ended means it answered after all. */
+  /**
+   * The sentence under the open DM, or null. It shows only when the person's
+   * own message is the newest one the conversation shows: they asked, the
+   * bot said it was working, and nothing came back. When the newest message
+   * is the bot's, or is newer than the row's start, the row ended silently
+   * and nothing is said. Read against the loaded conversation every time, so
+   * a late answer removes it. No timeline loaded: nothing is said.
+   */
   const stoppedRespondingNote = $derived.by(() => {
     const row = selectedRow;
     const uid = row?.kind === "dm" ? (row.personUid ?? "").trim() : "";
     const note = uid ? stoppedRespondingByUid[uid] : undefined;
     if (!row || !note) return null;
     if ((thinkingByRow[row.id] ?? []).some((entry) => entry.agentUid === uid)) return null;
-    const newest = newestMessageAtFrom(liveTimelineId === row.id ? liveTimeline : [], uid);
-    if (newest !== undefined && newest > note.afterMs) return null;
+    if (liveTimelineId !== row.id || timelineHydrating) return null;
+    if (!stoppedRespondingApplies(note, timeline, { agentUid: uid, selfUid: self?.uid })) return null;
     return stoppedRespondingLine(row.title?.trim() || note.name);
   });
 
@@ -9533,7 +9593,10 @@
               agentName: row.title?.trim() || "Bot",
             },
             Date.now(),
-            { afterMs: newestMessageAtFrom(liveTimeline, row.personUid) },
+            // A new ask: the row is for this message, and the 90 s silence
+            // rule waits for the bot's next status (agent-thinking.ts,
+            // `StartThinkingOpts.asked`).
+            { afterMs: newestMessageAtFrom(liveTimeline, row.personUid), asked: { eventId: wire?.eventId ?? null } },
           );
         }
         if (!wire) {

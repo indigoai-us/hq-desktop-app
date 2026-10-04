@@ -633,7 +633,9 @@ describe("a bot's status in its DM drives the DM row", () => {
   it('keeps the thread root from the status on the row, and drops it when the next status has none', () => {
     let rows = applyDmAgentStatus([], wake(0, 'Working', { rootEventId: 'evt_root' }), 'Nova', [], 1);
     expect(rows[0]!.rootEventId).toBe('evt_root');
-    // A restart that is not a status (the person writes again) keeps both.
+    // A restart that is not a status and not a send (a notice, a follow-up
+    // mention) keeps both. The person's own send is a new ask: see
+    // agent-thinking.stopped-responding.test.ts.
     rows = startThinking(rows, { agentUid: NOVA, agentName: 'Nova' }, 2);
     expect(rows[0]).toMatchObject({ rootEventId: 'evt_root', lastStatusAt: 1 });
     rows = applyDmAgentStatus(rows, wake(20, 'Running'), 'Nova', [], 3);

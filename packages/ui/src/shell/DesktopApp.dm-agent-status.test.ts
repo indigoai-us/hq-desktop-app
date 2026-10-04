@@ -283,36 +283,39 @@ describe("DesktopApp: a bot's status in its DM", () => {
     expect(thinkingRow()).toBeNull();
   });
 
-  it("ends the row after 90 s with no status and no message, logs it, and says the bot stopped responding", async () => {
+  /** Fake time moves the way real time does: the 5 s checks all run. */
+  async function pass(msTotal: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(msTotal);
+    await settle();
+  }
+  const fakeTime = (): void => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+  };
+
+  it("after the person asks: ends the row 90 s after the bot's last status, logs it, and says the bot stopped responding", async () => {
+    fakeTime();
     const w = world(Date.now());
     const wakes = await mountDm(w);
-    const start = Date.now();
-    await botStatus(wakes, "Working", start);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
     expect(thinkingRow()).not.toBeNull();
 
     // A status every 20 s keeps it up well past 90 s.
-    for (const at of [20_000, 40_000, 60_000, 80_000, 100_000]) {
-      vi.setSystemTime(start + at);
-      await botStatus(wakes, "Running", start + at);
-      await vi.advanceTimersByTimeAsync(5_000);
-      await settle();
-      expect(thinkingRow(), `still working at ${at / 1000}s`).not.toBeNull();
+    for (let i = 1; i <= 5; i += 1) {
+      await pass(20_000);
+      await botStatus(wakes, "Running", Date.now());
+      expect(thinkingRow(), `still working at ${i * 20}s`).not.toBeNull();
     }
-    const lastStatusAt = Date.now() - 5_000;
 
     // 85 s after the last status: still up.
-    vi.setSystemTime(lastStatusAt + 80_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await settle();
+    await pass(85_000);
     expect(thinkingRow()).not.toBeNull();
     expect(stoppedNote()).toBeNull();
     expect(thinkingLog()).toEqual([]);
 
-    // Past 90 s: the next check ends it.
-    vi.setSystemTime(lastStatusAt + 90_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await settle();
+    // Past 90 s: the next check ends it. The person's message is the newest
+    // one in the conversation, so the DM says so.
+    await pass(10_000);
     expect(thinkingRow()).toBeNull();
     expect(thinkingLog()).toEqual([endedLine("status-silent", "yes")]);
     expect(stoppedNote()?.textContent?.trim()).toBe("Nova stopped responding. Try again.");
@@ -323,15 +326,159 @@ describe("DesktopApp: a bot's status in its DM", () => {
     expect(stoppedNote()).toBeNull();
   });
 
-  it("drops the stopped-responding sentence when the bot answers after all", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+  it("ends the row silently when the newest message in the DM is the bot's", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    // Nobody asked anything here: the bot's hello is the newest message, and
+    // the bot reports it is working (a job of its own, a late status).
+    await botStatus(wakes, "Working", Date.now());
+    expect(thinkingRow()).not.toBeNull();
+
+    await pass(95_000);
+    expect(thinkingRow()).toBeNull();
+    expect(thinkingLog()).toEqual([endedLine("status-silent", "yes")]);
+    expect(stoppedNote(), "nothing is said under the bot's own message").toBeNull();
+  });
+
+  it("says nothing under a completed answer when a late status restarts the row", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await typeAndSend("What is the plan?");
+    await botStatus(wakes, "Working", Date.now());
+    await botAnswers(w, wakes);
+    expect(threadText()).toContain("Done.");
+    expect(thinkingRow()).toBeNull();
+
+    // A status that reads as newer than the answer (no sentAt, a clock that
+    // runs ahead) puts the row back up, pinned to the answer.
+    await botStatus(wakes, "Running", Date.now() + 60_000);
+    expect(thinkingRow()).not.toBeNull();
+
+    // Nothing follows. The row goes away, and the DM says nothing: the
+    // newest message is the bot's answer.
+    await pass(95_000);
+    expect(thinkingRow()).toBeNull();
+    expect(stoppedNote(), "no sentence under the answer").toBeNull();
+    await pass(30_000);
+    expect(stoppedNote()).toBeNull();
+  });
+
+  it("the person writing right after a status is a new ask: the row does not end seconds later", async () => {
+    fakeTime();
     const w = world(Date.now());
     const wakes = await mountDm(w);
     await botStatus(wakes, "Working", Date.now());
+    await pass(85_000);
+    expect(thinkingRow()).not.toBeNull();
 
-    vi.setSystemTime(Date.now() + 90_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await settle();
+    // 85 s into the bot's silence the person writes.
+    await typeAndSend("Are you there?");
+    await pass(30_000);
+    expect(thinkingRow(), "the earlier status does not end the row under the new message").not.toBeNull();
+    expect(stoppedNote()).toBeNull();
+    expect(thinkingLog()).toEqual([]);
+
+    // The bot picks it up, then goes quiet: 90 s after that status the DM says so.
+    await botStatus(wakes, "Working", Date.now());
+    await pass(95_000);
+    expect(thinkingRow()).toBeNull();
+    expect(stoppedNote()?.textContent?.trim()).toBe("Nova stopped responding. Try again.");
+  });
+
+  it("does not end the row on the first check after the Mac slept: the 90 s start over", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
+    await pass(10_000);
+
+    // The clock jumps three minutes with no check in between (sleep). The
+    // statuses sent meanwhile were lost: wakes are not redelivered.
+    vi.setSystemTime(Date.now() + 180_000);
+    await pass(5_000);
+    expect(thinkingRow(), "the first check after the gap ends nothing").not.toBeNull();
+    expect(stoppedNote()).toBeNull();
+    expect(thinkingLog()).toEqual([]);
+
+    // Still nothing 80 s later.
+    await pass(80_000);
+    expect(thinkingRow()).not.toBeNull();
+    expect(stoppedNote()).toBeNull();
+
+    // A full 90 s after the app was listening again with nothing heard: now it ends.
+    await pass(15_000);
+    expect(thinkingRow()).toBeNull();
+    expect(thinkingLog()).toEqual([endedLine("status-silent", "yes")]);
+    expect(stoppedNote()?.textContent?.trim()).toBe("Nova stopped responding. Try again.");
+  });
+
+  it("ends no row while the window is hidden, and starts the 90 s over when it is visible again", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await pass(200_000);
+      expect(thinkingRow(), "hidden: nothing ends").not.toBeNull();
+      expect(thinkingLog()).toEqual([]);
+
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await pass(85_000);
+      expect(thinkingRow(), "85 s after it became visible").not.toBeNull();
+      expect(stoppedNote()).toBeNull();
+
+      await pass(10_000);
+      expect(thinkingRow()).toBeNull();
+      expect(stoppedNote()?.textContent?.trim()).toBe("Nova stopped responding. Try again.");
+    } finally {
+      visibility.mockRestore();
+    }
+  });
+
+  it("starts the 90 s over when the wake connection reconnects, the network returns, or a catch-up runs", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
+
+    const resumes: Array<() => void> = [
+      () => wakes.emit("mesh:connection", { state: "connected" }),
+      () => window.dispatchEvent(new Event("online")),
+      () => wakes.emit("mesh:catchup", { reason: "connect" }),
+    ];
+    for (const [i, resume] of resumes.entries()) {
+      // Each resume comes 80 s after the status (or the resume) before it.
+      await pass(i === 0 ? 80_000 : 65_000);
+      resume();
+      await settle(20);
+      await pass(15_000);
+      expect(thinkingRow(), `resume ${i}: 95 s after the one before, 15 s after listening resumed`).not.toBeNull();
+      expect(stoppedNote()).toBeNull();
+    }
+    // A connection that is not connected restarts nothing.
+    wakes.emit("mesh:connection", { state: "reconnecting" });
+    await pass(80_000);
+    expect(thinkingRow()).toBeNull();
+    expect(thinkingLog()).toEqual([endedLine("status-silent", "yes")]);
+  });
+
+  it("drops the stopped-responding sentence when the bot answers after all", async () => {
+    fakeTime();
+    const w = world(Date.now());
+    const wakes = await mountDm(w);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
+
+    await pass(95_000);
     expect(stoppedNote()).not.toBeNull();
 
     await botAnswers(w, wakes);
@@ -341,13 +488,13 @@ describe("DesktopApp: a bot's status in its DM", () => {
   });
 
   it("drops the stopped-responding sentence when the person writes again", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    fakeTime();
     const w = world(Date.now());
-    await mountDm(w).then(async (wakes) => botStatus(wakes, "Working", Date.now()));
+    const wakes = await mountDm(w);
+    await typeAndSend("Are you there?");
+    await botStatus(wakes, "Working", Date.now());
 
-    vi.setSystemTime(Date.now() + 90_000);
-    await vi.advanceTimersByTimeAsync(5_000);
-    await settle();
+    await pass(95_000);
     expect(stoppedNote()).not.toBeNull();
 
     await typeAndSend("Try again please");
@@ -405,15 +552,13 @@ describe("DesktopApp: a bot's status for a DM that is not open", () => {
     // goes quiet 90 s later.
     await botStatus(wakes, "Running", repliedAt - 1_000);
     await botStatus(wakes, "Running", repliedAt + 1_000, { sentAt: iso(repliedAt) });
-    vi.setSystemTime(start + 100_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(105_000);
     await settle();
     expect(thinkingLog()).toEqual([endedLine("newer-message", "no")]);
 
     // A status created after the reply is a new turn, pinned to that reply.
     await botStatus(wakes, "Working", repliedAt + 2_000);
-    vi.setSystemTime(Date.now() + 90_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(95_000);
     await settle();
     expect(thinkingLog()).toEqual([endedLine("newer-message", "no"), endedLine("status-silent", "yes")]);
   });
@@ -440,8 +585,7 @@ describe("DesktopApp: a channel status is unchanged", () => {
     expect(thinkingRow()?.textContent).toContain("reading the repo");
 
     // Channel rows keep the long timers: 90 s without a status changes nothing.
-    vi.setSystemTime(start + 95_000);
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(100_000);
     await settle();
     expect(thinkingRow()?.textContent).toContain("reading the repo");
     expect(stoppedNote()).toBeNull();
