@@ -77,6 +77,8 @@ export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
 export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
+export const FIRST_LAUNCH_SIGNIN_REACH_FLAG =
+  "desktop.first-launch-signin-reach-telemetry-v1";
 export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
   "desktop.company-route-lookup-retry-v1";
 export const COMPANY_NAME_PREFILL_FLAG = "desktop.company-name-prefill-v1";
@@ -86,6 +88,8 @@ export const LOGIN_RECEIPT_DURABILITY_FLAG =
   "desktop.login-receipt-durable-before-return-v1";
 export const POST_READY_ACTION_TELEMETRY_FLAG =
   "desktop.post-ready-action-telemetry-v1";
+export const FIRST_WEEK_RETURN_NUDGE_FLAG =
+  "desktop.first-week-return-nudge-v1";
 export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
 export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
 export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
@@ -108,11 +112,13 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
+  [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [COMPANY_NAME_PREFILL_FLAG]: COMPANY_NAME_PREFILL_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
+  [FIRST_WEEK_RETURN_NUDGE_FLAG]: FIRST_WEEK_RETURN_NUDGE_FLAG,
   [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,

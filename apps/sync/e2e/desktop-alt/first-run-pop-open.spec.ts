@@ -27,7 +27,7 @@ describe('first-run routes through onboarding before completion', () => {
 
   it('first run renders onboarding and completion only happens from finish', () => {
     expect(lifecycle).toContain("state === 'InstalledFirstRun'");
-    expect(app).not.toContain("invoke<boolean>('is_first_run')");
+    expect(app).toContain("isFirstRun: () => invoke<boolean>('is_first_run')");
     expect(app).not.toContain("invoke('mark_first_run_complete')");
     expect(onboarding).toContain("invoke('mark_first_run_complete')");
   });

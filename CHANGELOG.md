@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
+- Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
+- First-launch telemetry can record whether sign-in was reached or which setup, update, or app-exit path diverted it; the measurement is off by default.
+- Updater restarts now carry a short-lived, version-checked marker through the GUI restart fallback when start-at-login is disabled.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 

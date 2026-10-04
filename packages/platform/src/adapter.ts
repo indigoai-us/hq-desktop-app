@@ -971,6 +971,8 @@ export interface CompanyApi {
    * slug) since callers already have it from the workspace roster.
    */
   ensureHomeChannel(companyUid: string): AdapterPromise<{ homeChannelId: string }>;
+  /** Membership-scoped, aggregate eligibility for the first-week return nudge. */
+  getFirstWeekReturnNudge(companyUid: string): AdapterPromise<Json>;
 }
 
 export interface ProjectsApi {

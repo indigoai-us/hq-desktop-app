@@ -56,6 +56,90 @@ describe('onboarding step telemetry', () => {
     });
   }
 
+  it('keeps only matching bounded first-launch sign-in reach outcomes', () => {
+    const reached = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'entered',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(reached.outcome).toBe('reached-signin');
+
+    const skipped = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'setup-resume-skip',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(skipped.outcome).toBe('setup-resume-skip');
+
+    const unsafe = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+        error: 'private path should not be emitted',
+      } as never,
+    });
+    expect(unsafe).not.toHaveProperty('outcome');
+    expect(unsafe).not.toHaveProperty('error');
+
+    const wrongScope = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'entered',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(wrongScope).not.toHaveProperty('outcome');
+
+    const wrongFlow = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'entered',
+        flow: 'first_install',
+        outcome: 'reached-signin',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(wrongFlow).not.toHaveProperty('outcome');
+
+    const unknown = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'free-form failure text',
+      } as never,
+    });
+    expect(unknown).not.toHaveProperty('outcome');
+  });
+
   it('emits setup transitions immediately, before a consent choice exists', async () => {
     const telemetry = createOnboardingStepTelemetry({
       storage,
@@ -606,6 +690,20 @@ describe('onboarding step telemetry', () => {
     await first.flush();
     expect(emitted).toHaveLength(1);
     expect(emitted[0]?.properties.flow).toBe('first_launch');
+  });
+
+  it('uses the install attempt id only on the reach receipt without changing shared session identity', async () => {
+    const sharedSessionId = '11111111-1111-4111-8111-111111111111';
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    const telemetry = createTelemetry({ newSessionId: () => sharedSessionId });
+
+    expect(telemetry.recordFirstLaunch('reached-signin', installAttemptId)).toBe(true);
+    expect(telemetry.sessionId).toBe(sharedSessionId);
+    await telemetry.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.sessionId).toBe(installAttemptId);
+    expect(emitted[0]?.properties.outcome).toBe('reached-signin');
   });
 
   it('buffers a pre-auth operational event and flushes it after authentication', async () => {

@@ -26,6 +26,8 @@
   } from "./core-popover-model.js";
   import { packDisplayName } from "./pack-display-name.js";
   import { type AdapterResult } from "../settings/update-orchestration.js";
+  import { FIRST_WEEK_RETURN_NUDGE_FLAG, POST_READY_ACTION_EVENT } from "@hq/platform";
+  import { eligibleReturnNudgeDay, markReturnNudgeShown } from "./return-nudge.js";
   import {
     appRowActions,
     appRowIdleHint,
@@ -163,6 +165,8 @@
   let updatesUnavailable = $state(false);
   let disposed = false;
   let loadGeneration = 0;
+  let returnNudge = $state<{ companyUid: string; slug?: string; dayIndex: number } | null>(null);
+  let returnNudgeBusy = $state(false);
   /** Fixture conflict timestamp for "· Nm ago" header. */
   const fixtureConflictAt = Date.now() - 3 * 60_000;
 
@@ -384,6 +388,77 @@
     }
   }
 
+  function reportReturnNudge(value: "shown" | "clicked" | "dismissed", companyUid: string): void {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent(POST_READY_ACTION_EVENT, {
+      detail: { action: "start_sync", companyUid, returnNudge: value },
+    }));
+  }
+
+  async function refreshReturnNudge(): Promise<void> {
+    if (useFixtures || adapter.kind !== "desktop" || !workspaces?.length) return;
+    try {
+      const flag = await adapter.identity.hasFeature(FIRST_WEEK_RETURN_NUDGE_FLAG);
+      if (!flag.ok || flag.value !== true || disposed) return;
+      for (const workspace of workspaces) {
+        const companyUid = typeof workspace.cloudUid === "string"
+          ? workspace.cloudUid
+          : typeof workspace.uid === "string"
+            ? workspace.uid
+            : typeof workspace.companyUid === "string" ? workspace.companyUid : "";
+        if (!/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) continue;
+        const result = await adapter.company.getFirstWeekReturnNudge(companyUid);
+        if (!result.ok || disposed) continue;
+        const dayIndex = eligibleReturnNudgeDay(result.value);
+        if (dayIndex === null) continue;
+        let storage: Storage;
+        try {
+          storage = window.localStorage;
+        } catch {
+          return;
+        }
+        const todayUtcDate = new Date().toISOString().slice(0, 10);
+        if (!markReturnNudgeShown(storage, companyUid, todayUtcDate)) continue;
+        returnNudge = {
+          companyUid,
+          ...(typeof workspace.slug === "string" ? { slug: workspace.slug } : {}),
+          dayIndex,
+        };
+        reportReturnNudge("shown", companyUid);
+        return;
+      }
+    } catch (error) {
+      console.warn("core-popover: return nudge lookup failed", {
+        errorClass: error instanceof Error ? error.name : "unknown",
+      });
+    }
+  }
+
+  async function runReturnNudgeSync(): Promise<void> {
+    const nudge = returnNudge;
+    if (!nudge) return;
+    returnNudgeBusy = true;
+    reportReturnNudge("clicked", nudge.companyUid);
+    try {
+      const result = await adapter.sync.startSync(nudge.slug);
+      if (!result.ok) {
+        console.error("core-popover: return nudge sync failed", result.code ?? result.reason);
+      } else {
+        returnNudge = null;
+      }
+    } catch (error) {
+      console.error("core-popover: return nudge sync failed", error instanceof Error ? error.name : "unknown");
+    } finally {
+      returnNudgeBusy = false;
+    }
+  }
+
+  function dismissReturnNudge(): void {
+    const nudge = returnNudge;
+    returnNudge = null;
+    if (nudge) reportReturnNudge("dismissed", nudge.companyUid);
+  }
+
   async function handleRestore(): Promise<void> {
     if (coreRestoring || !storeCore) return;
     coreRestoring = true;
@@ -453,7 +528,10 @@
     disposed = false;
     // D-08 visual-QA state is fully fixture-driven: skip every adapter call so
     // the designed popover stays ZERO-NETWORK.
-    if (!useFixtures) void refresh();
+    if (!useFixtures) {
+      void refresh();
+      void refreshReturnNudge();
+    }
     return () => {
       disposed = true;
       loadGeneration += 1;
@@ -485,6 +563,17 @@
       <span class="core-status-caption" data-testid="core-popover-sync-caption">
         {model.syncHeader.caption}
       </span>
+    {/if}
+    {#if returnNudge}
+      <span class="core-return-nudge" data-testid="core-popover-return-nudge">
+        Run a sync today to keep your company up to date.
+      </span>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}>
+        {returnNudgeBusy ? "Starting sync…" : "Sync now"}
+      </button>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}>
+        Dismiss
+      </button>
     {/if}
   </header>
 

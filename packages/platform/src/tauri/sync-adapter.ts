@@ -36,6 +36,7 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -222,6 +223,10 @@ export function createSyncPlatformAdapter(
     }
     if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
       // Missing or unreadable registry data leaves the new join-key behavior off.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === FIRST_LAUNCH_SIGNIN_REACH_FLAG) {
+      // Reach measurement is opt-in; missing or unreadable registry data stays off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
@@ -1129,6 +1134,8 @@ export function createSyncPlatformAdapter(
       getSummary: (slug) => call('get_company_summary', { slug }),
       getBoard: (slug) => call('get_company_board', { slug }),
       getActivity: (slug) => call('get_company_activity', { slug }),
+      getFirstWeekReturnNudge: (companyUid) =>
+        hqProJson('GET', WEB_PATHS.firstWeekReturnNudge(companyUid)),
       ensureHomeChannel: async (companyUid) => {
         const res = await call<string>('ensure_company_home_channel', {
           companyUid,

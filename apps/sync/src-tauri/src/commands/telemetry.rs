@@ -1191,6 +1191,13 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
     {
         out.insert("action".to_string(), Value::String(action.to_string()));
     }
+    if let Some(return_nudge) = input
+        .get("returnNudge")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "shown" | "clicked" | "dismissed"))
+    {
+        out.insert("returnNudge".to_string(), Value::String(return_nudge.to_string()));
+    }
     Value::Object(out)
 }
 
@@ -3067,6 +3074,22 @@ mod codex_telemetry_tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn post_ready_return_nudge_outcome_is_bounded() {
+        let shown = sanitize_post_ready_action_properties(Some(json!({
+            "action": "start_sync",
+            "returnNudge": "shown",
+        })));
+        assert_eq!(shown["returnNudge"], "shown");
+        for value in ["free text", "opened", "clicked elsewhere"] {
+            let sanitized = sanitize_post_ready_action_properties(Some(json!({
+                "action": "start_sync",
+                "returnNudge": value,
+            })));
+            assert!(sanitized.get("returnNudge").is_none(), "{value}");
+        }
+    }
 
     #[test]
     fn company_step_route_row_keeps_decision_counts_and_lifts_company_uid() {
