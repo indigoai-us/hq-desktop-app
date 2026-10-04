@@ -471,6 +471,7 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{title}</title>
 <style>
   html, body {{ margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; color: #fff;
@@ -478,7 +479,7 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
   .bg {{ position: fixed; inset: 0; background: #000 url("{dusk}") center 60%/cover no-repeat; }}
   .frame {{ position: relative; z-index: 1; min-height: 100%; display: flex; justify-content: center;
     align-items: center; padding: 48px 16px; }}
-  .col {{ width: 100%; max-width: 420px; }}
+  .col {{ width: 100%; max-width: 420px; min-width: 0; }}
   .mark {{ display: block; height: 26px; width: auto; margin: 0 0 24px; }}
   .card {{ position: relative; padding: 32px; box-sizing: border-box;
     border: 1px solid rgba(255,255,255,.10); background: rgba(9,9,11,.60);
@@ -1477,6 +1478,8 @@ mod tests {
         assert!(html.contains("data:image/jpeg;base64,"));
         assert!(html.contains("rgba(9,9,11,.60)"));
         assert!(html.contains("max-width: 420px"));
+        assert!(html.contains("min-width: 0"));
+        assert!(html.contains(r#"name="viewport""#));
         assert!(html.contains("align-items: center"));
         assert!(html.contains("padding: 32px"));
         assert!(!html.contains("min-height: 420px"));
