@@ -7,9 +7,10 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
 
+- Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
 - Rsync failure reports now include fixed categories for the exit status and sync phase.
-
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04

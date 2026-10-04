@@ -144,11 +144,13 @@ describe("DesktopApp direct message with a bot", () => {
 
 /**
  * B-1: only the app's own requests are left out of a bot conversation, and
- * nothing is left out anywhere else. The app's requests open with
+ * an explicit agent-lane row is left out in a human-only view. The app's requests open with
  * "Automatic message from HQ:". A row is one of them when it is tagged for
  * the bot (`audience: "agent"`), or, for a stored copy with no tag, when the
- * signed-in person sent it. A bot's own row is never hidden, and no row is
- * hidden in a channel or in a conversation between two people.
+ * signed-in person sent it. A bot's own row is never an app request.
+ * Human-only visibility separately hides explicit agent-only rows while an
+ * untagged row remains human-visible in a channel or in a conversation
+ * between two people.
  */
 describe("DesktopApp: which rows opening with the app's words are hidden", () => {
   const LEAD = "Automatic message from HQ:";
@@ -242,7 +244,7 @@ describe("DesktopApp: which rows opening with the app's words are hidden", () =>
     expect(text).not.toContain("your setup has just finished");
   });
 
-  it("shows every row in a conversation between two people, whoever sent it", async () => {
+  it("keeps an untagged direct message and hides an explicit agent-lane message", async () => {
     const text = await mountRows({
       target: PERSON_DM,
       shows: "Hello there",
@@ -253,10 +255,10 @@ describe("DesktopApp: which rows opening with the app's words are hidden", () =>
       ],
     });
     expect(text).toContain(`${LEAD} I typed this myself`);
-    expect(text).toContain(`${LEAD} and Hassaan typed this`);
+    expect(text).not.toContain(`${LEAD} and Hassaan typed this`);
   });
 
-  it("shows every row in a channel, whoever sent it", async () => {
+  it("keeps an untagged agt_ channel message and hides an explicit agent-lane message", async () => {
     const text = await mountRows({
       target: CHANNEL,
       shows: "Morning all",
@@ -268,7 +270,7 @@ describe("DesktopApp: which rows opening with the app's words are hidden", () =>
       ],
     });
     expect(text).toContain(`${LEAD} a bot wrote this in the channel`);
-    expect(text).toContain(`${LEAD} a teammate wrote this`);
+    expect(text).not.toContain(`${LEAD} a teammate wrote this`);
     expect(text).toContain(`${LEAD} I wrote this`);
   });
 });
