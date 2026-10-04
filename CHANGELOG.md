@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Rsync failure reports now include fixed categories for the exit status and sync phase.
+
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04
