@@ -212,6 +212,7 @@
     type RemoveBotRequest,
   } from "./create-bot/cancel-model.js";
   import { createDraftSignature, releaseCreateKey, takeCreateKey } from "./create-bot/create-key.js";
+  import { withoutHiddenRequestHits } from "./create-bot/hidden-request-hits.js";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -2494,7 +2495,12 @@
             limit: 50,
           });
           if (seq !== messageSearchSeq) return;
-          messageSearchHits = Array.isArray(resp?.results) ? resp.results : [];
+          // The requests the app writes to a bot are not for the person, and
+          // the server's search returns them like any message (review B-3).
+          messageSearchHits = withoutHiddenRequestHits(
+            Array.isArray(resp?.results) ? resp.results : [],
+            self?.uid,
+          );
         } catch (err) {
           if (seq !== messageSearchSeq) return;
           messageSearchHits = [];
