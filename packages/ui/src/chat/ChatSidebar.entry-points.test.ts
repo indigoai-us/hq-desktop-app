@@ -1251,7 +1251,7 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
       await settle(10);
     }
     // No bot was made in Indigo, the company the person was not looking at.
-    expect(oncreatenewbot.mock.calls.map((call) => call[0])).toEqual([]);
+    expect((oncreatenewbot.mock.calls as unknown[][]).map((call) => call[0])).toEqual([]);
 
     // What opened is the "+" window's own flow, as on main.
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();

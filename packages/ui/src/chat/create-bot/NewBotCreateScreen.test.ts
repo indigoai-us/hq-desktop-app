@@ -824,43 +824,26 @@ describe("NewBotCreateScreen: which company the bot is created in (review G-1)",
 
 describe("NewBotCreateScreen: a create that is being looked for (review G-2)", () => {
   it("says it is checking, and offers no Create bot, while the host looks for the bot", async () => {
-    let finish!: (result: { ok: false; blocked: false; reason: string }) => void;
-    const oncreate = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    host = document.createElement("div");
-    document.body.appendChild(host);
-    const props = { checking: false };
-    component = mount(NewBotCreateScreen, {
-      target: host,
-      props: {
-        companies: [{ companyUid: "cmp_current", label: "Current company" }],
-        runtimeReady: { codex: true },
-        loadProvisionOptions: async () => ({ ok: true as const, value: options }),
-        oncreate,
-        oncomplete: vi.fn(),
-        get checking() { return props.checking; },
-      },
-    });
+    type Refusal = { ok: false; blocked: false; reason: string };
+    let finish!: (result: Refusal) => void;
+    const oncreate = vi.fn(() => new Promise<Refusal>((resolve) => { finish = resolve; }));
+    const status = (): HTMLElement | null => document.querySelector("[data-testid='new-bot-creating-status']");
+    const one = { companies: [{ companyUid: "cmp_current", label: "Current company" }], oncreate };
+
+    // The create is out: the usual line.
+    render(one);
     await settle();
     await advanceName();
     document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
     await settle();
-    const status = (): HTMLElement | null => document.querySelector("[data-testid='new-bot-creating-status']");
     expect(status()?.textContent?.trim()).toBe("Getting things ready.");
     expect(status()?.getAttribute("data-state")).toBe("creating");
 
+    // The same, with the host looking for the bot.
     if (component) await unmount(component);
-    props.checking = true;
-    component = mount(NewBotCreateScreen, {
-      target: host,
-      props: {
-        companies: [{ companyUid: "cmp_current", label: "Current company" }],
-        runtimeReady: { codex: true },
-        loadProvisionOptions: async () => ({ ok: true as const, value: options }),
-        oncreate,
-        oncomplete: vi.fn(),
-        checking: true,
-      },
-    });
+    component = null;
+    host.remove();
+    render({ ...one, checking: true });
     await settle();
     await advanceName();
     document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
