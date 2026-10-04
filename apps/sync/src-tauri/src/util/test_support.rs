@@ -2,15 +2,58 @@
 //
 // Both `util::journal::tests` and `commands::first_push::tests` mutate HQ_STATE_DIR.
 // A single mutex here ensures they serialize even when cargo runs tests in parallel.
+// The same guard holds the package-use state lock so a home swap cannot delete the
+// directory another test is using to publish an HQ CLI update lease. A publisher
+// borrows that lock when the home snapshot is unchanged, so a test can hold this
+// guard and still publish from a spawned task.
 use std::ffi::OsString;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use tempfile::TempDir;
 
-pub(crate) static ENV_MUTEX: Mutex<()> = Mutex::new(());
+pub(crate) struct EnvMutex {
+    inner: Mutex<()>,
+}
+
+pub(crate) static ENV_MUTEX: EnvMutex = EnvMutex {
+    inner: Mutex::new(()),
+};
+
+pub(crate) struct EnvGuard<'a> {
+    _env: MutexGuard<'a, ()>,
+    _lease: hq_desktop_core::package_use_lease::PackageUseStateGuard,
+}
+
+pub(crate) struct EnvPoisonError<'a> {
+    guard: EnvGuard<'a>,
+}
+
+impl<'a> EnvPoisonError<'a> {
+    pub(crate) fn into_inner(self) -> EnvGuard<'a> {
+        self.guard
+    }
+}
+
+impl EnvMutex {
+    pub(crate) fn lock(&self) -> Result<EnvGuard<'_>, EnvPoisonError<'_>> {
+        match self.inner.lock() {
+            Ok(env) => Ok(EnvGuard {
+                _env: env,
+                _lease: hq_desktop_core::package_use_lease::lock_package_use_state(),
+            }),
+            Err(poisoned) => Err(EnvPoisonError {
+                guard: EnvGuard {
+                    _env: poisoned.into_inner(),
+                    _lease: hq_desktop_core::package_use_lease::lock_package_use_state(),
+                },
+            }),
+        }
+    }
+}
 
 pub(crate) struct ScopedHome {
     previous: Vec<(&'static str, Option<OsString>)>,
+    _lease: hq_desktop_core::package_use_lease::PackageUseStateGuard,
 }
 
 impl Drop for ScopedHome {
@@ -27,6 +70,9 @@ impl Drop for ScopedHome {
 /// Point every supported home-directory convention at a temporary test home.
 /// `dirs::home_dir()` uses USERPROFILE on Windows and HOME on Unix.
 pub(crate) fn scoped_home(path: &Path) -> ScopedHome {
+    // Lock first, then publish the temporary home, so a lease publisher waits
+    // until this guard restores the previous values.
+    let lease = hq_desktop_core::package_use_lease::lock_package_use_state();
     let names = ["HOME", "USERPROFILE", "HQ_TEST_HOME"];
     let previous = names
         .into_iter()
@@ -36,7 +82,10 @@ pub(crate) fn scoped_home(path: &Path) -> ScopedHome {
             (name, old)
         })
         .collect();
-    ScopedHome { previous }
+    ScopedHome {
+        previous,
+        _lease: lease,
+    }
 }
 
 /// Write a healthy managed Git fixture at the same path used by the installer.

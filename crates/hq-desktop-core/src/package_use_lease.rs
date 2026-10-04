@@ -5,9 +5,14 @@
 //! marker, then waits for each recorded PID/start-time pair to exit. Stale
 //! records are removed only while the caller holds the desktop updater lock.
 
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::thread::ThreadId;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -296,6 +301,214 @@ pub fn package_use_lease_paths(prefix: &Path) -> Result<PackageUseLeasePaths, St
     lease_paths(prefix, &state_directory)
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct EnvSnapshot {
+    home: Option<OsString>,
+    userprofile: Option<OsString>,
+    xdg_state_home: Option<OsString>,
+}
+
+impl EnvSnapshot {
+    fn capture() -> Self {
+        Self {
+            home: std::env::var_os("HOME"),
+            userprofile: std::env::var_os("USERPROFILE"),
+            xdg_state_home: std::env::var_os("XDG_STATE_HOME"),
+        }
+    }
+}
+
+/// In-process exclusion between a home swap and a lease publish.
+///
+/// The mutex is held only while updating this record. The home owner and the
+/// active publish count stay set after the mutex is released, for as long as
+/// the corresponding guard is alive.
+struct LeaseGate {
+    home_owner: Option<ThreadId>,
+    home_depth: u32,
+    snapshot: EnvSnapshot,
+    /// Reentrant publishes on the home-owner thread.
+    publishing: u32,
+    active_publishes: u32,
+}
+
+static LEASE_STATE: Mutex<LeaseGate> = Mutex::new(LeaseGate {
+    home_owner: None,
+    home_depth: 0,
+    snapshot: EnvSnapshot {
+        home: None,
+        userprofile: None,
+        xdg_state_home: None,
+    },
+    publishing: 0,
+    active_publishes: 0,
+});
+static LEASE_CV: Condvar = Condvar::new();
+static LEASE_STATE_WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+static TEST_DELETE_BEFORE_RENAME: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn lock_lease_state() -> MutexGuard<'static, LeaseGate> {
+    LEASE_STATE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+/// Holds the in-process package-use state lock.
+///
+/// Desktop tests swap the process-global home while another test publishes a
+/// lease into that directory, then delete the directory. The publish and the
+/// home swap share this lock so the rename cannot observe a directory that
+/// disappeared underneath it. The snapshot is taken when the lock is first
+/// acquired, before the caller changes the home.
+pub struct PackageUseStateGuard {
+    release: bool,
+    _thread: PhantomData<*const ()>,
+}
+
+/// Serialize lease publication with process-global home changes.
+pub fn lock_package_use_state() -> PackageUseStateGuard {
+    let current = std::thread::current().id();
+    let mut state = lock_lease_state();
+    loop {
+        if state.home_owner == Some(current) {
+            state.home_depth = state.home_depth.saturating_add(1);
+            return PackageUseStateGuard {
+                release: true,
+                _thread: PhantomData,
+            };
+        }
+        if state.home_owner.is_none() && state.active_publishes == 0 {
+            state.home_owner = Some(current);
+            state.home_depth = 1;
+            state.snapshot = EnvSnapshot::capture();
+            state.publishing = 0;
+            return PackageUseStateGuard {
+                release: true,
+                _thread: PhantomData,
+            };
+        }
+        state = LEASE_CV
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
+    }
+}
+
+impl Drop for PackageUseStateGuard {
+    fn drop(&mut self) {
+        if !self.release {
+            return;
+        }
+        self.release = false;
+        let mut state = lock_lease_state();
+        state.home_depth = state.home_depth.saturating_sub(1);
+        if state.home_depth == 0 {
+            state.home_owner = None;
+            state.publishing = 0;
+            LEASE_CV.notify_all();
+        }
+    }
+}
+
+enum PublishKind {
+    /// Caller already holds the home lock on this thread.
+    Reentrant,
+    /// Exclusive publish. The home owner may still be set when the snapshot
+    /// was unchanged and this publish borrowed that stable window.
+    Exclusive,
+}
+
+struct PublishHold {
+    kind: PublishKind,
+    _thread: PhantomData<*const ()>,
+}
+
+impl Drop for PublishHold {
+    fn drop(&mut self) {
+        let mut state = lock_lease_state();
+        match self.kind {
+            PublishKind::Reentrant => {
+                state.publishing = state.publishing.saturating_sub(1);
+            }
+            PublishKind::Exclusive => {
+                state.active_publishes = state.active_publishes.saturating_sub(1);
+            }
+        }
+        LEASE_CV.notify_all();
+    }
+}
+
+/// Take the publish lock.
+///
+/// The thread that already holds `lock_package_use_state` re-enters. Another
+/// thread waits while that holder has changed the home snapshot, which is the
+/// window where the holder may delete the directory. A holder that has not
+/// changed the home lets this publish run immediately. Tests that keep the env
+/// lock only so the home stays stable, then publish from a spawned task, would
+/// deadlock if every publish waited the holder out.
+fn acquire_publish_hold() -> PublishHold {
+    let current = std::thread::current().id();
+    let mut state = lock_lease_state();
+    loop {
+        if state.home_owner == Some(current) && state.active_publishes == 0 {
+            state.publishing = state.publishing.saturating_add(1);
+            return PublishHold {
+                kind: PublishKind::Reentrant,
+                _thread: PhantomData,
+            };
+        }
+        let owner_kept_home = state.home_owner.is_some()
+            && state.home_owner != Some(current)
+            && state.publishing == 0
+            && state.snapshot == EnvSnapshot::capture();
+        if state.active_publishes == 0 && (state.home_owner.is_none() || owner_kept_home) {
+            state.active_publishes = 1;
+            return PublishHold {
+                kind: PublishKind::Exclusive,
+                _thread: PhantomData,
+            };
+        }
+        LEASE_STATE_WAITERS.fetch_add(1, Ordering::SeqCst);
+        state = LEASE_CV
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
+        LEASE_STATE_WAITERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn error_is_missing_directory(error: &str) -> bool {
+    error.contains("(os-error-2)")
+        && (error.starts_with("Could not publish the HQ CLI update lease")
+            || error.starts_with("Could not prepare the HQ CLI update lease")
+            || error.starts_with("Could not create the HQ CLI update lease"))
+}
+
+fn publish_with_directory_retry<T>(
+    mut attempt: impl FnMut() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut last_error = String::new();
+    for _ in 0..4 {
+        match attempt() {
+            Err(error) if error_is_missing_directory(&error) => last_error = error,
+            other => return other,
+        }
+    }
+    Err(last_error)
+}
+
+#[cfg(test)]
+fn before_lease_rename(parent: &Path) {
+    let mut slot = TEST_DELETE_BEFORE_RENAME
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if slot.as_ref().is_some_and(|path| path == parent) {
+        let path = slot.take().expect("hook path");
+        drop(slot);
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
 fn create_lease_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -349,6 +562,8 @@ fn atomic_write(path: &Path, body: &[u8]) -> Result<(), String> {
         ));
     }
     drop(file);
+    #[cfg(test)]
+    before_lease_rename(parent);
     if path.exists() {
         let _ = fs::remove_file(&temp);
         return Err("Another HQ CLI update request is already present".to_string());
@@ -381,6 +596,11 @@ pub struct PackageUseCliGuard {
 
 impl PackageUseCliGuard {
     pub fn acquire(prefix: &Path) -> Result<Self, String> {
+        publish_with_directory_retry(|| Self::acquire_once(prefix))
+    }
+
+    fn acquire_once(prefix: &Path) -> Result<Self, String> {
+        let _hold = acquire_publish_hold();
         let paths = package_use_lease_paths(prefix)?;
         let record = LeaseRecord {
             pid: std::process::id(),
@@ -415,6 +635,11 @@ impl Drop for PackageUseCliGuard {
 
 impl PackageUseUpdateRequest {
     pub fn begin(prefix: &Path) -> Result<Self, String> {
+        publish_with_directory_retry(|| Self::begin_once(prefix))
+    }
+
+    fn begin_once(prefix: &Path) -> Result<Self, String> {
+        let _hold = acquire_publish_hold();
         let paths = package_use_lease_paths(prefix)?;
         match fs::read(&paths.update_request_path) {
             Ok(bytes) => {
@@ -1028,5 +1253,138 @@ mod tests {
             actual.to_string_lossy().replace('\\', "/"),
             r"C:/Users/me/AppData/Local/hq-cli/state/package-use"
         );
+    }
+
+    /// The three publish tests below swap `XDG_STATE_HOME` for the process.
+    static ENV_ISOLATION: Mutex<()> = Mutex::new(());
+
+    struct RestoreEnv {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl RestoreEnv {
+        fn new(name: &'static str) -> Self {
+            Self {
+                previous: std::env::var_os(name),
+                name,
+            }
+        }
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn lease_state_publish_waits_while_the_state_directory_is_replaced() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+        use std::time::Instant;
+
+        let _isolate = ENV_ISOLATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnv::new("XDG_STATE_HOME");
+        let stable = tempdir().unwrap();
+        let poisoned = tempdir().unwrap();
+        let prefix = stable.path().join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+
+        let hold = lock_package_use_state();
+        std::env::set_var("XDG_STATE_HOME", poisoned.path());
+        let (tx, rx) = mpsc::channel();
+        let finished = std::sync::Arc::new(AtomicBool::new(false));
+        let finished_thread = std::sync::Arc::clone(&finished);
+        let prefix_thread = prefix.clone();
+        std::thread::spawn(move || {
+            let result = PackageUseUpdateRequest::begin(&prefix_thread).map(|_| ());
+            finished_thread.store(true, Ordering::SeqCst);
+            let _ = tx.send(result);
+        });
+
+        let started = Instant::now();
+        while LEASE_STATE_WAITERS.load(Ordering::SeqCst) == 0 {
+            assert!(
+                !finished.load(Ordering::SeqCst),
+                "begin finished without waiting for the replaced state directory"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "begin did not wait on the package-use state lock"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "begin published while the state directory was still being replaced"
+        );
+
+        fs::remove_dir_all(poisoned.path()).unwrap();
+        std::env::set_var("XDG_STATE_HOME", stable.path());
+        drop(hold);
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("begin did not resume after the state directory was restored");
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn lease_state_publish_proceeds_when_the_holder_did_not_change_home() {
+        use std::sync::mpsc;
+
+        let _isolate = ENV_ISOLATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnv::new("XDG_STATE_HOME");
+        let stable = tempdir().unwrap();
+        let prefix = stable.path().join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        std::env::set_var("XDG_STATE_HOME", stable.path());
+        let hold = lock_package_use_state();
+
+        let (tx, rx) = mpsc::channel();
+        let prefix_thread = prefix.clone();
+        std::thread::spawn(move || {
+            let result = PackageUseUpdateRequest::begin(&prefix_thread).map(|_| ());
+            let _ = tx.send(result);
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("begin blocked even though the holder did not change the home snapshot");
+        drop(hold);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn lease_state_publish_retries_when_the_directory_disappears_before_rename() {
+        let _isolate = ENV_ISOLATION
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _restore = RestoreEnv::new("XDG_STATE_HOME");
+        let stable = tempdir().unwrap();
+        let prefix = stable.path().join("prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        std::env::set_var("XDG_STATE_HOME", stable.path());
+        let paths = package_use_lease_paths(&prefix).unwrap();
+        *TEST_DELETE_BEFORE_RENAME
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(paths.lease_directory);
+
+        let result = PackageUseUpdateRequest::begin(&prefix);
+
+        result
+            .map(|_| ())
+            .expect("publish must recreate a directory that disappeared before rename");
     }
 }
