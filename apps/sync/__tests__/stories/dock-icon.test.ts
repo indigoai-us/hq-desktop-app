@@ -137,7 +137,7 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
       const body = setup.slice(0, setup.indexOf('\n}\n'));
-      expect(body).toMatch(/probe_local_toolchain_for_startup\([\s\S]*?launch_agent_relaunch/);
+      expect(body).toMatch(/let from_updater_restart = [\s\S]*?startup_is_updater_restart\([\s\S]*?launch_agent_relaunch,\s*marker_matches,\s*\)[\s\S]*?probe_local_toolchain_for_startup\(\s*from_updater_restart\s*,/);
       expect(body).toMatch(
         /tools_present_for_lifecycle_gate\([\s\S]*?hq_program\.kind[\s\S]*?node_program\.kind[\s\S]*?\)/,
       );
