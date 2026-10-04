@@ -489,6 +489,29 @@ export function wakingStatusLine(
   return `${lead} ${minutes > 1 ? `About ${minutes} minutes left.` : "About a minute left."}`;
 }
 
+/**
+ * The session as it should be when the person opens it again.
+ *
+ * A screen that stopped because the app's own sign-in had ended says "Sign
+ * in again, then open {name} from the list". Opening it must then do what
+ * that says: the screen waits again and reads the bot's status. Nothing
+ * else about the bot is forgotten: how long it has been starting, whether
+ * its brain is signed in, whether it was asked for its first message. A
+ * session that stopped for any other reason, or did not stop, is returned
+ * as it is.
+ */
+export function reopenWakingSession(session: WakingBotSession, now: number = Date.now()): WakingBotSession {
+  if (session.phase !== "stopped" || session.stopped !== "signed-out") return session;
+  const waiting: WakingBotSession = {
+    ...session,
+    phase: "waking",
+    stopped: null,
+    stopSignals: 0,
+    consecutiveCheckFailures: 0,
+  };
+  return { ...waiting, progress: stageProgress(waiting, now) };
+}
+
 /** Resume polling the same agent after the server accepts a retry request. */
 export function resumeWakingSession(
   session: WakingBotSession,

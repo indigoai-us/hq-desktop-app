@@ -8,6 +8,7 @@ import {
   recordWakingCheckFailure,
   recordWakingHello,
   recordWakingHelloAsked,
+  reopenWakingSession,
   resumeWakingSession,
   SIGN_IN_CONFIRM_LATE_MS,
   SIGN_IN_CONFIRM_SLOW_MS,
@@ -294,6 +295,44 @@ describe("waking model", () => {
       expect(wakingBotGone({ phase: "stopped", stopped: "signed-out" })).toBe(false);
       expect(wakingBotGone({ phase: "stopped", stopped: "no-access" })).toBe(true);
       expect(wakingBotGone({ phase: "waking", stopped: null })).toBe(false);
+    });
+
+    it("waits again when a screen that stopped for a signed-out app is opened (review item 4)", () => {
+      const stopped = {
+        ...session(),
+        phase: "stopped" as const,
+        stopped: "signed-out" as const,
+        stopSignals: 2,
+        consecutiveCheckFailures: 2,
+        signedInAt: STARTED + 30_000,
+        helloAskedAt: STARTED + 40_000,
+        chatReadyAt: STARTED + 40_000,
+      };
+      const reopened = reopenWakingSession(stopped, STARTED + 60_000);
+      expect(reopened).toMatchObject({
+        phase: "waking",
+        stopped: null,
+        stopSignals: 0,
+        consecutiveCheckFailures: 0,
+        // What is known about the bot is kept.
+        startedAt: STARTED,
+        signedInAt: STARTED + 30_000,
+        helloAskedAt: STARTED + 40_000,
+        chatReadyAt: STARTED + 40_000,
+      });
+      // One more 401 does not stop it at once: it takes two in a row again.
+      expect(applyWakingCheckFailure(reopened, { ok: false, code: "http-401" }, STARTED + 61_000).phase).toBe("waking");
+    });
+
+    it("leaves every other session as it is when it is opened", () => {
+      for (const stop of ["removed", "removing", "no-access"] as const) {
+        const gone = { ...session(), phase: "stopped" as const, stopped: stop };
+        expect(reopenWakingSession(gone, STARTED + 60_000)).toBe(gone);
+      }
+      const waiting = session();
+      expect(reopenWakingSession(waiting, STARTED + 60_000)).toBe(waiting);
+      const failed = { ...session(), phase: "failed" as const };
+      expect(reopenWakingSession(failed, STARTED + 60_000)).toBe(failed);
     });
 
     it("starts clean again when a stopped or failed bot is retried", () => {

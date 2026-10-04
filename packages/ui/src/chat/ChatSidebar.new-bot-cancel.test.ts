@@ -1130,6 +1130,47 @@ describe("Leaving the waiting screen", () => {
   });
 });
 
+describe("A waiting screen that stopped because the app was signed out (review item 4)", () => {
+  it("waits again when the bot is opened from the list, and goes on once the sign-in is back", async () => {
+    let signedOut = true;
+    const loadAgentStatus = vi.fn(async () =>
+      signedOut
+        ? { ok: false, reason: "error", code: "http-401", status: 401, message: "Unauthorized" }
+        : { ok: true, value: { setupState: { phase: "provisioning" } } },
+    );
+    mountSidebar({ oncreatenewbot: async () => created("agt_nova"), loadAgentStatus });
+    await settle();
+    await startBot("Nova");
+
+    // Two refusals in a row stop the screen, and it says what to do.
+    await vi.waitFor(
+      () =>
+        expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain(
+          "You're signed out of HQ. Sign in again, then open Nova from the list.",
+        ),
+      { timeout: 15_000 },
+    );
+    const whileStopped = loadAgentStatus.mock.calls.length;
+    click('[data-testid="new-bot-waking-close"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+    // The bot is not gone: it keeps its row.
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeTruthy();
+
+    // The person signs in again and opens Nova from the list, as told.
+    signedOut = false;
+    click('[data-conversation-id="dm:agt_nova"]');
+    await settle();
+
+    const screen = q('[data-testid="new-bot-waking-screen"]');
+    expect(screen?.textContent).toContain("Waking up Nova");
+    expect(screen?.textContent).not.toContain("signed out");
+    // The status is read again.
+    await vi.waitFor(() => expect(loadAgentStatus.mock.calls.length).toBeGreaterThan(whileStopped));
+    expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).not.toContain("signed out");
+  }, 30_000);
+});
+
 describe("The app's shortcuts while the takeover is open (review A-C2)", () => {
   // This block replaces "A create that finishes after the takeover was closed
   // without Cancel", which asserted that a global shortcut closes the

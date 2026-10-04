@@ -53,7 +53,7 @@
     type ChatWakeBus,
   } from "./chat-api";
   import { CLOUD_BOT_NAME_TAKEN_REASON, type CloudBotDraft, type EntryPointResult } from "./lifecycle-entry-points.js";
-  import { beginWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
+  import { beginWakingSession, reopenWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
   import {
     upsertWakingSession,
     wakingSessionKey,
@@ -1637,6 +1637,15 @@
         openWakingKey = row.wakingBot
           ? row.wakingBot.agentUid || (row.channelId ? `ch:${row.channelId}` : null)
           : null;
+        // A screen that stopped because the app was signed out says to open
+        // the bot from the list. Doing so starts the wait again.
+        const held = openWakingKey
+          ? wakingBots.find((session) => wakingSessionKey(session) === openWakingKey)
+          : null;
+        if (held) {
+          const reopened = reopenWakingSession(held);
+          if (reopened !== held) changeWakingBots((sessions) => upsertWakingSession(sessions, reopened));
+        }
         newBotOpen = true;
         return;
       }
