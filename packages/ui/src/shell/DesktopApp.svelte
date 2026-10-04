@@ -76,6 +76,7 @@
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import {
+    HOST_PLACED_BLOCK_KINDS,
     messageHasConnectBlock,
     messageHasVisibleContent,
     messageMarksSetupDone,
@@ -6179,12 +6180,41 @@
     hqLog("setup-state", snapshot);
   });
 
+  /**
+   * A message that is nothing but connection cards: no words, no prompt or
+   * details, no file, and every block it draws is a `connect` block.
+   */
+  function isCardsOnlyMessage(message: ConversationMessageWire): boolean {
+    if (message.prompt?.trim() || message.details?.trim() || message.systemEvent) return false;
+    if ((message.attachments?.length ?? 0) > 0) return false;
+    const { text, rich } = richContentForMessage(message);
+    if (text.trim() || !rich) return false;
+    const drawn = rich.blocks.filter((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind));
+    return drawn.length > 0 && drawn.every((block) => block.kind === "connect");
+  }
+  /**
+   * In a one-to-one conversation with a bot where nobody draws cards (a
+   * member who may not read the bot's status, a local bot, a bot from
+   * outside), a message that is only cards has nothing in it for the person.
+   * It is left out, the way a message whose only block is of a kind the app
+   * does not know is: otherwise it is an empty row with the bot's name on
+   * it. A message with words keeps its words. Same array when nothing is
+   * left out.
+   */
+  function withoutCardsOnlyRows(rows: ConversationMessageWire[]): ConversationMessageWire[] {
+    const row = selectedRow;
+    if (!row || !timelineDisplayFor(row).inlineReplies || dmCloudBotUid) return rows;
+    const kept = rows.filter((message) => !isCardsOnlyMessage(message));
+    return kept.length === rows.length ? rows : kept;
+  }
+
   /** Chat + work-mesh activity, oldest → newest — what the channel renders. */
   const timelineWithActivity = $derived.by(() => {
+    const shown = withoutCardsOnlyRows(timeline);
     const merged =
       projectActivityRows.length > 0
-        ? mergeActivityIntoTimeline(timeline, projectActivityRows)
-        : timeline;
+        ? mergeActivityIntoTimeline(shown, projectActivityRows)
+        : shown;
     let rows = merged;
     if (selectedRow && isSetupChannel(selectedRow.channelId)) {
       const welcome = withoutCompaniesSummaryCards(

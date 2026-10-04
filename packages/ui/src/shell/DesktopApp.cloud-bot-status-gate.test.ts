@@ -68,6 +68,8 @@ const STATUS = ok({
 
 type StatusFn = (agentUid: string) => Promise<unknown>;
 
+let thread: Array<Record<string, unknown>> = THREAD;
+
 function adapter(getStatus: StatusFn, listConnections: () => Promise<unknown>): PlatformAdapter {
   return {
     kind: "web",
@@ -77,7 +79,7 @@ function adapter(getStatus: StatusFn, listConnections: () => Promise<unknown>): 
       listContacts: async () => ok({ contacts: [] }),
       listChannelMembers: async () => ok({ members: [] }),
       fetchChannel: async () => ok({ messages: [], nextCursor: null }),
-      fetchDmThread: async () => ok({ messages: THREAD }),
+      fetchDmThread: async () => ok({ messages: thread }),
       sendDm: async () => ok({ eventId: "sent_1" }),
     },
     agents: { getStatus },
@@ -95,6 +97,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 beforeEach(() => {
+  thread = THREAD;
   window.localStorage.clear();
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
 });
@@ -130,7 +133,7 @@ interface Mounted {
 }
 
 /** The DM of a bot this device has no record of: the status read is the only sign it is a cloud bot. */
-async function mountDm(getStatus: ReturnType<typeof vi.fn<StatusFn>>): Promise<Mounted> {
+async function mountDm(getStatus: ReturnType<typeof vi.fn<StatusFn>>, shows = "Here is what I can connect."): Promise<Mounted> {
   const listConnections = vi.fn(async () =>
     ok({
       companyUid: COMPANY,
@@ -154,7 +157,7 @@ async function mountDm(getStatus: ReturnType<typeof vi.fn<StatusFn>>): Promise<M
       coreFixtures: false,
     },
   });
-  await vi.waitFor(() => expect(threadText()).toContain("Here is what I can connect."));
+  await vi.waitFor(() => expect(threadText()).toContain(shows));
   await vi.waitFor(() => expect(getStatus).toHaveBeenCalled());
   await settle();
   return { getStatus, listConnections };
@@ -290,4 +293,61 @@ describe("DesktopApp: the status read that says a bot is a cloud bot", () => {
       expectNoCloudBotFeatures(m);
     });
   }
+});
+
+/**
+ * A plain member's read of a cloud bot's status is answered 404, so that
+ * member gets no cards and no chips in the bot's conversation. What the bot
+ * wrote must still read normally, and a message that was nothing but cards
+ * must not leave an empty row with the bot's name on it.
+ */
+describe("DesktopApp: a member who may not read the bot's status", () => {
+  const CONNECT = fence([{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] }]);
+  const refusedRead = () => vi.fn<StatusFn>(async () => ({ ok: false, reason: "error", code: "http-404", message: "Not found" }));
+  const messageRow = (eventId: string): HTMLElement | null =>
+    host.querySelector<HTMLElement>(`[data-testid="conversation-message"][data-event-id="${eventId}"]`);
+  const row = (eventId: string, from: string, body: string, at: string): Record<string, unknown> => ({
+    eventId,
+    fromPersonUid: from,
+    fromDisplayName: from === NOVA ? "Nova" : "Corey",
+    body,
+    createdAt: `2026-10-02T14:${at}.000Z`,
+  });
+
+  it("reads the prose of a message that also carries a connect block, with no cards and no raw block", async () => {
+    thread = [row("b2", NOVA, `Here is what I can connect.${CONNECT}`, "05:30"), row("p1", "prs_me", "What can you connect?", "05:00")];
+    const m = await mountDm(refusedRead());
+    await pass(1_000);
+    expect(messageRow("b2")?.textContent).toContain("Here is what I can connect.");
+    expect(threadText()).not.toContain("hq-block");
+    expect(threadText()).not.toContain("linear.app");
+    expectNoCloudBotFeatures(m);
+    expect(m.getStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws nothing for a message that is only a connect block: no empty row under the bot's name", async () => {
+    thread = [
+      row("b4", NOVA, "Anything else?", "07:00"),
+      row("b3", NOVA, CONNECT.trim(), "06:00"),
+      row("b2", NOVA, "Hello Corey.", "05:30"),
+      row("p1", "prs_me", "What can you connect?", "05:00"),
+    ];
+    const m = await mountDm(refusedRead(), "Anything else?");
+    await pass(1_000);
+    expect(messageRow("b2")).not.toBeNull();
+    expect(messageRow("b4")).not.toBeNull();
+    expect(messageRow("b3"), "the block-only message draws no row").toBeNull();
+    expect(threadText()).not.toContain("hq-block");
+    expectNoCloudBotFeatures(m);
+  });
+
+  it("an owner still sees that same message, as its cards", async () => {
+    thread = [
+      row("b3", NOVA, CONNECT.trim(), "06:00"),
+      row("b2", NOVA, "Hello Corey.", "05:30"),
+      row("p1", "prs_me", "What can you connect?", "05:00"),
+    ];
+    await mountDm(vi.fn<StatusFn>(async () => STATUS), "Hello Corey.");
+    await vi.waitFor(() => expect(messageRow("b3")?.querySelectorAll('[data-testid="connection-card"]').length).toBeGreaterThan(0));
+  });
 });
