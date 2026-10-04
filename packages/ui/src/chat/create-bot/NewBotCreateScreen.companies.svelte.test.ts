@@ -88,7 +88,7 @@ describe("NewBotCreateScreen: the selected company leaves the list while the scr
   function render(companies: Array<{ companyUid: string; label: string }>) {
     host = document.createElement("div");
     document.body.appendChild(host);
-    const oncreate = vi.fn(async (): Promise<EntryPointResult> => ({
+    const oncreate = vi.fn(async (_companyUid: string): Promise<EntryPointResult> => ({
       ok: true,
       target: { channelId: "chn_bot", cardId: null, cardKind: null },
     }));

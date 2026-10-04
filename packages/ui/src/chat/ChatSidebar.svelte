@@ -2094,6 +2094,8 @@
     handle: string;
     /** The key the create went out under. */
     key: string;
+    /** True when that key was kept from an earlier press with no answer. */
+    reused: boolean;
     /**
      * The bots the company had when Create bot was pressed, by id. Null when
      * that could not be read. A bot is only taken as this create's own when
@@ -2207,7 +2209,6 @@
       removalId: null as string | null,
       handle: botHandle({ name: draft.name, handle: draft.handle ?? "" }),
       key: keyed.key,
-      // Sent under a key kept from an earlier press with no answer.
       reused: keyed.reused,
       // Started before the create is sent, so it shows what was there before.
       baseline: baselineFor(keyed.key, keyed.reused, companyUid),
