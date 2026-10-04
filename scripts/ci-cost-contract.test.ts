@@ -522,7 +522,9 @@ describe("the installer gate splits its two release builds", () => {
     expect(e2e).not.toContain("dtolnay/rust-toolchain");
     expect(e2e).not.toContain("Swatinem/rust-cache");
     expect(e2e).not.toContain("cargo ");
-    expect(e2e).toContain("uses: actions/download-artifact@v4");
+    expect(e2e).toContain(
+      "uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4",
+    );
   });
 
   it("fails the required check when a build job did not succeed", () => {
@@ -543,7 +545,9 @@ describe("the installer gate splits its two release builds", () => {
     const steps = e2e.slice(e2e.indexOf("\n    steps:"));
     expect(
       steps.indexOf("Fail when an installer build job did not succeed"),
-    ).toBeLessThan(steps.indexOf("uses: actions/checkout@v4"));
+    ).toBeLessThan(
+      steps.indexOf("uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4"),
+    );
   });
 
   it("writes the fixture cargo profile only after rust-cache has keyed", () => {

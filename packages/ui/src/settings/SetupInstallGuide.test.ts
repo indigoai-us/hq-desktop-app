@@ -145,6 +145,88 @@ describe("SetupInstallGuide - tool present but not signed in", () => {
   });
 });
 
+/**
+ * Regression: a Mac with the Claude desktop app but no `claude` CLI read
+ * "Claude Code is installed. Sign in to finish." and the Sign in button failed
+ * with "Could not check sign-in", because the desktop app counted as an
+ * installed CLI. Sign-in and setup run through the CLI, so only `*_cli`
+ * (which the host also sets for a CLI a desktop app carries) counts.
+ */
+describe("SetupInstallGuide - a desktop app alone is not an installed CLI", () => {
+  const cases: Array<{
+    tool: CodingTool;
+    cli: keyof AiTools;
+    desktop: keyof AiTools;
+    install: string;
+    signIn: string;
+    name: string;
+  }> = [
+    {
+      tool: "claude",
+      cli: "claude_cli",
+      desktop: "claude_desktop",
+      install: "Install Claude",
+      signIn: "Sign in to Claude",
+      name: "Claude Code",
+    },
+    {
+      tool: "codex",
+      cli: "codex_cli",
+      desktop: "codex_desktop",
+      install: "Install Codex",
+      signIn: "Sign in to Codex",
+      name: "Codex",
+    },
+  ];
+
+  for (const c of cases) {
+    it(`${c.tool}: desktop app only offers the one-step install, not sign-in`, async () => {
+      const { oninstall, onsignin } = await render({
+        tools: { ...NO_AI_TOOLS, [c.desktop]: true, any: true },
+        preferred: c.tool,
+      });
+      const primary = q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+      expect(primary.textContent).toBe(c.install);
+      expect(lede()).not.toContain("is installed");
+      expect(lede()).toContain(`HQ can install ${c.name}`);
+
+      // One click installs, then opens sign-in by itself.
+      primary.click();
+      await vi.waitFor(() => expect(state()).toBe("done"));
+      expect(oninstall).toHaveBeenCalledWith(c.tool);
+      expect(onsignin.mock.calls[0]?.[0]).toBe(c.tool);
+      expect(oninstall.mock.invocationCallOrder[0]).toBeLessThan(
+        onsignin.mock.invocationCallOrder[0],
+      );
+    });
+
+    it(`${c.tool}: CLI present and signed out offers sign-in`, async () => {
+      const { oninstall, onsignin } = await render({
+        tools: { ...NO_AI_TOOLS, [c.cli]: true, any: true },
+        preferred: c.tool,
+      });
+      const primary = q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+      expect(primary.textContent).toBe(c.signIn);
+      expect(lede()).toContain(`${c.name} is installed`);
+      primary.click();
+      await vi.waitFor(() => expect(state()).toBe("done"));
+      expect(oninstall).not.toHaveBeenCalled();
+      expect(onsignin.mock.calls[0]?.[0]).toBe(c.tool);
+    });
+
+    it(`${c.tool}: CLI and desktop app both present offers sign-in`, async () => {
+      const { oninstall } = await render({
+        tools: { ...NO_AI_TOOLS, [c.cli]: true, [c.desktop]: true, any: true },
+        preferred: c.tool,
+      });
+      const primary = q<HTMLButtonElement>('[data-testid="setup-install-guide-primary"]')!;
+      expect(primary.textContent).toBe(c.signIn);
+      expect(lede()).toContain(`${c.name} is installed`);
+      expect(oninstall).not.toHaveBeenCalled();
+    });
+  }
+});
+
 describe("SetupInstallGuide - install fails", () => {
   it("says what happened in plain words and offers a manual download", async () => {
     const oninstall = vi.fn<(tool: CodingTool) => Promise<InstallOutcome>>(async () => ({
