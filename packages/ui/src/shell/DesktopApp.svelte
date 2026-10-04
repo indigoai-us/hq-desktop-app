@@ -4512,7 +4512,11 @@
     const row = selectedRow;
     const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
     if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
-    const decision = kickoffThinkingState(liveTimeline, uid);
+    // The setup bot's app offer holds the kickoff until the person answers:
+    // no turn is running, so no row (their "Keep going here" send starts one).
+    const decision = kickoffThinkingState(liveTimeline, uid, {
+      holdsKickoff: (message) => continueInToolForMessage(message) !== null,
+    });
     if (decision.state === "waiting") return;
     const name = kickoffPendingByUid[uid]!;
     const { [uid]: _started, ...rest } = kickoffPendingByUid;
