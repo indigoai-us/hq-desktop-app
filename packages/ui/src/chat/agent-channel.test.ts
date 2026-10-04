@@ -168,6 +168,19 @@ describe("agentChatReadiness", () => {
     expect(agentChatReadiness(null).chatReady).toBe(false);
   });
 
+  it("marks a bot that is being removed or is gone, and no other", () => {
+    expect(agentChatReadiness({ setupState: { phase: "deprovisioning" } })).toEqual({
+      chatReady: false,
+      catchingUp: false,
+      failed: false,
+      removing: true,
+    });
+    expect(agentChatReadiness({ agent: { setupPhase: "Deprovisioned" } }).removing).toBe(true);
+    for (const phase of ["provisioning", "waiting", "ready", "failed"]) {
+      expect("removing" in agentChatReadiness({ setupState: { phase } })).toBe(false);
+    }
+  });
+
   it("trusts the server's chatReady flag over the step list when the flag is present", () => {
     // Live (owner, 2026-10-03): under the chat-first order the sign-in and
     // sync steps read done while the runtime that answers was still

@@ -43,6 +43,8 @@ export function readinessReadDenied(result: unknown): boolean {
  * How long to wait before the next read (ms), or null to stop asking.
  *
  * - The setup failed, or the bot is fully ready: stop. Neither changes by itself.
+ * - The bot is being removed, or is gone: stop. Its setup will not move on,
+ *   and the server answers this way until the bot is deleted.
  * - The read was refused: stop.
  * - The bot can chat and its files are still arriving: the slow timer.
  * - The bot cannot chat yet: every 5 s.
@@ -59,7 +61,7 @@ export function nextReadinessPollMs(read: ReadinessRead, consecutiveFailures: nu
     return Math.min(AGENT_CHAT_READY_POLL_MS * 2 ** Math.min(failures, 20), AGENT_READINESS_MAX_BACKOFF_MS);
   }
   const { readiness } = read;
-  if (readiness.failed) return null;
+  if (readiness.failed || readiness.removing) return null;
   if (readiness.chatReady && !readiness.catchingUp) return null;
   return readiness.chatReady ? AGENT_CATCHING_UP_POLL_MS : AGENT_CHAT_READY_POLL_MS;
 }

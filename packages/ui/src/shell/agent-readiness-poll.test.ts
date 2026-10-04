@@ -7,6 +7,7 @@ import {
   nextReadinessPollMs,
   readinessReadDenied,
 } from "./agent-readiness-poll.js";
+import { agentChatReadiness } from "../chat/agent-channel.js";
 
 /** B-10: the readiness poll asked every 5 s for ever, whatever came back. */
 
@@ -28,6 +29,23 @@ describe("nextReadinessPollMs", () => {
   it("stops when the setup failed", () => {
     expect(nextReadinessPollMs(status(false, false, true), 0)).toBeNull();
     expect(nextReadinessPollMs(status(false, true, true), 0)).toBeNull();
+  });
+
+  it("stops for a bot that is being removed, whatever else its status says", () => {
+    // The waiting screen stops for these phases (review A-I4). This poll
+    // used to go on every 5 s until the server answered 404.
+    for (const phase of ["deprovisioning", "deprovisioned"]) {
+      const notReady = agentChatReadiness({ setupState: { phase } });
+      expect(notReady.chatReady).toBe(false);
+      expect(nextReadinessPollMs({ kind: "status", readiness: notReady }, 0)).toBeNull();
+      // It could chat before it was removed, and its files never finished arriving.
+      const wasChatting = agentChatReadiness({ agent: { runtime: {} }, setupState: { phase, chatReady: true } });
+      expect(wasChatting).toMatchObject({ chatReady: true, catchingUp: true });
+      expect(nextReadinessPollMs({ kind: "status", readiness: wasChatting }, 0)).toBeNull();
+    }
+    expect(nextReadinessPollMs({ kind: "status", readiness: { chatReady: false, catchingUp: false, failed: false, removing: true } }, 0)).toBeNull();
+    // A bot that is still setting up is asked about again.
+    expect(nextReadinessPollMs({ kind: "status", readiness: agentChatReadiness({ setupState: { phase: "provisioning" } }) }, 0)).toBe(5_000);
   });
 
   it("stops when the server refuses the read or does not know the bot", () => {

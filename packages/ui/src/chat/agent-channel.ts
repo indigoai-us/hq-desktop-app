@@ -389,6 +389,12 @@ export interface AgentChatReadiness {
   /** Chat works, but the company files are still downloading. */
   catchingUp: boolean;
   failed: boolean;
+  /**
+   * The bot is being removed, or is gone (phase `deprovisioning` or
+   * `deprovisioned`). Its setup will not move on, so nothing waits for it.
+   * Only present when true.
+   */
+  removing?: true;
 }
 
 function lowerText(value: unknown): string {
@@ -406,6 +412,7 @@ export function agentChatReadiness(payload: unknown): AgentChatReadiness {
       : null;
   const phase = lowerText(setup?.phase) || lowerText(agent?.setupPhase) || lowerText(agent?.status);
   const failed = /failed|error|blocked|cancelled/.test(phase);
+  const removing = phase === "deprovisioning" || phase === "deprovisioned";
   const fullyReady = !failed && /ready|active|complete|online/.test(phase);
   const steps = Array.isArray(setup?.steps) ? setup.steps.filter(isRecord) : null;
   const stepDone = (name: string): boolean =>
@@ -426,7 +433,7 @@ export function agentChatReadiness(payload: unknown): AgentChatReadiness {
   const chatReady = !failed && (fullyReady || (serverChatReady ?? stepsReady));
   const runtime = isRecord(agent?.runtime) ? agent.runtime : null;
   const filesDone = runtime ? typeof runtime.syncOkAt === "string" && runtime.syncOkAt.length > 0 : fullyReady;
-  return { chatReady, catchingUp: chatReady && !filesDone, failed };
+  return { chatReady, catchingUp: chatReady && !filesDone, failed, ...(removing ? { removing } : {}) };
 }
 
 // ── The cards under the hello, as the app shows them ─────────────────────
