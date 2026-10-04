@@ -473,15 +473,15 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
 <meta charset="utf-8" />
 <title>{title}</title>
 <style>
-  html, body {{ margin: 0; padding: 0; min-height: 100%; background: #000; color: #fff;
+  html, body {{ margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; color: #fff;
     font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
   .bg {{ position: fixed; inset: 0; background: #000 url("{dusk}") center 60%/cover no-repeat; }}
-  .frame {{ position: relative; z-index: 1; min-height: 100vh; display: flex; justify-content: center;
+  .frame {{ position: relative; z-index: 1; min-height: 100%; display: flex; justify-content: center;
     align-items: flex-start; padding: 88px 16px 48px; }}
   .col {{ width: 100%; max-width: 420px; }}
   .mark {{ display: block; height: 26px; width: auto; margin: 0 0 32px; }}
   .card {{ position: relative; min-height: 420px; padding: 32px; box-sizing: border-box;
-    border: 1px solid rgba(255,255,255,.10); background: rgba(9,9,11,.85);
+    border: 1px solid rgba(255,255,255,.10); background: rgba(9,9,11,.60);
     -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }}
   .tick {{ position: absolute; width: 10px; height: 10px; border-color: rgba(255,255,255,.30);
     border-style: solid; pointer-events: none; }}
@@ -490,13 +490,13 @@ fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
   .bl {{ bottom: 0; left: 0; border-width: 0 0 1px 1px; }}
   .br {{ bottom: 0; right: 0; border-width: 0 1px 1px 0; }}
   .eyebrow {{ margin: 0 0 12px; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
-    color: rgba(255,255,255,.50); }}
+    color: rgba(255,255,255,.75); }}
   .status {{ margin: 0 0 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }}
-  .ok {{ color: rgba(255,255,255,.50); }}
+  .ok {{ color: rgba(255,255,255,.75); }}
   .bad {{ color: #ff6b6b; }}
   h1 {{ margin: 0; font-size: 40px; font-weight: 400; line-height: 1.05; letter-spacing: -2.4px; }}
-  .lead {{ margin: 12px 0 0; font-size: 14px; line-height: 20px; color: rgba(255,255,255,.60); }}
+  .lead {{ margin: 12px 0 0; font-size: 14px; line-height: 20px; color: rgba(255,255,255,.80); }}
   @media (max-width: 639px) {{ h1 {{ font-size: 32px; letter-spacing: -1.6px; }} .frame {{ padding-top: 96px; }} }}
 </style>
 </head>
@@ -1474,6 +1474,7 @@ mod tests {
         assert!(html.contains(r#"data-testid="authorize-desktop-card""#));
         assert!(html.contains("HQ Desktop"));
         assert!(html.contains("data:image/jpeg;base64,"));
+        assert!(html.contains("rgba(9,9,11,.60)"));
         assert!(html.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(!html.contains("https://"));
         assert!(!html.contains("src=\"http"));
