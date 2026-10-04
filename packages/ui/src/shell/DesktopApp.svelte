@@ -11954,7 +11954,7 @@
                   onpresign={presignAttachment}
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
-                  onreply={openReply}
+                  onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}

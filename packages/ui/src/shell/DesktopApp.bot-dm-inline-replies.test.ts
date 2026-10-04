@@ -122,6 +122,24 @@ describe("DesktopApp direct message with a bot", () => {
     expect(text).not.toContain("Here now. What do you need?");
     expect(text).toMatch(/1 reply/);
   });
+
+  it("offers no 'Reply in thread' in a bot's direct message, where replies show in line (B-5)", async () => {
+    await mountDm("agt_nova");
+    expect(host.querySelectorAll('[data-testid="conversation-message"]').length).toBeGreaterThan(0);
+    expect(host.querySelectorAll('[data-testid="message-reply-quick"]')).toHaveLength(0);
+    expect(host.querySelectorAll('[data-testid="message-replies"]')).toHaveLength(0);
+    // The other message actions are still there.
+    expect(host.querySelectorAll('[data-testid="message-copy"]').length).toBeGreaterThan(0);
+  });
+
+  it("still offers 'Reply in thread' between two people, and it opens the thread", async () => {
+    await mountDm("prs_nova");
+    const replies = [...host.querySelectorAll<HTMLButtonElement>('[data-testid="message-reply-quick"]')];
+    expect(replies.length).toBeGreaterThan(0);
+    replies[0]!.click();
+    await settle();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="reply-panel"]')).not.toBeNull());
+  });
 });
 
 /**

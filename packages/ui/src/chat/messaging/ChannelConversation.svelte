@@ -173,7 +173,10 @@
      * already notified.
      */
     allowHereMention?: boolean;
-    /** Open ReplyPanel for this root eventId. */
+    /**
+     * Open ReplyPanel for this root eventId. Without it no "Reply in thread"
+     * button is drawn: the host has no threads to open here.
+     */
     onreply?: (rootEventId: string) => void;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
@@ -2184,16 +2187,22 @@
                       />
                     {/if}
                   </span>
-                  <button
-                    type="button"
-                    class="dm-quick-react-btn dm-quick-reply"
-                    data-testid="message-reply-quick"
-                    aria-label="Reply in thread"
-                    title="Reply in thread"
-                    onclick={() => openReply(msg.eventId)}
-                  >
-                    Reply
-                  </button>
+                  {#if onreply}
+                    <!-- Offered only where the host opens threads. A
+                         one-to-one conversation with a bot shows replies in
+                         line and passes no handler: a thread opened there was
+                         empty on an answer and showed a root twice. -->
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-reply"
+                      data-testid="message-reply-quick"
+                      aria-label="Reply in thread"
+                      title="Reply in thread"
+                      onclick={() => openReply(msg.eventId)}
+                    >
+                      Reply
+                    </button>
+                  {/if}
                   {#if copyableText(msg, "body")}
                     <button
                       type="button"
