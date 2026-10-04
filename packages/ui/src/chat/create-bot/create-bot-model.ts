@@ -696,6 +696,13 @@ export function provisionOptionsPriced(options: { options?: ReadonlyArray<{ sele
   );
 }
 
+/**
+ * Shown when the company selected on the New Bot screen is no longer one of
+ * the companies the screen offers. Create bot is off: nothing is sent to it.
+ */
+export const NEW_BOT_COMPANY_GONE_REASON =
+  "This company can't be used for a new bot right now. Close this screen and try again.";
+
 /** What the New Bot screen's second way out is called when it leads only to a local bot. */
 export const NEW_BOT_LOCAL_LABEL = "Create a local bot instead";
 

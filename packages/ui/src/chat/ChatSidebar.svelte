@@ -1673,6 +1673,8 @@
           const reopened = reopenWakingSession(held);
           if (reopened !== held) changeWakingBots((sessions) => upsertWakingSession(sessions, reopened));
         }
+        // The same list for as long as it is open, as "New bot" keeps it.
+        newBotCompaniesAtOpen = newBotTargets;
         newBotOpen = true;
         return;
       }

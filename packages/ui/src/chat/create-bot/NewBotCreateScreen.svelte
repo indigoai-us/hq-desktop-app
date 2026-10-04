@@ -14,6 +14,7 @@
     cloudNameIssue,
     firstSignedInCloudRuntime,
     handleIssue,
+    NEW_BOT_COMPANY_GONE_REASON,
     NEW_BOT_LOCAL_LABEL,
     newBotCheckingLine,
     newBotTargetLine,
@@ -123,9 +124,13 @@
   const selectedOption = $derived(options?.options.find((option) => option.key === selectedSize) ?? null);
   /** The size Create bot will ask for, when it can be priced. Its price is the one shown. */
   const pricedOption = $derived(selectedOption?.selectable && selectedOption.netMonthlyCents !== null ? selectedOption : null);
+  // The list can change while the screen is open. A company that left it is
+  // not one this screen may create in, so Create bot is off and says why.
+  const companyGone = $derived(!!companyUid && !companies.some((company) => company.companyUid === companyUid));
   const canSubmit = $derived(
     !busy &&
       !!companyUid &&
+      !companyGone &&
       brainChoices.includes(runtime) &&
       !!selectedOption?.selectable &&
       selectedOption.netMonthlyCents !== null &&
@@ -329,7 +334,9 @@
   <footer class="new-bot-create-foot">
     {#if attempted && nameIssue && step === 1}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{nameIssue}</p>{/if}
     {#if refusal && step === finalStep}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
-    {#if quoteProblemLine && step === finalStep}
+    {#if companyGone && step >= finalStep}
+      <p class="new-bot-create-error" role="alert" data-testid="new-bot-company-gone">{NEW_BOT_COMPANY_GONE_REASON}</p>
+    {:else if quoteProblemLine && step === finalStep}
       <!-- Create bot is off because the company's options did not load. Say
            which of the two reasons it is, and offer another try. -->
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>

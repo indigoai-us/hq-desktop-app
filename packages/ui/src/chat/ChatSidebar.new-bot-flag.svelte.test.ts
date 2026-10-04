@@ -17,6 +17,7 @@ import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
 import { takePendingChannelOpen } from "./open-target.js";
+import { resetWakingSessionStores } from "./create-bot/waking-sessions.js";
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -203,6 +204,93 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  });
+
+  it("keeps the list it started with when the takeover is opened from a bot's row (round 4, item 5)", async () => {
+    // A cancelled bot that could not be removed keeps a row. Its row opens
+    // the takeover on the create screen. That way in took no copy of the
+    // list, so a later flag read changed the companies under the person.
+    resetWakingSessionStores();
+    const removeAgent = vi.fn(async () => ({ ok: false, reason: "error", code: "http-403" }));
+    const props = $state({
+      ...BASE_PROPS,
+      api: createFixtureChatSidebarApi(),
+      seedDirectory: [],
+      companies: [{ ...INDIGO, role: "owner" }, { ...ACME, role: "owner" }] as Workspace[],
+      oncreateagent: async () => okTarget,
+      oncreatenewbot: async (): Promise<EntryPointResult> => ({
+        ok: true,
+        target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_nova" },
+      }),
+      loadAgentStatus: async () => ({ ok: true, value: { setupState: { phase: "provisioning" } } }),
+      removeAgent,
+      tenantAccountId: "acct_test",
+      botRemovalRetryMs: 0,
+      newBotCompanyUids: ["cmp_indigo", "cmp_acme"] as string[],
+    });
+    component = mount(ChatSidebar, { target: host, props });
+    await settle();
+
+    const nameBot = async (): Promise<void> => {
+      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+      name.value = "Nova";
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      click('[data-testid="new-bot-continue-name"]');
+      await settle();
+      click('[data-testid="new-bot-continue-brain"]');
+      await settle();
+    };
+    const offered = (): string[] =>
+      [...document.querySelectorAll<HTMLElement>('[data-testid="new-bot-company-grid"] [role="radio"]')].map(
+        (company) => company.dataset.companyUid ?? "",
+      );
+
+    // Make Nova, cancel it, and the removal is refused: Nova keeps a row.
+    click('[data-testid="chat-new-message"]');
+    await settle();
+    click('[data-testid="chat-create-new-bot"]');
+    await settle();
+    await nameBot();
+    await vi.waitFor(() =>
+      expect(q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.disabled).toBe(false),
+    );
+    click('[data-testid="new-bot-create-submit"]');
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy());
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    click('[data-testid="new-bot-cancel-remove"]');
+    await vi.waitFor(() => expect(removeAgent).toHaveBeenCalled());
+    await settle(12);
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
+
+    // Open the takeover from Nova's row.
+    click('[data-conversation-id="dm:agt_nova"]');
+    await settle();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+
+    // A later read says Indigo is off. The open screen keeps both companies.
+    props.newBotCompanyUids = ["cmp_acme"];
+    await settle();
+    await nameBot();
+    expect(offered()).toEqual(["cmp_indigo", "cmp_acme"]);
+
+    // Once it is closed, the next way in follows the new answer.
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    click('[data-conversation-id="dm:agt_nova"]');
+    await settle();
+    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    name.value = "Nova";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    // One company: no company step, and nothing but Acme to create in.
+    expect(q('[data-testid="new-bot-continue-brain"]')).toBeNull();
+    expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
   });
 
   it("tells the host which companies a cloud bot can be made in, on change and when the '+' modal opens", async () => {
