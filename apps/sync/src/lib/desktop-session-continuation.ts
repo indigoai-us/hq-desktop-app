@@ -141,6 +141,8 @@ export interface ContinuationDeps {
   downloadAnonId?: string | null;
 }
 
+export type FirstLaunchJoinKeyArm = 'on' | 'off' | 'unknown';
+
 /* ------------------------------------------------------------------ */
 /* Configuration                                                      */
 /* ------------------------------------------------------------------ */
@@ -344,13 +346,17 @@ export function progressReceipt(
 }
 
 /** Build the once-per-installation launch receipt. */
-export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
+export function launchReceipt(
+  deps: ContinuationDeps,
+  joinKeyArm: FirstLaunchJoinKeyArm = 'unknown',
+): ContinuationReceipt {
   const body: Record<string, string | number> = {
     installAttemptId: deps.installAttemptId,
     eventId: deps.newId(),
     occurredAt: new Date(deps.now()).toISOString(),
     platform: deps.platform,
     version: deps.appVersion,
+    joinKeyArm,
   };
   if (deps.downloadJoinEnabled === true && deps.downloadAnonId) {
     body.anonId = deps.downloadAnonId;
@@ -358,6 +364,7 @@ export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
   return {
     path: '/v1/desktop/onboarding/launch',
     body,
+  };
   };
 }
 

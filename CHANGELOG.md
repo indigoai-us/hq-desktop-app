@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
+
 - Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
