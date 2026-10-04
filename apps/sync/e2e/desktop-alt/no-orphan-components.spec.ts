@@ -48,12 +48,12 @@ describe('desktop-alt component-mount gate', () => {
       .map((f) => f.replace(/\.svelte$/, '')),
   );
 
-  // Pre-existing orphans, recorded so the gate can bite on NEW ones. These are
-  // not approved dead code: each needs deleting or mounting. MarketplacePage
-  // was already unreachable on origin/main — the live shell routes Marketplace
-  // through LibraryPage — so it is out of scope for the Sessions removal and
-  // tracked separately. The list must only ever shrink.
-  const KNOWN_ORPHANS = ['MarketplacePage'];
+  // Pre-existing orphans, recorded so the gate can bite on NEW ones. An entry
+  // is not approved dead code: mount the component or delete it, then shrink
+  // this list. MarketplacePage was the last entry. Nothing imported it except
+  // the marketplace barrel, so the component was removed and the list is empty.
+  // The list must only ever shrink.
+  const KNOWN_ORPHANS: string[] = [];
 
   it('every page/card component has at least one importer', () => {
     // A barrel re-export is NOT an importer. `export { default as X } from
