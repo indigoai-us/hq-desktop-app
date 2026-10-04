@@ -692,6 +692,20 @@ describe('onboarding step telemetry', () => {
     expect(emitted[0]?.properties.flow).toBe('first_launch');
   });
 
+  it('uses the install attempt id only on the reach receipt without changing shared session identity', async () => {
+    const sharedSessionId = '11111111-1111-4111-8111-111111111111';
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+    const telemetry = createTelemetry({ newSessionId: () => sharedSessionId });
+
+    expect(telemetry.recordFirstLaunch('reached-signin', installAttemptId)).toBe(true);
+    expect(telemetry.sessionId).toBe(sharedSessionId);
+    await telemetry.flush();
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]?.sessionId).toBe(installAttemptId);
+    expect(emitted[0]?.properties.outcome).toBe('reached-signin');
+  });
+
   it('buffers a pre-auth operational event and flushes it after authentication', async () => {
     let authenticated = false;
     const telemetry = createOnboardingStepTelemetry({

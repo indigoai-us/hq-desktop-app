@@ -1235,6 +1235,7 @@
           readNativeId: loadInstallAttemptId,
         });
         if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
+        let reachInstallAttemptId: string | null = null;
         let signInReachOutcome:
           | 'reached-signin'
           | 'existing-session-skip'
@@ -1243,9 +1244,8 @@
           | 'consent-only-skip'
           | undefined;
         if (signInReachEnabled) {
-          const reachInstallAttemptId = installAttemptId ?? await loadInstallAttemptId();
+          reachInstallAttemptId = installAttemptId ?? await loadInstallAttemptId();
           if (reachInstallAttemptId) {
-            onboardingTelemetry.setInstallAttemptId(reachInstallAttemptId);
             signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
               ? 'reached-signin'
               : mode === 'consent'
@@ -1261,11 +1261,13 @@
           !firstLaunchSignInReachOutcomeWasRecorded()
           ? signInReachOutcome
           : undefined;
+        const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId : undefined;
         const firstLaunchReceiptRecorded = context
           ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
-            onboardingTelemetry.recordFirstLaunch(receiptReachOutcome)
-          : firstLaunch && onboardingTelemetry.recordFirstLaunch(receiptReachOutcome);
-        if (signInReachOutcome) {
+            onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)
+          : firstLaunch &&
+            onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId);
+        if (signInReachOutcome && context?.suppressFirstLaunchTelemetry !== true) {
           if (firstLaunchReceiptRecorded && receiptReachOutcome) markFirstLaunchSignInReachRecorded();
           else recordFirstLaunchSignInReachOutcome(signInReachOutcome);
         }

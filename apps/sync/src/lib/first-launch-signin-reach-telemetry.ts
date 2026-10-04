@@ -1,4 +1,6 @@
 import type { DesktopTelemetryProperties } from './desktop-telemetry';
+import type { StartupSetupEvidence } from './unexpected-startup-surface';
+import { isMissingRootRecovery } from './onboarding-wizard';
 
 export const FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES = [
   'reached-signin',
@@ -23,6 +25,7 @@ export interface FirstLaunchSignInReachEvent {
 
 export interface FirstLaunchSignInReachReporterOptions {
   isFirstRun: () => Promise<boolean>;
+  isSuppressed?: () => Promise<boolean>;
   isEnabled: () => Promise<boolean>;
   getInstallAttemptId: () => Promise<string | null>;
   emit: (event: FirstLaunchSignInReachEvent) => Promise<void>;
@@ -31,6 +34,20 @@ export interface FirstLaunchSignInReachReporterOptions {
 
 const INSTALL_ATTEMPT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function startupOutcomeForLifecycle(
+  lifecycleState: string | null,
+  setupEvidence: StartupSetupEvidence | null,
+  authenticated: boolean,
+): FirstLaunchSignInReachOutcome | undefined {
+  if (!authenticated) return undefined;
+  if (isMissingRootRecovery(lifecycleState ?? '', setupEvidence)) {
+    return 'missing-root-recovery-skip';
+  }
+  if (lifecycleState === 'InstallResume') return 'setup-resume-skip';
+  if (lifecycleState === 'InstalledFirstRun') return 'consent-only-skip';
+  return 'existing-session-skip';
+}
 
 export function normalizeFirstLaunchSignInReachOutcome(
   value: unknown,
@@ -57,6 +74,7 @@ export function createFirstLaunchSignInReachReporter(
     if (ready) return ready;
     ready = (async () => {
       try {
+        if (await options.isSuppressed?.()) return null;
         const firstRun = await options.isFirstRun();
         if (!firstRun || !(await options.isEnabled())) return null;
         const installAttemptId = await options.getInstallAttemptId();

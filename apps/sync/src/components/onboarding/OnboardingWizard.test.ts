@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('svelte', async () => {
@@ -4808,5 +4809,28 @@ describe('company onboarding step', () => {
     await settle();
     expect(host.querySelector('[data-testid="onboarding-company"]')).toBeNull();
     expect(companyRows().some((row) => row.action === 'skipped')).toBe(true);
+  });
+});
+
+describe('first-launch sign-in reach stays independent from the join-key rollout', () => {
+  it('does not seed shared onboarding telemetry identity from the reach-only flag', () => {
+    const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
+    const reachBlock = source.slice(
+      source.indexOf('if (signInReachEnabled)'),
+      source.indexOf('const firstLaunchReceiptRecorded'),
+    );
+
+    expect(reachBlock).not.toContain('onboardingTelemetry.setInstallAttemptId(');
+    expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId : undefined');
+  });
+
+  it('does not use the standalone reporter when the native CI suppression marker is set', () => {
+    const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
+    const reachBlock = source.slice(
+      source.indexOf('if (signInReachOutcome && context?.suppressFirstLaunchTelemetry !== true)'),
+      source.indexOf('return { context, firstLaunchReceiptRecorded, installAttemptId }'),
+    );
+
+    expect(reachBlock).toContain('context?.suppressFirstLaunchTelemetry !== true');
   });
 });

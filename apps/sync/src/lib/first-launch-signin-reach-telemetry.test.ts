@@ -3,6 +3,7 @@ import {
   FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES,
   createFirstLaunchSignInReachReporter,
   normalizeFirstLaunchSignInReachOutcome,
+  startupOutcomeForLifecycle,
   type FirstLaunchSignInReachEvent,
 } from './first-launch-signin-reach-telemetry';
 
@@ -15,6 +16,39 @@ describe('first-launch sign-in reach telemetry', () => {
     }
     expect(normalizeFirstLaunchSignInReachOutcome('free-form error text')).toBeUndefined();
     expect(normalizeFirstLaunchSignInReachOutcome(null)).toBeUndefined();
+  });
+
+  it('does not query the flag or emit when CI suppression is set', async () => {
+    const isEnabled = vi.fn(async () => true);
+    const emit = vi.fn(async (_event: FirstLaunchSignInReachEvent) => {});
+    const reporter = createFirstLaunchSignInReachReporter({
+      isFirstRun: async () => true,
+      isSuppressed: async () => true,
+      isEnabled,
+      getInstallAttemptId: async () => INSTALL_ATTEMPT_ID,
+      emit,
+    });
+
+    reporter.record('quit');
+    await reporter.prepare();
+
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('classifies authenticated resume and recovery states before the generic session skip', () => {
+    expect(startupOutcomeForLifecycle('InstallResume', null, true)).toBe('setup-resume-skip');
+    expect(startupOutcomeForLifecycle('InstalledFirstRun', null, true)).toBe('consent-only-skip');
+    expect(startupOutcomeForLifecycle('NeedsInstall', {
+      installCompleted: true,
+      firstRunCompleted: false,
+      installInProgress: false,
+      manifestIncomplete: false,
+      hadMachineId: true,
+      hqRootValid: false,
+    }, true)).toBe('missing-root-recovery-skip');
+    expect(startupOutcomeForLifecycle('SteadyState', null, true)).toBe('existing-session-skip');
+    expect(startupOutcomeForLifecycle('NeedsAuthForInstall', null, false)).toBeUndefined();
   });
 
   it('emits the reached-signin outcome once with the existing install attempt key', async () => {

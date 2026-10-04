@@ -76,6 +76,7 @@
   import {
     createFirstLaunchSignInReachReporter,
     setFirstLaunchSignInReachReporter,
+    startupOutcomeForLifecycle,
   } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
@@ -107,6 +108,12 @@
   });
   const firstLaunchSignInReachReporter = createFirstLaunchSignInReachReporter({
     isFirstRun: () => invoke<boolean>('is_first_run'),
+    isSuppressed: async () => {
+      const context = await invoke<unknown>('desktop_continuation_context');
+      return typeof context === 'object' && context !== null &&
+        'suppressFirstLaunchTelemetry' in context &&
+        context.suppressFirstLaunchTelemetry === true;
+    },
     isEnabled: async () => {
       const result = await traySyncAdapter.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
       return result.ok && result.value === true;
@@ -2047,11 +2054,12 @@
     lifecycleState = probedLifecycle;
     startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
-    if (authenticated) {
-      firstLaunchSignInReachReporter.record(
-        lifecycleState === 'InstalledFirstRun' ? 'consent-only-skip' : 'existing-session-skip',
-      );
-    }
+    const startupReachOutcome = startupOutcomeForLifecycle(
+      lifecycleState,
+      setupEvidence ?? null,
+      authenticated,
+    );
+    if (startupReachOutcome) firstLaunchSignInReachReporter.record(startupReachOutcome);
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
       syncState = 'auth-error';
