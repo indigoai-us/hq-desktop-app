@@ -184,12 +184,18 @@
     dispatchPostReadyAction,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
+    FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
     FIRST_FOLDER_SYNC_STEP_FLAG,
     SETUP_DEPS_TIMEOUT_RETRY_FLAG,
     retryThrottled,
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
+  import {
+    firstLaunchSignInReachOutcomeWasRecorded,
+    markFirstLaunchSignInReachRecorded,
+    recordFirstLaunchSignInReachOutcome,
+  } from '../../lib/first-launch-signin-reach-telemetry';
   import {
     classifyInviteError,
     hqProErrorCode,
@@ -304,6 +310,7 @@
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
+  let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
     action: OnboardingAction;
@@ -1169,10 +1176,36 @@
     return firstLaunchJoinKeyFlagPromise;
   }
 
+  function resolveFirstLaunchSignInReachEnabled(): Promise<boolean> {
+    if (!firstLaunchSignInReachFlagPromise) {
+      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG).then(
+        (result) => {
+          if (!result.ok) {
+            console.warn('onboarding: sign-in reach flag unavailable; leaving telemetry off', result.reason, result.code);
+            return false;
+          }
+          return result.value === true;
+        },
+        (error) => {
+          console.warn('onboarding: sign-in reach flag failed; leaving telemetry off', error);
+          return false;
+        },
+      );
+      firstLaunchSignInReachFlagPromise = resolveFlagWithTimeout(flag, 2_000)
+        .then((enabled) => enabled)
+        .catch((error) => {
+          console.warn('onboarding: sign-in reach flag resolution failed; leaving telemetry off', error);
+          return false;
+        });
+    }
+    return firstLaunchSignInReachFlagPromise;
+  }
+
   function prepareOnboardingTelemetryIdentity(): Promise<{
     context: ContinuationContext | null;
     firstLaunchReceiptRecorded: boolean;
   }> {
+    const launchInitialStep = currentStep;
     if (!onboardingIdentityPromise) {
       onboardingIdentityPromise = (async () => {
         const firstLaunchPromise = invokeCommand<boolean>('is_first_run')
@@ -1186,10 +1219,14 @@
         const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
         );
-        const [firstLaunch, context, joinKeyEnabled] = await Promise.all([
+        const firstLaunchSignInReachEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
+          firstLaunch ? resolveFirstLaunchSignInReachEnabled() : false,
+        );
+        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled] = await Promise.all([
           firstLaunchPromise,
           contextPromise,
           firstLaunchJoinKeyEnabledPromise,
+          firstLaunchSignInReachEnabledPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
           firstLaunch,
@@ -1198,10 +1235,40 @@
           readNativeId: loadInstallAttemptId,
         });
         if (installAttemptId) onboardingTelemetry.setInstallAttemptId(installAttemptId);
+        let signInReachOutcome:
+          | 'reached-signin'
+          | 'existing-session-skip'
+          | 'setup-resume-skip'
+          | 'missing-root-recovery-skip'
+          | 'consent-only-skip'
+          | undefined;
+        if (signInReachEnabled) {
+          const reachInstallAttemptId = installAttemptId ?? await loadInstallAttemptId();
+          if (reachInstallAttemptId) {
+            onboardingTelemetry.setInstallAttemptId(reachInstallAttemptId);
+            signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
+              ? 'reached-signin'
+              : mode === 'consent'
+                ? 'consent-only-skip'
+                : recoveringMissingRoot
+                  ? 'missing-root-recovery-skip'
+                  : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
+                    ? 'setup-resume-skip'
+                    : 'existing-session-skip';
+          }
+        }
+        const receiptReachOutcome = signInReachOutcome &&
+          !firstLaunchSignInReachOutcomeWasRecorded()
+          ? signInReachOutcome
+          : undefined;
         const firstLaunchReceiptRecorded = context
           ? shouldSendFirstLaunchReceipt(firstLaunch, context.suppressFirstLaunchTelemetry) &&
-            onboardingTelemetry.recordFirstLaunch()
-          : firstLaunch && onboardingTelemetry.recordFirstLaunch();
+            onboardingTelemetry.recordFirstLaunch(receiptReachOutcome)
+          : firstLaunch && onboardingTelemetry.recordFirstLaunch(receiptReachOutcome);
+        if (signInReachOutcome) {
+          if (firstLaunchReceiptRecorded && receiptReachOutcome) markFirstLaunchSignInReachRecorded();
+          else recordFirstLaunchSignInReachOutcome(signInReachOutcome);
+        }
         return { context, firstLaunchReceiptRecorded, installAttemptId };
       })()
         .catch((error) => {

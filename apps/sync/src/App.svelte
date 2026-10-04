@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import {
     createSyncPlatformAdapter,
+    FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     POST_READY_ACTION_TELEMETRY_FLAG,
     type Json,
   } from '@hq/platform';
@@ -68,7 +69,14 @@
   } from './lib/brand';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
-  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
+  import {
+    emitDesktopOperationalTelemetryStrict,
+    emitDesktopTelemetry,
+  } from './lib/desktop-telemetry';
+  import {
+    createFirstLaunchSignInReachReporter,
+    setFirstLaunchSignInReachReporter,
+  } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
     replayRetainedDetections,
@@ -97,6 +105,21 @@
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
   });
+  const firstLaunchSignInReachReporter = createFirstLaunchSignInReachReporter({
+    isFirstRun: () => invoke<boolean>('is_first_run'),
+    isEnabled: async () => {
+      const result = await traySyncAdapter.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+      return result.ok && result.value === true;
+    },
+    getInstallAttemptId: async () => {
+      const value = await invoke<unknown>('desktop_install_attempt_id');
+      return typeof value === 'string' ? value : null;
+    },
+    emit: (event) => emitDesktopOperationalTelemetryStrict(event),
+    warn: (message, error) => console.warn(message, error),
+  });
+  setFirstLaunchSignInReachReporter(firstLaunchSignInReachReporter);
+  void firstLaunchSignInReachReporter.prepare();
   const postReadyTelemetry = getVersion()
     .then((appVersion) => createPostReadyActionTelemetry({
       appVersion,
@@ -1835,6 +1858,19 @@
     loadConfig();
     loadWorkspaces();
     const listenerRegistry = new ListenerRegistry();
+    void listen('version-gate:update-required', () => {
+      firstLaunchSignInReachReporter.record('update-gate');
+    })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('version-gate listener unavailable', error));
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        firstLaunchSignInReachReporter.record('window-closed');
+      })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('window-close reach listener unavailable', error));
+    const recordAppQuitBeforeSignIn = () => firstLaunchSignInReachReporter.record('quit');
+    window.addEventListener('pagehide', recordAppQuitBeforeSignIn);
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
       console.error('setup tray listeners failed:', err);
@@ -1875,6 +1911,8 @@
       clearChannelUnreadRetry();
       recordingActionAcks.dispose();
       listenerRegistry.dispose();
+      window.removeEventListener('pagehide', recordAppQuitBeforeSignIn);
+      setFirstLaunchSignInReachReporter(null);
     };
   });
 
@@ -1990,6 +2028,7 @@
         outcome.error,
       );
       scheduleStartupReprobe();
+      firstLaunchSignInReachReporter.record('startup-error');
       return;
     }
 
@@ -2008,6 +2047,11 @@
     lifecycleState = probedLifecycle;
     startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
+    if (authenticated) {
+      firstLaunchSignInReachReporter.record(
+        lifecycleState === 'InstalledFirstRun' ? 'consent-only-skip' : 'existing-session-skip',
+      );
+    }
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
       syncState = 'auth-error';

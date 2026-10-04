@@ -7,6 +7,7 @@ import {
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
@@ -67,6 +68,15 @@ describe("registry key mapping", () => {
     expect(FIRST_LAUNCH_JOIN_KEY_FLAG).toBe("desktop.first-launch-join-key-v1");
     expect(registryKeyFor(FIRST_LAUNCH_JOIN_KEY_FLAG)).toBe(
       FIRST_LAUNCH_JOIN_KEY_FLAG,
+    );
+  });
+
+  it("registers first-launch sign-in reach as an hq-flags rollout key", () => {
+    expect(FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
+      "desktop.first-launch-signin-reach-telemetry-v1",
+    );
+    expect(registryKeyFor(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).toBe(
+      FIRST_LAUNCH_SIGNIN_REACH_FLAG,
     );
   });
 

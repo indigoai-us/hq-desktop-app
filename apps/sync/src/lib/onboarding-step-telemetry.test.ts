@@ -56,6 +56,82 @@ describe('onboarding step telemetry', () => {
     });
   }
 
+  it('keeps only matching bounded first-launch sign-in reach outcomes', () => {
+    const reached = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'entered',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+      },
+    });
+    expect(reached.outcome).toBe('reached-signin');
+
+    const skipped = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'setup-resume-skip',
+      },
+    });
+    expect(skipped.outcome).toBe('setup-resume-skip');
+
+    const unsafe = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+        error: 'private path should not be emitted',
+      } as never,
+    });
+    expect(unsafe).not.toHaveProperty('outcome');
+    expect(unsafe).not.toHaveProperty('error');
+
+    const wrongScope = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'directory',
+        action: 'entered',
+        flow: 'first_launch',
+        outcome: 'reached-signin',
+      },
+    });
+    expect(wrongScope).not.toHaveProperty('outcome');
+
+    const wrongFlow = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'entered',
+        flow: 'first_install',
+        outcome: 'reached-signin',
+      },
+    });
+    expect(wrongFlow).not.toHaveProperty('outcome');
+
+    const unknown = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-04T00:00:00.000Z',
+      properties: {
+        step: 'welcome-signin',
+        action: 'skipped',
+        flow: 'first_launch',
+        outcome: 'free-form failure text',
+      } as never,
+    });
+    expect(unknown).not.toHaveProperty('outcome');
+  });
+
   it('emits setup transitions immediately, before a consent choice exists', async () => {
     const telemetry = createOnboardingStepTelemetry({
       storage,

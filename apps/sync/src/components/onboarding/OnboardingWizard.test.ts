@@ -48,6 +48,7 @@ vi.mock('@hq/platform', () => ({
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG: 'desktop.first-launch-signin-reach-telemetry-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
@@ -72,6 +73,7 @@ vi.mock('@hq/platform', () => ({
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
+          flag === 'desktop.first-launch-signin-reach-telemetry-v1' ||
           flag === 'desktop.company-route-lookup-retry-v1' ||
           flag === 'desktop.company-name-prefill-v1'
         ) {
@@ -2053,16 +2055,21 @@ describe('anonymous installer step pings', () => {
         command === 'emit_desktop_operational_telemetry' &&
         (args as {
           eventName?: string;
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).eventName === 'desktop_onboarding_step' &&
         (args as {
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).properties?.step === 'welcome-signin' &&
         (args as {
-          properties?: { step?: string; action?: string };
+          properties?: { step?: string; action?: string; outcome?: string };
         }).properties?.action === 'entered',
     );
     expect(welcomeEntries).toHaveLength(1);
+    expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
+      .toBe('reached-signin');
+    expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
+      'desktop.first-launch-signin-reach-telemetry-v1',
+    );
     expect(onboardingFlags.hasFeature).toHaveBeenCalledWith(
       'desktop.first-launch-join-key-v1',
     );
@@ -2108,10 +2115,14 @@ describe('anonymous installer step pings', () => {
             properties?: { step?: string; action?: string };
           }).properties?.action === 'entered',
       )
-      .map(([, args]) => args as { properties: { flow?: string } });
+      .map(([, args]) => args as { properties: { flow?: string; outcome?: string } });
     expect(welcomeEntries.map((entry) => entry.properties.flow)).toEqual([
       'first_install',
       'first_launch',
+    ]);
+    expect(welcomeEntries.map((entry) => entry.properties.outcome)).toEqual([
+      undefined,
+      undefined,
     ]);
   });
 

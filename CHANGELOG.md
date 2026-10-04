@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- First-launch telemetry can record whether sign-in was reached or which setup, update, or app-exit path diverted it; the measurement is off by default.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 
