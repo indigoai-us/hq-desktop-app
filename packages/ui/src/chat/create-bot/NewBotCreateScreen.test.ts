@@ -236,6 +236,180 @@ describe("NewBotCreateScreen", () => {
       expect(createButton().disabled).toBe(false);
     });
   });
+  describe("review findings on the create screen", () => {
+    const ONE_COMPANY = { companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" };
+    const POWER = { ...options.options[0]!, key: "power" as const, productName: "Power", default: false, netMonthlyCents: 9000, listCents: 9000 };
+    const createButton = () => document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!;
+    const price = () => document.querySelector("[data-testid='new-bot-price']")?.textContent;
+
+    it("A-I2: Enter in the company filter picks a single match and never creates the bot", async () => {
+      // Enter used to submit the create into the company selected before the
+      // filter was typed, which may not even be among the ones shown.
+      const { oncreate } = render({ companies: manyCompanies(14), currentCompanyUid: "cmp_3" });
+      await openCompanyStep();
+      const filter = document.querySelector<HTMLInputElement>("[data-testid='new-bot-company-filter']")!;
+      const pressEnter = () => filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      const checked = () => document.querySelector<HTMLElement>("[data-testid='new-bot-company-grid'] [aria-checked='true']")?.dataset.companyUid;
+
+      // Several matches: Enter does nothing.
+      filter.value = "Company 1";
+      filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await settle();
+      pressEnter();
+      await settle();
+      expect(oncreate).not.toHaveBeenCalled();
+      expect(checked()).toBeUndefined();
+
+      // One match: Enter selects it, and still does not create.
+      filter.value = "13";
+      filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await settle();
+      pressEnter();
+      await settle();
+      expect(oncreate).not.toHaveBeenCalled();
+      expect(checked()).toBe("cmp_13");
+
+      // No match: nothing happens.
+      filter.value = "zzz";
+      filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await settle();
+      pressEnter();
+      await settle();
+      expect(oncreate).not.toHaveBeenCalled();
+
+      createButton().click();
+      await settle();
+      expect(oncreate).toHaveBeenCalledWith("cmp_13", expect.anything());
+    });
+
+    it("A-I3: the price under Create bot is the selected size's, not the default's", async () => {
+      const { oncreate } = render({
+        loadProvisionOptions: async () => ({ ok: true as const, value: { ...options, options: [options.options[0]!, POWER] } }),
+      });
+      await openCompanyStep();
+      expect(price()).toBe("$50.00/month for Basic.");
+      document.querySelector<HTMLButtonElement>(".new-bot-more")!.click();
+      await settle();
+      document.querySelector<HTMLInputElement>("input[name='new-bot-size'][value='power']")!.click();
+      await settle();
+      expect(price()).toBe("$90.00/month for Power.");
+      createButton().click();
+      await settle();
+      expect(oncreate).toHaveBeenCalledWith("cmp_current", expect.objectContaining({ size: "power" }));
+    });
+
+    it("A-I3: shows the selected size's price when the server flags no default", async () => {
+      render({ ...ONE_COMPANY, loadProvisionOptions: async () => ({ ok: true as const, value: { ...options, options: [POWER] } }) });
+      await settle();
+      await advanceName();
+      expect(price()).toBe("$90.00/month for Power.");
+    });
+
+    it("A-I6: stops a name that makes no handle at the name step, before anything is sent", async () => {
+      // A name with no ASCII letter or digit makes an empty handle. The
+      // server refused it only after the create had begun.
+      const { oncreate } = render(ONE_COMPANY);
+      await settle();
+      typeName("日本語");
+      await settle();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
+      await settle();
+      expect(document.querySelector("[data-testid='new-bot-step-1']")).toBeTruthy();
+      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeNull();
+      expect(document.querySelector("[role='alert']")?.textContent).toBe("That name can't be used for a bot. Try letters and numbers.");
+      expect(oncreate).not.toHaveBeenCalled();
+
+      // A name the handle can be made from goes through.
+      typeName("日本語 Bot 2");
+      await settle();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
+      await settle();
+      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
+    });
+
+    it("A-I10: shows the whole reason for a refusal, not only its first sentence", async () => {
+      const reason = "A bot with that name already exists in this company. Try a different name.";
+      render({ ...ONE_COMPANY, oncreate: vi.fn(async () => ({ ok: false as const, blocked: false, reason })) });
+      await settle();
+      await advanceName();
+      createButton().click();
+      await settle();
+      expect(document.querySelector("#new-bot-create-issue")?.textContent).toBe(reason);
+    });
+
+    it("A-I13: names the machine the app runs on, not always a Mac", async () => {
+      const globals = globalThis as { __HQ_HOST_OS__?: string };
+      const before = globals.__HQ_HOST_OS__;
+      globals.__HQ_HOST_OS__ = "windows";
+      try {
+        render(ONE_COMPANY);
+        await settle();
+        await advanceName();
+        const signedIn = document.querySelector("[data-testid='new-bot-step-2'] small")?.textContent;
+        expect(signedIn).toBe("Signed in on this PC");
+      } finally {
+        if (before === undefined) delete globals.__HQ_HOST_OS__;
+        else globals.__HQ_HOST_OS__ = before;
+      }
+    });
+
+    it("A-I16: never calls a card that is not the upgrade card an upgrade", async () => {
+      // The server can send the person to any card. Every one of them was
+      // shown as "is on the Starter plan".
+      const onupgrade = vi.fn();
+      const oncreate = vi.fn(async () => ({
+        ok: true as const,
+        target: { channelId: "chn_company", cardId: "activate_cloud", cardKind: null },
+      }));
+      const { oncomplete } = render({ ...ONE_COMPANY, oncreate, onupgrade });
+      await settle();
+      await advanceName();
+      createButton().click();
+      await settle();
+      const step = document.querySelector<HTMLElement>("[data-testid='new-bot-upgrade']")!;
+      expect(step.dataset.kind).toBe("other");
+      expect(step.textContent).not.toMatch(/Starter plan|Upgrade|Workforce/);
+      expect(step.querySelector("[data-testid='new-bot-upgrade-copy']")?.textContent).toBe(
+        "Only company has a step to finish before it can add a cloud bot. Open the company's channel to see it, then come back to create Polar.",
+      );
+      const open = step.querySelector<HTMLButtonElement>("[data-testid='new-bot-upgrade-open']")!;
+      expect(open.textContent).toBe("Open the channel");
+      open.click();
+      expect(onupgrade).toHaveBeenCalledWith({ companyUid: "cmp_only", channelId: "chn_company", cardId: "activate_cloud" });
+      expect(oncomplete).not.toHaveBeenCalled();
+    });
+
+    it("A-I16: keeps the upgrade wording for the upgrade card itself", async () => {
+      const oncreate = vi.fn(async () => ({
+        ok: true as const,
+        target: { channelId: "chn_company", cardId: "upgrade_plan", cardKind: null },
+      }));
+      render({ ...ONE_COMPANY, oncreate, onupgrade: vi.fn() });
+      await settle();
+      await advanceName();
+      createButton().click();
+      await settle();
+      const step = document.querySelector<HTMLElement>("[data-testid='new-bot-upgrade']")!;
+      expect(step.dataset.kind).toBe("plan");
+      expect(step.textContent).toContain("Only company is on the Starter plan");
+      expect(step.querySelector("[data-testid='new-bot-upgrade-open']")?.textContent).toBe("See upgrade options");
+    });
+
+    it("A-I16: says a neutral line inline when the host offers no way to open the card", async () => {
+      const oncreate = vi.fn(async () => ({
+        ok: true as const,
+        target: { channelId: "chn_company", cardId: "activate_cloud", cardKind: null },
+      }));
+      render({ ...ONE_COMPANY, oncreate });
+      await settle();
+      await advanceName();
+      createButton().click();
+      await settle();
+      expect(document.querySelector("#new-bot-create-issue")?.textContent).toBe(
+        "This company has a step to finish before it can add a cloud bot.",
+      );
+    });
+  });
   it("skips company selection for one company and creates from the brain step", async () => {
     const { oncreate } = render({
       companies: [{ companyUid: "cmp_only", label: "Only company" }],

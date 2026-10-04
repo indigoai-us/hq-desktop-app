@@ -23,6 +23,7 @@ import {
   CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON,
   CLOUD_BOT_NO_NEXT_STEP_REASON,
   CLOUD_BOT_SERVER_FAILED_REASON,
+  isUpgradePlanCard,
   runCreateCloudBotOneShotEntry,
   type CloudBotDraft,
   type CloudBotOneShotApi,
@@ -247,6 +248,24 @@ describe("runCreateCloudBotOneShotEntry", () => {
     expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
       ok: true,
       target: { channelId: CHANNEL, cardId: "upgrade_plan", cardKind: null },
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("tells the upgrade card from any other card the server may send the person to (review A-I16)", async () => {
+    expect(isUpgradePlanCard("upgrade_plan")).toBe(true);
+    expect(isUpgradePlanCard(" upgrade_plan ")).toBe(true);
+    expect(isUpgradePlanCard("upgrade_plan:cmp_acme")).toBe(true);
+    expect(isUpgradePlanCard("setup:upgrade_plan")).toBe(true);
+    expect(isUpgradePlanCard("activate_cloud")).toBe(false);
+    expect(isUpgradePlanCard("create_agent")).toBe(false);
+    expect(isUpgradePlanCard("")).toBe(false);
+    expect(isUpgradePlanCard(null)).toBe(false);
+    // Any other card is still a destination, named by id.
+    const { api, runCardAction } = harness({ opened: { ...OPENED, focusCardId: "activate_cloud" } });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: true,
+      target: { channelId: CHANNEL, cardId: "activate_cloud", cardKind: null },
     });
     expect(runCardAction).not.toHaveBeenCalled();
   });

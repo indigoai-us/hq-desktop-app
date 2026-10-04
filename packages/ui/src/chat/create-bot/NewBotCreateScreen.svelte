@@ -1,12 +1,19 @@
 <script lang="ts">
-  import { tick, untrack } from "svelte";
-  import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
-  import type { EntryPointResult, EntryPointTarget, CloudBotDraft } from "../lifecycle-entry-points.js";
+  import { onMount, tick, untrack } from "svelte";
+  import { hostComputerNoun, subscribeHostComputerNoun, type AdapterPromise, type AgentProvisionOptionsView } from "@hq/platform";
+  import {
+    CLOUD_BOT_NAME_INVALID_REASON,
+    isUpgradePlanCard,
+    type EntryPointResult,
+    type EntryPointTarget,
+    type CloudBotDraft,
+  } from "../lifecycle-entry-points.js";
   import {
     botHandle,
     cloudBrainChoices,
     cloudNameIssue,
     firstSignedInCloudRuntime,
+    handleIssue,
     provisionOptionsProblem,
     provisionOptionsProblemLine,
     type BotRuntime,
@@ -45,8 +52,15 @@
     onupgrade = null,
   }: Props = $props();
 
-  // A company whose plan cannot host a cloud bot: where its upgrade card lives.
+  // A company that sent the person to a card instead of making a bot: where
+  // that card lives. Usually the upgrade card (the plan cannot host a cloud
+  // bot); `upgradeIsPlan` is false for any other card, which is never
+  // described as an upgrade.
   let upgrade = $state<NewBotUpgradeTarget | null>(null);
+  let upgradeIsPlan = $state(true);
+  /** "Mac", "PC" or "computer": the machine this app runs on. */
+  let hostNoun = $state(hostComputerNoun());
+  onMount(() => subscribeHostComputerNoun((next) => (hostNoun = next)));
   const upgradeCompany = $derived(companies.find((company) => company.companyUid === upgrade?.companyUid)?.label ?? "This company");
   const initialCompany = (companies.find((company) => company.companyUid === currentCompanyUid) ?? companies[0])?.companyUid ?? "";
   let companyUid = $state(initialCompany);
@@ -74,9 +88,15 @@
   const finalStep = $derived(singleCompany ? 2 : 3);
   const filteredCompanies = $derived(companies.filter((company) => company.label.toLocaleLowerCase().includes(companyFilter.trim().toLocaleLowerCase())));
   const derivedHandle = $derived(botHandle({ name, handle: "" }));
-  const nameIssue = $derived(cloudNameIssue(name));
+  // The handle is made from the name and never shown. A name with no letter
+  // or digit the handle can use makes an empty handle, which the server
+  // refuses only after the create has begun. Catch it here, at the name step.
+  const nameIssue = $derived(
+    cloudNameIssue(name) ?? (handleIssue({ name, handle: "" }) ? CLOUD_BOT_NAME_INVALID_REASON : null),
+  );
   const selectedOption = $derived(options?.options.find((option) => option.key === selectedSize) ?? null);
-  const defaultOption = $derived(options?.options.find((option) => option.default && option.selectable && option.netMonthlyCents !== null) ?? null);
+  /** The size Create bot will ask for, when it can be priced. Its price is the one shown. */
+  const pricedOption = $derived(selectedOption?.selectable && selectedOption.netMonthlyCents !== null ? selectedOption : null);
   const canSubmit = $derived(
     !busy &&
       !!companyUid &&
@@ -183,14 +203,41 @@
     // no waiting screen, no message, nothing of this attempt left on screen.
     if (!result.ok && result.cancelled) return;
     busy = false;
-    // A bot answers with its own channel and no card. A card in the answer is
-    // the upgrade card: the plan cannot host a bot, and nothing was created.
-    if (result.ok && result.target.cardId) { if (onupgrade) upgrade = { companyUid, channelId: result.target.channelId, cardId: result.target.cardId }; else refusal = "This company's plan doesn't include cloud bots yet."; return; }
+    // A bot answers with its own channel and no card. A card in the answer
+    // means nothing was created and the server sent the person to that card:
+    // the upgrade card when the plan cannot host a bot, else some other step.
+    if (result.ok && result.target.cardId) {
+      const plan = isUpgradePlanCard(result.target.cardId);
+      if (onupgrade) {
+        upgradeIsPlan = plan;
+        upgrade = { companyUid, channelId: result.target.channelId, cardId: result.target.cardId };
+      } else {
+        refusal = plan
+          ? "This company's plan doesn't include cloud bots yet."
+          : "This company has a step to finish before it can add a cloud bot.";
+      }
+      return;
+    }
     if (result.ok) { oncomplete({ name: name.trim(), companyUid, brain: runtime, target: result.target }); return; }
-    if (result.upgrade && onupgrade) { upgrade = { companyUid, ...result.upgrade }; return; }
-    const message = result.reason.trim() || "We couldn't create this bot. Try again in a moment."; refusal = message.match(/^.*?[.!?](?:\s|$)/)?.[0].trim() || message;
+    if (result.upgrade && onupgrade) { upgradeIsPlan = true; upgrade = { companyUid, ...result.upgrade }; return; }
+    // The whole reason: a second sentence often says what to do about the first.
+    refusal = result.reason.trim() || "We couldn't create this bot. Try again in a moment.";
   }
-  function onKeydown(event: KeyboardEvent): void { if (event.key !== "Enter" || busy) return; const target = event.target as HTMLElement; if (target.tagName === "BUTTON") return; event.preventDefault(); if (step === 1) continueName(); else if (step < finalStep) go((step + 1) as 2 | 3); else void submit(); }
+  function onKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Enter" || busy) return;
+    const target = event.target as HTMLElement;
+    if (target.tagName === "BUTTON") return;
+    event.preventDefault();
+    if (target.id === "new-bot-company-filter") {
+      // Enter in the filter picks the one company it found. It never creates
+      // the bot: the selected company may not even be among the ones shown.
+      if (filteredCompanies.length === 1) selectCompany(filteredCompanies[0]!.companyUid);
+      return;
+    }
+    if (step === 1) continueName();
+    else if (step < finalStep) go((step + 1) as 2 | 3);
+    else void submit();
+  }
 </script>
 
 {#if busy}
@@ -205,11 +252,17 @@
 {:else if upgrade}
 <!-- The company's plan cannot host a cloud bot. Say so plainly and offer the
      way forward: its upgrade card, another company, or a local bot. -->
-<section class="new-bot-waking new-bot-upgrade" data-testid="new-bot-upgrade">
+<section class="new-bot-waking new-bot-upgrade" data-testid="new-bot-upgrade" data-kind={upgradeIsPlan ? "plan" : "other"}>
   <p class="new-bot-takeover-kicker">One step first</p>
+  {#if upgradeIsPlan}
   <h1 id="new-bot-takeover-title">Upgrade to add <em>cloud bots.</em></h1>
   <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} is on the Starter plan. Cloud bots are part of HQ Workforce. Upgrade from the company's channel, then come back to create {name.trim()}.</p>
-  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}>See upgrade options</button>
+  {:else}
+  <!-- Some other card, not the upgrade: say only what is known. -->
+  <h1 id="new-bot-takeover-title">Finish a step <em>first.</em></h1>
+  <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} has a step to finish before it can add a cloud bot. Open the company's channel to see it, then come back to create {name.trim()}.</p>
+  {/if}
+  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}>{upgradeIsPlan ? "See upgrade options" : "Open the channel"}</button>
   <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}>{singleCompany ? "Back" : "Choose another company"}</button>
   {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}
 </section>
@@ -228,7 +281,7 @@
     {#if step === 1}
       <section class="new-bot-step" data-testid="new-bot-step-1"><p class="new-bot-create-copy">This is how your new teammate will appear in HQ.</p><label class="new-bot-create-label" for="new-bot-name">Name</label><input id="new-bot-name" class="new-bot-create-input" data-testid="new-bot-name" value={name} aria-invalid={attempted && nameIssue ? "true" : undefined} aria-describedby="new-bot-create-issue" autocomplete="off" oninput={(event) => { name = (event.currentTarget as HTMLInputElement).value; }} /></section>
     {:else if step === 2}
-      <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each brainChoices as choice (choice)}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{brainLabel(choice)}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this Mac</small>{/if}</label>{/each}</fieldset></section>
+      <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each brainChoices as choice (choice)}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{brainLabel(choice)}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this {hostNoun}</small>{/if}</label>{/each}</fieldset></section>
     {:else}
       <section class="new-bot-step" data-testid="new-bot-step-3"><p class="new-bot-create-copy">Your bot will work with this company from the start.</p>{#if companies.length > 12}<label class="new-bot-filter-label" for="new-bot-company-filter">Find a company</label><input id="new-bot-company-filter" class="new-bot-create-input" data-testid="new-bot-company-filter" value={companyFilter} autocomplete="off" oninput={(event) => { companyFilter = (event.currentTarget as HTMLInputElement).value; }} />{/if}<div class="new-bot-companies" data-testid="new-bot-company-grid" role="radiogroup" aria-label="Company" onkeydown={onCompanyKeydown}>{#each filteredCompanies as company (company.companyUid)}<button type="button" class:selected={companyUid === company.companyUid} class="new-bot-company" role="radio" aria-checked={companyUid === company.companyUid} aria-label={company.label} title={company.label} data-company-uid={company.companyUid} tabindex={companyFocusUid === company.companyUid ? 0 : -1} disabled={busy} onclick={() => selectCompany(company.companyUid)} onfocus={() => (companyFocusUid = company.companyUid)}><span class="new-bot-company-monogram" aria-hidden="true">{company.label.trim().slice(0, 1).toLocaleUpperCase()}</span><span class="new-bot-company-label">{company.label}</span>{#if companyUid === company.companyUid}<svg class="new-bot-company-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>{/if}</button>{:else}<p class="new-bot-company-empty">No company matches that.</p>{/each}</div>{#if moreOptions}<fieldset class="new-bot-sizes" disabled={busy || quoteStatus !== "ready"}><legend class="new-bot-create-label">Machine size</legend>{#each options?.options ?? [] as option (option.key)}<label class:selected={selectedSize === option.key} class="new-bot-size"><input type="radio" name="new-bot-size" value={option.key} checked={selectedSize === option.key} disabled={!option.selectable || option.netMonthlyCents === null} onchange={() => (selectedSize = option.key)} /><span>{option.productName} · {optionPrice(option)}</span></label>{:else}<span class="new-bot-muted">{quoteStatus === "loading" ? "Loading server options..." : "Server options could not be loaded."}</span>{/each}</fieldset>{/if}</section>
     {/if}
@@ -243,7 +296,7 @@
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblem?.kind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}>Try again</button>
     {/if}
-    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if defaultOption}<p class="new-bot-price" data-testid="new-bot-default-price">{optionPrice(defaultOption)} for {defaultOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the server's default price...</p>{/if}{/if}
+    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>Create a local bot instead</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
   </footer>
 </div>
 {/if}
