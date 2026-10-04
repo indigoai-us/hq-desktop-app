@@ -818,6 +818,9 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "result",
     "errorKind",
     "channel",
+    "stage",
+    "fromVersion",
+    "toVersion",
     "desktopVersion",
     "appVersion",
     "localCoreVersion",
@@ -4228,7 +4231,8 @@ mod codex_telemetry_tests {
                 "fromVersion": "0.10.386",
                 "toVersion": "0.10.387",
                 "channel": "stable",
-                "autoUpdate": true
+                "autoUpdate": true,
+                "error": "private diagnostic text must be dropped"
             })),
             None,
             None,
@@ -4244,6 +4248,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["properties"]["toVersion"], "0.10.387");
         assert_eq!(event["properties"]["channel"], "stable");
         assert_eq!(event["properties"]["autoUpdate"], true);
+        assert!(event["properties"].get("error").is_none());
     }
 
     #[test]
