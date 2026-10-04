@@ -1,5 +1,5 @@
 // The bundled brand marks: real logos for the apps most likely to be on a
-// card, keyed by domain, with the favicon chain for everything else.
+// card, keyed by domain, with the generic glyph for everything else.
 
 import { describe, expect, it } from "vitest";
 import { siGithub, siGmail, siGoogledrive, siIntercom, siLinear, siNotion } from "simple-icons";
@@ -54,15 +54,49 @@ describe("brandMarkFor", () => {
     expect(brandMarkFor("drive.google.com")?.title).toBe("Google Drive");
     expect(brandMarkFor("calendar.google.com")?.title).toBe("Google Calendar");
     expect(brandMarkFor("mail.google.com")?.title).toBe("Gmail");
-    // google.com itself is not one app, so it has no mark.
-    expect(brandMarkFor("google.com")).toBeNull();
+    // google.com itself, and a Google product with no mark of its own, draw the G.
+    expect(brandMarkFor("google.com")?.title).toBe("Google");
+    expect(brandMarkFor("chat.google.com")?.title).toBe("Google");
+  });
+
+  it("has a mark for the apps a bot names most, so they keep a real logo with no image request", () => {
+    const expected: Record<string, string> = {
+      "sentry.io": "Sentry",
+      "calendly.com": "Calendly",
+      "mixpanel.com": "Mixpanel",
+      "shopify.com": "Shopify",
+      "posthog.com": "PostHog",
+      "supabase.com": "Supabase",
+      "vercel.com": "Vercel",
+      "gitlab.com": "GitLab",
+      "clickup.com": "ClickUp",
+      "datadoghq.com": "Datadog",
+      "pagerduty.com": "PagerDuty",
+      "cloudflare.com": "Cloudflare",
+      "zapier.com": "Zapier",
+      "quickbooks.intuit.com": "QuickBooks",
+      "analytics.google.com": "Google Analytics",
+      "x.com": "X",
+      "twitter.com": "X",
+    };
+    for (const [domain, title] of Object.entries(expected)) expect(brandMarkFor(domain)?.title, domain).toBe(title);
+  });
+
+  it("carries a real path and a six-digit colour for every mark", () => {
+    for (const domain of BRAND_MARK_DOMAINS) {
+      const mark = brandMarkFor(domain)!;
+      expect(mark.hex, domain).toMatch(/^[0-9A-Fa-f]{6}$/);
+      expect(mark.path.length, domain).toBeGreaterThan(20);
+      expect(mark.title, domain).not.toBe("");
+    }
   });
 
   it("has no mark for the apps the icon set does not carry, and for anything unknown", () => {
-    // These take the favicon chain: simple-icons has no Salesforce or Microsoft marks.
+    // These show the generic glyph: simple-icons has no Salesforce, Microsoft or Firecrawl marks.
     expect(brandMarkFor("salesforce.com")).toBeNull();
     expect(brandMarkFor("teams.microsoft.com")).toBeNull();
     expect(brandMarkFor("outlook.com")).toBeNull();
+    expect(brandMarkFor("firecrawl.dev")).toBeNull();
     expect(brandMarkFor("example.com")).toBeNull();
     expect(brandMarkFor("")).toBeNull();
     expect(brandMarkFor(null)).toBeNull();

@@ -7,14 +7,16 @@ import {
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
-  appLogoSources,
   botCanUse,
+  botReason,
   catalogMatchFor,
   companyAppsBrief,
   connectActionFor,
   connectFailureSentence,
   connectRowReady,
+  connectionAnswersPress,
   connectionForDomain,
+  connectionForItem,
   defaultAppName,
   domainsToLookUp,
   integrationCardView,
@@ -34,6 +36,7 @@ import {
   recordGrant,
 } from "./connection-card-model.js";
 import { brandMarkFor } from "./app-brand-marks.js";
+import { parseRichContent } from "./richMessageContent.js";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
 
@@ -118,19 +121,81 @@ describe("readCompanyConnections", () => {
 });
 
 describe("connectionForDomain and botCanUse", () => {
-  it("matches by domain first, then by the provider's first label, newest first", () => {
+  it("matches by the listed domain, exactly first, then parent or subdomain, newest first", () => {
     const f = facts([
       connection({ id: "acct_a", createdAt: "2026-10-01T00:00:00.000Z" }),
-      connection({ id: "acct_b", createdAt: "2026-10-02T00:00:00.000Z", installation: { displayName: "Linear 2" } }),
+      connection({ id: "acct_a2", createdAt: "2026-10-03T00:00:00.000Z" }),
+      connection({ id: "acct_sub", createdAt: "2026-10-04T00:00:00.000Z", installation: { displayName: "Linear API", domain: "api.linear.app" } }),
       connection({ id: "acct_notion", provider: "factory:notion", installation: { displayName: "Notion", domain: "makenotion.com" } }),
     ]);
-    // acct_a has the domain, acct_b only the provider: the domain wins.
-    expect(connectionForDomain(f, "www.linear.app")?.id).toBe("acct_a");
-    expect(connectionForDomain(f, "linear.com")?.id).toBe("acct_b");
-    expect(connectionForDomain(f, "notion.so")?.id).toBe("acct_notion");
+    // Two list linear.app exactly: the newer of them wins, ahead of the newer subdomain.
+    expect(connectionForDomain(f, "www.linear.app")?.id).toBe("acct_a2");
+    expect(connectionForDomain(f, "mcp.linear.app")?.id).toBe("acct_a2");
+    expect(connectionForDomain(f, "api.linear.app")?.id).toBe("acct_sub");
+    // A subdomain nobody lists exactly falls to the connections of its site, newest first.
+    expect(connectionForDomain(f, "docs.linear.app")?.id).toBe("acct_a2");
+    expect(connectionForDomain(f, "makenotion.com")?.id).toBe("acct_notion");
     expect(connectionForDomain(f, "asana.com")).toBeNull();
     expect(connectionForDomain(null, "linear.app")).toBeNull();
     expect(connectionForDomain(f, "nope")).toBeNull();
+  });
+
+  it("never matches a connection by its provider name: the first label of a domain proves nothing", () => {
+    const f = facts([
+      connection({ id: "acct_linear", installation: { displayName: "Linear", domain: "linear.app" } }),
+      connection({ id: "acct_bare", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } }),
+      connection({ id: "acct_notion", provider: "factory:notion", installation: { displayName: "Notion", domain: "makenotion.com" } }),
+    ]);
+    // A domain that only starts with the provider's name is some other site.
+    for (const domain of ["linear.com", "linear.example.org", "linear.app.example.org", "notion.so", "notion.example.org", "gmail.com", "gmail.example.org"]) {
+      expect(connectionForDomain(f, domain), domain).toBeNull();
+    }
+    // Nor does a longer name that merely ends with the listed one.
+    expect(connectionForDomain(f, "notlinear.app")).toBeNull();
+    // So a bot naming a lookalike gets no "connected" card for the company's real connection.
+    expect(integrationCardView({ domain: "linear.example.org" }, input({ facts: f, lookup: "not-found" }))).toBeNull();
+    expect(integrationCardView({ domain: "gmail.com" }, input({ facts: f, lookup: "not-found" }))).toBeNull();
+  });
+
+  it("finds a connection the list gives no domain for by its id, which only the app's own pick carries", () => {
+    const f = facts([connection({ id: "acct_bare", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } }), connection()]);
+    expect(connectionForItem(f, { domain: "gmail.com", connectionId: "acct_bare" })?.id).toBe("acct_bare");
+    expect(connectionForItem(f, { domain: "gmail.com" })).toBeNull();
+    // An id the list no longer has falls back to the domain.
+    expect(connectionForItem(f, { domain: "linear.app", connectionId: "acct_gone" })?.id).toBe("acct_linear");
+    expect(connectionForItem(f, { domain: "gmail.com", connectionId: "acct_gone" })).toBeNull();
+    expect(connectionForItem(null, { domain: "linear.app", connectionId: "acct_linear" })).toBeNull();
+    const view = integrationCardView({ domain: "gmail.com", connectionId: "acct_bare" }, input({ facts: f, lookup: "unknown" }))!;
+    expect(view).toMatchObject({ state: "connected", title: "Gmail (Stefan)", connectionId: "acct_bare", primaryLabel: "Let Nova use it", domain: "gmail.com" });
+    // A bot's block cannot carry the id: the parser reads app, domain and why only.
+    const fromBot = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "gmail.com", connectionId: "acct_bare" }] }] });
+    expect(fromBot?.blocks[0]).toEqual({ kind: "connect", items: [{ domain: "gmail.com" }] });
+  });
+
+  it("gives the bot a connection with no second press only when it answers a fresh press exactly", () => {
+    const since = NOW - 60_000;
+    const entry = { state: "connecting" as const, since };
+    const made = (over: Record<string, unknown> = {}) =>
+      facts([connection({ createdAt: new Date(since + 30_000).toISOString(), ...over })]).connections[0]!;
+    expect(connectionAnswersPress(entry, made(), "linear.app", NOW)).toBe(true);
+    expect(connectionAnswersPress(entry, made(), "www.linear.app", NOW)).toBe(true);
+    // A stale press: the entry sat in storage past the wait.
+    expect(connectionAnswersPress({ state: "connecting", since: NOW - CONNECTING_TIMEOUT_MS - 1 }, made({ createdAt: new Date(NOW - 1_000).toISOString() }), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress({ state: "connecting", since: NOW - CONNECTING_TIMEOUT_MS }, made({ createdAt: new Date(NOW - 1_000).toISOString() }), "linear.app", NOW)).toBe(true);
+    // A connection that was already there when the button was pressed.
+    expect(connectionAnswersPress(entry, made({ createdAt: new Date(since).toISOString() }), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made({ createdAt: new Date(since - 86_400_000).toISOString() }), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made({ createdAt: "" }), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made({ createdAt: "not a date" }), "linear.app", NOW)).toBe(false);
+    // A domain that is not exactly the card's: a subdomain, a lookalike, none listed.
+    expect(connectionAnswersPress(entry, made({ installation: { displayName: "Linear", domain: "api.linear.app" } }), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made(), "api.linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made(), "linear.com", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, made({ installation: { displayName: "Linear" } }), "linear.app", NOW)).toBe(false);
+    // No press, a "Not now", no connection.
+    expect(connectionAnswersPress(null, made(), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress({ state: "declined", since }, made(), "linear.app", NOW)).toBe(false);
+    expect(connectionAnswersPress(entry, null, "linear.app", NOW)).toBe(false);
   });
 
   it("the bot can use an app open to everyone, or one granted from here", () => {
@@ -176,23 +241,27 @@ describe("catalogMatchFor", () => {
 });
 
 describe("the logo", () => {
-  it("builds exactly the console's two sources from the domain, in its order", () => {
-    expect(appLogoSources("linear.app")).toEqual([
-      "https://t0.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=https%3A%2F%2Flinear.app&size=64",
-      "https://icons.duckduckgo.com/ip3/linear.app.ico",
-    ]);
-    expect(appLogoSources("mcp.linear.app")).toEqual(appLogoSources("linear.app"));
-    expect(appLogoSources("nope")).toEqual([]);
-  });
-
-  it("pairs the bundled mark, when the app has one, with the favicon sources; never a badge from the name", () => {
-    expect(appLogo("linear.app")).toEqual({ mark: brandMarkFor("linear.app"), sources: appLogoSources("linear.app") });
+  it("is the bundled mark when the app has one, else nothing; never a badge from the name", () => {
+    expect(appLogo("linear.app")).toEqual({ mark: brandMarkFor("linear.app") });
     expect(appLogo("linear.app").mark?.title).toBe("Linear");
     expect(appLogo("mcp.linear.app").mark?.title).toBe("Linear");
-    // An app with no bundled mark: the image chain only.
-    expect(appLogo("example.com")).toEqual({ mark: null, sources: appLogoSources("example.com") });
-    expect(appLogo("nope")).toEqual({ mark: null, sources: [] });
+    // An app with no bundled mark: the generic glyph.
+    expect(appLogo("example.com")).toEqual({ mark: null });
+    expect(appLogo("nope")).toEqual({ mark: null });
     expect(Object.keys(appLogo("github.com"))).not.toContain("monogram");
+  });
+
+  it("never builds an image address from the domain", () => {
+    // The app's image policy allows one remote origin, the marketplace assets
+    // host. A favicon service address built from a domain the bot named would
+    // make the webview call a third party with no click.
+    for (const domain of ["linear.app", "example.com", "deepwiki.com", "evil.example.org"]) {
+      const logo = appLogo(domain);
+      expect(Object.keys(logo)).toEqual(["mark"]);
+      expect(JSON.stringify(logo)).not.toMatch(/https?:/);
+    }
+    const view = integrationCardView({ domain: "example.com" }, input({ facts: facts(), lookup: KEYED }))!;
+    expect(JSON.stringify(view)).not.toMatch(/https?:/);
   });
 });
 
@@ -211,7 +280,9 @@ describe("integrationCardView", () => {
       domain: "linear.app",
       title: "Linear",
       state: "offered",
-      line: "Your issues live here",
+      // The app's own sentence, which says the bot gets access. The bot's reason is a second line, named as the bot's.
+      line: "Connect Linear so Nova can use it.",
+      reason: "Nova says: Your issues live here",
       primaryLabel: "Connect Linear",
       primaryAction: "connect",
       primaryPending: false,
@@ -222,7 +293,41 @@ describe("integrationCardView", () => {
       connectionId: null,
       logo: { mark: { title: "Linear" } },
     });
-    expect(view.logo?.sources).toHaveLength(2);
+    expect(view.logo).toEqual({ mark: brandMarkFor("linear.app") });
+  });
+
+  it("never lets the bot's reason stand in for the sentence that says the bot gets access", () => {
+    const pushy = "Just a quick read-only sign in";
+    const view = integrationCardView({ domain: "linear.app", why: pushy }, input({ facts: facts(), lookup: LINEAR }))!;
+    expect(view.line).toBe("Connect Linear so Nova can use it.");
+    expect(view.line).not.toContain(pushy);
+    expect(view.reason).toBe(`Nova says: ${pushy}`);
+    expect(botReason("  Nova ", " x ")).toBe("Nova says: x");
+    expect(botReason("", "x")).toBe("your bot says: x");
+    // No reason, or a blank one: no second line.
+    expect(integrationCardView({ domain: "linear.app" }, input({ facts: facts(), lookup: LINEAR }))!.reason).toBeNull();
+    expect(integrationCardView({ domain: "linear.app", why: "   " }, input({ facts: facts(), lookup: LINEAR }))!.reason).toBeNull();
+  });
+
+  it("shows the reason only while the app is offered, and gives its place to a note", () => {
+    const item = { domain: "linear.app", why: "Your issues live here" };
+    // A failure or a timeout note takes the second line: the card is one fixed height.
+    expect(integrationCardView(item, input({ facts: facts(), lookup: LINEAR, note: "Could not start the connection. Try again." }))).toMatchObject({
+      line: "Connect Linear so Nova can use it.",
+      reason: null,
+      note: "Could not start the connection. Try again.",
+    });
+    const timedOut = integrationCardView(item, input({ facts: facts(), lookup: LINEAR, record: markAppConnecting(null, "linear.app", NOW - CONNECTING_TIMEOUT_MS - 1) }))!;
+    expect(timedOut).toMatchObject({ state: "offered", reason: null, note: APP_TIMEOUT_NOTE("Linear") });
+    // Every other state says its own sentence and nothing of the bot's.
+    const connecting = integrationCardView(item, input({ facts: facts(), lookup: LINEAR, record: markAppConnecting(null, "linear.app", NOW) }))!;
+    const declined = integrationCardView(item, input({ facts: facts(), lookup: LINEAR, record: markAppDeclined(null, "linear.app", NOW) }))!;
+    const connected = integrationCardView(item, input({ facts: facts([connection()]), lookup: "unknown" }))!;
+    const noAdmin = integrationCardView(item, input({ facts: facts([], { viewer: { personUid: "prs_me", canManageIntegrations: false } }), lookup: LINEAR }))!;
+    for (const view of [connecting, declined, connected, noAdmin]) {
+      expect(view.reason ?? null, view.state).toBeNull();
+      expect(view.line).not.toContain("Your issues live here");
+    }
   });
 
   it("writes its own line when the bot gives no reason, and opens the modal for a key app", () => {
@@ -473,18 +578,28 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
     ]);
     // Owner, 2026-10-03: "We shouldn't show 4 cards - max 3".
     expect(MAX_FALLBACK_APPS).toBe(3);
-    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, { domain: "notion.so" }, { domain: "asana.com" }]);
-    expect(appChosenItems(f, null, true)).toEqual([{ domain: "notion.so" }, { domain: "asana.com" }, { domain: "linear.app" }]);
+    const notion = { domain: "notion.so", connectionId: "a2" };
+    const asana = { domain: "asana.com", connectionId: "a3" };
+    const linear = { domain: "linear.app", connectionId: "a1" };
+    const hubspot = { domain: "hubspot.com", connectionId: "a4" };
+    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, notion, asana]);
+    expect(appChosenItems(f, null, true)).toEqual([notion, asana, linear]);
     // One the person already let the bot use is not offered again.
-    expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), true)).toEqual([{ domain: "asana.com" }, { domain: "linear.app" }, { domain: "hubspot.com" }]);
-    expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), false)).toEqual([{ app: "slack" }, { domain: "asana.com" }, { domain: "linear.app" }]);
+    expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), true)).toEqual([asana, linear, hubspot]);
+    expect(appChosenItems(f, recordGrant(null, "a2", "Notion", NOW), false)).toEqual([{ app: "slack" }, asana, linear]);
   });
 
   it("names an app with no domain by its provider, and skips what it cannot name", () => {
     const f = facts([own("a1", "Linear", undefined, "2026-10-01T00:00:00.000Z"), connection({ id: "a2", provider: "", installation: {} })]);
-    expect(appChosenItems(f, null, true)).toEqual([{ domain: "linear.com" }]);
-    // The card matches it back to the connection by its first label.
-    expect(connectionForDomain(f, "linear.com")?.id).toBe("a1");
+    expect(appChosenItems(f, null, true)).toEqual([{ domain: "linear.com", connectionId: "a1" }]);
+    // The card finds the connection by the id the app put on the item, never by the guessed name.
+    expect(connectionForItem(f, appChosenItems(f, null, true)[0]!)?.id).toBe("a1");
+    expect(connectionForDomain(f, "linear.com")).toBeNull();
+    const view = integrationCardView(appChosenItems(f, null, true)[0] as { domain: string; connectionId: string }, input({ facts: f }))!;
+    expect(view).toMatchObject({ state: "connected", connectionId: "a1", primaryLabel: "Let Nova use it" });
+    // Its row is settled and asks the catalog nothing.
+    expect(domainsToLookUp(appChosenItems(f, null, true), f)).toEqual([]);
+    expect(connectRowReady(appChosenItems(f, null, true), { facts: f, lookupFor: () => "unknown", since: NOW, now: NOW })).toBe(true);
   });
 
   it("offers nothing of a list that does not say who is looking", () => {

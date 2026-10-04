@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
 // Integration cards: one card per app the bot named, drawn from views the
-// app built. The logo is the app's bundled brand mark, else a favicon once
-// one loads, else the generic app glyph: never a badge made from the name.
+// app built. The logo is the app's bundled brand mark, else the generic app
+// glyph: never a badge made from the name, and never an image from another
+// host.
 // A row is a grid, with a quiet browse-all link under it.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -89,11 +90,28 @@ describe("an integration card", () => {
     expect(el.dataset.domain).toBe("linear.app");
     expect(el.dataset.state).toBe("offered");
     expect(el.getAttribute("aria-label")).toBe("Linear");
-    expect(el.querySelector('[data-testid="connection-card-line"]')?.textContent).toBe("Your issues live here");
+    // The app's own sentence is the line; the bot's reason sits under it with the bot's name on it.
+    expect(el.querySelector('[data-testid="connection-card-line"]')?.textContent).toBe("Connect Linear so Nova can use it.");
+    const reason = el.querySelector<HTMLElement>('[data-testid="connection-card-reason"]')!;
+    expect(reason.textContent).toBe("Nova says: Your issues live here");
+    expect(reason.getAttribute("title")).toBe("Nova says: Your issues live here");
+    expect(reason.previousElementSibling?.getAttribute("data-testid")).toBe("connection-card-line");
     expect(primary(el)?.textContent?.trim()).toBe("Connect Linear");
     expect(primary(el)?.dataset.action).toBe("connect");
     expect(decline(el)?.textContent?.trim()).toBe("Not now");
     expect(el.getAttribute("style")).toBeNull();
+  });
+
+  it("draws no reason line when the bot gave none, and binds a reason as text", () => {
+    const plain = renderCard(view("linear.app", { lookup: LINEAR }));
+    expect(plain.querySelector('[data-testid="connection-card-reason"]')).toBeNull();
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    const markup = renderCard(view("linear.app", { lookup: LINEAR }, '<img src=x onerror=alert(1)> <b>bold</b>'));
+    const reason = markup.querySelector<HTMLElement>('[data-testid="connection-card-reason"]')!;
+    expect(reason.textContent).toBe('Nova says: <img src=x onerror=alert(1)> <b>bold</b>');
+    expect(reason.querySelector("img, b")).toBeNull();
   });
 
   it("shows each state as its own state", () => {
@@ -183,13 +201,12 @@ describe("an integration card", () => {
 });
 
 describe("the logo", () => {
-  const SOURCES = ["https://t0.gstatic.com/faviconV2?x=1", "https://icons.duckduckgo.com/ip3/example.com.ico"];
-  /** An app with no bundled mark: the image chain, with the generic glyph under it. */
-  const IMAGE_ONLY = { mark: null, sources: SOURCES };
+  /** An app with no bundled mark: the generic glyph. */
+  const NO_MARK: CardLogo = { mark: null };
   const logoMark = (el: ParentNode) => el.querySelector<SVGElement>('[data-testid="connection-card-logo-mark"]');
   const generic = (el: ParentNode) => el.querySelector<HTMLElement>('[data-testid="connection-card-logo-generic"]');
 
-  function renderLogo(logo: CardLogo = IMAGE_ONLY, size = 28): HTMLElement {
+  function renderLogo(logo: CardLogo = NO_MARK, size = 28): HTMLElement {
     const root = target();
     component = mount(ConnectionCardLogo, { target: root, props: { logo, size } });
     flushSync();
@@ -220,102 +237,60 @@ describe("the logo", () => {
     expect(logoMark(box)?.getAttribute("fill")).toBe(`#${siIntercom.hex}`);
   });
 
-  it("shows the generic glyph first, and a lazy image that tries the first source", () => {
-    const box = renderLogo();
+  it("shows the generic glyph for an app with no bundled mark, and asks no other host for an image", () => {
+    const box = renderLogo(appLogo("example.com"));
     expect(box.dataset.logo).toBe("generic");
     expect(box.dataset.tile).toBe("glass");
-    expect(box.dataset.loaded).toBe("false");
     expect(generic(box)?.querySelector('[data-testid="connection-card-icon-generic"]')).not.toBeNull();
+    expect(logoMark(box)).toBeNull();
     expect(box.textContent?.trim()).toBe("");
-    const img = logoImg(box)!;
-    expect(img.getAttribute("src")).toBe(SOURCES[0]);
-    expect(img.getAttribute("loading")).toBe("lazy");
-    expect(img.getAttribute("decoding")).toBe("async");
-    expect(img.getAttribute("alt")).toBe("");
-    expect(img.getAttribute("referrerpolicy")).toBe("no-referrer");
+    // The app's image policy names one remote origin. A logo fetched by
+    // domain would let a domain a bot writes make the webview call a third
+    // party with no click, so the box holds no image at all.
+    expect(box.querySelector("img")).toBeNull();
+    expect(box.innerHTML).not.toContain("http");
   });
 
-  it("replaces the glyph with the image once it has loaded, on a light tile", () => {
-    const box = renderLogo();
-    logoImg(box)!.dispatchEvent(new Event("load"));
-    flushSync();
-    expect(box.dataset.loaded).toBe("true");
-    expect(box.dataset.logo).toBe("image");
-    expect(box.dataset.tile).toBe("light");
-    // The glyph stays in the box (hidden by style), so nothing moves.
-    expect(generic(box)).not.toBeNull();
-    expect(box.style.width).toBe("28px");
+  it("ignores image sources on a logo it is handed: only the mark is read", () => {
+    const stale = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=1", "https://icons.duckduckgo.com/ip3/example.com.ico"] } as CardLogo;
+    const box = renderLogo(stale);
+    expect(box.dataset.logo).toBe("generic");
+    expect(box.querySelector("img")).toBeNull();
+    expect(box.innerHTML).not.toContain("gstatic");
+    expect(box.innerHTML).not.toContain("duckduckgo");
   });
 
-  it("keeps a loaded image when the card is drawn again with the same logo, and starts over only for a new one", () => {
-    // The host rebuilds every card view on its clock (a catalog answer, the
-    // row's settle timer, a recheck while connecting), so the logo arrives as
-    // a new object with the same sources within a second of the first draw.
-    // The image is already loaded and fires no second load event, so a
-    // restart on object identity left the generic glyph in the installed app.
+  it("keeps the same box when the card is drawn again with the same logo, and swaps for a new one", () => {
+    // The host rebuilds every card view on its clock, so the logo arrives as
+    // a new object with the same mark.
     const root = target();
-    const props = $state({ logo: { mark: null, sources: [...SOURCES] } as CardLogo, size: 28 });
+    const props = $state({ logo: appLogo("linear.app") as CardLogo, size: 28 });
     component = mount(ConnectionCardLogo, { target: root, props });
     flushSync();
     const box = logoBox(root);
-    const img = logoImg(box)!;
-    img.dispatchEvent(new Event("load"));
+    const first = logoMark(box)!;
+    props.logo = appLogo("linear.app");
     flushSync();
-    expect(box.dataset.loaded).toBe("true");
-
-    props.logo = { mark: null, sources: [...SOURCES] };
+    expect(logoMark(box)).toBe(first);
+    props.logo = appLogo("example.com");
     flushSync();
-    expect(box.dataset.loaded).toBe("true");
-    expect(box.dataset.logo).toBe("image");
-    expect(logoImg(box)).toBe(img);
-
-    // A chain that has ended stays ended: the same logo again does not retry the network.
-    props.logo = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=2"] };
-    flushSync();
-    expect(box.dataset.loaded).toBe("false");
-    expect(logoImg(box)!.getAttribute("src")).toBe("https://t0.gstatic.com/faviconV2?x=2");
-    logoImg(box)!.dispatchEvent(new Event("error"));
-    flushSync();
-    expect(logoImg(box)).toBeNull();
-    props.logo = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=2"] };
-    flushSync();
-    expect(logoImg(box)).toBeNull();
-    expect(box.dataset.logo).toBe("generic");
-  });
-
-  it("falls through both sources on error and ends on the generic glyph, never on letters", () => {
-    const box = renderLogo();
-    logoImg(box)!.dispatchEvent(new Event("error"));
-    flushSync();
-    expect(logoImg(box)!.getAttribute("src")).toBe(SOURCES[1]);
-    expect(box.dataset.loaded).toBe("false");
-    logoImg(box)!.dispatchEvent(new Event("error"));
-    flushSync();
-    expect(logoImg(box)).toBeNull();
-    expect(box.dataset.logo).toBe("generic");
-    expect(generic(box)).not.toBeNull();
-    expect(box.textContent?.trim()).toBe("");
-  });
-
-  it("draws only the generic glyph when there is no mark and no source", () => {
-    const box = renderLogo({ mark: null, sources: [] });
-    expect(logoImg(box)).toBeNull();
     expect(logoMark(box)).toBeNull();
     expect(generic(box)).not.toBeNull();
-    expect(box.textContent?.trim()).toBe("");
+    expect(box.dataset.logo).toBe("generic");
   });
 
-  it("sizes the mark and the image from the box, so the modal's larger box gets a larger logo", () => {
+  it("sizes the mark and the glyph from the box, so the modal's larger box gets a larger logo", () => {
     const mark = renderLogo(appLogo("github.com"), 34);
     expect(logoMark(mark)?.getAttribute("width")).toBe("24");
     void unmount(component!);
     component = null;
     host?.remove();
-    const image = renderLogo(IMAGE_ONLY, 34);
-    expect(logoImg(image)?.getAttribute("width")).toBe("26");
+    const glyph = renderLogo(NO_MARK, 34);
+    expect(glyph.style.width).toBe("34px");
+    expect(generic(glyph)).not.toBeNull();
   });
 
-  it("is in the card's header: a bundled mark for Linear, the image chain for an app without one, and Slack's own mark", () => {
+  it("is in the card's header: a bundled mark for Linear, the generic glyph for an app without one, and Slack's own mark", () => {
     const linear = renderCard(view("linear.app", { lookup: LINEAR }));
     expect(logoMark(logoBox(linear))).not.toBeNull();
     expect(logoImg(linear)).toBeNull();
@@ -325,7 +300,8 @@ describe("the logo", () => {
     host?.remove();
     const example = renderCard(view("example.com", { lookup: EXAMPLE }));
     expect(logoMark(logoBox(example))).toBeNull();
-    expect(logoImg(example)?.getAttribute("src")).toContain("t0.gstatic.com");
+    expect(generic(logoBox(example))).not.toBeNull();
+    expect(example.querySelector("img")).toBeNull();
     void unmount(component!);
     component = null;
     host?.remove();
@@ -341,9 +317,10 @@ describe("the logo", () => {
     void unmount(component!);
     component = null;
     host?.remove();
-    // A connection the list names only by provider: "{provider}.com" gets the image chain for that host.
+    // A connection the list gives no domain for: the app's own pick names it by id, under "{provider}.com".
+    const bare = facts([connection({ id: "acct_gmail", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } })]);
     const gmail = renderCard(
-      view("gmail.com", { facts: facts([connection({ id: "acct_gmail", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } })]) }),
+      integrationCardView({ domain: "gmail.com", connectionId: "acct_gmail" }, { botName: "Nova", now: NOW, lookup: "unknown", facts: bare })!,
     );
     expect(gmail.dataset.state).toBe("connected");
     expect(logoMark(logoBox(gmail))?.querySelector("path")?.getAttribute("d")).toBe(siGmail.path);
@@ -365,14 +342,14 @@ describe("a row of integration cards in a message", () => {
   /** A second block: a no-auth app, a key app, and one nobody knows. */
   const MORE = parseRichContent({
     v: 1,
-    blocks: [{ kind: "connect", items: [{ domain: "asana.com" }, { domain: "example.com" }, { domain: "unknown.example" }] }],
+    blocks: [{ kind: "connect", items: [{ domain: "asana.com" }, { domain: "example.com" }, { domain: "unknown-app.io" }] }],
   })!;
 
   const lookups: Record<string, CatalogLookup> = {
     "linear.app": LINEAR,
     "example.com": EXAMPLE,
     "asana.com": { domain: "asana.com", name: "Asana", authClass: "none" },
-    "unknown.example": "not-found",
+    "unknown-app.io": "not-found",
   };
   const COMPANY = facts([connection({ id: "acct_notion", provider: "factory:notion", installation: { displayName: "Notion", domain: "notion.so" } })]);
 

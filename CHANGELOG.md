@@ -12,7 +12,7 @@ The release moves it under the version it ships in.
 - A cloud bot's direct message shows connection cards under its messages for Slack and the other apps your company uses. Connect Slack opens in a window over the chat. Writing "Connect more tools" brings the cards back. Suggested replies appear under the bot's newest message.
 - While a cloud bot's copy of your company files is syncing, a slim strip under the header of its direct message shows how far along it is, and goes away once the files are up to date.
 - While a bot works on an answer in its direct message, the "working" row shows what the bot is doing, and it goes away when the answer arrives.
-- App logos on connection cards load from two favicon services (t0.gstatic.com and icons.duckduckgo.com). The app's image policy now allows those two hosts.
+- App logos on connection cards are the app's own brand mark, shipped inside HQ. An app HQ has no mark for shows a plain app icon. No logo is loaded from another site.
 - Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 

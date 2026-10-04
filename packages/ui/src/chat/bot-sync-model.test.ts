@@ -12,6 +12,7 @@ import {
   BOT_SYNC_STALE_TITLE,
   BOT_SYNC_TITLE,
   advanceBotSync,
+  botSyncHideDeadline,
   botSyncNeedsClock,
   botSyncView,
   observeBotSync,
@@ -294,6 +295,20 @@ describe("botSyncView", () => {
     expect(botSyncNeedsClock(done, NOW + 1_000)).toBe(true);
     expect(botSyncNeedsClock(done, NOW + BOT_SYNC_DONE_VISIBLE_MS)).toBe(false);
     expect(botSyncNeedsClock({ ...done, state: "failed" }, NOW)).toBe(false);
+  });
+
+  it("names the one moment the strip changes by itself, so the widget sets one timer instead of polling", () => {
+    const done: BotSyncFacts = { state: "done", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null };
+    expect(botSyncHideDeadline(done, NOW)).toBe(NOW + BOT_SYNC_DONE_VISIBLE_MS);
+    expect(botSyncHideDeadline(done, NOW + 1_500)).toBe(NOW + BOT_SYNC_DONE_VISIBLE_MS);
+    // A reader whose clock is a moment behind still gets the same deadline.
+    expect(botSyncHideDeadline(done, NOW - 500)).toBe(NOW + BOT_SYNC_DONE_VISIBLE_MS);
+    // Past it, and for every state time does not change, there is none.
+    expect(botSyncHideDeadline(done, NOW + BOT_SYNC_DONE_VISIBLE_MS)).toBeNull();
+    expect(botSyncHideDeadline({ ...done, endedAt: null }, NOW)).toBeNull();
+    expect(botSyncHideDeadline({ ...done, state: "failed" }, NOW)).toBeNull();
+    expect(botSyncHideDeadline(syncing(), NOW)).toBeNull();
+    expect(botSyncHideDeadline(null, NOW)).toBeNull();
   });
 });
 

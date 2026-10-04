@@ -2,70 +2,40 @@
   /**
    * The logo box of an integration card and of the modal it opens.
    *
-   * Three things can be in the box, in this order of preference:
+   * Two things can be in the box:
    *
    * 1. The app's bundled brand mark (app-brand-marks.ts), drawn at once as an
    *    inline SVG in the brand's colour on a light tile (or a dark tile for a
    *    light brand colour). No network, no image policy.
-   * 2. Else an image that tries the sources the app built from the domain
-   *    (integration-cards-model.ts, `appLogoSources`), in order, falling
-   *    through on error, and takes the box only once it has loaded.
-   * 3. Else, and while an image is still loading, the generic app glyph in
-   *    the muted text colour. Never a badge made from the app's name: a card
-   *    with no logo says so plainly instead of showing a made-up one.
+   * 2. Else the generic app glyph in the muted text colour. Never a badge
+   *    made from the app's name: a card with no logo says so plainly instead
+   *    of showing a made-up one.
    *
-   * The box is one fixed size, so nothing moves whichever it is, and nothing
-   * waits on the network. The image is decorative; the name next to it says
-   * what it is. Every source is the app's own URL, never one the bot supplied.
+   * There is no `<img>` here. The app's image policy allows one remote
+   * origin (the marketplace assets host), and a logo fetched by domain would
+   * let a domain a bot writes make the webview call a third party with no
+   * click. The box is one fixed size, so nothing moves whichever it is. The
+   * logo is decorative; the name next to it says what it is.
    */
-  import { untrack } from "svelte";
   import { markTile } from "./app-brand-marks.js";
   import ConnectionCardIcon from "./ConnectionCardIcon.svelte";
   import type { ConnectionCardLogo } from "./connection-card-model.js";
 
   interface Props {
     logo: ConnectionCardLogo;
-    /** The box, in px. A mark inside is 10px smaller, an image 8px smaller. */
+    /** The box, in px. A mark inside is 10px smaller. */
     size?: number;
   }
 
   let { logo, size = 28 }: Props = $props();
 
-  let index = $state(0);
-  let loaded = $state(false);
-
-  /**
-   * The logo as text. The host rebuilds every card view on its clock (a
-   * catalog answer, the row's settle timer, a recheck while connecting), so
-   * the same logo arrives as a new object within a second of the first draw.
-   * The image is already loaded then and fires no second load event, so a
-   * restart on object identity would leave the glyph for good.
-   */
-  const signature = $derived(`${logo.mark?.path ?? ""}\u0000${logo.sources.join("\u0000")}`);
-
-  // A new logo (the card changed app) starts the chain again.
-  $effect(() => {
-    void signature;
-    untrack(() => {
-      index = 0;
-      loaded = false;
-    });
-  });
-
   const mark = $derived(logo.mark);
-  const src = $derived(mark ? null : (logo.sources[index] ?? null));
-  /** What the box shows now. */
-  const mode = $derived(mark ? "mark" : loaded ? "image" : "generic");
-  /** The tile behind it: a brand mark picks by its colour; an image sits on white; the glyph on the glass. */
-  const tile = $derived(mark ? markTile(mark.hex) : loaded ? "light" : "glass");
+  /** What the box shows. */
+  const mode = $derived(mark ? "mark" : "generic");
+  /** The tile behind it: a brand mark picks by its colour; the glyph sits on the glass. */
+  const tile = $derived(mark ? markTile(mark.hex) : "glass");
   const markSize = $derived(Math.max(10, size - 10));
-  const imageSize = $derived(Math.max(8, size - 8));
   const glyphSize = $derived(Math.max(10, Math.round(size * 0.64)));
-
-  function failed(): void {
-    loaded = false;
-    index += 1;
-  }
 </script>
 
 <span
@@ -73,7 +43,6 @@
   data-testid="connection-card-logo"
   data-logo={mode}
   data-tile={tile}
-  data-loaded={loaded ? "true" : "false"}
   aria-hidden="true"
   style:width={`${size}px`}
   style:height={`${size}px`}
@@ -91,32 +60,16 @@
       <path d={mark.path} />
     </svg>
   {:else}
-    <!-- The glyph stays in the box under the image, hidden once it has loaded, so nothing moves. -->
     <span class="connection-card-logo-generic" data-testid="connection-card-logo-generic">
       <ConnectionCardIcon name="integration" size={glyphSize} />
     </span>
-    {#if src}
-      <img
-        class="connection-card-logo-img"
-        data-testid="connection-card-logo-img"
-        {src}
-        alt=""
-        loading="lazy"
-        decoding="async"
-        width={imageSize}
-        height={imageSize}
-        referrerpolicy="no-referrer"
-        onload={() => (loaded = true)}
-        onerror={failed}
-      />
-    {/if}
   {/if}
 </span>
 
 <style>
   /* One fixed box on the glass. The tile behind the logo depends on what is
-     in it; the size never does, so a mark, an image and the glyph all swap
-     with no layout shift. */
+     in it; the size never does, so a mark and the glyph swap with no layout
+     shift. */
   .connection-card-logo {
     position: relative;
     display: inline-flex;
@@ -130,8 +83,8 @@
     color: inherit;
     overflow: hidden;
   }
-  /* A light tile: a brand mark in a dark colour, or a favicon, reads on white
-     wherever the glass is. */
+  /* A light tile: a brand mark in a dark colour reads on white wherever the
+     glass is. */
   .connection-card-logo[data-tile="light"] {
     border-color: rgba(255, 255, 255, 0.3);
     background: #fff;
@@ -149,25 +102,5 @@
     align-items: center;
     justify-content: center;
     line-height: 0;
-  }
-  .connection-card-logo-img {
-    position: absolute;
-    inset: 0;
-    margin: auto;
-    display: block;
-    object-fit: contain;
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-  .connection-card-logo[data-loaded="true"] .connection-card-logo-generic {
-    visibility: hidden;
-  }
-  .connection-card-logo[data-loaded="true"] .connection-card-logo-img {
-    opacity: 1;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .connection-card-logo-img {
-      transition: none;
-    }
   }
 </style>

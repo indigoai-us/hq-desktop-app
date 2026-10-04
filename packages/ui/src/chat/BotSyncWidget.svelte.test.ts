@@ -57,7 +57,8 @@ const detail = () => host!.querySelector('[data-testid="bot-sync-detail"]')?.tex
 const amount = () => host!.querySelector('[data-testid="bot-sync-amount"]');
 const glyph = () => host!.querySelector<SVGElement>('[data-testid="bot-sync-icon"] svg');
 const fill = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]');
-const fillWidth = () => parseFloat(fill()!.style.width);
+/** The bar's fill, in percent: the `--fill` ratio (0..1) the stylesheet scales the bar by. */
+const fillWidth = () => parseFloat(fill()!.style.getPropertyValue("--fill")) * 100;
 
 const SOURCE = readFileSync(join(import.meta.dirname, "BotSyncWidget.svelte"), "utf8");
 /** The declarations of one top-level rule in the component's stylesheet. */
@@ -309,6 +310,43 @@ describe("BotSyncWidget", () => {
     await vi.advanceTimersByTimeAsync(3_600_000);
     flushSync();
     expect(widget()).not.toBeNull();
+  });
+
+  it("eases the bar with a scale on the compositor, never a width the page lays out again", () => {
+    const fillRule = rule(".bot-sync-fill");
+    expect(fillRule).toMatch(/transform:\s*scaleX\(var\(--fill/);
+    expect(fillRule).toMatch(/transform-origin:\s*left/);
+    expect(fillRule).toMatch(/transition:\s*transform\b/);
+    expect(fillRule).not.toMatch(/transition:[^;]*\bwidth\b/);
+    render(syncing({ filesDone: 103, filesTotal: 412 }));
+    expect(fill()!.style.getPropertyValue("--fill")).toBe("0.25");
+    expect(fill()!.style.width).toBe("");
+  });
+
+  it("runs no ticking clock: one timer to the moment 'up to date' goes away, and none while syncing", async () => {
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const timeout = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const { props } = render(syncing({ filesDone: 10, filesTotal: 412 }));
+      await settle();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(interval).not.toHaveBeenCalled();
+      timeout.mockClear();
+      props.facts = { state: "done", startedAt: NOW - 60_000, endedAt: Date.now(), filesDone: 412, filesTotal: 412 };
+      await settle();
+      expect(interval).not.toHaveBeenCalled();
+      // The one timer is set to the hide deadline, not to a one second tick.
+      const waits = timeout.mock.calls.map(([, ms]) => ms);
+      expect(waits).toContain(BOT_SYNC_DONE_VISIBLE_MS);
+      expect(waits).not.toContain(1_000);
+      await vi.advanceTimersByTimeAsync(BOT_SYNC_DONE_VISIBLE_MS + 400);
+      flushSync();
+      expect(widget()).toBeNull();
+      expect(interval).not.toHaveBeenCalled();
+    } finally {
+      interval.mockRestore();
+      timeout.mockRestore();
+    }
   });
 
   it("goes away when the facts are taken away", async () => {

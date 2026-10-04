@@ -4,8 +4,10 @@
    *
    * Drawn entirely from a view the app built (connection-card-model.ts): the
    * title, the line, the buttons and the note are the app's own words, bound
-   * as text. Nothing here comes from the bot, and a press never opens a link
-   * by itself. It tells the host which button was pressed and the host decides
+   * as text. One thing on a card can be the bot's: an integration card's
+   * reason, sanitized plain text bound as text, drawn under the app's own
+   * sentence with the bot's name on it. A press never opens a link by
+   * itself. It tells the host which button was pressed and the host decides
    * what to open.
    *
    * A pressed button is disabled at once and stays so until the host has
@@ -23,8 +25,9 @@
    * both app themes, so no color here comes from a theme variable.
    *
    * Every card is one fixed height in every state (`--cc-height` below): the
-   * header row (logo, name, status), one line of copy, the button strip at
-   * the bottom. What does not fit scrolls inside the glass panel: the tools
+   * header row (logo, name, status), one line of copy (and under it, on an
+   * offered app's card, the bot's one-line reason), the button strip at the
+   * bottom. What does not fit scrolls inside the glass panel: the tools
    * card's rows. The header, the line and the button strip never move.
    */
   import { onDestroy } from "svelte";
@@ -158,7 +161,7 @@
   <div class="connection-card-glass">
     <div class="connection-card-head">
       {#if view.logo}
-        <!-- The app's logo: its bundled mark at once, else the favicon once it has loaded, else the generic glyph. -->
+        <!-- The app's logo: its bundled mark, else the generic glyph. Never a remote image. -->
         <ConnectionCardLogo logo={view.logo} size={HEAD_BOX} />
       {:else}
         <!-- Slack's own mark on a light tile; the generic glyph on the glass for the tools card. -->
@@ -183,6 +186,10 @@
     </div>
     <!-- One line of copy, cut with an ellipsis past it so the card keeps its height; the title holds all of it. -->
     <div class="connection-card-line" data-testid="connection-card-line" title={view.line}>{view.line}</div>
+    {#if view.reason}
+      <!-- The bot's own reason, under the app's sentence and named as the bot's. One line, the rest in the title. -->
+      <div class="connection-card-reason" data-testid="connection-card-reason" title={view.reason}>{view.reason}</div>
+    {/if}
     {#if view.waiting.length > 0}
       <div class="connection-card-list" data-more-below={moreBelow ? "true" : "false"}>
         <!-- The list scrolls, so it takes focus: the arrow keys scroll it for
@@ -264,10 +271,16 @@
    * Readability does not depend on the art. Words sit on the glass panel, or
    * on a button with its own fill. The brightest pixel in either wallpaper is
    * pure white (a star). Through the scrim (0.16 at its lightest) and the
-   * glass (0.68) it comes out at about rgb(81, 81, 82), and the faintest words
-   * (the muted line, the green mark, the amber note) stay above 4.5:1 on that
-   * even before the blur evens it out. Change the scrim, the glass or an ink
-   * together, never one alone.
+   * glass (0.78) it comes out at about rgb(61, 61, 62), and the faintest words
+   * (the muted line, the green mark, the amber note) stay above 4.5:1 on that.
+   * Change the scrim, the glass or an ink together, never one alone.
+   *
+   * No backdrop-filter anywhere on a card. Cards sit in the scrolling
+   * timeline, so a blur here is a per-frame GPU blur for every card on screen
+   * on every scroll tick (scripts/perf-budget-contract.test.ts). The glass and
+   * the quiet button carry the frost as extra alpha in their own fill instead:
+   * the art behind them is the card's own and never moves, so a static fill
+   * reads the same.
    */
   .connection-card {
     --cc-ink: #fafafa;
@@ -329,12 +342,10 @@
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 5px;
-    background: rgba(17, 17, 19, 0.68);
+    background: rgba(17, 17, 19, 0.78);
     box-shadow:
       0 4px 14px rgba(0, 0, 0, 0.3),
       inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
   }
   .connection-card[data-state="connecting"] {
     border-color: var(--cc-accent);
@@ -347,7 +358,7 @@
   }
   .connection-card[data-state="connected"] .connection-card-glass {
     border-color: color-mix(in srgb, var(--cc-ok) 30%, transparent);
-    background: color-mix(in srgb, #16a34a 10%, rgba(17, 17, 19, 0.74));
+    background: color-mix(in srgb, #16a34a 10%, rgba(17, 17, 19, 0.82));
   }
   /* Declined recedes: the art goes grey and dark, the border dashed, the
      title and icon dimmer. The words keep the muted ink, which stays well
@@ -362,7 +373,7 @@
   }
   .connection-card[data-state="declined"] .connection-card-glass {
     border-color: rgba(255, 255, 255, 0.07);
-    background: rgba(17, 17, 19, 0.5);
+    background: rgba(17, 17, 19, 0.6);
     box-shadow: none;
   }
   .connection-card-head {
@@ -422,6 +433,7 @@
   /* The copy is one line and the note two at most, then an ellipsis: neither
      ever grows the card. The title attribute holds the whole sentence. */
   .connection-card-line,
+  .connection-card-reason,
   .connection-card-note {
     flex: 0 0 auto;
     display: -webkit-box;
@@ -435,6 +447,19 @@
     -webkit-line-clamp: 1;
     line-clamp: 1;
     font-size: 12px;
+    line-height: 1.45;
+    color: var(--cc-muted);
+  }
+  /* The bot's reason: one line in the same quiet ink as the line above it,
+     set in italics so it reads as someone's words and not the app's. It sits
+     close under the line (most of the glass's gap is taken back), as one
+     pair with it. */
+  .connection-card-reason {
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    margin-top: -4px;
+    font-size: 12px;
+    font-style: italic;
     line-height: 1.45;
     color: var(--cc-muted);
   }
@@ -568,14 +593,12 @@
   }
   .connection-card-btn.is-quiet {
     color: rgba(250, 250, 250, 0.88);
-    background: rgba(9, 9, 11, 0.6);
+    background: rgba(9, 9, 11, 0.74);
     border-color: rgba(255, 255, 255, 0.14);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
   }
   .connection-card-btn.is-quiet:hover:not(:disabled) {
     color: var(--cc-ink);
-    background: rgba(9, 9, 11, 0.72);
+    background: rgba(9, 9, 11, 0.84);
     border-color: rgba(255, 255, 255, 0.4);
   }
   .connection-card-btn:disabled {

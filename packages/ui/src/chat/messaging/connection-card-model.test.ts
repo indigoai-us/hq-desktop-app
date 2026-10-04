@@ -9,6 +9,7 @@ import {
   isConnectMoreRequest,
   MAX_BOT_CONNECTION_RECORDS,
   MAX_WAITING_ROWS,
+  SLACK_ADMIN_LINE,
   SLACK_TIMEOUT_NOTE,
   SLACK_UNFINISHED_LINE,
   cardOpensModal,
@@ -688,6 +689,42 @@ describe("connectionCardView: Slack", () => {
 
   it("falls back to a plain name for a bot without one", () => {
     expect(connectionCardView("slack", input({ botName: " " })).line).toBe("Talk to your bot in Slack and let it post there.");
+  });
+
+  it("says who can connect Slack, in place of the button, for a person the server refuses", () => {
+    // The status read answered 403: only a company admin may set the bot up.
+    // Connect Slack would open a modal that can only end in the same refusal.
+    const view = connectionCardView("slack", input({ slackDenied: true }));
+    expect(view).toEqual({
+      target: "slack",
+      state: "offered",
+      title: "Slack",
+      line: "Ask a company admin to connect Nova to Slack.",
+      primaryLabel: null,
+      primaryAction: "open",
+      primaryPending: false,
+      declineLabel: null,
+      mark: null,
+      note: null,
+      usable: [],
+      waiting: [],
+      moreWaiting: null,
+    });
+    expect(SLACK_ADMIN_LINE("Nova")).toBe("Ask a company admin to connect Nova to Slack.");
+    expect(connectionCardView("slack", input({ slackDenied: true, botName: " " })).line).toBe("Ask a company admin to connect your bot to Slack.");
+    // A wait this person started here, and a press in flight, do not bring a button back.
+    const started = connectionCardView("slack", input({ slackDenied: true, record: markConnecting(null, "slack", NOW - 60_000), inFlight: new Set([connectionActionKey("slack", "open")]) }));
+    expect(started).toMatchObject({ state: "offered", primaryLabel: null, primaryPending: false, declineLabel: null, line: "Ask a company admin to connect Nova to Slack." });
+    // The host's sentence still shows.
+    expect(connectionCardView("slack", input({ slackDenied: true, notes: { slack: "Could not check Slack right now." } })).note).toBe("Could not check Slack right now.");
+  });
+
+  it("keeps what the server and the person already said ahead of the refusal, and offers as before without it", () => {
+    expect(connectionCardView("slack", input({ slackDenied: true, slack: { state: "connected" } }))).toMatchObject({ state: "connected", line: "Nova is in Slack." });
+    expect(connectionCardView("slack", input({ slackDenied: true, record: markDeclined(null, "slack", NOW) })).state).toBe("declined");
+    for (const slackDenied of [false, null, undefined]) {
+      expect(connectionCardView("slack", input({ slackDenied }))).toMatchObject({ primaryLabel: "Connect Slack", declineLabel: "Not now" });
+    }
   });
 });
 

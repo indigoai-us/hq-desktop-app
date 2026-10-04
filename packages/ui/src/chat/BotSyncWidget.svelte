@@ -21,14 +21,15 @@
    * The progress bar is a two pixel line along the strip's bottom edge, in
    * the theme's muted grey ink so it stays low profile. It is always
    * determinate: filled to the real fraction done, or an empty track while
-   * no honest total is known. It never sweeps or shimmers; only its width
-   * eases when the number changes. No border, no shadow, no panel: a faint
+   * no honest total is known. It never sweeps or shimmers; only its length
+   * eases when the number changes (a scale on the compositor, not a width
+   * the page lays out again). No border, no shadow, no panel: a faint
    * tint of the accent over the pane, from the theme's own tokens, so it
    * reads in both themes. The copy is the same for every sync, first or
    * later, and never names the bot.
    */
   import { onDestroy, tick, untrack } from "svelte";
-  import { botSyncNeedsClock, botSyncView, type BotSyncFacts, type BotSyncView } from "./bot-sync-model.js";
+  import { botSyncHideDeadline, botSyncView, type BotSyncFacts, type BotSyncView } from "./bot-sync-model.js";
 
   interface Props {
     facts: BotSyncFacts | null;
@@ -38,26 +39,34 @@
 
   let { facts }: Props = $props();
 
-  /** How soon "up to date" is noticed gone. */
-  const CLOCK_MS = 1_000;
   /** The height and opacity transitions below, plus a little. The strip leaves the page after it. */
   const CLOSE_MS = 320;
 
   let now = $state(Date.now());
   const view = $derived(botSyncView(facts, { now }));
 
-  // The clock runs only while time itself changes the strip. New facts are
-  // always read at the present moment, however long the clock has been still.
+  // Time changes the strip in one case only: "up to date" goes away after a
+  // few seconds. So there is no ticking clock: one timer is set to that
+  // moment. New facts are always read at the present moment, however long
+  // ago the last timer fired.
   $effect(() => {
     const current = Date.now();
     now = current;
-    if (!botSyncNeedsClock(facts, current)) return;
-    const timer = setInterval(() => {
-      now = Date.now();
-      // "Up to date" has been shown long enough: nothing moves any more.
-      if (!botSyncNeedsClock(facts, now)) clearInterval(timer);
-    }, CLOCK_MS);
-    return () => clearInterval(timer);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const arm = (at: number): void => {
+      const deadline = botSyncHideDeadline(facts, at);
+      if (deadline === null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        now = Date.now();
+        // A timer that fired a moment early is set again for what is left.
+        arm(now);
+      }, Math.max(0, deadline - at));
+    };
+    arm(current);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
   });
 
   // What is drawn. While the strip closes it keeps its last words.
@@ -157,7 +166,7 @@
             aria-valuenow={shown.progress ?? undefined}
             aria-valuetext={shown.counts ?? undefined}
           >
-            <span class="bot-sync-fill" data-testid="bot-sync-fill" style:width={`${shown.fill}%`}></span>
+            <span class="bot-sync-fill" data-testid="bot-sync-fill" style:--fill={shown.fill / 100}></span>
           </div>
         {/if}
       </div>
@@ -269,9 +278,15 @@
   }
   .bot-sync-fill {
     display: block;
+    width: 100%;
     height: 100%;
     background: var(--bs-bar);
-    transition: width 0.6s ease;
+    /* The fill ratio is --fill (0..1), drawn with scaleX so the easing runs
+       on the compositor and the page is never laid out again for it. The
+       track clips the bar. Same pattern as ProjectRow's progress fill. */
+    transform: scaleX(var(--fill, 0));
+    transform-origin: left center;
+    transition: transform 0.6s ease;
   }
   @media (prefers-reduced-motion: reduce) {
     .bot-sync-slot,

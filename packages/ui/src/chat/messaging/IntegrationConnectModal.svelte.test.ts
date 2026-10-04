@@ -15,7 +15,7 @@ import type { CardModalContentProps } from "./card-modal-registry.js";
 /** An obviously fake key. Never a real one. */
 const KEY = "fake-key-0000";
 const NOVA = "agt_nova";
-const LOGO = { mark: null, sources: ["https://t0.gstatic.com/faviconV2?x=example", "https://icons.duckduckgo.com/ip3/example.com.ico"] };
+const LOGO = { mark: null };
 
 const BLUEPRINT = {
   ok: true,
@@ -140,9 +140,9 @@ describe("IntegrationConnectModal", () => {
     await settle();
     expect(dialog().querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Example");
     expect(dialog().querySelector('[data-testid="connection-card-logo"]')).not.toBeNull();
-    // No bundled mark for example.com: the generic glyph holds the box while the favicon loads. No letters from the name.
+    // No bundled mark for example.com: the generic glyph holds the box. No letters from the name, no image from another host.
     expect(dialog().querySelector('[data-testid="connection-card-logo-generic"]')).not.toBeNull();
-    expect(dialog().querySelector('[data-testid="connection-card-logo-img"]')?.getAttribute("src")).toBe(LOGO.sources[0]);
+    expect(dialog().querySelector('[data-testid="connection-card-logo"] img')).toBeNull();
     expect(dialog().querySelector('[data-testid="connection-card-logo"]')?.textContent?.trim()).toBe("");
     expect(dialog().textContent).toContain("Example needs a key to connect.");
     expect(blueprint).toHaveBeenCalledTimes(1);
@@ -324,6 +324,89 @@ describe("IntegrationConnectModal", () => {
     expect(document.querySelector('[data-testid="card-modal"]')).toBeNull();
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("shows the app's domain under the title, so the name does not stand alone", async () => {
+    render({}, { domain: "example.com", name: "Example" });
+    await settle();
+    const subtitle = dialog().querySelector<HTMLElement>('[data-testid="card-modal-subtitle"]')!;
+    expect(subtitle.textContent).toBe("example.com");
+    // Under the title, inside the same heading.
+    expect(subtitle.previousElementSibling?.getAttribute("data-testid")).toBe("card-modal-title");
+    // A name that claims to be one brand over another site's domain is told apart by it.
+    await takeDown();
+    render({}, { domain: "paypa1-login.example.org", name: "PayPal" });
+    await settle();
+    expect(dialog().querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("PayPal");
+    expect(dialog().querySelector('[data-testid="card-modal-subtitle"]')?.textContent).toBe("paypa1-login.example.org");
+  });
+
+  it("says where Get a key opens, next to the button, before it is pressed", async () => {
+    render();
+    await settle();
+    const button = dialog().querySelector<HTMLButtonElement>('[data-testid="integration-connect-get-key"]')!;
+    const host = dialog().querySelector<HTMLElement>('[data-testid="integration-connect-get-key-host"]')!;
+    expect(host.textContent).toBe("Opens example.com in your browser.");
+    expect(host.parentElement).toBe(button.parentElement);
+    button.click();
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/settings/api");
+  });
+
+  it("names the host the blueprint's address really has, whatever the app is called", async () => {
+    blueprint.mockResolvedValue(
+      ok({
+        ...BLUEPRINT,
+        blueprint: {
+          ...BLUEPRINT.blueprint,
+          credentials: [{ id: "api_key", type: "api_key", label: "API key", generateUrl: "https://example.com@keys.other-site.org/make?next=example.com" }],
+          surfaces: [{ kind: "mcp", slug: "mcp", name: "MCP", url: "https://mcp.other-site.org/mcp", authStatus: "required", credentialIds: ["api_key"] }],
+        },
+      }),
+    );
+    render();
+    await settle();
+    expect(dialog().querySelector('[data-testid="integration-connect-get-key-host"]')?.textContent).toBe("Opens keys.other-site.org in your browser.");
+    expect(dialog().querySelector('[data-testid="integration-connect-destination"]')?.textContent).toBe(
+      "Connect sends the key to HQ, which stores it and uses it with mcp.other-site.org.",
+    );
+  });
+
+  it("says where the pasted key goes, under the field, before Connect is pressed", async () => {
+    render();
+    await settle();
+    const destination = dialog().querySelector<HTMLElement>('[data-testid="integration-connect-destination"]')!;
+    expect(destination.textContent).toBe("Connect sends the key to HQ, which stores it and uses it with mcp.example.com.");
+    expect(install).not.toHaveBeenCalled();
+    // The sentence never repeats the key.
+    type(KEY);
+    expect(destination.textContent).not.toContain(KEY);
+    // The install then goes to that same address.
+    submit().click();
+    await settle();
+    expect(install.mock.calls[0]![0]).toMatchObject({ mcpUrl: "https://mcp.example.com/mcp" });
+  });
+
+  it("falls back to the app's domain for the key's destination when the blueprint names no server", async () => {
+    blueprint.mockResolvedValue(refusal("INTEGRATION_FACTORY_FORBIDDEN", 403));
+    render({}, { catalogEntryId: "cat_example" });
+    await settle();
+    expect(dialog().querySelector('[data-testid="integration-connect-get-key-host"]')).toBeNull();
+    expect(dialog().querySelector('[data-testid="integration-connect-destination"]')?.textContent).toBe(
+      "Connect sends the key to HQ, which stores it and uses it with example.com.",
+    );
+  });
+
+  it("says where Open HQ Integrations opens", async () => {
+    install.mockResolvedValue(refusal("PLAN_LIMIT", 402));
+    render();
+    await settle();
+    type(KEY);
+    submit().click();
+    await settle();
+    const host = dialog().querySelector<HTMLElement>('[data-testid="integration-connect-elsewhere-host"]')!;
+    dialog().querySelector<HTMLButtonElement>('[data-testid="integration-connect-elsewhere-action"]')!.click();
+    const opened = new URL(openUrl.mock.calls.at(-1)![0]);
+    expect(host.textContent).toBe(`HQ Integrations opens ${opened.hostname} in your browser.`);
   });
 
   it("does nothing without a company to connect for", async () => {
