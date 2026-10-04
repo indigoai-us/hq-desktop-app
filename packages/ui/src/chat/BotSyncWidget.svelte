@@ -14,13 +14,15 @@
    * covers a message. Its height opens and closes gently, and it fades, so
    * the thread under it does not jump.
    *
-   * One line: a sync glyph that turns while the sync is running, the title,
-   * the short status line in the muted ink (the phase and the counts, or
-   * "Preparing."), and the percent at the right when there is an honest one.
-   * The progress bar is a two pixel line along the strip's bottom edge. It is
-   * always determinate: filled to the real fraction done, or an empty track
-   * while no honest total is known. It never sweeps or shimmers; only its
-   * width eases when the number changes. No border, no shadow, no panel: a faint
+   * One line, left aligned from the strip's left edge: a still sync glyph,
+   * the title, the short status line in the muted ink (the phase and the
+   * counts, or "Preparing."), and the percent at the right when there is an
+   * honest one. Nothing in the strip turns or spins.
+   * The progress bar is a two pixel line along the strip's bottom edge, in
+   * the theme's muted grey ink so it stays low profile. It is always
+   * determinate: filled to the real fraction done, or an empty track while
+   * no honest total is known. It never sweeps or shimmers; only its width
+   * eases when the number changes. No border, no shadow, no panel: a faint
    * tint of the accent over the pane, from the theme's own tokens, so it
    * reads in both themes. The copy is the same for every sync, first or
    * later, and never names the bot.
@@ -117,10 +119,9 @@
               <path d="M8 4.5v4.2M8 11.3v.2" /><circle cx="8" cy="8" r="6.2" />
             </svg>
           {:else}
-            <!-- Turns only while the sync is running; a stale strip holds still. -->
+            <!-- A still glyph in every state. -->
             <svg
               class="bot-sync-glyph"
-              class:bot-sync-spin={shown.state === "syncing"}
               viewBox="0 0 16 16"
               width="14"
               height="14"
@@ -185,22 +186,28 @@
   /*
    * The strip. Every colour is a theme token, so it follows the light and
    * the dark theme: the accent (the chat shell's violet ink) tinted faintly
-   * over the pane, the ink and muted ink for the words.
+   * over the pane, the ink and muted ink for the words, and the muted grey
+   * ink (--t3) for the bar over the faint rule (--line) for its track.
    */
   .bot-sync {
     --bs-accent: var(--accent, var(--vio-ink, #854dee));
     --bs-ok: var(--ok-ink, #248a3d);
     --bs-warn: var(--warn-ink, #b45309);
     --bs-tone: var(--bs-accent);
+    --bs-bar: var(--t3, color-mix(in srgb, currentColor 34%, transparent));
+    --bs-bar-track: var(--line, color-mix(in srgb, currentColor 8%, transparent));
     position: relative;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: 8px;
     box-sizing: border-box;
     width: 100%;
     min-height: 32px;
-    /* The words line up with the message column; the bar runs edge to edge. */
-    padding: 7px var(--conv-inset, 16px) 8px;
+    /* The words start at the strip's left edge, not at the centred message
+       column, and the percent sits at the right edge. The bar runs edge to edge. */
+    padding: 7px 16px 8px;
+    text-align: left;
     font-family: var(--font-ui, inherit);
     font-size: 13px;
     line-height: 1.3;
@@ -218,14 +225,6 @@
     display: inline-flex;
     color: var(--bs-tone);
   }
-  .bot-sync-spin {
-    animation: bot-sync-spin 2.4s linear infinite;
-  }
-  @keyframes bot-sync-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
   /* Title and sentence on one line. The sentence gives way first when the
      pane is narrow, so the title and the percent always stay whole. */
   .bot-sync-words {
@@ -233,6 +232,7 @@
     min-width: 0;
     display: flex;
     align-items: baseline;
+    justify-content: flex-start;
     gap: 10px;
     white-space: nowrap;
   }
@@ -256,7 +256,8 @@
     text-align: right;
     color: var(--t2, inherit);
   }
-  /* The bar: a two pixel line along the strip's bottom edge, full width. */
+  /* The bar: a two pixel line along the strip's bottom edge, full width, in
+     the muted grey ink so it stays low profile in every state. */
   .bot-sync-track {
     position: absolute;
     left: 0;
@@ -264,21 +265,18 @@
     bottom: 0;
     height: 2px;
     overflow: hidden;
-    background: color-mix(in srgb, var(--bs-tone) 18%, transparent);
+    background: var(--bs-bar-track);
   }
   .bot-sync-fill {
     display: block;
     height: 100%;
-    background: var(--bs-tone);
+    background: var(--bs-bar);
     transition: width 0.6s ease;
   }
   @media (prefers-reduced-motion: reduce) {
     .bot-sync-slot,
     .bot-sync-fill {
       transition: none;
-    }
-    .bot-sync-spin {
-      animation: none;
     }
   }
 </style>

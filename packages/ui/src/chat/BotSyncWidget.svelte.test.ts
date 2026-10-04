@@ -59,6 +59,28 @@ const glyph = () => host!.querySelector<SVGElement>('[data-testid="bot-sync-icon
 const fill = () => host!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]');
 const fillWidth = () => parseFloat(fill()!.style.width);
 
+const SOURCE = readFileSync(join(import.meta.dirname, "BotSyncWidget.svelte"), "utf8");
+/** The declarations of one top-level rule in the component's stylesheet. */
+function rule(selector: string): string {
+  const style = SOURCE.slice(SOURCE.indexOf("<style>"));
+  const at = style.indexOf(`\n  ${selector} {`);
+  expect(at).toBeGreaterThan(-1);
+  const open = style.indexOf("{", at);
+  return style.slice(open + 1, style.indexOf("\n  }", open));
+}
+
+/** The glyph holds still: no class or style on the icon or its svg drives a motion. */
+function expectStillGlyph(): void {
+  const icon = host!.querySelector<HTMLElement>('[data-testid="bot-sync-icon"]')!;
+  const svg = glyph()!;
+  for (const el of [icon, svg]) {
+    for (const name of Array.from(el.classList).filter((name) => !name.startsWith("svelte-"))) {
+      expect(["bot-sync-icon", "bot-sync-glyph"]).toContain(name);
+    }
+    expect(el.getAttribute("style") ?? "").not.toMatch(/animation|transform|rotate/);
+  }
+}
+
 /** The bar is never an animated sweep: no class or style on the track or fill drives a motion. */
 function expectStillBar(): void {
   const track = bar()!;
@@ -87,8 +109,8 @@ describe("BotSyncWidget", () => {
     expect(detail()).toBe("Preparing.");
     expect(el.textContent).not.toContain("Crassly");
     expect(el.closest(".bot-sync-slot")?.getAttribute("data-open")).toBe("true");
-    // The glyph turns while the sync runs.
-    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
+    // The glyph holds still even while the sync runs.
+    expectStillGlyph();
   });
 
   it("the live run: 10 of 10 planned and not finished reads 'Preparing.' with the files so far, no percent, an empty still bar", () => {
@@ -105,7 +127,7 @@ describe("BotSyncWidget", () => {
     expect(progress.getAttribute("aria-valuetext")).toBe("10 files so far");
     expect(fillWidth()).toBe(0);
     expectStillBar();
-    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(true);
+    expectStillGlyph();
   });
 
   it("the live box: 10 of 68,322 is a nearly empty determinate bar and the counts in words", () => {
@@ -121,11 +143,33 @@ describe("BotSyncWidget", () => {
     expectStillBar();
   });
 
-  it("the stylesheet has no sweeping bar animation in any state", () => {
-    const source = readFileSync(join(import.meta.dirname, "BotSyncWidget.svelte"), "utf8");
-    expect(source).not.toMatch(/is-unknown|bot-sync-travel|translateX/);
-    // The only keyframes left turn the small glyph, not the bar.
-    expect(source.match(/@keyframes\s+[\w-]+/g)).toEqual(["@keyframes bot-sync-spin"]);
+  it("the stylesheet has no animation at all: no sweeping bar and no spinning glyph", () => {
+    expect(SOURCE).not.toMatch(/is-unknown|bot-sync-travel|translateX|bot-sync-spin/);
+    expect(SOURCE).not.toMatch(/@keyframes/);
+    expect(SOURCE).not.toMatch(/\banimation\s*:/);
+    expect(SOURCE).not.toMatch(/rotate\(/);
+  });
+
+  it("draws the bar in the theme's muted grey ink over a fainter track, never the accent or a hard-coded white", () => {
+    const strip = rule(".bot-sync");
+    expect(strip).toMatch(/--bs-bar:\s*var\(--t3\b/);
+    expect(strip).toMatch(/--bs-bar-track:\s*var\(--line\b/);
+    expect(rule(".bot-sync-fill")).toMatch(/background:\s*var\(--bs-bar\)/);
+    expect(rule(".bot-sync-track")).toMatch(/background:\s*var\(--bs-bar-track\)/);
+    for (const block of [rule(".bot-sync-fill"), rule(".bot-sync-track")]) {
+      expect(block).not.toMatch(/--bs-tone|--bs-accent|--accent|#fff|white/i);
+    }
+  });
+
+  it("left-aligns the words from the strip's edge, not the centred message column", () => {
+    const strip = rule(".bot-sync");
+    expect(strip).toMatch(/text-align:\s*left/);
+    expect(strip).toMatch(/justify-content:\s*flex-start/);
+    expect(strip).not.toMatch(/--conv-inset/);
+    expect(rule(".bot-sync-words")).toMatch(/justify-content:\s*flex-start/);
+    expect(SOURCE).not.toMatch(/text-align:\s*center|justify-content:\s*center/);
+    // The percent still sits at the right.
+    expect(rule(".bot-sync-amount")).toMatch(/text-align:\s*right/);
   });
 
   it("announces the words politely, and the bar is a real progress bar", () => {
@@ -192,7 +236,7 @@ describe("BotSyncWidget", () => {
     expect(progress.hasAttribute("aria-valuenow")).toBe(false);
     expect(fillWidth()).toBe(0);
     expectStillBar();
-    expect(glyph()!.classList.contains("bot-sync-spin")).toBe(false);
+    expectStillGlyph();
   });
 
   it("does not move the bar with time; it moves only when new counts arrive", async () => {
@@ -227,6 +271,7 @@ describe("BotSyncWidget", () => {
     expect(bar()!.getAttribute("aria-valuenow")).toBe("100");
     expect(fillWidth()).toBe(100);
     expectStillBar();
+    expectStillGlyph();
     expect(amount()).toBeNull();
     await vi.advanceTimersByTimeAsync(BOT_SYNC_DONE_VISIBLE_MS - 1_500);
     flushSync();
@@ -260,6 +305,7 @@ describe("BotSyncWidget", () => {
     expect(widget()!.textContent).not.toMatch(/\d/);
     expect(bar()).toBeNull();
     expect(amount()).toBeNull();
+    expectStillGlyph();
     await vi.advanceTimersByTimeAsync(3_600_000);
     flushSync();
     expect(widget()).not.toBeNull();
