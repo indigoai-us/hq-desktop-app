@@ -6,7 +6,7 @@
 //! `npx -y --package=@indigoai-us/hq-cloud@<ver> hq-sync-runner …` (see
 //! `commands::sync`). The *first* invocation after a fresh install — or
 //! after bumping `sync::HQ_CLOUD_VERSION` — downloads the package into
-//! an HQ-owned cache directory, isolated from npm's user-global cache. That download takes
+//! npm's configured cache. That download takes
 //! ~3–10s, which would otherwise pad the user's first click of
 //! "Sync Now" and feel like the app is broken.
 //!
@@ -28,11 +28,12 @@
 //! `npx` writes a package tree below its shared cache. A launch-time prewarm
 //! can otherwise race a foreground Sync Now or watch-daemon start against the
 //! same tree, occasionally leaving npm to report an `EACCES` / exit-126-style
-//! failure. Every runner launch therefore first calls the same materialization
-//! helper below. The helper takes a cross-process advisory lock only while it
-//! runs the trivial npx payload, then releases it before the real (possibly
-//! long-lived) runner starts. Waiting is bounded, and an OS-released advisory
-//! lock cannot remain stale after an app crash.
+//! failure. Regular runner launches and rescue therefore materialize their
+//! pinned package under the same cross-process advisory lock. Rescue uses an
+//! HQ-owned cache; regular runners keep npm's configured cache. The lock is held
+//! only while the trivial npx payload runs, then released before the real
+//! (possibly long-lived) runner starts. Waiting is bounded, and an OS-released
+//! advisory lock cannot remain stale after an app crash.
 //!
 //! ## Why `std::thread` and not tokio
 //!
@@ -50,8 +51,9 @@
 //! trivial `node` no-op rather than a runner bin so the payload is
 //! immune to future `hq-sync-runner` argv changes and always exits 0.
 //! Output is dropped; we only care about the side effect of filling
-//! the cache. `NPM_CONFIG_CACHE` points npx at the app-owned cache below
-//! the HQ config directory, so a root-owned npm user cache cannot block rescue.
+//! the cache. The rescue materialization sets `NPM_CONFIG_CACHE` to the
+//! app-owned cache below the HQ config directory, so a root-owned npm user cache
+//! cannot block rescue; regular prewarm leaves npm's configured cache unchanged.
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
@@ -304,6 +306,13 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     with_materialization_lock(run_materialization_payload)?
 }
 
+/// Materialize `hq-cloud` for the rescue process using HQ's app-owned npm cache.
+/// Regular sync runners use npm's normal user cache, so this stays separate from
+/// [`materialize_hq_cloud_cache`]. Both paths share the same serialization lock.
+pub fn materialize_hq_cloud_rescue_cache() -> Result<(), String> {
+    with_materialization_lock(run_rescue_materialization_payload)?
+}
+
 pub fn hq_cloud_npm_cache_path() -> Option<std::path::PathBuf> {
     paths::home_dir().map(|home| home.join(".hq").join("npm-cache"))
 }
@@ -318,17 +327,22 @@ fn rescue_npm_cache_dir() -> Result<std::path::PathBuf, String> {
     Ok(cache)
 }
 
-fn npx_materialization_command(
+fn npx_materialization_command(npx: &str, package_spec: &str, path: &str) -> std::process::Command {
+    let mut command = paths::spawn_command(npx, &[]);
+    command
+        .args(["-y", package_spec, "--", "node", "-e", "process.exit(0)"])
+        .env("PATH", path);
+    command
+}
+
+fn rescue_npx_materialization_command(
     npx: &str,
     package_spec: &str,
     path: &str,
     cache: &std::path::Path,
 ) -> std::process::Command {
-    let mut command = paths::spawn_command(npx, &[]);
-    command
-        .args(["-y", package_spec, "--", "node", "-e", "process.exit(0)"])
-        .env("PATH", path)
-        .env("NPM_CONFIG_CACHE", cache);
+    let mut command = npx_materialization_command(npx, package_spec, path);
+    command.env("NPM_CONFIG_CACHE", cache);
     command
 }
 
@@ -336,10 +350,24 @@ fn run_materialization_payload() -> Result<(), String> {
     let npx = paths::resolve_bin("npx");
     let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
     let path = paths::child_path();
+    run_npx_materialization_command(npx_materialization_command(&npx, &package_spec, &path))
+}
+
+fn run_rescue_materialization_payload() -> Result<(), String> {
+    let npx = paths::resolve_bin("npx");
+    let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
+    let path = paths::child_path();
     let cache = rescue_npm_cache_dir()?;
-    let output = npx_materialization_command(&npx, &package_spec, &path, &cache)
-    .output()
-    .map_err(|err| {
+    run_npx_materialization_command(rescue_npx_materialization_command(
+        &npx,
+        &package_spec,
+        &path,
+        &cache,
+    ))
+}
+
+fn run_npx_materialization_command(mut command: std::process::Command) -> Result<(), String> {
+    let output = command.output().map_err(|err| {
         if err.kind() == ErrorKind::PermissionDenied {
             "HQ Sync cannot run npx because the Node/npm installation is not executable. \
              Reinstall Node 20 or newer, then reopen HQ Sync."
@@ -636,7 +664,7 @@ mod tests {
     fn rescue_npx_uses_the_hq_owned_cache_instead_of_the_global_npm_cache() {
         let temp = tempfile::tempdir().unwrap();
         let cache = temp.path().join("app-owned-npm-cache");
-        let command = npx_materialization_command(
+        let command = rescue_npx_materialization_command(
             "npx",
             "--package=@indigoai-us/hq-cloud@test",
             "/test/path",
@@ -650,6 +678,22 @@ mod tests {
                 .and_then(|(_, value)| value),
             Some(cache.as_os_str()),
             "rescue npx must not write into a potentially root-owned user-global npm cache",
+        );
+    }
+
+    #[test]
+    fn regular_materialization_does_not_override_the_global_npm_cache() {
+        let command = npx_materialization_command(
+            "npx",
+            "--package=@indigoai-us/hq-cloud@test",
+            "/test/path",
+        );
+
+        assert!(
+            command
+                .get_envs()
+                .all(|(name, _)| name != std::ffi::OsStr::new("NPM_CONFIG_CACHE")),
+            "regular prewarm must continue warming the npm cache used by regular runners",
         );
     }
 

@@ -669,8 +669,10 @@ pub(crate) fn build_rescue_args(
 /// the caller surfaces it, rather than spawning a process that dies as exit
 /// 126/127.
 pub(crate) async fn materialize_rescue_cache() -> Result<(), String> {
-    match tauri::async_runtime::spawn_blocking(hq_desktop_core::prewarm::materialize_hq_cloud_cache)
-        .await
+    match tauri::async_runtime::spawn_blocking(
+        hq_desktop_core::prewarm::materialize_hq_cloud_rescue_cache,
+    )
+    .await
     {
         Ok(Ok(())) => Ok(()),
         Ok(Err(msg)) => Err(msg),

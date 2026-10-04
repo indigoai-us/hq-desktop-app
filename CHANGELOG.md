@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Core rescue now materializes hq-cloud with an HQ-owned npm cache instead of the user-global cache.
+- Core rescue now materializes hq-cloud with its HQ-owned npm cache while regular sync prewarm keeps using the runner's global npm cache.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 - Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
