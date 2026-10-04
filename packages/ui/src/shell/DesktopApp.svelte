@@ -233,7 +233,8 @@
   import {
     AGENT_CHAT_READY_POLL_MS,
     nextReadinessPollMs,
-    readinessReadDenied,
+    readinessFailureRead,
+    startReadinessPoll,
     type ReadinessRead,
   } from "./agent-readiness-poll.js";
   import {
@@ -3922,43 +3923,28 @@
   );
   // Asked while the bot's channel is open and its setup is not finished.
   // When to ask again, and when to stop, is decided in
-  // agent-readiness-poll.ts: a setup that failed, a bot that is gone and a
-  // refused read all stop it, and reads that keep failing wait longer each
-  // time. It used to ask every 5 s for as long as the channel stayed open.
+  // agent-readiness-poll.ts: a bot that is gone and a read refused for this
+  // person stop it; a setup that failed and a refused sign-in are read again
+  // once a minute; reads that keep failing wait longer each time, up to a
+  // minute, and the wait is cut short when the connection comes back. It
+  // used to ask every 5 s for as long as the channel stayed open.
   $effect(() => {
     const uid = agentChannelUid;
     const pending = provisioning.state === "pending";
     if (!isAgentChannel || !uid || !uid.startsWith("agt_")) return;
     const known = untrack(() => agentChatByUid[uid]);
     if (!pending && !known?.catchingUp) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let failures = 0;
-    const check = async (): Promise<void> => {
-      let read: ReadinessRead = { kind: "failed" };
-      try {
-        const result = await adapter.agents.getStatus(uid);
-        if (stopped) return;
-        if (result.ok) {
-          const next = agentChatReadiness(result.value);
-          read = { kind: "status", readiness: next };
-          agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
-        } else if (readinessReadDenied(result)) {
-          read = { kind: "denied" };
-        }
-      } catch {
-        // Keep the last known state and ask again, less often each time.
-      }
-      if (stopped) return;
-      failures = read.kind === "failed" ? failures + 1 : 0;
-      const wait = nextReadinessPollMs(read, failures);
-      if (wait === null) return;
-      timer = setTimeout(() => void check(), wait);
-    };
-    void check();
+    let live = true;
+    const stop = startReadinessPoll(async (): Promise<ReadinessRead> => {
+      const result = await adapter.agents.getStatus(uid);
+      if (!result.ok) return readinessFailureRead(result);
+      const next = agentChatReadiness(result.value);
+      if (live) agentChatByUid = { ...untrack(() => agentChatByUid), [uid]: next };
+      return { kind: "status", readiness: next };
+    });
     return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
+      live = false;
+      stop();
     };
   });
   /**

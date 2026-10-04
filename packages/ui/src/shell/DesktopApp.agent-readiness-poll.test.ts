@@ -118,20 +118,33 @@ describe("DesktopApp: the readiness read in a cloud bot's channel", () => {
     expect(getStatus.mock.calls.every(([uid]) => uid === ADA)).toBe(true);
   });
 
-  it("stops once the status says the setup failed", async () => {
-    const getStatus = vi.fn(async () => ok({ setupState: { phase: "failed", steps: [] } }) as StatusResult);
+  it("reads a failed setup again once a minute, and finds it moving after a retry", async () => {
+    // B-10 follow-up: the read used to stop here for good, and the composer
+    // stayed locked after the setup was retried.
+    let phase = "failed";
+    const getStatus = vi.fn(async () => ok({ setupState: { phase, steps: [] } }) as StatusResult);
     await mountChannel(getStatus);
     const before = getStatus.mock.calls.length;
-    await pass(120_000);
+    await pass(55_000);
     expect(getStatus.mock.calls.length).toBe(before);
+    await pass(10_000);
+    expect(getStatus.mock.calls.length - before).toBe(1);
+
+    // Somebody retried the setup: the next slow read sees it, and the 5 s timer is back.
+    phase = "installing";
+    await pass(60_000);
+    const moving = getStatus.mock.calls.length;
+    expect(moving - before).toBeGreaterThanOrEqual(2);
+    await pass(16_000);
+    expect(getStatus.mock.calls.length - moving).toBeGreaterThanOrEqual(3);
   });
 
-  it("stops when the server refuses the read or does not know the bot", async () => {
-    for (const code of ["http-403", "http-404", "http-401"]) {
+  it("stops when the server refuses the read for this person or does not know the bot", async () => {
+    for (const code of ["http-403", "http-404"]) {
       const getStatus = vi.fn(async () => failure(code));
       await mountChannel(getStatus);
       const before = getStatus.mock.calls.length;
-      await pass(120_000);
+      await pass(300_000);
       expect(getStatus.mock.calls.length, code).toBe(before);
       if (component) await unmount(component);
       component = null;
@@ -140,7 +153,24 @@ describe("DesktopApp: the readiness read in a cloud bot's channel", () => {
     }
   });
 
-  it("asks less often each time the read keeps failing, and goes back to 5 s when one succeeds", async () => {
+  it("reads again once a minute after a 401, and goes on as usual once the sign-in is accepted", async () => {
+    // One 401 during a token refresh used to end the read for good.
+    let signedOut = true;
+    const getStatus = vi.fn(async () => (signedOut ? failure("http-401") : notReady()));
+    await mountChannel(getStatus);
+    const before = getStatus.mock.calls.length;
+    await pass(55_000);
+    expect(getStatus.mock.calls.length).toBe(before);
+
+    signedOut = false;
+    await pass(10_000);
+    const accepted = getStatus.mock.calls.length;
+    expect(accepted - before).toBeGreaterThanOrEqual(1);
+    await pass(16_000);
+    expect(getStatus.mock.calls.length - accepted).toBeGreaterThanOrEqual(3);
+  });
+
+  it("asks less often each time the read keeps failing, never more than a minute apart, and goes back to 5 s when one succeeds", async () => {
     let fail = true;
     const getStatus = vi.fn(async () => (fail ? failure("http-500") : notReady()));
     await mountChannel(getStatus);
@@ -148,21 +178,39 @@ describe("DesktopApp: the readiness read in a cloud bot's channel", () => {
     // 10 s, then 20 s, then 40 s: three more reads in 71 s. The fixed timer made fourteen.
     await pass(71_000);
     expect(getStatus.mock.calls.length - first).toBe(3);
-    // A read that throws counts the same way: the next one is 80 s out.
+    // A read that throws counts the same way. The next one is 60 s out, the longest wait there is.
     getStatus.mockImplementation(async () => {
       throw new Error("offline");
     });
-    await pass(75_000);
+    await pass(55_000);
     expect(getStatus.mock.calls.length - first).toBe(3);
     await pass(6_000);
     expect(getStatus.mock.calls.length - first).toBe(4);
+    await pass(60_000);
+    expect(getStatus.mock.calls.length - first).toBe(5);
 
     // The server answers again: back to the usual timer.
     fail = false;
     getStatus.mockImplementation(async () => notReady());
-    await pass(161_000);
+    await pass(61_000);
     const afterRecovery = getStatus.mock.calls.length;
     await pass(16_000);
     expect(getStatus.mock.calls.length - afterRecovery).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reads at once when the connection comes back, without sitting out the wait", async () => {
+    const getStatus = vi.fn(async () => failure("http-500"));
+    await mountChannel(getStatus);
+    const first = getStatus.mock.calls.length;
+    // Reads at 10 s and 30 s. The next is 40 s away.
+    await pass(31_000);
+    expect(getStatus.mock.calls.length - first).toBe(2);
+
+    window.dispatchEvent(new Event("online"));
+    await pass(100);
+    expect(getStatus.mock.calls.length - first).toBe(3);
+    // The back-off starts over: the read after that is 10 s out, not 60.
+    await pass(11_000);
+    expect(getStatus.mock.calls.length - first).toBe(4);
   });
 });
