@@ -40,6 +40,31 @@ pub use hq_desktop_core::first_run::{
 
 pub const FIRST_LAUNCH_SYNC_FLAG: &str = "desktop.first-launch-sync-v1";
 
+const FIRST_LAUNCH_SYNC_START_FAILURE_MESSAGE: &str = "first-launch sync start failed";
+const FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT: &str = "first-launch-sync-start-failed";
+
+fn first_launch_sync_start_error_category(error: &str) -> &'static str {
+    match error {
+        "Sync is already running" => "already_running",
+        hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE => "cloud_paused",
+        _ => "other",
+    }
+}
+
+fn report_first_launch_sync_start_failure(error: &str) {
+    crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
+        None,
+        "first-launch",
+        FIRST_LAUNCH_SYNC_START_FAILURE_MESSAGE,
+        &["sync", FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT],
+        &[(
+            "failure_category",
+            first_launch_sync_start_error_category(error).to_string(),
+        )],
+        &[],
+    );
+}
+
 /// `ensure_install_attempt_id` reads and, on the first call, writes the shared
 /// menubar settings file. Serialize this wrapper because receipt preparation
 /// intentionally runs several blocking workers concurrently.
@@ -264,6 +289,7 @@ pub async fn show_main_window_at_tray(
                 "first-run",
                 &format!("first-launch sync did not start: {error}"),
             );
+            report_first_launch_sync_start_failure(&error);
         }
     });
     Ok(())
@@ -282,4 +308,56 @@ pub fn mark_auto_sync_notice_shown() -> Result<(), String> {
             ("firstRunCompleted", Value::Bool(true)),
         ],
     )
+}
+
+#[cfg(test)]
+mod first_launch_sync_start_capture_tests {
+    use super::*;
+
+    #[test]
+    fn first_launch_sync_start_failure_is_captured_with_bounded_content() {
+        let captures = sentry::test::with_captured_events(|| {
+            report_first_launch_sync_start_failure(
+                "first-run user-specific path and token-bearing server detail",
+            );
+        });
+
+        assert_eq!(captures.len(), 1, "start failure creates one Sentry event");
+        let event = captures.into_iter().next().expect("capture exists");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("[sync] first-launch sync start failed")
+        );
+        assert_eq!(
+            event.tags.get("path").map(String::as_str),
+            Some("first-launch")
+        );
+        assert_eq!(
+            event.tags.get("failure_category").map(String::as_str),
+            Some("other")
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT]
+        );
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        assert!(!serialized.contains("first-run user-specific path"));
+        assert!(!serialized.contains("token-bearing server detail"));
+    }
+
+    #[test]
+    fn first_launch_sync_start_error_categories_are_closed() {
+        assert_eq!(
+            first_launch_sync_start_error_category("Sync is already running"),
+            "already_running"
+        );
+        assert_eq!(
+            first_launch_sync_start_error_category(hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE),
+            "cloud_paused"
+        );
+        assert_eq!(
+            first_launch_sync_start_error_category("untrusted detail"),
+            "other"
+        );
+    }
 }

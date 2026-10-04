@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
 - Unexpected watcher-exit reports now include the runner phase and elapsed-time bucket as searchable Sentry tags.
 - Held sign-in receipts keep the home directory captured before token resolution, preventing a profile switch from redirecting the pending event.
 - Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
