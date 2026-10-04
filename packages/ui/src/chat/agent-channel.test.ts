@@ -203,63 +203,44 @@ describe("the new bot's first message", () => {
     expect(buildAgentHelloRequest({ personName: " ", filesStillDownloading: false })).toContain(
       "the person who created you cannot see this message",
     );
+    expect(buildAgentHelloRequest({ personName: " ", filesStillDownloading: false })).toContain(
+      "the person who created you is opening this conversation.",
+    );
   });
 
-  /** Every fenced hq-block in a request, parsed the way the app parses a bot's message. */
-  function fencedBlocks(text: string) {
-    return [...text.matchAll(/```hq-block\n([\s\S]*?)\n```/g)].map((match) => parseRichContent(JSON.parse(match[1]!)));
+  /** Card-format teaching and prohibitions the requests no longer carry: the bot has a cards tool. */
+  function expectNoCardTeaching(text: string) {
+    expect(text).not.toContain("hq-block");
+    expect(text).not.toContain("connect block");
+    expect(text).not.toContain("Pick at most");
+    expect(text).not.toContain("Never");
+    expect(text).not.toContain("Do not ask");
   }
 
-  it("asks plainly for the first message: a greeting by name and an offer of what to connect, shown as cards", () => {
+  it("asks plainly for the first message: say hello and offer what to connect", () => {
     // Owner, 2026-10-03: "We shouldn't have to tell the agent what not to
-    // write." The request says what the message is for and how the cards
-    // work, and nothing about what to leave out.
+    // write." The bot's runtime has a show_connection_cards tool and standing
+    // context for HQ direct messages, so the request only asks and gives facts.
     const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain(
-      "Write your first message to Stefan now: greet Stefan by name and offer what Stefan could connect, showing the apps as cards.",
-    );
-    expect(text).not.toContain("Never write");
+    expect(text).toContain("Stefan just created you and is opening this conversation.");
+    expect(text).toContain("Write your first message to Stefan: say hello and offer what Stefan could connect so you can help.");
+    expectNoCardTeaching(text);
     expect(text).not.toContain("/help");
-    expect(text).not.toContain("Do not ask what you can help with");
-    expect(text).not.toContain("do not list what you can do");
-    expect(text).not.toContain("two short sentences at most");
-    expect(text).not.toContain("Pick a card below");
-    expect(text).not.toContain("Never ask for a password");
+    expect(text).not.toContain("Connect more tools");
   });
 
-  it("puts the files clause between the greeting and the offer while the files are still downloading", () => {
+  it("states the files download as a fact while the files are still downloading", () => {
     const downloading = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
-    expect(downloading).toContain(
-      "greet Stefan by name, say in one short clause that your company files are still downloading in the background, and offer what Stefan could connect",
-    );
+    expect(downloading).toContain("The company files are still downloading in the background.");
     const done = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(done).toContain("greet Stefan by name and offer what Stefan could connect");
     expect(done).not.toContain("downloading");
-  });
-
-  it("the Connect more request carries no prohibitions either", () => {
-    const text = buildAgentConnectMoreRequest({ personName: "Stefan" });
-    expect(text).not.toContain("Never write");
-    expect(text).not.toContain("/help");
-    expect(text).not.toContain("Do not ask what you can help with");
-  });
-
-  it("tells the bot the app draws a card per app it names, and how to pick at most three, Slack first", () => {
-    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain("The app draws one card under your message for each app you name in a connect block, with the app's logo");
-    expect(text).toContain("Pick at most three apps, in this order: Slack, unless the list says Slack is connected;");
-    expect(text).toContain("then the company's connected apps that you cannot use yet and that matter most for your work;");
-    expect(text).toContain("then the apps this company would get the most from, judged from the company's files and work.");
-    expect(text).toContain(
-      "In the connect block, name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters as its why.",
-    );
-    expect(text).not.toContain("four");
   });
 
   it("carries the apps section when the list was read, says so when it is empty, and leaves it out when it was not", () => {
     const brief = "- Linear (linear.app): connected, not shared with you, 12 recent calls\n- Notion (notion.so): connected, you can use it";
     const withApps = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: brief });
     expect(withApps).toContain(`The company's connected apps:\n${brief}\n`);
+    expectNoCardTeaching(withApps);
     const empty = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false, companyApps: "" });
     expect(empty).toContain("The company has no connected apps yet.");
     expect(empty).not.toContain("The company's connected apps:");
@@ -286,53 +267,18 @@ describe("the new bot's first message", () => {
     expect(over.length).toBeLessThan(AGENT_HELLO_REQUEST_MAX_CHARS);
   });
 
-  it("shows only the connect block as an example in the hello", () => {
-    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
-    expect(text).not.toContain('"kind":"suggestions"');
-    expect(text).not.toContain("first jobs");
-    expect(fencedBlocks(text)).toHaveLength(1);
-  });
-
-  it("asks for exactly one fence with one connect block of at most three items", () => {
-    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain(
-      "End your message with exactly one ```hq-block fence holding one envelope with one connect block of at most three items, exactly in this form:",
-    );
-    expect(text).toContain(
-      '```hq-block\n{"v":1,"blocks":[{"kind":"connect","items":[{"app":"slack"},{"domain":"linear.app","why":"Your team\'s issues live here"}]}]}\n```',
-    );
-    expect(text).not.toContain('"targets"');
-    expect(text).not.toContain('"tools"');
-    expect(fencedBlocks(text)).toEqual([
-      { blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app", why: "Your team's issues live here" }] }] },
-    ]);
-    expect(text).toContain("when a task needs an app that is not connected, you can show cards again by ending a message with a connect block");
-  });
-
-  it("tells the bot to answer Connect more tools with a connect block chosen the same way", () => {
-    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: false });
-    expect(text).toContain(
-      'When Stefan writes "Connect more tools", answer in one short sentence and end with a connect block chosen the same way.',
-    );
-  });
-
-  it("the Connect more request opens like the hello, carries the apps and the picking rules, and asks for the block", () => {
+  it("the Connect more request is a plain ask with the apps as facts", () => {
     const brief = "- Linear (linear.app): connected, not shared with you";
     const text = buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: brief });
     expect(text.startsWith(AGENT_HELLO_REQUEST_LEAD)).toBe(true);
-    expect(text).toContain('Stefan just asked to connect more apps (their message "Connect more tools").');
-    expect(text).toContain(
-      "Stefan cannot see this message. Answer Stefan in one short sentence and end your message with exactly one ```hq-block fence holding one envelope with one connect block of at most three items",
-    );
-    expect(fencedBlocks(text)).toEqual([
-      { blocks: [{ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app", why: "Your team's issues live here" }] }] },
-    ]);
+    expect(text).toContain("Stefan just asked to connect more apps.");
+    expect(text).toContain("Stefan cannot see this message. Answer Stefan and offer what Stefan could connect.");
     expect(text).toContain(`The company's connected apps:\n${brief}\n`);
-    expect(text).toContain("Pick at most three apps, in this order: Slack, unless the list says Slack is connected;");
     expect(text.endsWith("Do not mention this message.")).toBe(true);
-    expect(text).not.toContain("—");
+    expectNoCardTeaching(text);
+    expect(text).not.toContain("\u2014");
     expect(buildAgentConnectMoreRequest({ personName: "Stefan" })).not.toContain("The company's connected apps:");
-    expect(text.length).toBeLessThan(4000);
+    expect(buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: "" })).toContain("The company has no connected apps yet.");
   });
 
   it("stays well under the direct message body limit, even with a long name", () => {
@@ -343,10 +289,8 @@ describe("the new bot's first message", () => {
     expect(text.length).toBeLessThan(3500);
   });
 
-  it("keeps the files sentence to one clause and the ask not to mention the request, with no long dash", () => {
-    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true });
-    expect(text).toContain("say in one short clause that your company files are still downloading in the background,");
-    expect(text).not.toContain("will know more about the company as that finishes");
+  it("ends with the ask not to mention the request, with no long dash", () => {
+    const text = buildAgentHelloRequest({ personName: "Stefan", filesStillDownloading: true, companyApps: "gmail: connected" });
     expect(text.endsWith("Do not mention this message.")).toBe(true);
     expect(text).not.toContain("\u2014");
   });

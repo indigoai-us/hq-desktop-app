@@ -94,7 +94,7 @@ describe("composeCloudBotHello: the hello request with the company's apps", () =
     expect(hello.companyApps).toBeNull();
     expect(hello.body).not.toContain("connected apps:");
     expect(hello.body).not.toContain("no connected apps");
-    expect(hello.body).toContain("Pick at most three apps");
+    expect(hello.body).toContain("say hello and offer what Corey could connect");
     const thrown = adapter({ listConnections: vi.fn(async () => Promise.reject(new Error("offline"))) });
     expect((await composeCloudBotHello(thrown.adapter, { agentUid: NOVA, personName: "Corey" })).companyApps).toBeNull();
   });

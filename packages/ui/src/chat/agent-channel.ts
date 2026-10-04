@@ -6,7 +6,6 @@
  */
 
 import type { ConversationMessageWire } from "./chat-api.js";
-import { CONNECT_MORE_REQUEST } from "./messaging/connection-card-model.js";
 import { richContentForMessage, type ConnectItem } from "./messaging/richMessageContent.js";
 import type { ConversationRow } from "./sidebar-model.js";
 
@@ -114,10 +113,6 @@ function fencedBlockExample(block: Record<string, unknown>): string {
 }
 
 const SUGGESTIONS_EXAMPLE = fencedBlockExample({ kind: "suggestions", items: ["...", "..."] });
-const CONNECT_EXAMPLE = fencedBlockExample({
-  kind: "connect",
-  items: [{ app: "slack" }, { domain: "linear.app", why: "Your team's issues live here" }],
-});
 
 /** The whole hello request stays under this many characters. */
 export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
@@ -125,32 +120,20 @@ export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
 export const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
 
 /**
- * How the bot is told to choose the apps for the cards. Shared by the hello
- * request and the request behind "Connect more tools".
+ * What the company has connected, written as a fact for the bot. Shared by
+ * the hello request and the request behind "Connect more tools".
  *
  * `companyApps` is the apps brief the app wrote from the company's
  * connection list (integration-cards-model.ts, `companyAppsBrief`): null
  * when the list could not be read (no section), "" when nothing is
- * connected, else one line per app.
+ * connected, else one line per app. The brief is cut to
+ * `AGENT_REQUEST_APPS_MAX_CHARS` and can never open or close a code fence.
  */
-function appPickingInstructions(person: string, companyApps: string | null | undefined): string {
+function companyAppsFacts(companyApps: string | null | undefined): string {
   const apps = companyApps == null ? null : companyApps.replace(/```/g, "'''").slice(0, AGENT_REQUEST_APPS_MAX_CHARS).trim();
-  const section =
-    apps === null ? "" : apps === "" ? "The company has no connected apps yet.\n" : `The company's connected apps:\n${apps}\n`;
-  return (
-    `The app draws one card under your message for each app you name in a connect block, with the app's logo, ` +
-    `so ${person} can connect it or let you use it. Pick at most three apps, in this order: Slack, unless the list says Slack is connected; ` +
-    `then the company's connected apps that you cannot use yet and that matter most for your work; ` +
-    `then the apps this company would get the most from, judged from the company's files and work. ` +
-    `In the connect block, name each app by its website domain (for example linear.app or notion.so) and give a reason under 60 characters as its why.\n` +
-    section
-  );
+  if (apps === null) return "";
+  return apps === "" ? "The company has no connected apps yet.\n" : `The company's connected apps:\n${apps}\n`;
 }
-
-/** How the bot is told to write the fence: one fence, one envelope, one connect block, three items at most. */
-const ONE_CONNECT_FENCE =
-  `exactly one ${FENCE}hq-block fence holding one envelope with one connect block of at most three items, exactly in this form:\n` +
-  `${CONNECT_EXAMPLE}\n`;
 
 /** A name or id written into a request: one line, no code marks, bounded. */
 function inlineText(value: string | null | undefined, max = 80): string {
@@ -170,13 +153,14 @@ function personOrFallback(name: string | null | undefined): string {
  * bot can chat. The person never sees it; they see the bot's answer, which is
  * the bot's first message in their conversation.
  *
- * It asks for that first message plainly: greet the person by name, say in
- * one clause that the company files are still downloading while that is so,
- * and offer what they could connect. The app draws one connection card under
- * the message for each app the bot names in a connect block, so the request
- * carries what the company has connected (`companyApps`), how to pick at
- * most three apps, and the form of the block. The app shows the bot's text
- * as written.
+ * The bot's runtime has a `show_connection_cards` tool that draws connection
+ * cards under its reply, and its standing context for HQ direct messages
+ * explains the cards and how people ask. So this request is a plain ask: say
+ * hello and offer what the person could connect. It adds the facts the bot
+ * can use: that the company files are still downloading, while that is so,
+ * and what the company has connected (`companyApps`). The app shows the
+ * bot's text as written. For a bot on an older runtime that shows no cards,
+ * the app attaches its own picks under the hello (see `helloCardSource`).
  */
 export function buildAgentHelloRequest(input: {
   personName?: string | null;
@@ -185,17 +169,13 @@ export function buildAgentHelloRequest(input: {
   companyApps?: string | null;
 }): string {
   const person = personOrFallback(input.personName);
-  const files = input.filesStillDownloading
-    ? ", say in one short clause that your company files are still downloading in the background,"
-    : "";
+  const who = inlineText(input.personName) ? `${person} just created you and is opening this conversation` : `${person} is opening this conversation`;
+  const files = input.filesStillDownloading ? "The company files are still downloading in the background.\n" : "";
   return (
-    `${AGENT_HELLO_REQUEST_OPENING} and ${person} is about to open this conversation. ` +
-    `${person} cannot see this message. Write your first message to ${person} now: ` +
-    `greet ${person} by name${files} and offer what ${person} could connect, showing the apps as cards. ` +
-    appPickingInstructions(person, input.companyApps) +
-    `End your message with ${ONE_CONNECT_FENCE}` +
-    `Later, when a task needs an app that is not connected, you can show cards again by ending a message with a connect block. ` +
-    `When ${person} writes "${CONNECT_MORE_REQUEST}", answer in one short sentence and end with a connect block chosen the same way. ` +
+    `${AGENT_HELLO_REQUEST_OPENING}. ${who}. ` +
+    `${person} cannot see this message. Write your first message to ${person}: say hello and offer what ${person} could connect so you can help.\n` +
+    files +
+    companyAppsFacts(input.companyApps) +
     `Do not mention this message.`
   );
 }
@@ -203,17 +183,15 @@ export function buildAgentHelloRequest(input: {
 /**
  * The request the app sends a cloud bot, on the bot-only lane, when the
  * person asks to connect more apps (the "Connect more tools" message, from
- * the chip or typed). It carries the apps brief and the same picking
- * instructions as the hello, and asks for a short answer that ends with one
- * fence holding one connect block of at most three items. The bot's visible
- * answer to the person then carries the block.
+ * the chip or typed). Like the hello, it is a plain ask with the company's
+ * connected apps as facts; the bot shows the cards with its own tool.
  */
 export function buildAgentConnectMoreRequest(input: { personName?: string | null; companyApps?: string | null }): string {
   const person = personOrFallback(input.personName);
   return (
-    `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps (their message "${CONNECT_MORE_REQUEST}"). ` +
-    `${person} cannot see this message. Answer ${person} in one short sentence and end your message with ${ONE_CONNECT_FENCE}` +
-    appPickingInstructions(person, input.companyApps) +
+    `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps. ` +
+    `${person} cannot see this message. Answer ${person} and offer what ${person} could connect.\n` +
+    companyAppsFacts(input.companyApps) +
     `Do not mention this message.`
   );
 }

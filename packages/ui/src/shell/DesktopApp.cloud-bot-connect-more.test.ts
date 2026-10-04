@@ -360,14 +360,14 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     const [to, body] = visibleSends(w)[0]!;
     expect(to).toBe(NOVA);
     expect(body).toBe("Connect more tools");
-    // The bot also gets one request the person never sees, with the apps and
-    // the picking rules, keyed to the person's message.
+    // The bot also gets one request the person never sees, a plain ask with
+    // the company's apps, keyed to the person's message.
     await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
     const [hiddenTo, hiddenBody, extras] = hidden(w)[0]!;
     expect(hiddenTo).toBe(NOVA);
     expect(hiddenBody).toMatch(/^Automatic message from HQ: Corey just asked to connect more apps/);
     expect(hiddenBody).toContain("- Linear (linear.app): connected, not shared with you");
-    expect(hiddenBody).toContain("Pick at most three apps");
+    expect(hiddenBody).toContain("Answer Corey and offer what Corey could connect.");
     const key = (extras as { audience?: string; idempotencyKey?: string }).idempotencyKey ?? "";
     expect((extras as { audience?: string }).audience).toBe("agent");
     expect(key).toMatch(new RegExp(`^new-bot-connect-more-${NOVA}-sent_`));
