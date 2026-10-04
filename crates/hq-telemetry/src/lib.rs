@@ -2209,6 +2209,31 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // producer bug that shipped a path, a raw report byte, or a stderr fragment
         // to `[Filtered]` instead of projecting it into a tag or Event.culprit.
         "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        // Existing watcher-exit event detail (SC-DESKTOP-89-INSTR). These tags
+        // are diagnostic only and each has an independent closed/shape validator
+        // so accidental raw process output fails closed at egress.
+        "exit_producer" => Some(matches!(value, "launcher" | "runner" | "unknown")),
+        "watch_owner_result" => Some(matches!(value, "acquired" | "busy" | "lost" | "unknown")),
+        "stderr_cause" => Some(matches!(
+            value,
+            "libuv_assert"
+                | "libuv_fatal_syscall"
+                | "node_check_abort"
+                | "node_fatal"
+                | "heap_oom"
+                | "rust_panic"
+                | "exec_permission_denied"
+                | "exec_not_found"
+                | "node_too_old"
+                | "disk_full"
+                | "npm_install_relay"
+                | "already_owned"
+                | "owner_lease_lost"
+                | "other"
+        )),
+        "node_error_code" => Some(valid_node_error_code(value)),
+        "node_error_name" => Some(valid_node_error_name(value)),
+        "node_top_frame" => Some(valid_node_top_frame(value)),
         "runner_report_read" => Some(matches!(
             value,
             "report_read"
@@ -2232,6 +2257,55 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         _ => None,
     }
+}
+
+fn valid_node_error_code(value: &str) -> bool {
+    value == "unknown"
+        || (value.starts_with("ERR_")
+            && value.len() > 4
+            && value.len() <= 64
+            && value[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'))
+}
+
+fn valid_node_error_name(value: &str) -> bool {
+    value == "unknown"
+        || (!value.is_empty()
+            && value.len() <= 64
+            && (value.ends_with("Error") || value.ends_with("Exception"))
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+}
+
+fn valid_node_top_frame(value: &str) -> bool {
+    if value == "unknown" || value == "external" {
+        return true;
+    }
+    let mut parts = value.rsplitn(3, ':');
+    let Some(column) = parts.next() else {
+        return false;
+    };
+    let Some(line) = parts.next() else {
+        return false;
+    };
+    let Some(filename) = parts.next() else {
+        return false;
+    };
+    !filename.is_empty()
+        && filename.len() <= 128
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && line
+            .parse::<u64>()
+            .map(|number| number > 0)
+            .unwrap_or(false)
+        && column
+            .parse::<u64>()
+            .map(|number| number > 0)
+            .unwrap_or(false)
 }
 
 fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
@@ -2856,7 +2930,7 @@ pub fn init_with_identity(
     let guard = sentry::init(sentry::ClientOptions {
         dsn,
         release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
-        environment: Some(environment.unwrap_or("production").to_string().into()),
+        environment: Some(resolve_sentry_environment(release_version, environment).into()),
         sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -2869,6 +2943,22 @@ pub fn init_with_identity(
     });
     configure_identity_scope(identity);
     Some(guard)
+}
+
+fn resolve_sentry_environment(release_version: &str, configured: Option<&str>) -> String {
+    if is_shelltest_release_version(release_version) {
+        "shelltest".to_string()
+    } else {
+        configured.unwrap_or("production").to_string()
+    }
+}
+
+fn is_shelltest_release_version(release_version: &str) -> bool {
+    let Some(run_number) = release_version.strip_prefix("0.0.0-shelltest.") else {
+        return false;
+    };
+    matches!(run_number.as_bytes().first(), Some(b'1'..=b'9'))
+        && run_number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// Bind the process-wide attribution tags onto the current Sentry scope.
@@ -2906,6 +2996,23 @@ fn resolve_build_commit(value: Option<&'static str>) -> &'static str {
 mod tests {
     use super::*;
     use sentry::protocol::{AppContext, Breadcrumb, Request, RuntimeContext};
+
+    #[test]
+    fn shelltest_release_uses_nonproduction_sentry_environment() {
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.483", None),
+            "shelltest"
+        );
+        assert_eq!(resolve_sentry_environment("0.10.382", None), "production");
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.bad", None),
+            "production"
+        );
+        assert_eq!(
+            resolve_sentry_environment("0.10.382", Some("staging")),
+            "staging"
+        );
+    }
 
     // Most scrubber tests are intentionally independent of the process-global
     // native diagnostics. Keep their existing assertions deterministic while
@@ -5074,6 +5181,81 @@ mod tests {
             result.culprit.as_deref(),
             Some("sync/runner push: heap oom")
         );
+    }
+
+    #[test]
+    fn watcher_exit_diagnostic_axes_are_safe_at_egress() {
+        for class in hq_desktop_core::sync_outcome::RunnerFatalClass::ALL {
+            if class != hq_desktop_core::sync_outcome::RunnerFatalClass::None {
+                assert_eq!(
+                    valid_runner_diagnostic_field("stderr_cause", class.as_str()),
+                    Some(true),
+                    "classifier token {} must pass stderr cause egress",
+                    class.as_str()
+                );
+            }
+        }
+        for (key, values) in [
+            ("exit_producer", vec!["launcher", "runner", "unknown"]),
+            (
+                "watch_owner_result",
+                vec!["acquired", "busy", "lost", "unknown"],
+            ),
+            (
+                "stderr_cause",
+                vec!["already_owned", "owner_lease_lost", "node_fatal", "other"],
+            ),
+            ("node_error_code", vec!["ERR_MODULE_NOT_FOUND", "unknown"]),
+            ("node_error_name", vec!["Error", "TypeError", "unknown"]),
+            (
+                "node_top_frame",
+                vec!["sync-runner.js:23:17", "external", "unknown"],
+            ),
+        ] {
+            for value in values {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, value),
+                    Some(true),
+                    "valid {key} {value:?} must pass egress"
+                );
+            }
+        }
+
+        for (key, value) in [
+            ("exit_producer", "/private/npx"),
+            ("watch_owner_result", "owner=123"),
+            ("stderr_cause", "already_owned pid=123"),
+            ("node_error_code", "ERR_BAD/path"),
+            ("node_error_name", "Error: private message"),
+            ("node_top_frame", "/Users/ada/private-file.js:23:17"),
+            ("node_top_frame", "private-file.js:0:17"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "unsafe {key} {value:?} must fail egress"
+            );
+        }
+
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("exit_producer", "runner"),
+            ("watch_owner_result", "busy"),
+            ("stderr_cause", "already_owned"),
+            ("node_error_code", "ERR_MODULE_NOT_FOUND"),
+            ("node_error_name", "Error"),
+            ("node_top_frame", "external"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let event = before_send(event).expect("event remains sendable");
+        assert_eq!(event.tags["exit_producer"], "runner");
+        assert_eq!(event.tags["watch_owner_result"], "busy");
+        assert_eq!(event.tags["stderr_cause"], "already_owned");
+        assert_eq!(event.tags["node_error_code"], "ERR_MODULE_NOT_FOUND");
+        assert_eq!(event.tags["node_error_name"], "Error");
+        assert_eq!(event.tags["node_top_frame"], "external");
     }
 
     #[test]

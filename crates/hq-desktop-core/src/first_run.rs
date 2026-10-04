@@ -105,6 +105,15 @@ pub fn should_autoshow_on_launch(kind: LaunchKind) -> bool {
     kind == LaunchKind::FirstRun
 }
 
+/// Whether the first-run handoff may schedule one initial sync.
+pub fn should_sync_after_first_run_handoff(
+    flag_enabled: bool,
+    kind: LaunchKind,
+    realtime_sync: bool,
+) -> bool {
+    flag_enabled && kind == LaunchKind::FirstRun && realtime_sync
+}
+
 /// True when `autoSyncNoticeShown` is explicitly `true`.
 pub fn notice_shown_in_map(obj: &Map<String, Value>) -> bool {
     obj.get("autoSyncNoticeShown")
@@ -213,6 +222,43 @@ fn preserve_unparseable_menubar(path: &Path) -> Result<(), String> {
     Err("HQ settings file could not be preserved; it was not changed".to_string())
 }
 
+static MENUBAR_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static MENUBAR_WRITE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Held for one read-modify-write of `menubar.json`. See [`lock_menubar_writes`].
+pub struct MenubarWriteLock {
+    _guard: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+impl Drop for MenubarWriteLock {
+    fn drop(&mut self) {
+        MENUBAR_WRITE_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+/// Serialize every read-modify-write of `menubar.json` in this process.
+///
+/// Each writer reads the whole file, changes its keys, and renames a rewritten
+/// copy over it through the shared `menubar.json.tmp`. Two writers that overlap
+/// lose one of their changes (a sign-in row held for the next session was
+/// dropped when the install id was minted at the same moment), and can even
+/// rename each other's half-written temp file. Hold this across the read and
+/// the write. It is re-entrant on one thread, so a caller holding it can still
+/// use [`merge_menubar_flags`]. Do not hold it across an `.await`.
+pub fn lock_menubar_writes() -> MenubarWriteLock {
+    let nested = MENUBAR_WRITE_DEPTH.with(|depth| depth.get() > 0);
+    let guard = (!nested).then(|| {
+        MENUBAR_WRITES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    MENUBAR_WRITE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    MenubarWriteLock { _guard: guard }
+}
+
 /// Read settings before a write while preserving any corrupt source file.
 ///
 /// A returned map is safe to merge and replace. `None` means the settings
@@ -253,6 +299,7 @@ fn write_menubar_obj(path: &Path, obj: Map<String, Value>) -> Result<(), String>
 }
 
 pub fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
+    let _lock = lock_menubar_writes();
     let mut obj = prepare_menubar_write(path)?.unwrap_or_default();
     for (k, v) in updates {
         obj.insert((*k).to_string(), v.clone());
@@ -283,6 +330,7 @@ pub fn ensure_install_attempt_id(
     path: &Path,
     mint: impl FnOnce() -> String,
 ) -> Result<String, String> {
+    let _lock = lock_menubar_writes();
     let obj = read_menubar_obj(path);
     if let Some(Value::String(existing)) = obj.get(INSTALL_ATTEMPT_ID_KEY) {
         let trimmed = existing.trim();
@@ -307,6 +355,7 @@ pub const RETIRED_HQ_WORK_HANDOFF_KEY: &str = "hqWorkHandoff";
 /// Remove top-level keys from `menubar.json`. Missing file / missing keys are
 /// success (idempotent). Returns whether any named key was actually present.
 pub fn remove_menubar_keys(path: &Path, keys: &[&str]) -> Result<bool, String> {
+    let _lock = lock_menubar_writes();
     let Some(mut obj) = prepare_menubar_write(path)? else {
         return Ok(false);
     };
@@ -424,6 +473,95 @@ mod tests {
 
     fn map(v: Value) -> Map<String, Value> {
         v.as_object().cloned().unwrap()
+    }
+
+    // ── Concurrent menubar.json writers ─────────────────────────────────────
+    //
+    // Regression: every writer read the whole file and renamed a rewritten copy
+    // over it with no lock, so two overlapping writers lost one change. A
+    // sign-in row held for the next session vanished when the install id was
+    // minted at the same moment (CI: held_sign_in_failure_survives_app_quit
+    // found only `installAttemptId` in the file).
+
+    #[test]
+    fn concurrent_merges_keep_every_writers_key() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        fs::write(&path, "{}").unwrap();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40 {
+                        merge_menubar_flags(&path, &[(&format!("k{t}_{i}"), json!(i))]).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let obj = read_menubar_obj(&path);
+        for t in 0..8 {
+            for i in 0..40 {
+                assert_eq!(
+                    obj.get(&format!("k{t}_{i}")),
+                    Some(&json!(i)),
+                    "k{t}_{i} lost"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn minting_the_install_id_does_not_drop_a_concurrent_write() {
+        for round in 0..40 {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("menubar.json");
+            fs::write(&path, "{}").unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let minter = {
+                let (path, barrier) = (path.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ensure_install_attempt_id(&path, || format!("id-{round}")).unwrap()
+                })
+            };
+            barrier.wait();
+            let held = {
+                let _lock = lock_menubar_writes();
+                let mut rows = read_menubar_obj(&path)
+                    .get("held")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                // Widen the read-to-write window the lock has to cover.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                rows.push(json!(round));
+                merge_menubar_flags(&path, &[("held", Value::Array(rows))])
+            };
+            held.unwrap();
+            assert_eq!(minter.join().unwrap(), format!("id-{round}"));
+            let obj = read_menubar_obj(&path);
+            assert_eq!(obj.get("held"), Some(&json!([round])), "round {round}");
+            assert_eq!(
+                obj.get(INSTALL_ATTEMPT_ID_KEY),
+                Some(&json!(format!("id-{round}")))
+            );
+        }
+    }
+
+    #[test]
+    fn menubar_write_lock_is_reentrant_on_one_thread() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("menubar.json");
+        let _outer = lock_menubar_writes();
+        merge_menubar_flags(&path, &[("a", json!(1))]).unwrap();
+        assert!(remove_menubar_keys(&path, &["a"]).unwrap());
+        assert_eq!(
+            ensure_install_attempt_id(&path, || "x".into()).unwrap(),
+            "x"
+        );
     }
 
     // ── Telemetry consent record ────────────────────────────────────────────
@@ -748,6 +886,35 @@ mod tests {
         assert!(should_autoshow_on_launch(LaunchKind::FirstRun));
         assert!(!should_autoshow_on_launch(LaunchKind::ExistingUpdate));
         assert!(!should_autoshow_on_launch(LaunchKind::Normal));
+    }
+
+    #[test]
+    fn first_launch_sync_is_gated_to_fresh_installs_and_auto_sync() {
+        assert!(!should_sync_after_first_run_handoff(
+            false,
+            LaunchKind::FirstRun,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::ExistingUpdate,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::Normal,
+            true
+        ));
+        assert!(!should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::FirstRun,
+            false
+        ));
+        assert!(should_sync_after_first_run_handoff(
+            true,
+            LaunchKind::FirstRun,
+            true
+        ));
     }
 
     #[test]

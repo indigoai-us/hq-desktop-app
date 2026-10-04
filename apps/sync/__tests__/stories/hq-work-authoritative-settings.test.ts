@@ -104,6 +104,7 @@ afterEach(async () => {
   host?.remove();
   localStorage?.clear();
   resetUpdateStore();
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
 });
 
@@ -197,6 +198,9 @@ describe('embedded HQ Work authoritative settings', () => {
   });
 
   it('persists the Dock control through its native apply command across an injected-host component remount', async () => {
+    // This is specifically the macOS Dock setting; pin the host so Linux CI
+    // exercises the same label the test selects.
+    vi.stubGlobal('__HQ_HOST_OS__', 'macos');
     const { adapter, calls, persisted } = nativeHost({
       startAtLogin: false,
       dockIcon: true,

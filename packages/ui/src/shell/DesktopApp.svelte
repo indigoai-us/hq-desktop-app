@@ -26,6 +26,7 @@
   import {
     CLAUDE_PROVIDER_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
+    READY_FIRST_ACTION_FLAG,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -186,6 +187,7 @@
   import {
     openCreateCompanyDraft,
     submitCreateCompany,
+    provisionCompanyCloud,
     type CompanyCreateSeam,
   } from "../chat/create-company/create-company-flow.js";
   import {
@@ -357,6 +359,7 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
+    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
@@ -569,6 +572,7 @@
     ConversationApi,
     ConversationMessageWire,
     NotificationsApi,
+    ProjectMemberAddResult,
     ReplyThreadScope,
     ReplyThreadResponse,
   } from "../chat/chat-api.js";
@@ -643,6 +647,7 @@
     timelineHasEvent,
     type TimelineDisplayOptions,
     timelinePageFromPayload,
+    HUMAN_HISTORY_VIEW,
   } from "../chat/live-messages.js";
   import {
     DM_INBOX_SINCE_KEY,
@@ -650,6 +655,7 @@
     dmActivityFromInboxPage,
     dmActivityFromThreadsPage,
     dmActivityFromTimeline,
+    dmThreadsPageCarriesHumanRecency,
     type InboxDmActivity,
     isMissingEndpointFailure,
     mergeDmActivity,
@@ -683,6 +689,7 @@
   } from "./palette-rows.js";
   import {
     joinableMemberships,
+    needsCloudProvisioning,
     type Workspace,
     type WorkspacesResult,
   } from "../chat/workspaces.js";
@@ -727,11 +734,18 @@
     onreactionscache?: (row: ConversationRow, reactions: ReactionMap) => void;
     /** Resolve the (injected) Board fixture for a row (columns + stories). */
     boardByRow?: (row: ConversationRow) => BoardTabData | null;
+    /** Add an active company member to a project row through the host API. */
+    addProjectMember?: (row: ConversationRow, personUid: string) => Promise<ProjectMemberAddResult>;
     /** Resolve the (injected) Files fixture rows for a row. */
     filesByRow?: (row: ConversationRow) => ChannelFileItemModel[];
     loadFilePreview?: (item: ChannelFileItemModel) => Promise<ChannelFilePreview>;
     /** Platform seam for opening an external URL (run-card preview/diff). */
     onopenurl?: (url: string) => void;
+    /**
+     * Host-owned notification rows (paused uploads) open through the host, so
+     * it can record the engagement and open only an approved link.
+     */
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Bubbled lifecycle-card action (host posts in US-009). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
     /** Wake events (host bridges MeshClient → bus); null when offline. */
@@ -868,6 +882,8 @@
           }
         | null,
     ) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
     /**
      * When true, messagesByRow is first-paint only — the shell still fetches
      * REST for the selected row so mentions, member-added lines, and the
@@ -881,6 +897,12 @@
     ) => void;
     /** Persist the conversation the user just opened (fresh-load restore). */
     onselectrow?: (row: ConversationRow) => void;
+    /**
+     * QA-075: the company whose pane is open (a company or project channel),
+     * or null on personal pages and every non-conversation view. Hosts use it
+     * to scope per-company notices to that company's pane.
+     */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
     /** Desktop: PUT attachment bytes outside the webview (no S3 CORS). */
     putAttachmentObject?: PutChatAttachment;
     /**
@@ -1007,9 +1029,11 @@
     reactionsByRow,
     onreactionscache,
     boardByRow,
+    addProjectMember,
     filesByRow,
     loadFilePreview,
     onopenurl,
+    onopenhostnotification,
     oncardaction,
     wakes = null,
     companies = null,
@@ -1046,9 +1070,11 @@
     uiVersion = null,
     notificationWakeSeq = 0,
     onactivethreadchange,
+    readyFirstActionReady = false,
     hydrateLiveMessages = false,
     onlivemessages,
     onselectrow,
+    onactivecompanychange,
     putAttachmentObject,
     getAttachmentObject,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -1364,6 +1390,20 @@
     membershipSyncError = null;
     membershipSyncTarget = target.slug;
     try {
+      // A company you own with no vault bucket was created without its cloud
+      // provisioning, and its sync can only fail with "not provisioned".
+      // Provision first (idempotent, owner-only), so Try again repairs it.
+      if (needsCloudProvisioning(target) && conversationApi.activateCompanyCloud) {
+        const provisioned = await provisionCompanyCloud(
+          conversationApi,
+          target.cloudUid!,
+        );
+        if (!provisioned.ok) {
+          membershipSyncError = provisioned.reason;
+          membershipSyncPending = false;
+          return;
+        }
+      }
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
       // not what "pull it onto this machine" promises. Matches CompanyPage.
@@ -1692,6 +1732,7 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
+  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -1809,6 +1850,34 @@
    * this is true. See `packages/platform/src/humanMessage.ts` for the rule.
    */
   let humanOnlyConversations = $state(true);
+  /**
+   * The adapter has answered that the flag is on. `humanOnlyConversations`
+   * starts `true` before any answer so the first paint hides mesh rows, but a
+   * history request only asks the server for the human view (`view=human`)
+   * once the answer is in. Otherwise a host that ends up with the flag off
+   * would have loaded a server-filtered page it then has to show unfiltered.
+   */
+  let humanOnlyConfirmed = $state(false);
+  let readyFirstActionEnabled = $state(false);
+  $effect(() => {
+    const identity = adapter?.identity;
+    if (!identity || adapter.kind !== "desktop") return;
+    let cancelled = false;
+    void identity.hasFeature(READY_FIRST_ACTION_FLAG).then((result) => {
+      if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
+    }).catch((err) => {
+      console.warn("[hq-desktop] ready first action flag lookup failed:", err);
+    });
+    const unsubscribe = typeof identity.subscribeFeature === "function"
+      ? identity.subscribeFeature(READY_FIRST_ACTION_FLAG, (result) => {
+          if (!cancelled) readyFirstActionEnabled = result.ok && result.value === true;
+        })
+      : undefined;
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  });
   $effect(() => {
     const identity = adapter?.identity;
     if (!identity || typeof identity.hasFeature !== "function") return;
@@ -1820,6 +1889,7 @@
         );
         if (cancelled) return;
         humanOnlyConversations = initial.ok && initial.value === true;
+        humanOnlyConfirmed = humanOnlyConversations;
       } catch {
         // Registry outage / partial mock — stay dark.
       }
@@ -1829,6 +1899,7 @@
         ? identity.subscribeFeature(HUMAN_ONLY_CONVERSATIONS_FLAG, (result) => {
             if (cancelled) return;
             humanOnlyConversations = result.ok && result.value === true;
+            humanOnlyConfirmed = humanOnlyConversations;
           })
         : undefined;
     return () => {
@@ -3603,6 +3674,18 @@
       ""
     );
   });
+  const activeCompanyPane = $derived.by(() => {
+    if (view !== "conversation" || selectedRow?.kind !== "channel") return null;
+    const scope = (selectedRow.channelScope ?? "").trim();
+    if (scope !== "company" && scope !== "project" && !selectedHomeCompany) return null;
+    const uid = (selectedRow.companyUid ?? selectedHomeCompany?.cloudUid ?? "").trim() || null;
+    const slug = selectedCompanySlug.trim();
+    return uid || slug ? { uid, slug } : null;
+  });
+  $effect(() => {
+    const active = activeCompanyPane;
+    onactivecompanychange?.(active ? { uid: active.uid, slug: active.slug } : null);
+  });
 
   /** "Indigo · project channel" style subtitle under the channel name. */
   const channelSubtitle = $derived.by(() => {
@@ -3668,14 +3751,13 @@
   const activeTab = $derived(isProjectChannel ? tab : "chat");
 
   const headerTitle = $derived(
-    resolveConversationTitle(selectedRow, railRows, selectedHomeCompany?.slug ?? null),
+    selectedHomeCompany?.displayName?.trim() ||
+      selectedHomeCompany?.slug?.trim() ||
+      resolveConversationTitle(selectedRow, railRows),
   );
   const agentChannelWallpaper = $derived(SETUP_HERO_ART.dark);
 
-  /**
-   * Company hero shows the company's display name ("Ramen Bae"), not the
-   * channel slug ("ramen-bae") — the channel header keeps `#ramen-bae`.
-   */
+  /** Company hero and home-channel title use the company display name. */
   const companyHeroTitle = $derived(
     companyAppearanceName ||
       companyDisplayName(selectedRow?.companyUid, companyNames) ||
@@ -4084,6 +4166,28 @@
    * predates the peer index. Stop asking; the inbox path still runs.
    */
   let dmThreadsUnsupported = false;
+  /**
+   * The DM thread listing reported a last human message (or a known "none")
+   * for at least one pair, so this server maintains it. Only then is the
+   * listing re-read when a DM arrives or is sent: the sidebar orders such a
+   * pair by a value nothing else on the client can supply. An older server
+   * sends neither field and keeps the single backfill read.
+   */
+  let dmThreadsCarryHumanRecency = false;
+  /**
+   * Re-reads of the DM thread listing for human recency are throttled the
+   * way the rail throttles its directory read: an arriving DM asks for one
+   * read per interval, and the person's own send is read at once.
+   */
+  const DM_HUMAN_RECENCY_MIN_INTERVAL_MS = 20_000;
+  let dmHumanRecencyTimer: ReturnType<typeof setTimeout> | null = null;
+  let dmHumanRecencyLastRunAt = 0;
+  /**
+   * Counts DM thread listing requests. A response is applied only when it
+   * answers the newest request, so two reads in flight cannot land out of
+   * order and leave an older listing on the rail.
+   */
+  let dmThreadsRequestSeq = 0;
 
   // Client-side "agent is thinking" rows, keyed by conversation row id.
   // Local only — the backend has no typing/ack events. Per-conversation so
@@ -4390,9 +4494,18 @@
     });
   }
 
+  /**
+   * `history` marks the read that loads a conversation's newest history page
+   * (its result goes to `applyFetchedTimeline`). Only that read asks the
+   * server for the human view. A catch-up read does not, with or without
+   * `since`: it runs on every wake and on the safety poll, and a filtered
+   * read may scan a thousand rows on the server where an unfiltered one
+   * reads twenty. The local filter hides what a catch-up page should not show.
+   */
   async function fetchTimelineRaw(
     row: ConversationRow,
     since?: string,
+    history = false,
   ): Promise<unknown | null> {
     const started = performance.now();
     console.info("[hq-desktop]", {
@@ -4401,12 +4514,16 @@
       id: row.id,
       since: since ?? null,
     });
+    const view = history && !since && wantsServerHumanView()
+      ? { view: HUMAN_HISTORY_VIEW }
+      : {};
     try {
       if (row.kind === "dm" && row.personUid) {
         const res = await adapter.messaging.fetchDmThread({
           withPersonUid: row.personUid,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -4425,6 +4542,7 @@
           channelId: row.channelId,
           limit: since ? 20 : 50,
           since,
+          ...view,
         });
         console.info("[hq-desktop]", {
           t: Date.now(),
@@ -4449,6 +4567,36 @@
   }
 
   let historyCursors = $state<Record<string, string | null>>({});
+  /**
+   * Row id → the newest history page for it came back with `view: "human"`,
+   * meaning the server filtered and paged it. Only then is the page trusted:
+   * "earlier" exists exactly when the page carried a `nextCursor`, and a 1:1
+   * DM gets a cursor at all. An older server ignores `view` and echoes
+   * nothing, which leaves a row out of this map and on the previous
+   * behaviour (local filter, bounded auto-fetch, no DM paging).
+   */
+  let historyServerView = $state<Record<string, boolean>>({});
+
+  /** History requests ask for the server-side human view only once the flag is confirmed on. */
+  function wantsServerHumanView(): boolean {
+    return humanOnlyConversations && humanOnlyConfirmed;
+  }
+
+  /** Record what one history page says about paging for this row. */
+  function recordHistoryPage(
+    row: ConversationRow,
+    raw: unknown,
+    requestedCursor: string | null,
+  ): void {
+    const page = timelinePageFromPayload(raw);
+    const serverView = page.view === HUMAN_HISTORY_VIEW;
+    historyServerView[row.id] = serverView;
+    // Without the echo a 1:1 DM keeps no cursor, as before this option
+    // existed. With it, the server's cursor is the only paging signal.
+    const next = row.channelId || serverView ? (page.nextCursor ?? null) : null;
+    historyCursors[row.id] =
+      requestedCursor !== null && next === requestedCursor ? null : next;
+  }
 
   async function loadEarlierTimeline(): Promise<void> {
     const row = selectedRow;
@@ -4456,14 +4604,39 @@
     const generation = tenantGeneration;
     const cursor = historyCursors[row.id];
     if (!cursor) return;
+    // A cursor from a human-view page must go back with `view=human`. One
+    // from an unfiltered page is a plain row key, which that route accepts
+    // too, so the option follows the mode and not the cursor's origin.
+    const view = wantsServerHumanView() ? { view: HUMAN_HISTORY_VIEW } : {};
     const raw = row.channelId
-      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50 }))
-      : null;
+      ? unwrapAdapter(await adapter.messaging.fetchChannel({ channelId: row.channelId, cursor, limit: 50, ...view }))
+      : row.kind === "dm" && row.personUid
+        ? unwrapAdapter(await adapter.messaging.fetchDmThread({ withPersonUid: row.personUid, cursor, limit: 50, ...view }))
+        : null;
     if (selectedRow?.id !== row.id || tenantGeneration !== generation || raw === null) return;
-    const page = timelinePageFromPayload(raw);
-    historyCursors[row.id] = page.nextCursor === cursor ? null : (page.nextCursor ?? null);
-    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw));
+    recordHistoryPage(row, raw, cursor);
+    commitTimeline(row, mergeFetchedTimeline(liveTimeline, raw, timelineDisplayFor(row)));
   }
+
+  // The flag turned off while server-filtered pages are held: those pages
+  // lack the rows the unfiltered view shows. Drop them and read the open
+  // conversation again without `view`.
+  $effect(() => {
+    if (humanOnlyConversations) return;
+    untrack(() => {
+      const filtered = Object.keys(historyServerView).filter(
+        (id) => historyServerView[id],
+      );
+      if (filtered.length === 0) return;
+      for (const id of filtered) timelineCache.delete(id);
+      historyServerView = {};
+      const row = selectedRow;
+      if (!row || !filtered.includes(row.id)) return;
+      void fetchTimelineRaw(row, undefined, true)
+        .then((raw) => applyFetchedTimeline(row, raw))
+        .catch(() => {});
+    });
+  });
 
   /**
    * A channel opened by id before it was in the loaded rows (a deep link, a
@@ -4515,7 +4688,7 @@
     timelineHydrating = false;
     if (raw == null) return;
     hydrateStubChannelRow(row, raw);
-    historyCursors[row.id] = row.channelId ? (timelinePageFromPayload(raw).nextCursor ?? null) : null;
+    recordHistoryPage(row, raw, null);
     let incoming = messagesForDisplay(raw, timelineDisplayFor(row));
     // An immediate readback can lag the accepted mutation. Preserve its
     // pending receipt over a stale open card, but accept any newer state.
@@ -4605,7 +4778,7 @@
     timelineHydrating = true;
     const frame = requestAnimationFrame(() => {
       if (selectedRow?.id !== token) return;
-      void fetchTimelineRaw(row)
+      void fetchTimelineRaw(row, undefined, true)
         .then((raw) => applyFetchedTimeline(row, raw))
         .finally(() => {
           if (selectedRow?.id === token) timelineHydrating = false;
@@ -6620,6 +6793,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendChannelMessage: async (args) => {
@@ -6636,6 +6811,8 @@
       return {
         messages: normalizeConversationMessages(page.messages),
         nextCursor: page.nextCursor ?? null,
+        ...(page.view ? { view: page.view } : {}),
+        ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
       };
     },
     sendDm: async (args) => {
@@ -6692,6 +6869,10 @@
     checkCompanySlug: adapter.messaging.checkCompanySlug
       ? async (slug: string) =>
           unwrapAdapter(await adapter.messaging.checkCompanySlug!(slug))
+      : undefined,
+    activateCompanyCloud: adapter.messaging.activateCompanyCloud
+      ? async (companyUid: string) =>
+          unwrapAdapter(await adapter.messaging.activateCompanyCloud!(companyUid))
       : undefined,
     getCompanyTab: adapter.messaging.getCompanyTab
       ? async (companyUid, tabId) =>
@@ -7066,12 +7247,13 @@
           checkSlug: conversationApi.checkCompanySlug
             ? (slug: string) => conversationApi.checkCompanySlug!(slug)
             : null,
-          submit: async (form, values, invites) => {
+          submit: async (form, values, invites, onPhase) => {
             const result = await submitCreateCompany(
               conversationApi,
               form,
               values,
               invites,
+              { onPhase },
             );
             if (result.ok) {
               createCompanyRequested = true;
@@ -7088,6 +7270,8 @@
             }
             return result;
           },
+          provision: (companyUid: string) =>
+            provisionCompanyCloud(conversationApi, companyUid),
         }
       : null,
   );
@@ -7248,7 +7432,7 @@
       }
       // Fetch newly created steps even when no live event arrives. Failure
       // must not turn an already-saved choice into a failed mutation.
-      void fetchTimelineRaw(actionRow)
+      void fetchTimelineRaw(actionRow, undefined, true)
         .then((raw) => applyFetchedTimeline(actionRow, raw, state === "pending" ? event.cardId : undefined))
         .catch(() => {});
     }
@@ -7933,6 +8117,7 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
+    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
@@ -8172,6 +8357,14 @@
     return navigate({ kind: "messages" });
   }
 
+  function leaveLibrary(): void {
+    if (libraryBackTargetIndex != null) {
+      void navigation.backTo(libraryBackTargetIndex);
+      return;
+    }
+    void navigate({ kind: "messages" });
+  }
+
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
   });
@@ -8186,6 +8379,7 @@
       if (slug) allowed.add(slug);
     }
     navigation.filterAccessible(allowed);
+    syncNavigationChrome();
     const current = navigationHistory.current();
     const shownExtra =
       extraPageId != null
@@ -8425,7 +8619,7 @@
     timelineHydrating = false;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
+    resetDmThreadsState();
     setThinking({}, "tenant-switch");
     stoppedRespondingByUid = {};
     botDmMessageSeenAt.clear();
@@ -8811,6 +9005,7 @@
       backfill &&
       !dmThreadsUnsupported &&
       typeof notifications.fetchDmThreads === "function";
+    const threadsSeq = wantThreads ? ++dmThreadsRequestSeq : 0;
     const [res, threadsRes] = await Promise.all([
       raceTimeout(
         notifications.fetchDmInbox({
@@ -8835,11 +9030,16 @@
       return;
     }
     let threadActivity: InboxDmActivity[] = [];
-    if (threadsRes) {
+    // A newer listing request was issued while this one was in flight: its
+    // answer is the one to apply, so this one is dropped.
+    if (threadsRes && threadsSeq === dmThreadsRequestSeq) {
       if (threadsRes.ok) {
         threadActivity = dmActivityFromThreadsPage(threadsRes.value, {
           selfUid: self?.uid,
         });
+        if (dmThreadsPageCarriesHumanRecency(threadsRes.value)) {
+          dmThreadsCarryHumanRecency = true;
+        }
       } else if (isMissingEndpointFailure(threadsRes)) {
         dmThreadsUnsupported = true;
       }
@@ -8854,10 +9054,16 @@
       since,
       selfUid: self?.uid,
     });
-    const activity = mergeDmActivity(
-      dmActivityFromInboxPage(res.value, { selfUid: self?.uid }),
-      threadActivity,
-    );
+    const inboxActivity = dmActivityFromInboxPage(res.value, {
+      selfUid: self?.uid,
+    });
+    // An incremental pass does not read the listing itself. When it found
+    // new DMs (a wake this client missed), and the listing also supplies
+    // human recency, it asks for the throttled re-read.
+    if (!backfill && inboxActivity.length > 0) {
+      scheduleDmHumanRecencyRefresh(false);
+    }
+    const activity = mergeDmActivity(inboxActivity, threadActivity);
     const hasUnreads = Boolean(
       parsed.pairUnreads && parsed.pairUnreads.length > 0,
     );
@@ -8877,6 +9083,105 @@
       storage?.setItem(DM_INBOX_SINCE_KEY, parsed.nextSince);
   }
 
+  /** Forget what the previous tenant's DM thread listing said, and its reads. */
+  function resetDmThreadsState(): void {
+    dmThreadsUnsupported = false;
+    dmThreadsCarryHumanRecency = false;
+    dmHumanRecencyLastRunAt = 0;
+    // Any read still in flight belongs to the previous tenant.
+    dmThreadsRequestSeq += 1;
+    if (dmHumanRecencyTimer != null) {
+      clearTimeout(dmHumanRecencyTimer);
+      dmHumanRecencyTimer = null;
+    }
+  }
+
+  /**
+   * The rail orders 1:1 DMs by a value from the DM thread listing only in
+   * human-only mode, and only a server that reports the value is worth
+   * reading again.
+   */
+  function dmHumanRecencyWanted(): boolean {
+    return (
+      humanOnlyConversations &&
+      dmThreadsCarryHumanRecency &&
+      !dmThreadsUnsupported &&
+      typeof adapter.notifications?.fetchDmThreads === "function"
+    );
+  }
+
+  /**
+   * Ask for a re-read of the DM thread listing so a pair's last human message
+   * (which only the server computes) follows a new DM. `immediate` is the
+   * person's own send: an outgoing DM raises no wake on this client, and it
+   * is known to be typed, so it is read at once and replaces a pending
+   * throttled read. Anything else shares one read per interval.
+   */
+  function scheduleDmHumanRecencyRefresh(immediate: boolean): void {
+    if (!dmHumanRecencyWanted()) return;
+    if (immediate) {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+      return;
+    }
+    if (dmHumanRecencyTimer != null) return;
+    const wait = Math.max(
+      400,
+      dmHumanRecencyLastRunAt + DM_HUMAN_RECENCY_MIN_INTERVAL_MS - Date.now(),
+    );
+    dmHumanRecencyTimer = setTimeout(() => {
+      dmHumanRecencyTimer = null;
+      dmHumanRecencyLastRunAt = Date.now();
+      void refreshDmHumanRecency();
+    }, wait);
+  }
+
+  /** One read of the DM thread listing, applied only if it is still the newest. */
+  async function refreshDmHumanRecency(): Promise<void> {
+    const bus = wakes;
+    const notifications = adapter.notifications;
+    if (!bus || !dmHumanRecencyWanted()) return;
+    if (!notifications || typeof notifications.fetchDmThreads !== "function") {
+      return;
+    }
+    const expectedGeneration = tenantGeneration;
+    const expectedCompanyId = tenantCompanyId;
+    const seq = ++dmThreadsRequestSeq;
+    const res = await raceTimeout(
+      notifications.fetchDmThreads({ limit: 100 }),
+      bootTimeoutMs,
+      "dm-threads",
+    ).catch(() => null);
+    if (!res || !res.ok) return;
+    // A newer request was issued while this one was in flight: drop this one.
+    if (seq !== dmThreadsRequestSeq) return;
+    if (
+      expectedGeneration !== tenantGeneration ||
+      expectedCompanyId !== tenantCompanyId
+    ) {
+      return;
+    }
+    const activity = dmActivityFromThreadsPage(res.value, {
+      selfUid: self?.uid,
+    });
+    if (activity.length > 0) bus.emit?.("dm:pair-unreads", { activity });
+  }
+
+  // The throttled read must not fire after the shell is gone.
+  $effect(() => {
+    return () => {
+      if (dmHumanRecencyTimer != null) {
+        clearTimeout(dmHumanRecencyTimer);
+        dmHumanRecencyTimer = null;
+      }
+      dmThreadsRequestSeq += 1;
+    };
+  });
+
   $effect(() => {
     const bus = wakes;
     if (!bus) return;
@@ -8887,6 +9192,7 @@
       bus.on("dm:new-message", (wake) => {
         void applyDmWake(wake);
         void catchUpDmInbox();
+        scheduleDmHumanRecencyRefresh(false);
       }),
       bus.on("mesh:catchup", () => {
         const row = selectedRow;
@@ -8919,7 +9225,7 @@
     void tenantCompanyId;
     lastDmTimelineStampByUid.clear();
     lastChannelTimelineStampById.clear();
-    dmThreadsUnsupported = false;
+    resetDmThreadsState();
     if (!wakes) return;
     untrack(() => {
       void catchUpDmInbox({ backfill: true });
@@ -9035,6 +9341,7 @@
         const wire = sentMessageFromResult(res.value, extras);
         if (wire)
           commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+        scheduleDmHumanRecencyRefresh(true);
         // "Connect more tools" typed to a cloud bot: the bot
         // also gets one hidden request with the company's apps, so its
         // visible answer can carry the cards it chose.
@@ -9097,6 +9404,9 @@
       }
       const wire = sentMessageFromResult(res.value, extras);
       if (wire) commitTimeline(row, mergeTimelineMessages(liveTimeline, [wire]));
+      // After the commit above, whose activity wake the rail may answer with
+      // a throttled directory read: this one is known to be a typed message.
+      wakes?.emit?.("channel:own-send", { channelId });
       // Channel sends need an explicit @agent mention (agent DMs start their
       // row in the DM branch above).
       for (const mention of mentions) {
@@ -9363,6 +9673,11 @@
       handleSelect(existing ?? stub, {
         replyRootEventId: dest.replyRootEventId,
       });
+      return;
+    }
+    if (dest.kind === "external") {
+      if (onopenhostnotification) onopenhostnotification(dest.id, dest.url);
+      else onopenurl?.(dest.url);
       return;
     }
     if (dest.kind === "files") {
@@ -11074,6 +11389,9 @@
                     {rosterStatus}
                     {onretryroster}
                     onsetupstarted={recordWelcomeSetupRun}
+                    readyFirstActionEnabled={readyFirstActionEnabled}
+                    {readyFirstActionReady}
+                    onstartsync={() => adapter.sync.startSync()}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
                     installGuide={setupInstallGuide}
@@ -11214,7 +11532,10 @@
                     wakes?.emit?.("conversation:read", { id: row.id });
                   }}
                   hasEarlier={Boolean(historyCursors[selectedRow.id])}
+                  serverHumanView={humanOnlyConversations &&
+                    Boolean(historyServerView[selectedRow.id])}
                   onloadearlier={loadEarlierTimeline}
+                  conversationKey={selectedRow.id}
                   emptyLabel={conversationEmptyLabel}
                   reactions={rowReactions}
                   placeholder={composerPlaceholder}
@@ -11414,6 +11735,11 @@
             <BoardTab
               columns={board?.columns ?? []}
               stories={board?.stories ?? {}}
+              companyUid={selectedRow?.companyUid ?? null}
+              listCompanyMembers={sidebarApi.listCompanyMembers}
+              onAddMember={selectedRow && addProjectMember
+                ? (personUid) => addProjectMember(selectedRow!, personUid)
+                : undefined}
               onOpenInChannel={() => pushConversationSurface({ tab: "chat" })}
             />
           {:else}
@@ -11453,9 +11779,7 @@
       tab={libraryTab}
       itemId={libraryItemId}
       {packagesEvents}
-      onback={() => {
-        void leaveCurrentDestination();
-      }}
+      onback={leaveLibrary}
       onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
       onnavigateitem={(id) =>
         void navigate({ kind: "library", tab: libraryTab, itemId: id })}

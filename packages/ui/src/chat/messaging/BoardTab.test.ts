@@ -49,17 +49,79 @@ afterEach(async () => {
   host?.remove();
 });
 
-function renderBoard(): HTMLDivElement {
+function renderBoard(
+  onAddMember?: (personUid: string) => Promise<"added" | "not-enabled">,
+  extraProps: Record<string, unknown> = {},
+): HTMLDivElement {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(BoardTab, {
     target: host,
-    props: { columns, stories },
+    props: { columns, stories, onAddMember, ...extraProps },
   });
   return host;
 }
 
 describe("BoardTab column filter", () => {
+  it("adds a member through the host project API callback", async () => {
+    const addMember = vi.fn(async () => "added" as const);
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers: async () => ({ contacts: [{ personUid: "prs_member", displayName: "Project teammate" }] }),
+    });
+    const select = root.querySelector<HTMLSelectElement>("#board-member-uid");
+    expect(select).not.toBeNull();
+    await vi.waitFor(() => expect(select?.options.length).toBeGreaterThan(1));
+    select!.options[1]!.selected = true;
+    select!.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    expect(select!.value).toBe("prs_member");
+    const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await tick();
+    flushSync();
+    expect(addMember).toHaveBeenCalledWith("prs_member");
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Member added to the project.");
+  });
+
+  it("uses the existing company member roster as the Add member selector", async () => {
+    const addMember = vi.fn(async () => "added" as const);
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_member", displayName: "Project teammate" }],
+    }));
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers,
+    });
+    await vi.waitFor(() => expect(listCompanyMembers).toHaveBeenCalledWith("cmp_work"));
+    expect(root.querySelector('option[value="prs_member"]')?.textContent).toBe("Project teammate");
+  });
+
+  it("hides the member form when the server says membership management is not enabled", async () => {
+    const addMember = vi.fn(async () => "not-enabled" as const);
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_member", displayName: "Project teammate" }],
+    }));
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers,
+    });
+    await vi.waitFor(() => expect(root.querySelector('option[value="prs_member"]')).not.toBeNull());
+    const select = root.querySelector<HTMLSelectElement>("#board-member-uid")!;
+    select.options[1]!.selected = true;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await tick();
+    expect(select.value).toBe("prs_member");
+    const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(root.querySelector('[aria-label="Add project member"]')).toBeNull());
+    expect(root.querySelector('[role="status"]')?.textContent).toBe(
+      "Adding project members is not turned on for this company yet.",
+    );
+  });
+
   it("does not advertise a changes action without an authoritative diff", () => {
     const root = renderBoard();
     flushSync(() =>

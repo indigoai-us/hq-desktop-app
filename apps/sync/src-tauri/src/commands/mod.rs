@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod banner;
 pub mod bots;
 pub mod calls;
+pub mod cdp_mirror;
 /// US-016 story acceptance tests (test builds only).
 #[cfg(test)]
 mod calls_story_tests;

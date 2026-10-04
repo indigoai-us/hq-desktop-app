@@ -30,7 +30,11 @@
   import { onMount } from "svelte";
   import type { AiTools } from "../settings/setup-launch";
   import SetupWelcomeMark from "./SetupWelcomeMark.svelte";
-  import type { SettingsApi, ShellApi } from "@hq/platform";
+  import {
+    dispatchPostReadyAction,
+    type SettingsApi,
+    type ShellApi,
+  } from "@hq/platform";
   import {
     createLaunchActions,
     type LaunchKey,
@@ -118,6 +122,12 @@
      * company channel instead of #welcome.
      */
     onsetupstarted?: () => void;
+    /** Opt-in post-ready first real-use action, resolved by the desktop host. */
+    readyFirstActionEnabled?: boolean;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
+    /** Start the native sync path used by the first real-use action. */
+    onstartsync?: () => Promise<{ ok: boolean }> | { ok: boolean };
     /**
      * Host-provided guided run (see `SetupRunApi`). When present, Run Setup
      * runs `/setup` natively inside this hero — stepper, one-line status,
@@ -188,6 +198,9 @@
     rosterStatus = null,
     onretryroster,
     onsetupstarted,
+    readyFirstActionEnabled = false,
+    readyFirstActionReady = false,
+    onstartsync,
     agent = null,
     onopensessiondetails,
     setupBot = null,
@@ -233,6 +246,32 @@
 
   let createAnotherBusy = $state(false);
   let createAnotherError = $state<string | null>(null);
+  let firstActionBusy = $state(false);
+  let firstActionError = $state<string | null>(null);
+  let firstActionShown = false;
+
+  $effect(() => {
+    if (readyFirstActionEnabled && readyFirstActionReady && onstartsync && !firstActionShown) {
+      firstActionShown = true;
+      dispatchPostReadyAction("ready_first_action_shown");
+    }
+  });
+
+  async function startFirstAction(): Promise<void> {
+    if (!onstartsync || firstActionBusy) return;
+    firstActionBusy = true;
+    firstActionError = null;
+    dispatchPostReadyAction("ready_first_action_clicked");
+    try {
+      const result = await onstartsync();
+      if (!result.ok) firstActionError = "Sync could not start. Try again.";
+    } catch (err) {
+      console.warn("[hq-desktop] ready first action failed:", err);
+      firstActionError = "Sync could not start. Try again.";
+    } finally {
+      firstActionBusy = false;
+    }
+  }
 
   async function createAnotherCompany(): Promise<void> {
     if (!oncreatecompany || createAnotherBusy) return;
@@ -508,9 +547,27 @@
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
       {#if !showInstallGuide}
-      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+      {#if readyFirstActionEnabled && readyFirstActionReady && onstartsync}
+        <div class="hero-actions" role="group" aria-label="Start using HQ">
+          <SetupButton
+            variant="primary"
+            data-testid="ready-first-action"
+            disabled={firstActionBusy}
+            aria-busy={firstActionBusy}
+            onclick={() => void startFirstAction()}
+          >
+            {firstActionBusy ? "Starting sync…" : "Sync my HQ folder"}
+          </SetupButton>
+        </div>
+        {#if firstActionError}
+          <p class="launch-error" role="alert" data-testid="ready-first-action-error">
+            {firstActionError}
+          </p>
+        {/if}
+      {/if}
+      <div class="hero-actions" role="group" aria-label={`Set up this ${hostNoun}`}>
         <SetupButton
-          variant="primary"
+          variant={readyFirstActionEnabled && readyFirstActionReady && onstartsync ? "quiet" : "primary"}
           data-testid="setup-run"
           disabled={botBusy ||
             Boolean(setupBot?.starting && !scriptedFallback) ||

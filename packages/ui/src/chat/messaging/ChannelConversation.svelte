@@ -318,6 +318,28 @@
      * exact rule. Default off preserves the legacy view.
      */
     humanOnly?: boolean;
+    /**
+     * The host's history pages for this conversation are filtered and paged
+     * by the server (it echoed `view: "human"`). `hasEarlier` is then exactly
+     * "the last page carried a cursor", and a page may add no visible row
+     * while a cursor remains (the server's read budget ran out, or the page
+     * held only rows this pane hides). In that case the pane keeps fetching,
+     * bounded per user action, and shows a loading state instead of an empty
+     * pane with a "load earlier" button. Leave false for a server that did
+     * not echo the view: the pane then behaves exactly as it did before this
+     * option existed. Read only when `humanOnly` is on.
+     */
+    serverHumanView?: boolean;
+    /**
+     * Identity of the conversation this pane shows (the host passes the row
+     * id). A run of history requests is bound to the identity it started
+     * for: once this value changes, or the pane is unmounted, the run issues
+     * no further request. Without it a pane the host has already replaced
+     * could keep asking for history, and the host would apply those requests
+     * to whichever conversation is open by then. Falls back to `draftKey`,
+     * then `channelId`.
+     */
+    conversationKey?: string | null;
   }
 
   let {
@@ -369,6 +391,8 @@
     restoreScroll = null,
     localBots = null,
     humanOnly = false,
+    serverHumanView = false,
+    conversationKey = null,
   }: Props = $props();
 
   /** A message's text and blocks, with any blocks the host put on it. */
@@ -602,6 +626,20 @@
     return out;
   });
 
+  /**
+   * Root rows from the host that this pane paints: visible in this mode and
+   * not a retired card (`timeline` drops those). The server human view reads
+   * this one set everywhere it asks "is there anything to show yet": to
+   * start the open-time run, to decide whether a run should continue, and to
+   * choose between the loading, paused, and ordinary states. Reading
+   * `visibleRootMessages` in one place and `timeline` in another left a
+   * cached conversation whose only visible row was a retired card on
+   * "Loading earlier messages" with no run and no button.
+   */
+  const paintableRootMessages = $derived(
+    visibleRootMessages.filter((msg) => !isHiddenTimelineMessage(msg)),
+  );
+
   // Persisted answered-decision state, derived from the whole injected message
   // set (root + replies, oldest → newest) so a card locks + highlights its
   // chosen option across reload and thread reopen — not just optimistically
@@ -755,18 +793,58 @@
    */
   const AUTO_FETCH_MAX_PAGES = 5;
   let autoFetchPages = $state(0);
+  /**
+   * Server human view: history requests one user action may issue while the
+   * pages it gets back add no visible row. Opening the conversation counts as
+   * one action, and so does each press of the button. The server reads up to
+   * 1,000 underlying rows per request, so one action crosses about 8,000
+   * hidden rows before the pane stops and asks.
+   */
+  const SERVER_VIEW_MAX_REQUESTS_PER_ACTION = 8;
+  /** Server human view: the open-time run has been started for this mount. */
+  let serverViewAutoStarted = $state(false);
   /** "Show N earlier" prepends rows; anchor the height so the view holds still. */
   let earlierError = $state(false);
+  /** The pane has been unmounted: no run may issue another request. */
+  let destroyed = false;
+  /** The conversation a run of history requests belongs to. */
+  const conversationIdentity = $derived(
+    conversationKey ?? draftKey ?? channelId ?? null,
+  );
   async function showEarlier(): Promise<void> {
     if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
+    // The run is bound to the conversation it starts for. The host applies a
+    // history request to whichever conversation is open when it is made, so
+    // a run that outlives its conversation must stop asking.
+    const startedFor = conversationIdentity;
+    const stillCurrent = () =>
+      !destroyed && conversationIdentity === startedFor;
     loadingEarlier = true;
     earlierError = false;
     prependAnchorHeight = scroller?.scrollHeight ?? 0;
     try {
-      if (windowed.hidden === 0) await onloadearlier?.();
-      extraOlder += TIMELINE_WINDOW;
+      if (windowed.hidden === 0) {
+        const paintableBefore = paintableRootMessages.length;
+        let requests = 0;
+        do {
+          if (!stillCurrent()) break;
+          await onloadearlier?.();
+          requests += 1;
+          // Without the server's echo this is one request per action, as it
+          // always was. The echo is read after the request because it arrives
+          // with the page.
+          if (!(humanOnly && serverHumanView)) break;
+          await tick();
+        } while (
+          stillCurrent() &&
+          hasEarlier &&
+          paintableRootMessages.length === paintableBefore &&
+          requests < SERVER_VIEW_MAX_REQUESTS_PER_ACTION
+        );
+      }
+      if (stillCurrent()) extraOlder += TIMELINE_WINDOW;
     } catch {
-      earlierError = true;
+      if (stillCurrent()) earlierError = true;
     } finally {
       await tick();
       if (scroller && prependAnchorHeight > 0) {
@@ -789,14 +867,40 @@
     if (!hasEarlier) return;
     if (loadingEarlier) return;
     if (earlierError) return;
-    if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
+    // Server human view: one bounded run per mount (`showEarlier` issues the
+    // requests). Otherwise: one request per run, up to the page cap.
+    if (serverHumanView) {
+      if (serverViewAutoStarted) return;
+    } else if (autoFetchPages >= AUTO_FETCH_MAX_PAGES) return;
     // Only auto-fetch when the visible pane is EMPTY. Any visible human row
     // means the reader has something to read on open; further paging stays
     // click-driven so an ordinary channel does not silently chew server pages.
-    if (visibleRootMessages.length > 0) return;
-    autoFetchPages += 1;
+    // The server human view reads the rows the pane paints, the same set
+    // `serverScanEmpty` reads, so the two cannot disagree about "empty".
+    const shown = serverHumanView
+      ? paintableRootMessages.length
+      : visibleRootMessages.length;
+    if (shown > 0) return;
+    if (serverHumanView) serverViewAutoStarted = true;
+    else autoFetchPages += 1;
     void showEarlier();
   });
+
+  /**
+   * Server human view with nothing to show yet while the server still holds a
+   * cursor. The pane must not present this as an empty conversation with a
+   * "load earlier" button: before the open-time run starts it reads as
+   * loading, and once a run has spent its request budget it says so and
+   * offers to keep looking.
+   */
+  const serverScanEmpty = $derived(
+    humanOnly &&
+      serverHumanView &&
+      hasEarlier &&
+      !loading &&
+      !earlierError &&
+      paintableRootMessages.length === 0,
+  );
 
   let selectedMentions = $state<MentionTarget[]>([]);
   let mentionHighlight = $state(0);
@@ -1002,6 +1106,7 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     threadScroll.cancel();
     flushDraft();
     if (copiedTimer) clearTimeout(copiedTimer);
@@ -1688,8 +1793,28 @@
             {/each}
           </div>
         {/if}
-        {#if loadingEarlier}
-          <div role="status" class="dm-load-earlier">Loading earlier messages…</div>
+        {#if loadingEarlier || (serverScanEmpty && !serverViewAutoStarted)}
+          <div
+            role="status"
+            class="dm-load-earlier"
+            data-testid="conversation-loading-earlier"
+          >Loading earlier messages…</div>
+        {:else if serverScanEmpty}
+          <div
+            role="status"
+            class="dm-thread-empty"
+            data-testid="conversation-scan-paused"
+          >
+            No messages found in the most recent activity.
+          </div>
+          <button
+            type="button"
+            class="dm-load-earlier"
+            data-testid="conversation-load-earlier"
+            onclick={showEarlier}
+          >
+            Look further back
+          </button>
         {:else if windowed.hidden > 0 || hasEarlier}
           <button
             type="button"

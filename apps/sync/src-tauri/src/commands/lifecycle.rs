@@ -49,6 +49,9 @@ pub struct LifecycleInputsHandle {
     pub hq_program_kind: Option<ResolvedProgramKind>,
     pub node_program_kind: Option<ResolvedProgramKind>,
     pub require_local_toolchain_demoted: bool,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 #[derive(serde::Serialize)]
@@ -163,6 +166,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             hq_program_kind: None,
             node_program_kind: None,
             require_local_toolchain_demoted: false,
+            hq_candidate_count_bucket: "0",
+            managed_hq_package_state: "unknown",
+            bundled_cli_mode: "unknown",
         });
         return;
     }
@@ -258,6 +264,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     ) = {
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
@@ -276,24 +285,29 @@ pub fn setup_lifecycle(app: &AppHandle) {
                     | LifecycleState::InstalledLegacyUpdate
             ),
             || {
-                let hq_program = paths::resolve_bin_with_kind("hq");
+                let (hq_program, resolver_diagnostics) = paths::resolve_hq_with_diagnostics();
                 let node_program = paths::resolve_bin_with_kind("node");
                 let tools_present = tools_present_for_lifecycle_gate(
                     hq_program.kind != ResolvedProgramKind::NotResolved,
                     node_program.kind != ResolvedProgramKind::NotResolved,
                 );
-                resolved_programs = Some((hq_program, node_program));
+                resolved_programs = Some((hq_program, node_program, resolver_diagnostics));
                 tools_present
             },
         );
         // The startup probe always performs its initial resolution.
-        let (hq_program, node_program) = resolved_programs
+        let (hq_program, node_program, resolver_diagnostics) = resolved_programs
             .expect("startup toolchain probe records its initial resolution");
-        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
+        let (bundled_cli_ready, bundled_cli_mode) =
+            crate::commands::install_deps::bundled_hq_cli_diagnostics(app);
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+                classified,
+                tools_present,
+                launch_agent_relaunch,
+            )
         };
         let require_local_toolchain_demoted = !evidence_unreadable
             && classified.state != verdict.state
@@ -305,6 +319,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             Some(hq_program.kind),
             Some(node_program.kind),
             require_local_toolchain_demoted,
+            resolver_diagnostics.candidate_count_bucket(),
+            resolver_diagnostics.managed_package_state,
+            bundled_cli_mode,
         )
     };
     #[cfg(windows)]
@@ -316,10 +333,13 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     ) = {
         // Windows does not use require_local_toolchain for lifecycle routing,
         // but collect the same resolver observations for startup diagnostics.
-        let hq_program = paths::resolve_bin_with_kind("hq");
+        let (hq_program, resolver_diagnostics) = paths::resolve_hq_with_diagnostics();
         let node_program = paths::resolve_bin_with_kind("node");
         (
             true,
@@ -327,6 +347,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             Some(hq_program.kind),
             Some(node_program.kind),
             false,
+            resolver_diagnostics.candidate_count_bucket(),
+            resolver_diagnostics.managed_package_state,
+            "unknown",
         )
     };
 
@@ -459,6 +482,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     });
 }
 
@@ -637,11 +663,11 @@ pub fn report_unexpected_startup_surface(
     let seconds_since_start = elapsed_since_start
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let (auth_session_status, refresh_failure_class) =
+    let (auth_session_status, refresh_failure_class, refresh_rejection_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
     let diagnostic_tags =
         hq_desktop_core::unexpected_surface::apply_startup_token_store_diagnostics(
-            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_rejection_class(
                 authenticated,
                 &token_presence,
                 elapsed_since_start.map(|elapsed| elapsed.as_millis()),
@@ -652,9 +678,13 @@ pub fn report_unexpected_startup_surface(
                     hq_program_kind: state.hq_program_kind,
                     node_program_kind: state.node_program_kind,
                     require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+                    hq_candidate_count_bucket: state.hq_candidate_count_bucket,
+                    managed_hq_package_state: state.managed_hq_package_state,
+                    bundled_cli_mode: state.bundled_cli_mode,
                 },
                 auth_session_status,
                 refresh_failure_class,
+                refresh_rejection_class,
             ),
             &surface,
             &token_presence,
@@ -689,7 +719,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} marker_kind={} refresh_rejection_class={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={} hq_candidate_count_bucket={} managed_hq_package_state={} bundled_cli_mode={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -713,10 +743,15 @@ pub fn report_unexpected_startup_surface(
         std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
         crate::app_version::current(),
         diagnostic_tags.invalidation_marker_present,
+        diagnostic_tags.marker_kind,
+        diagnostic_tags.refresh_rejection_class,
         diagnostic_tags.first_read_result,
         diagnostic_tags.recheck_read_result,
         last_auth_transition,
         last_auth_transition_age_seconds,
+        diagnostic_tags.hq_candidate_count_bucket,
+        diagnostic_tags.managed_hq_package_state,
+        diagnostic_tags.bundled_cli_mode,
     );
 
     if !should_report {

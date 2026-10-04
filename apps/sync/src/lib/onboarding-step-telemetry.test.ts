@@ -88,6 +88,41 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
+  it('durably defers setup failure until retry outcome, then recovers unresolved rows after restart', async () => {
+    const first = createTelemetry();
+    const deferredId = first.recordDeferred({
+      properties: { step: 'setup', action: 'failed', component: 'deps', depsOperation: 'git' },
+      occurredAt: '2026-10-03T10:00:00.000Z',
+    }, {
+      retryAttempted: false,
+      retryResult: 'skipped-flag-unreadable',
+    });
+
+    await Promise.resolve();
+    expect(emitted).toEqual([]);
+    expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('skipped-flag-unreadable');
+
+    const restarted = createTelemetry();
+    await restarted.flush();
+    expect(emitted).toMatchObject([{
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'setup', action: 'failed', component: 'deps', depsOperation: 'git',
+        retryAttempted: false, retryResult: 'skipped-flag-unreadable',
+      },
+    }]);
+
+    const live = createTelemetry();
+    const resolvedId = live.recordDeferred({
+      properties: { step: 'setup', action: 'failed', component: 'deps', depsOperation: 'node' },
+    }, { retryAttempted: false, retryResult: 'not-eligible' });
+    live.markDeferredRetryAttempted(resolvedId);
+    live.resolveDeferred(resolvedId, { retryAttempted: true, retryResult: 'recovered' });
+    await live.flush();
+    expect(emitted.at(-1)?.properties).toMatchObject({ retryAttempted: true, retryResult: 'recovered' });
+    expect(deferredId).not.toBe(resolvedId);
+  });
+
   it('records first-folder-step transitions only on the desktop onboarding event path', async () => {
     const telemetry = createTelemetry();
     expect(INSTALLER_STEP_BY_WIZARD_STEP['first-folder-sync' as never]).toBeNull();
@@ -221,6 +256,86 @@ describe('onboarding step telemetry', () => {
     expect(unsafeFailure).not.toHaveProperty('errorCode');
   });
 
+  it('adds a bounded failure stage when a failed setup event omits failureStage', () => {
+    const missingStage = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        errorCategory: '/Users/alice/HQ/raw-error.txt' as never,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+
+    expect(missingStage).toMatchObject({
+      failureStage: 'deps',
+      errorCategory: 'unknown',
+    });
+    expect(JSON.stringify(missingStage)).not.toContain('/Users/alice/HQ/raw-error.txt');
+  });
+
+  it('keeps only bounded deps retry outcome fields on failed setup steps', () => {
+    const retryFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        retryAttempted: true,
+        retryResult: 'recovered',
+        depsOperation: 'git',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(retryFailure).toMatchObject({
+      component: 'deps',
+      retryAttempted: true,
+      retryResult: 'recovered',
+      depsOperation: 'git',
+    });
+
+    const invalid = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        retryAttempted: 'yes',
+        retryResult: 'retry with npm install -g private-package',
+        depsOperation: '/Users/alice/HQ/private-path',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalid).not.toHaveProperty('retryAttempted');
+    expect(invalid).not.toHaveProperty('retryResult');
+    expect(invalid).not.toHaveProperty('depsOperation');
+
+    const nonDeps = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'content',
+        retryAttempted: true,
+        retryResult: 'failed-again',
+        depsOperation: 'git',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(nonDeps).not.toHaveProperty('retryAttempted');
+    expect(nonDeps).not.toHaveProperty('retryResult');
+    expect(nonDeps).not.toHaveProperty('depsOperation');
+  });
+
   it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',
@@ -338,6 +453,78 @@ describe('onboarding step telemetry', () => {
     });
     expect(JSON.stringify(properties)).not.toContain('alice');
     expect(JSON.stringify(properties)).not.toContain('work.example');
+  });
+
+  it('keeps only bounded company name-prefill status, never a suggested value', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'offered_kept',
+        companyUid: 'cmp_test',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      },
+    });
+    expect(properties.namePrefill).toBe('offered_kept');
+    expect(JSON.stringify(properties)).not.toContain('Acme');
+
+    const invalid = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'completed',
+        namePrefill: 'Acme Corporation',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalid).not.toHaveProperty('namePrefill');
+  });
+
+  it('keeps invite company scope, explicit missing-scope marker, and a bounded sent count', () => {
+    const completed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        companyUid: 'cmp_test',
+        invitesSent: 20,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(completed).toMatchObject({ companyUid: 'cmp_test', invitesSent: 20 });
+
+    const missing = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'entered',
+        companyUidMissing: true,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(missing).toMatchObject({ companyUidMissing: true });
+
+    const invalidCount = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-03T10:00:00.000Z',
+      properties: {
+        step: 'invite-teammate',
+        action: 'completed',
+        invitesSent: 21,
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalidCount).not.toHaveProperty('invitesSent');
   });
 
   it('keeps an opaque setup run identifier across its events and changes it for a new run', async () => {
@@ -473,9 +660,9 @@ describe('onboarding step telemetry', () => {
     ]);
   });
 
-  it('migrates the compatible v2 session and pending records before creating v3', async () => {
+  it('migrates the compatible v2 session and pending records into the current queue schema', async () => {
     storage.setItem(
-      __INTERNALS__.LEGACY_STORAGE_KEY,
+      __INTERNALS__.OLDER_STORAGE_KEY,
       JSON.stringify({
         version: 2,
         sessionId: '55555555-5555-4555-8555-555555555555',
@@ -503,7 +690,7 @@ describe('onboarding step telemetry', () => {
     });
 
     expect(telemetry.sessionId).toBe('55555555-5555-4555-8555-555555555555');
-    expect(storage.getItem(__INTERNALS__.LEGACY_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(__INTERNALS__.OLDER_STORAGE_KEY)).toBeNull();
     expect(storage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
 
     await telemetry.flush();
@@ -564,6 +751,25 @@ describe('onboarding step telemetry', () => {
       },
     ]);
     expect(pings[0]?.installSessionId).toBe(emitted[0]?.sessionId);
+  });
+
+  it('uses the shared installAttemptId for first-run onboarding event session identity', async () => {
+    const telemetry = createTelemetry({
+      newSessionId: () => '11111111-1111-4111-8111-111111111111',
+    });
+    const installAttemptId = '22222222-2222-4222-8222-222222222222';
+
+    telemetry.setInstallAttemptId(installAttemptId);
+    telemetry.recordFirstLaunch();
+    await Promise.resolve();
+
+    expect(emitted).toMatchObject([
+      {
+        sessionId: installAttemptId,
+        properties: { step: 'welcome-signin', action: 'entered' },
+      },
+    ]);
+    expect(pings.every((ping) => ping.installSessionId === installAttemptId)).toBe(true);
   });
 
   it('omits personUid before sign-in and includes it on later pings', async () => {
@@ -664,5 +870,107 @@ describe('onboarding step telemetry', () => {
         personUid: undefined,
       },
     ]);
+  });
+});
+
+describe('invite-teammate failure telemetry', () => {
+  const base = {
+    sessionId: '11111111-1111-4111-8111-111111111111',
+    occurredAt: '2026-10-02T10:00:00.000Z',
+  };
+
+  it('carries the invite errorKind and HTTP status', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'plan_limit',
+        statusCode: 402,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('plan_limit');
+    expect(properties.statusCode).toBe(402);
+  });
+
+  it('bounds unknown kinds and bad statuses', () => {
+    const properties = desktopPropertiesForOnboardingStep({
+      ...base,
+      properties: {
+        step: 'invite-teammate',
+        action: 'failed',
+        errorKind: 'person@example.com' as never,
+        statusCode: 9000,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(properties.errorKind).toBe('request_failed');
+    expect(properties.statusCode).toBeUndefined();
+    expect(JSON.stringify(properties)).not.toContain('example.com');
+  });
+
+  it('carries the company route decision, provisioning step and self-heal, bounded', () => {
+    const route = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'paid_existing',
+        existingCompanies: 2,
+        paidCompany: true,
+        pendingInvites: 0,
+        companyUid: 'cmp_a',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(route).toMatchObject({
+      decision: 'paid_existing',
+      existingCompanies: 2,
+      paidCompany: true,
+      pendingInvites: 0,
+      companyUid: 'cmp_a',
+    });
+    const odd = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'first-folder-sync',
+        action: 'failed',
+        decision: 'made up',
+        provisioningStep: 'Has Spaces',
+        selfHeal: 'failed',
+        companyUid: 'cmp_b',
+        existingCompanies: -1,
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(odd.decision).toBe('unknown');
+    expect(odd.provisioningStep).toBe('unknown');
+    expect(odd.selfHeal).toBe('failed');
+    expect(odd.companyUid).toBe('cmp_b');
+    expect(odd.existingCompanies).toBeUndefined();
+
+    const lookupFailed = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-10-02T10:00:00.000Z',
+      properties: {
+        step: 'company',
+        action: 'started',
+        decision: 'lookup_failed',
+        outcome: 'route_lookup_failed',
+        surface: 'desktop_installer',
+        platform: 'macos',
+      },
+    });
+    expect(lookupFailed).toMatchObject({
+      decision: 'lookup_failed',
+      outcome: 'route_lookup_failed',
+    });
   });
 });

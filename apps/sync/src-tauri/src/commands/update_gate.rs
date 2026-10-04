@@ -225,14 +225,19 @@ mod tests {
     }
 
     #[test]
-    fn upload_in_flight_hold_defers_manual_install() {
+    fn upload_in_flight_hold_does_not_block_a_manual_install_but_defers_automatic() {
+        // Sync runs every few minutes. A person who clicks "Restart to update"
+        // must not be refused because a sync pass happens to be running
+        // (2026-10-02 regression); only the automatic installer waits for a gap.
         let holds = UpdateHoldsState::default();
         let focus = AppFocusState::default();
         holds.0.acquire(HoldReason::UploadInFlight);
-        let d = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        let manual = decide(UpdateTrigger::Manual, focus.app_focus(), &holds.0);
+        assert_eq!(manual, UpdateDecision::InstallNow);
+        let automatic = decide(UpdateTrigger::Automatic, AppFocus::Unfocused, &holds.0);
         assert!(
-            matches!(d, UpdateDecision::Defer { .. }),
-            "UploadInFlight must defer Manual: {d:?}"
+            matches!(automatic, UpdateDecision::Defer { .. }),
+            "UploadInFlight must still defer Automatic: {automatic:?}"
         );
     }
 

@@ -39,27 +39,35 @@ import { TAURI_CAPABILITIES, type Capability } from '../capabilities.js';
 import { WEB_PATHS } from '../web/index.js';
 import {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
-  INVITE_TEAMMATE_STEP_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
+  READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   MIRROR_QUARANTINE_MOVE_NOT_DELETION_FLAG,
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
-  SETUP_STAGE_TIMEOUT_FIX_FLAG,
   type FeatureFlagGateOptions,
 } from '../flags.js';
 import { updateSettings, type SettingsInvoker } from './settings-mutations.js';
 import { localBotSettingsArgs } from './local-bot-settings.js';
 import { createCallsApi } from '../calls/api.js';
 import {
+  isLambdaInvokeServiceErrorBody,
+  lambdaInvokeRetryDelayMs,
   retryThrottled,
+  sleepForLambdaInvokeRetry,
   type RequestPolicyOptions,
 } from '../request-policy.js';
 import { hqProFailure, parseHqProErrorBody } from '../plan-limit.js';
+import { dispatchPostReadyAction } from '../post-ready-actions.js';
 
 export type SyncInvokeFn = (
   cmd: string,
@@ -192,9 +200,26 @@ export function createSyncPlatformAdapter(
   });
 
   function hasFeatureLegacy(flag: string): AdapterPromise<boolean> {
-    if (flag === SETUP_DIRECTORY_PARENT_FALLBACK_FLAG) {
-      // This rollout is opt-in. A missing registry value or unavailable
-      // registry stays off until the manager creates and enables it.
+    if (flag === COMPANY_NAME_PREFILL_FLAG) {
+      // Company-name suggestions are opt-in; missing registry data stays off.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
+      // The measurement event is opt-in and stays off until the hq-flags
+      // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === READY_FIRST_ACTION_FLAG) {
+      // The first real-use action is opt-in and stays off until the manager
+      // creates and enables its hq-flags value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === DESKTOP_LIMIT_STATUS_PUSH_FLAG) {
+      // Missing rows and registry outages preserve event-only behavior.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === SETUP_DEPS_TIMEOUT_RETRY_FLAG) {
+      // Dependency timeout retries are opt-in until hq-flags explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
@@ -202,19 +227,17 @@ export function createSyncPlatformAdapter(
       // a manager explicitly enables its hq-flags value.
       return Promise.resolve(ok(false));
     }
-    if (flag === INVITE_TEAMMATE_STEP_FLAG) {
-      // This optional onboarding step stays off on missing or unreadable
-      // registry values until a manager explicitly enables it.
-      return Promise.resolve(ok(false));
-    }
-    if (flag === SETUP_STAGE_TIMEOUT_FIX_FLAG) {
-      // Setup timeout mitigation is opt-in and stays off until a manager
-      // explicitly enables its hq-flags value.
+    if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
+      // Missing or unreadable registry data leaves the new join-key behavior off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
       // Personal board reads stay disabled until the hq-flags registry
       // explicitly enables this rollout.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === PERSONAL_TRANSCRIPTS_FLAG) {
+      // Local transcript rows stay off unless the hq-flags registry explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === LOGIN_RECEIPT_DURABILITY_FLAG) {
@@ -368,6 +391,7 @@ export function createSyncPlatformAdapter(
     result: AdapterResult<T>;
     status: number | null;
     retryAfter?: string | null;
+    body?: string;
   }> {
     const raw = await call<unknown>('hq_pro_fetch', {
       url: path,
@@ -388,7 +412,12 @@ export function createSyncPlatformAdapter(
           text,
           `${method} ${path} failed`,
         );
-        return { result: hqProFailure(details), status: rec.status, retryAfter };
+        return {
+          result: hqProFailure(details),
+          status: rec.status,
+          retryAfter,
+          body: text,
+        };
       }
       if (rec.status === 204 || !text.trim()) {
         return { result: ok(undefined as T), status: rec.status };
@@ -419,11 +448,21 @@ export function createSyncPlatformAdapter(
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
-    const attempted = await retryThrottled(
+    const makeAttempt = () => retryThrottled(
       () => hqProAttempt<T>(method, path, body),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
       requestPolicy,
     );
+    let attempted = await makeAttempt();
+    if (
+      method === 'GET' &&
+      attempted.status === 504 &&
+      isLambdaInvokeServiceErrorBody(attempted.body ?? '')
+    ) {
+      const delayMs = lambdaInvokeRetryDelayMs(requestPolicy.random);
+      await (requestPolicy.sleep ?? sleepForLambdaInvokeRetry)(delayMs);
+      attempted = await makeAttempt();
+    }
     return attempted.result;
   }
 
@@ -514,6 +553,8 @@ export function createSyncPlatformAdapter(
     isAvailable: (cap: Capability): boolean => TAURI_CAPABILITIES[cap],
 
     identity: {
+      getAuthSession: () => call('get_auth_session'),
+      refreshFeatureFlags: () => flags.refresh(),
       whoami: async () => {
         type ShellAuthState = {
           authenticated?: boolean;
@@ -587,6 +628,8 @@ export function createSyncPlatformAdapter(
         });
       },
       isAdmin: () => call<boolean>('desktop_alt_is_admin'),
+      resolveFeatureFlagStatus: (flag) =>
+        flags.resolveStatus(flag, () => hasFeatureLegacy(flag)),
       hasFeature: (flag) =>
         flag === HUMAN_ONLY_CONVERSATIONS_FLAG
           ? // Pinned per release; the registry cannot turn it off.
@@ -726,7 +769,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['results', 'hits']));
       },
-      fetchChannel: ({ channelId, limit, cursor, since }) => {
+      fetchChannel: ({ channelId, limit, cursor, since, view }) => {
         if (since) {
           return hqProJson(
             'GET',
@@ -734,13 +777,19 @@ export function createSyncPlatformAdapter(
               limit,
               cursor,
               since,
+              view,
             }),
           );
         }
+        // `view` rides the same native command as every other history page,
+        // so an older server (which ignores it) answers exactly as before.
+        // The command forwards it and returns the echoed `view` and
+        // `viewScanTruncated`. The key is only sent when set.
         return call('fetch_channel', {
           channelId,
           limit,
           cursor: cursor ?? null,
+          ...(view ? { view } : {}),
         });
       },
       listChannelMembers: (channelId) =>
@@ -772,6 +821,8 @@ export function createSyncPlatformAdapter(
           idempotencyKey: args.idempotencyKey ?? null,
         }),
       checkCompanySlug: (slug) => call('check_company_slug', { slug }),
+      activateCompanyCloud: (companyUid) =>
+        call('activate_company_cloud', { companyUid }),
       getCompanyTab: (companyUid, tab) =>
         call('get_company_tab', { companyUid, tab }),
       runCompanyTabAction: (args) =>
@@ -783,14 +834,27 @@ export function createSyncPlatformAdapter(
           values: args.values,
           idempotencyKey: args.idempotencyKey ?? null,
         }),
-      fetchDmThread: ({ withPersonUid, limit, since }) => {
+      fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
         if (since) {
           return hqProJson(
             'GET',
-            withQuery(WEB_PATHS.dmThread, { withPersonUid, limit, since }),
+            withQuery(WEB_PATHS.dmThread, {
+              withPersonUid,
+              limit,
+              since,
+              cursor,
+              view,
+            }),
           );
         }
-        return call('fetch_dm_thread', { withPersonUid, limit });
+        // As on fetchChannel: the native command forwards `cursor` and
+        // `view`, and both keys are only sent when set.
+        return call('fetch_dm_thread', {
+          withPersonUid,
+          limit,
+          ...(cursor ? { cursor } : {}),
+          ...(view ? { view } : {}),
+        });
       },
       sendDm: (toPersonUid, body, extras) => {
         const attachments = extras?.attachments;
@@ -1134,7 +1198,7 @@ export function createSyncPlatformAdapter(
       getTeamTelemetry: (slug) =>
         call('get_company_team_telemetry', { slug }),
       claimPendingInvite: (slug) =>
-        call('claim_pending_company_invite', { slug }),
+        call('claim_pending_company_invite', { slug, route: 'company_page' }),
       connectToCloud: (slug) =>
         call('connect_workspace_to_cloud', { slug }),
       getSummary: (slug) => call('get_company_summary', { slug }),
@@ -1203,6 +1267,7 @@ export function createSyncPlatformAdapter(
         noteLinks: (root, includeSystem, path, targets) =>
           call('vault_note_links', { root, includeSystem, path, targets }),
         readNote: (path) => call('read_vault_note', { path }),
+        readFrontmatter: (path) => call('read_vault_note_frontmatter', { path }),
       },
       getFileContent: (path) => call('get_company_file_content', { path }),
       listVaultPrefix: (companyUid, prefix) =>
@@ -1282,10 +1347,13 @@ export function createSyncPlatformAdapter(
       },
       stopDaemon: () => call('stop_daemon'),
       daemonStatus: () => call('daemon_status'),
+      daemonSyncStatus: () => call('daemon_sync_status'),
       startSync: async (slug) => {
         const configured = await updateMirrorQuarantineFlag();
         if (!configured.ok) return configured;
-        return call('start_sync', slug ? { companySlug: slug } : undefined);
+        const result = await call<void>('start_sync', slug ? { companySlug: slug } : undefined);
+        if (result.ok) dispatchPostReadyAction('start_sync', slug ? { slug } : undefined);
+        return result;
       },
       cancelSync: () => call('cancel_sync'),
       getSyncStatus: () => call('get_sync_status'),
@@ -1315,9 +1383,19 @@ export function createSyncPlatformAdapter(
       openCodexDeepLink: (url) => call('open_codex_deep_link', { url }),
       openFileInClaude: (path) =>
         call('open_authorized_file_in_claude', { path }),
-      launchClaudeCode: (path) => call('launch_claude_code', { path }),
-      launchCodexWorkspace: (path, prompt) =>
-        call('launch_codex_workspace', { path, prompt: prompt ?? null }),
+      launchClaudeCode: async (path) => {
+        const result = await call<void>('launch_claude_code', { path });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
+      launchCodexWorkspace: async (path, prompt) => {
+        const result = await call<void>('launch_codex_workspace', {
+          path,
+          prompt: prompt ?? null,
+        });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
+      },
       launchCliInTerminal: async (args) => {
         const rec = asRecord(args) ?? {};
         const path = String(rec.path ?? '');
@@ -1325,10 +1403,16 @@ export function createSyncPlatformAdapter(
         if (!path || !tool) {
           return failure('invalid-argument', 'launch payload needs path and tool');
         }
-        return call('launch_cli_in_terminal', { path, tool });
+        const result = await call<void>('launch_cli_in_terminal', { path, tool });
+        if (result.ok) dispatchPostReadyAction('open_cli');
+        return result;
       },
       detectAiTools: () => call('detect_ai_tools'),
-      pickFolder: () => call('pick_folder'),
+      pickFolder: async () => {
+        const result = await call<string | null>('pick_folder');
+        if (result.ok && result.value) dispatchPostReadyAction('open_folder');
+        return result;
+      },
       pickFile: (kind) =>
         kind === 'image'
           ? call('pick_avatar_file')

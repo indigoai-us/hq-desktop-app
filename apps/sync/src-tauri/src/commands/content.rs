@@ -583,6 +583,7 @@ fn read_staging_source_from(path: &Path) -> bool {
 }
 
 fn write_staging_source_to(path: &Path, enabled: bool) -> Result<(), String> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let mut obj: Map<String, Value> =
         hq_desktop_core::first_run::prepare_menubar_write(path)?.unwrap_or_default();
     obj.insert(STAGING_SOURCE_KEY.to_string(), Value::Bool(enabled));
@@ -1113,6 +1114,25 @@ fn create_symlink_with_failure(
     link_path: &Path,
     _cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, _cancel, true)
+}
+
+#[cfg(unix)]
+fn create_symlink_if_absent(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, cancel, false)
+}
+
+#[cfg(unix)]
+fn create_symlink_with_failure_mode(
+    target: &Path,
+    link_path: &Path,
+    _cancel: Option<&AtomicBool>,
+    replace_existing: bool,
+) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             ContentOperationFailure::from_io(
@@ -1125,6 +1145,18 @@ fn create_symlink_with_failure(
         })?;
     }
     if std::fs::symlink_metadata(link_path).is_ok() {
+        if !replace_existing {
+            return Err(ContentOperationFailure::from_io(
+                "refusing to replace existing template entry",
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "template destination already exists",
+                ),
+                false,
+                ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink",
+            ));
+        }
         std::fs::remove_file(link_path).map_err(|error| {
             ContentOperationFailure::from_io(
                 "failed to replace existing symlink entry",
@@ -1274,7 +1306,19 @@ fn copy_file_with_cancellation(
     destination: &Path,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<()> {
-    if is_content_cancelled(cancel) {
+    copy_file_with_cancellation_check(source, destination, || is_content_cancelled(cancel))
+}
+
+#[cfg(any(windows, test))]
+fn copy_file_with_cancellation_check<C>(
+    source: &Path,
+    destination: &Path,
+    mut is_cancelled: C,
+) -> io::Result<()>
+where
+    C: FnMut() -> bool,
+{
+    if is_cancelled() {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             "content copy cancelled",
@@ -1290,10 +1334,26 @@ fn copy_file_with_cancellation(
         ));
     }
     let mut source = fs::File::open(source)?;
-    let mut destination = fs::File::create(destination)?;
-    copy_stream_with_cancellation(&mut source, &mut destination, || {
-        is_content_cancelled(cancel)
-    })
+    let destination_path = destination;
+    let mut destination = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination_path)?;
+    match copy_stream_with_cancellation(&mut source, &mut destination, &mut is_cancelled) {
+        Ok(()) => Ok(()),
+        Err(copy_error) => {
+            drop(destination);
+            if let Err(cleanup_error) = fs::remove_file(destination_path) {
+                return Err(io::Error::new(
+                    cleanup_error.kind(),
+                    format!(
+                        "copy failed ({copy_error}); failed to remove partial destination {destination_path:?}: {cleanup_error}"
+                    ),
+                ));
+            }
+            Err(copy_error)
+        }
+    }
 }
 
 /// Copy the bytes of `target` to `link_path` as a privilege-free substitute
@@ -1376,7 +1436,26 @@ fn create_symlink_with_failure(
     link_path: &Path,
     cancel: Option<&AtomicBool>,
 ) -> Result<(), ContentOperationFailure> {
-    create_windows_symlink_with_failure(target, link_path, cancel)
+    create_symlink_with_failure_mode(target, link_path, cancel, true)
+}
+
+#[cfg(windows)]
+fn create_symlink_if_absent(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), ContentOperationFailure> {
+    create_symlink_with_failure_mode(target, link_path, cancel, false)
+}
+
+#[cfg(windows)]
+fn create_symlink_with_failure_mode(
+    target: &Path,
+    link_path: &Path,
+    cancel: Option<&AtomicBool>,
+    replace_existing: bool,
+) -> Result<(), ContentOperationFailure> {
+    create_windows_symlink_with_failure(target, link_path, cancel, replace_existing)
 }
 
 #[cfg(windows)]
@@ -1384,6 +1463,7 @@ fn create_windows_symlink_with_failure(
     target: &Path,
     link_path: &Path,
     cancel: Option<&AtomicBool>,
+    replace_existing: bool,
 ) -> Result<(), ContentOperationFailure> {
     if let Some(parent) = link_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -1411,6 +1491,18 @@ fn create_windows_symlink_with_failure(
     };
 
     if let Ok(md) = std::fs::symlink_metadata(link_path) {
+        if !replace_existing {
+            return Err(ContentOperationFailure::from_io(
+                "refusing to replace existing template entry",
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "template destination already exists",
+                ),
+                true,
+                ContentErrorKind::SymlinkCreationFailed,
+                "create_symlink",
+            ));
+        }
         remove_existing_windows_entry(link_path, &md).map_err(|error| {
             ContentOperationFailure::from_io(
                 "failed to replace existing symlink entry",
@@ -1558,18 +1650,40 @@ fn extract_tarball_with_progress(
     cancel: Option<&AtomicBool>,
     failure_scope: Option<&OnboardingFailureScope>,
 ) -> Result<(), String> {
+    extract_tarball_with_progress_and_cancel_check(
+        compressed,
+        target_dir,
+        progress,
+        cancel,
+        failure_scope,
+        || is_content_cancelled(cancel),
+    )
+}
+
+fn extract_tarball_with_progress_and_cancel_check<C>(
+    compressed: &[u8],
+    target_dir: &Path,
+    progress: Option<&ContentProgressEmitter>,
+    cancel: Option<&AtomicBool>,
+    failure_scope: Option<&OnboardingFailureScope>,
+    mut is_cancelled: C,
+) -> Result<(), String>
+where
+    C: FnMut() -> bool,
+{
     std::fs::create_dir_all(target_dir).map_err(|e| {
         record_content_io_failure(failure_scope, &e);
         format!("failed to create HQ root {target_dir:?}: {e}")
     })?;
 
-    if is_content_cancelled(cancel) {
+    if is_cancelled() {
         return Err(content_cancelled_error(failure_scope));
     }
 
     let total_bytes = archive_extract_total_bytes(compressed, failure_scope)?;
     let total_bytes = (total_bytes > 0).then_some(total_bytes);
     let mut extracted_bytes = 0_u64;
+    let mut skipped_existing_files = 0_usize;
     let mut progress_throttle = ProgressThrottle::new();
 
     if let Some(progress) = progress {
@@ -1596,7 +1710,7 @@ fn extract_tarball_with_progress(
 
     let mut symlink_relatives: Vec<String> = Vec::new();
     for entry in entries {
-        if is_content_cancelled(cancel) {
+        if is_cancelled() {
             return Err(content_cancelled_error(failure_scope));
         }
 
@@ -1691,18 +1805,28 @@ fn extract_tarball_with_progress(
                     );
                     continue;
                 }
-                create_symlink_with_failure(
-                    Path::new(&link_target),
-                    &dest,
-                    cancel,
-                )
-                .map_err(|failure| {
-                    if failure.kind == ContentErrorKind::Cancelled {
-                        return content_cancelled_error(failure_scope);
+                match std::fs::symlink_metadata(&dest) {
+                    Ok(_) => {
+                        skipped_existing_files += 1;
+                        continue;
                     }
-                    record_content_operation_failure(failure_scope, &failure);
-                    failure.message
-                })?;
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        record_content_io_failure(failure_scope, &error);
+                        return Err(format!(
+                            "failed to inspect template symlink destination {dest:?}: {error}"
+                        ));
+                    }
+                }
+                create_symlink_if_absent(Path::new(&link_target), &dest, cancel).map_err(
+                    |failure| {
+                        if failure.kind == ContentErrorKind::Cancelled {
+                            return content_cancelled_error(failure_scope);
+                        }
+                        record_content_operation_failure(failure_scope, &failure);
+                        failure.message
+                    },
+                )?;
                 symlink_relatives.push(normalized);
             }
             EntryType::Regular | EntryType::Continuous => {
@@ -1713,48 +1837,96 @@ fn extract_tarball_with_progress(
                     })?;
                 }
                 let mode = entry.header().mode().unwrap_or(0o644);
-                let mut file = std::fs::File::create(&dest).map_err(|e| {
-                    record_content_io_failure(failure_scope, &e);
-                    format!("failed to write {dest:?}: {e}")
-                })?;
-                let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
-                loop {
-                    if is_content_cancelled(cancel) {
-                        return Err(content_cancelled_error(failure_scope));
-                    }
-                    let n = entry.read(&mut buf).map_err(|e| {
-                        record_content_failure(
-                            failure_scope,
-                            OnboardingErrorCategory::Checksum,
-                            ContentErrorKind::ArchiveInvalid,
-                        );
-                        format!("failed to read {relative} from archive: {e}")
-                    })?;
-                    if n == 0 {
-                        break;
-                    }
-                    file.write_all(&buf[..n]).map_err(|e| {
-                        record_content_io_failure(failure_scope, &e);
-                        format!("failed to write {dest:?}: {e}")
-                    })?;
-                    extracted_bytes = extracted_bytes.saturating_add(n as u64);
-                    if progress_throttle.should_emit() {
-                        if let Some(progress) = progress {
-                            progress.emit(
-                                "extract",
-                                Some(extracted_bytes),
-                                total_bytes,
-                                false,
-                                false,
-                                format!("Extracting {normalized}"),
-                            );
+                let mut file = match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&dest)
+                {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        match std::fs::symlink_metadata(&dest) {
+                            Ok(metadata)
+                                if metadata.file_type().is_file()
+                                    || metadata.file_type().is_symlink() =>
+                            {
+                                skipped_existing_files += 1;
+                                continue;
+                            }
+                            Ok(_) => {
+                                record_content_io_failure(failure_scope, &error);
+                                return Err(format!(
+                                    "refusing to replace non-file template destination {dest:?}: {error}"
+                                ));
+                            }
+                            Err(metadata_error) => {
+                                record_content_io_failure(failure_scope, &metadata_error);
+                                return Err(format!(
+                                    "failed to inspect existing template destination {dest:?}: {metadata_error}"
+                                ));
+                            }
                         }
                     }
+                    Err(error) => {
+                        record_content_io_failure(failure_scope, &error);
+                        return Err(format!("failed to write {dest:?}: {error}"));
+                    }
+                };
+                let mut buf = [0_u8; EXTRACT_READ_CHUNK_BYTES];
+                let write_result = (|| {
+                    loop {
+                        if is_cancelled() {
+                            return Err(content_cancelled_error(failure_scope));
+                        }
+                        let n = entry.read(&mut buf).map_err(|e| {
+                            record_content_failure(
+                                failure_scope,
+                                OnboardingErrorCategory::Checksum,
+                                ContentErrorKind::ArchiveInvalid,
+                            );
+                            format!("failed to read {relative} from archive: {e}")
+                        })?;
+                        if n == 0 {
+                            break;
+                        }
+                        file.write_all(&buf[..n]).map_err(|e| {
+                            record_content_io_failure(failure_scope, &e);
+                            format!("failed to write {dest:?}: {e}")
+                        })?;
+                        extracted_bytes = extracted_bytes.saturating_add(n as u64);
+                        if progress_throttle.should_emit() {
+                            if let Some(progress) = progress {
+                                progress.emit(
+                                    "extract",
+                                    Some(extracted_bytes),
+                                    total_bytes,
+                                    false,
+                                    false,
+                                    format!("Extracting {normalized}"),
+                                );
+                            }
+                        }
+                    }
+                    set_entry_mode(&dest, mode).map_err(|e| {
+                        record_content_io_failure(failure_scope, &e);
+                        format!("failed to set file mode: {e}")
+                    })?;
+                    Ok::<(), String>(())
+                })();
+                if let Err(write_error) = write_result {
+                    drop(file);
+                    if let Err(cleanup_error) = std::fs::remove_file(&dest) {
+                        log(
+                            "content",
+                            &format!(
+                                "failed to remove partial template file {dest:?} after extraction error ({write_error}): {cleanup_error}"
+                            ),
+                        );
+                        return Err(format!(
+                            "{write_error}; failed to remove partial template file {dest:?}: {cleanup_error}"
+                        ));
+                    }
+                    return Err(write_error);
                 }
-                set_entry_mode(&dest, mode).map_err(|e| {
-                    record_content_io_failure(failure_scope, &e);
-                    format!("failed to set file mode: {e}")
-                })?;
             }
             _ => {
                 // Hard links / device nodes / fifos etc. are not part of the
@@ -1764,6 +1936,11 @@ fn extract_tarball_with_progress(
             }
         }
     }
+
+    log(
+        "content",
+        &format!("template extraction skipped {skipped_existing_files} existing files"),
+    );
 
     if let Some(progress) = progress {
         progress.emit(
@@ -2204,6 +2381,97 @@ mod tests {
     }
 
     #[test]
+    fn extract_keeps_existing_file_bytes() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("core.yaml");
+        let existing_link_path = dir.path().join("AGENTS.md");
+        let user_bytes = b"name: personal HQ settings\n";
+        let user_link_path_bytes = b"person's existing regular file\n";
+        std::fs::write(&existing, user_bytes).unwrap();
+        std::fs::write(&existing_link_path, user_link_path_bytes).unwrap();
+
+        let content = b"name: template defaults\n".to_vec();
+        let link_name = Path::new(".claude/CLAUDE.md");
+        let archive = build_test_tarball(&[
+            (
+                "indigoai-us-hq-core-deadbeef/core.yaml",
+                file_header(content.len() as u64, 0o644),
+                Some(content),
+            ),
+            (
+                "indigoai-us-hq-core-deadbeef/AGENTS.md",
+                symlink_header(link_name.to_str().unwrap()),
+                None,
+            ),
+        ]);
+
+        extract_tarball(&archive, dir.path()).expect("extraction should succeed");
+
+        assert_eq!(
+            std::fs::read(existing).unwrap(),
+            user_bytes,
+            "installing the HQ template must preserve an existing user file"
+        );
+        assert_eq!(
+            std::fs::read(existing_link_path).unwrap(),
+            user_link_path_bytes,
+            "installing a template symlink must preserve a file at that path"
+        );
+    }
+
+    #[test]
+    fn extract_removes_partial_file_on_cancel_and_retry_preserves_user_file() {
+        let dir = tempdir().unwrap();
+        let existing = dir.path().join("core.yaml");
+        let partial = dir.path().join("large-template.bin");
+        let user_bytes = b"name: personal HQ settings\n";
+        std::fs::write(&existing, user_bytes).unwrap();
+
+        let template_bytes = vec![b't'; EXTRACT_READ_CHUNK_BYTES * 2];
+        let archive = build_test_tarball(&[
+            (
+                "indigoai-us-hq-core-deadbeef/core.yaml",
+                file_header(20, 0o644),
+                Some(b"name: defaults here\n".to_vec()),
+            ),
+            (
+                "indigoai-us-hq-core-deadbeef/large-template.bin",
+                file_header(template_bytes.len() as u64, 0o644),
+                Some(template_bytes.clone()),
+            ),
+        ]);
+
+        let mut cancellation_checks = 0;
+        let result = extract_tarball_with_progress_and_cancel_check(
+            &archive,
+            dir.path(),
+            None,
+            None,
+            None,
+            || {
+                cancellation_checks += 1;
+                cancellation_checks == 5
+            },
+        );
+
+        assert!(result.is_err(), "extraction should stop mid-file");
+        assert_eq!(
+            std::fs::read(&existing).unwrap(),
+            user_bytes,
+            "cancelling a later entry must preserve the existing user file"
+        );
+        assert!(
+            !partial.exists(),
+            "an incomplete file created by this attempt must be removed"
+        );
+
+        extract_tarball(&archive, dir.path()).expect("retry should complete extraction");
+
+        assert_eq!(std::fs::read(partial).unwrap(), template_bytes);
+        assert_eq!(std::fs::read(existing).unwrap(), user_bytes);
+    }
+
+    #[test]
     fn extract_writes_safe_entries_and_skips_malicious_ones() {
         let dir = tempdir().unwrap();
         let wrapper = "indigoai-us-hq-core-deadbeef";
@@ -2508,6 +2776,27 @@ mod windows_symlink_fallback_selection_tests {
 
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(writer.len(), EXTRACT_READ_CHUNK_BYTES);
+    }
+
+    #[test]
+    fn file_copy_removes_destination_when_cancelled_between_chunks() {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let source = dir.path().join("source.md");
+        let destination = dir.path().join("copy.md");
+        fs::write(&source, vec![b'x'; EXTRACT_READ_CHUNK_BYTES * 2]).expect("write source");
+
+        let mut cancellation_checks = 0;
+        let error = copy_file_with_cancellation_check(&source, &destination, || {
+            cancellation_checks += 1;
+            cancellation_checks == 4
+        })
+        .expect_err("stop copying after the first chunk");
+
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(
+            !destination.exists(),
+            "an incomplete copy created by this attempt must be removed"
+        );
     }
 }
 

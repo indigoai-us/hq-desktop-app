@@ -57,10 +57,6 @@ export function readDesktopZoom(storage: ZoomStorage | null): number {
   }
 }
 
-export function readBrowserDesktopZoom(): number {
-  return readDesktopZoom(getBrowserStorage());
-}
-
 export function writeDesktopZoom(storage: ZoomStorage | null, value: number): void {
   if (!storage) return;
 

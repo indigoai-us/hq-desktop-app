@@ -102,6 +102,36 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
     }
 }
 
+/// During an updater restart, missing tools on a previously installed machine
+/// must resume at setup repair instead of reopening first-run onboarding. Fresh
+/// installs and the consent-only first-run state keep their existing routing.
+pub fn require_local_toolchain_after_updater_restart(
+    verdict: LifecycleVerdict,
+    tools_present: bool,
+    updater_restart: bool,
+) -> LifecycleVerdict {
+    if tools_present {
+        return verdict;
+    }
+
+    if updater_restart
+        && matches!(
+            verdict.state,
+            LifecycleState::InstallResume
+                | LifecycleState::InstalledLegacyUpdate
+                | LifecycleState::SteadyState
+        )
+    {
+        return LifecycleVerdict {
+            state: LifecycleState::InstallResume,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        };
+    }
+
+    require_local_toolchain(verdict, false)
+}
+
 /// Whether the launch install-gate should treat local tools as present.
 ///
 /// Only unresolved `hq` or `node` counts as missing. A release bundle can
@@ -386,22 +416,32 @@ fn probe_hq_root_for_startup_with(
 
 /// The pure classifier.
 pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
+    let has_app_local_setup_marker =
+        inputs.install_completed || inputs.first_run_completed || inputs.had_machine_id;
+
     // An install is recognized from what is actually on disk: a valid HQ root
     // plus evidence the machine has been set up before — an explicit
-    // completion marker, a prior machineId, a valid config.json, OR usable
-    // Cognito auth tokens.
+    // completion marker, a prior machineId, a valid config.json, or usable
+    // Cognito auth tokens. On a readable fresh app install, the reusable HQ
+    // root and auth/config alone do not prove that this app installation
+    // completed setup.
     //
     // `config.json` is deliberately NOT required. The onboarding flow does not
     // reliably write `~/.hq/config.json` (the personal-vault first-push
     // short-circuits when the vault already exists), so gating on it sent a
     // fully set-up user back through the entire onboarding wizard on the next
-    // launch/restart. The rule is now "valid HQ folder + (prior setup OR auth
-    // on disk) => installed, show the menu bar".
-    let has_prior_setup = inputs.install_completed
-        || inputs.first_run_completed
-        || inputs.had_machine_id
-        || inputs.config_valid;
-    let is_installed = inputs.hq_root_valid && (has_prior_setup || inputs.has_auth);
+    // launch/restart. The ordinary rule is "valid HQ folder + (prior setup OR
+    // auth on disk) => installed, show the menu bar"; the narrow readable,
+    // unmarked reinstall case below overrides it while consent is unanswered.
+    let has_prior_setup = has_app_local_setup_marker || inputs.config_valid;
+    let reinstall_still_owes_full_setup = inputs.hq_root_valid
+        && !has_app_local_setup_marker
+        && !inputs.consent_answered
+        && !inputs.evidence_unreadable
+        && (inputs.has_auth || inputs.config_valid);
+    let is_installed = inputs.hq_root_valid
+        && (has_prior_setup || inputs.has_auth)
+        && !reinstall_still_owes_full_setup;
     let needs_install_backfill = is_installed && !inputs.install_completed;
 
     // Installed and consent answered: setup is done whatever the markers say.
@@ -992,15 +1032,16 @@ mod tests {
 
     #[test]
     fn valid_hq_root_plus_auth_alone_is_installed() {
-        // "hq path + cognito login on disk => show the menu bar": a valid HQ
-        // root plus usable auth is enough, even with no menubar markers.
+        // Reinstall report: a reusable HQ root and auth do not prove that this
+        // app install completed setup. With consent unanswered and no app-local
+        // completion marker, route through full setup.
         let verdict = classify_lifecycle(LifecycleInputs {
             hq_root_valid: true,
             has_auth: true,
             ..input()
         });
 
-        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]
@@ -1468,6 +1509,46 @@ mod toolchain_readiness_tests {
             waits,
             [STARTUP_TOOLCHAIN_RECHECK_DELAY; STARTUP_TOOLCHAIN_RECHECKS]
         );
+    }
+
+    #[test]
+    fn updater_restart_with_completed_setup_and_missing_tools_resumes_repair() {
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+        };
+        let classified = classify_lifecycle(inputs);
+        assert_eq!(classified.state, LifecycleState::SteadyState);
+
+        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        assert_eq!(verdict.state, LifecycleState::InstallResume);
+        assert!(!verdict.needs_install_backfill && !verdict.needs_first_run_backfill);
+        assert!(installation_required(verdict.state));
+    }
+
+    #[test]
+    fn fresh_install_after_updater_restart_still_starts_at_install() {
+        let inputs = LifecycleInputs {
+            install_completed: false,
+            first_run_completed: false,
+            had_machine_id: false,
+            config_valid: false,
+            hq_root_valid: false,
+            has_auth: false,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+        };
+        let classified = classify_lifecycle(inputs);
+        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]

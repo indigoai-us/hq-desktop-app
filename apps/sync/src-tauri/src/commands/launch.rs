@@ -305,6 +305,13 @@ pub fn codex_thread_url(prompt: &str) -> String {
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {
+    let result = launch_codex_workspace_impl(path, prompt);
+    crate::commands::cdp_mirror::note_agent_session_launched("codex", "codex_app", &result);
+    result
+}
+
+#[cfg(not(windows))]
+fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(), String> {
     let target = expand_home_path(&path)?;
     if !target.is_dir() {
         return Err(format!(
@@ -352,6 +359,13 @@ pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<()
 #[cfg(windows)]
 #[tauri::command]
 pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<(), String> {
+    let result = launch_codex_workspace_impl(path, prompt);
+    crate::commands::cdp_mirror::note_agent_session_launched("codex", "codex_app", &result);
+    result
+}
+
+#[cfg(windows)]
+fn launch_codex_workspace_impl(path: String, prompt: Option<String>) -> Result<(), String> {
     let target = expand_home_path(&path)?;
     if !target.is_dir() {
         return Err(format!(
@@ -393,15 +407,19 @@ pub fn launch_codex_workspace(path: String, prompt: Option<String>) -> Result<()
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn launch_claude_code(path: String) -> Result<(), String> {
-    spawn_cli_terminal_unix(&path, "claude")
+    let result = spawn_cli_terminal_unix(&path, "claude");
+    crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
+    result
 }
 
 /// Open a new Terminal window at `path` and auto-run a CLI coding tool.
 #[cfg(not(windows))]
 #[tauri::command]
 pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
-    let binary = cli_binary_for(&tool)?;
-    spawn_cli_terminal_unix(&path, binary)
+    let result = cli_binary_for(&tool).and_then(|binary| spawn_cli_terminal_unix(&path, binary));
+    let provider = cli_binary_for(&tool).unwrap_or("other");
+    crate::commands::cdp_mirror::note_agent_session_launched(provider, "terminal", &result);
+    result
 }
 
 /// Shared macOS terminal-launch helper. `binary` must come from a trusted source
@@ -442,7 +460,9 @@ end tell"#,
 #[cfg(windows)]
 #[tauri::command]
 pub fn launch_claude_code(path: String) -> Result<(), String> {
-    spawn_cli_terminal_windows(&path, "claude")
+    let result = spawn_cli_terminal_windows(&path, "claude");
+    crate::commands::cdp_mirror::note_agent_session_launched("claude", "terminal", &result);
+    result
 }
 
 /// Open a Windows Terminal (or PowerShell) window at `path` and auto-run a CLI
@@ -451,8 +471,10 @@ pub fn launch_claude_code(path: String) -> Result<(), String> {
 #[cfg(windows)]
 #[tauri::command]
 pub fn launch_cli_in_terminal(path: String, tool: String) -> Result<(), String> {
-    let binary = cli_binary_for(&tool)?;
-    spawn_cli_terminal_windows(&path, binary)
+    let result = cli_binary_for(&tool).and_then(|binary| spawn_cli_terminal_windows(&path, binary));
+    let provider = cli_binary_for(&tool).unwrap_or("other");
+    crate::commands::cdp_mirror::note_agent_session_launched(provider, "terminal", &result);
+    result
 }
 
 #[cfg(windows)]

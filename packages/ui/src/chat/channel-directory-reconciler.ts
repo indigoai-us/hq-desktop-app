@@ -58,8 +58,17 @@ export interface ChannelDirectoryRow {
   /** Server-computed subtitle label. */
   subtitle?: string;
   lastActivityAt: string | null;
-  /** Latest person-typed message, supplied by the notify directory projection. */
+  /**
+   * Latest person-typed message, supplied by the notify directory projection.
+   * Present only when the server knows it.
+   */
   lastHumanMessageAt?: string | null;
+  /**
+   * `false` when the server knows the channel holds no human message; never
+   * `true`. With `lastHumanMessageAt` also absent the state is unknown, which
+   * must not be read as "none".
+   */
+  hasHumanMessage?: boolean;
   /** Notify-channel created stamp — sidebar fallback when activity is a provision clone. */
   createdAt?: string | null;
   /** Channel creator uid (drives the default notification level). */

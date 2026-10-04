@@ -23,8 +23,6 @@ export const EMOJI_CATEGORIES = [
   'Symbols',
 ] as const;
 
-export type EmojiCategory = (typeof EMOJI_CATEGORIES)[number];
-
 const RAW = `
 # Smileys & People
 😀|grinning face|smile happy joy

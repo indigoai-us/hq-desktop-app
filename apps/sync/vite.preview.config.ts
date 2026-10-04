@@ -41,6 +41,5 @@ export default defineConfig({
   server: {
     port: 1422,
     strictPort: true,
-    open: '/dev-harness/index.html?view=onboarding&step=4',
   },
 });

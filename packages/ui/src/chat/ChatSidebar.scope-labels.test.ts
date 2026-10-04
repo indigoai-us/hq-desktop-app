@@ -22,6 +22,7 @@ const memoryStorage = installMemoryLocalStorage();
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+const originalUserAgent = navigator.userAgent;
 
 const now = () => new Date().toISOString();
 
@@ -181,15 +182,58 @@ afterEach(async () => {
   component = null;
   host?.remove();
   memoryStorage.clear();
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: originalUserAgent });
 });
 
 describe("ChatSidebar company / email labels", () => {
+  it("uses Ctrl+P in the Windows scope-menu title", () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    });
+    component = mountSidebar();
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')?.title).toBe(
+      "Company scope (Ctrl+P Personal)",
+    );
+  });
+
   it("channel rows in All scope show the company label", async () => {
     component = mountSidebar();
     await vi.waitFor(() => {
       expect(scopeOf("ch:hq-desktop")?.textContent).toBe("Indigo");
     });
     expect(scopeOf("ch:hq-desktop")?.getAttribute("data-kind")).toBe("company");
+  });
+
+  it("uses the company display name for its scope avatar and label", async () => {
+    const twoWordCompany: Workspace = {
+      ...INDIGO,
+      slug: "xy",
+      displayName: "Two Word",
+      cloudUid: "cmp_xy",
+    };
+    component = mountSidebar({
+      companies: [twoWordCompany],
+      scopeUid: "cmp_xy",
+    });
+
+    const pill = host.querySelector<HTMLButtonElement>(
+      '[data-testid="chat-scope-pill"]',
+    );
+    expect(pill).toBeTruthy();
+    pill?.click();
+
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="chat-scope-menu"]')).toBeTruthy();
+    });
+    const option = host.querySelector<HTMLElement>(
+      '[data-testid="chat-scope-option"][data-scope="cmp_xy"]',
+    );
+    expect(option?.textContent).toContain("Two Word");
+    expect(
+      option?.querySelector(".chat-scope-avatar")?.textContent?.trim(),
+    ).toBe("TW");
+    expect(option?.textContent).not.toContain("XY");
   });
 
   it("agent DMs in All scope show the company name", async () => {

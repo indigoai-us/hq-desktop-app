@@ -503,6 +503,13 @@ impl CoreUpdateRescueTelemetry {
         attempt_number: u32,
         probe_results: CoreUpdateToolProbeResults,
     ) -> Self {
+        let terminal_failure_marker_class = core_update_last_failure_context(raw)
+            .and_then(|context| context.lines().next())
+            .and_then(core_update_rescue_error_class);
+        let terminal_diagnostics = core_update_last_failure_context(raw)
+            .or_else(|| core_update_last_clone_failure_context(raw))
+            .or_else(|| core_update_last_error_context(raw))
+            .unwrap_or(raw);
         let is_explicit_disk_full = raw.lines().any(|line| {
             line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full"
                 || core_update_is_disk_full_diagnostic_line(line)
@@ -512,8 +519,9 @@ impl CoreUpdateRescueTelemetry {
         {
             "insufficient-space"
         } else {
-            raw.lines()
-                .find_map(core_update_rescue_error_class)
+            terminal_failure_marker_class
+                .or_else(|| core_update_snapshot_error_class(raw))
+                .or_else(|| terminal_diagnostics.lines().find_map(core_update_rescue_error_class))
                 .unwrap_or("unknown")
         };
         let stage_markers = core_update_stage_markers(raw);
@@ -537,9 +545,11 @@ impl CoreUpdateRescueTelemetry {
             raw.lines()
                 .find_map(core_update_redact_snapshot_capacity_line)
         } else {
-            raw.lines().find_map(|line| {
-                core_update_rescue_error_class(line)
-                    .map(|_| line.trim().chars().take(240).collect())
+            core_update_snapshot_failure_reason(raw, rescue_error_class).or_else(|| {
+                raw.lines().find_map(|line| {
+                    core_update_rescue_error_class(line)
+                        .map(|_| line.trim().chars().take(240).collect())
+                })
             })
         };
         let (snapshot_required_gib_bucket, snapshot_available_gib_bucket) =
@@ -804,6 +814,14 @@ fn core_update_rescue_step_from_marker(stage: &str) -> &'static str {
 
 fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static str {
     match error_class {
+        "snapshot_disk_full"
+        | "snapshot_capacity_check_failed"
+        | "snapshot_recovery_required"
+        | "snapshot_permission_denied"
+        | "snapshot_symlink_invalid"
+        | "snapshot_copy_unreadable"
+        | "snapshot_copy_failed"
+        | "snapshot_failed" => return "snapshot",
         "rsync_missing" | "rsync_failed" | "rsync_partial" => return "rsync",
         "npx_resolve_failed" | "npm_enoent" => return "npm-install",
         "restore_symlink_race" => return "restore",
@@ -833,7 +851,182 @@ fn core_update_rescue_step_from_raw(raw: &str, error_class: &str) -> &'static st
     }
 }
 
+fn core_update_last_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_failure_kind=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_clone_failure_context(raw: &str) -> Option<&str> {
+    let prefix = "hq_rescue_clone_failure_class=";
+    let mut offset = 0;
+    let mut last_marker_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            last_marker_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_marker_offset.map(|start| &raw[start..])
+}
+
+fn core_update_last_error_context(raw: &str) -> Option<&str> {
+    let mut offset = 0;
+    let mut last_error_offset = None;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if ["error:", "fatal:"].iter().any(|prefix| {
+            trimmed
+                .get(..prefix.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        }) {
+            last_error_offset = Some(offset);
+        }
+        offset += line.len();
+    }
+    last_error_offset.map(|start| &raw[start..])
+}
+
+fn core_update_snapshot_error_class(raw: &str) -> Option<&'static str> {
+    let terminal = core_update_last_failure_context(raw)
+        .or_else(|| core_update_last_error_context(raw))
+        .unwrap_or(raw);
+    let lower = terminal.to_ascii_lowercase();
+    let failure_kind = lower.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("hq_rescue_failure_kind=")
+            .map(str::trim)
+    });
+    if failure_kind.is_some_and(|kind| {
+        !kind.starts_with("snapshot-")
+            && !matches!(kind, "disk_full" | "backup-capacity-check-failed")
+    }) {
+        return None;
+    }
+    let copy_code = lower.lines().find_map(|line| {
+        line.trim_start()
+            .strip_prefix("hq_rescue_snapshot_copy_code=")
+            .map(str::trim)
+    });
+    let last_stage = raw.lines().rev().find_map(|line| {
+        let marker = line.trim().strip_prefix("==>")?.trim();
+        let stage = core_update_stage_token(marker);
+        (stage != "unknown").then_some(stage)
+    });
+    let has_error_line = lower.lines().rev().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("error:") || line.starts_with("fatal:")
+    });
+    let snapshot_error_message = lower.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("error:")
+            && (line.contains("safety snapshot")
+                || line.contains("cannot write the paths rescue would rename or delete")
+                || line.contains("insufficient free space")
+                || line.contains("could not measure snapshot"))
+    });
+    let snapshot_context = failure_kind.is_some_and(|kind| {
+        kind.starts_with("snapshot-")
+            || matches!(kind, "disk_full" | "backup-capacity-check-failed")
+    }) || snapshot_error_message
+        || last_stage == Some("snapshot") && has_error_line;
+    if !snapshot_context {
+        return None;
+    }
+
+    if failure_kind == Some("snapshot-recovery-circuit-breaker") {
+        return Some("snapshot_recovery_required");
+    }
+    if failure_kind == Some("backup-capacity-check-failed") {
+        return Some("snapshot_capacity_check_failed");
+    }
+    if failure_kind == Some("disk_full")
+        || matches!(copy_code, Some("enospc" | "edquot"))
+        || lower.contains("enospc")
+        || lower.contains("edquot")
+        || lower.contains("no space left on device")
+        || lower.contains("disk quota exceeded")
+    {
+        return Some("snapshot_disk_full");
+    }
+    if lower.contains("resolves outside the hq root")
+        || lower.contains("invalid symbolic link")
+        || copy_code == Some("eloop")
+        || lower.contains("eloop")
+    {
+        return Some("snapshot_symlink_invalid");
+    }
+    if lower.contains("cannot write the paths rescue would rename or delete")
+        || matches!(copy_code, Some("eacces" | "eperm"))
+        || lower.contains("eacces")
+        || lower.contains("eperm")
+        || lower.contains("permission denied")
+        || lower.contains("operation not permitted")
+    {
+        return Some("snapshot_permission_denied");
+    }
+    if lower.contains("safety snapshot could not read") {
+        return Some("snapshot_copy_unreadable");
+    }
+    if lower.contains("safety snapshot could not") {
+        return Some("snapshot_copy_failed");
+    }
+    match failure_kind {
+        Some("snapshot-copy-unreadable") => return Some("snapshot_copy_unreadable"),
+        Some("snapshot-copy-failed") => return Some("snapshot_copy_failed"),
+        _ => {}
+    }
+
+    // A raw filesystem exception can lack a producer marker. The last rescue
+    // stage is still present in the captured tail for allocation/manifest
+    // failures, so keep those distinct from unrelated update failures.
+    (last_stage == Some("snapshot") && has_error_line).then_some("snapshot_failed")
+}
+
+fn core_update_snapshot_failure_reason(raw: &str, error_class: &str) -> Option<String> {
+    if !error_class.starts_with("snapshot_") {
+        return None;
+    }
+    let specific = raw.lines().rev().find_map(|line| {
+        let lower = line.to_ascii_lowercase();
+        let is_snapshot_reason = lower.starts_with("error:")
+            && (lower.contains("safety snapshot")
+                || lower.contains("insufficient free space")
+                || lower.contains("could not measure snapshot")
+                || lower.contains("cannot write the paths rescue would rename or delete")
+                || lower.contains("no space left on device")
+                || lower.contains("disk quota exceeded")
+                || lower.contains("permission denied")
+                || lower.contains("operation not permitted"));
+        is_snapshot_reason.then(|| line.trim().chars().take(240).collect())
+    });
+    specific.or_else(|| {
+        raw.lines()
+            .rev()
+            .find(|line| line.trim_start().to_ascii_lowercase().starts_with("error:"))
+            .map(|line| line.trim().chars().take(240).collect())
+    })
+}
+
 fn core_update_rescue_error_class(line: &str) -> Option<&'static str> {
+    if line.trim() == "HQ_RESCUE_FAILURE_KIND=git_too_old" {
+        return Some("git_too_old");
+    }
     if line.trim() == "HQ_RESCUE_FAILURE_KIND=disk_full" {
         return Some("insufficient-space");
     }
@@ -1030,6 +1223,15 @@ fn core_update_redact_snapshot_capacity_values(raw: &str) -> String {
 }
 
 fn core_update_disk_free_bucket(raw: &str) -> &'static str {
+    // Rescue's snapshot-capacity diagnostic prints `have` as a bare byte
+    // count. Handle that field directly before the generic parser can mistake
+    // the preceding `need ... bytes` estimate for free disk space.
+    for line in raw.lines() {
+        if core_update_is_disk_full_diagnostic_line(line) {
+            return core_update_snapshot_available_disk_bucket(line).unwrap_or("unknown");
+        }
+    }
+
     for line in raw.lines() {
         let lower = line.to_ascii_lowercase();
         if let Some(bucket) = core_update_explicit_disk_bucket(&lower) {
@@ -1058,6 +1260,26 @@ fn core_update_disk_free_bucket(raw: &str) -> &'static str {
         }
     }
     "unknown"
+}
+
+fn core_update_snapshot_available_disk_bucket(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    let value_start = lower.split_once("have ")?.1;
+    let value_end = value_start
+        .find(|character: char| character.is_ascii_whitespace() || character == ')')
+        .unwrap_or(value_start.len());
+    let value =
+        value_start[..value_end].trim_end_matches(|character| matches!(character, '.' | ','));
+    let amount = value.replace(',', "").parse::<f64>().ok()?;
+    let suffix = value_start[value_end..].trim_start();
+    let gib = if suffix.starts_with("gib") || suffix.starts_with("gb") {
+        amount
+    } else if suffix.starts_with("bytes") || suffix.starts_with(')') || suffix.is_empty() {
+        amount / 1024.0 / 1024.0 / 1024.0
+    } else {
+        return None;
+    };
+    core_update_disk_bucket_from_gib(gib)
 }
 
 fn core_update_explicit_disk_bucket(line: &str) -> Option<&'static str> {
@@ -1402,7 +1624,12 @@ fn classify_rescue_stderr_failure(stderr: &str) -> RescueFailureCategory {
     if let Some(category) = stderr.lines().find_map(|line| {
         match line.strip_prefix("hq_rescue_failure_kind=").map(str::trim) {
             Some("snapshot-copy-unreadable") => Some(RescueFailureCategory::SnapshotUnreadable),
+            Some("snapshot-copy-failed") if stderr.contains("resolves outside the hq root") => {
+                Some(RescueFailureCategory::SnapshotExternalSymlink)
+            }
             Some("snapshot-copy-failed") => Some(RescueFailureCategory::SnapshotFailed),
+            Some("disk_full") => Some(RescueFailureCategory::DiskFull),
+            Some("backup-capacity-check-failed") => Some(RescueFailureCategory::SnapshotFailed),
             Some("snapshot-recovery-circuit-breaker") => {
                 Some(RescueFailureCategory::SnapshotRecoveryRequired)
             }
@@ -1490,6 +1717,37 @@ fn core_update_failure_report_disposition(
 fn rescue_failure_requires_no_automatic_retry(stderr: &str) -> bool {
     stderr.contains("HQ_RESCUE_FAILURE_KIND=preserve-restore-failed")
         || stderr.contains("HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker")
+}
+
+const CORE_RESCUE_MIN_GIT_VERSION: &str = "2.19.0";
+
+pub(crate) fn emit_core_update_git_preflight_failure(
+    source: &'static str,
+    channel: Channel,
+    detected_git_version: &str,
+) {
+    crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+        "core_update_git_preflight_failed",
+        json!({
+            "source": source,
+            "channel": channel_label(channel),
+            "errorKind": "git_too_old",
+            "requiredGitVersion": CORE_RESCUE_MIN_GIT_VERSION,
+            "detectedGitVersion": detected_git_version,
+        }),
+    );
+}
+
+fn core_rescue_git_version_notice(stderr: &str) -> Option<String> {
+    let lower = stderr.to_ascii_lowercase();
+    (lower.contains("hq_rescue_failure_kind=git_too_old")
+        || lower.contains("filter_unsupported")
+        || (lower.contains("unknown option") && lower.contains("filter=blob:none")))
+        .then(|| {
+            format!(
+                "Git {CORE_RESCUE_MIN_GIT_VERSION} or newer is required to update HQ Core. Update Git and try again."
+            )
+        })
 }
 
 /// Build the sentence shown after an automatic rescue applied the release but
@@ -2660,13 +2918,17 @@ fn core_update_rescue_step_for_category(category: RescueFailureCategory) -> &'st
 
 fn core_update_rescue_error_class_for_category(category: RescueFailureCategory) -> &'static str {
     match category {
+        RescueFailureCategory::SnapshotUnreadable => "snapshot_copy_unreadable",
+        RescueFailureCategory::SnapshotExternalSymlink => "snapshot_symlink_invalid",
+        RescueFailureCategory::SnapshotFailed => "snapshot_copy_failed",
+        RescueFailureCategory::SnapshotRecoveryRequired => "snapshot_recovery_required",
+        RescueFailureCategory::DiskFull => "insufficient-space",
         RescueFailureCategory::RsyncBroken => "rsync_failed",
         RescueFailureCategory::RsyncPartialTransfer => "rsync_partial",
         RescueFailureCategory::UpdateDeferredHqChange => "update_deferred_hq_change",
         RescueFailureCategory::CloneFailed => "clone_failed",
         RescueFailureCategory::NpxResolveFailed => "npx_resolve_failed",
         RescueFailureCategory::RestoreSymlinkRace => "restore_symlink_race",
-        RescueFailureCategory::DiskFull => "insufficient-space",
         _ => "unknown",
     }
 }
@@ -3232,6 +3494,8 @@ fn resolve_channel() -> (Channel, String) {
 // ─── Target resolution ───────────────────────────────────────────────────────
 
 const GITHUB_FETCH_FAILURE_CLASS_MARKER: &str = "[github_fetch_failure_class=";
+const BASELINE_FETCH_MAX_ATTEMPTS: usize = 3;
+const BASELINE_FETCH_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
     let value = detail
@@ -3255,6 +3519,35 @@ fn github_fetch_failure_class_from_detail(detail: &str) -> &'static str {
         "invalid_response" => "invalid_response",
         _ => "unknown",
     }
+}
+
+async fn fetch_baseline_tree_with_timeout_retries<F, Fut>(
+    source: &str,
+    commit: &str,
+    token: Option<String>,
+    mut fetcher: F,
+) -> Result<BTreeMap<String, (String, u64)>, String>
+where
+    F: FnMut(String, String, Option<String>) -> Fut,
+    Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
+{
+    // A short bounded retry lets transient GitHub timeouts recover before the
+    // caller records a durable pending-baseline warning. Exhaustion still
+    // returns the final timeout unchanged so the pending state remains visible.
+    for attempt in 0..BASELINE_FETCH_MAX_ATTEMPTS {
+        match fetcher(source.to_string(), commit.to_string(), token.clone()).await {
+            Ok(tree) => return Ok(tree),
+            Err(error) => {
+                let is_retryable_timeout =
+                    github_fetch_failure_class_from_detail(&error) == "timeout";
+                if !is_retryable_timeout || attempt + 1 == BASELINE_FETCH_MAX_ATTEMPTS {
+                    return Err(error);
+                }
+                tokio::time::sleep(BASELINE_FETCH_RETRY_DELAY * (attempt as u32 + 1)).await;
+            }
+        }
+    }
+    unreachable!("baseline fetch attempts always return or exhaust")
 }
 
 fn github_fetch_failure(class: &'static str, detail: impl AsRef<str>) -> String {
@@ -3819,7 +4112,7 @@ async fn persist_applied_rescue_baseline_with_fetcher<F, Fut>(
     fetcher: F,
 ) -> Result<AppliedRescueBaseline, String>
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     persist_applied_rescue_baseline_with_fetcher_and_path(
@@ -3844,14 +4137,15 @@ async fn persist_applied_rescue_baseline_with_fetcher_and_path<F, Fut>(
     fetcher: F,
 ) -> Result<AppliedRescueBaseline, String>
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     let stamp = required_local_source_stamp(hq_folder)?;
-    let remote_tree = fetcher(
-        stamp.source.clone(),
-        stamp.commit.clone(),
+    let remote_tree = fetch_baseline_tree_with_timeout_retries(
+        &stamp.source,
+        &stamp.commit,
         token.map(str::to_string),
+        fetcher,
     )
     .await;
     persist_applied_rescue_baseline_from_stamp_with_path(
@@ -4727,6 +5021,7 @@ fn skip_automatic_core_update_for_disabled_updates(
 
 fn defer_automatic_core_update_for_sync(
     candidate: CoreAutoUpdateCandidate<'_>,
+    deferral: Option<(u32, Duration)>,
 ) -> NativeCoreAutoUpdateOutcome {
     log(
         "hq-core-update",
@@ -4747,7 +5042,95 @@ fn defer_automatic_core_update_for_sync(
         None,
         Some("sync_in_progress"),
     );
+    if let Some((deferral_count, first_deferral_age)) = deferral {
+        crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+            "core_update_sync_deferral",
+            json!({
+                "source": "automatic",
+                "channel": channel_label(candidate.channel),
+                "targetCoreVersion": candidate.target_version,
+                "deferralCount": deferral_count,
+                "firstDeferralAgeSeconds": first_deferral_age.as_secs(),
+            }),
+        );
+    }
     NativeCoreAutoUpdateOutcome::DeferredForSync
+}
+
+const CORE_UPDATE_SYNC_DEFERRAL_CAP: u32 = 10;
+const CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP: Duration = Duration::from_secs(6 * 60 * 60);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CoreUpdateSyncDeferralStreak {
+    count: u32,
+    first_deferred_at: Option<Instant>,
+}
+
+impl CoreUpdateSyncDeferralStreak {
+    const fn new() -> Self {
+        Self {
+            count: 0,
+            first_deferred_at: None,
+        }
+    }
+
+    fn record(&mut self, now: Instant) -> (u32, Duration, bool) {
+        let first = *self.first_deferred_at.get_or_insert(now);
+        self.count = self.count.saturating_add(1);
+        let age = now.saturating_duration_since(first);
+        (
+            self.count,
+            age,
+            self.count >= CORE_UPDATE_SYNC_DEFERRAL_CAP
+                || age >= CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP,
+        )
+    }
+
+    fn ready(&self, now: Instant) -> bool {
+        self.count >= CORE_UPDATE_SYNC_DEFERRAL_CAP
+            || self.first_deferred_at.is_some_and(|first| {
+                now.saturating_duration_since(first) >= CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP
+            })
+    }
+
+    fn snapshot(&self, now: Instant) -> (u32, Duration, bool) {
+        let age = self
+            .first_deferred_at
+            .map(|first| now.saturating_duration_since(first))
+            .unwrap_or(Duration::ZERO);
+        (self.count, age, self.ready(now))
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+fn core_update_sync_deferral_streak() -> &'static std::sync::Mutex<CoreUpdateSyncDeferralStreak> {
+    static STREAK: std::sync::OnceLock<std::sync::Mutex<CoreUpdateSyncDeferralStreak>> =
+        std::sync::OnceLock::new();
+    STREAK.get_or_init(|| std::sync::Mutex::new(CoreUpdateSyncDeferralStreak::new()))
+}
+
+fn record_core_update_sync_deferral(now: Instant) -> (u32, Duration, bool) {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .record(now)
+}
+
+fn core_update_sync_deferral_snapshot(now: Instant) -> (u32, Duration, bool) {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot(now)
+}
+
+fn reset_core_update_sync_deferral_streak() {
+    core_update_sync_deferral_streak()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .reset();
 }
 
 fn emit_automatic_core_update_hq_change_deferral_telemetry(
@@ -4927,16 +5310,25 @@ fn core_update_auto_install_from_run(
     app: &AppHandle,
     run: &crate::commands::hq_core_staging::RescueRunResult,
 ) -> CoreUpdateAutoInstall {
-    if run.exit_code != 0 && rescue_failure_requires_no_automatic_retry(&run.rescue_stderr_tail) {
-        let detail = preserve_restore_failure_notice(&run.log_tail);
-        let message = match detail {
-            Some(detail) => format!("Update failed. Full log: {}. {detail}", run.log_path),
-            None => format!("Update failed. Full log: {}.", run.log_path),
+    if run.exit_code != 0 {
+        let git_notice = core_rescue_git_version_notice(&run.rescue_stderr_tail);
+        let preserve_notice = rescue_failure_requires_no_automatic_retry(&run.rescue_stderr_tail)
+            .then(|| preserve_restore_failure_notice(&run.log_tail))
+            .flatten();
+        if git_notice.is_none() && preserve_notice.is_none() {
+            return CoreUpdateAutoInstall::from_run(run);
+        }
+        let message = match git_notice {
+            Some(notice) => format!("{notice} Full log: {}.", run.log_path),
+            None => match preserve_notice {
+                Some(detail) => format!("Update failed. Full log: {}. {detail}", run.log_path),
+                None => format!("Update failed. Full log: {}.", run.log_path),
+            },
         };
         let _ = app.emit(
             "hq-core-update:automatic-failed",
             json!({
-                "title": "Update failed",
+                "title": if core_rescue_git_version_notice(&run.rescue_stderr_tail).is_some() { "Update needs newer Git" } else { "Update failed" },
                 "logPath": run.log_path,
                 "message": message,
             }),
@@ -5078,16 +5470,27 @@ where
 {
     let baseline_refresh_pending =
         automatic_target_baseline_refresh_pending_with_path(candidate.channel, injected_path);
+    let mut sync_deferral = (sync_in_progress
+        && auto_updates
+        && !crate::commands::hq_daemon_host::daemon_mode_active()
+        && (candidate.version_behind || baseline_refresh_pending))
+        .then(|| record_core_update_sync_deferral(now()));
+    let mut sync_deferral_cap_reached = sync_deferral.is_some_and(|(_, _, capped)| capped);
     match core_auto_update_decision(
         auto_updates,
         candidate.version_behind || baseline_refresh_pending,
-        sync_in_progress,
+        sync_in_progress && !sync_deferral_cap_reached,
     ) {
         CoreAutoUpdateDecision::Ignore => NativeCoreAutoUpdateOutcome::Ignored,
         CoreAutoUpdateDecision::SkipAutomaticUpdatesDisabled => {
             skip_automatic_core_update_for_disabled_updates(candidate)
         }
-        CoreAutoUpdateDecision::DeferForSync => defer_automatic_core_update_for_sync(candidate),
+        CoreAutoUpdateDecision::DeferForSync => {
+            defer_automatic_core_update_for_sync(
+                candidate,
+                sync_deferral.map(|(count, age, _)| (count, age)),
+            )
+        }
         CoreAutoUpdateDecision::Install => {
             // Do not gate on `state.is_eligible`: that field means Indigo
             // staging-email eligibility. Release-channel client users (the
@@ -5108,7 +5511,25 @@ where
                     return NativeCoreAutoUpdateOutcome::DeferredForPrewarm;
                 }
                 AutomaticCoreUpdatePreinstall::DeferForSync => {
-                    return defer_automatic_core_update_for_sync(candidate);
+                    if crate::commands::hq_daemon_host::daemon_mode_active() {
+                        return defer_automatic_core_update_for_sync(candidate, None);
+                    }
+                    let checked_at = now();
+                    let current_streak = core_update_sync_deferral_snapshot(checked_at);
+                    if !current_streak.2 {
+                        let (count, age, capped) = record_core_update_sync_deferral(checked_at);
+                        if !capped {
+                            return defer_automatic_core_update_for_sync(
+                                candidate,
+                                Some((count, age)),
+                            );
+                        }
+                        sync_deferral = Some((count, age, capped));
+                        sync_deferral_cap_reached = true;
+                    } else {
+                        sync_deferral = Some(current_streak);
+                        sync_deferral_cap_reached = true;
+                    }
                 }
                 AutomaticCoreUpdatePreinstall::SkipAutomaticUpdatesDisabled => {
                     return skip_automatic_core_update_for_disabled_updates(candidate);
@@ -5170,7 +5591,41 @@ where
                 ),
             );
             let observation = CoreUpdateTelemetryContext::automatic(candidate.version_behind);
+            if sync_deferral_cap_reached {
+                crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+                    "core_update_sync_hold_started",
+                    json!({
+                        "source": "automatic",
+                        "channel": channel_label(candidate.channel),
+                        "targetCoreVersion": candidate.target_version,
+                        "deferralCount": sync_deferral
+                            .map(|(count, _, _)| count)
+                            .unwrap_or(CORE_UPDATE_SYNC_DEFERRAL_CAP),
+                        "firstDeferralAgeSeconds": sync_deferral
+                            .map(|(_, age, _)| age.as_secs())
+                            .unwrap_or(0),
+                        "lockTimeoutSeconds": 900,
+                    }),
+                );
+            }
+            reset_core_update_sync_deferral_streak();
             let result = install(candidate.channel, run_guard, observation).await;
+            if sync_deferral_cap_reached {
+                let release_reason = match &result {
+                    Ok(result) if result.exit_code == 0 => "updated",
+                    Ok(result) if result.exit_code == 17 => "timeout",
+                    Ok(_) | Err(_) => "failed",
+                };
+                crate::commands::telemetry::emit_desktop_telemetry_best_effort(
+                    "core_update_sync_hold_released",
+                    json!({
+                        "source": "automatic",
+                        "channel": channel_label(candidate.channel),
+                        "targetCoreVersion": candidate.target_version,
+                        "holdReason": release_reason,
+                    }),
+                );
+            }
             match result {
                 Ok(result)
                     if result.exit_code == 0
@@ -5302,7 +5757,7 @@ async fn retry_pending_baseline_refresh_at<F, Fut>(
     fetcher: F,
 ) -> bool
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     retry_pending_baseline_refresh_at_with_path(channel, hq_folder, token, None, fetcher).await
@@ -5316,7 +5771,7 @@ async fn retry_pending_baseline_refresh_at_with_path<F, Fut>(
     fetcher: F,
 ) -> bool
 where
-    F: FnOnce(String, String, Option<String>) -> Fut,
+    F: FnMut(String, String, Option<String>) -> Fut,
     Fut: Future<Output = Result<BTreeMap<String, (String, u64)>, String>>,
 {
     let Some(pending) = persisted_baseline_refresh_target(channel, injected_path) else {
@@ -5351,7 +5806,8 @@ where
         return false;
     }
 
-    let remote_tree = fetcher(source.clone(), stamped_commit.clone(), token).await;
+    let remote_tree =
+        fetch_baseline_tree_with_timeout_retries(&source, &stamped_commit, token, fetcher).await;
     match remote_tree {
         Ok(tree) => match refresh_pending_baseline_from_tree_with_path(
             hq_folder,
@@ -5550,6 +6006,28 @@ mod tests {
 
     static CORE_UPDATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static CORE_UPDATE_SENTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn core_update_sync_deferral_streak_caps_by_count_or_age_and_resets() {
+        let start = Instant::now();
+        let mut by_count = CoreUpdateSyncDeferralStreak::new();
+        for count in 1..CORE_UPDATE_SYNC_DEFERRAL_CAP {
+            let (observed, age, capped) = by_count.record(start + Duration::from_secs(count as u64));
+            assert_eq!(observed, count);
+            assert_eq!(age, Duration::from_secs((count - 1) as u64));
+            assert!(!capped);
+        }
+        let (observed, _, capped) = by_count.record(start + Duration::from_secs(10));
+        assert_eq!(observed, CORE_UPDATE_SYNC_DEFERRAL_CAP);
+        assert!(capped);
+
+        let mut by_age = CoreUpdateSyncDeferralStreak::new();
+        let (_, _, capped) = by_age.record(start);
+        assert!(!capped);
+        assert!(by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+        by_age.reset();
+        assert!(!by_age.ready(start + CORE_UPDATE_SYNC_DEFERRAL_AGE_CAP));
+    }
 
     // Snapshot of the hq-pro entries that can admit `core_update_failed`
     // properties. Mirrors
@@ -6273,6 +6751,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transient_timeout_during_applied_baseline_fetch_retries_before_reporting_pending() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "b".repeat(40);
+        let old_path = "core/policies/old.md";
+        std::fs::create_dir_all(root.path().join("core/policies")).unwrap();
+        std::fs::write(root.path().join(old_path), b"local\n").unwrap();
+        std::fs::write(
+            root.path().join("core/core.yaml"),
+            format!(
+                "rules:\n  locked:\n    - core/policies/\nreplaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"
+            ),
+        )
+        .unwrap();
+        let menubar_path = home.path().join("menubar.json");
+        let previous_paths = [old_path.to_string()].into_iter().collect::<BTreeSet<_>>();
+        let mut remote = BTreeMap::new();
+        remote.insert(
+            "core/policies/remote.md".to_string(),
+            ("remote-blob".to_string(), 1),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_fetch = Arc::clone(&calls);
+        let result = persist_applied_rescue_baseline_with_fetcher_and_path(
+            root.path(),
+            Some(&previous_paths),
+            "",
+            Channel::Release,
+            None,
+            Some(&menubar_path),
+            move |_, _, _| {
+                let attempt = calls_for_fetch.fetch_add(1, Ordering::AcqRel);
+                let remote_for_attempt = remote.clone();
+                async move {
+                    if attempt == 0 {
+                        Err(github_fetch_failure("timeout", "request timed out"))
+                    } else {
+                        Ok(remote_for_attempt)
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.baseline_persisted);
+        assert!(!result.refresh_pending);
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        assert!(persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_none());
+        let baseline =
+            hq_desktop_core::drift_scope::load_core_drift_baseline(root.path(), source, &commit)
+                .unwrap();
+        assert_eq!(
+            baseline.normalized_blobs.get("core/policies/remote.md"),
+            Some(&"remote-blob".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn baseline_refresh_reports_timeout_after_bounded_fetch_retries_are_exhausted() {
+        let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let source = "indigoai-us/hq-core";
+        let commit = "c".repeat(40);
+        std::fs::create_dir_all(root.path().join("core")).unwrap();
+        std::fs::write(
+            root.path().join("core/core.yaml"),
+            format!("replaced_from_source:\n  source: {source}\n  last_sync_sha: {commit}\n"),
+        )
+        .unwrap();
+        let menubar_path = home.path().join("menubar.json");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_fetch = Arc::clone(&calls);
+        let result = persist_applied_rescue_baseline_with_fetcher_and_path(
+            root.path(),
+            None,
+            "",
+            Channel::Release,
+            None,
+            Some(&menubar_path),
+            move |_, _, _| {
+                calls_for_fetch.fetch_add(1, Ordering::AcqRel);
+                async { Err(github_fetch_failure("timeout", "request timed out")) }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.baseline_persisted);
+        assert!(result.refresh_pending);
+        assert_eq!(result.fetch_failure_class, Some("timeout"));
+        assert_eq!(calls.load(Ordering::Acquire), 3);
+        assert!(persisted_baseline_refresh_target(Channel::Release, Some(&menubar_path)).is_some());
+    }
+
+    #[tokio::test]
     async fn baseline_refresh_scheduled_retry_fetches_tree_without_installer() {
         let _test_lock = CORE_UPDATE_TEST_LOCK.lock().await;
         let home = TempDir::new().unwrap();
@@ -6331,9 +6908,12 @@ mod tests {
                 root.path(),
                 None,
                 Some(&menubar_path),
-                move |_, _, _| async move {
-                    failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                    Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                move |_, _, _| {
+                    let failed_fetch_calls = Arc::clone(&failed_fetch_calls);
+                    async move {
+                        failed_fetch_calls.fetch_add(1, Ordering::AcqRel);
+                        Err(github_fetch_failure("rate_limited", "HTTP 403"))
+                    }
                 },
             )
             .await
@@ -6373,9 +6953,10 @@ mod tests {
                 root.path(),
                 None,
                 Some(&menubar_path),
-                move |_, _, _| async move {
+                move |_, _, _| {
                     successful_fetch_calls.fetch_add(1, Ordering::AcqRel);
-                    Ok(remote)
+                    let remote_for_attempt = remote.clone();
+                    async move { Ok(remote_for_attempt) }
                 },
             )
             .await
@@ -6389,6 +6970,20 @@ mod tests {
             baseline.normalized_blobs.get("core/policies/new.md"),
             Some(&"remote-new-blob".to_string())
         );
+    }
+
+    #[test]
+    fn old_git_clone_filter_failure_gets_a_bounded_actionable_notice() {
+        let notice = core_rescue_git_version_notice(
+            "HQ_RESCUE_CLONE_FAILURE_CLASS=filter_unsupported",
+        )
+        .expect("unsupported partial clone filter identifies old Git");
+        assert!(notice.contains("Git 2.19.0 or newer"));
+        assert!(notice.len() < 160);
+        assert!(core_rescue_git_version_notice("fatal: unable to resolve host").is_none());
+        let preflight = crate::commands::hq_core_staging::rescue_git_preflight_diagnostic("2.15.0");
+        assert!(core_rescue_git_version_notice(&preflight)
+            .is_some_and(|notice| notice.contains("Git 2.19.0 or newer")));
     }
 
     #[tokio::test]
@@ -6826,6 +7421,22 @@ mod tests {
             ),
             ("5-10G", "5-10G")
         );
+    }
+
+    #[test]
+    fn disk_free_bucket_uses_available_bytes_from_snapshot_capacity_error() {
+        // hq-cloud emits the `have` byte count without a unit suffix. The
+        // required snapshot estimate must never be reported as free space.
+        let raw = concat!(
+            "error: insufficient free space for safety snapshot ",
+            "(need 34359738368 bytes, have 3221225472).\n",
+        );
+
+        assert_eq!(core_update_disk_free_bucket(raw), "1-5G");
+        let telemetry = CoreUpdateRescueTelemetry::from_raw(raw, 1);
+        assert_eq!(telemetry.snapshot_required_gib_bucket, "20G+");
+        assert_eq!(telemetry.snapshot_available_gib_bucket, "<5G");
+        assert_eq!(telemetry.disk_free_bucket, "1-5G");
     }
 
     #[test]
@@ -7278,6 +7889,157 @@ error: clone failed";
         assert_eq!(
             classify_rescue_stderr_failure(&redacted),
             RescueFailureCategory::SnapshotRecoveryRequired
+        );
+    }
+
+    #[test]
+    fn snapshot_failure_markers_set_specific_rescue_error_classes() {
+        let cases = [
+            (
+                "HQ_RESCUE_FAILURE_KIND=disk_full\nerror: insufficient free space for safety snapshot.",
+                "insufficient-space",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=backup-capacity-check-failed\nerror: could not measure snapshot size/free space.",
+                "snapshot_capacity_check_failed",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-recovery-circuit-breaker\nerror: safety snapshot circuit breaker is open.",
+                "snapshot_recovery_required",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-unreadable\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\nerror: safety snapshot could not read <source> (EIO).",
+                "snapshot_copy_unreadable",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\nerror: safety snapshot could not write <snapshot> (EACCES).",
+                "snapshot_permission_denied",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=UNKNOWN\nerror: safety snapshot could not safely record <link> (UNKNOWN): target resolves outside the HQ root.",
+                "snapshot_symlink_invalid",
+            ),
+            (
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nHQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\nerror: safety snapshot could not write <snapshot> (EIO).",
+                "snapshot_copy_failed",
+            ),
+            (
+                "error: safety snapshot could not read <source> (EIO).",
+                "snapshot_copy_unreadable",
+            ),
+            (
+                "error: safety snapshot could not write <snapshot> (EIO).",
+                "snapshot_copy_failed",
+            ),
+            (
+                "==> Safety snapshot -> <backup>\nError: EACCES while creating snapshot manifest",
+                "snapshot_permission_denied",
+            ),
+            (
+                "==> Safety snapshot -> <backup>\nError: snapshot manifest could not be written",
+                "snapshot_failed",
+            ),
+            (
+                "error: cannot write the paths rescue would rename or delete (permission denied).",
+                "snapshot_permission_denied",
+            ),
+        ];
+
+        for (raw, expected_class) in cases {
+            let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+            let report = report_for_core_update_error(&error);
+            assert_eq!(
+                report.rescue_telemetry.rescue_error_class, expected_class,
+                "raw diagnostic: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_failure_markers_classify_capacity_and_symlink_causes() {
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=disk_full\nerror: insufficient free space for safety snapshot."
+            ),
+            RescueFailureCategory::DiskFull
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=backup-capacity-check-failed\nerror: could not measure snapshot size/free space."
+            ),
+            RescueFailureCategory::SnapshotFailed
+        );
+        assert_eq!(
+            classify_rescue_stderr_failure(
+                "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\nerror: target resolves outside the HQ root."
+            ),
+            RescueFailureCategory::SnapshotExternalSymlink
+        );
+    }
+
+    #[test]
+    fn later_definitive_failure_marker_overrides_earlier_snapshot_diagnostic() {
+        let raw = concat!(
+            "error: no space left on device while allocating the safety snapshot\n",
+            "HQ_RESCUE_FAILURE_KIND=rsync-found-but-broken\r\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(report.rescue_telemetry.rescue_step, "rsync");
+        assert_eq!(report.rescue_telemetry.rescue_error_class, "rsync_failed");
+    }
+
+    #[test]
+    fn tolerated_snapshot_skip_code_does_not_classify_terminal_copy_failure() {
+        let raw = concat!(
+            "HQ_RESCUE_SKIPPED_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EACCES\n",
+            "warning: snapshot skipped <path>. It was not backed up and was left untouched. The update continued.\n",
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\n",
+            "error: safety snapshot could not write <snapshot> (EIO).\n",
+        );
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, raw);
+        let report = report_for_core_update_error(&error);
+
+        assert_eq!(
+            report.rescue_telemetry.rescue_error_class,
+            "snapshot_copy_failed"
+        );
+    }
+
+    #[test]
+    fn snapshot_terminal_failure_stays_in_the_captured_tail() {
+        let temp = TempDir::new().unwrap();
+        let log_path = temp.path().join("rescue.log");
+        let terminal = concat!(
+            "HQ_RESCUE_FAILURE_KIND=snapshot-copy-failed\n",
+            "HQ_RESCUE_SNAPSHOT_COPY_CODE=EIO\n",
+            "error: safety snapshot could not write snapshot (EIO).\n",
+        );
+        let log = format!(
+            "{}{}",
+            "progress ".repeat(hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES),
+            terminal,
+        );
+        std::fs::write(&log_path, log).unwrap();
+
+        let captured = crate::commands::hq_core_staging::read_raw_rescue_diagnostic_tail(&log_path)
+            .expect("desktop reads the terminal diagnostic window");
+
+        assert!(captured.ends_with(terminal));
+        assert!(captured.len() <= hq_telemetry::SETUP_DIAGNOSTIC_STREAM_LIMIT_BYTES);
+        let error = CoreUpdateError::new(CoreUpdateErrorKind::RescueSpawn, captured);
+        let report = report_for_core_update_error(&error);
+        assert_eq!(
+            report.rescue_telemetry.rescue_error_class,
+            "snapshot_copy_failed"
+        );
+        assert_eq!(report.rescue_telemetry.rescue_step, "snapshot");
+        assert_eq!(
+            report.rescue_telemetry.first_error_line.as_deref(),
+            Some("error: safety snapshot could not write snapshot (EIO).")
         );
     }
 
@@ -9111,11 +9873,15 @@ error: clone failed";
             Channel::Release,
             Some("github-token"),
             Some(&menubar_path),
-            move |fetched_source, fetched_commit, token| async move {
-                assert_eq!(fetched_source, source);
-                assert_eq!(fetched_commit, expected_commit);
-                assert_eq!(token.as_deref(), Some("github-token"));
-                Ok(remote)
+            move |fetched_source, fetched_commit, token| {
+                let expected_commit = expected_commit.clone();
+                let remote = remote.clone();
+                async move {
+                    assert_eq!(fetched_source, source);
+                    assert_eq!(fetched_commit, expected_commit);
+                    assert_eq!(token.as_deref(), Some("github-token"));
+                    Ok(remote)
+                }
             },
         )
         .await

@@ -7,6 +7,7 @@
    * answer for an old query never replaces a newer one.
    */
   import type { VaultFileHit } from "@hq/platform";
+  import { formatShortcut } from "../../common/keyboard-shortcuts.js";
   import { vaultRelativePath, noteTitle, type Vault } from "./vault-model.js";
 
   interface Props {
@@ -127,7 +128,7 @@
     <footer class="qs-foot">
       <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
       <span><kbd>↵</kbd> open</span>
-      <span><kbd>⌘</kbd><kbd>↵</kbd> new tab</span>
+      <span><kbd>{formatShortcut("Mod+Enter")}</kbd> new tab</span>
       <span><kbd>esc</kbd> close</span>
     </footer>
   </div>

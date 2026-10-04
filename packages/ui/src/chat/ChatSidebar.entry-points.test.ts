@@ -710,6 +710,7 @@ describe("ChatSidebar company switcher — in-modal company creation", () => {
         companyUid: "cmp_new",
         companyChannelId: "chn_new",
         inviteFailures: [],
+        cloudError: null,
       },
     }),
   };

@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 
 /**
- * Company channel hero shows the company's display name ("Acme"), not the
- * channel slug — while the channel header itself keeps the slug.
+ * Company-home channel headers and the company hero both use the company's
+ * display name instead of the backing channel slug.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -108,9 +108,9 @@ async function mountApp(companies: Workspace[] | null): Promise<void> {
 }
 
 describe("DesktopApp company hero title", () => {
-  it("uses the company display name while the header keeps the slug", async () => {
+  it("uses the company display name for the home-channel header and hero", async () => {
     await mountApp([acmeWorkspace]);
-    expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("acme");
+    expect(host.querySelector('[data-testid="channel-name"]')?.textContent).toBe("Acme");
     const hero = host.querySelector('[data-testid="company-hero"]');
     expect(hero, "company hero renders for a company channel").toBeTruthy();
     expect(hero?.querySelector(".company-hero-title")?.textContent?.trim()).toBe("Acme");

@@ -137,12 +137,31 @@ export const TIMELINE_ROOT_PAGE_SIZE = 50;
 /** Extra newest-first pages fetched when the first page is mostly replies. */
 export const TIMELINE_ROOT_MAX_EXTRA_PAGES = 3;
 
+/** The `view` value that asks a history route for the human view. */
+export const HUMAN_HISTORY_VIEW = "human" as const;
+
 export interface TimelineMessagePage {
   messages?: unknown;
   nextCursor?: string | null;
+  /**
+   * `"human"` only when the server echoed `view: "human"`, which means it
+   * filtered and paged this response itself. A server that predates the
+   * parameter ignores it and echoes nothing, so an absent value marks an
+   * ordinary unfiltered page.
+   */
+  view?: typeof HUMAN_HISTORY_VIEW;
+  /**
+   * The server's read budget ran out before it filled the page. It always
+   * comes with a `nextCursor`; `messages` may be short or empty and the
+   * caller should request the next page. Read only on a `view: "human"` page.
+   */
+  viewScanTruncated?: boolean;
 }
 
-/** Pull `{ messages, nextCursor }` out of an hq-pro / adapter payload. */
+/**
+ * Pull `{ messages, nextCursor }` out of an hq-pro / adapter payload, plus
+ * the `view` echo and `viewScanTruncated` of a server-filtered page.
+ */
 export function timelinePageFromPayload(raw: unknown): TimelineMessagePage {
   const rec = asRecord(raw);
   if (!rec) return { messages: raw, nextCursor: null };
@@ -150,9 +169,14 @@ export function timelinePageFromPayload(raw: unknown): TimelineMessagePage {
     typeof rec.nextCursor === "string" && rec.nextCursor.trim()
       ? rec.nextCursor.trim()
       : null;
+  const humanView = rec.view === HUMAN_HISTORY_VIEW;
   return {
     messages: rec.messages ?? raw,
     nextCursor: cursor,
+    ...(humanView ? { view: HUMAN_HISTORY_VIEW } : {}),
+    ...(humanView && rec.viewScanTruncated === true
+      ? { viewScanTruncated: true }
+      : {}),
   };
 }
 

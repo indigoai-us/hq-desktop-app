@@ -14,6 +14,7 @@ let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
 afterEach(async () => {
+  Reflect.deleteProperty(globalThis, "__HQ_HOST_OS__");
   if (component) await unmount(component);
   component = null;
   host?.remove();
@@ -36,6 +37,15 @@ function stepStatuses(): string[] {
 }
 
 describe("SetupRunCard", () => {
+  it("labels the running setup with the Windows computer noun", async () => {
+    Object.defineProperty(globalThis, "__HQ_HOST_OS__", { value: "windows", configurable: true });
+    const run = interpretSetupRun([], "working");
+    await mountCard({ mode: "live", run });
+    expect(host.querySelector('[data-testid="setup-run-card"]')?.textContent).toContain(
+      "Setting up this PC",
+    );
+  });
+
   it("renders the six steps in order with the running step's status line", async () => {
     const run = interpretSetupRun(
       [say("Checking what's already in place."), say("Signed in as jacob@example.com — synced.")],

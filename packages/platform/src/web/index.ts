@@ -47,6 +47,7 @@ import {
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   type FeatureFlagGate,
 } from "../flags.js";
 import {
@@ -60,6 +61,7 @@ interface WebAttempt<T> {
   result: AdapterResult<T>;
   status: number | null;
   retryAfter?: string | null;
+  lambdaInvoke504?: boolean;
 }
 
 /** `Retry-After` off a Response, tolerating a header-less test double. */
@@ -68,6 +70,18 @@ function readRetryAfter(res: Response): string | null {
     return res.headers?.get?.("retry-after") ?? null;
   } catch {
     return null;
+  }
+}
+
+function isLambdaInvoke504(response: Response, bodyText: string): boolean {
+  if (response.status !== 504) return false;
+  try {
+    const payload: unknown = JSON.parse(bodyText);
+    return typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+      Object.keys(payload).length === 1 &&
+      (payload as { message?: unknown }).message === "Internal server error";
+  } catch {
+    return false;
   }
 }
 
@@ -262,6 +276,8 @@ export interface WebPlatformAdapterConfig {
    * `sleep` and a deterministic `random`; production uses the defaults.
    */
   requestPolicy?: RequestPolicyOptions;
+  /** Disable this retry when the injected fetch already retries at its own layer. */
+  retryLambdaInvoke504?: boolean;
 }
 
 function defaultOnUnauthorized(): void {
@@ -469,6 +485,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly onUnauthorized: () => void;
   private readonly flags: FeatureFlagGate;
   private readonly requestPolicy: RequestPolicyOptions;
+  private readonly retryLambdaInvoke504: boolean;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -481,6 +498,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
+    this.retryLambdaInvoke504 = config.retryLambdaInvoke504 ?? true;
     this.flags = createFeatureFlagGate({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
@@ -500,7 +518,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
-      flag === PERSONAL_WORKSPACE_BOARD_FLAG
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
+      flag === PERSONAL_TRANSCRIPTS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
@@ -530,12 +549,25 @@ export class WebPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): Promise<WebAttempt<T>> {
+    let lambdaInvokeRetried = false;
     return retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
-      (outcome) => ({
-        status: outcome.status,
-        retryAfter: outcome.retryAfter,
-      }),
+      (outcome) => {
+        if (
+          this.retryLambdaInvoke504 &&
+          method === "GET" &&
+          !lambdaInvokeRetried &&
+          outcome.lambdaInvoke504
+        ) {
+          lambdaInvokeRetried = true;
+          const random = this.requestPolicy.random ?? Math.random;
+          return {
+            status: 503,
+            retryDelayMs: 25 + Math.floor(random() * 51),
+          };
+        }
+        return { status: outcome.status, retryAfter: outcome.retryAfter };
+      },
       this.requestPolicy,
     );
   }
@@ -592,6 +624,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
           result: hqProFailure(details),
           status: res.status,
           retryAfter: readRetryAfter(res),
+          lambdaInvoke504: method === "GET" && isLambdaInvoke504(res, text),
         };
       }
       if (res.status === 204) {
@@ -746,11 +779,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
     searchMessages: (q, opts) => {
       return this.get(buildWebMessageSearchPath(q, opts));
     },
-    fetchChannel: ({ channelId, limit, cursor, since }) => {
+    fetchChannel: ({ channelId, limit, cursor, since, view }) => {
       const params = new URLSearchParams();
       if (limit != null) params.set("limit", String(limit));
       if (cursor) params.set("cursor", cursor);
       if (since) params.set("since", since);
+      if (view) params.set("view", view);
       const qs = params.toString();
       return this.get(
         `${WEB_PATHS.channelMessages(channelId)}${qs ? `?${qs}` : ""}`,
@@ -785,6 +819,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `/v1/companies/slug-available?slug=${encodeURIComponent(slug)}`,
       ),
+    activateCompanyCloud: (companyUid) =>
+      this.post(
+        `/v1/companies/${encodeURIComponent(companyUid)}/activate-cloud`,
+        {},
+      ),
     getCompanyTab: (companyUid, tab) =>
       this.get(WEB_PATHS.companyTab(companyUid, tab)),
     runCompanyTabAction: (args) =>
@@ -798,10 +837,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
             ? crypto.randomUUID()
             : `tab-${Date.now()}`),
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) => {
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
       const params = new URLSearchParams({ withPersonUid });
       if (limit != null) params.set("limit", String(limit));
       if (since) params.set("since", since);
+      if (cursor) params.set("cursor", cursor);
+      if (view) params.set("view", view);
       return this.get(`/v1/notify/thread?${params.toString()}`);
     },
     sendDm: (toPersonUid, body, extras) =>
@@ -1180,6 +1221,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     startDaemon: async () => DESKTOP_ONLY,
     stopDaemon: async () => DESKTOP_ONLY,
     daemonStatus: async () => DESKTOP_ONLY,
+    daemonSyncStatus: async () => ok(null),
     startSync: async () => DESKTOP_ONLY,
     cancelSync: async () => DESKTOP_ONLY,
     getSyncStatus: async () => DESKTOP_ONLY,

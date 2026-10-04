@@ -11,6 +11,7 @@
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
+  import CompanyStepPreview from './CompanyStepPreview.svelte';
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
@@ -243,7 +244,10 @@
        2 cloud with the install running, 5 ready with the Claude Code / Codex
        options and the usage-data checkbox; 3 lands on ready too); the shortcut
        screen is Next from 2. ?mode=replay previews the menu-bar "Replay
-       welcome intro" (the story screens only). In the app the window is
+       welcome intro" (the story screens only). &company=create answers as a
+       brand-new person, so Next, Next from step 2 reaches the company step
+       inside the real welcome window (&companyDelay=<ms> slows its card
+       fetch like a real network). In the app the window is
        transparent over a native blur of the desktop; a browser cannot do that,
        so the harness paints a stand-in desktop behind it. -->
   <div class="fake-desktop" aria-hidden="true"></div>
@@ -252,6 +256,11 @@
     mode={params.get('mode') === 'replay' ? 'replay' : 'onboarding'}
     onfinish={() => {}}
   />
+{:else if view === 'onboarding-company'}
+  <!-- The first-run company step on its own: ?scenario=create|join|paused.
+       Size the viewport to ~800x900 like the welcome window. -->
+  <div class="fake-desktop" aria-hidden="true"></div>
+  <CompanyStepPreview />
 {:else if view === 'global-error'}
   <!-- Deterministic render failure for visually verifying the production
        Svelte error boundary without breaking any other harness route. -->

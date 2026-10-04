@@ -34,9 +34,36 @@ use crate::util::{logfile::log, paths};
 
 pub use hq_desktop_core::first_run::{
     classify_from_map, classify_from_menubar_read, ensure_install_attempt_id, merge_menubar_flags,
-    notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch, LaunchKind,
-    MenubarRead,
+    notice_shown_in_map, read_menubar, read_menubar_obj, should_autoshow_on_launch,
+    should_sync_after_first_run_handoff, LaunchKind, MenubarRead,
 };
+
+pub const FIRST_LAUNCH_SYNC_FLAG: &str = "desktop.first-launch-sync-v1";
+
+const FIRST_LAUNCH_SYNC_START_FAILURE_MESSAGE: &str = "first-launch sync start failed";
+const FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT: &str = "first-launch-sync-start-failed";
+
+fn first_launch_sync_start_error_category(error: &str) -> &'static str {
+    match error {
+        "Sync is already running" => "already_running",
+        hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE => "cloud_paused",
+        _ => "other",
+    }
+}
+
+fn report_first_launch_sync_start_failure(error: &str) {
+    crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
+        None,
+        "first-launch",
+        FIRST_LAUNCH_SYNC_START_FAILURE_MESSAGE,
+        &["sync", FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT],
+        &[(
+            "failure_category",
+            first_launch_sync_start_error_category(error).to_string(),
+        )],
+        &[],
+    );
+}
 
 /// `ensure_install_attempt_id` reads and, on the first call, writes the shared
 /// menubar settings file. Serialize this wrapper because receipt preparation
@@ -104,6 +131,16 @@ pub fn install_attempt_id() -> Option<String> {
 /// process even after `machineId` gets written this launch.
 pub struct LaunchKindState(pub LaunchKind);
 
+/// Cheap, side-effect-free launch hint for painting the first-run surface
+/// before lifecycle probes. The final, managed classification still happens
+/// after lifecycle has had a chance to backfill older setup markers.
+pub fn early_launch_hint() -> LaunchKind {
+    match paths::menubar_json_path() {
+        Ok(path) => classify_from_menubar_read(&read_menubar(&path)),
+        Err(_) => LaunchKind::Normal,
+    }
+}
+
 /// Classify this launch and stash the verdict in managed state. MUST be called
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
@@ -127,6 +164,15 @@ pub fn classify_launch(app: &AppHandle) -> LaunchKind {
 #[tauri::command]
 pub fn is_first_run(state: State<'_, LaunchKindState>) -> bool {
     state.0 == LaunchKind::FirstRun
+}
+
+/// Read the stable installation identity for anonymous first-launch joins.
+#[tauri::command]
+pub async fn desktop_install_attempt_id() -> Option<String> {
+    tauri::async_runtime::spawn_blocking(|| install_attempt_id())
+        .await
+        .ok()
+        .flatten()
 }
 
 /// True when a legacy user updated to this build, hasn't seen the auto-sync
@@ -213,9 +259,39 @@ pub fn set_main_window_vibrancy(app: AppHandle, enabled: bool) {
 /// actually opened. If opening fails, the error is returned with the card
 /// still on screen rather than leaving the user with no window at all.
 #[tauri::command]
-pub async fn show_main_window_at_tray(app: AppHandle) -> Result<(), String> {
+pub async fn show_main_window_at_tray(
+    app: AppHandle,
+    state: State<'_, LaunchKindState>,
+) -> Result<(), String> {
     crate::commands::desktop_alt::open_desktop_alt_window_inner(app.clone(), None).await?;
     crate::tray::hide_onboarding_window(&app);
+    let launch_kind = state.0;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let flag_enabled =
+            crate::commands::hq_pro::feature_flag_enabled(FIRST_LAUNCH_SYNC_FLAG).await;
+        if !should_sync_after_first_run_handoff(
+            flag_enabled,
+            launch_kind,
+            crate::commands::daemon::is_realtime_sync_enabled(),
+        ) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(error) = crate::commands::sync::start_sync_with_trigger(
+            handle,
+            None,
+            crate::commands::cdp_mirror::SyncTrigger::First,
+        )
+        .await
+        {
+            crate::util::logfile::log(
+                "first-run",
+                &format!("first-launch sync did not start: {error}"),
+            );
+            report_first_launch_sync_start_failure(&error);
+        }
+    });
     Ok(())
 }
 
@@ -232,4 +308,56 @@ pub fn mark_auto_sync_notice_shown() -> Result<(), String> {
             ("firstRunCompleted", Value::Bool(true)),
         ],
     )
+}
+
+#[cfg(test)]
+mod first_launch_sync_start_capture_tests {
+    use super::*;
+
+    #[test]
+    fn first_launch_sync_start_failure_is_captured_with_bounded_content() {
+        let captures = sentry::test::with_captured_events(|| {
+            report_first_launch_sync_start_failure(
+                "first-run user-specific path and token-bearing server detail",
+            );
+        });
+
+        assert_eq!(captures.len(), 1, "start failure creates one Sentry event");
+        let event = captures.into_iter().next().expect("capture exists");
+        assert_eq!(
+            event.message.as_deref(),
+            Some("[sync] first-launch sync start failed")
+        );
+        assert_eq!(
+            event.tags.get("path").map(String::as_str),
+            Some("first-launch")
+        );
+        assert_eq!(
+            event.tags.get("failure_category").map(String::as_str),
+            Some("other")
+        );
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT]
+        );
+        let serialized = serde_json::to_string(&event).expect("serialize event");
+        assert!(!serialized.contains("first-run user-specific path"));
+        assert!(!serialized.contains("token-bearing server detail"));
+    }
+
+    #[test]
+    fn first_launch_sync_start_error_categories_are_closed() {
+        assert_eq!(
+            first_launch_sync_start_error_category("Sync is already running"),
+            "already_running"
+        );
+        assert_eq!(
+            first_launch_sync_start_error_category(hq_desktop_core::daemon::CLOUD_PAUSED_MESSAGE),
+            "cloud_paused"
+        );
+        assert_eq!(
+            first_launch_sync_start_error_category("untrusted detail"),
+            "other"
+        );
+    }
 }

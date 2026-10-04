@@ -33,9 +33,13 @@ pub struct AuthSessionEnvelope {
 }
 
 static AUTH_SESSION_ENVELOPE: OnceLock<Mutex<Option<AuthSessionEnvelope>>> = OnceLock::new();
-static AUTH_SESSION_DIAGNOSTIC: OnceLock<
-    Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>>,
-> = OnceLock::new();
+type AuthSessionDiagnostic = (
+    AuthSessionStatus,
+    Option<CognitoRefreshFailureClass>,
+    &'static str,
+);
+
+static AUTH_SESSION_DIAGNOSTIC: OnceLock<Mutex<Option<AuthSessionDiagnostic>>> = OnceLock::new();
 static LAST_AUTH_TRANSITION: OnceLock<Mutex<Option<(&'static str, SystemTime)>>> = OnceLock::new();
 
 fn record_last_auth_transition(class: &'static str) {
@@ -57,8 +61,7 @@ fn auth_session_envelope_cell() -> &'static Mutex<Option<AuthSessionEnvelope>> {
     AUTH_SESSION_ENVELOPE.get_or_init(|| Mutex::new(None))
 }
 
-fn auth_session_diagnostic_cell(
-) -> &'static Mutex<Option<(AuthSessionStatus, Option<CognitoRefreshFailureClass>)>> {
+fn auth_session_diagnostic_cell() -> &'static Mutex<Option<AuthSessionDiagnostic>> {
     AUTH_SESSION_DIAGNOSTIC.get_or_init(|| Mutex::new(None))
 }
 
@@ -76,25 +79,30 @@ fn auth_session_status_tag(status: &AuthSessionStatus) -> &'static str {
 fn set_auth_session_diagnostic(
     status: AuthSessionStatus,
     refresh_failure_class: Option<CognitoRefreshFailureClass>,
+    rejection_class: &'static str,
 ) {
     let mut guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *guard = Some((status, refresh_failure_class));
+    *guard = Some((status, refresh_failure_class, rejection_class));
 }
 
 /// Bounded startup diagnostic labels; this snapshot contains no account
 /// identity, token material, email, or free-form error detail.
-pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str) {
+pub(crate) fn startup_auth_diagnostic_tags() -> (&'static str, &'static str, &'static str) {
     let guard = auth_session_diagnostic_cell()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match guard.as_ref() {
-        Some((status, Some(failure_class))) => {
-            (auth_session_status_tag(status), failure_class.as_tag())
+        Some((status, Some(failure_class), rejection_class)) => (
+            auth_session_status_tag(status),
+            failure_class.as_tag(),
+            *rejection_class,
+        ),
+        Some((status, None, rejection_class)) => {
+            (auth_session_status_tag(status), "none", *rejection_class)
         }
-        Some((status, None)) => (auth_session_status_tag(status), "none"),
-        None => ("unknown", "none"),
+        None => ("unknown", "none", "none"),
     }
 }
 
@@ -166,7 +174,7 @@ pub(crate) fn publish_auth_session(
         *guard = Some(current.clone());
         (current, changed)
     };
-    set_auth_session_diagnostic(current.0.status.clone(), None);
+    set_auth_session_diagnostic(current.0.status.clone(), None, "none");
     if current.1 {
         // The desktop label is intentional: auth events for the compact main
         // window must not be mistaken for an embedded Work tenant transition.
@@ -435,7 +443,8 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
     let before = first_token_read.ok().flatten();
     let outcome =
         crate::commands::dm_notify::resolve_notification_credentials_classified(app).await;
-    let (state, status, account_id, reason, refresh_failure_class) = match outcome {
+    let (state, status, account_id, reason, refresh_failure_class, rejection_class) = match outcome
+    {
         // Refuse to adopt a machine identity as the signed-in person. The
         // credential file is shared with the `hq` CLI and with fleet-agent
         // machine credentials, so usable tokens are not evidence of a human
@@ -467,6 +476,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                         }
                     }),
                     None,
+                    "none",
                 ),
                 None => {
                     set_sentry_user_from_tokens(&tokens);
@@ -477,12 +487,18 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                         Some(notification_identity_from_tokens(&tokens)),
                         None,
                         None,
+                        "none",
                     )
                 }
             }
         }
-        Err(error) if before.is_none() => {
-            let status = cognito::startup_token_store_status(first_token_read_failed);
+        Err(error) if before.is_none() && (!error.requires_reauth || first_token_read_failed) => {
+            let status = cognito::classify_startup_refresh_failure(
+                false,
+                first_token_read_failed,
+                error.requires_reauth,
+                false,
+            );
             let reason = if first_token_read_failed {
                 "HQ Work could not read saved credentials."
             } else {
@@ -494,6 +510,7 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 None,
                 Some(reason),
                 error.refresh_failure_class,
+                error.rejection_class,
             )
         }
         Err(error) => {
@@ -506,21 +523,32 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
                 .as_ref()
                 .or(after.as_ref())
                 .map(notification_identity_from_tokens);
-            if error.requires_reauth || after.is_none() {
+            let status = cognito::classify_startup_refresh_failure(
+                before.is_some(),
+                first_token_read_failed,
+                error.requires_reauth,
+                after.is_some(),
+            );
+            if status == AuthSessionStatus::CredentialsInvalid {
                 (
                     signed_out_state(),
                     AuthSessionStatus::CredentialsInvalid,
                     preserved_account,
                     Some("Your saved HQ Work credentials are no longer valid."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             } else {
                 (
-                    signed_out_state(),
+                    after
+                        .as_ref()
+                        .map(authenticated_state_from_tokens)
+                        .unwrap_or_else(signed_out_state),
                     AuthSessionStatus::RefreshTemporarilyUnavailable,
                     preserved_account,
                     Some("HQ Work could not refresh credentials while offline or unavailable."),
                     refresh_failure_class,
+                    error.rejection_class,
                 )
             }
         }
@@ -539,7 +567,11 @@ async fn resolve_authoritative_auth_session(app: &AppHandle) -> (AuthState, Auth
             reason: reason.map(str::to_string),
         },
     );
-    set_auth_session_diagnostic(envelope.status.clone(), refresh_failure_class);
+    set_auth_session_diagnostic(
+        envelope.status.clone(),
+        refresh_failure_class,
+        rejection_class,
+    );
     (state, envelope)
 }
 
@@ -551,6 +583,7 @@ pub async fn get_auth_state(app: AppHandle) -> Result<AuthState, String> {
         // receipt and sending it. Retries are native and non-blocking, so the
         // renderer never receives a bearer token or waits on analytics.
         crate::commands::desktop_auth::flush_pending_authenticated_desktop_receipts();
+        crate::commands::desktop_auth::flush_pending_desktop_referrals(&app);
     }
     startup_auth_state_result(state, &envelope.status)
 }
@@ -654,6 +687,23 @@ mod tests {
             result.is_err(),
             "a saved session with a transient refresh failure must reach the renderer retry path"
         );
+    }
+
+    #[test]
+    fn temporary_refresh_failure_keeps_a_stored_session_authenticated() {
+        let tokens = cognito::CognitoTokens {
+            access_token: "expired-access".to_string(),
+            id_token: None,
+            refresh_token: "refresh".to_string(),
+            expires_at: 0,
+        };
+        let state = authenticated_state_from_tokens(&tokens);
+        assert!(state.authenticated);
+        assert!(startup_auth_state_result(
+            state,
+            &AuthSessionStatus::RefreshTemporarilyUnavailable,
+        )
+        .is_err(), "the renderer gets the temporary-retry surface while the session stays authenticated");
     }
 
     #[test]

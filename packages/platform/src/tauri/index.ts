@@ -37,9 +37,15 @@ import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { createCallsApi } from "../calls/api.js";
 import {
+  isLambdaInvokeServiceErrorBody,
+  lambdaInvokeRetryDelayMs,
+  sleepForLambdaInvokeRetry,
+} from "../request-policy.js";
+import {
   CLAUDE_PROVIDER_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
+  PERSONAL_TRANSCRIPTS_FLAG,
   createFeatureFlagGate,
   createHqProFlagFetch,
   type FeatureFlagGate,
@@ -173,11 +179,28 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): Promise<{ result: AdapterResult<T>; status: number | null }> {
-    const raw = await this.call<unknown>("hq_pro_fetch", {
+    let raw = await this.call<unknown>("hq_pro_fetch", {
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
+    const firstResponse = raw.ok && raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
+      ? raw.value as Record<string, unknown>
+      : null;
+    if (
+      method === "GET" &&
+      typeof firstResponse?.status === "number" &&
+      firstResponse.status === 504 &&
+      typeof firstResponse.body === "string" &&
+      isLambdaInvokeServiceErrorBody(firstResponse.body)
+    ) {
+      await sleepForLambdaInvokeRetry(lambdaInvokeRetryDelayMs());
+      raw = await this.call<unknown>("hq_pro_fetch", {
+        url: path,
+        method,
+        body: body === undefined ? null : JSON.stringify(body),
+      });
+    }
     if (!raw.ok) return { result: raw, status: null };
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
@@ -250,7 +273,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         ? // Pinned per release; the registry cannot turn it off.
           Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
         : this.flags.resolve(flag, () =>
-            flag === CLAUDE_PROVIDER_FLAG
+            flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
@@ -260,7 +283,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         : this.flags.subscribe(
             flag,
             () =>
-              flag === CLAUDE_PROVIDER_FLAG
+              flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
                 ? Promise.resolve(ok(false))
                 : this.call("has_feature", { flag }),
             onChange,
@@ -353,12 +376,15 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         companyUid: opts?.companyUid,
         limit: opts?.limit,
       }),
-    fetchChannel: ({ channelId, limit, cursor, since }) =>
+    fetchChannel: ({ channelId, limit, cursor, since, view }) =>
+      // The native command forwards `view` and returns the server's echo.
+      // The key is only sent when set.
       this.call("fetch_channel", {
         channelId,
         limit,
         cursor: cursor ?? null,
         since: since ?? null,
+        ...(view ? { view } : {}),
       }),
     listChannelMembers: (channelId) =>
       this.call("list_channel_members", { channelId }),
@@ -381,6 +407,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         idempotencyKey: args.idempotencyKey ?? null,
       }),
     checkCompanySlug: (slug) => this.call("check_company_slug", { slug }),
+    activateCompanyCloud: (companyUid) =>
+      this.call("activate_company_cloud", { companyUid }),
     getCompanyTab: (companyUid, tab) =>
       this.call("get_company_tab", { companyUid, tab }),
     runCompanyTabAction: (args) =>
@@ -392,11 +420,13 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         values: args.values,
         idempotencyKey: args.idempotencyKey ?? null,
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) =>
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) =>
       this.call("fetch_dm_thread", {
         withPersonUid,
         limit,
         since: since ?? null,
+        ...(cursor ? { cursor } : {}),
+        ...(view ? { view } : {}),
       }),
     sendDm: (toPersonUid, body, extras) =>
       this.call("send_dm", {
@@ -664,6 +694,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     startDaemon: () => this.call("start_daemon"),
     stopDaemon: () => this.call("stop_daemon"),
     daemonStatus: () => this.call("daemon_status"),
+    daemonSyncStatus: () => this.call("daemon_sync_status"),
     startSync: (slug) => this.call("start_sync", { slug }),
     cancelSync: () => this.call("cancel_sync"),
     getSyncStatus: () => this.call("get_sync_status"),
