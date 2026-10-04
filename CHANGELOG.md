@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.391] — 2026-10-04
+
 - Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
 - First-launch join-key rollout assignments now use the public flag resolver.
 - CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
