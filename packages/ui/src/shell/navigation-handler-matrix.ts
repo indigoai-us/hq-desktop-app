@@ -121,6 +121,14 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   openConflictResolution: "push",
   // Hands the file to the OS editor; the shell stays where it is.
   openConflictInEditor: "none",
+  // A connection card in a cloud bot's DM: opens a console page in the system
+  // browser or changes the card's state. The shell stays in the conversation.
+  handleConnectionAction: "none",
+  openConnectionUrl: "none",
+  // The modal a connection card opens: a dialog over the conversation. The
+  // shell stays where it is.
+  openConnectionModal: "none",
+  closeConnectionModal: "none",
   // #welcome / Home setup card → the setup bot's DM (handleSelect).
   openSetupBotDm: "push",
   applyChannelWake: "none",

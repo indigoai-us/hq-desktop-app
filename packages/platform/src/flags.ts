@@ -67,6 +67,7 @@
 
 import {
   createFlagClient,
+  isFlagSnapshot,
   type FlagClient,
   type FlagClientOptions,
   type FlagSnapshot,
@@ -77,6 +78,8 @@ export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
 export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
+export const FIRST_LAUNCH_SIGNIN_REACH_FLAG =
+  "desktop.first-launch-signin-reach-telemetry-v1";
 export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
   "desktop.company-route-lookup-retry-v1";
 export const COMPANY_NAME_PREFILL_FLAG = "desktop.company-name-prefill-v1";
@@ -86,6 +89,8 @@ export const LOGIN_RECEIPT_DURABILITY_FLAG =
   "desktop.login-receipt-durable-before-return-v1";
 export const POST_READY_ACTION_TELEMETRY_FLAG =
   "desktop.post-ready-action-telemetry-v1";
+export const FIRST_WEEK_RETURN_NUDGE_FLAG =
+  "desktop.first-week-return-nudge-v1";
 export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
 export const DESKTOP_LIMIT_STATUS_PUSH_FLAG = "desktop.limit-status-push";
 export const SETUP_DEPS_TIMEOUT_RETRY_FLAG =
@@ -108,11 +113,13 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
+  [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [COMPANY_NAME_PREFILL_FLAG]: COMPANY_NAME_PREFILL_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
+  [FIRST_WEEK_RETURN_NUDGE_FLAG]: FIRST_WEEK_RETURN_NUDGE_FLAG,
   [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
@@ -121,6 +128,15 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
 };
+
+/**
+ * The full-window New Bot flow. A COMPANY flag: the server runs the chat-first
+ * setup order only for a company that has it. It is deliberately NOT in
+ * `LEGACY_TO_REGISTRY`: that table is read per person, with no company, and a
+ * per-person answer says nothing about the company the bot is created in.
+ * Read it with `resolveCompanyFeature` and the company's uid.
+ */
+export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
@@ -147,8 +163,15 @@ export type FlagInvokeFn = (
 
 export type FeatureFlagFallback = () => AdapterPromise<boolean>;
 
+export interface FeatureFlagResolution {
+  enabled: boolean;
+  /** Whether this value came from a boolean registry entry rather than fallback. */
+  configured: boolean;
+}
+
 export interface FeatureFlagGate {
   resolve(flag: string, fallback: FeatureFlagFallback): AdapterPromise<boolean>;
+  resolveStatus(flag: string, fallback: FeatureFlagFallback): AdapterPromise<FeatureFlagResolution>;
   /** Bypass the normal refresh cadence when identity changes before a gated route. */
   refresh(): Promise<void>;
   /** Notify when the registry client publishes a refreshed snapshot. */
@@ -308,18 +331,20 @@ export function createFeatureFlagGate(
         unsubscribe();
       };
     },
-    async resolve(flag, fallback) {
+    async resolveStatus(flag, fallback) {
       const key = registryKeyFor(flag);
-      if (!key) return fallback();
+      if (!key) {
+        const result = await fallback();
+        return result.ok
+          ? ok({ enabled: result.value, configured: false })
+          : result;
+      }
 
       let configuredValue: boolean | null = null;
       try {
         const flagClient = getClient();
         await flagClient.ready();
         let snapshot = flagClient.snapshot();
-        // ready() already attempted the first load. A second request on this
-        // same resolve would double-hit a still-unauthenticated endpoint.
-        // A later resolve with a still-null snapshot self-heals via refresh().
         const shouldRecover = snapshot == null && initialReadySettled;
         initialReadySettled = true;
         if (shouldRecover) {
@@ -333,9 +358,80 @@ export function createFeatureFlagGate(
         configuredValue = null;
       }
 
-      if (configuredValue !== null) return ok(configuredValue);
-      return fallback();
+      if (configuredValue !== null) {
+        return ok({ enabled: configuredValue, configured: true });
+      }
+      const result = await fallback();
+      return result.ok
+        ? ok({ enabled: result.value, configured: false })
+        : result;
+    },
+    async resolve(flag, fallback) {
+      const result = await gate.resolveStatus(flag, fallback);
+      return result.ok ? ok(result.value.enabled) : result;
     },
   };
   return gate;
+}
+
+/** How long one company flag read may take before it counts as off. */
+export const COMPANY_FEATURE_TIMEOUT_MS = 10_000;
+
+export interface CompanyFeatureOptions {
+  /** Test seam. Production uses `COMPANY_FEATURE_TIMEOUT_MS`. */
+  timeoutMs?: number;
+}
+
+/**
+ * One company's value for one flag, as hq-flags resolves it for the signed-in
+ * person: a single `GET /v1/flags/resolve?companyUid=<uid>`. The route checks
+ * the caller's membership and applies the company override.
+ *
+ * Fail closed and total: true only when the answer is a valid snapshot (the
+ * same `isFlagSnapshot` shape the registry client accepts) whose flags map
+ * holds the key as exactly `true`. Any other status, a missing key, a
+ * malformed body, a timeout or a throw is `false`, and no rejection escapes.
+ *
+ * Nothing is cached here. The caller owns how often it asks.
+ */
+export async function resolveCompanyFeature(
+  fetchFn: typeof fetch,
+  flag: string,
+  companyUid: string,
+  options: CompanyFeatureOptions = {},
+): Promise<boolean> {
+  const key = flag.trim();
+  const uid = companyUid.trim();
+  if (!key || !uid) return false;
+  const read = async (): Promise<boolean> => {
+    try {
+      const res = await fetchFn(
+        `/v1/flags/resolve?companyUid=${encodeURIComponent(uid)}`,
+        { method: "GET" },
+      );
+      if (res.status !== 200) return false;
+      const body: unknown = await res.json();
+      if (!isFlagSnapshot(body)) return false;
+      // Own keys only. `Object.hasOwn` is newer than the oldest webview the
+      // desktop app still builds for.
+      return (
+        Object.prototype.hasOwnProperty.call(body.flags, key) &&
+        body.flags[key] === true
+      );
+    } catch {
+      return false;
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<boolean>((resolve) => {
+    timer = setTimeout(
+      () => resolve(false),
+      options.timeoutMs ?? COMPANY_FEATURE_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([read(), deadline]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }

@@ -20,7 +20,10 @@ function response(
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: (name: string) => map.get(name.toLowerCase()) ?? null },
+    headers: {
+      get: (name: string) => map.get(name.toLowerCase()) ?? null,
+      has: (name: string) => map.has(name.toLowerCase()),
+    },
     text: async () => (body == null ? "" : JSON.stringify(body)),
   } as unknown as Response;
 }
@@ -28,6 +31,7 @@ function response(
 function adapterWith(
   responses: Response[],
   slept: number[],
+  retryLambdaInvoke504 = true,
 ): { adapter: WebPlatformAdapter; fetchFn: ReturnType<typeof vi.fn> } {
   let index = 0;
   const fetchFn = vi.fn(async () => responses[Math.min(index++, responses.length - 1)]!);
@@ -37,10 +41,12 @@ function adapterWith(
     onUnauthorized: () => {},
     requestPolicy: {
       throttle: null,
+      random: () => 0,
       sleep: async (ms: number) => {
         slept.push(ms);
       },
     },
+    retryLambdaInvoke504,
   });
   return { adapter, fetchFn };
 }
@@ -119,5 +125,111 @@ describe("WebPlatformAdapter throttle policy", () => {
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries one GET 504 with the exact Lambda service body and no function request id", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [response(504, { message: "Internal server error" }), response(200, { ok: true })],
+      slept,
+    );
+
+    const result = await adapter.identity.whoami();
+
+    expect(result.ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(slept).toHaveLength(1);
+    expect(slept[0]).toBeGreaterThanOrEqual(25);
+    expect(slept[0]).toBeLessThanOrEqual(75);
+  });
+
+  it.each([
+    { status: 502, attempts: 1 },
+    // Existing GET throttling already retries 503 up to RETRY_MAX_ATTEMPTS;
+    // this asserts the Lambda-invoke policy adds no extra attempt.
+    { status: 503, attempts: 4 },
+  ])("does not add a Lambda-invoke retry for status $status", async ({ status, attempts }) => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith([response(status, { message: "Internal server error" })], slept);
+
+    await adapter.identity.whoami();
+
+    expect(fetchFn).toHaveBeenCalledTimes(attempts);
+    expect(slept).toHaveLength(attempts - 1);
+  });
+
+  it("retries a gateway request-id header but not a function request id in the body", async () => {
+    const idCase = adapterWith([
+      response(504, { message: "Internal server error" }, { "x-amzn-requestid": "request-id" }),
+      response(200, { ok: true }),
+    ], []);
+    const bodyCase = adapterWith([
+      response(504, { message: "Internal server error", requestId: "request-id" }),
+    ], []);
+
+    await idCase.adapter.identity.whoami();
+    await bodyCase.adapter.identity.whoami();
+
+    expect(idCase.fetchFn).toHaveBeenCalledTimes(2);
+    expect(bodyCase.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("feeds a retry response back into the normal throttle policy", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [
+        response(504, { message: "Internal server error" }),
+        response(429, { error: "Too many requests" }, { "retry-after": "2" }),
+        response(200, { personUid: "prs_1" }),
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.whoami();
+
+    expect(result.ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(slept).toEqual([25, 2_000]);
+  });
+
+  it("keeps the existing retry budget for non-GET throttles", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [
+        response(429, { error: "Too many requests" }),
+        response(200, { updated: true }),
+      ],
+      slept,
+    );
+
+    const result = await adapter.identity.updateProfile({ displayName: "Ada" });
+
+    expect(result.ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(slept).toHaveLength(1);
+  });
+
+  it("does not retry a generic 504 when the injected fetch owns that retry", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith(
+      [response(504, { message: "Internal server error" })],
+      slept,
+      false,
+    );
+
+    const result = await adapter.identity.whoami();
+
+    expect(result.ok).toBe(false);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a POST on 504", async () => {
+    const slept: number[] = [];
+    const { adapter, fetchFn } = adapterWith([response(504, { message: "Internal server error" })], slept);
+
+    await adapter.messaging.markChannelRead("channel-test");
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(slept).toEqual([]);
   });
 });

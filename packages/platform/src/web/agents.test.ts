@@ -39,14 +39,14 @@ describe("WebPlatformAdapter agents", () => {
   it("GETs status, jobs, roster, owners, and telemetry", async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.agents.getProvisionOptions("cmp_1");
-    await adapter.agents.getStatus("agt_1");
+    await adapter.agents.getStatus("agt_1", "grok");
     await adapter.agents.listJobs("agt_1");
     await adapter.agents.listMobileRoster("cmp_1");
     await adapter.agents.listOwners("cmp_1", "agt_1");
     await adapter.agents.getCompanyTelemetry("cmp_1", "2026-08-01", "2026-09-01");
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
       `GET ${AGENT_PATHS.provisionOptions("cmp_1")}`,
-      `GET ${AGENT_PATHS.status("agt_1")}`,
+      `GET ${AGENT_PATHS.status("agt_1", "grok")}`,
       `GET ${AGENT_PATHS.jobs("agt_1")}`,
       `GET ${AGENT_PATHS.mobileRoster("cmp_1")}`,
       `GET ${AGENT_PATHS.owners("cmp_1", "agt_1")}`,
@@ -54,7 +54,7 @@ describe("WebPlatformAdapter agents", () => {
     ]);
   });
 
-  it("POSTs pause/stop/start and PATCHes profile", async () => {
+  it("POSTs pause/stop/start/retry and PATCHes profile", async () => {
     const { adapter, calls } = makeAdapter();
     await adapter.agents.pauseJob("agt_1", "job_9");
     await adapter.agents.updateProfile("agt_1", {
@@ -63,6 +63,9 @@ describe("WebPlatformAdapter agents", () => {
     });
     await adapter.agents.stop("agt_1");
     await adapter.agents.start("agt_1");
+    await adapter.agents.retryProvisioning("agt_1");
+    await adapter.agents.restartBrainApproval!("agt_1", "grok");
+    await adapter.agents.submitClaudeLoginCode!("agt_1", "returned-code");
     await adapter.agents.deprovision("agt_1");
     expect(calls).toEqual([
       {
@@ -77,11 +80,50 @@ describe("WebPlatformAdapter agents", () => {
       },
       { method: "POST", path: AGENT_PATHS.stop("agt_1"), body: undefined },
       { method: "POST", path: AGENT_PATHS.start("agt_1"), body: undefined },
+      { method: "POST", path: "/v1/agents/agt_1/retry", body: undefined },
+      { method: "POST", path: "/v1/agents/agt_1/reauth", body: { brain: "grok" } },
+      { method: "POST", path: "/v1/agents/agt_1/login-code", body: { code: "returned-code" } },
       {
         method: "DELETE",
         path: AGENT_PATHS.deprovision("agt_1"),
         body: undefined,
       },
     ]);
+  });
+
+  it("names the running machine when a bot removal is confirmed", async () => {
+    const { adapter, calls } = makeAdapter();
+    await adapter.agents.deprovision("agt_1", {
+      confirmDestroyInstanceId: "i-0abc1234def567890",
+    });
+    expect(calls).toEqual([
+      {
+        method: "DELETE",
+        path: "/v1/agents/agt_1?confirmDestroyAgentsV2=i-0abc1234def567890",
+        body: undefined,
+      },
+    ]);
+  });
+
+  it("hands back the machine a refused bot removal names", async () => {
+    const adapter = new WebPlatformAdapter({
+      baseUrl: "https://api.test",
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            error: "Nova is already on HQ Agents v2 (live box i-0abc1234def567890). Refused.",
+            code: "AGENTS_V2_BOX_PROTECTED",
+            agentUid: "agt_1",
+            instanceId: "i-0abc1234def567890",
+          }),
+          { status: 409 },
+        ),
+    });
+    const result = await adapter.agents.deprovision("agt_1");
+    expect(result).toMatchObject({
+      ok: false,
+      code: "AGENTS_V2_BOX_PROTECTED",
+      instanceId: "i-0abc1234def567890",
+    });
   });
 });

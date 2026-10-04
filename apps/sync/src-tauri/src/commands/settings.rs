@@ -237,6 +237,7 @@ pub(crate) fn save_settings_at(path: &Path, prefs: &MenubarPrefs) -> Result<(), 
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let existing = prepare_menubar_write(path)?
         .map(|obj| serde_json::to_string(&Value::Object(obj)).map_err(|e| e.to_string()))
         .transpose()?;

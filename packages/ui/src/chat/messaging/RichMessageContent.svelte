@@ -15,14 +15,18 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
+  import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
   import { HOST_PLACED_BLOCK_KINDS } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
     ChartBlock,
+    ConnectBlock,
     DecisionBlock,
     DecisionOption,
+    RichBlock,
     RichContentModel,
     StatItem,
     TableBlock,
@@ -53,6 +57,14 @@
      * answered even if it is absent from `answeredQuestionIds`.
      */
     answeredChoices?: ReadonlyMap<string, string>;
+    /**
+     * The host's connection cards for a `connect` block: one view per target
+     * (built by the app, see connection-card-model.ts) and where a press goes.
+     * Without it (a channel, a conversation between people, an older host) a
+     * `connect` block draws nothing. No agent-supplied text, style or link is
+     * ever used: the block only names which cards to show.
+     */
+    connections?: ConnectionCards | null;
   }
 
   let {
@@ -60,7 +72,48 @@
     ondecision,
     answeredQuestionIds,
     answeredChoices,
+    connections = null,
   }: Props = $props();
+
+  /**
+   * The cards a `connect` block draws here: the host's view for each item,
+   * in the block's order. A built-in card by name, an app by domain (null
+   * when the app draws none). A row with apps still being looked up draws
+   * nothing yet, so no card appears and then goes away.
+   */
+  function connectCards(block: ConnectBlock): Array<{ key: string; view: ConnectionCardView }> {
+    const cards = connections;
+    if (!cards) return [];
+    if (cards.rowReady && !cards.rowReady(block.items)) return [];
+    const out: Array<{ key: string; view: ConnectionCardView }> = [];
+    for (const item of block.items) {
+      if (item.app) {
+        const view = cards.views[item.app];
+        if (view) out.push({ key: item.app, view });
+      } else if (item.domain && cards.integration) {
+        const view = cards.integration({
+          domain: item.domain,
+          ...(item.why ? { why: item.why } : {}),
+          // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
+          ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+        });
+        if (view) out.push({ key: `domain:${item.domain}`, view });
+      }
+    }
+    return out;
+  }
+
+  /** The browse-all link is offered under a row with at least one integration card. */
+  function browseAllFor(cards: ReadonlyArray<{ view: ConnectionCardView }>): { url: string; open: () => void } | null {
+    const link = connections?.browseAll ?? null;
+    return link && cards.some((card) => card.view.kind === "integration") ? link : null;
+  }
+
+  /** Does this block put anything inside the bubble? */
+  function drawsInBubble(block: RichBlock): boolean {
+    if (HOST_PLACED_BLOCK_KINDS.has(block.kind)) return false;
+    return block.kind !== "connect" || connectCards(block).length > 0;
+  }
 
   // Optimistic local disable after a click, keyed by block index (stable per
   // message). Mirrors LifecycleCard's `localPending`. Value = chosen label
@@ -228,7 +281,7 @@
   }
 </script>
 
-{#if content.blocks.some((b) => !HOST_PLACED_BLOCK_KINDS.has(b.kind))}
+{#if content.blocks.some(drawsInBubble)}
 <div class="rich-content" data-testid="rich-message-content">
   {#each content.blocks as block, blockIndex (blockIndex)}
     {#if block.kind === "stat"}
@@ -443,6 +496,33 @@
           </div>
         {/if}
       </div>
+    {:else if block.kind === "connect"}
+      {@const cards = connectCards(block)}
+      {@const browse = browseAllFor(cards)}
+      {#if cards.length > 0}
+        <div class="rich-connect" data-testid="rich-connect-block">
+          <div class="rich-connect-row" data-testid="rich-connect">
+            {#each cards as card, index (card.key)}
+              <ConnectionCard view={card.view} {index} onaction={connections?.onaction} />
+            {/each}
+          </div>
+          {#if browse}
+            <!-- The app's own link, by the company's slug. The host opens it the way every other link here opens. -->
+            <a
+              class="rich-connect-browse"
+              data-testid="rich-connect-browse"
+              href={browse.url}
+              rel="noopener noreferrer"
+              onclick={(event) => {
+                event.preventDefault();
+                browse.open();
+              }}
+            >
+              Browse all in HQ Integrations
+            </a>
+          {/if}
+        </div>
+      {/if}
     {/if}
   {/each}
 </div>
@@ -853,5 +933,39 @@
   .rich-decision-answered {
     font-size: 12px;
     color: var(--t3, var(--pop-muted));
+  }
+
+  /* Connection cards: a grid of equal columns, as many as fit at 220px,
+     every card the one fixed height. Narrow: one column. */
+  .rich-connect {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rich-connect-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* The quiet way to everything else, after the cards the bot chose. */
+  .rich-connect-browse {
+    align-self: flex-start;
+    font-size: 12px;
+    color: var(--t3, var(--pop-muted));
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 2px;
+  }
+  .rich-connect-browse:hover {
+    color: var(--t2, var(--pop-muted));
+    text-decoration-color: currentColor;
+  }
+  .rich-connect-browse:focus-visible {
+    outline: 2px solid var(--vio-ink, #7c5cff);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 </style>

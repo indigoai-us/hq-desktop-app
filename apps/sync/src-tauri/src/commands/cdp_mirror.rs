@@ -150,6 +150,7 @@ pub fn load_persisted(
     path: &std::path::Path,
     now_ms: u64,
 ) -> (Option<String>, Option<String>, u64) {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let obj = read_menubar_obj(path);
     let string = |key: &str| {
         obj.get(key)
@@ -191,6 +192,7 @@ pub fn apply_download_tag(
     tag: Option<&hq_desktop_core::download_tag::DownloadTag>,
     now_ms: u64,
 ) -> Option<TagReadReport> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let obj = read_menubar_obj(path);
     if obj.get(DOWNLOAD_TAG_READ_AT_KEY).is_some() {
         return None;
@@ -640,6 +642,9 @@ pub fn hold_auth_row_at(
     properties: Option<&Value>,
     now: u64,
 ) -> Result<(), String> {
+    // The held list is read, extended and written back; hold the lock across
+    // all three so no other menubar.json write lands in between.
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let mut props = Map::new();
     for key in ["provider", "step", "errorCategory"] {
         if let Some(value) = held_label(properties, key) {
@@ -674,6 +679,7 @@ pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
 
 /// Drop the delivered row `key` and any expired rows; keeps rows held meanwhile.
 fn clear_held_auth_row(path: &std::path::Path, key: &str) -> Result<(), String> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let rows: Vec<Value> = held_auth_rows_at(path, now_ms())
         .into_iter()
         .filter(|row| row.get("idempotencyKey").and_then(Value::as_str) != Some(key))
@@ -711,10 +717,11 @@ pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize>
     }
 }
 
-async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
+pub(crate) async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
     use std::sync::atomic::Ordering;
-    // The access-token resolver follows current HOME, so leave rows in place
-    // rather than sending them under a different profile's identity.
+    // Leave the rows when this file is no longer the current install. The
+    // post reads the token beside `path`, so a resolver home that has moved
+    // cannot deliver or clear them under another profile.
     if !flush_path_matches_current_home(&path) {
         return 0;
     }
@@ -728,7 +735,7 @@ async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
         let Some(key) = row.get("idempotencyKey").and_then(Value::as_str) else {
             continue;
         };
-        if super::telemetry::post_held_auth_row(&row).await.is_err() {
+        if super::telemetry::post_held_auth_row(&row, &path).await.is_err() {
             crate::util::logfile::log("cdp", "WARN auth_held send_failed_held_for_retry");
             break;
         }
@@ -787,6 +794,7 @@ fn account_linked_key(props: &Value) -> String {
 /// it as sent when it does.
 pub fn claim_account_linked_at(path: &std::path::Path, props: &Value) -> bool {
     let key = account_linked_key(props);
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     if read_menubar_obj(path)
         .get(ACCOUNT_LINKED_KEY)
         .and_then(Value::as_str)

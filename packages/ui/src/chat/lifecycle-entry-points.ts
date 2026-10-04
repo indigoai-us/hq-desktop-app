@@ -18,6 +18,19 @@
  * flow, it answers a stale refusal through the card's own "try again" instead
  * of returning it forever, and it never submits into a sequence opened for a
  * different bot.
+ *
+ * There are TWO cloud-bot drivers, and which one runs is decided by where the
+ * person started:
+ *
+ *   `runCreateCloudBotEntry`        the "+" modal's Cloud option. Walks the
+ *                                   card's turns, as above. Works against
+ *                                   every company and every server.
+ *   `runCreateCloudBotOneShotEntry` the full-window New Bot takeover. Sends
+ *                                   one `create` that names the takeover as
+ *                                   its surface and asks for a direct-message
+ *                                   bot. Only for a company that has the
+ *                                   `agents.desktop-agent-creation` flag; the
+ *                                   host offers the takeover to no other.
  */
 
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
@@ -60,6 +73,26 @@ export type EntryPointResult =
       reason: string;
       /** True when the server refused (permission / plan), not a transport error. */
       blocked: boolean;
+      /**
+       * Set when the refusal is the company's plan: where the upgrade card
+       * lives, so the caller can offer the way forward instead of a dead end.
+       * Only the New Bot takeover's one-shot create sets it.
+       */
+      upgrade?: { channelId: string; cardId: string };
+      /**
+       * Set when the person cancelled while the request was still out. The
+       * caller shows nothing for it: no waiting screen and no message.
+       */
+      cancelled?: boolean;
+      /**
+       * Set when the create was sent and no answer came back (a timeout, a
+       * dropped connection, a server error part-way). The bot may exist. A
+       * caller must not say that nothing was created. When the person
+       * presses Create bot again, the same create under the same key
+       * (`CloudBotDraft.idempotencyKey`) gets the first answer. Only the
+       * New Bot takeover's one-shot create sets it.
+       */
+      outcomeUnknown?: boolean;
     };
 
 export type EntryPointApi = Pick<ConversationApi, "runCardAction">;
@@ -205,6 +238,14 @@ export interface CloudBotDraft {
   authMode?: "subscription" | "apiKey";
   /** Write-only create input; never copied into lifecycle card state. */
   apiKey?: string;
+  /**
+   * The key this create is sent under (create-bot/create-key.ts). The server
+   * keeps its first answer under the key, so the same key sent again gets
+   * that answer, bot included, and makes no second bot. Only the New Bot
+   * takeover's one-shot create sends it; the "+" modal's card walk does not
+   * read it.
+   */
+  idempotencyKey?: string;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
@@ -700,6 +741,382 @@ export async function runCreateCloudBotEntry(
   // attempt does not inherit a draft this one abandoned.
   if (card) await abandonCard(api, channelId, card);
   return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+}
+
+// ── The New Bot takeover's one-shot create ───────────────────────────────
+
+/** What the one-shot create needs: the team action and the one create action. */
+export type CloudBotOneShotApi = Pick<
+  ConversationApi,
+  "runCardAction" | "runCompanyTabAction"
+> & {
+  /** Desktop support-log bridge. Optional so web hosts remain compatible. */
+  logToFile?: (tag: string, message: string) => Promise<void>;
+};
+
+/** Shown when the server answered without creating the bot or saying why. */
+export const CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON =
+  "The server isn't ready for this version of bot setup yet. Try again shortly.";
+
+/** The handle is derived from the name and never shown, so say "name". */
+export const CLOUD_BOT_NAME_TAKEN_REASON =
+  "A bot with that name already exists in this company. Try a different name.";
+export const CLOUD_BOT_NAME_INVALID_REASON =
+  "That name can't be used for a bot. Try letters and numbers.";
+
+const CREATE_AGENT_CARD_ID = "create_agent";
+/** The card the server resurfaces in the company channel on a plan refusal. */
+export const UPGRADE_PLAN_CARD_ID = "upgrade_plan";
+const CREATE_ACTION_ID = "create";
+
+/** True for the upgrade card, whether the server names it bare or with a company suffix. */
+export function isUpgradePlanCard(cardId: string | null | undefined): boolean {
+  const id = (cardId ?? "").trim();
+  return id === UPGRADE_PLAN_CARD_ID || id.startsWith(`${UPGRADE_PLAN_CARD_ID}:`) || id.endsWith(`:${UPGRADE_PLAN_CARD_ID}`);
+}
+
+export interface CloudBotOneShotOptions {
+  /** Overrides the draft's own key, and is also sent with the opening `add_agent`. */
+  idempotencyKey?: string;
+}
+
+/**
+ * True when a thrown create leaves it unknown whether the bot was made.
+ *
+ * What reaches this code is one string from the native command
+ * (`run_card_action` in apps/sync/src-tauri/src/commands/messages.rs):
+ *
+ *   - `Network error: ...` when the request did not complete (no connection,
+ *     a timeout): it may or may not have reached the server.
+ *   - `Request failed (status NNN)` for a refusal with no words in its body,
+ *     which is what a gateway answers (504, 502, 429).
+ *   - `[plan-limit ...] ...` for a plan refusal.
+ *   - Otherwise the `error` or `reason` text of the server's own answer, with
+ *     no status. That is the server refusing the request in its own words
+ *     (a size that cannot be priced, a card it does not know), or its handler
+ *     reporting a failure further in (`agent create returned status 500`).
+ *
+ * The outcome is unknown only when the request may have run and its answer
+ * was lost: a transport failure, a timeout, a 5xx. A 4xx is the server
+ * turning the request away, and so are its own words when they name no
+ * server failure: nothing was made, and the reason is shown. A 429 is a
+ * request the server did not take up. 408 is a timeout.
+ */
+function outcomeUnknown(err: unknown, raw: boolean): boolean {
+  const text = err instanceof Error ? err.message : String(err ?? "");
+  if (/^\[plan-limit\b/i.test(text)) return false;
+  const status = Number(
+    text.match(/\bstatus:? (\d{3})\b/i)?.[1] ??
+      text.match(/\(([45]\d{2})\)/)?.[1] ??
+      text.match(/^\s*([45]\d{2})\b/)?.[1] ??
+      NaN,
+  );
+  if (Number.isFinite(status)) return status >= 500 || status === 408;
+  if (/network|offline|connection|timed? ?out|time-?out/i.test(text)) return true;
+  if (/internal (server )?error|bad gateway|service unavailable|temporarily/i.test(text)) return true;
+  if (isPermission(err) || isNotFound(err)) return false;
+  // Text that reads like a backend's own failure (a cloud error, a payload)
+  // is a server that broke part-way, not a refusal.
+  return raw;
+}
+
+/** Shown when the server failed for a reason a person cannot act on. */
+export const CLOUD_BOT_SERVER_FAILED_REASON =
+  "We couldn't create this bot. Try again in a moment.";
+
+/**
+ * What to show for a thrown failure. A short sentence the server wrote for a
+ * person is kept. Anything that reads like a raw backend error (cloud resource
+ * names, status payloads, stack text, long strings) is replaced with a plain
+ * line. The support log gets a code for it (`failureCode`), never the text.
+ */
+function shownFailure(err: unknown): { reason: string; raw: boolean } {
+  const message = cardActionFailureMessage(err);
+  const raw =
+    message.length > 140 ||
+    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(/i.test(
+      message,
+    );
+  return raw
+    ? { reason: CLOUD_BOT_SERVER_FAILED_REASON, raw: true }
+    : { reason: message, raw: false };
+}
+
+/**
+ * What kind of failure this was, for the support log: a code, never the text.
+ * The text of a thrown failure can repeat what the person typed (a name, a
+ * handle) or name cloud resources, so none of it is written down. What is
+ * kept is the adapter's own leading `[code]` tag, else the HTTP status the
+ * text names, else one word for the kind.
+ */
+function failureCode(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "");
+  const tag = raw.match(/^\[([A-Za-z0-9_.:-]{1,60})(?:\s[^\]]*)?]/)?.[1];
+  if (tag) return tag;
+  const status = raw.match(/\bstatus:? (\d{3})\b/i)?.[1] ?? raw.match(/\b([45]\d{2})\b/)?.[1];
+  if (status) return `http-${status}`;
+  if (/timed? ?out/i.test(raw)) return "timeout";
+  if (/network|offline|connection/i.test(raw)) return "network";
+  if (/not authorized|accessdenied|forbidden|permission/i.test(raw)) return "denied";
+  return "error";
+}
+
+interface WireField {
+  id: string;
+  value: string;
+  error: string;
+}
+
+/** The fields a card action answered with, read defensively off the wire. */
+function resultFields(result: CardActionResult): WireField[] {
+  if (!Array.isArray(result.fields)) return [];
+  const fields: WireField[] = [];
+  for (const row of result.fields as unknown[]) {
+    if (!row || typeof row !== "object") continue;
+    const field = row as Record<string, unknown>;
+    const id = trimmed(field.id);
+    if (!id) continue;
+    fields.push({ id, value: trimmed(field.value), error: trimmed(field.error) });
+  }
+  return fields;
+}
+
+/** Why the server refused, in words a person can act on. */
+function blockedReason(result: CardActionResult): string {
+  const said = trimmed(result.reason);
+  if (said) return said;
+  const fields = resultFields(result);
+  const why = fields.find((field) => field.id === "blocked_reason")?.value;
+  if (why === "plan") return "This company's plan doesn't include cloud bots yet.";
+  if (why === "permission") {
+    const owner = fields.find((field) => field.id === "owner")?.value || "the owner";
+    return `You don't have permission to add bots here. Ask ${owner}.`;
+  }
+  return CLOUD_BOT_REFUSED_REASON;
+}
+
+/**
+ * One line per failed attempt in the support log, so a failure names its own
+ * exit. Ids, codes and states only: no names, handles or keys, and no text
+ * of a failure.
+ */
+function logCloudBotExit(
+  api: CloudBotOneShotApi,
+  exit: string,
+  detail: Record<string, string>,
+): void {
+  const line = [
+    `exit=${exit}`,
+    ...Object.entries(detail).map(([key, value]) => `${key}=${value || "none"}`),
+  ].join(" ");
+  console.warn(`[cloud-bot] ${line}`);
+  if (typeof api.logToFile !== "function") return;
+  void api.logToFile("cloud-bot", line).catch((err: unknown) => {
+    console.error("[cloud-bot] logToFile failed", err);
+  });
+}
+
+/**
+ * New cloud bot from the New Bot takeover: ask the Team tab where the
+ * company's `create_agent` card lives, then answer it once with everything the
+ * person chose.
+ *
+ * The server keeps ONE create_agent card per company channel and updates it in
+ * place. It is never re-posted, so it may sit far up the channel, still on a
+ * turn an abandoned attempt left it on, or already `done` for an earlier bot.
+ * This driver therefore never reads the card and never walks its turns. It
+ * sends a single `create` carrying name, handle, runtime and size, which the
+ * server treats as a complete answer regardless of the stored card.
+ *
+ * That create also carries `surface`, `conversation` and `deferChannels`: the
+ * chat-first setup order and the direct-message bot. The server honours them
+ * only for a company with the `agents.desktop-agent-creation` flag, so this
+ * driver is reached ONLY from the takeover, and the takeover is offered only
+ * for such a company. The "+" modal's Cloud option uses
+ * `runCreateCloudBotEntry` and sends none of the three.
+ *
+ * `add_agent` answers with the tab row's own id in `cardId` and the lifecycle
+ * card in `focusCardId`; the channel is `channelId`. A company on a plan that
+ * cannot host a bot gets the upgrade card instead. That one still renders, so
+ * the caller is sent to it.
+ */
+export async function runCreateCloudBotOneShotEntry(
+  api: CloudBotOneShotApi,
+  companyUid: string,
+  draft: CloudBotDraft,
+  options: CloudBotOneShotOptions = {},
+): Promise<EntryPointResult> {
+  const uid = companyUid.trim();
+  if (!uid) return { ok: false, reason: "Pick a company first", blocked: false };
+  const runTabAction = api.runCompanyTabAction;
+  if (typeof runTabAction !== "function") {
+    return {
+      ok: false,
+      reason: "Adding bots isn't available in this build",
+      blocked: false,
+    };
+  }
+
+  let opened: CardActionResult;
+  try {
+    opened = await runTabAction({
+      companyUid: uid,
+      tab: "team",
+      cardId: TEAM_SPEND_CARD_ID,
+      actionId: ADD_AGENT_ACTION_ID,
+      values: {},
+      idempotencyKey: options.idempotencyKey,
+    });
+  } catch (err) {
+    const shown = shownFailure(err);
+    logCloudBotExit(api, "open-failed", { code: failureCode(err), raw: String(shown.raw) });
+    return { ok: false, reason: shown.reason, blocked: !shown.raw && isPermission(err) };
+  }
+  if (opened.state === "blocked") {
+    logCloudBotExit(api, "open-blocked", {});
+    return { ok: false, reason: blockedReason(opened), blocked: true };
+  }
+  const channelId = trimmed(opened.channelId);
+  const answeredCard = trimmed(opened.cardId);
+  const focusCardId =
+    trimmed(opened.focusCardId) ||
+    (answeredCard && answeredCard !== TEAM_SPEND_CARD_ID ? answeredCard : "");
+  if (!channelId || !focusCardId) {
+    logCloudBotExit(api, "open-no-target", {
+      channel: channelId ? "present" : "",
+      card: answeredCard,
+      focus: focusCardId,
+      state: trimmed(opened.state),
+    });
+    return { ok: false, reason: CLOUD_BOT_NO_NEXT_STEP_REASON, blocked: false };
+  }
+  if (focusCardId !== CREATE_AGENT_CARD_ID) {
+    // The server sent the person to another card. That card still renders, so
+    // this is a destination, not a failure. A plan that cannot host a bot
+    // answers with the upgrade card (`isUpgradePlanCard`); any other card is
+    // some other step, and the caller must not call it an upgrade.
+    return {
+      ok: true,
+      target: { channelId, cardId: focusCardId, cardKind: null },
+    };
+  }
+
+  const name = draft.name.trim();
+  const handle = botHandle(draft);
+  const runtime = draft.runtime ?? "";
+  const size = draft.size ?? "";
+  if (!name || !handle || !runtime || !size) {
+    logCloudBotExit(api, "draft-incomplete", {
+      name: name ? "present" : "",
+      handle: handle ? "present" : "",
+      runtime,
+      size,
+    });
+    return { ok: false, reason: CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON, blocked: false };
+  }
+  const authMode = draft.authMode ?? "subscription";
+  // An API key is write-only create input. It travels on this one action and
+  // is never copied into a lifecycle field, a card snapshot or a log line.
+  const values: Record<string, string> = {
+    name,
+    handle,
+    runtime,
+    size,
+    authMode,
+    deferChannels: "true",
+    // The person talks to the bot in a direct message. A server that knows
+    // this value makes no channel for the bot; an older one ignores it.
+    conversation: "dm",
+    // Where the create came from. The agents service picks its chat-first
+    // setup order (runtime before the audit, so Slack never waits on the
+    // first file sync) only for this value; an older server ignores it.
+    surface: "desktop_new_bot",
+    ...(authMode === "apiKey" && draft.apiKey ? { apiKey: draft.apiKey } : {}),
+  };
+
+  // The create goes out under the draft's key. The server keeps its first
+  // answer under that key, so a create sent again after a lost answer gets
+  // the same bot back instead of "that name already exists".
+  const createKey = trimmed(options.idempotencyKey) || trimmed(draft.idempotencyKey);
+  let result: CardActionResult;
+  try {
+    result = await api.runCardAction({
+      channelId,
+      cardId: CREATE_AGENT_CARD_ID,
+      actionId: CREATE_ACTION_ID,
+      values,
+      ...(createKey ? { idempotencyKey: createKey } : {}),
+    });
+  } catch (err) {
+    // A raw backend failure (a cloud permission, a status payload) is the
+    // server's defect, not the person's refusal: it is neither shown nor
+    // treated as "you may not do this".
+    const shown = shownFailure(err);
+    // When the request may have run and its answer was lost, nobody knows
+    // whether the bot was made. A refusal is the server's answer.
+    const unknown = outcomeUnknown(err, shown.raw);
+    logCloudBotExit(api, "create-failed", {
+      code: failureCode(err),
+      raw: String(shown.raw),
+      outcome: unknown ? "unknown" : "refused",
+    });
+    return {
+      ok: false,
+      reason: shown.reason,
+      blocked: !shown.raw && isPermission(err),
+      ...(unknown ? { outcomeUnknown: true } : {}),
+    };
+  }
+
+  const agentChannelId = trimmed(result.agentChannelId);
+  const createdAgentUid = trimmed(result.agentUid);
+  if (agentChannelId || createdAgentUid) {
+    // The bot exists. Its uid rides along so the caller can finish the profile
+    // and open the direct message. An older server also made a channel for the
+    // bot; its id is kept so the app can leave that channel out of the list.
+    const agentUid = createdAgentUid;
+    return {
+      ok: true,
+      target: {
+        channelId: agentChannelId,
+        cardId: null,
+        cardKind: null,
+        ...(agentUid ? { agentUid } : {}),
+      },
+    };
+  }
+  if (result.state === "blocked") {
+    const why =
+      resultFields(result).find((field) => field.id === "blocked_reason")?.value ?? "";
+    logCloudBotExit(api, "create-blocked", { why });
+    return {
+      ok: false,
+      reason: blockedReason(result),
+      blocked: true,
+      // A plan refusal resurfaces the upgrade card in this same channel.
+      ...(why === "plan"
+        ? { upgrade: { channelId, cardId: UPGRADE_PLAN_CARD_ID } }
+        : {}),
+    };
+  }
+  const refused = resultFields(result).find((field) => field.error);
+  if (refused) {
+    logCloudBotExit(api, "create-field-error", { field: refused.id });
+    const reason =
+      refused.id === "handle" || refused.id === "name"
+        ? /taken/i.test(refused.error)
+          ? CLOUD_BOT_NAME_TAKEN_REASON
+          : CLOUD_BOT_NAME_INVALID_REASON
+        : refused.error;
+    return { ok: false, reason, blocked: false };
+  }
+  // No bot, no refusal, no field error: a server that does not know the
+  // one-shot create moved its card a turn instead of creating anything.
+  logCloudBotExit(api, "create-no-agent", {
+    state: trimmed(result.state),
+    turn: resultFields(result).find((field) => field.id === "turn")?.value ?? "",
+  });
+  return { ok: false, reason: CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON, blocked: false };
 }
 
 /** Selector for the card an entry point landed on, by id then by kind. */

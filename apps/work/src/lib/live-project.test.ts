@@ -5,6 +5,7 @@ import { hqProFetch } from "./hq-pro-client.js";
 import {
   loadWebVaultFilePreview,
   loadLiveProjectMeta,
+  addLiveProjectMember,
   metaFromProjectView,
   parseChannelMembers,
 } from "./live-project.js";
@@ -37,6 +38,69 @@ function json(value: unknown): Response {
 describe("live project hq-pro transport", () => {
   beforeEach(() => {
     vi.mocked(hqProFetch).mockReset();
+  });
+
+  it("adds a project member through the same company-scoped hq-pro route", async () => {
+    const fetchImpl = vi.fn(async () => json({ ok: true }));
+    await expect(addLiveProjectMember("cmp_work", "project/a", "prs_member", fetchImpl)).resolves.toBe("added");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/v1/work-mesh/projects/project%2Fa",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ operation: "add-member", companyUid: "cmp_work", personUid: "prs_member" }),
+      }),
+    );
+  });
+
+  it("retries a transient project member write and keeps the request idempotent", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("{}", { status: 503 }))
+      .mockResolvedValueOnce(json({ ok: true }));
+    await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl)).resolves.toBe("added");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0]?.[1]).toEqual(fetchImpl.mock.calls[1]?.[1]);
+  });
+
+  it("maps only the membership feature-off response to not-enabled", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({
+        error: "Project member management is not enabled",
+        code: "PROJECT_MEMBERSHIP_DISABLED",
+      }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl)).resolves.toBe("not-enabled");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a semantic project-not-found response as the feature gate", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Project view not found", code: "PROJECT_VIEW_NOT_FOUND" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "missing-project", "prs_member", fetchImpl))
+      .rejects.toThrow("Could not add project member");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat an unsupported-route 404 as the feature gate", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "Not found" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl))
+      .rejects.toThrow("Could not add project member");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps other 4xx add-member responses as generic failures without retry", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ code: "PROJECT_MEMBER_WRITE_REQUIRED" }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    ));
+    await expect(addLiveProjectMember("cmp_work", "project-a", "prs_member", fetchImpl))
+      .rejects.toThrow("Could not add project member");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("routes project metadata through an injected hq-pro transport", async () => {

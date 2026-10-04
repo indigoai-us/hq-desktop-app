@@ -82,12 +82,15 @@ function agentsApi(over: Partial<AgentsApi> = {}): AgentsApi {
   return {
     getProvisionOptions: async () => ok({ defaultInstanceType: "t4g.medium", catalogVersion: "test", options: [] }),
     getStatus: async () => ok(STATUS),
+    attachSlack: async () => ok({ config: {} }),
+    submitSlackAppToken: async () => ok({ ok: true }),
     listMobileRoster: async () => ok({ agents: [] }),
     listJobs: async () => ok(JOBS),
     pauseJob: async () => ok({ ok: true }),
     updateProfile: async () => ok({ uid: "agt_izzy" }),
     stop: async () => ok({ uid: "agt_izzy" }),
     start: async () => ok({ uid: "agt_izzy" }),
+    retryProvisioning: async () => ok({ uid: "agt_izzy" }),
     deprovision: async () => ok({ uid: "agt_izzy" }),
     listOwners: async () =>
       ok({

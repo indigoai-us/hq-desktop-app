@@ -29,6 +29,7 @@ import {
   type StatusMemberInput,
   type StatusPresenceInput,
   type VaultFilePreviewRequest,
+  type ProjectMemberAddResult,
 } from "@hq/ui";
 import { hqProFetch, type HqProFetch } from "./hq-pro-client.js";
 
@@ -55,6 +56,51 @@ export interface LiveProjectMetaLoad {
 
 export interface LiveProjectDeps {
   fetch?: HqProFetch;
+}
+
+/** Add a project member through the project-view operation endpoint. */
+export async function addLiveProjectMember(
+  companyUid: string,
+  projectId: string,
+  personUid: string,
+  fetchImpl: HqProFetch = hqProFetch,
+): Promise<ProjectMemberAddResult> {
+  const path = `/v1/work-mesh/projects/${encodeURIComponent(projectId)}`;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetchImpl(path, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ operation: "add-member", companyUid, personUid }),
+      });
+    } catch (error) {
+      if (attempt === 2) throw new Error("Could not add project member");
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+      continue;
+    }
+    if (response.ok) return "added";
+    if (response.status === 404) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error("Could not add project member");
+      }
+      if (
+        payload && typeof payload === "object" && !Array.isArray(payload) &&
+        (payload as Record<string, unknown>).code === "PROJECT_MEMBERSHIP_DISABLED"
+      ) {
+        return "not-enabled";
+      }
+      throw new Error("Could not add project member");
+    }
+    if (response.status < 500 && response.status !== 429) {
+      throw new Error("Could not add project member");
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+  }
+  throw new Error("Could not add project member");
 }
 
 function rec(value: unknown): Record<string, unknown> | null {

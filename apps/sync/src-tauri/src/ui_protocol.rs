@@ -21,9 +21,15 @@ use url::Url;
 
 pub const SCHEME: &str = "hq-ui";
 
-/// Same CSP the app has always shipped (see `tauri.conf.json`
-/// `app.security.csp`) — kept identical so this protocol is not a policy
-/// downgrade from the asset protocol it replaces.
+/// The same CSP as `tauri.conf.json` `app.security.csp`, which Tauri also
+/// injects into every page as a `<meta>` tag. The webview enforces both, and
+/// the stricter wins for each directive, so the two strings must be equal.
+/// `csp_matches_tauri_config` below fails when they drift apart.
+///
+/// One remote image origin only: the marketplace assets host. Anything else
+/// the app draws is bundled, a data URL, a blob or the asset protocol. An
+/// integration card's logo is a bundled brand mark, so no favicon service is
+/// listed and a domain a bot names never makes the webview call a third party.
 const CSP: &str = "img-src 'self' data: asset: blob: https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com";
 
 /// Resolve the root directory this protocol serves files from.
@@ -231,6 +237,28 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The header this protocol sets and the policy in `tauri.conf.json` are
+    /// enforced together, so they have to say the same thing.
+    #[test]
+    fn csp_matches_tauri_config() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json parses");
+        let configured = config["app"]["security"]["csp"].as_str().expect("app.security.csp is a string");
+        assert_eq!(CSP, configured, "ui_protocol CSP must equal tauri.conf.json app.security.csp");
+    }
+
+    /// The image policy names one remote origin, the marketplace assets host.
+    /// A favicon service here would let a domain a bot writes in a message
+    /// make the webview call a third party with no click.
+    #[test]
+    fn csp_allows_one_remote_image_origin() {
+        let remote: Vec<&str> = CSP.split_whitespace().filter(|source| source.starts_with("http")).collect();
+        assert_eq!(remote, vec!["https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com"]);
+        for host in ["gstatic.com", "duckduckgo.com"] {
+            assert!(!CSP.contains(host), "image policy must not allow the favicon host {host}");
+        }
     }
 
     #[test]
