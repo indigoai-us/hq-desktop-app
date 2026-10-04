@@ -2021,6 +2021,7 @@
    * another one.
    */
   function openNewBotTakeover(): void {
+    newBotFromCreateWindow = createOpen;
     createOpen = false;
     newBotCompaniesAtOpen = newBotTargets;
     openWakingKey = null;
@@ -2746,8 +2747,22 @@
     });
   }
 
+  /**
+   * True when the takeover was opened from the create window's "New bot" row.
+   * On the rail it usually opens from the "+" menu, with no window behind it.
+   */
+  let newBotFromCreateWindow = false;
+
+  /** Cancel goes back to where the person came from: the create window, or the "+" button. */
   async function cancelNewBotTakeover(): Promise<void> {
     newBotOpen = false;
+    const backToWindow = newBotFromCreateWindow;
+    newBotFromCreateWindow = false;
+    if (!backToWindow) {
+      await tick();
+      plusBtnEl?.focus();
+      return;
+    }
     createStep = "find";
     createOpen = true;
     await tick();
@@ -2756,6 +2771,10 @@
 
   function openLocalBotFromTakeover(): void {
     newBotOpen = false;
+    newBotFromCreateWindow = false;
+    // No company was chosen for this bot: a preselect left by an earlier
+    // "Add agent" for one company must not carry over.
+    createBotCompanyUid = null;
     createStep = "bot";
     createOpen = true;
   }

@@ -210,6 +210,10 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     // Once it is closed, the next "New bot" follows the new answer.
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
+    // Opened from the "+" menu, so Cancel goes back to the "+" button. It
+    // does not open a create window the person never had open.
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("chat-new-message");
     // On the rail, New bot is on the "+" menu, which closes after each pick.
     document.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
     await settle();

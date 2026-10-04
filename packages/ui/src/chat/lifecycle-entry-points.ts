@@ -835,7 +835,7 @@ function shownFailure(err: unknown): { reason: string; raw: boolean } {
   const message = cardActionFailureText(err);
   const raw =
     message.length > 140 ||
-    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(/i.test(
+    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(|https?:\/\/|sending request/i.test(
       message,
     );
   return raw
