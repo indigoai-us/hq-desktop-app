@@ -509,21 +509,21 @@ describe('hq-CLI Windows EBUSY recovery waits for app commands and records the b
     );
     const pnpmAt = installFlow.indexOf('install_hq_cli_update_via_pnpm(&app');
     const pnpmQuiesceAt = installFlow.indexOf('wait_for_cli_install_quiescence(');
-    const npmInstallAt = installFlow.indexOf('run_npm_install_with_retries(&npm');
-    // The npm path quiesces inside run_npm_install_with_retries: it takes the
+    const npmInstallAt = installFlow.indexOf('run_npm_install_with_retry_attempt(\n        &npm');
+    // The npm path quiesces inside run_npm_install_with_retry_attempt: it takes the
     // package-use lease and closes app admission before the first npm attempt,
     // and holds both guards until every retry has finished.
     const npmRun = cli.slice(
-      cli.indexOf('async fn run_npm_install_with_retries('),
-      cli.indexOf('\n}\n', cli.indexOf('async fn run_npm_install_with_retries(')),
+      cli.indexOf('async fn run_npm_install_with_retry_attempt('),
+      cli.indexOf('\n}\n', cli.indexOf('async fn run_npm_install_with_retry_attempt(')),
     );
     const npmLeaseAt = npmRun.indexOf(
-      'let (_package_use_lease, _process_admission) =\n        acquire_cli_package_update_lease(npm, path, prefix).await?;',
+      'let (_package_use_lease, _process_admission) =\n        acquire_cli_package_update_lease(npm, path, prefix, retry_attempt).await?;',
     );
     const npmFirstAttemptAt = npmRun.indexOf('run_recorded_npm_install_attempt(');
     const lease = cli.slice(
       cli.indexOf('async fn acquire_cli_package_update_lease('),
-      cli.indexOf('async fn run_npm_install_with_retries('),
+      cli.indexOf('async fn run_npm_install_with_retry_attempt('),
     );
     const managedRetryAt = installFlow.indexOf('match managed_toolchain_retry(');
 
