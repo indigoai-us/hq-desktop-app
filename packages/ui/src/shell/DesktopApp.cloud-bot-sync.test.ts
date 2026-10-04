@@ -213,7 +213,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(amount()).toBeNull();
     expect(widget()!.textContent).not.toMatch(/\d/);
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
     expect(bar()!.classList.contains("is-unknown")).toBe(false);
   });
 
@@ -273,7 +273,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(el.textContent).not.toMatch(/\d/);
     expect(amount()).toBeNull();
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
     expect(bar()!.classList.contains("is-unknown")).toBe(false);
   });
 
@@ -292,7 +292,7 @@ describe("DesktopApp sync widget in a cloud bot's direct message", () => {
     expect(el.textContent).not.toMatch(/\d+%|99/);
     expect(amount()).toBeNull();
     expect(bar()!.hasAttribute("aria-valuenow")).toBe(false);
-    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.width).toBe("0%");
+    expect(bar()!.querySelector<HTMLElement>('[data-testid="bot-sync-fill"]')!.style.getPropertyValue("--fill")).toBe("0");
     expect(bar()!.classList.contains("is-unknown")).toBe(false);
     expect(bar()!.getAttribute("aria-valuetext")).toBe("10 files so far");
   });

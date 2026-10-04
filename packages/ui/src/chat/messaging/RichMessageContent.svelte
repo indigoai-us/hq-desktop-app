@@ -91,7 +91,12 @@
         const view = cards.views[item.app];
         if (view) out.push({ key: item.app, view });
       } else if (item.domain && cards.integration) {
-        const view = cards.integration({ domain: item.domain, ...(item.why ? { why: item.why } : {}) });
+        const view = cards.integration({
+          domain: item.domain,
+          ...(item.why ? { why: item.why } : {}),
+          // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
+          ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+        });
         if (view) out.push({ key: `domain:${item.domain}`, view });
       }
     }

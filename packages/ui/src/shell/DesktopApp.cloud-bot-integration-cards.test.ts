@@ -49,21 +49,30 @@ const ITEMS = [
   { domain: "notion.so" },
   { domain: "deepwiki.com" },
   { domain: "example.com" },
-  { domain: "unknown.example" },
+  { domain: "unknown-app.io" },
 ];
 
 /**
- * A connect block keeps three items at most, so the six go in two blocks:
- * two rows of cards under the one message, in the bot's order.
+ * One message draws three cards at most, however many blocks it carries, so
+ * the six go in two messages from the bot: a row of cards under each, in the
+ * bot's order.
  */
 const ITEM_BLOCKS = [
   { kind: "connect", items: ITEMS.slice(0, 3) },
   { kind: "connect", items: ITEMS.slice(3) },
 ];
 
-/** Newest first, as the server returns a direct-message page. */
-function thread(blocks: unknown[] = ITEM_BLOCKS): Row[] {
+/**
+ * Newest first, as the server returns a direct-message page. `blocks` go
+ * under the bot's hello; `more`, when there are any, under its next message.
+ */
+function thread(own?: unknown[], next?: unknown[]): Row[] {
+  const blocks = own ?? ITEM_BLOCKS.slice(0, 1);
+  const more = next ?? (own ? [] : ITEM_BLOCKS.slice(1));
   return [
+    ...(more.length > 0
+      ? [{ eventId: "e3", fromPersonUid: NOVA, fromDisplayName: "Nova", body: `A few more you might want.${fence(more)}`, createdAt: "2026-10-02T13:54:40.000Z", rootEventId: "e1" }]
+      : []),
     { eventId: "e2", fromPersonUid: NOVA, fromDisplayName: "Nova", body: `Hi Corey, I am Nova.${fence(blocks)}`, createdAt: "2026-10-02T13:54:20.000Z", rootEventId: "e1" },
     {
       eventId: "e1",
@@ -72,7 +81,7 @@ function thread(blocks: unknown[] = ITEM_BLOCKS): Row[] {
       body: buildAgentHelloRequest({ personName: "Corey", filesStillDownloading: false }),
       createdAt: "2026-10-02T13:53:50.000Z",
       audience: "agent",
-      replyCount: 1,
+      replyCount: more.length > 0 ? 2 : 1,
     },
   ];
 }
@@ -296,12 +305,14 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "linear.app", "notion.so", "deepwiki.com", "example.com"]));
     // The catalog was asked once per app that is not connected, never for the connected one.
     const asked = w.catalogSearch.mock.calls.map(([, query]) => query).sort();
-    expect(asked).toEqual(["deepwiki.com", "example.com", "linear.app", "unknown.example"]);
+    expect(asked).toEqual(["deepwiki.com", "example.com", "linear.app", "unknown-app.io"]);
     expect(w.catalogSearch.mock.calls.every(([company, , limit]) => company === COMPANY && limit === 20)).toBe(true);
-    // The app writes the names and logos; the bot's reason is the line.
+    // The app writes the names, the logos and the line that says the bot gets access; the bot's reason sits under it, named as the bot's.
     expect(appCard("linear.app")!.textContent).toContain("Linear");
-    expect(appLine("linear.app")).toBe("Your team's issues live here");
+    expect(appLine("linear.app")).toBe("Connect Linear so Nova can use it.");
+    expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-reason"]')?.textContent).toBe("Nova says: Your team's issues live here");
     expect(appLine("deepwiki.com")).toBe("Connect DeepWiki so Nova can use it.");
+    expect(appCard("deepwiki.com")!.querySelector('[data-testid="connection-card-reason"]')).toBeNull();
     // Linear has a bundled mark, so no letters are drawn. DeepWiki has none: it shows the generic glyph. No card asks another host for an image.
     expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(brandMarkFor("linear.app")?.path);
     expect(appCard("linear.app")!.querySelector('[data-testid="connection-card-logo-img"]')).toBeNull();
@@ -313,7 +324,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     }
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Connect Linear");
     expect(appPrimary("example.com")!.getAttribute("aria-haspopup")).toBe("dialog");
-    expect(threadText()).not.toContain("unknown.example");
+    expect(threadText()).not.toContain("unknown-app.io");
     expect(threadText()).not.toContain("hq-block");
     // The quiet way to everything else.
     expect(host.querySelector('[data-testid="rich-connect-browse"]')?.textContent?.trim()).toBe("Browse all in HQ Integrations");

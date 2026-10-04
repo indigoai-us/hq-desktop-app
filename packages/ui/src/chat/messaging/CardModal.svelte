@@ -46,6 +46,11 @@
     open: boolean;
     /** The card's title, e.g. "Slack". Names the dialog. */
     title: string;
+    /**
+     * One quiet line under the title. An app's modal puts the app's website
+     * domain here, so the person sees which site the name stands for.
+     */
+    subtitle?: string | null;
     /** The card's icon. */
     icon: ConnectionCardTarget;
     /** An integration card's logo, drawn in place of the icon. */
@@ -76,6 +81,7 @@
   let {
     open,
     title,
+    subtitle = null,
     icon,
     logo = null,
     art,
@@ -223,6 +229,9 @@
           {/if}
           <div class="card-modal-heading">
             <h2 class="card-modal-title" id={titleId} data-testid="card-modal-title">{title}</h2>
+            {#if subtitle}
+              <p class="card-modal-subtitle" data-testid="card-modal-subtitle">{subtitle}</p>
+            {/if}
             {#if steps && stepAt >= 0}
               <div class="card-modal-progress" data-testid="card-modal-steps">
                 <span class="card-modal-progress-marks" aria-hidden="true">

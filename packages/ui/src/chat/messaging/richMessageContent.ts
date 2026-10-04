@@ -219,6 +219,14 @@ export interface ConnectItem {
   domain?: string;
   /** The bot's short reason, sanitized text, at most 80 characters. */
   why?: string;
+  /**
+   * The connection this card is for. Set by the app alone, on the cards it
+   * chooses itself from the company's list (`appChosenItems`), so such a card
+   * is tied to that one connection and not to whichever one shares its
+   * domain. Never read from a bot's block: the parser takes `app`, `domain`
+   * and `why` and nothing else.
+   */
+  connectionId?: string;
 }
 
 /**

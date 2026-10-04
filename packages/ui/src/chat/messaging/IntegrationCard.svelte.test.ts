@@ -90,11 +90,28 @@ describe("an integration card", () => {
     expect(el.dataset.domain).toBe("linear.app");
     expect(el.dataset.state).toBe("offered");
     expect(el.getAttribute("aria-label")).toBe("Linear");
-    expect(el.querySelector('[data-testid="connection-card-line"]')?.textContent).toBe("Your issues live here");
+    // The app's own sentence is the line; the bot's reason sits under it with the bot's name on it.
+    expect(el.querySelector('[data-testid="connection-card-line"]')?.textContent).toBe("Connect Linear so Nova can use it.");
+    const reason = el.querySelector<HTMLElement>('[data-testid="connection-card-reason"]')!;
+    expect(reason.textContent).toBe("Nova says: Your issues live here");
+    expect(reason.getAttribute("title")).toBe("Nova says: Your issues live here");
+    expect(reason.previousElementSibling?.getAttribute("data-testid")).toBe("connection-card-line");
     expect(primary(el)?.textContent?.trim()).toBe("Connect Linear");
     expect(primary(el)?.dataset.action).toBe("connect");
     expect(decline(el)?.textContent?.trim()).toBe("Not now");
     expect(el.getAttribute("style")).toBeNull();
+  });
+
+  it("draws no reason line when the bot gave none, and binds a reason as text", () => {
+    const plain = renderCard(view("linear.app", { lookup: LINEAR }));
+    expect(plain.querySelector('[data-testid="connection-card-reason"]')).toBeNull();
+    void unmount(component!);
+    component = null;
+    host?.remove();
+    const markup = renderCard(view("linear.app", { lookup: LINEAR }, '<img src=x onerror=alert(1)> <b>bold</b>'));
+    const reason = markup.querySelector<HTMLElement>('[data-testid="connection-card-reason"]')!;
+    expect(reason.textContent).toBe('Nova says: <img src=x onerror=alert(1)> <b>bold</b>');
+    expect(reason.querySelector("img, b")).toBeNull();
   });
 
   it("shows each state as its own state", () => {
@@ -300,9 +317,10 @@ describe("the logo", () => {
     void unmount(component!);
     component = null;
     host?.remove();
-    // A connection the list names only by provider: "{provider}.com" gets the image chain for that host.
+    // A connection the list gives no domain for: the app's own pick names it by id, under "{provider}.com".
+    const bare = facts([connection({ id: "acct_gmail", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } })]);
     const gmail = renderCard(
-      view("gmail.com", { facts: facts([connection({ id: "acct_gmail", provider: "factory:gmail", installation: { displayName: "Gmail (Stefan)" } })]) }),
+      integrationCardView({ domain: "gmail.com", connectionId: "acct_gmail" }, { botName: "Nova", now: NOW, lookup: "unknown", facts: bare })!,
     );
     expect(gmail.dataset.state).toBe("connected");
     expect(logoMark(logoBox(gmail))?.querySelector("path")?.getAttribute("d")).toBe(siGmail.path);
@@ -324,14 +342,14 @@ describe("a row of integration cards in a message", () => {
   /** A second block: a no-auth app, a key app, and one nobody knows. */
   const MORE = parseRichContent({
     v: 1,
-    blocks: [{ kind: "connect", items: [{ domain: "asana.com" }, { domain: "example.com" }, { domain: "unknown.example" }] }],
+    blocks: [{ kind: "connect", items: [{ domain: "asana.com" }, { domain: "example.com" }, { domain: "unknown-app.io" }] }],
   })!;
 
   const lookups: Record<string, CatalogLookup> = {
     "linear.app": LINEAR,
     "example.com": EXAMPLE,
     "asana.com": { domain: "asana.com", name: "Asana", authClass: "none" },
-    "unknown.example": "not-found",
+    "unknown-app.io": "not-found",
   };
   const COMPANY = facts([connection({ id: "acct_notion", provider: "factory:notion", installation: { displayName: "Notion", domain: "notion.so" } })]);
 

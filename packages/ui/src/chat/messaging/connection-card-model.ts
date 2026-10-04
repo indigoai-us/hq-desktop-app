@@ -12,8 +12,11 @@
  * the bot's status for Slack, the company's connection list for tools. A card
  * can therefore never claim a connection the server does not have.
  *
- * Every word on a card and every link it opens is written by the app. Nothing
- * here reads text, a link or a style from the bot.
+ * Every sentence a card states and every link it opens is written by the
+ * app. Nothing here reads a link or a style from the bot. The one piece of
+ * the bot's own text a card can show is the short reason on an integration
+ * card (`reason`): sanitized plain text, drawn under the app's own sentence
+ * and attributed to the bot by name, never in place of that sentence.
  */
 
 import type { BrandMark } from "./app-brand-marks.js";
@@ -614,7 +617,14 @@ export interface ConnectionCardView {
   state: ConnectionCardState;
   /** The card's name: "Slack", "Connect your tools", or the app's name. */
   title: string;
+  /** The app's own sentence: what the card is, and for an app, that the bot gets access. */
   line: string;
+  /**
+   * The bot's reason for an app, attributed to it ("Nova says: ..."), drawn
+   * under {@link line} in the quieter ink. Integration cards only, and only
+   * while the app is offered. It never replaces the app's own sentence.
+   */
+  reason?: string | null;
   /** Main button, or null when the state has none. */
   primaryLabel: string | null;
   /**
@@ -644,6 +654,12 @@ export interface ConnectionCardInput {
   record?: BotConnectionRecord | null;
   /** null while unknown (not loaded, or the load failed). */
   slack?: SlackFacts | null;
+  /**
+   * The server refused to show this person the bot's status (403): only a
+   * company admin may set the bot up in Slack. The card then says so instead
+   * of offering a button that would end in the same refusal.
+   */
+  slackDenied?: boolean | null;
   tools?: ToolFacts | null;
   now: number;
   /**
@@ -665,6 +681,8 @@ export interface ConnectionCardInput {
 /** The Slack card's line while its setup has been started and is not done. */
 export const SLACK_UNFINISHED_LINE = "Setup is not finished.";
 export const SLACK_TIMEOUT_NOTE = "Slack was not connected. You can try again any time.";
+/** The Slack card's line for a person who may not set the bot up in Slack. */
+export const SLACK_ADMIN_LINE = (bot: string): string => `Ask a company admin to connect ${bot} to Slack.`;
 export const TOOLS_TIMEOUT_NOTE = "No new tool was connected. You can try again any time.";
 
 function timedOut(since: number, now: number): boolean {
@@ -730,6 +748,20 @@ function slackView(input: ConnectionCardInput): ConnectionCardView {
       line: `${SLACK_UNFINISHED_LINE} ${slackPendingHint(facts.stage, bot, facts.wait)}`,
       primaryLabel: "Continue",
       declineLabel: "Not now",
+      mark: null,
+      note: hostNote,
+    };
+  }
+  // This person may not set the bot up: say who can, in place of a button
+  // (Connect Slack, or Continue on a wait started here) that cannot work.
+  if (input.slackDenied === true) {
+    return {
+      ...base,
+      state: "offered",
+      line: SLACK_ADMIN_LINE(bot),
+      primaryLabel: null,
+      primaryPending: false,
+      declineLabel: null,
       mark: null,
       note: hostNote,
     };
@@ -879,14 +911,17 @@ export type ConnectionCardActionHandler = (detail: ConnectionCardActionDetail) =
  */
 export interface ConnectionCards {
   views: Partial<Record<ConnectTarget, ConnectionCardView>>;
-  /** The card of an app named by domain, or null when it draws none. Absent: no integration cards. */
-  integration?: ((item: { domain: string; why?: string }) => ConnectionCardView | null) | null;
+  /**
+   * The card of an app named by domain, or null when it draws none. Absent:
+   * no integration cards. `connectionId` is the app's own (see `ConnectItem`).
+   */
+  integration?: ((item: { domain: string; why?: string; connectionId?: string }) => ConnectionCardView | null) | null;
   /**
    * Whether a block's row may draw yet: null means draw it. A row with apps
    * in it waits while their lookups are unknown, so no card appears and then
    * goes away. Absent: draw at once.
    */
-  rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string }>) => boolean) | null;
+  rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>) => boolean) | null;
   /**
    * The quiet "Browse all in HQ Integrations" link under a row with an
    * integration card in it: the page it names, and how the host opens it.

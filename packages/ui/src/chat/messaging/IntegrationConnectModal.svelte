@@ -3,11 +3,17 @@
    * Connect a key-based app from its card, inside the card modal.
    *
    * One component for every such app, parameterized by the card's domain:
-   * the app's logo and name on the frame, one line, a "Get a key" button when
-   * the app's blueprint says where to make one, the key field labelled the
-   * way the blueprint names the credential, and Connect. The blueprint is
-   * pulled when the modal opens; the install is sent from exactly one place,
-   * the Connect button.
+   * the app's logo and name on the frame with its website domain under the
+   * name, one line, a "Get a key" button when the app's blueprint says where
+   * to make one, the key field labelled the way the blueprint names the
+   * credential, and Connect. The blueprint is pulled when the modal opens;
+   * the install is sent from exactly one place, the Connect button.
+   *
+   * WHERE THINGS GO IS SAID. A name alone does not say which site it stands
+   * for, so the domain is under the title, the host a button opens is next
+   * to that button, and the host the key will be used with is under the
+   * field, before Connect is pressed. Every host shown is read with the URL
+   * parser from the address the app itself is about to use.
    *
    * THE KEY IS A SECRET. It lives in `key` below and in the field, and
    * nowhere else: not in storage, a link, a log or an error. It is cleared
@@ -49,6 +55,27 @@
   let gone = false;
 
   const label = $derived(blueprint?.label ?? "Key");
+
+  /** The host of an https address, as the URL parser reads it. Null for anything else. */
+  function hostOf(url: string | null | undefined): string | null {
+    if (!url) return null;
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "https:" && parsed.hostname ? parsed.hostname : null;
+    } catch {
+      return null;
+    }
+  }
+  /** Where "Get a key" opens. */
+  const getKeyHost = $derived(hostOf(blueprint?.generateUrl));
+  /**
+   * The host the key is used with: the app's own server when the blueprint
+   * names one (the same address the install is sent with), else the app's
+   * website domain.
+   */
+  const keyHost = $derived(hostOf(blueprint?.mcpUrl) ?? integration?.domain ?? null);
+  /** Where "Open HQ Integrations" opens. */
+  const elsewhereHost = $derived(hostOf(companyIntegrationsUrl(companySlug)));
   const keyEmpty = $derived(key.trim() === "");
   const autofocus = { [CARD_MODAL_AUTOFOCUS]: "" };
 
@@ -183,7 +210,7 @@
   });
 </script>
 
-<CardModal {...frame} title={name} onclose={close} busy={inFlight}>
+<CardModal {...frame} title={name} subtitle={integration?.domain ?? null} onclose={close} busy={inFlight}>
   {#snippet body()}
     <div
       class="integration-connect"
@@ -200,13 +227,19 @@
         <div data-testid="integration-connect-elsewhere">
           <CardModalStatus kind="problem" text={elsewhere} />
         </div>
+        {#if elsewhereHost}
+          <p class="card-modal-hint" data-testid="integration-connect-elsewhere-host">{CONNECT_ELSEWHERE_LINK} opens {elsewhereHost} in your browser.</p>
+        {/if}
       {:else}
         <p class="card-modal-copy">{name} needs a key to connect.</p>
         {#if blueprint?.generateUrl}
-          <div>
+          <div class="card-modal-action-row">
             <button type="button" class="card-modal-btn is-small" data-testid="integration-connect-get-key" onclick={getKey}>
               Get a key
             </button>
+            {#if getKeyHost}
+              <span class="card-modal-hint" data-testid="integration-connect-get-key-host">Opens {getKeyHost} in your browser.</span>
+            {/if}
           </div>
         {/if}
         <div data-testid="integration-connect-key" use:wipeOnRemove>
@@ -223,6 +256,9 @@
             onsubmit={() => void submit()}
           />
         </div>
+        {#if keyHost}
+          <p class="card-modal-hint" data-testid="integration-connect-destination">Connect sends the key to HQ, which stores it and uses it with {keyHost}.</p>
+        {/if}
         {#if inFlight}
           <CardModalStatus kind="working" text={`Connecting ${name}.`} />
         {:else if blueprintFailed && !blueprint}

@@ -7,14 +7,16 @@
  * a function of its arguments, so it is testable on its own.
  *
  * WHAT THE BOT SUPPLIES: a domain and an optional sanitized reason. Nothing
- * else. The app supplies the name (the connection's, else the catalog's, else
+ * else. The reason is shown under the app's own sentence, with the bot's
+ * name on it, and never in place of that sentence. The app supplies the name (the connection's, else the catalog's, else
  * the domain's first label), the logo (a bundled brand mark for the apps that
  * have one, else a generic glyph; never a remote image), every word, every
  * link and every state.
  *
  * WHAT DECIDES A CARD:
- * - a company connection whose domain or provider matches the item: a
- *   connection card (connected, or "Let {bot} use it" for the person's own);
+ * - a company connection whose listed domain is the item's (or the two are
+ *   one another's subdomain): a connection card (connected, or "Let {bot} use
+ *   it" for the person's own). A provider name alone never matches a domain;
  * - else a catalog match for the domain: a connectable card with its auth class;
  * - else no card. While the lookup is unknown there is no card yet, and the
  *   row waits for its lookups up to {@link ROW_SETTLE_MS}.
@@ -30,6 +32,7 @@ import { normalizeConnectDomain } from "./richMessageContent.js";
 import {
   CONNECTING_TIMEOUT_MS,
   connectionActionKey,
+  type AppCardRecord,
   type BotConnectionRecord,
   type ConnectionCardLogo,
   type ConnectionCardPrimaryAction,
@@ -146,20 +149,80 @@ export function readCompanyConnections(json: unknown): CompanyConnections | null
   };
 }
 
+/** Whether one domain is the other, or a subdomain of it. */
+function sameSite(a: string, b: string): boolean {
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
+function newestFirst(connections: CompanyConnection[]): CompanyConnection[] {
+  return [...connections].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+}
+
 /**
- * The connection an item's domain names: one whose domain equals it, else one
- * whose provider equals the domain's first label (`factory:linear` answers for
- * `linear.app`). The newest wins when several match.
+ * The connection a domain names: one whose listed domain equals it, else one
+ * whose listed domain is its parent or its subdomain (`api.example.com` and
+ * `example.com`). The newest wins when several match.
+ *
+ * A connection is never matched by its provider name. `factory:linear` does
+ * not answer for `linear.app` unless the list says its domain is `linear.app`:
+ * a provider name is one label, and a domain a bot wrote that only starts
+ * with that label (`linear.example.org`) is some other site. A connection
+ * the list gives no domain for is reached by its id alone (see
+ * {@link connectionForItem}), which only the app's own picks carry.
  */
 export function connectionForDomain(facts: CompanyConnections | null | undefined, domain: string): CompanyConnection | null {
   if (!facts) return null;
   const wanted = normalizeConnectDomain(domain);
   if (!wanted) return null;
-  const label = firstLabel(wanted);
-  const byDomain = facts.connections.filter((c) => c.domain === wanted);
-  const byLabel = byDomain.length > 0 ? byDomain : facts.connections.filter((c) => c.provider && c.provider === label);
-  if (byLabel.length === 0) return null;
-  return [...byLabel].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))[0]!;
+  const listed = facts.connections.filter((c) => c.domain !== null);
+  const exact = listed.filter((c) => c.domain === wanted);
+  const matches = exact.length > 0 ? exact : listed.filter((c) => sameSite(c.domain!, wanted));
+  return newestFirst(matches)[0] ?? null;
+}
+
+/**
+ * The connection a card's item names: the one with the item's own id when the
+ * app put one on it and the list still has it, else the one its domain names.
+ */
+export function connectionForItem(
+  facts: CompanyConnections | null | undefined,
+  item: { domain?: string; connectionId?: string },
+): CompanyConnection | null {
+  if (!facts) return null;
+  const id = item.connectionId?.trim();
+  if (id) {
+    const byId = facts.connections.find((c) => c.id === id);
+    if (byId) return byId;
+  }
+  return item.domain ? connectionForDomain(facts, item.domain) : null;
+}
+
+/**
+ * Whether a connection is the answer to a Connect press on this device, so
+ * the bot may be given it with no second press. All three must hold:
+ *
+ * - the press is still waiting and is not stale: it was made at most
+ *   {@link CONNECTING_TIMEOUT_MS} ago;
+ * - the connection was made after the press, by the list's own `createdAt`;
+ * - the list says the connection's domain is exactly the card's.
+ *
+ * Anything else (an old "connecting" entry left in storage, a connection
+ * that was already there, a domain that only resembles the card's, a date
+ * that cannot be read) is no answer: the card keeps its explicit
+ * "Let {bot} use it" button and nothing is shared for the person.
+ */
+export function connectionAnswersPress(
+  entry: AppCardRecord | null | undefined,
+  connection: CompanyConnection | null | undefined,
+  domain: string,
+  now: number,
+): boolean {
+  if (!entry || entry.state !== "connecting" || !connection) return false;
+  if (!Number.isFinite(entry.since) || now - entry.since > CONNECTING_TIMEOUT_MS) return false;
+  const createdAt = Date.parse(connection.createdAt);
+  if (!Number.isFinite(createdAt) || createdAt <= entry.since) return false;
+  const wanted = normalizeConnectDomain(domain);
+  return wanted !== null && connection.domain !== null && connection.domain === wanted;
 }
 
 /**
@@ -271,11 +334,14 @@ export function connectActionFor(authClass: IntegrationAuthClass): ConnectionCar
  * Build the card of one `connect` item that names a domain. Null when there
  * is no card: an unknown domain, or a lookup not settled yet. Pure.
  */
-export function integrationCardView(item: { domain: string; why?: string }, input: IntegrationCardInput): ConnectionCardView | null {
+export function integrationCardView(
+  item: { domain: string; why?: string; connectionId?: string },
+  input: IntegrationCardInput,
+): ConnectionCardView | null {
   const domain = normalizeConnectDomain(item.domain);
   if (!domain) return null;
   const bot = input.botName.trim() || "your bot";
-  const connection = connectionForDomain(input.facts, domain);
+  const connection = connectionForItem(input.facts, { domain, connectionId: item.connectionId });
   const match = typeof input.lookup === "object" ? input.lookup : null;
   if (!connection && !match) return null;
   const name = connection?.name || match?.name || defaultAppName(domain);
@@ -352,16 +418,28 @@ export function integrationCardView(item: { domain: string; why?: string }, inpu
   if (!canConnect) {
     return { ...base, state: "offered", line: `Ask a company admin to connect ${name}.`, primaryLabel: null, primaryAction: action, note: hostNote };
   }
+  // The app's own sentence always says what pressing the button does: the
+  // bot gets to use the app. The bot's reason goes under it, with the bot's
+  // name on it. A card with a note shows the note there instead: a card is
+  // one fixed height, and a failure matters more than a reason.
+  const note = hostNote ?? (timedOut ? APP_TIMEOUT_NOTE(name) : null);
+  const why = item.why?.trim() ?? "";
   return {
     ...base,
     state: "offered",
-    line: item.why?.trim() || `Connect ${name} so ${bot} can use it.`,
+    line: `Connect ${name} so ${bot} can use it.`,
+    reason: why && !note ? botReason(bot, why) : null,
     primaryLabel: `Connect ${name}`,
     primaryAction: action,
     primaryPending: pending(action),
     declineLabel: "Not now",
-    note: hostNote ?? (timedOut ? APP_TIMEOUT_NOTE(name) : null),
+    note,
   };
+}
+
+/** The bot's reason as the card shows it: the bot's name, then its words. */
+export function botReason(botName: string, why: string): string {
+  return `${botName.trim() || "your bot"} says: ${why.trim()}`;
 }
 
 /**
@@ -370,7 +448,7 @@ export function integrationCardView(item: { domain: string; why?: string }, inpu
  * unknown leaves a domain undecided.
  */
 export function itemSettled(
-  item: { app?: ConnectTarget; domain?: string },
+  item: { app?: ConnectTarget; domain?: string; connectionId?: string },
   facts: CompanyConnections | null | undefined,
   lookupFor: (domain: string) => CatalogLookup,
 ): boolean {
@@ -378,7 +456,7 @@ export function itemSettled(
   const domain = normalizeConnectDomain(item.domain);
   if (!domain) return true;
   if (!facts) return false;
-  if (connectionForDomain(facts, domain)) return true;
+  if (connectionForItem(facts, { domain, connectionId: item.connectionId })) return true;
   return lookupFor(domain) !== "unknown";
 }
 
@@ -388,7 +466,7 @@ export function itemSettled(
  * simply left out, and come in when they settle.
  */
 export function connectRowReady(
-  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string }>,
+  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   input: { facts: CompanyConnections | null | undefined; lookupFor: (domain: string) => CatalogLookup; since: number; now: number },
 ): boolean {
   if (input.now - input.since >= ROW_SETTLE_MS) return true;
@@ -397,14 +475,14 @@ export function connectRowReady(
 
 /** The domains of a block's items that need a catalog lookup: not a built-in, not a connection. */
 export function domainsToLookUp(
-  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string }>,
+  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   facts: CompanyConnections | null | undefined,
 ): string[] {
   if (!facts) return [];
   const out: string[] = [];
   for (const item of items) {
     const domain = item.app ? null : normalizeConnectDomain(item.domain);
-    if (!domain || out.includes(domain) || connectionForDomain(facts, domain)) continue;
+    if (!domain || out.includes(domain) || connectionForItem(facts, { domain, connectionId: item.connectionId })) continue;
     out.push(domain);
   }
   return out;
@@ -499,9 +577,13 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
  * The cards the app attaches when the bot's message carries no connect block:
  * Slack (unless the bot is in Slack), then the person's own connected apps
  * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
- * all (Slack counts as one). An app with no domain in the list is named
- * `{provider}.com`, which the card matches back to the connection by its
- * first label.
+ * all (Slack counts as one).
+ *
+ * Each app's item carries the connection's id, so its card is that one
+ * connection and no other. The item's domain is the one the list gives; a
+ * connection the list gives no domain for is named `{provider}.com`, which
+ * is only the card's name in the row (its logo, its key): the card finds the
+ * connection by the id, never by that guess.
  */
 export function appChosenItems(
   facts: CompanyConnections | null | undefined,
@@ -510,16 +592,14 @@ export function appChosenItems(
 ): ConnectItem[] {
   const items: ConnectItem[] = slackConnected ? [] : [{ app: "slack" }];
   if (!facts || !facts.viewerUid) return items;
-  const own = facts.connections
-    .filter((c) => c.createdBy === facts.viewerUid && !botCanUse(c, record))
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  const own = newestFirst(facts.connections.filter((c) => c.createdBy === facts.viewerUid && !botCanUse(c, record)));
   const seen = new Set<string>();
   for (const connection of own) {
     if (items.length >= MAX_FALLBACK_APPS) break;
-    const domain = connection.domain ?? (connection.provider ? `${connection.provider}.com` : null);
-    if (!domain || seen.has(domain) || !normalizeConnectDomain(domain)) continue;
+    const domain = connection.domain ?? normalizeConnectDomain(connection.provider ? `${connection.provider}.com` : null);
+    if (!domain || seen.has(domain)) continue;
     seen.add(domain);
-    items.push({ domain });
+    items.push({ domain, connectionId: connection.id });
   }
   return items;
 }
