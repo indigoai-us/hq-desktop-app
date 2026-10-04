@@ -14,11 +14,14 @@
  * So one key is minted for a draft when Create bot is pressed, and it is
  * kept for as long as the outcome of that create is not known:
  *
- *   - a retry of the same draft sends the same key and picks up the first
- *     answer;
- *   - Cancel sends it once more to learn what the first request made;
+ *   - pressing Create bot again for the same draft sends the same key and
+ *     picks up the first answer;
  *   - it is written to storage before the request leaves, so an app that
  *     quits in the middle still has it.
+ *
+ * Pressing Create bot is the only thing that sends a create. Cancel never
+ * does: it reads the company's bots to learn what the first request made
+ * (created-bot-lookup.ts).
  *
  * Once the server has answered, whatever it answered, the key is let go: a
  * stored refusal (the plan, a name that is taken) would otherwise be played

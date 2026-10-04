@@ -71,7 +71,7 @@
   import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
-  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import { botHandle, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
@@ -205,6 +205,7 @@
     loadOpenBotRemovals,
     loadRemovedBots,
     rememberRemovedBot,
+    readCancelledCreate,
     resolveCancelledCreate,
     runBotRemoval,
     saveOpenBotRemovals,
@@ -212,6 +213,11 @@
     type RemoveBotRequest,
   } from "./create-bot/cancel-model.js";
   import { createDraftSignature, releaseCreateKey, takeCreateKey } from "./create-bot/create-key.js";
+  import {
+    createdByAnotherPerson,
+    findCreatedBot,
+    rosterBaseline,
+  } from "./create-bot/created-bot-lookup.js";
   import { withoutHiddenRequestHits } from "./create-bot/hidden-request-hits.js";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
@@ -351,10 +357,16 @@
     /** Test seam: how long a removal waits before asking the server again. */
     botRemovalRetryMs?: number;
     /**
-     * Test seam: how long a cancelled create with no answer waits before each
-     * time it asks the server what its request made.
+     * Reads the bots of one company (the member-safe roster the app already
+     * reads elsewhere). Cancel uses it to learn whether a create with no
+     * answer made a bot. It only reads: Cancel never sends a create.
      */
-    botCreateReplayMs?: number;
+    loadCompanyBots?: ((companyUid: string) => Promise<unknown>) | null;
+    /**
+     * Test seam: how long a cancelled create with no answer waits before each
+     * look at the company's bots.
+     */
+    botCreateLookupMs?: number;
     /** Ask a new cloud bot, on the bot-only lane, to write its first message. */
     sendBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
     /** True once that first message is in the direct message. */
@@ -528,7 +540,8 @@
     removeAgent = null,
     onbotremoved = null,
     botRemovalRetryMs = undefined,
-    botCreateReplayMs = undefined,
+    loadCompanyBots = null,
+    botCreateLookupMs = undefined,
     sendBotHello = null,
     checkBotHello = null,
     restartBrainApproval = null,
@@ -1938,9 +1951,49 @@
     companyUid: string;
     brain: string | null;
     removalId: string | null;
-    /** The draft as it was sent, key included, so the same create can be sent again. */
-    draft: CloudBotDraft;
+    /** The handle the create was sent with. Cancel looks for it among the company's bots. */
+    handle: string;
+    /** The key the create went out under. */
+    key: string;
+    /**
+     * The bots the company had when Create bot was pressed, by id. Null when
+     * that could not be read. A bot is only taken as this create's own when
+     * it is not on this list.
+     */
+    baseline: Promise<ReadonlySet<string> | null>;
   } | null = null;
+
+  /**
+   * The company's bots as they were at the first press for each key. Kept
+   * for as long as the key is, so a second press of the same draft compares
+   * against what was there before the first.
+   */
+  const createBaselines = new Map<string, Promise<ReadonlySet<string> | null>>();
+
+  /** Read the company's bots before the create is sent. Never throws. */
+  function baselineFor(key: string, reused: boolean, companyUid: string): Promise<ReadonlySet<string> | null> {
+    const held = createBaselines.get(key);
+    if (held) return held;
+    // A key from before a restart has no list from before its first press.
+    const read = loadCompanyBots;
+    let baseline: Promise<ReadonlySet<string> | null> = Promise.resolve(null);
+    if (!reused && read) {
+      try {
+        // Called here, in the press, so the read leaves before the create does.
+        baseline = Promise.resolve(read(companyUid)).then(rosterBaseline).catch(() => null);
+      } catch {
+        baseline = Promise.resolve(null);
+      }
+    }
+    createBaselines.set(key, baseline);
+    return baseline;
+  }
+
+  /** The server answered this create: its key and its list are let go. */
+  function forgetCreateKey(key: string): void {
+    releaseCreateKey(accountStorage, key);
+    createBaselines.delete(key);
+  }
 
   /** Shown when the create got no answer. Sending it again picks up the first answer. */
   function createUnknownReason(name: string): string {
@@ -1984,7 +2037,10 @@
       companyUid,
       brain: draft.runtime ?? null,
       removalId: null as string | null,
-      draft: sent,
+      handle: botHandle({ name: draft.name, handle: draft.handle ?? "" }),
+      key: keyed.key,
+      // Started before the create is sent, so it shows what was there before.
+      baseline: baselineFor(keyed.key, keyed.reused, companyUid),
     };
     createInFlight = attempt;
     let result: EntryPointResult | null = null;
@@ -2006,7 +2062,7 @@
       return { ok: false, blocked: false, reason: createUnknownReason(draft.name), outcomeUnknown: true };
     }
     // The server answered. Its answer is final for this key.
-    releaseCreateKey(accountStorage, keyed.key);
+    forgetCreateKey(keyed.key);
     const answered = result as EntryPointResult;
     if (keyed.reused && !answered.ok && answered.reason === CLOUD_BOT_NAME_TAKEN_REASON) {
       // The first request may have made the bot that now holds the name.
@@ -2047,9 +2103,10 @@
   /**
    * The answer to a create the person cancelled. A bot it names exists and
    * is removed. An answer that does not say (a timeout, a dropped
-   * connection) is not read as "nothing was created": the same create is
-   * sent again under the same key, and the server answers with what the
-   * first request made.
+   * connection) is not read as "nothing was created", and the create is not
+   * sent again to find out: a first request that never reached the server
+   * would then make the bot the person cancelled. The company's bots are
+   * read instead, a few times, and searched for the handle.
    */
   async function settleCancelledCreate(
     attempt: NonNullable<typeof createInFlight>,
@@ -2057,30 +2114,63 @@
   ): Promise<void> {
     const removalId = attempt.removalId;
     if (!removalId) return;
-    const send = oncreatenewbot;
+    const read = loadCompanyBots;
+    const lookedUp = readCancelledCreate(result).kind === "unknown";
     const outcome = await resolveCancelledCreate(
       result,
-      send ? () => send(attempt.companyUid, attempt.draft) : null,
-      botCreateReplayMs === undefined ? {} : { delaysMs: [botCreateReplayMs, botCreateReplayMs, botCreateReplayMs] },
+      read
+        ? async () =>
+            findCreatedBot({
+              roster: await read(attempt.companyUid),
+              companyUid: attempt.companyUid,
+              handle: attempt.handle,
+              baseline: await attempt.baseline,
+            })
+        : null,
+      botCreateLookupMs === undefined
+        ? {}
+        : { delaysMs: [botCreateLookupMs, botCreateLookupMs, botCreateLookupMs] },
     );
     if (outcome.kind === "unknown") {
-      // Still not known. Nothing is claimed, and the key is kept.
+      // Still not known. Nothing is claimed, and the key is kept: pressing
+      // Create bot again for the same draft picks up the first answer.
       patchBotRemoval(removalId, { phase: "unconfirmed" });
       return;
     }
-    if (attempt.draft.idempotencyKey) releaseCreateKey(accountStorage, attempt.draft.idempotencyKey);
-    const agentUid = outcome.kind === "created" ? outcome.agentUid : "";
-    const channelId = outcome.kind === "created" ? outcome.channelId : "";
+    forgetCreateKey(attempt.key);
     if (outcome.kind === "not-created") {
       patchBotRemoval(removalId, { phase: "not-created" });
       return;
     }
+    const agentUid = outcome.agentUid;
+    const channelId = outcome.channelId;
     // An older server also makes a channel for the bot. The server does not
     // remove that channel with the bot, so it stays off the list.
     if (channelId) botSetupChannels = rememberBotSetupChannel(botSetupChannels, channelId, storage);
     if (!agentUid) {
       patchBotRemoval(removalId, { channelId, phase: "failed", problem: "unknown-bot" });
       return;
+    }
+    if (lookedUp) {
+      // The bot was found by its handle, not named by the create's answer.
+      if (!canRemoveBotIn(attempt.companyUid)) {
+        // This person may not remove bots: no removal is sent, and the line
+        // says who can remove it.
+        patchBotRemoval(removalId, { agentUid, phase: "failed", problem: "not-allowed" });
+        return;
+      }
+      // One more check before removing a bot found that way: the server
+      // records who created it.
+      let status: unknown = null;
+      try {
+        status = loadAgentStatus ? await loadAgentStatus(agentUid) : null;
+      } catch {
+        status = null;
+      }
+      if (createdByAnotherPerson(status, self?.uid)) {
+        patchBotRemoval(removalId, { phase: "unconfirmed" });
+        return;
+      }
     }
     patchBotRemoval(removalId, { agentUid, channelId, phase: "removing", problem: null });
     void runRemoval(removalId);

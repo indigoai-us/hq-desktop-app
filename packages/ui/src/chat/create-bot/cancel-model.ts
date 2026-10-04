@@ -24,9 +24,8 @@ export type BotRemovalPhase =
   /** The create request ended without making a bot. */
   | "not-created"
   /**
-   * The create request got no answer, and asking the server again under the
-   * same key did not settle it. The bot may exist. Nothing is claimed either
-   * way.
+   * The create request got no answer, and reading the company's bots did
+   * not settle it. The bot may exist. Nothing is claimed either way.
    */
   | "unconfirmed";
 
@@ -305,9 +304,9 @@ export function botRemovalDismissLabel(removal: Pick<BotRemoval, "name" | "phase
 
 // ── A create the person cancelled ──────────────────────────────────────────
 
-/** What a cancelled create made, as far as its answer says. */
+/** What a cancelled create made, as far as is known. */
 export type CancelledCreateOutcome =
-  /** The request made a bot. It exists and is to be removed. */
+  /** The request made a bot. It exists. */
   | { kind: "created"; agentUid: string; channelId: string }
   /** The server answered, and made nothing. */
   | { kind: "not-created" }
@@ -319,41 +318,38 @@ export type CancelledCreateAnswer =
   | { ok: true; target: { cardId?: string | null; channelId?: string | null; agentUid?: string } }
   | { ok: false; reason?: string; outcomeUnknown?: boolean };
 
-/**
- * Read the answer to a create the person cancelled.
- *
- * `afterUnknown` is true when this answer is to a request sent again because
- * the first had no known outcome. Such an answer can name the bot the first
- * request made, and that is all it can settle. A refusal cannot: "that name
- * already exists" may be about the very bot the first request made, and the
- * plan's upgrade card may be shown because that bot used the last place on
- * the plan. So after an unknown outcome nothing but a bot is taken as an
- * answer.
- */
-export function readCancelledCreate(
-  answer: CancelledCreateAnswer | null | undefined,
-  afterUnknown = false,
-): CancelledCreateOutcome {
+/** Read the answer to a create the person cancelled. */
+export function readCancelledCreate(answer: CancelledCreateAnswer | null | undefined): CancelledCreateOutcome {
   // The request threw, or never answered.
   if (!answer) return { kind: "unknown" };
   if (answer.ok) {
+    // A card in the answer is the upgrade card, or another step: nothing was created.
+    if (answer.target.cardId) return { kind: "not-created" };
     const agentUid = (answer.target.agentUid ?? "").trim();
     const channelId = (answer.target.channelId ?? "").trim();
-    // A card in the answer is the upgrade card, or another step: this request made no bot.
-    if (!answer.target.cardId && (agentUid || channelId)) return { kind: "created", agentUid, channelId };
-    return afterUnknown ? { kind: "unknown" } : { kind: "not-created" };
+    return agentUid || channelId ? { kind: "created", agentUid, channelId } : { kind: "not-created" };
   }
-  if (answer.outcomeUnknown || afterUnknown) return { kind: "unknown" };
+  if (answer.outcomeUnknown) return { kind: "unknown" };
   return { kind: "not-created" };
 }
 
-/** How long to wait before each time the server is asked what a cancelled create made. */
-export const CANCELLED_CREATE_REPLAY_DELAYS_MS: readonly number[] = [10_000, 20_000, 40_000];
+/**
+ * What one look at the company's bots says about a cancelled create
+ * (see created-bot-lookup.ts).
+ */
+export type CancelledCreateLookup =
+  | { kind: "found"; agentUid: string }
+  | { kind: "absent" }
+  | { kind: "unproven" }
+  | { kind: "unreadable" };
+
+/** How long to wait before each look at the company's bots after a cancelled create. */
+export const CANCELLED_CREATE_LOOKUP_DELAYS_MS: readonly number[] = [10_000, 20_000, 40_000];
 
 export interface CancelledCreateOptions {
   /** Test seam. Production waits on a timer. */
   sleep?: (ms: number) => Promise<void>;
-  /** The wait before each replay. Its length is how many times the server is asked. */
+  /** The wait before each look. Its length is how many times the server is asked. */
   delaysMs?: readonly number[];
 }
 
@@ -361,35 +357,35 @@ export interface CancelledCreateOptions {
  * Settle what a cancelled create made.
  *
  * When its own answer says, that is the outcome. When it does not (a
- * timeout, a dropped connection), the same create is sent again under the
- * same key: the server keeps the first answer under that key and plays it
- * back, bot included. The wait before each replay lets a first request that
- * is still running on the server finish and store its answer.
+ * timeout, a dropped connection), the company's bots are read and searched
+ * for the bot. This only reads: the create is never sent again from here,
+ * because a first request that never reached the server would then make the
+ * bot the person cancelled. The wait before each look lets a first request
+ * that is still running on the server finish.
  *
- * Resolves "not-created" only on the first request's own word, never on
- * silence and never on what a replay was refused for. Never throws.
+ * Resolves "not-created" only on the create's own word, never on silence
+ * and never because a look did not find the bot. Never throws.
  */
 export async function resolveCancelledCreate(
   first: CancelledCreateAnswer | null | undefined,
-  replay: (() => Promise<CancelledCreateAnswer | null | undefined>) | null,
+  lookup: (() => Promise<CancelledCreateLookup>) | null,
   options: CancelledCreateOptions = {},
 ): Promise<CancelledCreateOutcome> {
   const outcome = readCancelledCreate(first);
-  if (outcome.kind !== "unknown" || !replay) return outcome;
+  if (outcome.kind !== "unknown" || !lookup) return outcome;
   const sleep = options.sleep ?? defaultSleep;
-  for (const delay of options.delaysMs ?? CANCELLED_CREATE_REPLAY_DELAYS_MS) {
+  for (const delay of options.delaysMs ?? CANCELLED_CREATE_LOOKUP_DELAYS_MS) {
     await sleep(delay);
-    let answer: CancelledCreateAnswer | null | undefined;
+    let seen: CancelledCreateLookup;
     try {
-      answer = await replay();
+      seen = await lookup();
     } catch {
-      answer = null;
+      seen = { kind: "unreadable" };
     }
-    const replayed = readCancelledCreate(answer, true);
-    if (replayed.kind === "created") return replayed;
-    // The server answered, and not with a bot. It holds that answer under
-    // this key now: asking again returns the same words.
-    if (answer && (answer.ok || !answer.outcomeUnknown)) break;
+    if (seen.kind === "found") return { kind: "created", agentUid: seen.agentUid, channelId: "" };
+    // A bot has the handle and nothing shows this create made it. Looking
+    // again will not change that.
+    if (seen.kind === "unproven") break;
   }
   return { kind: "unknown" };
 }

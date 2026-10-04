@@ -10996,6 +10996,7 @@
           loadAgentStatus={(agentUid, brain) => adapter.agents.getStatus(agentUid, brain)}
           retryAgent={(agentUid) => adapter.agents.retryProvisioning(agentUid)}
           removeAgent={(agentUid, options) => adapter.agents.deprovision(agentUid, options)}
+          loadCompanyBots={(companyUid) => adapter.agents.listMobileRoster(companyUid)}
           onbotremoved={forgetRemovedCloudBot}
           sendBotHello={sendCloudBotHello}
           checkBotHello={cloudBotHelloArrived}

@@ -87,10 +87,10 @@ export type EntryPointResult =
       /**
        * Set when the create was sent and no answer came back (a timeout, a
        * dropped connection, a server error part-way). The bot may exist. A
-       * caller must not say that nothing was created; sending the same
-       * create again under the same key (`CloudBotDraft.idempotencyKey`)
-       * gets the first answer. Only the New Bot takeover's one-shot create
-       * sets it.
+       * caller must not say that nothing was created. When the person
+       * presses Create bot again, the same create under the same key
+       * (`CloudBotDraft.idempotencyKey`) gets the first answer. Only the
+       * New Bot takeover's one-shot create sets it.
        */
       outcomeUnknown?: boolean;
     };
