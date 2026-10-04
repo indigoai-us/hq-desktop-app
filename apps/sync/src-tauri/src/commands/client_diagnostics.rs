@@ -915,23 +915,6 @@ pub(crate) fn notify_client_diagnostics_wake() {
     wake_notify().notify_one();
 }
 
-#[allow(dead_code)]
-fn debug_probe_names() -> serde_json::Value {
-    // Kept for quick manual smoke-checks via `cargo expand`/devtools; not a
-    // registered Tauri command (US-007 has no required UI surface).
-    json!([
-        ClientHealthDiagnosticCheck::Auth.wire_value(),
-        ClientHealthDiagnosticCheck::Runner.wire_value(),
-        ClientHealthDiagnosticCheck::Cli.wire_value(),
-        ClientHealthDiagnosticCheck::Core.wire_value(),
-        ClientHealthDiagnosticCheck::Updater.wire_value(),
-        ClientHealthDiagnosticCheck::Sync.wire_value(),
-        ClientHealthDiagnosticCheck::Conflicts.wire_value(),
-        ClientHealthDiagnosticCheck::Storage.wire_value(),
-        ClientHealthDiagnosticCheck::Permissions.wire_value(),
-    ])
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
