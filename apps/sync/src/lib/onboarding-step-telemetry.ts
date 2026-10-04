@@ -17,6 +17,8 @@ import {
   normalizeConnectorImportSourceSet,
   normalizeErrorCategory,
   normalizeFailedDependency,
+  normalizeDepsOperation,
+  normalizeDepsRetryResult,
   normalizeFailedStageIds,
   normalizeSetupErrorKind,
   CONNECTOR_IMPORT_OUTCOMES,
@@ -26,6 +28,8 @@ import {
   type ConnectorImportSourceSet,
   type ErrorCategory,
   type FailedDependency,
+  type DepsOperation,
+  type DepsRetryResult,
   type SymlinkErrorIoKind,
   type SymlinkErrorOperation,
   type SetupErrorKind,
@@ -71,6 +75,9 @@ export interface OnboardingStepProperties {
   failedStageCount?: number;
   failedStages?: StageId[];
   failedDependency?: FailedDependency;
+  depsOperation?: DepsOperation;
+  retryAttempted?: boolean;
+  retryResult?: DepsRetryResult;
   errorCategory?: ErrorCategory;
   failureStage?: StageId;
   /** Setup failures carry a SetupErrorKind; the invite step an InviteErrorKind. */
@@ -400,6 +407,13 @@ export function desktopPropertiesForOnboardingStep(
     }
     if (event.properties.component === 'deps') {
       properties.failedDependency = normalizeFailedDependency(event.properties.failedDependency);
+      if (typeof event.properties.retryAttempted === 'boolean') {
+        properties.retryAttempted = event.properties.retryAttempted;
+      }
+      const retryResult = normalizeDepsRetryResult(event.properties.retryResult);
+      if (retryResult !== undefined) properties.retryResult = retryResult;
+      const depsOperation = normalizeDepsOperation(event.properties.depsOperation);
+      if (depsOperation !== undefined) properties.depsOperation = depsOperation;
     } else if (event.properties.component === 'content') {
       if (
         typeof event.properties.errorOperation === 'string' &&

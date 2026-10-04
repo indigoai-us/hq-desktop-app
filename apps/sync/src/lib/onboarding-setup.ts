@@ -1,3 +1,54 @@
+export const DEPS_OPERATIONS = [
+  'node',
+  'yq',
+  'qmd',
+  'hq-cli',
+  'git',
+  'jq',
+  'gh',
+  'claude-code',
+  'homebrew',
+  'unknown',
+] as const;
+
+export type DepsOperation = (typeof DEPS_OPERATIONS)[number];
+
+export const DEPS_RETRY_RESULTS = [
+  'not-eligible',
+  'recovered',
+  'failed-again',
+  'skipped-flag-off',
+  'skipped-flag-unreadable',
+] as const;
+
+export type DepsRetryResult = (typeof DEPS_RETRY_RESULTS)[number];
+export type DepsTimeoutRetryFlagStatus = 'enabled' | 'disabled' | 'unreadable';
+
+export function depsTimeoutRetryTelemetry(input: {
+  flagStatus: DepsTimeoutRetryFlagStatus;
+  timedOut: boolean;
+  retrySuppressed: boolean;
+  retryAttempted: boolean;
+  retryRecovered: boolean;
+}): { retryAttempted: boolean; retryResult: DepsRetryResult } {
+  if (!input.timedOut || input.retrySuppressed) {
+    return { retryAttempted: false, retryResult: 'not-eligible' };
+  }
+  if (input.retryAttempted && input.flagStatus === 'enabled') {
+    return {
+      retryAttempted: true,
+      retryResult: input.retryRecovered ? 'recovered' : 'failed-again',
+    };
+  }
+  if (input.flagStatus === 'disabled') {
+    return { retryAttempted: false, retryResult: 'skipped-flag-off' };
+  }
+  if (input.flagStatus === 'unreadable') {
+    return { retryAttempted: false, retryResult: 'skipped-flag-unreadable' };
+  }
+  return { retryAttempted: false, retryResult: 'not-eligible' };
+}
+
 export type StageId =
   | 'content'
   | 'deps'
@@ -178,6 +229,18 @@ export const STAGE_ORDER: StageId[] = [
   'indexing',
 ];
 
+export function normalizeDepsOperation(value: unknown): DepsOperation | undefined {
+  return typeof value === 'string' && DEPS_OPERATIONS.includes(value as DepsOperation)
+    ? (value as DepsOperation)
+    : undefined;
+}
+
+export function normalizeDepsRetryResult(value: unknown): DepsRetryResult | undefined {
+  return typeof value === 'string' && DEPS_RETRY_RESULTS.includes(value as DepsRetryResult)
+    ? (value as DepsRetryResult)
+    : undefined;
+}
+
 export function normalizeFailedDependency(value: unknown): FailedDependency {
   return typeof value === 'string' && FAILED_DEPENDENCIES.includes(value as FailedDependency)
     ? (value as FailedDependency)
@@ -207,6 +270,7 @@ export function normalizeFailedStageIds(values: Iterable<unknown>): StageId[] {
 
 export interface SetupFailureTelemetryDetails {
   errorCategory: ErrorCategory;
+  depsOperation?: DepsOperation;
   errorKind?: SetupErrorKind;
   failedDependency?: FailedDependency;
   errorOperation?: SymlinkErrorOperation;
@@ -219,6 +283,7 @@ export function setupFailureTelemetryDetails(input: {
   errorCategory?: unknown;
   errorKind?: unknown;
   failedDependency?: unknown;
+  depsOperation?: unknown;
   errorOperation?: unknown;
   errorIoKind?: unknown;
   errorCode?: unknown;
@@ -253,6 +318,9 @@ export function setupFailureTelemetryDetails(input: {
         errorCategory,
         ...(errorKind === undefined ? {} : { errorKind }),
         failedDependency: normalizeFailedDependency(input.failedDependency),
+        ...(normalizeDepsOperation(input.depsOperation ?? input.failedDependency) === undefined
+          ? {}
+          : { depsOperation: normalizeDepsOperation(input.depsOperation ?? input.failedDependency) }),
       }
     : {
         errorCategory,
@@ -744,6 +812,26 @@ export function resolveFlagWithTimeout(
     flag.then(
       (enabled) => finish(enabled === true),
       () => finish(false),
+    );
+  });
+}
+
+export function resolveFlagStatusWithTimeout(
+  flag: Promise<boolean | null>,
+  timeoutMs: number,
+): Promise<DepsTimeoutRetryFlagStatus> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (status: DepsTimeoutRetryFlagStatus) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(status);
+    };
+    const timer = setTimeout(() => finish('unreadable'), timeoutMs);
+    flag.then(
+      (enabled) => finish(enabled === true ? 'enabled' : enabled === false ? 'disabled' : 'unreadable'),
+      () => finish('unreadable'),
     );
   });
 }

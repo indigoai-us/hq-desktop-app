@@ -242,6 +242,65 @@ describe('onboarding step telemetry', () => {
     expect(JSON.stringify(missingStage)).not.toContain('/Users/alice/HQ/raw-error.txt');
   });
 
+  it('keeps only bounded deps retry outcome fields on failed setup steps', () => {
+    const retryFailure = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        retryAttempted: true,
+        retryResult: 'recovered',
+        depsOperation: 'git',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(retryFailure).toMatchObject({
+      component: 'deps',
+      retryAttempted: true,
+      retryResult: 'recovered',
+      depsOperation: 'git',
+    });
+
+    const invalid = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'deps',
+        retryAttempted: 'yes',
+        retryResult: 'retry with npm install -g private-package',
+        depsOperation: '/Users/alice/HQ/private-path',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(invalid).not.toHaveProperty('retryAttempted');
+    expect(invalid).not.toHaveProperty('retryResult');
+    expect(invalid).not.toHaveProperty('depsOperation');
+
+    const nonDeps = desktopPropertiesForOnboardingStep({
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      occurredAt: '2026-09-09T10:00:00.000Z',
+      properties: {
+        step: 'setup',
+        action: 'failed',
+        component: 'content',
+        retryAttempted: true,
+        retryResult: 'failed-again',
+        depsOperation: 'git',
+        surface: 'desktop_installer',
+        platform: 'windows',
+      } as never,
+    });
+    expect(nonDeps).not.toHaveProperty('retryAttempted');
+    expect(nonDeps).not.toHaveProperty('retryResult');
+    expect(nonDeps).not.toHaveProperty('depsOperation');
+  });
+
   it('keeps failed-run dependency, category, stages, and run identifier in telemetry', () => {
     const depsFailure = desktopPropertiesForOnboardingStep({
       sessionId: '11111111-1111-4111-8111-111111111111',
