@@ -624,3 +624,46 @@ export function rememberRemovedBot(
   }
   return next;
 }
+
+type RemovalStorage = Pick<Storage, "getItem" | "setItem">;
+
+/**
+ * The cancelled bots that still exist, for the account.
+ *
+ * They used to be kept per company scope. A removal begun with the sidebar
+ * on one scope was then not found by the sidebar for another, and the bot
+ * stayed alive until the first scope was shown again. They are kept for the
+ * account now. `legacy` is the per-scope place they used to be written to:
+ * what is still there is taken over once and cleared, so a removal that was
+ * under way before this change is not lost.
+ */
+export function loadAccountBotRemovals(
+  account: RemovalStorage | null | undefined,
+  legacy: RemovalStorage | null | undefined,
+): BotRemoval[] {
+  const kept = loadOpenBotRemovals(account);
+  const old = legacy ? loadOpenBotRemovals(legacy) : [];
+  if (!old.length) return kept;
+  const merged = [...kept, ...old.filter((entry) => !kept.some((other) => other.agentUid === entry.agentUid))];
+  saveOpenBotRemovals(merged, account);
+  saveOpenBotRemovals([], legacy);
+  return merged;
+}
+
+/** The bots confirmed removed, for the account. `legacy` as in `loadAccountBotRemovals`. */
+export function loadAccountRemovedBots(
+  account: RemovalStorage | null | undefined,
+  legacy: RemovalStorage | null | undefined,
+): string[] {
+  const kept = loadRemovedBots(account);
+  const old = legacy ? loadRemovedBots(legacy) : [];
+  if (!old.length) return kept;
+  const merged = [...new Set([...kept, ...old])].slice(0, 200);
+  try {
+    account?.setItem(REMOVED_BOTS_STORAGE_KEY, JSON.stringify(merged));
+    legacy?.setItem(REMOVED_BOTS_STORAGE_KEY, "[]");
+  } catch {
+    // best-effort
+  }
+  return merged;
+}

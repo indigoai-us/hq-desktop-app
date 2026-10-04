@@ -8,6 +8,8 @@ import {
   botRemovalRetryLabel,
   canRetryBotRemoval,
   cancelBotConfirmCopy,
+  loadAccountBotRemovals,
+  loadAccountRemovedBots,
   loadOpenBotRemovals,
   loadRemovedBots,
   readBotRemovalAnswer,
@@ -581,5 +583,41 @@ describe("what a cancelled create made (review A-C5)", () => {
     expect(line).not.toContain("Nothing was created");
     expect(line).not.toContain(LONG_DASH);
     expect(canRetryBotRemoval({ phase: "unconfirmed", agentUid: "", problem: null })).toBe(false);
+  });
+});
+
+describe("cancelled bots are kept for the account (round 4, item 1)", () => {
+  const removing = (agentUid: string): BotRemoval => beginBotRemoval({ name: agentUid, companyUid: "cmp_indigo", agentUid, hadRow: true });
+
+  it("reads the account's list, and takes over once what the old per-company place still holds", () => {
+    const account = memoryStorage();
+    const legacy = memoryStorage();
+    saveOpenBotRemovals([removing("agt_a")], account);
+    saveOpenBotRemovals([removing("agt_a"), removing("agt_b")], legacy);
+
+    expect(loadAccountBotRemovals(account, legacy).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+    // Written to the account, and gone from the old place.
+    expect(loadOpenBotRemovals(account).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+    expect(loadOpenBotRemovals(legacy)).toEqual([]);
+    // A second read finds nothing more to take over.
+    expect(loadAccountBotRemovals(account, legacy).map((entry) => entry.agentUid)).toEqual(["agt_a", "agt_b"]);
+  });
+
+  it("reads the account's list alone when there is no old place", () => {
+    const account = memoryStorage();
+    saveOpenBotRemovals([removing("agt_a")], account);
+    expect(loadAccountBotRemovals(account, null).map((entry) => entry.agentUid)).toEqual(["agt_a"]);
+    expect(loadAccountBotRemovals(null, null)).toEqual([]);
+  });
+
+  it("does the same for the bots that were removed", () => {
+    const account = memoryStorage();
+    const legacy = memoryStorage();
+    rememberRemovedBot([], "agt_x", account);
+    rememberRemovedBot(["agt_x"], "agt_y", legacy);
+
+    expect(loadAccountRemovedBots(account, legacy).sort()).toEqual(["agt_x", "agt_y"]);
+    expect(loadRemovedBots(account).sort()).toEqual(["agt_x", "agt_y"]);
+    expect(loadRemovedBots(legacy)).toEqual([]);
   });
 });

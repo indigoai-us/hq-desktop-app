@@ -202,8 +202,8 @@
   import NewBotTakeover from "./create-bot/NewBotTakeover.svelte";
   import {
     beginBotRemoval,
-    loadOpenBotRemovals,
-    loadRemovedBots,
+    loadAccountBotRemovals,
+    loadAccountRemovedBots,
     rememberRemovedBot,
     CANCELLED_CREATE_LOOKUP_DELAYS_MS,
     readCancelledCreate,
@@ -1103,10 +1103,20 @@
   /** The bot whose waiting screen the takeover shows. Null: the create screen. */
   let openWakingKey = $state<string | null>(null);
   let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
-  /** Cancelled bots: what is being removed, what was removed, what was not. */
-  let botRemovals = $state<BotRemoval[]>(loadOpenBotRemovals(storage));
+  /**
+   * Where cancelled bots used to be written: the company partition this
+   * sidebar is scoped to. Null when that is the account's own partition.
+   */
+  const legacyRemovalStorage =
+    (tenantCompanyId ?? "").trim() && (tenantCompanyId ?? "").trim() !== "all" ? storage : null;
+  /**
+   * Cancelled bots: what is being removed, what was removed, what was not.
+   * Kept for the account, so the sidebar for any company scope finds a
+   * removal that is under way and goes on with it.
+   */
+  let botRemovals = $state<BotRemoval[]>(loadAccountBotRemovals(accountStorage, legacyRemovalStorage));
   /** Bots the server confirmed removed. Their conversation stays off the list. */
-  let removedBotUids = $state<string[]>(loadRemovedBots(storage));
+  let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
@@ -1210,7 +1220,8 @@
         }), botSetupChannels),
       ),
       // A cancel whose create has no known outcome names no bot and has no row.
-      botRemovals.filter((removal): removal is BotRemoval & { phase: Exclude<BotRemoval["phase"], "unconfirmed"> } => removal.phase !== "unconfirmed"),
+      // Nor has a cancelled bot of a company this sidebar is not showing.
+      botRemovals.filter((removal): removal is BotRemoval & { phase: Exclude<BotRemoval["phase"], "unconfirmed"> } => removal.phase !== "unconfirmed" && wakingBotInScope(removal)),
       removedBotUids,
     ),
   );
@@ -2151,7 +2162,7 @@
 
   function setBotRemovals(next: BotRemoval[]): void {
     botRemovals = next;
-    saveOpenBotRemovals(next, storage);
+    saveOpenBotRemovals(next, accountStorage);
   }
 
   function patchBotRemoval(id: string, patch: Partial<BotRemoval>): void {
@@ -2535,7 +2546,7 @@
     }
     // Gone on the server: forget the bot here, and keep its conversation off
     // the list, because the server leaves the thread behind.
-    removedBotUids = rememberRemovedBot(removedBotUids, agentUid, storage);
+    removedBotUids = rememberRemovedBot(removedBotUids, agentUid, accountStorage);
     endWakingBot({ agentUid, channelId: "" });
     forgetKeysOfRemovedBot(removal.companyUid, removal.name);
     patchBotRemoval(id, { phase: "removed", problem: null });

@@ -1982,6 +1982,62 @@ describe("A removal that is still going when the sidebar goes away (review item 
     expect(mostAtOnce).toBeLessThanOrEqual(2);
   });
 
+  it("goes on in the sidebar for another company scope, so the bot does not stay alive (round 4, item 1)", async () => {
+    // Cancel with every company in view. The server is still at it when the
+    // person switches the sidebar to one company and it is rebuilt.
+    let answer: unknown = WORKING;
+    const removeAgent = vi.fn(async () => answer);
+    const onbotremoved = vi.fn();
+    const props = { oncreatenewbot: async () => created("agt_nova"), removeAgent, onbotremoved, botRemovalRetryMs: 5 };
+    mountSidebar(props);
+    await settle();
+    await startBot("Nova");
+    await cancelAndConfirm();
+    await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThanOrEqual(2));
+
+    await unmount(component!);
+    component = null;
+    await wait(30);
+    const before = removeAgent.mock.calls.length;
+    // The sidebar for a company scope. It is not the scope Cancel was pressed in.
+    mountSidebar({ ...props, tenantCompanyId: "cmp_acme", scopeUid: "cmp_acme" });
+    await vi.waitFor(() => expect(removeAgent.mock.calls.length).toBeGreaterThan(before + 1));
+    expect(removeAgent).toHaveBeenLastCalledWith("agt_nova", undefined);
+
+    answer = REMOVED;
+    await vi.waitFor(() => expect(onbotremoved).toHaveBeenCalledWith("agt_nova"));
+    expect(stored(OPEN_BOT_REMOVALS_STORAGE_KEY)).toEqual([]);
+    expect(stored(REMOVED_BOTS_STORAGE_KEY)).toEqual(["agt_nova"]);
+    // A cancelled bot of another company gets no row in this company's sidebar.
+    expect(q('[data-conversation-id="dm:agt_nova"]')).toBeNull();
+  });
+
+  it("takes over a removal that was written down per company before this change, once", async () => {
+    const legacyKey = (key: string): string => tenantStorageKey({ accountId: ACCOUNT, companyId: "cmp_indigo" }, key);
+    window.localStorage.setItem(
+      legacyKey(OPEN_BOT_REMOVALS_STORAGE_KEY),
+      JSON.stringify([
+        { name: "Nova", companyUid: "cmp_indigo", agentUid: "agt_nova", channelId: "", phase: "removing", hadRow: true, startedAt: 1, problem: null },
+      ]),
+    );
+    window.localStorage.setItem(legacyKey(REMOVED_BOTS_STORAGE_KEY), JSON.stringify(["agt_gone"]));
+    const removeAgent = vi.fn(async () => WORKING);
+    mountSidebar({
+      oncreatenewbot: async () => created("agt_other"),
+      removeAgent,
+      botRemovalRetryMs: 5,
+      tenantCompanyId: "cmp_indigo",
+      scopeUid: "cmp_indigo",
+    });
+    await vi.waitFor(() => expect(removeAgent).toHaveBeenCalledWith("agt_nova", undefined));
+
+    // It is the account's now, and the old place is empty.
+    expect(stored(OPEN_BOT_REMOVALS_STORAGE_KEY)).toMatchObject([{ agentUid: "agt_nova", phase: "removing" }]);
+    expect(stored(REMOVED_BOTS_STORAGE_KEY)).toEqual(["agt_gone"]);
+    expect(JSON.parse(window.localStorage.getItem(legacyKey(OPEN_BOT_REMOVALS_STORAGE_KEY)) ?? "null")).toEqual([]);
+    expect(JSON.parse(window.localStorage.getItem(legacyKey(REMOVED_BOTS_STORAGE_KEY)) ?? "null")).toEqual([]);
+  });
+
   it("asks nothing while the window is hidden, and goes on when it is shown again", async () => {
     seedRemoval();
     const original = Object.getOwnPropertyDescriptor(Document.prototype, "hidden");
