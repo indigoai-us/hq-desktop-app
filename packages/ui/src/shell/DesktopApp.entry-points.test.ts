@@ -626,6 +626,7 @@ describe("DesktopApp New bot takeover", () => {
   const NEW_BOT_FLAG = "agents.desktop-agent-creation";
   const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
   const BOT_CONNECTION_CARDS_STORAGE_KEY = "hq.chat.botConnectionCards.v1";
+  const BOT_HELLO_ASKED_STORAGE_KEY = "hq.chat.botHelloAskedAt.v1";
 
   const GLOBEX_WORKSPACE = {
     ...ACME_WORKSPACE,
@@ -953,6 +954,13 @@ describe("DesktopApp New bot takeover", () => {
       audience: "agent",
       idempotencyKey: "new-bot-hello-agt_nova",
     });
+    // B-8: the time of the request is kept on this device, so the bot's first
+    // message can be found later on a page that leaves the request out.
+    const before = Date.now();
+    await vi.waitFor(() => expect(stored(BOT_HELLO_ASKED_STORAGE_KEY)).toContain("agt_nova"));
+    const asked = (JSON.parse(stored(BOT_HELLO_ASKED_STORAGE_KEY)) as Record<string, number>).agt_nova!;
+    expect(asked).toBeGreaterThan(before - 60_000);
+    expect(asked).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 
   it("the in-modal create sends none of surface, conversation or deferChannels, and opens the new bot's channel", async () => {

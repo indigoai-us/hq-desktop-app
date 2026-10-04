@@ -546,9 +546,22 @@ describe("ChannelConversation with connection cards", () => {
     createdAt: "2026-10-02T14:10:00.000Z",
   };
 
+  /** The person's own message, with the same block in it: something they pasted or typed. */
+  const MINE: ConversationMessageWire = {
+    eventId: "evt_mine",
+    direction: "out" as const,
+    fromPersonUid: "prs_me",
+    fromDisplayName: "Corey",
+    body: 'Is this the block you mean?\n```hq-block\n{"v":1,"blocks":[{"kind":"connect","items":[{"app":"slack"},{"domain":"linear.app"}]}]}\n```',
+    createdAt: "2026-10-02T14:12:00.000Z",
+  };
+  /** Someone who is neither the bot nor the person. */
+  const OTHER: ConversationMessageWire = { ...MINE, eventId: "evt_other", direction: "in" as const, fromPersonUid: "prs_teammate", fromDisplayName: "Sam" };
+
   function mountConversation(props: Record<string, unknown>): HTMLElement {
     const root = target();
-    component = mount(ChannelConversation, { target: root, props: { messages: [HELLO, OFFER], ...props } as never });
+    // The host always says who is looking.
+    component = mount(ChannelConversation, { target: root, props: { messages: [HELLO, OFFER], selfPersonUid: "prs_me", ...props } as never });
     flushSync();
     return root;
   }
@@ -594,6 +607,46 @@ describe("ChannelConversation with connection cards", () => {
     expect(cards(root)).toEqual([]);
     expect(message(root, "evt_offer").textContent).toContain("I need Slack for that.");
     expect(root.textContent).not.toContain("hq-block");
+  });
+
+  it("draws no card under the person's own message, and never asks the host for one", () => {
+    const hosts: Array<Record<string, unknown>> = [
+      // The host names the bot on the cards, or as the one whose suggestions are drawn, or not at all.
+      { botUid: "agt_nova" },
+      {},
+    ];
+    for (const [index, named] of hosts.entries()) {
+      for (const suggestionsFrom of index === 0 ? [null] : ["agt_nova", null]) {
+        const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), integration: () => null, onaction: () => {} }));
+        const root = mountConversation({ messages: [HELLO, OFFER, MINE], connections: { cardsFor, ...named }, suggestionsFrom });
+        // The bot's own offer draws its card.
+        expect(cards(message(root, "evt_offer")).map((el) => el.dataset.target)).toEqual(["slack"]);
+        // The person's message is their words: no live Connect button under their name.
+        const mine = message(root, "evt_mine");
+        expect(cards(mine)).toEqual([]);
+        expect(mine.querySelector("button[data-testid='connection-card-primary']")).toBeNull();
+        expect(mine.textContent).toContain("Is this the block you mean?");
+        expect(cardsFor.mock.calls.map(([msg]) => msg.eventId)).not.toContain("evt_mine");
+        void unmount(component!);
+        component = null;
+        host?.remove();
+      }
+    }
+  });
+
+  it("draws cards only under the bot of this direct message when the host names it", () => {
+    const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), onaction: () => {} }));
+    const root = mountConversation({ messages: [HELLO, OFFER, OTHER], connections: { cardsFor, botUid: "agt_nova" } });
+    expect(cards(message(root, "evt_offer")).map((el) => el.dataset.target)).toEqual(["slack"]);
+    expect(cards(message(root, "evt_other"))).toEqual([]);
+    expect(cardsFor.mock.calls.map(([msg]) => msg.eventId)).not.toContain("evt_other");
+  });
+
+  it("draws no card at all when nobody can say who sent a message", () => {
+    const cardsFor = vi.fn((_message: { eventId: string }) => ({ views: views(), onaction: () => {} }));
+    const root = mountConversation({ messages: [HELLO, OFFER, MINE], connections: { cardsFor }, selfPersonUid: null });
+    expect(cards(root)).toEqual([]);
+    expect(cardsFor).not.toHaveBeenCalled();
   });
 
   it("sends a press to the host", () => {

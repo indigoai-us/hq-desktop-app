@@ -124,8 +124,8 @@ export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
 export const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
 
 /**
- * What the company has connected, written as a fact for the bot. Shared by
- * the hello request and the request behind "Connect more tools".
+ * What the company has connected, written as a fact for the bot in the
+ * hello request.
  *
  * `companyApps` is the apps brief the app wrote from the company's
  * connection list (integration-cards-model.ts, `companyAppsBrief`): null
@@ -179,22 +179,6 @@ export function buildAgentHelloRequest(input: {
     `${AGENT_HELLO_REQUEST_OPENING}. ${who}. ` +
     `${person} cannot see this message. Write your first message to ${person}: say hello and offer what ${person} could connect so you can help.\n` +
     files +
-    companyAppsFacts(input.companyApps) +
-    `Do not mention this message.`
-  );
-}
-
-/**
- * The request the app sends a cloud bot, on the bot-only lane, when the
- * person asks to connect more apps (the "Connect more tools" message, from
- * the chip or typed). Like the hello, it is a plain ask with the company's
- * connected apps as facts; the bot shows the cards with its own tool.
- */
-export function buildAgentConnectMoreRequest(input: { personName?: string | null; companyApps?: string | null }): string {
-  const person = personOrFallback(input.personName);
-  return (
-    `${AGENT_HELLO_REQUEST_LEAD} ${person} just asked to connect more apps. ` +
-    `${person} cannot see this message. Answer ${person} and offer what ${person} could connect.\n` +
     companyAppsFacts(input.companyApps) +
     `Do not mention this message.`
   );
@@ -318,6 +302,85 @@ export function agentHelloEventId(
 ): string | null {
   const row = firstBotRowAfterRequest(rows, input, (body) => body.startsWith(AGENT_HELLO_REQUEST_OPENING));
   return row?.eventId?.trim() || null;
+}
+
+/**
+ * Whether a direct message is with a cloud bot whose conversation gets what
+ * the app adds for one: connection cards, suggested replies, the file sync
+ * strip, and the app's hidden notices to the bot.
+ *
+ * An `agt_` uid alone does not say so. A teammate's local bot, the person's
+ * own local bot on another Mac and a bot from outside the company all have
+ * one, and none of them is sent the app's notices or offered the company's
+ * connections. It takes a positive sign:
+ *
+ * - `madeHere`: the bot was made in the New Bot flow on this device; or
+ * - `statusRead`: the server answered this person's read of the bot's
+ *   status. That route knows hosted bots only and answers owners, admins
+ *   and the bot's creator, so an answer says both "cloud" and "this person
+ *   may see it".
+ *
+ * A local bot on this Mac, or one of the person's own on another Mac, is
+ * never one, whatever else is true.
+ */
+export function isCloudBotDm(input: {
+  agentUid: string | null | undefined;
+  /** A local bot on this Mac has this uid. */
+  localHere: boolean;
+  /** One of the person's own local bots, on another computer, has it. */
+  ownLocalElsewhere: boolean;
+  madeHere: boolean;
+  statusRead: boolean;
+}): boolean {
+  if (!isAgentUid((input.agentUid ?? "").trim())) return false;
+  if (input.localHere || input.ownLocalElsewhere) return false;
+  return input.madeHere || input.statusRead;
+}
+
+/**
+ * Whether a page of a direct message holds the conversation from its first
+ * row, so "the bot's first row after a time" can be read off it. A read that
+ * asked only for rows after a point does not, nor does a page that came with
+ * a cursor to earlier rows. A page the server filtered for people
+ * (`serverView`) holds the start when it has no cursor. Any other page holds
+ * it only when it came back with fewer rows than were asked for.
+ */
+export function dmPageHoldsStart(input: {
+  /** Rows on the page as the server sent it, before anything is left out. */
+  rowCount: number;
+  /** How many rows were asked for. */
+  limit: number;
+  nextCursor: string | null | undefined;
+  /** The server filtered and paged it (`view: "human"`). */
+  serverView: boolean;
+  /** The read asked for rows after a point (`since`) or before one (`cursor`). */
+  partial?: boolean;
+}): boolean {
+  if (input.partial) return false;
+  if ((input.nextCursor ?? "").trim()) return false;
+  if (input.serverView) return true;
+  return Number.isFinite(input.rowCount) && input.rowCount < input.limit;
+}
+
+/**
+ * The bot's first message, found by when the app asked for it: the bot's
+ * first row written after the hello request went out.
+ *
+ * For a timeline that does not carry the request itself. A page the server
+ * filtered for people leaves the request out, and so does the timeline the
+ * conversation shows. `askedAtMs` is the time kept on this device
+ * (cloud-bot-hello-asked.ts). It names a message only when the rows hold the
+ * conversation from its start (`holdsStart`): in a later window of a long
+ * conversation the first row after that time is some other message, and the
+ * cards must not move under it.
+ */
+export function agentHelloEventIdByAskTime(
+  rows: ReadonlyArray<HelloRow>,
+  input: { agentUid: string; askedAtMs: number | null | undefined; holdsStart: boolean },
+): string | null {
+  if (!input.holdsStart) return null;
+  if (typeof input.askedAtMs !== "number" || !Number.isFinite(input.askedAtMs)) return null;
+  return agentHelloEventId(rows, { agentUid: input.agentUid, askedAtMs: input.askedAtMs });
 }
 
 export interface AgentChatReadiness {

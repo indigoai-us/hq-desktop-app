@@ -2,25 +2,32 @@
 
 // The Connect Slack flow inside the Slack card's modal: one stage at a time,
 // read from the bot's status. Attach is sent as the modal opens, once per
-// bot, and again only from Try again. The pasted token never leaves the
-// field and the one request that carries it.
+// bot, and again only from Try again, each time after the status has been
+// read again. The pasted token never leaves the field and the one request
+// that carries it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
-import SlackConnectModal from "./SlackConnectModal.svelte";
+import SlackConnectModal, { forgetSlackAttaches } from "./SlackConnectModal.svelte";
 import type { CardModalContentProps } from "./card-modal-registry.js";
-import { SLACK_COPIED_MS, SLACK_FINISHING_SLOW_MS, SLACK_TOKEN_ACCEPT_GRACE_MS } from "./slack-connect-model.js";
+import { SLACK_ATTACH_SETTLE_MS, SLACK_COPIED_MS, SLACK_FINISHING_SLOW_MS, SLACK_TOKEN_ACCEPT_GRACE_MS } from "./slack-connect-model.js";
 
 /**
- * An obviously fake app-level token. Never a real one. Too short to count as
- * a whole token, so pasting it waits for Connect, as most tests here want.
+ * An obviously fake app-level token. Never a real one. Not in the shape of a
+ * whole token, so pasting it waits for Connect, as most tests here want.
  */
 const TOKEN = "xapp-test-0000";
-/** A fake token long enough to be sent the moment it is pasted. */
-const WHOLE_TOKEN = "xapp-test-0000-aaaa-bbbb";
-const OTHER_WHOLE_TOKEN = "xapp-test-1111-cccc-dddd";
+/**
+ * Fake tokens in the exact shape Slack writes one, so they are sent the
+ * moment they are pasted. Put together here, from parts that are plainly not
+ * a real token, so no token-shaped text sits in the source.
+ */
+const WHOLE_TOKEN = ["xapp", "1", "A0FAKE0TEST", "0000000000000", "0".repeat(64)].join("-");
+const OTHER_WHOLE_TOKEN = ["xapp", "1", "A0FAKE0TEST", "0000000000000", "1".repeat(64)].join("-");
+/** What the looser rule took for a whole token. It waits for Connect now. */
+const LOOSE_TOKEN = "xapp-test-0000-aaaa-bbbb";
 const NOVA = "agt_nova";
 const INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0TEST";
 const FRESH_INSTALL = "https://slack.com/oauth/v2/authorize?client_id=1.2&scope=chat%3Awrite&state=A0FRESH";
@@ -107,6 +114,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   await takeDown();
+  // The modal remembers attaches across its instances, by bot.
+  forgetSlackAttaches();
   shell.remove();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -185,12 +194,45 @@ const howtoLines = () =>
   );
 const copyButton = () => byId<HTMLButtonElement>("slack-connect-copy-scope")!;
 
+/** The person pastes a value into the token field: a paste event, then the change it makes. */
 function paste(value: string): void {
   const input = tokenField()!;
   input.focus();
+  input.dispatchEvent(new Event("paste", { bubbles: true }));
   input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromPaste" }));
   flushSync();
+}
+
+/** The person types a value into the token field, one character at a time. */
+function typeIn(value: string): void {
+  const input = tokenField()!;
+  input.focus();
+  for (let i = input.value.length + 1; i <= value.length; i += 1) {
+    input.value = value.slice(0, i);
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value[i - 1] }));
+    flushSync();
+  }
+}
+
+/**
+ * The server sets the bot up when it is asked to: from that answer on, the
+ * bot's status shows the setup. `hold` leaves the request on its way until
+ * the function it returns is called.
+ */
+function attachSetsUp(next: unknown = WAITING_FOR_APPROVAL, hold = false): () => void {
+  let finish: () => void = () => {};
+  attachSlack.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => {
+          serverStatus = next;
+          resolve(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+        };
+        if (!hold) finish();
+      }),
+  );
+  return () => finish();
 }
 
 /** Stand in a clipboard, or take it away, for one test. */
@@ -218,9 +260,7 @@ function expectTokenNowhere(): void {
 
 describe("the Connect Slack modal: each stage", () => {
   it("opens straight into the list with step 1 current and its spinner, and calls attach once", async () => {
-    let finish: (value: unknown) => void = () => {};
-    attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
-    serverStatus = WAITING_FOR_APPROVAL;
+    const finish = attachSetsUp(WAITING_FOR_APPROVAL, true);
     render();
     await settle();
     expect(stage()).toBe("approve");
@@ -242,7 +282,7 @@ describe("the Connect Slack modal: each stage", () => {
     expect(submitSlackAppToken).not.toHaveBeenCalled();
     expect(started).not.toHaveBeenCalled();
 
-    finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+    finish();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(byId("slack-connect-starting")).toBeNull();
@@ -536,9 +576,7 @@ describe("the Connect Slack modal: the attach", () => {
   });
 
   it("holds the modal while the attach is on its way, then puts focus on Open Slack", async () => {
-    let finish: (value: unknown) => void = () => {};
-    attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
-    serverStatus = WAITING_FOR_APPROVAL;
+    const finish = attachSetsUp(WAITING_FOR_APPROVAL, true);
     render();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
@@ -550,12 +588,16 @@ describe("the Connect Slack modal: the attach", () => {
     expect(started).not.toHaveBeenCalled();
     // Nothing to press yet: the keyboard stays in the dialog.
     expect(document.activeElement).toBe(dialog());
+    // The status was read once, before the attach was sent.
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh.mock.invocationCallOrder[0]!).toBeLessThan(attachSlack.mock.invocationCallOrder[0]!);
 
-    finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+    finish();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalledTimes(1);
+    // And once more after it, to show what the server made.
+    expect(refresh).toHaveBeenCalledTimes(2);
     expect(stage()).toBe("approve");
     expect(closeX().disabled).toBe(false);
     expect(byId("slack-connect-start")).toBeNull();
@@ -563,9 +605,7 @@ describe("the Connect Slack modal: the attach", () => {
   });
 
   it("does not attach twice when the modal is taken down and opened again while the attach is on its way", async () => {
-    let finish: (value: unknown) => void = () => {};
-    attachSlack.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
-    serverStatus = WAITING_FOR_APPROVAL;
+    const finish = attachSetsUp(WAITING_FOR_APPROVAL, true);
     render();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
@@ -578,7 +618,7 @@ describe("the Connect Slack modal: the attach", () => {
     expect(statusLines()).toEqual(["working:Setting things up in Slack."]);
     expect(closeX().disabled).toBe(true);
     // The answer reaches the modal that is open now.
-    finish(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
+    finish();
     await settle();
     expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledTimes(1);
@@ -637,17 +677,21 @@ describe("the Connect Slack modal: the attach", () => {
 
   it("goes on from the status when the server says Slack is already connected", async () => {
     attachSlack.mockResolvedValueOnce(refusal("SLACK_ATTACH_ALREADY_CONNECTED", 409));
+    // The status read before the attach is a moment behind: it shows no Slack yet.
+    refresh.mockImplementationOnce(async () => {});
     serverStatus = CONNECTED;
     render();
     await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
     expect(stage()).toBe("connected");
     expect(document.querySelector('[data-testid="card-modal-status"][data-kind="problem"]')).toBeNull();
     expect(started).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the failure under step 1 with Try again when Slack did not answer, and the list stays", async () => {
-    for (const failure of [refusal("SLACK_FACTORY_ROTATE_UNAVAILABLE", 409), refusal("CHANNEL_ATTACH_FAILED", 502), refusal("network")]) {
+  it("shows the failure under step 1 with Try again when the server says the setup failed, and the list stays", async () => {
+    for (const failure of [refusal("SLACK_FACTORY_ROTATE_UNAVAILABLE", 409), refusal("CHANNEL_ATTACH_FAILED", 502)]) {
       attachSlack.mockReset();
+      refresh.mockClear();
       attachSlack.mockResolvedValueOnce(failure);
       render();
       await settle();
@@ -665,20 +709,91 @@ describe("the Connect Slack modal: the attach", () => {
       expect(started).not.toHaveBeenCalled();
       // Focus is on the button, ready for the retry.
       expect(document.activeElement).toBe(startButton());
-      // Try again asks once more, and works.
-      attachSlack.mockResolvedValueOnce(ok({ config: SOCKET_ROW, followUpUrl: INSTALL }));
-      serverStatus = WAITING_FOR_APPROVAL;
+      // Try again reads the status again first. The bot still has no Slack, and the
+      // server itself said the setup failed, so it asks once more, and works.
+      attachSetsUp();
+      const readsBefore = refresh.mock.calls.length;
       startButton().click();
       await settle();
       expect(attachSlack).toHaveBeenCalledTimes(2);
+      expect(refresh.mock.invocationCallOrder[readsBefore]!).toBeLessThan(attachSlack.mock.invocationCallOrder[1]!);
       expect(stage()).toBe("approve");
       expect(byId("slack-connect-attach-error")).toBeNull();
       expect(byId("slack-connect-start")).toBeNull();
       expect(document.activeElement).toBe(byId("slack-connect-open-slack"));
       await takeDown();
+      forgetSlackAttaches();
       serverStatus = NO_SLACK;
       started.mockClear();
     }
+  });
+
+  it("Try again sends no second attach when the status shows the first one landed after all", async () => {
+    // The request timed out here, and the server finished it anyway.
+    attachSlack.mockResolvedValueOnce(refusal("network"));
+    render();
+    await settle();
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
+    serverStatus = WAITING_FOR_APPROVAL;
+    startButton().click();
+    await settle();
+    // The status was read first and shows the setup: nothing more is asked for.
+    expect(attachSlack).toHaveBeenCalledTimes(1);
+    expect(stage()).toBe("approve");
+    expect(byId("slack-connect-attach-error")).toBeNull();
+    expect(byId("slack-connect-open-slack")).not.toBeNull();
+  });
+
+  it("Try again sends no second attach while the first, unanswered, may still be running on the server", async () => {
+    for (const unanswered of [refusal("network"), refusal("http-504", 504), null]) {
+      attachSlack.mockReset();
+      if (unanswered === null) attachSlack.mockRejectedValueOnce(new Error("offline"));
+      else attachSlack.mockResolvedValueOnce(unanswered);
+      render();
+      await settle();
+      expect(attachSlack).toHaveBeenCalledTimes(1);
+      expect(statusLines()).toEqual(["problem:Slack did not answer. Try again."]);
+      // Pressed at once, and again a minute later: the status still shows no
+      // Slack, and the first request may still be creating the app.
+      for (const wait of [0, 60_000, SLACK_ATTACH_SETTLE_MS - 60_001]) {
+        clock += wait;
+        const readsBefore = refresh.mock.calls.length;
+        startButton().click();
+        await settle();
+        expect(refresh.mock.calls.length).toBe(readsBefore + 1);
+        expect(attachSlack).toHaveBeenCalledTimes(1);
+        expect(statusLines()).toEqual(["problem:Slack may still be setting this up. Wait a minute, then try again."]);
+        expect(startButton().textContent!.trim()).toBe("Try again");
+        expect(document.activeElement).toBe(startButton());
+      }
+      // A modal closed and opened again for the same bot knows it too.
+      await takeDown();
+      render();
+      await settle();
+      expect(attachSlack).toHaveBeenCalledTimes(1);
+      expect(statusLines()).toEqual(["problem:Slack may still be setting this up. Wait a minute, then try again."]);
+      // The wait has passed and the status still shows nothing: the first did not land. Now it asks again.
+      clock += 2;
+      attachSetsUp();
+      startButton().click();
+      await settle();
+      expect(attachSlack).toHaveBeenCalledTimes(2);
+      expect(byId("slack-connect-open-slack")).not.toBeNull();
+      await takeDown();
+      forgetSlackAttaches();
+      serverStatus = NO_SLACK;
+    }
+  });
+
+  it("reads the status before every attach, even when it already has one", async () => {
+    // The modal opens with a status that says no Slack. The server has one by now.
+    serverStatus = WAITING_FOR_TOKEN;
+    render({ status: NO_SLACK });
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(attachSlack).not.toHaveBeenCalled();
+    expect(stage()).toBe("token");
   });
 
   it("treats a request that throws as Slack not answering", async () => {
@@ -804,7 +919,7 @@ describe("the Connect Slack modal: a token pasted whole", () => {
 
   it("waits for Connect when what was pasted is not a whole token", async () => {
     render({ status: WAITING_FOR_TOKEN });
-    for (const partial of ["xapp-", "xapp-short", TOKEN, `${WHOLE_TOKEN} with a space`, "token-0000-aaaa-bbbb"]) {
+    for (const partial of ["xapp-", "xapp-short", TOKEN, LOOSE_TOKEN, WHOLE_TOKEN.slice(0, -1), `${WHOLE_TOKEN} with a space`, "token-0000-aaaa-bbbb"]) {
       paste(partial);
       await settle();
     }
@@ -827,7 +942,7 @@ describe("the Connect Slack modal: a token pasted whole", () => {
     await settle();
     expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
     expect(fieldError()).toBe("Could not check the token with Slack. Try again.");
-    // The value stays, as it does after Connect. Typing over it with the same value sends nothing.
+    // The value stays, as it does after Connect. Pasting the same value over it sends nothing.
     expect(tokenField()!.value).toBe(WHOLE_TOKEN);
     expect(document.activeElement).toBe(tokenField());
     paste(WHOLE_TOKEN);
@@ -865,6 +980,62 @@ describe("the Connect Slack modal: a token pasted whole", () => {
     expect(stage()).toBe("finishing");
     expect(document.body.innerHTML).not.toContain(WHOLE_TOKEN);
     expect(document.body.innerHTML).not.toContain(OTHER_WHOLE_TOKEN);
+  });
+
+  it("never sends by itself while the person is typing, and never clears the field under them", async () => {
+    // The looser rule sent a value the moment it looked long enough. Slack
+    // refused the half-typed token and the field was emptied mid-entry.
+    submitSlackAppToken.mockResolvedValue(refusal("SLACK_APP_TOKEN_REJECTED", 400));
+    render({ status: WAITING_FOR_TOKEN });
+    typeIn(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).not.toHaveBeenCalled();
+    expect(started).not.toHaveBeenCalled();
+    expect(tokenField()!.value).toBe(WHOLE_TOKEN);
+    expect(fieldError()).toBeNull();
+    expect(statusLines()).toEqual([]);
+    // Every prefix on the way was left alone too: nothing was sent at any length.
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(0);
+    // Connect sends what was typed.
+    submitSlackAppToken.mockReset();
+    submitSlackAppToken.mockResolvedValueOnce(ok({ ok: true }));
+    serverStatus = TOKEN_STORED;
+    submitButton().click();
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(submitSlackAppToken).toHaveBeenCalledWith(NOVA, WHOLE_TOKEN);
+    expect(stage()).toBe("finishing");
+  });
+
+  it("does not send a pasted value that only looks like a token: the exact shape, or Connect", async () => {
+    render({ status: WAITING_FOR_TOKEN });
+    paste(LOOSE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).not.toHaveBeenCalled();
+    expect(tokenField()!.value).toBe(LOOSE_TOKEN);
+    // The Connect button still takes any value that starts with xapp-.
+    submitButton().click();
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    expect(submitSlackAppToken).toHaveBeenCalledWith(NOVA, LOOSE_TOKEN);
+  });
+
+  it("keeps what the person went on to type when the answer to an earlier value comes back refused", async () => {
+    let finish: (value: unknown) => void = () => {};
+    submitSlackAppToken.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    render({ status: WAITING_FOR_TOKEN });
+    paste(WHOLE_TOKEN);
+    await settle();
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
+    // The person starts over while that is on its way.
+    const input = tokenField()!;
+    input.value = "xapp-1-A0";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "0" }));
+    flushSync();
+    finish(refusal("SLACK_APP_TOKEN_REJECTED", 400));
+    await settle();
+    expect(tokenField()!.value).toBe("xapp-1-A0");
+    expect(submitSlackAppToken).toHaveBeenCalledTimes(1);
   });
 
   it("is forgotten with the field when the modal closes: the same value pasted later is sent again", async () => {
@@ -1090,7 +1261,7 @@ describe("the Connect Slack modal: the token", () => {
     const logs = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
       vi.spyOn(console, level).mockImplementation(() => {}),
     );
-    serverStatus = WAITING_FOR_APPROVAL;
+    attachSetsUp();
     render();
     await settle();
     byId<HTMLButtonElement>("slack-connect-open-slack")!.click();

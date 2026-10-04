@@ -8,7 +8,9 @@ import {
   AGENT_HELLO_REQUEST_MAX_CHARS,
   agentHelloArrived,
   agentHelloEventId,
-  buildAgentConnectMoreRequest,
+  agentHelloEventIdByAskTime,
+  dmPageHoldsStart,
+  isCloudBotDm,
   buildAgentHelloRequest,
   buildAgentSlackConnectedNotice,
   buildAgentToolConnectedNotice,
@@ -298,20 +300,6 @@ describe("the new bot's first message", () => {
     expect(over.length).toBeLessThan(AGENT_HELLO_REQUEST_MAX_CHARS);
   });
 
-  it("the Connect more request is a plain ask with the apps as facts", () => {
-    const brief = "- Linear (linear.app): connected, not shared with you";
-    const text = buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: brief });
-    expect(text.startsWith(AGENT_HELLO_REQUEST_LEAD)).toBe(true);
-    expect(text).toContain("Stefan just asked to connect more apps.");
-    expect(text).toContain("Stefan cannot see this message. Answer Stefan and offer what Stefan could connect.");
-    expect(text).toContain(`The company's connected apps:\n${brief}\n`);
-    expect(text.endsWith("Do not mention this message.")).toBe(true);
-    expectNoCardTeaching(text);
-    expect(text).not.toContain("\u2014");
-    expect(buildAgentConnectMoreRequest({ personName: "Stefan" })).not.toContain("The company's connected apps:");
-    expect(buildAgentConnectMoreRequest({ personName: "Stefan", companyApps: "" })).toContain("The company has no connected apps yet.");
-  });
-
   it("stays well under the direct message body limit, even with a long name", () => {
     const name = "Bartholomew-Maximilian Featherstonehaugh";
     expect(name).toHaveLength(40);
@@ -391,6 +379,72 @@ describe("the hello message the cards sit under", () => {
     const answer = { eventId: "e6", fromPersonUid: "agt_nova", body: "I am in Slack now.", createdAt: "2026-10-02T14:30:20.000Z" };
     expect(agentHelloEventId([answer, notice], { agentUid: "agt_nova" })).toBeNull();
     expect(agentHelloEventId([answer, notice, HELLO, REQUEST], { agentUid: "agt_nova" })).toBe("e2");
+  });
+});
+
+describe("isCloudBotDm (B-9): an agt_ uid alone is not a cloud bot", () => {
+  const base = { agentUid: "agt_nova", localHere: false, ownLocalElsewhere: false, madeHere: false, statusRead: false };
+
+  it("takes a positive sign: made here, or a status the server let this person read", () => {
+    // A teammate's local bot, a bot from outside: an agt_ uid and nothing else.
+    expect(isCloudBotDm(base)).toBe(false);
+    expect(isCloudBotDm({ ...base, madeHere: true })).toBe(true);
+    expect(isCloudBotDm({ ...base, statusRead: true })).toBe(true);
+  });
+
+  it("is never a local bot, on this Mac or another of the person's", () => {
+    expect(isCloudBotDm({ ...base, localHere: true, madeHere: true, statusRead: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, ownLocalElsewhere: true, madeHere: true, statusRead: true })).toBe(false);
+  });
+
+  it("is never a person or a missing uid", () => {
+    expect(isCloudBotDm({ ...base, agentUid: "prs_nova", madeHere: true, statusRead: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, agentUid: null, madeHere: true })).toBe(false);
+    expect(isCloudBotDm({ ...base, agentUid: "  ", statusRead: true })).toBe(false);
+  });
+});
+
+describe("the hello message, found by when it was asked for (B-8)", () => {
+  const ASKED = Date.parse("2026-10-02T13:53:50.000Z");
+  const TYPED = { eventId: "e1b", fromPersonUid: "prs_me", body: "Are you there?", createdAt: "2026-10-02T13:54:05.000Z" };
+  const HELLO = { eventId: "e2", fromPersonUid: "agt_nova", body: "Hi Stefan, I'm Nova.", createdAt: "2026-10-02T13:54:20.000Z" };
+  const LATER = { eventId: "e4", fromPersonUid: "agt_nova", body: "Here now.", createdAt: "2026-10-02T13:55:10.000Z" };
+  const JOINED = { eventId: "e0", fromPersonUid: "agt_nova", body: "Nova (an agent) just joined Acme.", createdAt: "2026-10-02T13:50:42.000Z" };
+
+  it("is the bot's first row after the ask, on rows that leave the request out", () => {
+    // A page filtered for people: no request row. The person typed before the hello arrived.
+    const rows = [JOINED, TYPED, HELLO, LATER];
+    expect(agentHelloEventIdByAskTime(rows, { agentUid: "agt_nova", askedAtMs: ASKED, holdsStart: true })).toBe("e2");
+    expect(agentHelloEventIdByAskTime([LATER, HELLO, TYPED], { agentUid: "agt_nova", askedAtMs: ASKED, holdsStart: true })).toBe("e2");
+    // Nothing from the bot since the ask yet.
+    expect(agentHelloEventIdByAskTime([JOINED, TYPED], { agentUid: "agt_nova", askedAtMs: ASKED, holdsStart: true })).toBeNull();
+  });
+
+  it("names nothing when the rows do not hold the conversation's start", () => {
+    // A later window of a long conversation: its first bot row is not the hello.
+    expect(agentHelloEventIdByAskTime([LATER], { agentUid: "agt_nova", askedAtMs: ASKED, holdsStart: false })).toBeNull();
+    expect(agentHelloEventIdByAskTime([TYPED, HELLO, LATER], { agentUid: "agt_nova", askedAtMs: ASKED, holdsStart: false })).toBeNull();
+  });
+
+  it("names nothing without a usable time", () => {
+    for (const askedAtMs of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(agentHelloEventIdByAskTime([TYPED, HELLO], { agentUid: "agt_nova", askedAtMs, holdsStart: true })).toBeNull();
+    }
+  });
+
+  it("a page holds the start only when nothing earlier can exist", () => {
+    // Filtered and paged by the server: the cursor is the only signal.
+    expect(dmPageHoldsStart({ rowCount: 50, limit: 50, nextCursor: null, serverView: true })).toBe(true);
+    expect(dmPageHoldsStart({ rowCount: 3, limit: 50, nextCursor: "cur_1", serverView: true })).toBe(false);
+    expect(dmPageHoldsStart({ rowCount: 0, limit: 50, nextCursor: "  cur_1 ", serverView: true })).toBe(false);
+    // Not filtered: a short page is the whole conversation, a full one may not be.
+    expect(dmPageHoldsStart({ rowCount: 0, limit: 50, nextCursor: null, serverView: false })).toBe(true);
+    expect(dmPageHoldsStart({ rowCount: 49, limit: 50, nextCursor: null, serverView: false })).toBe(true);
+    expect(dmPageHoldsStart({ rowCount: 50, limit: 50, nextCursor: null, serverView: false })).toBe(false);
+    expect(dmPageHoldsStart({ rowCount: 12, limit: 50, nextCursor: "cur_1", serverView: false })).toBe(false);
+    expect(dmPageHoldsStart({ rowCount: Number.NaN, limit: 50, nextCursor: null, serverView: false })).toBe(false);
+    // A read for the rows after a point never does.
+    expect(dmPageHoldsStart({ rowCount: 2, limit: 20, nextCursor: null, serverView: true, partial: true })).toBe(false);
   });
 });
 

@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -17,10 +19,8 @@ import type { Workspace } from "../chat/workspaces.js";
  *
  * Owner walkthrough: the rows started by the app's hidden notices to the bot
  * (a tool connected) were unpinned, so the bot message 100 s and 21 s before
- * each notice ended them on the next page fetch, long before the answer. A
- * person's own question was pinned, but a hidden request sent right after it
- * ("Connect more tools") restarted the row without a pin and lost it the same
- * way. Every row ending also writes one `bot-thinking` line to the file log.
+ * each notice ended them on the next page fetch, long before the answer.
+ * Every row ending also writes one `bot-thinking` line to the file log.
  */
 
 const NOVA = "agt_nova";
@@ -235,17 +235,20 @@ describe("DesktopApp cloud bot thinking row", () => {
     expect(lines[0]).toMatch(new RegExp(`^ended agent=${NOVA} row=dm:${NOVA} reason=newer-message elapsedMs=\\d+ pinned=yes$`));
   });
 
-  it("a hidden request right after the person's message keeps the question's row pinned", async () => {
+  it("'Connect more tools' is one message: its row stays pinned through a page fetch and ends on the answer", async () => {
+    // B-9: the app used to send a hidden request right after this message,
+    // and the bot answered both. Now the person's message is the only one.
     const w = world(Date.now());
     const wakes = await mountNewBotDm(w);
     await typeAndSend("Connect more tools");
-    await vi.waitFor(() => expect(hiddenNotices(w).length).toBeGreaterThanOrEqual(1));
-    await settle(20);
+    await settle(40);
+    expect(w.sendDm).toHaveBeenCalledTimes(1);
+    expect(hiddenNotices(w)).toHaveLength(0);
     expect(thinkingRow()).not.toBeNull();
 
     wakes.emit("mesh:catchup", {} as { reason: "connect" | "focus" });
     await settle(20);
-    expect(thinkingRow(), "the restart did not drop the pin").not.toBeNull();
+    expect(thinkingRow(), "the bot's earlier message does not end the row").not.toBeNull();
 
     await botAnswers(w, wakes);
     expect(thinkingRow()).toBeNull();
@@ -268,5 +271,39 @@ describe("DesktopApp cloud bot thinking row", () => {
     expect(thinkingLog()).toEqual([
       expect.stringMatching(new RegExp(`^ended agent=${NOVA} row=dm:${NOVA} reason=expired elapsedMs=\\d+ pinned=yes$`)),
     ]);
+  });
+});
+
+/**
+ * B-4: a hello request the bot had already answered started a thinking row
+ * that nothing ended for ten minutes. What the row does is decided by
+ * `helloThinkingState` (agent-thinking.test.ts). This holds the shell to it:
+ * the request's time is kept, the decision waits for the conversation to
+ * load, and the row is never started without asking.
+ */
+describe("DesktopApp: the row for a hello request in flight (source contract)", () => {
+  const source = readFileSync(join(import.meta.dirname, "DesktopApp.svelte"), "utf8");
+  const effectStart = source.indexOf("const pending = uid ? cloudBotHelloPending[uid] : undefined;");
+  const effect = source.slice(effectStart, source.indexOf("const SETUP_DONE_PLACEHOLDER", effectStart));
+
+  it("keeps the time the request was sent with the pending bot", () => {
+    expect(source).toContain("let cloudBotHelloPending = $state<Record<string, { name: string; askedAt: number }>>({});");
+    const send = source.slice(source.indexOf("async function sendCloudBotHello("), source.indexOf("async function cloudBotHelloArrived("));
+    expect(send.indexOf("const askedAt = Date.now();")).toBeGreaterThan(-1);
+    // Taken before the request leaves, so the bot's answer is never older than it.
+    expect(send.indexOf("const askedAt = Date.now();")).toBeLessThan(send.indexOf("adapter.messaging.sendDm("));
+  });
+
+  it("waits for the conversation to load, then asks helloThinkingState before starting a row", () => {
+    expect(effectStart).toBeGreaterThan(-1);
+    expect(effect).toContain("liveTimelineId !== row.id || timelineHydrating) return;");
+    const decide = effect.indexOf("helloThinkingState(messages, uid, pending.askedAt, Date.now())");
+    const start = effect.indexOf("startThinkingIn(");
+    expect(decide).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(decide);
+    expect(effect.slice(decide, start)).toContain('if (decision.state !== "start") return;');
+    // Started as of the request, pinned to the bot's newest message.
+    expect(effect.slice(start)).toContain("decision.startedAt,");
+    expect(effect.slice(start)).toContain("{ afterMs: decision.afterMs }");
   });
 });

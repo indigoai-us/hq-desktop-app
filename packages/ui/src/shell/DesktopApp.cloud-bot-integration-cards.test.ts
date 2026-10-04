@@ -10,6 +10,7 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { createChatWakeBus } from "../chat/chat-api.js";
 import { buildAgentHelloRequest } from "../chat/agent-channel.js";
 import { brandMarkFor } from "../chat/messaging/app-brand-marks.js";
+import { BOT_CONNECTION_CARDS_STORAGE_KEY, CONNECTING_TIMEOUT_MS } from "../chat/messaging/connection-card-model.js";
 import type { ConversationRow } from "../chat/sidebar-model.js";
 import type { Workspace } from "../chat/workspaces.js";
 
@@ -98,6 +99,20 @@ function connection(over: Row = {}): Row {
     installation: { displayName: "Notion", domain: "notion.so" },
     ...over,
   };
+}
+
+/**
+ * The Linear connection the person makes in the browser after pressing
+ * Connect on its card: the list dates it after the press.
+ */
+function connectedAfterPress(over: Row = {}): Row {
+  return connection({
+    id: "acct_linear",
+    provider: "factory:linear",
+    createdAt: new Date(Date.now() + 1_000).toISOString(),
+    installation: { displayName: "Linear", domain: "linear.app" },
+    ...over,
+  });
 }
 
 const CATALOG: Record<string, Row> = {
@@ -371,7 +386,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(hidden(w)).toHaveLength(0);
 
     // The person signed in and came back: the list shows their new connection.
-    w.connections = [...w.connections, connection({ id: "acct_linear", provider: "factory:linear", installation: { displayName: "Linear", domain: "linear.app" } })];
+    w.connections = [...w.connections, connectedAfterPress()];
     await refocus();
     await vi.waitFor(() => expect(w.grantConnectionAccess).toHaveBeenCalledTimes(1));
     expect(w.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: COMPANY, connectionId: "acct_linear", granteeUid: NOVA });
@@ -396,7 +411,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     appPrimary("linear.app")!.click();
     await vi.waitFor(() => expect(appCard("linear.app")!.dataset.state).toBe("connecting"));
     w.grantConnectionAccess.mockResolvedValueOnce({ ok: false, reason: "error", code: "http-500", message: "boom" });
-    w.connections = [...w.connections, connection({ id: "acct_linear", provider: "factory:linear", installation: { displayName: "Linear", domain: "linear.app" } })];
+    w.connections = [...w.connections, connectedAfterPress()];
     await refocus();
     await vi.waitFor(() => expect(appNote("linear.app")).toBe("Could not share Linear. Try again."));
     expect(appLine("linear.app")).toBe("Connected. Let Nova use it?");
@@ -412,7 +427,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     await vi.waitFor(() => expect(appCard("linear.app")!.dataset.state).toBe("connecting"));
     w.connections = [
       ...w.connections,
-      connection({ id: "acct_linear", provider: "factory:linear", access: { mode: "everyone", grantCount: 0 }, installation: { displayName: "Linear", domain: "linear.app" } }),
+      connectedAfterPress({ access: { mode: "everyone", grantCount: 0 } }),
     ];
     await refocus();
     await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
@@ -507,5 +522,102 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(host.querySelector('[data-target="tools"]')!.textContent).toContain("Connect your tools");
     expect(host.querySelector('[data-testid="rich-connect-browse"]')).toBeNull();
     expect(w.catalogSearch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * C-2: the record of a Connect press lives in localStorage. One left there
+ * from an earlier day must never give the bot a private connection: only a
+ * connection that answers a press made just now is shared with no press.
+ */
+describe("DesktopApp integration cards: a 'connecting' record left in storage", () => {
+  /** What this device remembers about Nova's cards before the app starts. */
+  function seedPress(domain: string, since: unknown): void {
+    window.localStorage.setItem(
+      BOT_CONNECTION_CARDS_STORAGE_KEY,
+      JSON.stringify({ [NOVA]: { apps: { [domain]: { state: "connecting", since } } } }),
+    );
+  }
+  const storedApps = (): Record<string, unknown> => {
+    const parsed = JSON.parse(window.localStorage.getItem(BOT_CONNECTION_CARDS_STORAGE_KEY) ?? "{}") as Record<string, { apps?: Record<string, unknown> }>;
+    return parsed[NOVA]?.apps ?? {};
+  };
+  const linear = (over: Row = {}): Row =>
+    connection({ id: "acct_linear", provider: "factory:linear", installation: { displayName: "Linear", domain: "linear.app" }, ...over });
+
+  /** Mount, let the list arrive more than once, and wait for the record to be dropped. */
+  async function mountAndSettle(w: World): Promise<void> {
+    await mountResolved(w);
+    await refocus();
+    await vi.waitFor(() => expect(storedApps()).not.toHaveProperty("linear.app"));
+    await refocus();
+  }
+
+  function expectExplicitButtonOnly(w: World): void {
+    expect(w.grantConnectionAccess).not.toHaveBeenCalled();
+    expect(hidden(w)).toHaveLength(0);
+    expect(appCard("linear.app")!.dataset.state).toBe("connected");
+    expect(appLine("linear.app")).toBe("Connected. Let Nova use it?");
+    expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Let Nova use it");
+  }
+
+  it("a press from days ago shares nothing, is forgotten, and leaves the explicit button", async () => {
+    const since = Date.now() - 3 * 86_400_000;
+    seedPress("linear.app", since);
+    // The person connected Linear yesterday, somewhere else: after that press.
+    const w = world({ connections: [connection(), linear({ createdAt: new Date(Date.now() - 86_400_000).toISOString() })] });
+    await mountAndSettle(w);
+    expectExplicitButtonOnly(w);
+
+    // The explicit press still shares it, once, and tells the bot.
+    appPrimary("linear.app")!.click();
+    await vi.waitFor(() => expect(w.grantConnectionAccess).toHaveBeenCalledTimes(1));
+    expect(w.grantConnectionAccess).toHaveBeenCalledWith({ companyUid: COMPANY, connectionId: "acct_linear", granteeUid: NOVA });
+    await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
+    await vi.waitFor(() => expect(appLine("linear.app")).toBe("Connected. Nova can use it."));
+  });
+
+  it("a press just past the wait shares nothing, even for a connection made after it", async () => {
+    const since = Date.now() - CONNECTING_TIMEOUT_MS - 5_000;
+    seedPress("linear.app", since);
+    const w = world({ connections: [connection(), linear({ createdAt: new Date(since + 60_000).toISOString() })] });
+    await mountAndSettle(w);
+    expectExplicitButtonOnly(w);
+  });
+
+  it("a recent press shares nothing when the connection was already there", async () => {
+    seedPress("linear.app", Date.now() - 60_000);
+    // Made two days before the press.
+    const w = world({ connections: [connection(), linear({ createdAt: new Date(Date.now() - 2 * 86_400_000).toISOString() })] });
+    await mountAndSettle(w);
+    expectExplicitButtonOnly(w);
+  });
+
+  it("a recent press shares nothing when the connection's domain is not exactly the card's", async () => {
+    const since = Date.now() - 60_000;
+    seedPress("linear.app", since);
+    const w = world({
+      connections: [
+        connection(),
+        linear({ createdAt: new Date(since + 30_000).toISOString(), installation: { displayName: "Linear", domain: "api.linear.app" } }),
+      ],
+    });
+    await mountAndSettle(w);
+    expectExplicitButtonOnly(w);
+  });
+
+  it("a record with no usable press time is dropped when it is read and shares nothing", async () => {
+    for (const since of [null, "yesterday", undefined]) {
+      window.localStorage.clear();
+      seedPress("linear.app", since);
+      const w = world({ connections: [connection(), linear({ createdAt: new Date(Date.now() - 1_000).toISOString() })] });
+      await mountResolved(w);
+      await refocus();
+      await refocus();
+      expectExplicitButtonOnly(w);
+      if (component) await unmount(component);
+      component = null;
+      host.remove();
+    }
   });
 });

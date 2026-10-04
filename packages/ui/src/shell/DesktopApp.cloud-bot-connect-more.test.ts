@@ -19,8 +19,9 @@ import type { Workspace } from "../chat/workspaces.js";
  * bot's own suggestions, shown when it has something to suggest (owner, live
  * walkthrough 2026-10-03: a "Connect more tools" chip under every message was
  * noise). The person can still ask, by typing it or by pressing the bot's own
- * suggestion with those words: the message goes as the person's own, the bot
- * gets one hidden request with the company's apps, and the app draws the
+ * suggestion with those words: the message goes as the person's own, and
+ * that one message is all the bot gets (B-9: a second, hidden request beside
+ * it was answered as well, so the bot wrote twice). The app draws the
  * connection cards again under the bot's answer.
  */
 
@@ -253,6 +254,15 @@ function rememberCards(record: Record<string, unknown>): void {
   window.localStorage.setItem(BOT_CONNECTION_CARDS_STORAGE_KEY, JSON.stringify({ [NOVA]: { helloEventId: "e2", ...record } }));
 }
 
+async function typeAndSend(text: string): Promise<void> {
+  const composer = host.querySelector<HTMLTextAreaElement>('[data-testid="conversation-composer"]');
+  expect(composer, "live composer renders for the bot DM").toBeTruthy();
+  composer!.value = text;
+  composer!.dispatchEvent(new Event("input", { bubbles: true }));
+  composer!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await settle(20);
+}
+
 describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   it("adds no chip while a card is still waiting for an answer", async () => {
     const w = world();
@@ -332,7 +342,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(chips()).toEqual([]);
   });
 
-  it("the bot's own 'Connect more tools' suggestion sends exactly one visible message and exactly one hidden request with the company's apps", async () => {
+  it("the bot's own 'Connect more tools' suggestion sends exactly one message, the person's own, and no hidden request", async () => {
     // The bot is in Slack; the person's Linear is the one card, already connected.
     const own = fence([{ kind: "suggestions", items: ["Connect more tools", "List our open projects"] }]);
     const w = world({ slackCapability: "ok", connections: [LINEAR], thread: answered(own) });
@@ -343,29 +353,32 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     button.click();
     button.click();
     await vi.waitFor(() => expect(w.sendDm).toHaveBeenCalled());
-    await settle(20);
+    await settle(40);
+    // One message the bot acts on: what the person said, on the ordinary lane.
+    expect(w.sendDm).toHaveBeenCalledTimes(1);
     expect(visibleSends(w)).toHaveLength(1);
-    const [to, body] = visibleSends(w)[0]!;
+    const [to, body, extras] = visibleSends(w)[0]!;
     expect(to).toBe(NOVA);
     expect(body).toBe("Connect more tools");
-    // The bot also gets one request the person never sees, a plain ask with
-    // the company's apps, keyed to the person's message.
-    await vi.waitFor(() => expect(hidden(w)).toHaveLength(1));
-    const [hiddenTo, hiddenBody, extras] = hidden(w)[0]!;
-    expect(hiddenTo).toBe(NOVA);
-    expect(hiddenBody).toMatch(/^Automatic message from HQ: Corey just asked to connect more apps/);
-    expect(hiddenBody).toContain("- Linear (linear.app): connected, not shared with you");
-    expect(hiddenBody).toContain("Answer Corey and offer what Corey could connect.");
-    const key = (extras as { audience?: string; idempotencyKey?: string }).idempotencyKey ?? "";
-    expect((extras as { audience?: string }).audience).toBe("agent");
-    expect(key).toMatch(new RegExp(`^new-bot-connect-more-${NOVA}-sent_`));
+    expect((extras as { audience?: string } | undefined)?.audience).toBeUndefined();
+    expect(hidden(w)).toHaveLength(0);
+    // The words stay in the conversation as the person's own message.
+    expect(threadText()).toContain("Connect more tools");
     expect(threadText()).not.toContain("Automatic message from HQ");
     // The row is put away, and nothing extra is drawn until the bot answers.
     expect(chips()).toEqual([]);
     expect(cardsIn(host)).toHaveLength(1);
-    // A typed request gets the same hidden request, once per message.
-    await settle(20);
-    expect(hidden(w)).toHaveLength(1);
+  });
+
+  it("a typed 'Connect more tools' is one message too, and the bot shows as working on it", async () => {
+    const w = world({ slackCapability: "ok", connections: [LINEAR], thread: answered() });
+    await mountNewBotDm(w, "Quite a lot already.");
+    await typeAndSend("connect more tools.");
+    await settle(40);
+    expect(w.sendDm).toHaveBeenCalledTimes(1);
+    expect(w.sendDm.mock.calls[0]![1]).toBe("connect more tools.");
+    expect(hidden(w)).toHaveLength(0);
+    expect(host.querySelector('[data-testid="agent-thinking-row"]')).not.toBeNull();
   });
 
   it("draws the app-chosen cards under a bot answer that carries no block: Slack, then the person's own apps", async () => {
@@ -505,6 +518,49 @@ describe("DesktopApp Connect more outside a cloud bot's direct message", () => {
     await mountRow(w, DM_ROW(NOVA), "Here are your connections.");
     await settle(40);
     expectNothing(w);
+  });
+
+  it("does nothing for a bot that was not made here and whose status this person cannot read (B-9)", async () => {
+    // A teammate's local bot, or a bot from outside the company: an agt_ uid
+    // that is not on this Mac. The status route does not know it (404), or
+    // will not show it to this person (403).
+    const ownBlocks = fence([
+      { kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] },
+      { kind: "suggestions", items: ["Connect more tools", "List our open projects"] },
+    ]);
+    for (const code of ["http-404", "http-403"]) {
+      window.localStorage.clear();
+      const w = world({
+        connections: [LINEAR],
+        thread: page(novas("b1", "Hello Corey.", 1), mine("p1", CONNECT_MORE_REQUEST, 5), novas("b2", `Here are your connections.${ownBlocks}`, 5)),
+        getStatus: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code, message: "no" })),
+      });
+      await mountRow(w, { ...DM_ROW(NOVA), companyUid: COMPANY } as ConversationRow, "Here are your connections.");
+      await vi.waitFor(() => expect(w.getStatus).toHaveBeenCalled());
+      await settle(40);
+      // No cards (the app's or the bot's own block), no chips, and the
+      // company's connections are never read for it.
+      expectNothing(w);
+      // The status is asked once, not on a timer.
+      expect(w.getStatus).toHaveBeenCalledTimes(1);
+
+      // What the person types goes as their own message and nothing else.
+      await typeAndSend(CONNECT_MORE_REQUEST);
+      await settle(40);
+      expect(w.sendDm).toHaveBeenCalledTimes(1);
+      expect(hidden(w)).toHaveLength(0);
+      expect(w.listConnections).not.toHaveBeenCalled();
+      if (component) await unmount(component);
+      component = null;
+      host.remove();
+    }
+  });
+
+  it("treats a bot whose status the server lets this person read as a cloud bot, with no record on this device", async () => {
+    const w = world({ thread: asked(NOVA) });
+    await mountRow(w, DM_ROW(NOVA), "Here are your connections.");
+    await vi.waitFor(() => expect(cardsIn(message("b2")).length).toBeGreaterThan(0));
+    expect(w.listConnections).toHaveBeenCalledWith(COMPANY);
   });
 
   it("does nothing in a channel", async () => {

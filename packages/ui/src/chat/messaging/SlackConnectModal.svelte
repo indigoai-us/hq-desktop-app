@@ -10,6 +10,22 @@
    */
   const attachesInFlight = new Map<string, Promise<unknown>>();
 
+  /**
+   * Attach requests that got no answer, by bot: when the app gave up on one
+   * (ms). The server may still be working on it, and it creates a real Slack
+   * app, so no second request is sent for that bot until the wait in
+   * slack-connect-model.ts (`SLACK_ATTACH_SETTLE_MS`) has passed or the bot's
+   * status shows the setup. Module-wide for the same reason as above: a modal
+   * closed and opened again must still know.
+   */
+  const attachesUnanswered = new Map<string, number>();
+
+  /** For tests: forget every attach this module remembers. */
+  export function forgetSlackAttaches(): void {
+    attachesInFlight.clear();
+    attachesUnanswered.clear();
+  }
+
   /** The one attach request for this bot: the one on its way, or a new one. Never throws. */
   function attachOnce(adapter: PlatformAdapter, agentUid: string): Promise<unknown> {
     const pending = attachesInFlight.get(agentUid);
@@ -45,10 +61,15 @@
    *
    * ATTACH CREATES A REAL SLACK APP. The press on the card's Connect Slack
    * button is the intent, so the modal sends it as it opens, once, and only
-   * while the status says the bot has no Slack. Try again sends it again
-   * after a failure. A request on its way is shared across instances of this
-   * modal for the same bot (`attachesInFlight`): a modal taken down and put
-   * back while the server is still answering does not ask a second time.
+   * while the status says the bot has no Slack. Three things keep it to one
+   * app. The bot's status is read again right before every attach, the first
+   * one and every Try again, so one that is already set up is never asked
+   * for twice. A request on its way is shared across instances of this modal
+   * for the same bot (`attachesInFlight`): a modal taken down and put back
+   * while the server is still answering does not ask a second time. And a
+   * request that got no answer (a timeout, a dropped connection) may still
+   * be running on the server, so Try again reads the status and waits out
+   * `SLACK_ATTACH_SETTLE_MS` before it sends another (`attachesUnanswered`).
    *
    * THE TOKEN IS A SECRET. It lives in `token` below and in the field, and
    * nowhere else: not in storage, a link, a log or an error. It is cleared
@@ -68,15 +89,17 @@
     SLACK_APPROVE_DETAIL,
     SLACK_APPROVE_NO_LINK_DETAIL,
     SLACK_ATTACH_RETRY_SENTENCE,
+    SLACK_ATTACH_STILL_WORKING_SENTENCE,
     SLACK_COPIED_MS,
     SLACK_STARTING,
     SLACK_TOKEN_CHECKING,
     SLACK_TOKEN_SCOPE,
     checkSlackAppToken,
-    isWholeSlackAppToken,
     readSlackAttachAnswer,
     readSlackTokenAnswer,
+    shouldAutoSubmitSlackToken,
     slackAccessPendingSentence,
+    slackAttachMayRetry,
     slackConnectView,
     slackConnectedSentence,
     slackTokenSteps,
@@ -231,21 +254,33 @@
     touch();
     holdFocus();
     try {
+      // Ask the server first, every time: the first attach, Try again, and
+      // after a request that got no answer. What this modal last heard can
+      // be old, and a second setup must never be asked for on top of one
+      // that exists.
+      await refresh();
+      await tick();
+      if (gone) return;
       if (status == null) {
-        // Not known yet whether this bot already has Slack. Find out first:
-        // a second setup must never be asked for on top of one that exists.
-        await refresh();
-        await tick();
-        if (gone) return;
-        if (status == null) {
-          if (!statusDenied) attachError = SLACK_ATTACH_RETRY_SENTENCE;
-          return;
-        }
-        if (!view.needsAttach) return;
+        if (!statusDenied) attachError = SLACK_ATTACH_RETRY_SENTENCE;
+        return;
+      }
+      if (!view.needsAttach) {
+        // The status shows the setup: whatever was unanswered has landed.
+        attachesUnanswered.delete(agentUid);
+        return;
+      }
+      // An earlier request got no answer and the status does not show it
+      // yet: the server may still be working on it. Wait it out.
+      if (!slackAttachMayRetry(attachesUnanswered.get(agentUid), Date.now())) {
+        attachError = SLACK_ATTACH_STILL_WORKING_SENTENCE;
+        return;
       }
       const result = await attachOnce(adapter, agentUid);
       if (gone) return;
       const answer = readSlackAttachAnswer(result);
+      if (answer.kind === "retry" && answer.unanswered) attachesUnanswered.set(agentUid, Date.now());
+      else attachesUnanswered.delete(agentUid);
       if (answer.kind === "attached") {
         attached = answer.attached;
         started();
@@ -339,14 +374,13 @@
   /**
    * Something was typed or pasted into the field. A whole token, pasted in
    * one go, is sent at once: there is nothing left for the person to do.
-   * Anything else waits for Connect.
+   * Anything typed waits for Connect, however much it looks like a token.
    */
-  function onTokenInput(value: string): void {
+  function onTokenInput(value: string, change: { pasted: boolean }): void {
     token = value;
     if (tokenError) tokenError = null;
-    const whole = value.trim();
-    if (!isWholeSlackAppToken(whole) || whole === autoSent) return;
-    autoSent = whole;
+    if (!shouldAutoSubmitSlackToken({ value, pasted: change.pasted, alreadySent: autoSent })) return;
+    autoSent = value.trim();
     void submitToken();
   }
 
@@ -374,14 +408,19 @@
     }
     if (gone) return;
     const answer = readSlackTokenAnswer(result);
+    // The field is emptied of the value that was sent. If the person has
+    // typed on since, what they are typing is theirs and stays.
+    const clearSent = (): void => {
+      if (token.trim() === checked.token) token = "";
+    };
     if (answer.kind === "accepted") {
       token = "";
       autoSent = null;
       tokenAcceptedAt = Date.now();
     } else if (answer.kind === "continue") {
-      token = "";
+      clearSent();
     } else if (answer.kind === "rejected") {
-      token = "";
+      clearSent();
       tokenError = answer.sentence;
     } else if (answer.kind === "retry") {
       // The value stays in the field for the retry, and nowhere else.

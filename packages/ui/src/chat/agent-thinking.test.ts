@@ -18,10 +18,13 @@ import {
   clearRowFromMessages,
   dropRow,
   kickoffThinkingState,
+  helloThinkingState,
+  HELLO_ASK_SKEW_MS,
   agentDisplayName,
   applyAgentStatus,
   parseAgentStatusWake,
   applyDmAgentStatus,
+  heldDmMessages,
   parseDmAgentStatusWake,
   dmAgentStatusCreatedAt,
   endStatusSilent,
@@ -447,6 +450,61 @@ describe('kickoffThinkingState', () => {
   });
 });
 
+describe('helloThinkingState (B-4): a hello request the bot already answered starts no row', () => {
+  const NOVA = 'agt_nova';
+  const ASKED = Date.UTC(2026, 9, 3, 10, 0, 0);
+  const at = (offsetMs: number) => new Date(ASKED + offsetMs).toISOString();
+  const bot = (offsetMs: number) => ({ fromPersonUid: NOVA, createdAt: at(offsetMs) });
+  const me = (offsetMs: number) => ({ fromPersonUid: 'prs_me', createdAt: at(offsetMs) });
+
+  it('starts no row when the bot has written since the request', () => {
+    // The stale case: the hello landed, the person opens the DM later.
+    expect(helloThinkingState([bot(20_000)], NOVA, ASKED, ASKED + 60_000)).toEqual({ state: 'done' });
+    expect(helloThinkingState([bot(-60_000), bot(1)], NOVA, ASKED, ASKED + 400_000)).toEqual({ state: 'done' });
+  });
+
+  it('allows for the two clocks not agreeing to the second', () => {
+    expect(HELLO_ASK_SKEW_MS).toBe(5_000);
+    // The server stamped the hello a little before this Mac's time of the ask.
+    expect(helloThinkingState([bot(-5_000)], NOVA, ASKED, ASKED + 1_000)).toEqual({ state: 'done' });
+    // A message from well before the ask is not an answer to it.
+    expect(helloThinkingState([bot(-5_001)], NOVA, ASKED, ASKED + 1_000)).toEqual({
+      state: 'start',
+      startedAt: ASKED,
+      afterMs: ASKED - 5_001,
+    });
+  });
+
+  it('starts the row as of the request when nothing came back, pinned to the bot\'s newest message', () => {
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 30_000)).toEqual({ state: 'start', startedAt: ASKED });
+    // The person's own messages are not the bot's answer.
+    expect(helloThinkingState([me(10_000)], NOVA, ASKED, ASKED + 30_000)).toEqual({ state: 'start', startedAt: ASKED });
+    expect(helloThinkingState([bot(-90_000)], NOVA, ASKED, ASKED + 30_000)).toEqual({
+      state: 'start',
+      startedAt: ASKED,
+      afterMs: ASKED - 90_000,
+    });
+  });
+
+  it('a row started as of the request ends when one started then would have', () => {
+    const decision = helloThinkingState([], NOVA, ASKED, ASKED + 500_000);
+    expect(decision).toEqual({ state: 'start', startedAt: ASKED });
+    const rows = startThinking([], { agentUid: NOVA, agentName: 'Nova' }, ASKED);
+    expect(tick(rows, ASKED + 599_999)).toHaveLength(1);
+    expect(tick(rows, ASKED + 600_000)).toEqual([]);
+    // Past that, there is nothing to start.
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 600_000)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, ASKED, ASKED + 86_400_000)).toEqual({ state: 'done' });
+  });
+
+  it('starts no row without a usable time of the request, and never starts one in the future', () => {
+    expect(helloThinkingState([], NOVA, null, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, undefined, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, Number.NaN, ASKED)).toEqual({ state: 'done' });
+    expect(helloThinkingState([], NOVA, ASKED + 10_000, ASKED)).toEqual({ state: 'start', startedAt: ASKED });
+  });
+});
+
 describe("agentDisplayName", () => {
   const root = { fromPersonUid: "prs_jacob", fromDisplayName: "Jacob Posel" };
   const agentReply = { fromPersonUid: "agt_mkt", fromDisplayName: "Marketing Agent" };
@@ -584,6 +642,29 @@ describe("a bot's status in its DM drives the DM row", () => {
     expect(applyDmAgentStatus([], wake(30), 'Nova', [], 1)[0]!.afterMs).toBeUndefined();
   });
 
+  it('B-7: pins to the newer of the timeline and the reply a wake announced', () => {
+    // The timeline holds the bot's message at 10 s; a wake announced one at 40 s.
+    const held = heldDmMessages([msg(4), msg(10)], NOVA, t(40));
+    expect(newestMessageAtFrom(held, NOVA)).toBe(ms(40));
+    // A status created after the announced reply is a new stretch of work,
+    // pinned to that reply: the reply arriving on a page does not end the row.
+    const rows = applyDmAgentStatus([], wake(45), 'Nova', held, 1, { afterMs: newestMessageAtFrom(held, NOVA) });
+    expect(rows[0]!.afterMs).toBe(ms(40));
+    expect(clearRows(rows, [msg(10), msg(40)])).toHaveLength(1);
+    expect(clearRows(rows, [msg(10), msg(40), msg(50)])).toHaveLength(0);
+    // A status from before the announced reply is late.
+    const none: ThinkingEntry[] = [];
+    expect(applyDmAgentStatus(none, wake(39), 'Nova', held, 1)).toBe(none);
+    // The timeline wins when it is the newer one, and nothing announced adds nothing.
+    expect(newestMessageAtFrom(heldDmMessages([msg(60)], NOVA, t(40)), NOVA)).toBe(ms(60));
+    const timeline = [msg(10)];
+    expect(heldDmMessages(timeline, NOVA, undefined)).toBe(timeline);
+    expect(heldDmMessages(timeline, NOVA, '  ')).toBe(timeline);
+    expect(heldDmMessages(timeline, NOVA, 'not a time')).toBe(timeline);
+    // No timeline at all: the announced reply alone is the pin.
+    expect(newestMessageAtFrom(heldDmMessages([], NOVA, t(40)), NOVA)).toBe(ms(40));
+  });
+
   it('refreshes an existing pinned row without dropping the pin', () => {
     // The person wrote; the row is pinned to the bot's newest message then.
     const sent = startThinking([], { agentUid: NOVA, agentName: 'Nova' }, 1_000, { afterMs: ms(10) });
@@ -633,7 +714,9 @@ describe("a bot's status in its DM drives the DM row", () => {
   it('keeps the thread root from the status on the row, and drops it when the next status has none', () => {
     let rows = applyDmAgentStatus([], wake(0, 'Working', { rootEventId: 'evt_root' }), 'Nova', [], 1);
     expect(rows[0]!.rootEventId).toBe('evt_root');
-    // A restart that is not a status (the person writes again) keeps both.
+    // A restart that is not a status and not a send (a notice, a follow-up
+    // mention) keeps both. The person's own send is a new ask: see
+    // agent-thinking.stopped-responding.test.ts.
     rows = startThinking(rows, { agentUid: NOVA, agentName: 'Nova' }, 2);
     expect(rows[0]).toMatchObject({ rootEventId: 'evt_root', lastStatusAt: 1 });
     rows = applyDmAgentStatus(rows, wake(20, 'Running'), 'Nova', [], 3);
