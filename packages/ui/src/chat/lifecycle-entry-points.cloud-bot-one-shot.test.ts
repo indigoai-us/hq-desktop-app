@@ -210,12 +210,43 @@ describe("runCreateCloudBotOneShotEntry", () => {
       ["Card not found", false],
       ["Unknown actionId for this card", false],
       ["[plan-limit url=https://example.test/u] You have reached the limit of your plan", false],
+      // Review item 5: the server's refusal in its own words, with no status
+      // (the native command passes the body's `error` text on alone).
+      ['lifecycle create_agent: size "basic" (t4g.medium) cannot be priced for this company (plan)', false],
+      ["Card envelope is not a lifecycle_card v1", false],
+      ["That runtime is not available for this company.", false],
+      // A refusal with no words in its body keeps its status.
+      ["Request failed (status 400)", false],
+      ["Request failed (status 422)", false],
+      // The server did not take the request up.
+      ["Request failed (status 429)", false],
+      // Timeouts and server failures: the request may have run.
+      ["Request failed (status 408)", true],
+      ["Request failed (status 500)", true],
+      ["Request failed (status 503)", true],
+      ["Network error: error sending request for url (https://api.example.test/x)", true],
+      ["Internal Server Error", true],
+      ["Service Unavailable", true],
     ])("says whether the outcome is known when the create fails with %j", async (text, unknown) => {
       const { api, logToFile } = harness({ created: new Error(text) });
       const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
       expect(result.ok).toBe(false);
       expect("outcomeUnknown" in result && result.outcomeUnknown === true).toBe(unknown);
       expect(String(logToFile.mock.calls[0]![1])).toContain(`outcome=${unknown ? "unknown" : "refused"}`);
+    });
+
+    it("shows the server's own reason for a refusal, and not a line about a lost answer (review item 5)", async () => {
+      const text = 'lifecycle create_agent: size "basic" (t4g.medium) cannot be priced for this company (plan)';
+      const { api } = harness({ created: new Error(text) });
+      const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect(result).toEqual({ ok: false, reason: text, blocked: false });
+      // A refusal with no words gets the plain line, and is still a refusal.
+      const bare = harness({ created: new Error("Request failed (status 429)") });
+      expect(await runCreateCloudBotOneShotEntry(bare.api, "cmp_acme", DRAFT)).toEqual({
+        ok: false,
+        reason: "We couldn't create this bot. Try again in a moment.",
+        blocked: false,
+      });
     });
 
     it("never calls an answer the server gave an unknown outcome", async () => {

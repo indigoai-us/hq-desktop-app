@@ -385,6 +385,34 @@ describe("The key a create is sent under (review A-C5)", () => {
     expect(sent[1]).not.toBe(sent[0]);
   });
 
+  it("shows a refusal as the server worded it, lets the key go, and does not look for a bot (review item 5)", async () => {
+    const refusal: EntryPointResult = {
+      ok: false,
+      blocked: false,
+      reason: 'lifecycle create_agent: size "basic" (t4g.medium) cannot be priced for this company (plan)',
+    };
+    const loadCompanyBots = vi.fn(async (): Promise<unknown> => ({ ok: true, value: { agents: [] } }));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(refusal);
+    mountSidebar({ oncreatenewbot, loadCompanyBots });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    expect(createError()).toBe(refusal.reason);
+    expect(createError()).not.toContain("We didn't hear back");
+    expect(keysKept()).toEqual([]);
+    // Only the list read at the press: nothing was looked for.
+    expect(loadCompanyBots).toHaveBeenCalledTimes(1);
+
+    click('[data-testid="new-bot-create-submit"]');
+    await settle(12);
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).not.toBe(sent[0]);
+  });
+
   it("says the bot may already exist when the same create, sent again, is told the name is in use", async () => {
     const oncreatenewbot = vi
       .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()

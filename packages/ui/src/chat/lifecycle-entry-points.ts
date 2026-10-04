@@ -781,15 +781,43 @@ export interface CloudBotOneShotOptions {
 }
 
 /**
- * True when a thrown create is the server's own refusal of the request: it
- * was turned away before anything was made (not allowed, no such card, an
- * action it does not know). Any other thrown failure leaves the outcome
- * unknown: the request may have got through and made the bot.
+ * True when a thrown create leaves it unknown whether the bot was made.
+ *
+ * What reaches this code is one string from the native command
+ * (`run_card_action` in apps/sync/src-tauri/src/commands/messages.rs):
+ *
+ *   - `Network error: ...` when the request did not complete (no connection,
+ *     a timeout): it may or may not have reached the server.
+ *   - `Request failed (status NNN)` for a refusal with no words in its body,
+ *     which is what a gateway answers (504, 502, 429).
+ *   - `[plan-limit ...] ...` for a plan refusal.
+ *   - Otherwise the `error` or `reason` text of the server's own answer, with
+ *     no status. That is the server refusing the request in its own words
+ *     (a size that cannot be priced, a card it does not know), or its handler
+ *     reporting a failure further in (`agent create returned status 500`).
+ *
+ * The outcome is unknown only when the request may have run and its answer
+ * was lost: a transport failure, a timeout, a 5xx. A 4xx is the server
+ * turning the request away, and so are its own words when they name no
+ * server failure: nothing was made, and the reason is shown. A 429 is a
+ * request the server did not take up. 408 is a timeout.
  */
-function refusedOutright(err: unknown, raw: boolean): boolean {
-  if (raw) return false;
+function outcomeUnknown(err: unknown, raw: boolean): boolean {
   const text = err instanceof Error ? err.message : String(err ?? "");
-  return isPermission(err) || isNotFound(err) || /unknown action|plan[- ]limit/i.test(text);
+  if (/^\[plan-limit\b/i.test(text)) return false;
+  const status = Number(
+    text.match(/\bstatus:? (\d{3})\b/i)?.[1] ??
+      text.match(/\(([45]\d{2})\)/)?.[1] ??
+      text.match(/^\s*([45]\d{2})\b/)?.[1] ??
+      NaN,
+  );
+  if (Number.isFinite(status)) return status >= 500 || status === 408;
+  if (/network|offline|connection|timed? ?out|time-?out/i.test(text)) return true;
+  if (/internal (server )?error|bad gateway|service unavailable|temporarily/i.test(text)) return true;
+  if (isPermission(err) || isNotFound(err)) return false;
+  // Text that reads like a backend's own failure (a cloud error, a payload)
+  // is a server that broke part-way, not a refusal.
+  return raw;
 }
 
 /** Shown when the server failed for a reason a person cannot act on. */
@@ -1024,19 +1052,19 @@ export async function runCreateCloudBotOneShotEntry(
     // server's defect, not the person's refusal: it is neither shown nor
     // treated as "you may not do this".
     const shown = shownFailure(err);
-    // Unless the server turned the request away outright, nobody knows
-    // whether the bot was made: the request left, and no answer came back.
-    const outcomeUnknown = !refusedOutright(err, shown.raw);
+    // When the request may have run and its answer was lost, nobody knows
+    // whether the bot was made. A refusal is the server's answer.
+    const unknown = outcomeUnknown(err, shown.raw);
     logCloudBotExit(api, "create-failed", {
       code: failureCode(err),
       raw: String(shown.raw),
-      outcome: outcomeUnknown ? "unknown" : "refused",
+      outcome: unknown ? "unknown" : "refused",
     });
     return {
       ok: false,
       reason: shown.reason,
       blocked: !shown.raw && isPermission(err),
-      ...(outcomeUnknown ? { outcomeUnknown: true } : {}),
+      ...(unknown ? { outcomeUnknown: true } : {}),
     };
   }
 
