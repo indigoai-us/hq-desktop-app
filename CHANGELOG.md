@@ -16,6 +16,8 @@ The release moves it under the version it ships in.
 - Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
 - Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
+- When the Claude app or the Codex app is installed on your Mac and you have used it a lot lately, your setup bot's welcome asks whether you want to continue setup there, with two buttons under it: "Continue in Claude" (or "Continue in Codex") opens your HQ folder in that app with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. The button opens the desktop app, never a terminal. Needs the hq-cli release that sends the offer.
+- Opening your HQ folder in the Codex app works again with the current ChatGPT app, which moved its built-in Codex command inside the app.
 
 ## [0.10.390] — 2026-10-04
 
@@ -24,8 +26,6 @@ The release moves it under the version it ships in.
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
-- When the Claude app or the Codex app is installed on your Mac and you have used it a lot lately, your setup bot's welcome asks whether you want to continue setup there, with two buttons under it: "Continue in Claude" (or "Continue in Codex") opens your HQ folder in that app with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. The button opens the desktop app, never a terminal. Needs the hq-cli release that sends the offer.
-- Opening your HQ folder in the Codex app works again with the current ChatGPT app, which moved its built-in Codex command inside the app.
 
 - HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
 
