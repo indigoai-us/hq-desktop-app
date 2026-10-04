@@ -645,9 +645,10 @@ describe("The key a create is sent under (review A-C5)", () => {
   });
 
   it("compares a second press of the same draft with the list from before the first", async () => {
-    // First press: no answer, and the bot was in fact created. The person
-    // presses Create bot again (same key) and cancels that one. The bot is
-    // not on the list from before the first press, so it is this create's.
+    // First press: no answer, and the bot is not on the list yet when the
+    // app looks. The person presses Create bot again (same key) and cancels
+    // that one. The bot is not on the list from before the first press, so
+    // it is this create's.
     let finishSecond!: (result: EntryPointResult) => void;
     const oncreatenewbot = vi
       .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
@@ -655,6 +656,8 @@ describe("The key a create is sent under (review A-C5)", () => {
       .mockImplementationOnce(() => new Promise<EntryPointResult>((resolve) => { finishSecond = resolve; }));
     const loadCompanyBots = vi
       .fn<(companyUid: string) => Promise<unknown>>()
+      // The list at the first press, and the look after its lost answer.
+      .mockResolvedValueOnce(rosterAnswer())
       .mockResolvedValueOnce(rosterAnswer())
       .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
     const removeAgent = vi.fn(async () => REMOVED);
@@ -662,10 +665,11 @@ describe("The key a create is sent under (review A-C5)", () => {
     await settle();
     await openTakeover();
     await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
     click('[data-testid="new-bot-create-submit"]');
     await settle();
     // The second press reads no new list: the first one's is kept with the key.
-    expect(loadCompanyBots).toHaveBeenCalledTimes(1);
+    expect(loadCompanyBots).toHaveBeenCalledTimes(2);
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
 
@@ -676,6 +680,172 @@ describe("The key a create is sent under (review A-C5)", () => {
     // Two presses, two creates, under one key. Cancel added none.
     expect(oncreatenewbot).toHaveBeenCalledTimes(2);
     expect(new Set(keysSent(oncreatenewbot)).size).toBe(1);
+  });
+
+  // ── A create with no answer is looked for before it can be sent again ───
+  // Review G-2: the server checks the name before it looks at the key, so a
+  // create sent again while the first is still running is told "name already
+  // exists" for good. The bot existed with no row, no hello and no sign-in.
+
+  it("holds Create bot after no answer, looks for the bot, and takes it up without a second create", async () => {
+    let answerLook!: (roster: unknown) => void;
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" })))
+      .mockImplementationOnce(() => new Promise<unknown>((resolve) => { answerLook = resolve; }));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(NO_ANSWER);
+    mountSidebar({ oncreatenewbot, loadCompanyBots });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(loadCompanyBots).toHaveBeenCalledTimes(2));
+    await settle();
+
+    // The look is out. The person is told, and there is no Create bot to press.
+    const status = q('[data-testid="new-bot-creating-status"]');
+    expect(status?.textContent?.trim()).toBe("Checking whether Woah was created...");
+    expect(status?.getAttribute("data-state")).toBe("checking");
+    expect(q('[data-testid="new-bot-create-submit"]')).toBeNull();
+    expect(q('[role="alert"]')).toBeNull();
+
+    // The first request did make the bot.
+    answerLook(rosterAnswer(rosterRow("agt_old", "scout", { setupPhase: "ready" }), rosterRow("agt_woah", "woah")));
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeTruthy();
+    // One create in all: nothing was sent again.
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("lets the person send it again once the look found no bot", async () => {
+    const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer(rosterRow("agt_old", "scout")));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(created("agt_woah"));
+    mountSidebar({ oncreatenewbot, loadCompanyBots });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(createError()).toContain("We didn't hear back"));
+
+    // One look, not three: the person is not kept waiting to try again.
+    expect(loadCompanyBots).toHaveBeenCalledTimes(2);
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    expect(q('[data-testid="new-bot-creating-status"]')).toBeNull();
+
+    click('[data-testid="new-bot-create-submit"]');
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')).toBeTruthy());
+    const sent = keysSent(oncreatenewbot);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toBe(sent[0]);
+  });
+
+  it("takes the bot up when the create, sent again, is told the name is in use", async () => {
+    // The second request arrived while the first was still running.
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      // The look after the first press, and the first look after the second.
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(NAME_TAKEN);
+    mountSidebar({ oncreatenewbot, loadCompanyBots });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-create-submit"]')).toBeTruthy());
+    click('[data-testid="new-bot-create-submit"]');
+
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-waking-screen"]')?.textContent).toContain("Waking up Woah"));
+    // The bot has its row, as a bot named by the create's own answer would.
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeTruthy();
+    expect(q('[role="alert"]')).toBeNull();
+    expect(oncreatenewbot).toHaveBeenCalledTimes(2);
+    expect(loadCompanyBots).toHaveBeenCalledTimes(4);
+    expect(keysKept()).toEqual([]);
+  });
+
+  it("does not take up a bot that already had the handle before the create was sent", async () => {
+    // Somebody's older bot is called woah. Both requests were refused for it.
+    const loadCompanyBots = vi.fn(async (): Promise<unknown> => rosterAnswer(rosterRow("agt_theirs", "woah", { setupPhase: "ready" })));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValueOnce(NO_ANSWER)
+      .mockResolvedValueOnce(NAME_TAKEN);
+    mountSidebar({ oncreatenewbot, loadCompanyBots });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(createError()).toContain("We didn't hear back"));
+    click('[data-testid="new-bot-create-submit"]');
+
+    await vi.waitFor(() =>
+      expect(createError()).toBe(
+        "A bot with that name already exists in this company. It may be the one you just tried to create. Look in Settings, under Bots, before trying again.",
+      ),
+    );
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(q('[data-conversation-id="dm:agt_theirs"]')).toBeNull();
+    expect(q('[data-testid="chat-waking-bot-ring"]')).toBeNull();
+  });
+
+  it("does not take up a bot the server says another person created", async () => {
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const loadAgentStatus = vi.fn(async () => ({
+      ok: true,
+      value: { agent: { uid: "agt_woah", ownerUid: "prs_grace" }, setupState: { phase: "provisioning" } },
+    }));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(NO_ANSWER);
+    mountSidebar({ oncreatenewbot, loadCompanyBots, loadAgentStatus, self: { uid: "prs_ada", displayName: "Ada" } });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+
+    await vi.waitFor(() => expect(createError()).toContain("We didn't hear back"));
+    expect(loadAgentStatus).toHaveBeenCalledWith("agt_woah");
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+  });
+
+  it("Cancel while the bot is being looked for settles the same way, and sends no create", async () => {
+    const loadCompanyBots = vi
+      .fn<(companyUid: string) => Promise<unknown>>()
+      .mockResolvedValueOnce(rosterAnswer())
+      .mockResolvedValue(rosterAnswer(rosterRow("agt_woah", "woah")));
+    const oncreatenewbot = vi
+      .fn<(companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>>()
+      .mockResolvedValue(NO_ANSWER);
+    const removeAgent = vi.fn(async () => REMOVED);
+    // A long wait before each look, so Cancel lands while the first is pending.
+    mountSidebar({ oncreatenewbot, loadCompanyBots, removeAgent, botCreateLookupMs: 40 });
+    await settle();
+    await openTakeover();
+    await pressCreate("Woah");
+    await vi.waitFor(() => expect(q('[data-testid="new-bot-creating-status"]')?.getAttribute("data-state")).toBe("checking"));
+
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    expect(notice()).toBe("Cancelling Woah. Anything already set up for it will be removed.");
+    await removalSettled(() => expect(notice()).toBe("Woah was removed."));
+
+    expect(removeAgent).toHaveBeenCalledTimes(1);
+    expect(removeAgent).toHaveBeenCalledWith("agt_woah", undefined);
+    expect(oncreatenewbot).toHaveBeenCalledTimes(1);
+    // The cancelled bot is not taken up as a bot that is starting.
+    expect(q('[data-testid="new-bot-waking-screen"]')).toBeNull();
+    expect(q('[data-conversation-id="dm:agt_woah"]')).toBeNull();
   });
 });
 

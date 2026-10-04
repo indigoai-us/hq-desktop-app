@@ -36,6 +36,7 @@ import {
   type CreateBotContext,
   type CreateBotDraft,
   NEW_BOT_LOCAL_LABEL,
+  newBotCheckingLine,
   newBotOtherWayLabel,
   newBotTargetLine,
 } from "./create-bot-model.js";
@@ -545,5 +546,12 @@ describe("the New Bot screen's words about companies (review G-1)", () => {
   it("says where the bot will be created", () => {
     expect(newBotTargetLine(" Nova ", "Indigo")).toBe("Nova will be created in Indigo.");
     expect(newBotTargetLine("", "Indigo")).toBe("This bot will be created in Indigo.");
+  });
+});
+
+describe("what the New Bot screen says while a lost create is looked for (review G-2)", () => {
+  it("names the bot", () => {
+    expect(newBotCheckingLine(" Nova ")).toBe("Checking whether Nova was created...");
+    expect(newBotCheckingLine("")).toBe("Checking whether your bot was created...");
   });
 });

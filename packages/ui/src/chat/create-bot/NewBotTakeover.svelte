@@ -41,6 +41,11 @@
      */
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     oncreate?: ((companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>) | null;
+    /**
+     * True while the host looks for a bot whose create got no answer. The
+     * create screen says so, and Create bot stays held.
+     */
+    checkingCreate?: boolean;
     getStatus?: ((agentUid: string, brain?: BrainProvider) => Promise<unknown>) | null;
     retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
     restartBrainApproval?: ((agentUid: string, brain: BrainProvider) => Promise<unknown>) | null;
@@ -93,6 +98,7 @@
     loadProvisionOptions = null,
     loadClaudeProviderFlag = null,
     oncreate = null,
+    checkingCreate = false,
     getStatus = null,
     retryAgent = null,
     restartBrainApproval = null,
@@ -484,6 +490,7 @@
           onopenlocal={canCreateLocalBot || otherWayLabel ? onopenlocal : null}
           {otherWayLabel}
           {nameCompany}
+          checking={checkingCreate}
         />
         {/key}
       {:else}

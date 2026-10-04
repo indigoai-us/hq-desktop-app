@@ -433,6 +433,17 @@ describe("what a cancelled create made (review A-C5)", () => {
     expect(lookup).toHaveBeenCalledTimes(1);
   });
 
+  it("stops looking once nobody waits for the outcome", async () => {
+    const lookup = vi.fn(async () => ABSENT);
+    let looks = 0;
+    const outcome = await resolveCancelledCreate(NO_ANSWER, lookup, {
+      sleep: noWait,
+      stopped: () => (looks += 1) > 1,
+    });
+    expect(outcome).toEqual({ kind: "unknown" });
+    expect(lookup).toHaveBeenCalledTimes(1);
+  });
+
   it("stays unknown when there is no way to look", async () => {
     expect(await resolveCancelledCreate(NO_ANSWER, null, { sleep: noWait })).toEqual({ kind: "unknown" });
   });

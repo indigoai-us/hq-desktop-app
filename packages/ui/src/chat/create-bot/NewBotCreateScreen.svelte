@@ -15,6 +15,7 @@
     firstSignedInCloudRuntime,
     handleIssue,
     NEW_BOT_LOCAL_LABEL,
+    newBotCheckingLine,
     newBotTargetLine,
     provisionOptionsProblem,
     provisionOptionsProblemLine,
@@ -37,6 +38,12 @@
     claudeEnabled?: boolean;
     loadProvisionOptions: (companyUid: string) => AdapterPromise<AgentProvisionOptionsView>;
     oncreate: (companyUid: string, draft: CloudBotDraft) => Promise<EntryPointResult>;
+    /**
+     * True while the host looks for a bot whose create got no answer. The
+     * screen says so in place of "Getting things ready.", and Create bot
+     * stays held: nothing is sent again until the look is over.
+     */
+    checking?: boolean;
     oncomplete: (created: NewBotCreated) => void;
     onopenlocal?: (() => void) | null;
     /**
@@ -65,6 +72,7 @@
     onopenlocal = null,
     otherWayLabel = "",
     nameCompany = false,
+    checking = false,
     onupgrade = null,
   }: Props = $props();
   const otherWay = $derived(otherWayLabel.trim() || NEW_BOT_LOCAL_LABEL);
@@ -266,7 +274,7 @@
   <NewBotDawn progress={creatingProgress} mode="creating" label={`Creating ${name.trim()}`} />
   <p class="new-bot-takeover-kicker">A new teammate</p>
   <h1 id="new-bot-takeover-title">Waking up <em>{name.trim()}</em></h1>
-  <p class="new-bot-waking-status" data-testid="new-bot-creating-status" aria-live="polite">Getting things ready.</p>
+  <p class="new-bot-waking-status" data-testid="new-bot-creating-status" data-state={checking ? "checking" : "creating"} aria-live="polite">{checking ? newBotCheckingLine(name) : "Getting things ready."}</p>
 </section>
 {:else if upgrade}
 <!-- The company's plan cannot host a cloud bot. Say so plainly and offer the

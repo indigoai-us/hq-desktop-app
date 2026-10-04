@@ -351,6 +351,8 @@ export interface CancelledCreateOptions {
   sleep?: (ms: number) => Promise<void>;
   /** The wait before each look. Its length is how many times the server is asked. */
   delaysMs?: readonly number[];
+  /** True once nobody waits for the outcome any more. Checked before each look. */
+  stopped?: () => boolean;
 }
 
 /**
@@ -376,6 +378,7 @@ export async function resolveCancelledCreate(
   const sleep = options.sleep ?? defaultSleep;
   for (const delay of options.delaysMs ?? CANCELLED_CREATE_LOOKUP_DELAYS_MS) {
     await sleep(delay);
+    if (options.stopped?.()) break;
     let seen: CancelledCreateLookup;
     try {
       seen = await lookup();

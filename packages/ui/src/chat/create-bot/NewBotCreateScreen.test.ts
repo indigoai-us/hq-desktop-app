@@ -762,3 +762,58 @@ describe("NewBotCreateScreen: which company the bot is created in (review G-1)",
     );
   });
 });
+
+describe("NewBotCreateScreen: a create that is being looked for (review G-2)", () => {
+  it("says it is checking, and offers no Create bot, while the host looks for the bot", async () => {
+    let finish!: (result: { ok: false; blocked: false; reason: string }) => void;
+    const oncreate = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    const props = { checking: false };
+    component = mount(NewBotCreateScreen, {
+      target: host,
+      props: {
+        companies: [{ companyUid: "cmp_current", label: "Current company" }],
+        runtimeReady: { codex: true },
+        loadProvisionOptions: async () => ({ ok: true as const, value: options }),
+        oncreate,
+        oncomplete: vi.fn(),
+        get checking() { return props.checking; },
+      },
+    });
+    await settle();
+    await advanceName();
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
+    await settle();
+    const status = (): HTMLElement | null => document.querySelector("[data-testid='new-bot-creating-status']");
+    expect(status()?.textContent?.trim()).toBe("Getting things ready.");
+    expect(status()?.getAttribute("data-state")).toBe("creating");
+
+    if (component) await unmount(component);
+    props.checking = true;
+    component = mount(NewBotCreateScreen, {
+      target: host,
+      props: {
+        companies: [{ companyUid: "cmp_current", label: "Current company" }],
+        runtimeReady: { codex: true },
+        loadProvisionOptions: async () => ({ ok: true as const, value: options }),
+        oncreate,
+        oncomplete: vi.fn(),
+        checking: true,
+      },
+    });
+    await settle();
+    await advanceName();
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
+    await settle();
+    expect(status()?.textContent?.trim()).toBe("Checking whether Polar was created...");
+    expect(status()?.getAttribute("data-state")).toBe("checking");
+    // Nothing can be sent again while the look is out.
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")).toBeNull();
+    expect(oncreate).toHaveBeenCalledTimes(2);
+
+    finish({ ok: false, blocked: false, reason: "We didn't hear back." });
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")).toBeTruthy();
+  });
+});

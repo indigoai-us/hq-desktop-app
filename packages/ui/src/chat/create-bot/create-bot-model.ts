@@ -700,3 +700,8 @@ export function newBotOtherWayLabel(input: { local: boolean; otherCompanies: boo
 export function newBotTargetLine(name: string, companyLabel: string): string {
   return `${name.trim() || "This bot"} will be created in ${companyLabel.trim()}.`;
 }
+
+/** What the New Bot screen says while the host looks for a bot whose create got no answer. */
+export function newBotCheckingLine(name: string): string {
+  return `Checking whether ${name.trim() || "your bot"} was created...`;
+}
