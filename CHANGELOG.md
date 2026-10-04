@@ -7,13 +7,17 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
-- An updater restart with a previously completed install and temporarily unresolved local tools now resumes setup repair instead of reopening first-run onboarding.
+- Add an Add member action to project boards for active company members.
 - Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
 
+- Held sign-in receipts now read the sign-in token from the same home directory they were held in, so a session in another home directory can no longer send or drop them.
 - First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
 - Desktop setup failure records now show whether a dependency timeout retry ran and how it ended, using a bounded dependency label.
 
+- An updater restart with a previously completed install and temporarily unresolved local tools now resumes setup repair instead of reopening first-run onboarding.
+
 ## [0.10.387] — 2026-10-04
+
 - Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping. (This fix was listed under 0.10.386 by mistake; it ships in this release.)
 - First-run setup: "Name your company" now comes right after the setup explainers, before the "Open HQ Desktop" screen, while the install keeps running. It no longer asks for a company handle: HQ makes it from the company name and, if it is taken, picks a free one by itself; a name it cannot use gets a plain message under the name field. The company and plan screens stay centred in the welcome window: the form, the line under the heading, the plan cards and the buttons share one column under the heading, the screen re-centres when the form or plan cards replace "Getting things ready…", and the window no longer scrolls off-centre when a field gets focus. The plan screen now matches the website's plan cards: "Choose how your HQ runs.", Starter and Workforce side by side with the website's prices, rows and buttons ("Get started free" finishes setup, "Get started" opens checkout), and a "Book a call" link for a custom setup. It is skipped when hq-pro reports a plan already picked on the website; hq-pro does not send that yet, so the screen still shows until it does.
 - A sign-in step saved for your next session, and other app settings, are no longer lost when the app saves two settings at the same moment. Changes to the settings file are now made one at a time.
