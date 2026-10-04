@@ -9,8 +9,12 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Core rescue now materializes hq-cloud with its HQ-owned npm cache while regular sync prewarm keeps using the runner's global npm cache.
+- Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
+- First-launch join-key rollout assignments now use the public flag resolver.
+- CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
 - Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
 
+- Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
 - Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 

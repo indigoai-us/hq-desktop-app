@@ -8,7 +8,6 @@ export * from "./markdown";
 export * from "./emojiShortcodes";
 export * from "./external-links";
 export { default as LinkContextMenu } from "./LinkContextMenu.svelte";
-export * from "./latest-request";
 export * from "./activity-request";
 export * from "./progressive-collection";
 export {
@@ -21,7 +20,6 @@ export * from "./local-image-src";
 export * from "./hq-console";
 export * from "./platform";
 export * from "./keyboard-shortcuts";
-export * from "./cloud-connection";
 export * from "./sync-model";
 export * from "./progressLabel";
 export * from "./settings-write";
