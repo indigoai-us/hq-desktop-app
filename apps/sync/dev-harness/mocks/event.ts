@@ -22,3 +22,11 @@ export async function listen<T>(
 export async function emit(event: string, payload?: unknown): Promise<void> {
   handlers.get(event)?.forEach((h) => h({ payload }));
 }
+
+export async function emitTo<T>(
+  _target: string,
+  event: string,
+  payload?: T
+): Promise<void> {
+  await emit(event, payload);
+}

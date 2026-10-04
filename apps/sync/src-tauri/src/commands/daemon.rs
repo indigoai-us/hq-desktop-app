@@ -48,7 +48,8 @@ use hq_desktop_core::runner_error_shape::{
 use hq_desktop_core::runner_target::RunnerTargetState;
 use hq_desktop_core::sync_outcome::{
     classify_runner_fatal_signature, classify_windows_exit_status, current_termination_host,
-    deferred_session_end_confirmed, deferred_session_end_outcome, describe_exit, is_crash_signal,
+    deferred_session_end_confirmed, deferred_session_end_outcome, describe_exit,
+    parse_watch_owner_holder_fields, is_crash_signal,
     is_windows_console_control_exit, is_windows_fault_exit, normalized_abort_description,
     resolved_session_end_attribution, runner_assertion_for_class,
     runner_fault_is_disk_exhaustion_content, runner_fault_is_file_lock_content,
@@ -160,8 +161,32 @@ fn record_watcher_stderr_tail(stderr_tail: &Mutex<VecDeque<String>>, line: &str)
     let mut tail = stderr_tail
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let is_owner_refusal = line
+        .to_ascii_lowercase()
+        .contains("hq-sync-runner already owned");
+    if is_owner_refusal {
+        tail.retain(|existing| {
+            !existing
+                .to_ascii_lowercase()
+                .contains("hq-sync-runner already owned")
+        });
+    }
     if tail.len() == WATCHER_STDERR_TAIL_CAP {
-        tail.pop_front();
+        if is_owner_refusal
+            || !tail.front().is_some_and(|existing| {
+                existing
+                    .to_ascii_lowercase()
+                    .contains("hq-sync-runner already owned")
+            })
+        {
+            tail.pop_front();
+        } else if let Some(index) = tail.iter().position(|existing| {
+            !existing
+                .to_ascii_lowercase()
+                .contains("hq-sync-runner already owned")
+        }) {
+            tail.remove(index);
+        }
     }
     tail.push_back(line.to_string());
 }
@@ -1799,7 +1824,18 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                     deferred_report_dir.clone();
                             }
                         }
-                        let last_stderr = stderr_tail.last().map(String::as_str);
+                        // Preserve and prioritize the refusal line: the ring keeps
+                        // it even when launcher/runtime diagnostics arrive later.
+                        // The old classifier consumed only tail.last(), which lost
+                        // this evidence whenever any later stderr line was emitted.
+                        let last_stderr = stderr_tail
+                            .iter()
+                            .find(|line| {
+                                line.to_ascii_lowercase()
+                                    .contains("hq-sync-runner already owned")
+                            })
+                            .or_else(|| stderr_tail.last())
+                            .map(String::as_str);
                         let report_dir_disposition = if let Some(plan) = watch_owner_exit.as_ref() {
                             sentry::with_scope(
                                 |scope| {
@@ -4644,7 +4680,14 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         }
         _ => String::new(),
     };
-    let message = if let Some(exit_description) = normalized_abort {
+    let message = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        format!(
+            "auto-sync watcher refused: another sync runner owns this HQ root, \
+             consecutive failure #{consecutive}{episode_suffix}{diag}"
+        )
+    } else if let Some(exit_description) = normalized_abort {
         format!(
             "auto-sync watcher exited unexpectedly ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
@@ -4679,35 +4722,54 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     let last_stderr_signature = last_stderr
         .map(classify_runner_fatal_signature)
         .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = match last_stderr_signature
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = if code
+        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
     {
-        Some(signature) => (
-            signature.class.as_str().to_string(),
-            signature.syscall.map(|syscall| syscall.to_string()),
-            signature.errno,
-        ),
-        None => (
-            context.runner_fatal_class.clone(),
-            context.runner_fatal_syscall.clone(),
-            context.runner_fatal_errno,
-        ),
+        ("none".to_string(), None, None)
+    } else {
+        match last_stderr_signature {
+            Some(signature) => (
+                signature.class.as_str().to_string(),
+                signature.syscall.map(|syscall| syscall.to_string()),
+                signature.errno,
+            ),
+            None => (
+                context.runner_fatal_class.clone(),
+                context.runner_fatal_syscall.clone(),
+                context.runner_fatal_errno,
+            ),
+        }
     };
     let runner_fatal_class_seen = runner_fatal_class != "none";
     let (stderr_cause, owner_result, stderr_producer) =
         watcher_exit_stderr_diagnostics(last_stderr);
-    let stderr_cause = if stderr_cause == "other" && context.runner_fatal_class != "none" {
+    let stderr_cause = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        "already_owned"
+    } else if stderr_cause == "other" && context.runner_fatal_class != "none" {
         context.runner_fatal_class.as_str()
     } else {
         stderr_cause
     };
-    let exit_producer = if stderr_producer == "runner" || context.runner_stdout_line_count > 0 {
+    let exit_producer = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        "runner"
+    } else if stderr_producer == "runner" || context.runner_stdout_line_count > 0 {
         "runner"
     } else if stderr_producer == "launcher" {
         "launcher"
     } else {
         "unknown"
     };
-    let watch_owner_result = if owner_result != "unknown" {
+    let watch_owner_result = if code
+        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        "busy"
+    } else if owner_result != "unknown" {
         owner_result
     } else if context.runner_stdout_line_count > 0 {
         "acquired"
@@ -4744,6 +4806,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         ("sync_route", "watcher".to_string()),
         ("exit_producer", exit_producer.to_string()),
         ("watch_owner_result", watch_owner_result.to_string()),
+        // These values come from the closed runner phase and elapsed-bucket helpers.
+        ("runner_phase", context.runner_phase.clone()),
+        (
+            "runner_phase_elapsed_bucket",
+            context.runner_phase_elapsed_bucket.clone(),
+        ),
         ("stderr_cause", stderr_cause.to_string()),
         ("node_error_code", "unknown".to_string()),
         ("node_error_name", "unknown".to_string()),
@@ -4767,6 +4835,17 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             context.runner_stack_signature.clone(),
         ),
     ];
+    if let Some(holder) = last_stderr.and_then(parse_watch_owner_holder_fields) {
+        tags.extend([
+            ("watch_owner_holder_owner", holder.owner),
+            ("watch_owner_holder_pid", holder.pid),
+            (
+                "watch_owner_holder_process",
+                holder.process_name.to_string(),
+            ),
+            ("watch_owner_holder_started_at", holder.started_at),
+        ]);
+    }
     // Windows fatal-reason attribution (this reopen, HQ-DESKTOP-5W). `runner_fatal_source`
     // names WHERE the fatal class came from — the runner's own stderr when it already
     // named the class, else `none`; the deferred fault worker upgrades it to `node_report`
@@ -9134,6 +9213,36 @@ mod tests {
     }
 
     #[test]
+    fn unexpected_watcher_exit_21_capture_has_phase_tags() {
+        let mut effects = RecordingWatcherEffects::default();
+        let context = WatcherExitCaptureContext {
+            runner_phase: "pull".to_string(),
+            runner_phase_elapsed_bucket: "5m_to_30m".to_string(),
+            ..WatcherExitCaptureContext::default()
+        };
+
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("runner stopped after lease loss"),
+            current_termination_host(),
+            &context,
+        );
+
+        assert_eq!(effects.captures.len(), 1);
+        let capture = &effects.captures[0];
+        assert_eq!(recorded_tag(capture, "runner_phase"), "pull");
+        assert_eq!(
+            recorded_tag(capture, "runner_phase_elapsed_bucket"),
+            "5m_to_30m"
+        );
+    }
+
+    #[test]
     fn sighup_watcher_exit_is_named_and_classified() {
         // HQ-DESKTOP-5Y: a macOS SIGHUP (code=None, signal=Some(1)) with none of
         // the self-teardown discriminators set is captured — but must now be named
@@ -10166,7 +10275,7 @@ mod tests {
             false,
             false,
             "/opt/homebrew/bin/npx",
-            Some("[sync] hq-sync-runner already owned for this HQ root (owner=fixture, pid=123); exiting."),
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting."),
             current_termination_host(),
             &WatcherExitCaptureContext::default(),
         );
@@ -10175,11 +10284,81 @@ mod tests {
         assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
         assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
         assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
-        assert!(capture
-            .tags
-            .iter()
-            .all(|(_, value)| !value.contains("fixture")));
-        assert!(capture.tags.iter().all(|(_, value)| !value.contains("123")));
+        assert_eq!(recorded_tag(capture, "exit_class"), "already_owned");
+        assert_eq!(recorded_tag(capture, "runner_fatal_class"), "none");
+        assert_eq!(
+            recorded_tag(capture, "watch_owner_holder_owner"),
+            "hq-daemon"
+        );
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_pid"), "123");
+        assert_eq!(
+            recorded_tag(capture, "watch_owner_holder_process"),
+            "sync-runner"
+        );
+        assert_eq!(
+            recorded_tag(capture, "watch_owner_holder_started_at"),
+            "2026-10-04T08:10:11.123Z"
+        );
+        assert!(capture.message.starts_with("auto-sync watcher refused:"));
+    }
+
+    #[test]
+    fn watcher_exit_20_with_pre_holder_format_line_keeps_owner_and_pid() {
+        // Runners published before hq-cloud #837 print only owner and pid. The
+        // refusal must still classify, keep both fields, and report the fields it
+        // does not carry as `unknown` rather than dropping the holder evidence.
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123); exiting."),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("watcher exit capture");
+        assert_eq!(recorded_tag(capture, "exit_class"), "already_owned");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_owner"), "hq-daemon");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_pid"), "123");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_process"), "unknown");
+        assert_eq!(recorded_tag(capture, "watch_owner_holder_started_at"), "unknown");
+        assert!(capture.message.starts_with("auto-sync watcher refused:"));
+    }
+
+    #[test]
+    fn watcher_exit_20_with_empty_stderr_stays_visible_as_already_owned() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            None,
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("exit 20 remains captured");
+        assert_eq!(recorded_tag(capture, "exit_class"), "already_owned");
+        assert_eq!(recorded_tag(capture, "runner_fatal_class"), "none");
+        assert_eq!(recorded_tag(capture, "stderr_cause"), "already_owned");
+        assert_eq!(recorded_tag(capture, "watch_owner_result"), "busy");
+        assert_eq!(recorded_tag(capture, "exit_producer"), "runner");
+        assert!(capture.message.starts_with("auto-sync watcher refused:"));
+        assert!(
+            !capture
+                .tags
+                .iter()
+                .any(|(key, _)| key.starts_with("watch_owner_holder_"))
+        );
     }
 
     #[test]
@@ -15435,6 +15614,33 @@ mod tests {
         let serialized = serde_json::to_string(&event.extras).expect("serialize extras");
         assert!(!serialized.contains("private-company"));
         assert!(!serialized.contains("secret-plan"));
+    }
+
+    #[test]
+    fn watcher_stderr_tail_preserves_owner_refusal_ahead_of_later_diagnostics() {
+        let stderr_tail = Mutex::new(VecDeque::with_capacity(WATCHER_STDERR_TAIL_CAP));
+        record_watcher_stderr_tail(
+            &stderr_tail,
+            "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.",
+        );
+        for index in 0..(WATCHER_STDERR_TAIL_CAP + 3) {
+            record_watcher_stderr_tail(&stderr_tail, &format!("later diagnostic {index}"));
+        }
+        let tail = stderr_tail.lock().unwrap();
+        let selected = tail
+            .iter()
+            .find(|line| line.contains("hq-sync-runner already owned"))
+            .or_else(|| tail.back())
+            .map(String::as_str)
+            .expect("stderr evidence retained");
+        assert_eq!(watcher_exit_stderr_diagnostics(Some(selected)).1, "busy");
+        assert_eq!(
+            parse_watch_owner_holder_fields(selected)
+                .expect("holder fields retained")
+                .pid,
+            "123"
+        );
+        assert_eq!(tail.len(), WATCHER_STDERR_TAIL_CAP);
     }
 
     /// The exact Sentry status behind HQ-DESKTOP-3S (raw `Some(-1073740791)`)

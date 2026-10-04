@@ -8,27 +8,41 @@
 
 import {
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
+  INTEGRATION_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
+  integrationAppRefBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
   unavailable,
   validateFetchReplyThread,
   validateSendReply,
+  withHttpStatus,
+  withoutSecret,
   type AdapterPromise,
+  type AdapterResult,
   type AgentProvisionOptionsView,
+  type IntegrationOAuthStart,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
 import { TAURI_CAPABILITIES, type Capability } from "../capabilities.js";
 import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
+import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
 import { scrubTransportFailure } from "../api-error.js";
 import { createCallsApi } from "../calls/api.js";
+import {
+  isLambdaInvokeServiceErrorBody,
+  lambdaInvokeRetryDelayMs,
+  sleepForLambdaInvokeRetry,
+} from "../request-policy.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   DESKTOP_AGENT_CREATION_FLAG,
@@ -39,6 +53,8 @@ import {
   createHqProRestFetch,
   createScopedFeatureFlagGates,
   type ScopedFeatureFlagGates,
+  resolveCompanyFeature,
+  type FeatureFlagGate,
 } from "../flags.js";
 
 /** Meetings are cloud-backed — desktop composite routes them via web.meetings. */
@@ -160,12 +176,38 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
-    const raw = await this.call<unknown>("hq_pro_fetch", {
+    return (await this.hqProAttempt<T>(method, path, body)).result;
+  }
+
+  /** One hq-pro request, with the HTTP status of its answer when there was one. */
+  private async hqProAttempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<{ result: AdapterResult<T>; status: number | null; body?: string }> {
+    let raw = await this.call<unknown>("hq_pro_fetch", {
       url: path,
       method,
       body: body === undefined ? null : JSON.stringify(body),
     });
-    if (!raw.ok) return scrubTransportFailure(raw);
+    const firstResponse = raw.ok && raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
+      ? raw.value as Record<string, unknown>
+      : null;
+    if (
+      method === "GET" &&
+      typeof firstResponse?.status === "number" &&
+      firstResponse.status === 504 &&
+      typeof firstResponse.body === "string" &&
+      isLambdaInvokeServiceErrorBody(firstResponse.body)
+    ) {
+      await sleepForLambdaInvokeRetry(lambdaInvokeRetryDelayMs());
+      raw = await this.call<unknown>("hq_pro_fetch", {
+        url: path,
+        method,
+        body: body === undefined ? null : JSON.stringify(body),
+      });
+    }
+    if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
         ? (raw.value as Record<string, unknown>)
@@ -173,22 +215,52 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     if (rec && typeof rec.status === "number") {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
-        return scrubTransportFailure(
-          hqProFailure(
-            parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+        return {
+          result: scrubTransportFailure(
+            hqProFailure(
+              parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+            ),
           ),
-        );
+          status: rec.status,
+          body: text,
+        };
       }
       try {
-        return ok((text ? JSON.parse(text) : undefined) as T);
+        return {
+          result: ok((text ? JSON.parse(text) : undefined) as T),
+          status: rec.status,
+        };
       } catch (err) {
-        return failure(
-          "network",
-          err instanceof Error ? err.message : String(err),
-        );
+        return {
+          result: failure(
+            "network",
+            err instanceof Error ? err.message : String(err),
+          ),
+          status: rec.status,
+        };
       }
     }
-    return ok(raw.value as T);
+    return { result: ok(raw.value as T), status: null };
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code.
+   */
+  private hqProPostWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    return this.hqProRequestWithStatus<T>("POST", path, body);
+  }
+
+  /** {@link hqProJson}, with the HTTP status on a failure. */
+  private async hqProRequestWithStatus<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await this.hqProAttempt<T>(method, path, body);
+    // A reply that was not JSON is not the server refusing: it keeps no status.
+    if (!attempted.result.ok && attempted.result.code === "network") return attempted.result;
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   /**
@@ -216,6 +288,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
+    hasCompanyFeature: (flag, companyUid) =>
+      resolveCompanyFeature(
+        createHqProFlagFetch(this.invokeFn),
+        flag,
+        companyUid,
+      ),
     subscribeFeature: (flag, onChange) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? () => {}
@@ -369,12 +447,29 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         ...(cursor ? { cursor } : {}),
         ...(view ? { view } : {}),
       }),
-    sendDm: (toPersonUid, body, extras) =>
-      this.call("send_dm", {
+    sendDm: (toPersonUid, body, extras) => {
+      const attachments = extras?.attachments;
+      const audience = extras?.audience;
+      const idempotencyKey = extras?.idempotencyKey?.trim();
+      // The native command carries neither field. A message for the bot only,
+      // or one sent under a key, goes to hq-pro as the Sync adapter sends it:
+      // without the lane it would arrive as an ordinary direct message.
+      if (audience || idempotencyKey) {
+        const hasAttachments = Boolean(attachments && attachments.length > 0);
+        return this.hqProJson("POST", WEB_PATHS.dmSend, {
+          toPersonUid,
+          body,
+          ...(hasAttachments ? { attachments } : {}),
+          ...(audience ? { audience } : {}),
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        });
+      }
+      return this.call("send_dm", {
         toPersonUid,
         body,
-        attachments: extras?.attachments ?? null,
-      }),
+        attachments: attachments ?? null,
+      });
+    },
     fetchReplyThread: async (args) => {
       const invalid = validateFetchReplyThread(args);
       if (invalid) return invalid;
@@ -498,12 +593,34 @@ export class TauriPlatformAdapter implements PlatformAdapter {
 
   readonly agents: PlatformAdapter["agents"] = {
     fetch: createHqProRestFetch((cmd, args) => this.invokeFn(cmd, args)),
-    getProvisionOptions: (companyUid) =>
-      this.hqProJson<AgentProvisionOptionsView>(
+    // A refusal keeps its HTTP status and the people the server says to ask
+    // (`admins`), so the New Bot screen can say why Create is off.
+    getProvisionOptions: async (companyUid) => {
+      const attempted = await this.hqProAttempt<AgentProvisionOptionsView>(
         "GET",
         AGENT_PATHS.provisionOptions(companyUid),
+      );
+      if (!attempted.result.ok && attempted.result.code === "network") return attempted.result;
+      return withCreateAgentsAdmins(
+        withHttpStatus(attempted.result, attempted.status),
+        attempted.body,
+      );
+    },
+    // A refused read keeps its HTTP status: the New Bot waiting screen tells a
+    // bot that is gone (404) or out of reach (403, 401) from a read that failed.
+    getStatus: (agentUid, brain) => this.hqProRequestWithStatus("GET", AGENT_PATHS.status(agentUid, brain)),
+    restartBrainApproval: (agentUid, brain) =>
+      this.hqProJson("POST", AGENT_PATHS.reauth(agentUid), { brain }),
+    submitClaudeLoginCode: (agentUid, code) =>
+      this.hqProJson("POST", AGENT_PATHS.loginCode(agentUid), { code }),
+    attachSlack: (agentUid) =>
+      this.hqProPostWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
+    // The token goes in the body only. The path names the bot, nothing else.
+    submitSlackAppToken: async (agentUid, appToken) =>
+      withoutSecret(
+        await this.hqProPostWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+        appToken,
       ),
-    getStatus: (agentUid) => this.hqProJson("GET", AGENT_PATHS.status(agentUid)),
     listMobileRoster: (companyUid) =>
       this.hqProJson("GET", AGENT_PATHS.mobileRoster(companyUid)),
     listJobs: (agentUid) => this.hqProJson("GET", AGENT_PATHS.jobs(agentUid)),
@@ -513,14 +630,38 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("PATCH", AGENT_PATHS.profile(agentUid), patch),
     stop: (agentUid) => this.hqProJson("POST", AGENT_PATHS.stop(agentUid)),
     start: (agentUid) => this.hqProJson("POST", AGENT_PATHS.start(agentUid)),
-    deprovision: (agentUid) =>
-      this.hqProJson("DELETE", AGENT_PATHS.deprovision(agentUid)),
+    retryProvisioning: (agentUid) =>
+      this.hqProJson("POST", AGENT_PATHS.retryProvisioning(agentUid)),
+    // A refusal keeps its HTTP status: Cancel in the New Bot flow tells
+    // "already gone" (404) and "not yours to remove" (403) from a failure.
+    deprovision: (agentUid, options) =>
+      this.hqProRequestWithStatus(
+        "DELETE",
+        AGENT_PATHS.deprovision(agentUid, options?.confirmDestroyInstanceId),
+      ),
     listOwners: (companyUid, agentUid) =>
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
     getMyTelemetry: (from, to) =>
       this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to)),
+  };
+
+  readonly integrations: PlatformAdapter["integrations"] = {
+    listConnections: (companyUid) =>
+      this.hqProJson("GET", INTEGRATION_PATHS.connections(companyUid)),
+    grantConnectionAccess: (input) =>
+      this.hqProJson("POST", INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    catalogSearch: (companyUid, query, limit) =>
+      this.hqProRequestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+    // No redirectUri: the server's default lands on the console's callback.
+    startOAuth: (input) =>
+      this.hqProPostWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+    // The key goes in the body only, and is taken out of any failure's text.
+    install: async (input) =>
+      withoutSecret(await this.hqProPostWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
+    blueprint: (input) =>
+      this.hqProPostWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -535,6 +676,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.call("get_activity", { slug }),
     ensureHomeChannel: (companyUid) =>
       this.hqProJson("POST", `/v1/companies/${companyUid}/home-channel`),
+    getFirstWeekReturnNudge: (companyUid) =>
+      this.hqProJson("GET", WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
 
   readonly projects: PlatformAdapter["projects"] = {

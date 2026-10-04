@@ -7,7 +7,7 @@
     appRowStatusLabel,
     isRecordingRestartDeferral,
   } from "./update-presentation";
-  import { heldRestartTitle, holdReasonText } from "../shell/update-toast";
+  import { heldRestartTitle, holdReasonText, restartHoldText } from "../shell/update-toast";
   import {
     checkDesktopUpdates,
     downloadDesktopUpdate,
@@ -293,13 +293,26 @@
   // Item 8: otherwise, while the native gate holds the update (an upload, a
   // recording), the same reason sentence the update toast shows, from the same
   // store value, so the pane and the toast never disagree.
-  const appDeferralReason = $derived(
+  const appRestartDeferred = $derived(
     updateStore.installPhase === "deferred" &&
-      updateStore.installError &&
-      isRecordingRestartDeferral(updateStore.installError)
+      !!updateStore.installError &&
+      isRecordingRestartDeferral(updateStore.installError),
+  );
+  const appDeferralReason = $derived(
+    appRestartDeferred
       ? updateStore.installError
       : appRowLabel !== "UP TO DATE" && updateStore.installPhase !== "installing"
         ? holdReasonText([...updateStore.holdReasons])
+        : null,
+  );
+  // What keeps Restart from working. An upload is named above as the reason
+  // the automatic install waits, and does not stop a restart the person asks
+  // for.
+  const appRestartHold = $derived(
+    appRestartDeferred
+      ? updateStore.installError
+      : appDeferralReason
+        ? restartHoldText([...updateStore.holdReasons])
         : null,
   );
   // Release channel (Stable / Beta / Alpha). The native host owns the
@@ -1710,8 +1723,8 @@
             type="button"
             class="chip"
             data-testid="settings-app-restart"
-            disabled={!!appDeferralReason}
-            title={appDeferralReason ? heldRestartTitle(appDeferralReason) : (updateStore.installError ?? undefined)}
+            disabled={!!appRestartHold}
+            title={appRestartHold ? heldRestartTitle(appRestartHold) : (updateStore.installError ?? undefined)}
             onclick={() => void restartDesktopUpdate()}
           >Restart to update</button>
         {/if}

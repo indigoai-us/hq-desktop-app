@@ -46,6 +46,45 @@ function runtimeFetch(): typeof globalThis.fetch {
   return globalThis.fetch.bind(globalThis);
 }
 
+const LAMBDA_INVOKE_RETRY_MAX_DELAY_MS = 75;
+
+function isLambdaInvokeServiceError(response: Response, bodyText: string): boolean {
+  if (response.status !== 504) {
+    return false;
+  }
+  try {
+    const body: unknown = JSON.parse(bodyText);
+    return (
+      typeof body === "object" &&
+      body !== null &&
+      !Array.isArray(body) &&
+      Object.keys(body).length === 1 &&
+      (body as { message?: unknown }).message === "Internal server error"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function delayWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal?.removeEventListener("abort", abort);
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      cleanup();
+      reject(signal?.reason ?? new DOMException("The operation was aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 /**
  * Read the current id_token from the authenticated same-origin session.
  * The value lives only in this closure and is cleared after an upstream 401.
@@ -148,7 +187,32 @@ export function createHqProFetch(options: {
       });
     };
 
-    const response = await requestWithCurrentToken();
+    const request = input instanceof Request ? input : null;
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const requestBody = init?.body ?? request?.body;
+    const signal = init?.signal ?? request?.signal;
+    let lambdaInvokeRetried = false;
+    const retryLambdaInvoke = async (response: Response): Promise<Response> => {
+      if (
+        lambdaInvokeRetried ||
+        method !== "GET" ||
+        requestBody != null ||
+        response.status !== 504
+      ) return response;
+      const bodyText = await response.text();
+      if (!isLambdaInvokeServiceError(response, bodyText)) {
+        return new Response(bodyText, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+      lambdaInvokeRetried = true;
+      await delayWithAbort(25 + Math.floor(Math.random() * (LAMBDA_INVOKE_RETRY_MAX_DELAY_MS - 24)), signal);
+      return (await requestWithCurrentToken()) ?? response;
+    };
+
+    let response = await requestWithCurrentToken();
     if (!response) {
       onUnauthorized();
       return new Response(
@@ -156,13 +220,15 @@ export function createHqProFetch(options: {
         { status: 401, headers: { "content-type": "application/json" } },
       );
     }
+    response = await retryLambdaInvoke(response);
     if (response.status !== 401) return response;
 
     // A 401 can be an expired id token while the same-origin refresh cookie is
     // still valid. Clear once, obtain a fresh token, and retry this request
     // exactly once before falling back to the normal sign-in flow.
     tokenProvider.clear();
-    const retry = await requestWithCurrentToken();
+    let retry = await requestWithCurrentToken();
+    if (retry) retry = await retryLambdaInvoke(retry);
     if (retry && retry.status !== 401) return retry;
 
     onUnauthorized();

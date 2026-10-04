@@ -102,6 +102,36 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
     }
 }
 
+/// During an updater restart, missing tools on a previously installed machine
+/// must resume at setup repair instead of reopening first-run onboarding. Fresh
+/// installs and the consent-only first-run state keep their existing routing.
+pub fn require_local_toolchain_after_updater_restart(
+    verdict: LifecycleVerdict,
+    tools_present: bool,
+    updater_restart: bool,
+) -> LifecycleVerdict {
+    if tools_present {
+        return verdict;
+    }
+
+    if updater_restart
+        && matches!(
+            verdict.state,
+            LifecycleState::InstallResume
+                | LifecycleState::InstalledLegacyUpdate
+                | LifecycleState::SteadyState
+        )
+    {
+        return LifecycleVerdict {
+            state: LifecycleState::InstallResume,
+            needs_install_backfill: false,
+            needs_first_run_backfill: false,
+        };
+    }
+
+    require_local_toolchain(verdict, false)
+}
+
 /// Whether the launch install-gate should treat local tools as present.
 ///
 /// Only unresolved `hq` or `node` counts as missing. A release bundle can
@@ -1479,6 +1509,46 @@ mod toolchain_readiness_tests {
             waits,
             [STARTUP_TOOLCHAIN_RECHECK_DELAY; STARTUP_TOOLCHAIN_RECHECKS]
         );
+    }
+
+    #[test]
+    fn updater_restart_with_completed_setup_and_missing_tools_resumes_repair() {
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+        };
+        let classified = classify_lifecycle(inputs);
+        assert_eq!(classified.state, LifecycleState::SteadyState);
+
+        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        assert_eq!(verdict.state, LifecycleState::InstallResume);
+        assert!(!verdict.needs_install_backfill && !verdict.needs_first_run_backfill);
+        assert!(installation_required(verdict.state));
+    }
+
+    #[test]
+    fn fresh_install_after_updater_restart_still_starts_at_install() {
+        let inputs = LifecycleInputs {
+            install_completed: false,
+            first_run_completed: false,
+            had_machine_id: false,
+            config_valid: false,
+            hq_root_valid: false,
+            has_auth: false,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+        };
+        let classified = classify_lifecycle(inputs);
+        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]

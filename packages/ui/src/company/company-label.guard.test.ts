@@ -31,6 +31,10 @@ const ALLOWLIST: Record<string, string> = {
     "Button verb phrase (\"Open {name}\"), not a bare name.",
   "chat/SetupRunCard.svelte::card.scope === \"company\" ? (card.company ? `${card.company} vault` : \"company vault\") : \"your personal vault\"":
     "Sentence fragment: \"{name} vault\".",
+  "chat/create-bot/NewBotCreateScreen.svelte::company.label":
+    "The New Bot takeover's own company tile: a monogram and the name, on its dark screen.",
+  "chat/create-bot/NewBotCreateScreen.svelte::company.label.trim().slice(0, 1).toLocaleUpperCase()":
+    "The tile's one-letter monogram.",
   "chat/create-bot/CloudDetailsStep.svelte::nameError ?? `What ${companyLabel} will call it.`":
     "Help sentence.",
   "chat/create-bot/CloudDetailsStep.svelte::handleError ?? `People @mention it as @${handle} in ${companyLabel}'s channels.`":

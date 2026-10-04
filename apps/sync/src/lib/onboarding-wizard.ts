@@ -22,7 +22,8 @@ export const WIZARD_STEPS = [
   { index: 2, id: 'setup', label: 'Setup' },
   // Name a company (or join a pending invite) and pick a plan. The website no
   // longer creates a company, so first run has to. Skipped for anyone who is
-  // already an active member of a company.
+  // already an active member of a company. Shown after the setup explainers
+  // and before the ready screen, without waiting for the install.
   { index: 3, id: 'company', label: 'Your company' },
   { index: 4, id: 'first-folder-sync', label: 'Sync your first folder' },
   { index: 5, id: 'invite-teammate', label: 'Invite a teammate' },

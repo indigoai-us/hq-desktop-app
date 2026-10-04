@@ -181,6 +181,30 @@ export interface HqProErrorDetails {
   /** Present only when the body carried an approved upgrade link. */
   upgradeUrl?: string;
   planLimit: boolean;
+  /** Present only on a refused bot removal that names the running machine. */
+  instanceId?: string;
+  /** Present only when the body names the service behind hq-pro that refused. */
+  upstreamCode?: string;
+}
+
+/** Server code for a bot removal refused because its machine is running. */
+export const AGENT_BOX_PROTECTED = "AGENTS_V2_BOX_PROTECTED";
+
+/** The machine id a refused bot removal names, when it is a plain EC2 id. */
+function protectedInstanceId(rec: Record<string, unknown>, code: string): string | null {
+  if (code !== AGENT_BOX_PROTECTED || typeof rec.instanceId !== "string") return null;
+  const id = rec.instanceId.trim();
+  return /^i-[0-9a-f]{8,32}$/.test(id) ? id : null;
+}
+
+/**
+ * The `upstreamCode` of an error body, when it is a short machine code. Free
+ * text is dropped: this value is shown to callers as a code, never a sentence.
+ */
+function upstreamCodeOf(rec: Record<string, unknown>): string | null {
+  if (typeof rec.upstreamCode !== "string") return null;
+  const code = rec.upstreamCode.trim();
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(code) ? code : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -216,11 +240,15 @@ export function hqProErrorFromRecord(
   } else if (typeof rec.error === "string" && rec.error.trim()) {
     message = rec.error.trim();
   }
+  const instanceId = protectedInstanceId(rec, code);
+  const upstreamCode = upstreamCodeOf(rec);
   return {
     code,
     message,
     planLimit,
     ...(upgradeUrl ? { upgradeUrl } : {}),
+    ...(instanceId ? { instanceId } : {}),
+    ...(upstreamCode ? { upstreamCode } : {}),
   };
 }
 
@@ -257,5 +285,7 @@ export function hqProFailure(details: HqProErrorDetails): AdapterFailure {
     code: details.code,
     message: details.message,
     ...(details.upgradeUrl ? { upgradeUrl: details.upgradeUrl } : {}),
+    ...(details.instanceId ? { instanceId: details.instanceId } : {}),
+    ...(details.upstreamCode ? { upstreamCode: details.upstreamCode } : {}),
   };
 }
