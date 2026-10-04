@@ -671,9 +671,7 @@ fn process_start_time_ms(pid: u32) -> Option<u64> {
     if hz <= 0 {
         return None;
     }
-    Some(
-        boot_epoch_ms.saturating_add(ticks.saturating_mul(1000) / hz as u64),
-    )
+    Some(boot_epoch_ms.saturating_add(ticks.saturating_mul(1000) / hz as u64))
 }
 
 #[cfg(target_os = "linux")]
@@ -860,9 +858,7 @@ mod tests {
         let pid = std::process::id();
         let start = process_start_time_ms(pid).unwrap();
         record_with_version(
-            &paths
-                .lease_directory
-                .join(format!("{pid}-{start}.json")),
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
             pid,
             start,
             "5.342.3",
@@ -952,9 +948,7 @@ mod tests {
         let pid = std::process::id();
         let start = process_start_time_ms(pid).unwrap();
         record(
-            &paths
-                .lease_directory
-                .join(format!("{pid}-{start}.json")),
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
             pid,
             start,
         );
