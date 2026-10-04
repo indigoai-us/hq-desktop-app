@@ -39,14 +39,14 @@ use url::Url;
 
 use crate::commands::config::MenubarPrefs;
 use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
+use crate::updater_outcome::{UpdateOutcomeAttempt, UpdateOutcomeProperties, UpdateOutcomeStage};
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
-use crate::updater_outcome::{UpdateOutcomeAttempt, UpdateOutcomeProperties, UpdateOutcomeStage};
 use crate::util::release_channel::{
     channel_accepts_version, effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
-    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
-    UpdateFeedPolicy,
+    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel,
+    ResolvedChannelEndpoint, UpdateFeedPolicy,
 };
 use hq_desktop_core::update_gate::{
     decide, should_emit_deferred, AppFocus, DeferReason, DeferredEmitKey, HoldReason,
@@ -1212,7 +1212,11 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
         updater.channel.as_str(),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
     );
-    emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::CheckStarted, crate::app_version::current());
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
@@ -1220,7 +1224,11 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpdateAvailable, &info.version);
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
+            );
             record_and_announce_update(
                 &app,
                 ticket,
@@ -1234,7 +1242,11 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             // Up to date — clear any previously stored pending update so a
             // pulled/superseded release doesn't keep hydrating surfaces
             // (e.g. the version pop-out) as "Update available" forever.
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpToDate, crate::app_version::current());
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             Ok(apply_absent_and_emit(&app, ticket, authoritative)?.pending_info())
         }
         Err(e) => Err(e.to_string()),
@@ -1270,7 +1282,11 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
         updater.channel.as_str(),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
     );
-    emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::CheckStarted, crate::app_version::current());
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
@@ -1278,7 +1294,11 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpdateAvailable, &info.version);
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
+            );
             let _ = record_and_announce_update(
                 &app,
                 ticket,
@@ -1298,13 +1318,17 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
             #[cfg(not(target_os = "windows"))]
             crate::commands::hq_work::spawn_maybe_co_install_hq_work();
             let version = update.version.clone();
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::InstallStarted, &version);
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::InstallStarted,
+                &version,
+            );
             let result = install_verified_update(&app, &update).await;
             let result = match result {
                 Err(error) => telemetry_attempt.observe_result(
-                UpdateOutcomeStage::InstallFailed,
-                &version,
-                Err(error),
+                    UpdateOutcomeStage::InstallFailed,
+                    &version,
+                    Err(error),
                     send_update_outcome,
                 ),
                 Ok(()) => Ok(()),
@@ -1315,7 +1339,11 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
             result
         }
         Ok(None) => {
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpToDate, crate::app_version::current());
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
             Err("No release available to reinstall".to_string())
         }
@@ -1402,7 +1430,11 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
         ReleaseChannel::Stable.as_str(),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
     );
-    emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::CheckStarted, crate::app_version::current());
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
@@ -1410,12 +1442,20 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpdateAvailable, &info.version);
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
+            );
             stage_plugin_update(app, update, info, &telemetry_attempt).await?;
             commit_staged_install_unguarded(app, InstallTrigger::Forced).await
         }
         Ok(None) => {
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpToDate, crate::app_version::current());
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             Err("hq-pro hard-gate fired but tauri-updater sees no release; latest.json may be stale".to_string())
         }
         Err(error) => Err(error.to_string()),
@@ -1734,7 +1774,11 @@ async fn commit_staged_install_with_decision(
         return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let telemetry_attempt = staged.telemetry_attempt.clone();
-    emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::InstallStarted, &version);
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::InstallStarted,
+        &version,
+    );
     emit_update_install_started(app, &version);
     let drain_after_pause = drains_after_pause(trigger, decision);
     let post_cap =
@@ -2076,7 +2120,11 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
         updater.channel.as_str(),
         hq_desktop_core::hq_cli_update::auto_update_enabled(),
     );
-    emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::CheckStarted, crate::app_version::current());
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
@@ -2084,7 +2132,11 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpdateAvailable, &info.version);
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
+            );
             let info = record_and_announce_update(
                 &app,
                 ticket,
@@ -2101,7 +2153,11 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
             Ok(info)
         }
         Ok(None) => {
-            emit_update_outcome(&telemetry_attempt, UpdateOutcomeStage::UpToDate, crate::app_version::current());
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
             Err("No update available".to_string())
         }
@@ -2547,7 +2603,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                 updater.channel.as_str(),
                                 automatic_updates,
                             );
-                            emit_update_outcome(&telemetry_attempt,
+                            emit_update_outcome(
+                                &telemetry_attempt,
                                 UpdateOutcomeStage::CheckStarted,
                                 crate::app_version::current(),
                             );
@@ -2558,7 +2615,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         update.body.clone(),
                                         update.date.map(|d| d.to_string()),
                                     );
-                                    emit_update_outcome(&telemetry_attempt,
+                                    emit_update_outcome(
+                                        &telemetry_attempt,
                                         UpdateOutcomeStage::UpdateAvailable,
                                         &info.version,
                                     );
@@ -2645,7 +2703,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         }
                                         BackgroundUpdateAction::Announce => {
                                             if !automatic_updates {
-                                                emit_update_outcome(&telemetry_attempt,
+                                                emit_update_outcome(
+                                                    &telemetry_attempt,
                                                     UpdateOutcomeStage::InstallDeferredUserOff,
                                                     &info.version,
                                                 );
@@ -2668,7 +2727,8 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     }
                                 }
                                 Ok(None) => {
-                                    emit_update_outcome(&telemetry_attempt,
+                                    emit_update_outcome(
+                                        &telemetry_attempt,
                                         UpdateOutcomeStage::UpToDate,
                                         crate::app_version::current(),
                                     );
@@ -3152,7 +3212,9 @@ mod tests {
             deferred_restart_message(&[HoldReason::CoreUpdateInProgress]),
             UPDATE_DEFERRED_DURING_CORE_UPDATE
         );
-        assert!(automatic_install_should_retry(UPDATE_DEFERRED_DURING_CORE_UPDATE));
+        assert!(automatic_install_should_retry(
+            UPDATE_DEFERRED_DURING_CORE_UPDATE
+        ));
     }
 
     #[test]
