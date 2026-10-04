@@ -1321,7 +1321,10 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(app, &update.version) {
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(
+            app,
+            &update.version,
+        ) {
             // A recording won the final exit race. The updater work has already
             // been deferred by the chokepoint instead of terminating the app.
             return Ok(());
@@ -2067,7 +2070,10 @@ async fn install_staged_update(
         if post_cap {
             emit_post_cap_install_outcome(&staged.info.version, "installed", None);
         }
-        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(app, &staged.info.version) {
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(
+            app,
+            &staged.info.version,
+        ) {
             // A recording won the final exit race. The staged install entry
             // gate normally prevents this; retain a successful deferred
             // outcome for the remaining narrow race window.

@@ -3,7 +3,6 @@ use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::first_run::merge_menubar_flags;
 use serde_json::Value;
-use tauri::Manager;
 
 /// One-time in-app copy when a stale LaunchAgent was healed or an old bundle
 /// was retired. Persisted untyped in menubar.json so a settings save cannot
