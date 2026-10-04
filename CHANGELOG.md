@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
+- When your setup bot sees that you already use Claude Code or Codex a lot on this computer, its first message asks whether you want to continue setup there, and shows two buttons under it: "Continue in Claude Code" (or Codex) opens your HQ folder in that tool with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. Needs the hq-cli release that sends the offer.
 
 ## [0.10.389] — 2026-10-04
 
@@ -53,7 +54,6 @@ The release moves it under the version it ships in.
   you informed while browser sign-in is in progress, and gives you a clear Try
   again path if it does not finish.
 - Desktop funnel telemetry fixes: the daily-active row is stamped with the time it was sent (it was stamped midnight, so daytime reports showed none) and is re-sent every 6 hours; a new install's first app-opened row is held until sign-in instead of being dropped; account-linked rows now carry the company hash after the first sync or first company push; and every desktop funnel row carries the app version.
-- When your setup bot sees that you already use Claude Code or Codex a lot on this computer, its first message asks whether you want to continue setup there, and shows two buttons under it: "Continue in Claude Code" (or Codex) opens your HQ folder in that tool with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. Needs the hq-cli release that sends the offer.
 
 ## [0.10.386] — 2026-10-03
 
