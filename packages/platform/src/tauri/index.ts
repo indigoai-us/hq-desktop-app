@@ -435,12 +435,29 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         ...(cursor ? { cursor } : {}),
         ...(view ? { view } : {}),
       }),
-    sendDm: (toPersonUid, body, extras) =>
-      this.call("send_dm", {
+    sendDm: (toPersonUid, body, extras) => {
+      const attachments = extras?.attachments;
+      const audience = extras?.audience;
+      const idempotencyKey = extras?.idempotencyKey?.trim();
+      // The native command carries neither field. A message for the bot only,
+      // or one sent under a key, goes to hq-pro as the Sync adapter sends it:
+      // without the lane it would arrive as an ordinary direct message.
+      if (audience || idempotencyKey) {
+        const hasAttachments = Boolean(attachments && attachments.length > 0);
+        return this.hqProJson("POST", WEB_PATHS.dmSend, {
+          toPersonUid,
+          body,
+          ...(hasAttachments ? { attachments } : {}),
+          ...(audience ? { audience } : {}),
+          ...(idempotencyKey ? { idempotencyKey } : {}),
+        });
+      }
+      return this.call("send_dm", {
         toPersonUid,
         body,
-        attachments: extras?.attachments ?? null,
-      }),
+        attachments: attachments ?? null,
+      });
+    },
     fetchReplyThread: async (args) => {
       const invalid = validateFetchReplyThread(args);
       if (invalid) return invalid;

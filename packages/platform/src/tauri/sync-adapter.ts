@@ -449,6 +449,20 @@ export function createSyncPlatformAdapter(
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
+    return (await hqProAttemptWithRetries<T>(method, path, body)).result;
+  }
+
+  /**
+   * One hq-pro request under the shared policy: the 429/503 retries, then a
+   * single repeat of a GET that failed with the gateway's own 504 (the Lambda
+   * was never invoked, so asking again is safe). Both request helpers below
+   * go through here, so neither can skip a retry the other has.
+   */
+  async function hqProAttemptWithRetries<T>(
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    path: string,
+    body?: unknown,
+  ): ReturnType<typeof hqProAttempt<T>> {
     const makeAttempt = () => retryThrottled(
       () => hqProAttempt<T>(method, path, body),
       (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
@@ -464,7 +478,7 @@ export function createSyncPlatformAdapter(
       await (requestPolicy.sleep ?? sleepForLambdaInvokeRetry)(delayMs);
       attempted = await makeAttempt();
     }
-    return attempted.result;
+    return attempted;
   }
 
   /**
@@ -478,17 +492,16 @@ export function createSyncPlatformAdapter(
     return hqProRequestWithStatus<T>('POST', path, body);
   }
 
-  /** {@link hqProJson}, with the HTTP status on a failure. Same 429/503 policy. */
+  /**
+   * {@link hqProJson}, with the HTTP status on a failure. Same 429/503 policy
+   * and the same single repeat of a GET that met the gateway's 504.
+   */
   async function hqProRequestWithStatus<T>(
     method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
   ): AdapterPromise<T> {
-    const attempted = await retryThrottled(
-      () => hqProAttempt<T>(method, path, body),
-      (outcome) => ({ status: outcome.status, retryAfter: outcome.retryAfter }),
-      requestPolicy,
-    );
+    const attempted = await hqProAttemptWithRetries<T>(method, path, body);
     // A reply that was not JSON is not the server refusing: it keeps no status.
     if (!attempted.result.ok && attempted.result.code === 'network') {
       return attempted.result;
