@@ -6286,11 +6286,23 @@ fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassificat
         return NodeCrashClassification::NONE;
     }
 
-    let text = stderr.to_ascii_lowercase();
-    let oom = text.contains("javascript heap out of memory");
-    let fatal = text.contains("fatal error:");
-    let assertion = text.contains("assertion failed");
-    let native_trace = text.contains("node::") || text.contains("native stack trace");
+    // npm's own marker proves this is not the pre-logger failure class, and
+    // matching only line prefixes avoids treating echoed input as Node evidence.
+    if has_any_npm_marker_line(stderr) {
+        return NodeCrashClassification::NONE;
+    }
+    let mut oom = false;
+    let mut fatal = false;
+    let mut assertion = false;
+    let mut native_trace = false;
+    for line in stderr.lines() {
+        let line = line.trim().to_ascii_lowercase();
+        fatal |= line.starts_with("fatal error:");
+        oom |= line.starts_with("fatal error:")
+            && line.contains("javascript heap out of memory");
+        assertion |= line.starts_with("assertion failed");
+        native_trace |= line.starts_with("node::") || line.starts_with("native stack trace");
+    }
     if !(oom || fatal || assertion || native_trace) {
         return NodeCrashClassification::NONE;
     }
@@ -19222,6 +19234,21 @@ mod tests {
 
         assert_eq!(
             node_crash_kind(Some(134), "npm error code E404").kind.tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(
+                Some(134),
+                "npm error command failed\nFATAL ERROR: JavaScript heap out of memory"
+            )
+            .kind
+            .tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(134), "echoed input: FATAL ERROR: failure")
+                .kind
+                .tag_value(),
             "none"
         );
         assert_eq!(
