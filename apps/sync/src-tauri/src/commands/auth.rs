@@ -629,6 +629,7 @@ pub async fn sign_out(app: AppHandle) -> Result<(), String> {
     );
     record_last_auth_transition("sign_out");
     crate::commands::dm_notify::clear_notification_credentials(&app).await?;
+    crate::commands::vault_explorer::clear_account_cache(&app);
     crate::commands::dm_mqtt::reset_dm_push_for_auth_session_change();
     clear_sentry_user();
     // The next account must not inherit this one's plan-limit upload pause.

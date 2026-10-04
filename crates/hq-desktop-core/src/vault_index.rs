@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::desktop_alt::{
     canonical_hq_relative_path, company_slug_for_hq_path, is_dev_noise, is_within,
@@ -156,7 +156,7 @@ pub fn extract_wikilinks(source: &str) -> Vec<String> {
 
 // ---- snapshot ------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Entry {
     /// HQ-folder-relative, forward-slash path.
     path: String,
@@ -183,6 +183,19 @@ pub struct VaultSnapshot {
     incoming: Vec<Vec<usize>>,
     truncated: bool,
 }
+
+/// On-disk representation of a snapshot. It deliberately contains only paths,
+/// file metadata, and extracted link targets - never Markdown text.
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedSnapshot {
+    version: u32,
+    root: String,
+    include_system: bool,
+    entries: Vec<Entry>,
+    truncated: bool,
+}
+
+const PERSISTED_SNAPSHOT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -395,6 +408,70 @@ impl VaultSnapshot {
         };
         snapshot.link();
         Ok(snapshot)
+    }
+
+    /// Read a previous snapshot saved by this version of the app. Corrupt,
+    /// obsolete, or unsafe cache files are intentionally indistinguishable from
+    /// a cache miss: the caller simply rebuilds the index.
+    pub fn load(path: &Path, root: &str, include_system: bool) -> Option<Self> {
+        let bytes = std::fs::read(path).ok()?;
+        let persisted: PersistedSnapshot = serde_json::from_slice(&bytes).ok()?;
+        if persisted.version != PERSISTED_SNAPSHOT_VERSION
+            || persisted.root != root
+            || persisted.include_system != include_system
+            || persisted.entries.len() > MAX_INDEX_FILES
+            || persisted
+                .entries
+                .iter()
+                .any(|entry| !safe_cached_entry(entry, root, include_system))
+        {
+            return None;
+        }
+        let mut snapshot = Self {
+            root: persisted.root,
+            include_system: persisted.include_system,
+            entries: persisted.entries,
+            by_path: HashMap::new(),
+            by_name: HashMap::new(),
+            outgoing: Vec::new(),
+            incoming: Vec::new(),
+            truncated: persisted.truncated,
+        };
+        snapshot.link();
+        Some(snapshot)
+    }
+
+    /// Atomically write the snapshot for the next launch. A failed cache write
+    /// never changes the answer currently being served.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "vault cache path has no parent".to_string())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create vault cache: {error}"))?;
+        let bytes = serde_json::to_vec(&PersistedSnapshot {
+            version: PERSISTED_SNAPSHOT_VERSION,
+            root: self.root.clone(),
+            include_system: self.include_system,
+            entries: self.entries.clone(),
+            truncated: self.truncated,
+        })
+        .map_err(|error| format!("could not encode vault cache: {error}"))?;
+        let temp = path.with_extension("tmp");
+        std::fs::write(&temp, bytes)
+            .map_err(|error| format!("could not write vault cache: {error}"))?;
+        std::fs::rename(&temp, path).map_err(|error| {
+            let _ = std::fs::remove_file(&temp);
+            format!("could not replace vault cache: {error}")
+        })
+    }
+
+    /// Whether a rebuild changed the persisted index payload.
+    pub fn same_index(&self, other: &Self) -> bool {
+        self.root == other.root
+            && self.include_system == other.include_system
+            && self.truncated == other.truncated
+            && self.entries == other.entries
     }
 
     fn vault_relative<'a>(&self, path: &'a str) -> &'a str {
@@ -632,6 +709,40 @@ impl VaultSnapshot {
     }
 }
 
+fn safe_cached_entry(entry: &Entry, root: &str, include_system: bool) -> bool {
+    let relative = if root.is_empty() {
+        entry.path.as_str()
+    } else {
+        let Some(relative) = entry
+            .path
+            .strip_prefix(root)
+            .and_then(|path| path.strip_prefix('/'))
+        else {
+            return false;
+        };
+        relative
+    };
+    if relative.is_empty()
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return false;
+    }
+    let mut parts = relative.split('/').peekable();
+    while let Some(part) = parts.next() {
+        let is_dir = parts.peek().is_some();
+        if is_dev_noise(part, is_dir)
+            || is_sensitive_name(part, is_dir)
+            || (!include_system && part.starts_with('.'))
+        {
+            return false;
+        }
+    }
+    entry.name == relative.rsplit('/').next().unwrap_or_default()
+        && entry.is_markdown == is_markdown_name(&entry.name)
+}
+
 /// Read the wikilinks out of many notes at once. Reading is I/O bound, so the
 /// notes are split across the machine's cores; a first build of a large vault
 /// is otherwise one file read after another.
@@ -858,6 +969,13 @@ mod tests {
         .unwrap();
         let s = VaultSnapshot::build(root, "companies/acme", false, None).unwrap();
         assert_eq!(paths(&s), vec!["companies/acme/a.md"]);
+        let cache = root.join("snapshot.json");
+        s.save(&cache).unwrap();
+        assert!(!fs::read_to_string(&cache).unwrap().contains("linked"));
+        assert_eq!(
+            paths(&VaultSnapshot::load(&cache, "companies/acme", false).unwrap()),
+            vec!["companies/acme/a.md"]
+        );
     }
 
     fn acme() -> (tempfile::TempDir, VaultSnapshot) {
@@ -997,6 +1115,61 @@ mod tests {
             hit_paths(&second.note_links("companies/acme/c.md", &[]).backlinks),
             vec!["companies/acme/a.md"]
         );
+    }
+
+    #[test]
+    fn persisted_snapshot_round_trips_and_reuses_changed_note_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "companies/acme/a.md", "[[b]]\nprivate note body stays in the vault");
+        write(root, "companies/acme/b.md", "");
+        let first = VaultSnapshot::build(root, "companies/acme", false, None).unwrap();
+        let cache = root.join("snapshot.json");
+        first.save(&cache).unwrap();
+        assert!(
+            !fs::read_to_string(&cache)
+                .unwrap()
+                .contains("private note body stays in the vault")
+        );
+        let loaded = VaultSnapshot::load(&cache, "companies/acme", false).unwrap();
+        assert!(first.same_index(&loaded));
+
+        write(root, "companies/acme/a.md", "[[c]] changed");
+        write(root, "companies/acme/c.md", "");
+        let rebuilt = VaultSnapshot::build(root, "companies/acme", false, Some(&loaded)).unwrap();
+        assert_eq!(
+            rebuilt.resolve("c", "companies/acme/a.md"),
+            Some("companies/acme/c.md")
+        );
+    }
+
+    #[test]
+    fn persisted_snapshot_rejects_corrupt_and_wrong_version_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "companies/acme/a.md", "");
+        let snapshot = VaultSnapshot::build(root, "companies/acme", false, None).unwrap();
+        let cache = root.join("snapshot.json");
+        snapshot.save(&cache).unwrap();
+        fs::write(&cache, "not json").unwrap();
+        assert!(VaultSnapshot::load(&cache, "companies/acme", false).is_none());
+        fs::write(&cache, r#"{"version":999,"root":"companies/acme","include_system":false,"entries":[],"truncated":false}"#).unwrap();
+        assert!(VaultSnapshot::load(&cache, "companies/acme", false).is_none());
+    }
+
+    #[test]
+    fn persisted_snapshot_never_contains_sensitive_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "companies/acme/knowledge/a.md", "");
+        write(root, "companies/acme/secrets/key.pem", "private");
+        write(root, "companies/acme/.env", "TOKEN=private");
+        let snapshot = VaultSnapshot::build(root, "companies/acme", true, None).unwrap();
+        let cache = root.join("snapshot.json");
+        snapshot.save(&cache).unwrap();
+        let persisted = fs::read_to_string(cache).unwrap();
+        assert!(!persisted.contains("secrets"));
+        assert!(!persisted.contains(".env"));
     }
 
     #[test]

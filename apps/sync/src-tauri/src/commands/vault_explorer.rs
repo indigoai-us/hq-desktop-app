@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +26,7 @@ use hq_desktop_core::desktop_alt::{
 use hq_desktop_core::vault_index::{
     read_note_head, FileHit, NoteLinks, NotePreview, VaultSnapshot, VaultSummary,
 };
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use super::desktop_alt::{
     enforce_desktop_read_scope, hydrated_file_context, require_company_file_read_access,
@@ -43,7 +44,10 @@ const MAX_FRONTMATTER_BYTES: usize = 8 * 1024;
 /// Most quick-switcher results.
 const MAX_SEARCH_RESULTS: usize = 60;
 
-type VaultKey = (PathBuf, String, bool);
+/// Account id, HQ folder, vault root, and system-files toggle. The account
+/// partition keeps a second sign-in in this process from inheriting the first
+/// person's in-memory index.
+type VaultKey = (String, PathBuf, String, bool);
 
 #[derive(Default)]
 struct Slot {
@@ -53,10 +57,13 @@ struct Slot {
     refreshing: AtomicBool,
 }
 
-fn slot(key: &VaultKey) -> Arc<Slot> {
+fn slots() -> &'static Mutex<HashMap<VaultKey, Arc<Slot>>> {
     static SLOTS: OnceLock<Mutex<HashMap<VaultKey, Arc<Slot>>>> = OnceLock::new();
-    let mut slots = SLOTS
-        .get_or_init(Default::default)
+    SLOTS.get_or_init(Default::default)
+}
+
+fn slot(key: &VaultKey) -> Arc<Slot> {
+    let mut slots = slots()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     slots.entry(key.clone()).or_default().clone()
@@ -66,25 +73,89 @@ async fn build(
     key: &VaultKey,
     previous: Option<Arc<VaultSnapshot>>,
 ) -> Result<Arc<VaultSnapshot>, String> {
-    let (hq, root, include_system) = key.clone();
+    let (_, hq, root, include_system) = key.clone();
     tokio::task::spawn_blocking(move || {
-        VaultSnapshot::build(&hq, &root, include_system, previous.as_deref()).map(Arc::new)
+        let started = Instant::now();
+        let snapshot = VaultSnapshot::build(&hq, &root, include_system, previous.as_deref())?;
+        let summary = snapshot.summary();
+        crate::util::logfile::log(
+            "vault-index",
+            &format!(
+                "build complete in {} ms: {} files, {} notes",
+                started.elapsed().as_millis(),
+                summary.files,
+                summary.notes
+            ),
+        );
+        Ok(Arc::new(snapshot))
     })
     .await
     .map_err(|e| format!("vault index task failed: {e}"))?
 }
 
+fn cache_path(app: &AppHandle, key: &VaultKey) -> Result<PathBuf, String> {
+    let (account_id, hq, root, include_system) = key;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hq.hash(&mut hasher);
+    root.hash(&mut hasher);
+    include_system.hash(&mut hasher);
+    // Account ids are opaque service identifiers, so put only a filesystem-safe
+    // encoding in the directory name. The snapshot also verifies its root and
+    // option on load, making a hash collision a harmless cache miss.
+    let account_dir = account_id
+        .bytes()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    app.path()
+        .app_data_dir()
+        .map(|dir| {
+            dir.join("vault-index")
+                .join(account_dir)
+                .join(format!("{:016x}.json", hasher.finish()))
+        })
+        .map_err(|error| format!("could not resolve vault index cache directory: {error}"))
+}
+
+fn cache_previous(app: &AppHandle, key: &VaultKey) -> Option<Arc<VaultSnapshot>> {
+    let (_, _, root, include_system) = key;
+    VaultSnapshot::load(&cache_path(app, key).ok()?, root, *include_system).map(Arc::new)
+}
+
+fn persist_snapshot(app: &AppHandle, key: &VaultKey, snapshot: Arc<VaultSnapshot>) {
+    let Ok(path) = cache_path(app, key) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("vault-index-save".to_string())
+        .spawn(move || {
+            if let Err(error) = snapshot.save(&path) {
+                crate::util::logfile::log(
+                    "vault-index",
+                    &format!("snapshot cache write skipped: {error}"),
+                );
+            }
+        });
+}
+
 /// The current snapshot for a vault, building it on first use and refreshing
 /// it in the background once stale.
-async fn snapshot(key: VaultKey) -> Result<Arc<VaultSnapshot>, String> {
+async fn snapshot(app: &AppHandle, key: VaultKey) -> Result<Arc<VaultSnapshot>, String> {
     let slot = slot(&key);
     if let Some((built_at, snap)) = slot.snapshot.read().await.clone() {
         if built_at.elapsed() > REFRESH_AFTER && !slot.refreshing.swap(true, Ordering::AcqRel) {
             let slot = slot.clone();
             let previous = snap.clone();
+            let current = snap.clone();
+            let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 if let Ok(fresh) = build(&key, Some(previous)).await {
+                    let changed = !fresh.same_index(&current);
                     *slot.snapshot.write().await = Some((Instant::now(), fresh));
+                    if changed {
+                        if let Some((_, fresh)) = slot.snapshot.read().await.clone() {
+                            persist_snapshot(&app, &key, fresh);
+                        }
+                    }
                 }
                 slot.refreshing.store(false, Ordering::Release);
             });
@@ -95,9 +166,111 @@ async fn snapshot(key: VaultKey) -> Result<Arc<VaultSnapshot>, String> {
     if let Some((_, snap)) = slot.snapshot.read().await.clone() {
         return Ok(snap);
     }
+    if let Some(cached) = cache_previous(app, &key) {
+        // A persisted snapshot is useful immediately, but must never be treated
+        // as current. Mark it stale so the first caller starts the same
+        // stale-while-revalidate walk used for an in-memory snapshot.
+        *slot.snapshot.write().await = Some((Instant::now() - REFRESH_AFTER, cached.clone()));
+        if !slot.refreshing.swap(true, Ordering::AcqRel) {
+            let slot = slot.clone();
+            let previous = cached.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Ok(fresh) = build(&key, Some(previous.clone())).await {
+                    let changed = !fresh.same_index(&previous);
+                    *slot.snapshot.write().await = Some((Instant::now(), fresh.clone()));
+                    if changed {
+                        persist_snapshot(&app, &key, fresh);
+                    }
+                }
+                slot.refreshing.store(false, Ordering::Release);
+            });
+        }
+        return Ok(cached);
+    }
     let snap = build(&key, None).await?;
     *slot.snapshot.write().await = Some((Instant::now(), snap.clone()));
+    persist_snapshot(app, &key, snap.clone());
     Ok(snap)
+}
+
+/// Starts after the first successful shell paint. It deliberately performs no
+/// work on the launch path, indexes one vault at a time, and reuses the exact
+/// command authorization before each candidate is admitted.
+pub fn prewarm_after_shell_ready(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let Some(account) = crate::commands::auth::active_auth_session_snapshot() else {
+            return;
+        };
+        let account_id = account.account_id.unwrap_or_default();
+        let account_generation = account.generation;
+        let scope = app.state::<DesktopSessionScope>();
+        let active = scope.active_company_slug();
+        let mut roots = active
+            .as_deref()
+            .map(|slug| vec![format!("companies/{slug}")])
+            .unwrap_or_default();
+        roots.push(String::new());
+
+        // Every candidate below receives its own desktop read scope and still
+        // passes through authorize_vault, including the live membership check.
+        // This does not mutate the shell's active-company scope while it warms
+        // the person's other readable vaults one at a time.
+        if let Ok((_, workspaces)) = hydrated_file_context().await {
+            for workspace in workspaces {
+                let root = format!("companies/{}", workspace.slug);
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+        for root in roots {
+            let Some(current) = crate::commands::auth::active_auth_session_snapshot() else {
+                return;
+            };
+            if current.account_id.as_deref() != Some(account_id.as_str())
+                || current.generation != account_generation
+            {
+                return;
+            }
+            let candidate_scope = DesktopSessionScope {
+                active_company: Mutex::new(root.strip_prefix("companies/").map(str::to_string)),
+            };
+            let Ok(key) = authorize_vault(&root, false, &candidate_scope).await else {
+                continue;
+            };
+            let _ = snapshot(&app, key).await;
+        }
+    });
+}
+
+/// Auth transitions call this before tokens disappear. Removing only the
+/// current account's partition keeps the next account from reading it while
+/// leaving unrelated OS users' local data untouched.
+pub fn clear_account_cache(app: &AppHandle) {
+    let Some(account) = crate::commands::auth::active_auth_session_snapshot() else {
+        return;
+    };
+    let Some(account_id) = account.account_id else {
+        return;
+    };
+    slots()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .retain(|(cached_account_id, _, _, _), _| cached_account_id != &account_id);
+    let account_dir = account_id
+        .bytes()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let Ok(root) = app
+        .path()
+        .app_data_dir()
+        .map(|dir| dir.join("vault-index").join(account_dir))
+    else {
+        return;
+    };
+    let _ = std::fs::remove_dir_all(root);
 }
 
 /// Authorize a vault root (`""` or `companies/<slug>`) and return its cache key.
@@ -120,36 +293,43 @@ async fn authorize_vault(
     } else {
         resolve_hq_folder()
     };
-    Ok((hq, normalized, include_system))
+    let account_id = crate::commands::auth::active_auth_session_snapshot()
+        .and_then(|session| session.account_id)
+        .filter(|account_id| !account_id.trim().is_empty())
+        .ok_or_else(|| "file explorer requires a signed-in user".to_string())?;
+    Ok((account_id, hq, normalized, include_system))
 }
 
 /// Counts, most linked notes and top folders for the vault home.
 #[tauri::command]
 pub async fn vault_summary(
+    app: AppHandle,
     root: String,
     include_system: bool,
     scope: State<'_, DesktopSessionScope>,
 ) -> Result<VaultSummary, String> {
     let key = authorize_vault(&root, include_system, &scope).await?;
-    Ok(snapshot(key).await?.summary())
+    Ok(snapshot(&app, key).await?.summary())
 }
 
 /// Quick switcher: files in the vault matching `query`.
 #[tauri::command]
 pub async fn vault_search(
+    app: AppHandle,
     root: String,
     include_system: bool,
     query: String,
     scope: State<'_, DesktopSessionScope>,
 ) -> Result<Vec<FileHit>, String> {
     let key = authorize_vault(&root, include_system, &scope).await?;
-    let snap = snapshot(key).await?;
+    let snap = snapshot(&app, key).await?;
     Ok(snap.search(&query, MAX_SEARCH_RESULTS))
 }
 
 /// Where the open note's `[[targets]]` go, and which notes link to it.
 #[tauri::command]
 pub async fn vault_note_links(
+    app: AppHandle,
     root: String,
     include_system: bool,
     path: String,
@@ -157,7 +337,7 @@ pub async fn vault_note_links(
     scope: State<'_, DesktopSessionScope>,
 ) -> Result<NoteLinks, String> {
     let key = authorize_vault(&root, include_system, &scope).await?;
-    let snap = snapshot(key).await?;
+    let snap = snapshot(&app, key).await?;
     Ok(snap.note_links(&path, &targets))
 }
 
