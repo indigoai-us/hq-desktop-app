@@ -439,6 +439,9 @@
     type AnsweredWhileBusy,
     agentDisplayName,
     applyAgentStatus,
+    applyDmAgentStatus,
+    endStatusSilentAll,
+    stoppedRespondingLine,
     dropRow,
     isAgentUid,
     newestMessageAtFrom,
@@ -4237,9 +4240,69 @@
       : [],
   );
 
+  /**
+   * Bots whose DM row ended because they went quiet after reporting a status
+   * (agent uid to the name shown and the newest bot message known then). The
+   * DM says so in place of the row until something newer happens there: a
+   * message from the bot, a fresh status, or the person writing again.
+   */
+  let stoppedRespondingByUid = $state<Record<string, { name: string; afterMs: number }>>({});
+  /**
+   * The newest message each bot is known to have sent in its DM, from the
+   * wakes that announced them (agent uid to ISO time). A DM that is not open
+   * may have no timeline in the app at all, and a status from before the
+   * bot's reply must be recognised as late there too.
+   */
+  const botDmMessageSeenAt = new Map<string, string>();
+  /** End rows whose bot reported a status and then sent nothing for 90 s. */
+  function endSilentThinking(now: number): void {
+    const prev = thinkingByRow;
+    const next = endStatusSilentAll(prev, now);
+    if (next === prev) return;
+    const stopped = { ...stoppedRespondingByUid };
+    for (const { rowId, entry } of endedBotDmThinking(prev, next)) {
+      if (rowId !== `dm:${entry.agentUid}`) continue;
+      // The row's own pin first: a bot message newer than it is an answer,
+      // even one that only hid the row and had not removed it yet.
+      stopped[entry.agentUid] = {
+        name: entry.agentName,
+        afterMs: entry.afterMs ?? botPinFor(rowId, entry.agentUid) ?? entry.lastStatusAt ?? now,
+      };
+    }
+    stoppedRespondingByUid = stopped;
+    setThinking(next, "status-silent");
+  }
+  // A row for that bot in its DM is the newer event: the sentence goes away.
+  $effect(() => {
+    const map = thinkingByRow;
+    untrack(() => {
+      const working = Object.keys(stoppedRespondingByUid).filter((uid) =>
+        (map[`dm:${uid}`] ?? []).some((entry) => entry.agentUid === uid),
+      );
+      if (working.length === 0) return;
+      const rest = { ...stoppedRespondingByUid };
+      for (const uid of working) delete rest[uid];
+      stoppedRespondingByUid = rest;
+    });
+  });
+  /** The sentence under the open DM, or null. A message from the bot newer
+   *  than the one known when its row ended means it answered after all. */
+  const stoppedRespondingNote = $derived.by(() => {
+    const row = selectedRow;
+    const uid = row?.kind === "dm" ? (row.personUid ?? "").trim() : "";
+    const note = uid ? stoppedRespondingByUid[uid] : undefined;
+    if (!row || !note) return null;
+    if ((thinkingByRow[row.id] ?? []).some((entry) => entry.agentUid === uid)) return null;
+    const newest = newestMessageAtFrom(liveTimelineId === row.id ? liveTimeline : [], uid);
+    if (newest !== undefined && newest > note.afterMs) return null;
+    return stoppedRespondingLine(row.title?.trim() || note.name);
+  });
+
   onMount(() => {
     const handle = window.setInterval(() => {
-      setThinking(tickAll(thinkingByRow, Date.now()), "expired");
+      const now = Date.now();
+      endSilentThinking(now);
+      setThinking(tickAll(thinkingByRow, now), "expired");
     }, AGENT_THINKING_TICK_MS);
     return () => {
       clearInterval(handle);
@@ -7331,6 +7394,39 @@
     });
   });
 
+  // A bot's own status in its DM with the signed-in person drives that DM's
+  // row: it starts the row or refreshes it with the bot's words, pinned to the
+  // bot's newest message so only a newer one ends it. A status addressed to
+  // someone else, or one no newer than the bot's last message (the reply
+  // already landed), changes nothing. A thread root on the status is kept on
+  // the row; the row still draws in the main pane.
+  $effect(() => {
+    if (!wakes) return;
+    return wakes.on("agent:dm-status", (wake) => {
+      const me = self?.uid?.trim() ?? "";
+      if (!me || wake.withPersonUid !== me) return;
+      const rowId = `dm:${wake.agentUid}`;
+      const timeline = liveTimelineId === rowId ? liveTimeline : (timelineCache.get(rowId) ?? []);
+      // Plus the bot's newest message announced by a wake, for a DM whose
+      // timeline the app does not hold.
+      const seenAt = botDmMessageSeenAt.get(wake.agentUid);
+      const held = seenAt ? [...timeline, { fromPersonUid: wake.agentUid, createdAt: seenAt }] : timeline;
+      const current = thinkingByRow[rowId] ?? [];
+      // The name the DM already goes by, when the app has one.
+      const name =
+        (selectedRow?.id === rowId ? selectedRow.title?.trim() : "") ||
+        current.find((entry) => entry.agentUid === wake.agentUid)?.agentName ||
+        agentDisplayName(wake.agentUid, held, {
+          liveNames: displayNameByUid,
+          fallback: localBots.find((bot) => bot.agentUid === wake.agentUid)?.name,
+        });
+      const next = applyDmAgentStatus(current, wake, name, held, Date.now(), {
+        afterMs: botPinFor(rowId, wake.agentUid) ?? newestMessageAtFrom(held, wake.agentUid),
+      });
+      if (next !== current) thinkingByRow = { ...thinkingByRow, [rowId]: next };
+    });
+  });
+
   // Closed-panel `reply:new`: bump visible “N replies”. Open panel on this
   // root re-fetches via ReplyPanel. Other roots do not rewrite the panel.
   $effect(() => {
@@ -8331,6 +8427,8 @@
     lastChannelTimelineStampById.clear();
     dmThreadsUnsupported = false;
     setThinking({}, "tenant-switch");
+    stoppedRespondingByUid = {};
+    botDmMessageSeenAt.clear();
     answeredWhileBusy = {};
     openReplyRootId = null;
     openProfileMember = null;
@@ -8621,6 +8719,10 @@
     if (wake.direction === "out") return;
     const from = (wake.fromPersonUid ?? "").trim();
     if (!from) return;
+    const wakeCreatedAt = (wake.createdAt ?? "").trim();
+    if (isAgentUid(from) && wakeCreatedAt > (botDmMessageSeenAt.get(from) ?? "")) {
+      botDmMessageSeenAt.set(from, wakeCreatedAt);
+    }
     const row = selectedRow;
     const peer = (row?.personUid ?? "").trim();
     const isOpen =
@@ -10885,6 +10987,13 @@
                     />
                   {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
+                  {#if stoppedRespondingNote}
+                    <!-- The bot said it was working and then went quiet: the
+                         row is gone, and the conversation says why. -->
+                    <div class="bot-unanswered" data-testid="bot-stopped-responding" role="status">
+                      {stoppedRespondingNote}
+                    </div>
+                  {/if}
                   {#if botMessageUnanswered}
                     {#if selectedBotAutoRestoring}
                       <!-- Writing to a bot that is not running here is what

@@ -21,6 +21,14 @@ import {
   agentDisplayName,
   applyAgentStatus,
   parseAgentStatusWake,
+  applyDmAgentStatus,
+  parseDmAgentStatusWake,
+  dmAgentStatusCreatedAt,
+  endStatusSilent,
+  endStatusSilentAll,
+  stoppedRespondingLine,
+  STATUS_SILENT_AFTER_MS,
+  visibleThinking,
   clearFromMessages as clearRows,
   endedBotDmThinking,
   thinkingEndedLogLine,
@@ -495,6 +503,223 @@ describe("agent status keeps the row up while the agent works", () => {
   });
 });
 
+describe("a bot's status in its DM drives the DM row", () => {
+  const NOVA = 'agt_nova';
+  const t = (s: number) => new Date(Date.UTC(2026, 9, 3, 10, 0, s)).toISOString();
+  const ms = (s: number) => Date.parse(t(s));
+  const wake = (s: number, status = 'Working', extra: Record<string, unknown> = {}) =>
+    parseDmAgentStatusWake({ type: 'agent_status', agentUid: NOVA, withPersonUid: 'prs_me', status, ts: t(s), ...extra })!;
+  const msg = (s: number) => ({ fromPersonUid: NOVA, createdAt: t(s) });
+
+  it('parses the shape the server publishes and ignores fields it does not know', () => {
+    expect(
+      parseDmAgentStatusWake(
+        JSON.stringify({
+          type: 'agent_status',
+          agentUid: ` ${NOVA} `,
+          withPersonUid: 'prs_me',
+          status: '  Searching the web ',
+          ts: t(0),
+          rootEventId: ' evt_root ',
+          somethingNew: { nested: true },
+        }),
+      ),
+    ).toEqual({ agentUid: NOVA, withPersonUid: 'prs_me', status: 'Searching the web', ts: t(0), rootEventId: 'evt_root' });
+    // No thread root and no sentAt on the wake: neither on the result.
+    expect(wake(0)).toEqual({ agentUid: NOVA, withPersonUid: 'prs_me', status: 'Working', ts: t(0) });
+    // The native event carries no `type`.
+    expect(parseDmAgentStatusWake({ agentUid: NOVA, withPersonUid: 'prs_me', status: 'x', ts: t(0) })).not.toBeNull();
+    expect(parseDmAgentStatusWake({ type: 'agent_status', agentUid: NOVA, withPersonUid: 'prs_me', status: 'e'.repeat(200), ts: t(0) })!.status).toHaveLength(140);
+  });
+
+  it('reads an optional sentAt, and does without one', () => {
+    expect(wake(10, 'Working', { sentAt: ` ${t(7)} ` })).toMatchObject({ ts: t(10), sentAt: t(7) });
+    expect(dmAgentStatusCreatedAt(wake(10, 'Working', { sentAt: t(7) }))).toBe(ms(7));
+    // Absent, not a string, or not a time: the wake still parses and the
+    // server's publish time stands in.
+    for (const sentAt of [undefined, 7, '', 'nope']) {
+      const parsed = wake(10, 'Working', { sentAt });
+      expect('sentAt' in parsed).toBe(false);
+      expect(dmAgentStatusCreatedAt(parsed)).toBe(ms(10));
+    }
+  });
+
+  it('is not the channel shape, and the channel parser does not read it', () => {
+    const channel = { type: 'agent_status', channelId: 'chn_1', agentUid: NOVA, status: 'x', ts: t(0) };
+    expect(parseDmAgentStatusWake(channel)).toBeNull();
+    expect(parseDmAgentStatusWake({ ...channel, withPersonUid: 'prs_me' })).toBeNull();
+    expect(parseAgentStatusWake({ type: 'agent_status', agentUid: NOVA, withPersonUid: 'prs_me', status: 'x', ts: t(0) })).toBeNull();
+    // The channel shape parses exactly as it did.
+    expect(parseAgentStatusWake(channel)).toEqual({ channelId: 'chn_1', agentUid: NOVA, status: 'x', ts: t(0) });
+  });
+
+  it('rejects a payload it cannot place', () => {
+    expect(parseDmAgentStatusWake('not json')).toBeNull();
+    expect(parseDmAgentStatusWake({ type: 'dm', agentUid: NOVA, withPersonUid: 'prs_me', ts: t(0) })).toBeNull();
+    expect(parseDmAgentStatusWake({ type: 'agent_status', withPersonUid: 'prs_me', status: 'x', ts: t(0) })).toBeNull();
+    expect(parseDmAgentStatusWake({ type: 'agent_status', agentUid: NOVA, status: 'x', ts: t(0) })).toBeNull();
+    expect(parseDmAgentStatusWake({ type: 'agent_status', agentUid: NOVA, withPersonUid: 'prs_me', status: 'x', ts: 'nope' })).toBeNull();
+  });
+
+  it('starts a row when there is none: status text, pin, and the time of the status', () => {
+    const rows = applyDmAgentStatus([], wake(30, 'Searching the web'), 'Nova', [msg(10)], 5_000, { afterMs: ms(10) });
+    expect(rows).toEqual([
+      {
+        agentUid: NOVA,
+        agentName: 'Nova',
+        startedAt: 5_000,
+        since: 5_000,
+        phase: 'thinking',
+        afterMs: ms(10),
+        detail: 'Searching the web',
+        lastStatusAt: 5_000,
+      },
+    ]);
+    expect(thinkingLine(rows[0]!, 5_000).label).toBe('Nova: Searching the web');
+  });
+
+  it('pins to the newest bot message it was given when the caller names no pin', () => {
+    expect(applyDmAgentStatus([], wake(30), 'Nova', [msg(4), msg(10)], 1)[0]!.afterMs).toBe(ms(10));
+    // No message from the bot yet: nothing to pin to.
+    expect(applyDmAgentStatus([], wake(30), 'Nova', [], 1)[0]!.afterMs).toBeUndefined();
+  });
+
+  it('refreshes an existing pinned row without dropping the pin', () => {
+    // The person wrote; the row is pinned to the bot's newest message then.
+    const sent = startThinking([], { agentUid: NOVA, agentName: 'Nova' }, 1_000, { afterMs: ms(10) });
+    // The app holds no timeline for this DM right now, so it names no pin.
+    const rows = applyDmAgentStatus(sent, wake(30, 'Using Linear'), 'Nova', [], 9_000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ afterMs: ms(10), detail: 'Using Linear', lastStatusAt: 9_000, startedAt: 9_000, since: 1_000 });
+    // The bot's earlier message, seen again on a page fetch, does not end it.
+    expect(clearRows(rows, [msg(10)])).toHaveLength(1);
+    // Its answer does.
+    expect(clearRows(rows, [msg(10), msg(45)])).toHaveLength(0);
+  });
+
+  it('each status replaces the text and moves the time of the last status', () => {
+    let rows = applyDmAgentStatus([], wake(0, 'Working'), 'Nova', [], 1_000);
+    rows = applyDmAgentStatus(rows, wake(20, 'Running'), 'Nova', [], 21_000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ detail: 'Running', lastStatusAt: 21_000, since: 1_000 });
+  });
+
+  it('ignores a status no newer than the bot message already in the DM', () => {
+    const none: ThinkingEntry[] = [];
+    // Older than the reply, and exactly as old as the reply: both late.
+    expect(applyDmAgentStatus(none, wake(10), 'Nova', [msg(12)], 1)).toBe(none);
+    expect(applyDmAgentStatus(none, wake(12), 'Nova', [msg(12)], 1)).toBe(none);
+    // One that is newer starts the row.
+    expect(applyDmAgentStatus(none, wake(13), 'Nova', [msg(12)], 1)).toHaveLength(1);
+  });
+
+  it('judges a late status by sentAt when the wake has one', () => {
+    const none: ThinkingEntry[] = [];
+    // Created before the reply (and at the same instant), published after it.
+    expect(applyDmAgentStatus(none, wake(15, 'Working', { sentAt: t(11) }), 'Nova', [msg(12)], 1)).toBe(none);
+    expect(applyDmAgentStatus(none, wake(15, 'Working', { sentAt: t(12) }), 'Nova', [msg(12)], 1)).toBe(none);
+    // Created after the reply: a new stretch of work.
+    expect(applyDmAgentStatus(none, wake(15, 'Working', { sentAt: t(13) }), 'Nova', [msg(12)], 1)).toHaveLength(1);
+    // The same publish time with no sentAt is judged by the publish time.
+    expect(applyDmAgentStatus(none, wake(15), 'Nova', [msg(12)], 1)).toHaveLength(1);
+  });
+
+  it('a late status does not refresh a row that is already up', () => {
+    const rows = applyDmAgentStatus([], wake(0, 'Working'), 'Nova', [], 1_000);
+    expect(applyDmAgentStatus(rows, wake(5, 'Running'), 'Nova', [msg(8)], 9_000)).toBe(rows);
+    expect(applyDmAgentStatus(rows, wake(9, 'Running', { sentAt: t(7) }), 'Nova', [msg(8)], 9_000)).toBe(rows);
+  });
+
+  it('keeps the thread root from the status on the row, and drops it when the next status has none', () => {
+    let rows = applyDmAgentStatus([], wake(0, 'Working', { rootEventId: 'evt_root' }), 'Nova', [], 1);
+    expect(rows[0]!.rootEventId).toBe('evt_root');
+    // A restart that is not a status (the person writes again) keeps both.
+    rows = startThinking(rows, { agentUid: NOVA, agentName: 'Nova' }, 2);
+    expect(rows[0]).toMatchObject({ rootEventId: 'evt_root', lastStatusAt: 1 });
+    rows = applyDmAgentStatus(rows, wake(20, 'Running'), 'Nova', [], 3);
+    expect('rootEventId' in rows[0]!).toBe(false);
+  });
+
+  it('is one row per DM when two threads are running: either status refreshes it', () => {
+    let rows = applyDmAgentStatus([], wake(0, 'Searching the web', { rootEventId: 'evt_a' }), 'Nova', [], 1_000);
+    rows = applyDmAgentStatus(rows, wake(5, 'Using Linear', { rootEventId: 'evt_b' }), 'Nova', [], 6_000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ detail: 'Using Linear', rootEventId: 'evt_b', lastStatusAt: 6_000, since: 1_000 });
+    rows = applyDmAgentStatus(rows, wake(20, 'Searching the web', { rootEventId: 'evt_a' }), 'Nova', [], 21_000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ detail: 'Searching the web', rootEventId: 'evt_a', lastStatusAt: 21_000 });
+    // Thread A went quiet 85 s ago, thread B reported 10 s ago: still working.
+    rows = applyDmAgentStatus(rows, wake(95, 'Using Linear', { rootEventId: 'evt_b' }), 'Nova', [], 96_000);
+    expect(endStatusSilent(rows, 106_000)).toBe(rows);
+  });
+
+  it('leaves another agent in the same list alone', () => {
+    const other = entry({ agentUid: 'agt_other', agentName: 'Other', startedAt: 5 });
+    const rows = applyDmAgentStatus([other], wake(0), 'Nova', [], 1_000);
+    expect(rows[0]).toBe(other);
+    expect(rows[1]).toMatchObject({ agentUid: NOVA, lastStatusAt: 1_000 });
+  });
+
+  it('ends a row 90 s after its last status, and not before', () => {
+    expect(STATUS_SILENT_AFTER_MS).toBe(90_000);
+    let rows = applyDmAgentStatus([], wake(0), 'Nova', [], 1_000);
+    expect(endStatusSilent(rows, 1_000 + 89_999)).toBe(rows);
+    // A status inside the window moves the deadline.
+    rows = applyDmAgentStatus(rows, wake(60), 'Nova', [], 61_000);
+    expect(endStatusSilent(rows, 1_000 + 90_000)).toBe(rows);
+    expect(endStatusSilent(rows, 61_000 + 90_000)).toEqual([]);
+  });
+
+  it('a row that never received a status keeps the slow and expiry timers', () => {
+    const rows = startThinking([], { agentUid: NOVA, agentName: 'Nova' }, 0, { afterMs: ms(10) });
+    expect(endStatusSilent(rows, 90_000)).toBe(rows);
+    expect(endStatusSilent(rows, 599_000)).toBe(rows);
+    expect(tick(rows, 150_000)[0]!.phase).toBe('slow');
+    expect(tick(rows, 600_000)).toEqual([]);
+  });
+
+  it('a row that keeps receiving statuses never goes slow or expires', () => {
+    let rows = applyDmAgentStatus([], wake(0), 'Nova', [], 0);
+    for (let s = 20; s <= 700; s += 20) {
+      rows = applyDmAgentStatus(rows, parseDmAgentStatusWake({ agentUid: NOVA, withPersonUid: 'prs_me', status: 'Working', ts: new Date(ms(0) + s * 1_000).toISOString() })!, 'Nova', [], s * 1_000);
+      rows = tick(endStatusSilent(rows, s * 1_000), s * 1_000);
+    }
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.phase).toBe('thinking');
+  });
+
+  it('ends silent rows across the map and leaves the rest', () => {
+    const quiet = applyDmAgentStatus([], wake(0), 'Nova', [], 0);
+    const plain = startThinking([], { agentUid: 'agt_izzy', agentName: 'Izzy' }, 0);
+    const map: ThinkingByRow = { [`dm:${NOVA}`]: quiet, 'ch:chn_1': plain };
+    expect(endStatusSilentAll(map, 89_999)).toBe(map);
+    const next = endStatusSilentAll(map, 90_000);
+    expect(next).toEqual({ 'ch:chn_1': plain });
+    const ended = endedBotDmThinking(map, next);
+    expect(ended).toHaveLength(1);
+    expect(thinkingEndedLogLine({ ...ended[0]!, reason: 'status-silent', now: 90_000 })).toBe(
+      `ended agent=${NOVA} row=dm:${NOVA} reason=status-silent elapsedMs=90000 pinned=no`,
+    );
+  });
+
+  it('the row hides in the render that shows a newer bot message', () => {
+    const rows = applyDmAgentStatus([], wake(30), 'Nova', [msg(10)], 1, { afterMs: ms(10) });
+    expect(visibleThinking(rows, [msg(10)])).toBe(rows);
+    expect(visibleThinking(rows, [msg(10), msg(40)])).toEqual([]);
+  });
+
+  it('says the bot stopped responding', () => {
+    expect(stoppedRespondingLine('Nova')).toBe('Nova stopped responding. Try again.');
+    expect(stoppedRespondingLine('  ')).toBe('Bot stopped responding. Try again.');
+  });
+
+  it('a channel status is applied exactly as before', () => {
+    const channel = parseAgentStatusWake({ type: 'agent_status', channelId: 'chn_1', agentUid: NOVA, status: 'reading', ts: t(5) })!;
+    expect(applyAgentStatus([], channel, 'Nova', [], 1_000)).toEqual([
+      { agentUid: NOVA, agentName: 'Nova', startedAt: 1_000, since: 1_000, phase: 'thinking', afterMs: ms(5), detail: 'reading' },
+    ]);
+  });
+});
 
 describe('thinkingLine — the row visibly changes while the agent works', () => {
   const START = 1_000_000;

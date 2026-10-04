@@ -110,10 +110,22 @@ export interface ThinkingEntry {
    * clear rule); the elapsed counter must keep counting the whole turn, so it
    * reads this instead. */
   since?: number;
+  /** Local time (ms) the agent's newest status for this row arrived. Set only
+   * by a status the agent itself sent (`applyDmAgentStatus`); a row that has
+   * it ends once the agent goes quiet for {@link STATUS_SILENT_AFTER_MS}. A
+   * row without it never received a status and keeps the slow and expiry
+   * timers. */
+  lastStatusAt?: number;
+  /** The DM thread root the agent said it is working in, kept for a later
+   * per-thread indicator. It does not change where the row draws. */
+  rootEventId?: string;
 }
 
 const DEFAULT_SLOW_AFTER_MS = 150_000;
 const DEFAULT_EXPIRE_AFTER_MS = 600_000;
+/** A row whose agent has reported a status ends after this long with no
+ * further status (the bot sends one at least every 20 s while it works). */
+export const STATUS_SILENT_AFTER_MS = 90_000;
 
 /** Start (or restart) a thinking row for `agent`. Idempotent per `agentUid`:
  * a second start for the same agent replaces the existing row in place,
@@ -149,8 +161,15 @@ export function startThinking(
   const copy = entries.slice();
   // A restart is the same stretch of work continuing (a fresh status, or a
   // follow-up mention while the agent is still going), so the elapsed counter
-  // carries on from when it started rather than resetting to zero.
-  copy[idx] = { ...next, since: entries[idx]!.since ?? entries[idx]!.startedAt };
+  // carries on from when it started rather than resetting to zero. What the
+  // agent last reported about itself (when, and in which thread) stays too.
+  const prev = entries[idx]!;
+  copy[idx] = {
+    ...next,
+    since: prev.since ?? prev.startedAt,
+    ...(prev.lastStatusAt !== undefined ? { lastStatusAt: prev.lastStatusAt } : {}),
+    ...(prev.rootEventId ? { rootEventId: prev.rootEventId } : {}),
+  };
   return copy;
 }
 
@@ -387,6 +406,136 @@ export function applyAgentStatus(
   );
 }
 
+/**
+ * An agent's own live status in a 1:1 DM with a person (hq-pro `agent_status`
+ * wake from POST /v1/notify/dm/{peerUid}/agent-status). It carries no
+ * `channelId`: `withPersonUid` is the person the DM is with and `agentUid` is
+ * the other side, so it belongs to the row `dm:<agentUid>`.
+ */
+export interface DmAgentStatusWake {
+  agentUid: string;
+  /** The person the DM is with (the owner of the topic the wake arrived on). */
+  withPersonUid: string;
+  status: string;
+  /** Server publish time (ISO-8601). */
+  ts: string;
+  /** When the bot's own machine created the status (ISO-8601 UTC), when the
+   * wake carries it. It is the better time to judge a late status by: a
+   * status can be created before the reply and published after it. */
+  sentAt?: string;
+  /** The DM thread root the agent is working in, when it said. */
+  rootEventId?: string;
+}
+
+/**
+ * Parse the DM shape of an `agent_status` payload (native event or raw MQTT
+ * JSON). A payload with a `channelId` is the channel shape and is not this
+ * one. Unknown fields are ignored.
+ */
+export function parseDmAgentStatusWake(raw: unknown): DmAgentStatusWake | null {
+  let value: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (rec.type !== undefined && rec.type !== 'agent_status') return null;
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  if (str(rec.channelId)) return null;
+  const agentUid = str(rec.agentUid);
+  const withPersonUid = str(rec.withPersonUid);
+  const ts = str(rec.ts);
+  if (!agentUid || !withPersonUid || !ts || Number.isNaN(Date.parse(ts))) return null;
+  const sentAt = str(rec.sentAt);
+  const rootEventId = str(rec.rootEventId);
+  return {
+    agentUid,
+    withPersonUid,
+    status: str(rec.status).slice(0, 140),
+    ts,
+    ...(sentAt && !Number.isNaN(Date.parse(sentAt)) ? { sentAt } : {}),
+    ...(rootEventId ? { rootEventId } : {}),
+  };
+}
+
+/** When a DM status was created (ms): the bot's `sentAt` when the wake has
+ * one, else the server's publish time. NaN when neither parses. */
+export function dmAgentStatusCreatedAt(wake: DmAgentStatusWake): number {
+  const sent = wake.sentAt ? Date.parse(wake.sentAt) : Number.NaN;
+  return Number.isNaN(sent) ? Date.parse(wake.ts) : sent;
+}
+
+/**
+ * A bot says it is working in its DM: start its row, or refresh the one that
+ * is there, with the status text and the time the status arrived.
+ *
+ * `messages` is the timeline the app holds for that DM. A status created
+ * (`sentAt`, else `ts`) at or before the bot's newest message there is late
+ * (the reply already landed) and changes nothing: the SAME array comes back.
+ * The row is pinned to `opts.afterMs` (the bot's newest message at this
+ * moment), so only a newer message from the bot ends it; with no pin given, a
+ * row that is already pinned keeps its pin.
+ *
+ * There is one row per DM whatever thread the status names: with two threads
+ * running for the same person, a status for either means the bot is working.
+ * The newest status's `rootEventId` is kept on the row and nothing else
+ * changes with it.
+ */
+export function applyDmAgentStatus(
+  entries: ThinkingEntry[],
+  wake: DmAgentStatusWake,
+  agentName: string,
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; createdAt?: string | null }>,
+  now: number,
+  opts?: { afterMs?: number },
+): ThinkingEntry[] {
+  const at = dmAgentStatusCreatedAt(wake);
+  if (Number.isNaN(at)) return entries;
+  const newest = newestMessageAtFrom(messages, wake.agentUid);
+  if (newest !== undefined && newest >= at) return entries;
+  const started = startThinking(
+    entries,
+    { agentUid: wake.agentUid, agentName },
+    now,
+    { afterMs: opts?.afterMs ?? newest, detail: wake.status },
+  );
+  return started.map((entry) => {
+    if (entry.agentUid !== wake.agentUid) return entry;
+    const { rootEventId: _previous, ...rest } = entry;
+    return {
+      ...rest,
+      lastStatusAt: now,
+      ...(wake.rootEventId ? { rootEventId: wake.rootEventId } : {}),
+    };
+  });
+}
+
+/**
+ * Drop every row whose agent reported a status and has now been quiet for
+ * `silentAfterMs`: no further status, and no message (a message from the
+ * agent ends the row by itself). Rows that never received a status are left
+ * to `tick`. Same array when nothing ended.
+ */
+export function endStatusSilent(
+  entries: ThinkingEntry[],
+  now: number,
+  silentAfterMs: number = STATUS_SILENT_AFTER_MS,
+): ThinkingEntry[] {
+  const kept = entries.filter(
+    (entry) => entry.lastStatusAt === undefined || now - entry.lastStatusAt < silentAfterMs,
+  );
+  return kept.length === entries.length ? entries : kept;
+}
+
+/** What the conversation says once a row ended because the bot went quiet. */
+export function stoppedRespondingLine(agentName: string): string {
+  return `${agentName.trim() || 'Bot'} stopped responding. Try again.`;
+}
+
 // ---------------------------------------------------------------------------
 // What the row SAYS over time.
 //
@@ -516,6 +665,23 @@ export function tickAll(
   return out;
 }
 
+/** `endStatusSilent` applied to every row; rows left empty are removed. Same
+ * map when nothing ended. */
+export function endStatusSilentAll(
+  map: ThinkingByRow,
+  now: number,
+  silentAfterMs: number = STATUS_SILENT_AFTER_MS,
+): ThinkingByRow {
+  const out: ThinkingByRow = {};
+  let changed = false;
+  for (const [rowId, entries] of Object.entries(map)) {
+    const next = endStatusSilent(entries, now, silentAfterMs);
+    if (next !== entries) changed = true;
+    if (next.length > 0) out[rowId] = next;
+  }
+  return changed ? out : map;
+}
+
 /** `clearFromMessages` scoped to `rowId` (messages from another conversation
  * must never clear this row's status). A row left empty is removed. Returns
  * a NEW map. */
@@ -625,6 +791,7 @@ export function syncBusyThinking(
 export type ThinkingEndReason =
   | 'newer-message'
   | 'expired'
+  | 'status-silent'
   | 'send-failed'
   | 'tenant-switch'
   | 'verdict'
