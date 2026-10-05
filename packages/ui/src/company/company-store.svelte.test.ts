@@ -66,7 +66,7 @@ describe("companyStore Activity request lifecycle", () => {
 
   it("logs a failed focus refresh and still accepts the next load", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
-    const getSecrets = vi.fn(async () => {
+    const getSecrets = vi.fn<CompanyApi["getSecrets"]>(async () => {
       throw new Error("secrets down");
     });
     configureCompanyApi({ getActivity, getSecrets } as unknown as CompanyApi);
