@@ -10,6 +10,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
     RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
+use crate::runner_exit_record::{parse_runner_exit_line, RunnerExitRecord};
 use crate::uploads_paused::UploadsPassObservation;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +37,9 @@ pub struct RunTotals {
     /// channel. Auth-required is intentionally exit 0, but must never be
     /// overwritten by the manual exit handler's synthetic AllComplete.
     pub saw_auth_error: bool,
+    /// Latest valid bounded runner-exit diagnostic, when emitted by a newer
+    /// runner. The parser retains only an integer and a closed reason enum.
+    runner_exit_record: Option<RunnerExitRecord>,
     /// What this pass said about uploads per company: plan-limit notices,
     /// per-company completions, and companies that uploaded a file. Settles
     /// the "uploads paused" state at `AllComplete` (hard-stop-readiness
@@ -460,6 +464,9 @@ impl RunTotals {
     /// Node-too-old signature is not a runner protocol error, it is the
     /// interpreter failing before the runner can start.
     pub fn record_stderr_line(&mut self, line: &str) {
+        if let Some(record) = parse_runner_exit_line(line) {
+            self.runner_exit_record = Some(record);
+        }
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
@@ -502,6 +509,12 @@ impl RunTotals {
         // affects capture. Fed the SAME line as the classification above, so both
         // routes (which share this seam) inherit identical heap attribution.
         self.record_heap_oom_stderr_line(line, signature.class);
+    }
+
+    /// The latest parsed runner-exit diagnostic, absent for older runners or
+    /// when no valid record was written.
+    pub fn runner_exit_record(&self) -> Option<RunnerExitRecord> {
+        self.runner_exit_record
     }
 
     /// Single-pass, line-oriented V8 heap-OOM retention. Three transitions, in

@@ -2178,6 +2178,7 @@ struct WatcherExitCaptureContext {
     /// runner is distinguishable from a noisy-but-unrecognised one. `None` when no
     /// unmatched line was seen this generation.
     runner_unmatched_stderr_shapes: Option<String>,
+    runner_exit_record: Option<hq_desktop_core::runner_exit_record::RunnerExitRecord>,
     /// Windows Error Reporting fault attribution for this generation. The image
     /// and module are allow-listed tokens (or `unavailable`); provenance is an
     /// honesty token; the code and offset are bare integers. Every field degrades
@@ -2348,6 +2349,7 @@ impl Default for WatcherExitCaptureContext {
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
+            runner_exit_record: None,
             // No Windows fault read applies by default (non-Windows, or a clean /
             // non-fault exit); the image/module keep the `unavailable` sentinel.
             watcher_fault_provenance: WatcherFaultProvenance::NotApplicable.as_str().to_string(),
@@ -2561,6 +2563,7 @@ fn watcher_exit_capture_context(
         runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),
         runner_error_sites: totals.runner_error_sites.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
+        runner_exit_record: totals.runner_exit_record(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
         runner_phase_elapsed_bucket: runner_phase_elapsed_bucket(
@@ -5012,6 +5015,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // so "silent" is separable from "noisy but unrecognised". Only when nonempty.
     if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
         tags.push(("runner_unmatched_stderr_shapes", shapes.clone()));
+    }
+    if let Some(record) = context
+        .runner_exit_record
+        .filter(|record| Some(record.code) == code)
+    {
+        tags.push(("runner_exit_reason", record.reason.as_str().to_string()));
     }
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
