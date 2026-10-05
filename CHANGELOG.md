@@ -37,6 +37,7 @@ The release moves it under the version it ships in.
 - Project dots on the Atlas map now grow with recent activity (the project's own last change and the linked items changed in the last 14 days), and projects with stories carry a thin ring that fills clockwise as stories are done.
 - Clicking a project on the Atlas map now glides to it and gathers its repos, knowledge and policies in a ring around it, with everything else pushed further back. Escape, a click on empty map, or another selection sends them back home. Picking a project from Find or from Related does the same.
 - Atlas now shows where work is happening. A project gives one soft pulse when a refresh shows it changed or when someone live on it moves off a task or finishes, and a project someone is working on right now draws faint drifting lines to the items it touched in the last two days. Nothing moves on a quiet map, and nothing moves when motion is reduced.
+- The Atlas map has more depth: a faint vignette and fine grain under the map, and a softer, wider glow behind items that are active. None of it moves, and labels stay as readable as before.
 
 ## [0.10.392] — 2026-10-05
 
