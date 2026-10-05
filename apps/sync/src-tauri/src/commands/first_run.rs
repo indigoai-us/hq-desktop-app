@@ -145,10 +145,15 @@ pub fn early_launch_hint() -> LaunchKind {
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
 pub fn classify_launch(app: &AppHandle) -> LaunchKind {
+    let mut settings_prove_writable = false;
     let kind = match paths::menubar_json_path() {
         Ok(path) => {
             let read = read_menubar(&path);
             report_settings_file_read_failure(&read);
+            settings_prove_writable = matches!(
+                &read,
+                MenubarRead::Absent | MenubarRead::Object(_)
+            );
             classify_from_menubar_read(&read)
         }
         // Without a resolvable home directory, we cannot prove this is a
@@ -157,9 +162,11 @@ pub fn classify_launch(app: &AppHandle) -> LaunchKind {
         Err(_) => LaunchKind::Normal,
     };
     // Mint and persist the stable join key before onboarding can emit setup or
-    // sign-in telemetry. Receipt builders still read the same store, so this
-    // does not change the event contract or create another identity source.
-    if install_attempt_id().is_none() {
+    // sign-in telemetry, but only when the initial read proved that settings
+    // are absent or valid JSON. A damaged existing settings file must remain
+    // untouched. Receipt builders still read the same store, so this does not
+    // change the event contract or create another identity source.
+    if settings_prove_writable && install_attempt_id().is_none() {
         log(
             "first-run",
             "install attempt ID unavailable before onboarding telemetry",

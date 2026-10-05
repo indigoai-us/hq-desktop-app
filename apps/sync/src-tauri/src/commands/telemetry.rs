@@ -4025,6 +4025,28 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn launch_classification_preserves_damaged_settings_before_attempt_id_initialization() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        let settings_path = home.path().join(".hq/menubar.json");
+        let damaged_contents = b"{malformed settings";
+        fs::write(&settings_path, damaged_contents).expect("write damaged settings fixture");
+
+        let app = tauri::test::mock_app();
+        assert_eq!(
+            crate::commands::first_run::classify_launch(&app.handle().clone()),
+            crate::commands::first_run::LaunchKind::Normal
+        );
+
+        assert_eq!(
+            fs::read(&settings_path).expect("damaged settings remain in place"),
+            damaged_contents,
+            "attempt-ID initialization must not move or replace damaged settings"
+        );
+    }
+
+    #[test]
     fn first_run_attempt_id_is_persisted_before_setup_telemetry_and_reused() {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
 
