@@ -38,6 +38,23 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
         .map(|handle| handle.current())
 }
 
+/// Closed launch-source label using only evidence available on this platform.
+/// LaunchAgent argv distinguishes login-item launches on macOS. Windows' Run
+/// registration has no reliable process-origin signal, so it remains unknown
+/// unless the updater marker identifies the relaunch.
+pub fn desktop_liveness_launch_source(app: &AppHandle) -> &'static str {
+    let Some(inputs) = app.try_state::<LifecycleInputsHandle>() else {
+        return "unknown";
+    };
+    let from_login_item = std::env::args()
+        .any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    crate::commands::telemetry::classify_desktop_launch_source(
+        inputs.from_updater_restart,
+        from_login_item,
+        cfg!(target_os = "macos"),
+    )
+}
+
 /// Immutable lifecycle inputs captured at startup, for use by diagnostic
 /// commands that run after setup_lifecycle has returned.
 pub struct LifecycleInputsHandle {

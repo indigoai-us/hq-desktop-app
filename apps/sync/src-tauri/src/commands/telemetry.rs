@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -1427,6 +1429,7 @@ async fn emit_desktop_operational_telemetry_with_vault(
 
 const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_daily_active",
+    "desktop_app_quit",
     "desktop_onboarding_step",
     "desktop_post_ready_action",
     "desktop_setup_completed",
@@ -1688,6 +1691,206 @@ pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: 
 /// `occurredAt` is the send time. The once-per-day guarantee comes from the
 /// day in `idempotencyKey` (hq-pro keeps one row per subject, event and key);
 /// a midnight timestamp would put every row outside any daytime query window.
+const APP_LIVENESS_TELEMETRY_FLAG: &str = "desktop.app-liveness-telemetry-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopQuitReason {
+    TrayQuit,
+    AppMenuQuit,
+    OsShutdown,
+    UpdateRestart,
+    Unknown,
+}
+
+impl DesktopQuitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TrayQuit => "tray_quit",
+            Self::AppMenuQuit => "app_menu_quit",
+            Self::OsShutdown => "os_shutdown",
+            Self::UpdateRestart => "update_restart",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+static DESKTOP_QUIT_REASON: AtomicU8 = AtomicU8::new(0);
+
+pub fn note_desktop_quit_reason(reason: DesktopQuitReason) {
+    let value = match reason {
+        DesktopQuitReason::Unknown => 0,
+        DesktopQuitReason::TrayQuit => 1,
+        DesktopQuitReason::AppMenuQuit => 2,
+        DesktopQuitReason::OsShutdown => 3,
+        DesktopQuitReason::UpdateRestart => 4,
+    };
+    DESKTOP_QUIT_REASON.store(value, Ordering::Release);
+}
+
+fn desktop_quit_reason() -> DesktopQuitReason {
+    match DESKTOP_QUIT_REASON.load(Ordering::Acquire) {
+        1 => DesktopQuitReason::TrayQuit,
+        2 => DesktopQuitReason::AppMenuQuit,
+        3 => DesktopQuitReason::OsShutdown,
+        4 => DesktopQuitReason::UpdateRestart,
+        _ => DesktopQuitReason::Unknown,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopLivenessContext {
+    pub launch_source: &'static str,
+    pub start_at_login: &'static str,
+}
+
+pub fn classify_desktop_launch_source(
+    from_updater_restart: bool,
+    from_login_item: bool,
+    source_is_observable: bool,
+) -> &'static str {
+    if from_updater_restart {
+        "update_restart"
+    } else if from_login_item {
+        "login_item"
+    } else if source_is_observable {
+        "user"
+    } else {
+        "unknown"
+    }
+}
+
+pub fn classify_start_at_login(
+    preference_enabled: Option<bool>,
+    registered: Option<bool>,
+) -> &'static str {
+    match (preference_enabled, registered) {
+        (_, Some(true)) => "registered",
+        (Some(false), Some(false)) => "opted_out",
+        (Some(true), Some(false)) => "registration_failed",
+        _ => "unknown",
+    }
+}
+
+fn days_since_setup_bucket(
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> &'static str {
+    let Some(setup_at) = setup_at.filter(|setup_at| *setup_at <= now) else {
+        return "unknown";
+    };
+    match (now - setup_at).num_days() {
+        0 => "0",
+        1..=7 => "1-7",
+        8.. => "8+",
+        _ => "unknown",
+    }
+}
+
+fn read_setup_completed_at() -> Option<chrono::DateTime<chrono::Utc>> {
+    let path = paths::menubar_json_path().ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    let timestamp = value.get("welcomeSetupCompletedAt")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+}
+
+fn build_daily_active_event_with_liveness(
+    now: chrono::DateTime<chrono::Utc>,
+    liveness: Option<DesktopLivenessContext>,
+) -> RawTelemetryEvent {
+    let mut event = build_daily_active_event(now);
+    if let Some(liveness) = liveness {
+        if let Some(properties) = event.properties.as_object_mut() {
+            properties.insert("launch_source".into(), json!(liveness.launch_source));
+            properties.insert("start_at_login".into(), json!(liveness.start_at_login));
+        }
+    }
+    event
+}
+
+fn build_desktop_quit_event(
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> RawTelemetryEvent {
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    build_desktop_telemetry_event(
+        "desktop_app_quit".to_string(),
+        Some(json!({
+            "reason": reason.as_str(),
+            "days_since_setup": days_since_setup_bucket(setup_at, now),
+        })),
+        None,
+        Some(occurred_at),
+        "no-consent",
+    )
+}
+
+fn quit_event_when_enabled(
+    enabled: bool,
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<RawTelemetryEvent> {
+    enabled.then(|| build_desktop_quit_event(now, reason, setup_at))
+}
+
+fn liveness_flag_is_enabled(read: Result<Option<bool>, ()>) -> bool {
+    matches!(read, Ok(Some(true)))
+}
+
+fn daily_active_liveness_context(
+    read: Result<Option<bool>, ()>,
+    context: DesktopLivenessContext,
+) -> Option<DesktopLivenessContext> {
+    liveness_flag_is_enabled(read).then_some(context)
+}
+
+fn wait_for_quit_telemetry_attempt(receiver: Receiver<Result<(), String>>) {
+    let _ = receiver.recv_timeout(Duration::from_millis(480));
+}
+
+fn report_quit_telemetry_attempt(sender: SyncSender<Result<(), String>>, result: Result<(), String>) {
+    let _ = sender.send(result);
+}
+
+/// Resolve the new telemetry flag and give its send at most 480ms before exit.
+/// Missing, malformed, or unreadable flag state fails off.
+pub fn emit_desktop_quit_before_exit(reason: DesktopQuitReason) {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    tauri::async_runtime::spawn(async move {
+        let result = tokio::time::timeout(Duration::from_millis(450), async move {
+            let enabled = liveness_flag_is_enabled(
+                crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG).await,
+            );
+            let now = chrono::Utc::now();
+            let setup_at = enabled.then(read_setup_completed_at).flatten();
+            if let Some(event) = quit_event_when_enabled(enabled, now, reason, setup_at) {
+                emit_desktop_operational_telemetry(
+                    event.event_name,
+                    Some(event.properties),
+                    None,
+                    Some(event.occurred_at),
+                )
+                .await
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|_| "desktop quit telemetry exceeded its send budget".to_string())
+        .and_then(|result| result);
+        report_quit_telemetry_attempt(sender, result);
+    });
+    wait_for_quit_telemetry_attempt(receiver);
+}
+
+pub fn emit_noted_desktop_quit_before_exit() {
+    emit_desktop_quit_before_exit(desktop_quit_reason());
+}
+
 fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryEvent {
     let day = now.date_naive().format("%Y-%m-%d");
     let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -1713,9 +1916,10 @@ fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryE
 async fn emit_daily_active_with_vault(
     vault: &VaultClient,
     now: chrono::DateTime<chrono::Utc>,
+    liveness: Option<DesktopLivenessContext>,
 ) -> Result<(), String> {
     let batch = TelemetryEventsBatch {
-        events: vec![build_daily_active_event(now)],
+        events: vec![build_daily_active_event_with_liveness(now, liveness)],
     };
     vault
         .post_telemetry_events(&batch)
@@ -1723,12 +1927,19 @@ async fn emit_daily_active_with_vault(
         .map_err(|e| e.to_string())
 }
 
-async fn emit_daily_active_at(now: chrono::DateTime<chrono::Utc>) {
+async fn emit_daily_active_at(
+    now: chrono::DateTime<chrono::Utc>,
+    liveness: DesktopLivenessContext,
+) {
     let result = async {
+        let liveness = daily_active_liveness_context(
+            crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG).await,
+            liveness,
+        );
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
-        emit_daily_active_with_vault(&vault, now).await
+        emit_daily_active_with_vault(&vault, now, liveness).await
     }
     .await;
 
@@ -1743,10 +1954,10 @@ async fn emit_daily_active_at(now: chrono::DateTime<chrono::Utc>) {
 const DAILY_ACTIVE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Start best-effort daily-active emits without delaying application startup.
-pub fn setup_daily_active_emit() {
+pub fn setup_daily_active_emit(liveness: DesktopLivenessContext) {
     tauri::async_runtime::spawn(async move {
         loop {
-            emit_daily_active_at(chrono::Utc::now()).await;
+            emit_daily_active_at(chrono::Utc::now(), liveness).await;
             tokio::time::sleep(DAILY_ACTIVE_INTERVAL).await;
         }
     });
@@ -5022,7 +5233,7 @@ mod codex_telemetry_tests {
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let now = chrono::Utc::now();
 
-        let result = emit_daily_active_with_vault(&vault, now).await;
+        let result = emit_daily_active_with_vault(&vault, now, None).await;
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
@@ -5185,7 +5396,7 @@ mod codex_telemetry_tests {
     fn version_heartbeat_is_wired_at_launch_and_after_update() {
         let main = include_str!("../main.rs");
         let daily = main
-            .find("commands::telemetry::setup_daily_active_emit();")
+            .find("commands::telemetry::setup_daily_active_emit(")
             .expect("daily-active setup");
         let heartbeat = main
             .find("commands::telemetry::setup_version_heartbeat();")
@@ -8229,5 +8440,106 @@ mod codex_telemetry_tests {
         assert_eq!(event.properties["found"], true);
         assert_eq!(event.properties["source"], "whereFroms");
         assert!(event.properties.get("url").is_none());
+    }
+}
+
+#[cfg(test)]
+mod desktop_liveness_telemetry_regression_tests {
+    use super::*;
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-10-05T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn daily_active_has_closed_liveness_context_only_when_enabled() {
+        let off = build_daily_active_event_with_liveness(now(), None);
+        assert_eq!(off.properties, json!({
+            "platform": crate::commands::version_gate::platform_tag(),
+            "appVersion": crate::app_version::current(),
+        }));
+        let on = build_daily_active_event_with_liveness(
+            now(),
+            Some(DesktopLivenessContext {
+                launch_source: "login_item",
+                start_at_login: "registration_failed",
+            }),
+        );
+        assert_eq!(on.properties["launch_source"], "login_item");
+        assert_eq!(on.properties["start_at_login"], "registration_failed");
+    }
+
+    #[test]
+    fn each_launch_source_and_registration_state_is_closed() {
+        assert_eq!(classify_desktop_launch_source(false, true, true), "login_item");
+        assert_eq!(classify_desktop_launch_source(false, false, true), "user");
+        assert_eq!(classify_desktop_launch_source(true, true, true), "update_restart");
+        assert_eq!(classify_desktop_launch_source(false, false, false), "unknown");
+
+        assert_eq!(classify_start_at_login(Some(true), Some(true)), "registered");
+        assert_eq!(classify_start_at_login(Some(false), Some(false)), "opted_out");
+        assert_eq!(classify_start_at_login(Some(true), Some(false)), "registration_failed");
+        assert_eq!(classify_start_at_login(None, None), "unknown");
+    }
+
+    #[test]
+    fn each_quit_reason_and_setup_age_bucket_is_emitted_closed() {
+        let reasons = [
+            (DesktopQuitReason::TrayQuit, "tray_quit"),
+            (DesktopQuitReason::AppMenuQuit, "app_menu_quit"),
+            (DesktopQuitReason::OsShutdown, "os_shutdown"),
+            (DesktopQuitReason::UpdateRestart, "update_restart"),
+            (DesktopQuitReason::Unknown, "unknown"),
+        ];
+        for (reason, expected) in reasons {
+            let event = build_desktop_quit_event(now(), reason, Some(now()));
+            assert_eq!(event.event_name, "desktop_app_quit");
+            assert_eq!(event.properties["reason"], expected);
+        }
+        let ages = [
+            (Some(now()), "0"),
+            (Some(now() - chrono::Duration::days(1)), "1-7"),
+            (Some(now() - chrono::Duration::days(8)), "8+"),
+            (None, "unknown"),
+            (Some(now() + chrono::Duration::seconds(1)), "unknown"),
+        ];
+        for (setup_at, expected) in ages {
+            let event = build_desktop_quit_event(now(), DesktopQuitReason::Unknown, setup_at);
+            assert_eq!(event.properties["days_since_setup"], expected);
+        }
+    }
+
+    #[test]
+    fn flag_off_or_unreadable_emits_no_new_fields_or_quit_event() {
+        let context = DesktopLivenessContext {
+            launch_source: "user",
+            start_at_login: "registered",
+        };
+        assert!(!liveness_flag_is_enabled(Ok(None)));
+        assert!(!liveness_flag_is_enabled(Err(())));
+        assert!(liveness_flag_is_enabled(Ok(Some(true))));
+        assert_eq!(daily_active_liveness_context(Ok(None), context), None);
+        assert_eq!(daily_active_liveness_context(Err(()), context), None);
+        assert_eq!(daily_active_liveness_context(Ok(Some(true)), context), Some(context));
+        assert!(quit_event_when_enabled(false, now(), DesktopQuitReason::TrayQuit, None).is_none());
+        let unchanged = build_daily_active_event_with_liveness(now(), None);
+        assert!(!unchanged.properties.as_object().unwrap().contains_key("launch_source"));
+        assert!(!unchanged.properties.as_object().unwrap().contains_key("start_at_login"));
+    }
+
+    #[test]
+    fn failed_quit_telemetry_result_does_not_hold_exit() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        report_quit_telemetry_attempt(sender, Err("offline".to_string()));
+        let started = std::time::Instant::now();
+        wait_for_quit_telemetry_attempt(receiver);
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn desktop_quit_is_an_approved_operational_event() {
+        assert!(is_operational_desktop_event_name("desktop_app_quit"));
     }
 }

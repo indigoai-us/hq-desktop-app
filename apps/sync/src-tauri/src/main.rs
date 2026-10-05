@@ -1382,7 +1382,12 @@ fn main() {
             commands::version_gate::setup_version_gate(app.handle());
             #[cfg(not(target_os = "macos"))]
             updater::setup_update_checker(app.handle());
-            commands::telemetry::setup_daily_active_emit();
+            commands::telemetry::setup_daily_active_emit(
+                commands::telemetry::DesktopLivenessContext {
+                    launch_source: commands::lifecycle::desktop_liveness_launch_source(app.handle()),
+                    start_at_login: commands::autostart::desktop_start_at_login_status(),
+                },
+            );
             commands::telemetry::setup_version_heartbeat();
             // Client health (US-002): startup + 5-minute operational health
             // heartbeat, woken immediately on sync/updater/auth/pause/conflict
@@ -1619,6 +1624,7 @@ fn main() {
             // `WM_ENDSESSION` produces neither. That path is handled in the
             // `RunEvent::Exit` arm below — see `handle_run_event_exit`.
             if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::telemetry::emit_noted_desktop_quit_before_exit();
                 // Latch first, so the `Exit` arm that follows can tell an
                 // app-initiated quit from an OS-forced session end.
                 commands::process::note_app_initiated_exit();
@@ -1663,6 +1669,11 @@ fn main() {
             }
 
             if matches!(&event, tauri::RunEvent::Exit) {
+                if !commands::process::app_initiated_exit() {
+                    commands::telemetry::emit_desktop_quit_before_exit(
+                        commands::telemetry::DesktopQuitReason::OsShutdown,
+                    );
+                }
                 hq_telemetry::set_native_panic_phase(hq_telemetry::NativePanicPhase::Destroyed);
 
                 // Windows only, and only when no `ExitRequested` preceded this:

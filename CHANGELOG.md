@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
+
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 
 ## [0.10.394] — 2026-10-05
