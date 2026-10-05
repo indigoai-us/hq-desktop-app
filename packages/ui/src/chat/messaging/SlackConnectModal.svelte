@@ -50,6 +50,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Connect a cloud bot to Slack, inside the Slack card's modal.
    *
@@ -506,7 +507,7 @@
                       data-testid="slack-connect-open-slack"
                       onclick={openSlack}
                       {...autofocus}
-                    >
+                    ><RailIcon name="external" />
                       Open Slack
                     </button>
                   {:else if view.attachError && !attachInFlight}
@@ -516,7 +517,7 @@
                       data-testid="slack-connect-start"
                       onclick={() => void start()}
                       {...autofocus}
-                    >
+                    ><RailIcon name="refresh" />
                       Try again
                     </button>
                   {/if}
@@ -545,7 +546,7 @@
                                   data-copied={copied ? "true" : "false"}
                                   aria-label={copied ? "Copied connections:write" : "Copy connections:write"}
                                   onclick={() => void copyScope()}
-                                >
+                                ><RailIcon name="copy" />
                                   {copied ? "Copied" : "Copy"}
                                 </button>
                               </span>
@@ -558,7 +559,7 @@
                                 class="card-modal-btn is-small"
                                 data-testid="slack-connect-open-app-page"
                                 onclick={openAppPage}
-                              >
+                              ><RailIcon name="external" />
                                 Open app page
                               </button>
                             </span>
@@ -616,23 +617,23 @@
         data-testid="slack-connect-submit"
         disabled={tokenInFlight || tokenEmpty}
         onclick={() => void submitToken()}
-      >
+      ><RailIcon name="plug" />
         Connect
       </button>
     {:else if view.stage === "connected"}
       {#if view.botUrl}
-        <button type="button" class="card-modal-btn is-quiet" data-testid="slack-connect-finish" onclick={close}>Done</button>
+        <button type="button" class="card-modal-btn is-quiet" data-testid="slack-connect-finish" onclick={close}><RailIcon name="check" />Done</button>
         <button
           type="button"
           class="card-modal-btn is-primary"
           data-testid="slack-connect-open-bot"
           onclick={openBot}
           {...autofocus}
-        >
+        ><RailIcon name="external" />
           Open {botName.trim() || "your bot"} in Slack
         </button>
       {:else}
-        <button type="button" class="card-modal-btn is-primary" data-testid="slack-connect-finish" onclick={close} {...autofocus}>
+        <button type="button" class="card-modal-btn is-primary" data-testid="slack-connect-finish" onclick={close} {...autofocus}><RailIcon name="check" />
           Done
         </button>
       {/if}
@@ -644,7 +645,7 @@
         data-testid="slack-connect-close"
         onclick={close}
         {...(action ? {} : autofocus)}
-      >
+      ><RailIcon name="x" />
         Close
       </button>
       {#if action}
@@ -665,7 +666,7 @@
         data-testid="slack-connect-close"
         onclick={close}
         {...(closeTakesFocus ? autofocus : {})}
-      >
+      ><RailIcon name="x" />
         Close
       </button>
     {/if}

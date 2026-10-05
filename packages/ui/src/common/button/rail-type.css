@@ -35,3 +35,11 @@
   color: var(--t2, var(--v4-text-2));
   white-space: nowrap;
 }
+
+/* Leading icon inside a labelled button that is not a RailButton: 14px glyph,
+   6px before the label, centred on the text. */
+button:not([data-rail-btn]) > svg.rail-icon:first-child {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-inline-end: 6px;
+}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * New company sheet (US-037). Step 1 is name, slug, and plan. Step 2 pins
    * the rail tile, queues invites, and names an optional first project.
@@ -319,17 +320,17 @@
       {/if}
     </span>
     {#if step === 1}
-      <button type="button" class="btn" onclick={() => onclose?.()}>Cancel</button>
+      <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
       <button
         type="button"
         class="btn primary"
         data-testid="new-company-continue"
         disabled={!slug}
         onclick={() => void continueStep()}
-      >Create and continue</button>
+      ><RailIcon name="arrow-right" />Create and continue</button>
     {:else}
-      <button type="button" class="btn" data-testid="new-company-skip" onclick={() => void finish(true)}>Skip for now</button>
-      <button type="button" class="btn primary" data-testid="new-company-finish" onclick={() => void finish(false)}>Finish</button>
+      <button type="button" class="btn" data-testid="new-company-skip" onclick={() => void finish(true)}><RailIcon name="arrow-right" />Skip for now</button>
+      <button type="button" class="btn primary" data-testid="new-company-finish" onclick={() => void finish(false)}><RailIcon name="check" />Finish</button>
     {/if}
   </footer>
 </div>

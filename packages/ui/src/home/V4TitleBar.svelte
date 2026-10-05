@@ -817,7 +817,7 @@
                   class="v4-launch-install"
                   data-testid={`titlebar-launch-${item.key}-install`}
                   onclick={() => void refreshLaunchTools()}
-                >Install</button>
+                ><RailIcon name="download" />Install</button>
               </div>
             {:else}
               <button

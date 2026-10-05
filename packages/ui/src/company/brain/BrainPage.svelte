@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
   import { dismissable } from "../../common/dismissable.js";
@@ -564,10 +565,10 @@
         <span class="meta">Sort · team runs</span>
       </div>
       {#if teamUsage.state === "failed"}
-        <p class="note" data-testid="skills-usage-team-failed">Team runs could not be read. Only company owners and admins can see them. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+        <p class="note" data-testid="skills-usage-team-failed">Team runs could not be read. Only company owners and admins can see them. <button type="button" class="link" onclick={() => (usageNonce += 1)}><RailIcon name="refresh" />Try again</button></p>
       {/if}
       {#if myUsage.state === "failed"}
-        <p class="note" data-testid="skills-usage-mine-failed">Your runs could not be read. <button type="button" class="link" onclick={() => (usageNonce += 1)}>Try again</button></p>
+        <p class="note" data-testid="skills-usage-mine-failed">Your runs could not be read. <button type="button" class="link" onclick={() => (usageNonce += 1)}><RailIcon name="refresh" />Try again</button></p>
       {/if}
       <div class="head usage-grid">
         <span>Skill</span><span>Team runs</span><span title="Across all of your companies">Your runs (all companies)</span><span>People</span><span title="The day of the latest run; the read does not say who ran it">Last run (date)</span>

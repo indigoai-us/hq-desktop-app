@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Unified Notifications feed (US-012).
    *
@@ -374,7 +375,7 @@
         disabled={markAllPending || feedState.unreadCount === 0}
         aria-busy={markAllPending}
         onclick={() => void handleMarkAllRead()}
-      >
+      ><RailIcon name="check" />
         {markAllPending ? "Marking…" : "Mark all read"}
       </button>
       {#if onopensettings}
@@ -383,7 +384,7 @@
           class="notif-mark-all"
           data-testid="notifications-open-settings"
           onclick={() => onopensettings?.()}
-        >
+        ><RailIcon name="settings" />
           Notification settings
         </button>
       {/if}
@@ -395,7 +396,7 @@
       <strong>{unavailableNotification.actorName || "Notification"}</strong>
       <p>{unavailableNotification.contextLine}</p>
       <p>This notification does not include a conversation link. You can find the conversation using search.</p>
-      <button type="button" onclick={() => (unavailableNotification = null)}>Dismiss</button>
+      <button type="button" onclick={() => (unavailableNotification = null)}><RailIcon name="x" />Dismiss</button>
     </div>
   {/if}
 
@@ -716,7 +717,7 @@
                         data-testid="notifications-reply-send"
                         disabled={replySending || !replyDraft.trim()}
                         onclick={() => void sendReply(row, replyDraft)}
-                      >
+                      ><RailIcon name="send" />
                         {replySending ? "Sending…" : "Send"}
                       </button>
                     </div>
@@ -742,7 +743,7 @@
             disabled={loadingMore}
             aria-busy={loadingMore}
             onclick={() => void loadMore()}
-          >
+          ><RailIcon name="chevron-down" />
             {loadingMore
               ? "Loading…"
               : loadMoreError

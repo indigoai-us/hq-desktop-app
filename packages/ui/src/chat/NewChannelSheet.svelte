@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import PeoplePicker from "./PeoplePicker.svelte";
   import { channelSlug } from "./create-flow.js";
@@ -194,14 +195,14 @@
     <span class="hint">
       {#if error}{error}{:else}{humans} people · posts the purpose as the first message{/if}
     </span>
-    <button type="button" class="btn" onclick={() => onclose()}>Cancel</button>
+    <button type="button" class="btn" onclick={() => onclose()}><RailIcon name="x" />Cancel</button>
     <button
       type="button"
       class="btn primary"
       data-testid="new-channel-create"
       disabled={creating || !slug || !api.createChannel}
       onclick={() => void create()}
-    >{creating ? "Creating…" : "Create channel"}</button>
+    ><RailIcon name="plus" />{creating ? "Creating…" : "Create channel"}</button>
   </footer>
 </div>
 

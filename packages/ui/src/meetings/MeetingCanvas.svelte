@@ -12,6 +12,7 @@
   row is clicked.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     elapsedLabel,
@@ -119,8 +120,8 @@
       {#if venue}<span class="chip">{venue}</span>{/if}
       {#if companyName}<span class="chip"><CompanyLabel name={companyName} /></span>{/if}
     </div>
-    <button type="button" class="btn primary" disabled={!url} title="Opens the meeting link in your browser" onclick={() => url && openExternal?.(url)}>Join</button>
-    <button type="button" class="btn" disabled={!url} title="Copies the link" onclick={() => url && oncopy?.(url)}>Copy link</button>
+    <button type="button" class="btn primary" disabled={!url} title="Opens the meeting link in your browser" onclick={() => url && openExternal?.(url)}><RailIcon name="arrow-right" />Join</button>
+    <button type="button" class="btn" disabled={!url} title="Copies the link" onclick={() => url && oncopy?.(url)}><RailIcon name="link" />Copy link</button>
     <button type="button" class="icon-btn" aria-label="More" title="Agenda and notetaker" onclick={() => onmore?.()}>⋯</button>
   </div>
 
@@ -245,7 +246,7 @@
                         bind:value={editing.text}
                         onkeydown={(e) => { if (e.key === "Escape") editing = null; }}
                       />
-                      <button type="submit" class="btn">Save</button>
+                      <button type="submit" class="btn"><RailIcon name="save" />Save</button>
                     </form>
                   {:else}
                     <div class="act">

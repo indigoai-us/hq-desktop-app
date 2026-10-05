@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "./button/RailIcon.svelte";
   import Sparkline from "./Sparkline.svelte";
   import ReadLoader from "./ReadLoader.svelte";
 
@@ -165,7 +166,7 @@
       class="digest-link"
       data-testid="overview-open-inbox"
       onclick={() => onopeninbox?.()}
-    >
+    ><RailIcon name="external" />
       Open inbox
     </button>
   </header>

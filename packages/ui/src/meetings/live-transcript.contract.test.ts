@@ -83,6 +83,10 @@ describe("live transcript stays off the initial JS graph", () => {
   it("loads the body through the memoized door", () => {
     const lazy = readFileSync(resolve(here, "live-transcript-lazy.ts"), "utf8");
     expect(lazy).toMatch(/import\("\.\/LiveTranscriptBody\.svelte"\)/);
-    expect(staticImports(resolve(here, "LiveTranscriptDoor.svelte"))).toEqual(["./live-transcript-lazy"]);
+    expect(staticImports(resolve(here, "LiveTranscriptDoor.svelte"))).toEqual([
+      // The Retry button's leading icon; RailIcon is already in the shell graph.
+      "../common/button/RailIcon.svelte",
+      "./live-transcript-lazy",
+    ]);
   });
 });

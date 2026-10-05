@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * One knock, as a quiet actionable item (US-019).
    *
@@ -182,7 +183,7 @@
         data-testid={`knock-accept-${knock.knockId}`}
         disabled={busy}
         onclick={() => void onaccept?.(knock)}
-      >
+      ><RailIcon name="arrow-right" />
         Open the door
       </button>
       <button
@@ -191,7 +192,7 @@
         data-testid={`knock-reply-${knock.knockId}`}
         disabled={busy}
         onclick={openReply}
-      >
+      ><RailIcon name="send" />
         Reply with a message
       </button>
       <button
@@ -200,7 +201,7 @@
         data-testid={`knock-defer-${knock.knockId}`}
         disabled={busy}
         onclick={() => void ondefer?.(knock)}
-      >
+      ><RailIcon name="x" />
         Not right now
       </button>
       <button
@@ -209,7 +210,7 @@
         data-testid={`knock-dismiss-${knock.knockId}`}
         disabled={busy}
         onclick={() => void ondismiss?.(knock)}
-      >
+      ><RailIcon name="x" />
         Dismiss
       </button>
     </div>
@@ -232,7 +233,7 @@
             data-testid={`knock-reply-send-${knock.knockId}`}
             disabled={busy || replyText.trim().length === 0}
             onclick={() => void sendReply()}
-          >
+          ><RailIcon name="send" />
             Send reply
           </button>
           <button
@@ -242,7 +243,7 @@
             onclick={() => {
               replying = false;
             }}
-          >
+          ><RailIcon name="check" />
             Keep the knock open
           </button>
         </div>
@@ -261,7 +262,7 @@
         data-testid={`knock-goto-${knock.knockId}`}
         disabled={busy}
         onclick={() => void ongoto?.(knock)}
-      >
+      ><RailIcon name="arrow-right" />
         Go to your room
       </button>
     </div>
@@ -273,7 +274,7 @@
         data-testid={`knock-cancel-${knock.knockId}`}
         disabled={busy}
         onclick={() => void oncancel?.(knock)}
-      >
+      ><RailIcon name="x" />
         Withdraw the knock
       </button>
     </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
@@ -74,7 +75,7 @@
     {#if projects === null && projectsError}
       <div class="foot" role="alert" data-testid="link-picker-error">
         {projectsError}
-        {#if onretry}<button type="button" class="act" onclick={onretry}>Try again</button>{/if}
+        {#if onretry}<button type="button" class="act" onclick={onretry}><RailIcon name="refresh" />Try again</button>{/if}
       </div>
     {:else if projects === null}
       <ReadLoader testid="link-picker-loading" {onretry} />
@@ -99,7 +100,7 @@
     {#if needsKr}
       <div class="foot" data-testid="link-picker-needs-kr">
         Add a key result to this objective first.
-        <button type="button" class="act" onclick={() => onaddkr?.(needsKr.id)}>Add key result</button>
+        <button type="button" class="act" onclick={() => onaddkr?.(needsKr.id)}><RailIcon name="plus" />Add key result</button>
       </div>
     {:else if !hasKrs}
       <p class="foot">{emptyText}</p>

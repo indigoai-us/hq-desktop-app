@@ -10,6 +10,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
@@ -303,7 +304,7 @@
             <button type="button" class="toggle-pill" class:sel={pills.byBots} aria-pressed={pills.byBots} data-testid="deploy-by-bots" onclick={() => setPills({ byBots: !pills.byBots })}>Deployed by your bots</button>
           {/if}
           {#if !pillsAreDefault(pills)}
-            <button type="button" class="clear-pills" data-testid="deploy-clear-filters" onclick={() => setPills({ ...DEFAULT_DEPLOY_PILLS })}>Clear</button>
+            <button type="button" class="clear-pills" data-testid="deploy-clear-filters" onclick={() => setPills({ ...DEFAULT_DEPLOY_PILLS })}><RailIcon name="x" />Clear</button>
           {/if}
         </span>
       {/if}
@@ -372,7 +373,7 @@
             </button>
           {/each}
           {#if rows.length > shown.length}
-            <button type="button" class="more" onclick={() => (limit += PAGE)}>
+            <button type="button" class="more" onclick={() => (limit += PAGE)}><RailIcon name="chevron-down" />
               Show more ({(rows.length - shown.length).toLocaleString()} left)
             </button>
           {/if}

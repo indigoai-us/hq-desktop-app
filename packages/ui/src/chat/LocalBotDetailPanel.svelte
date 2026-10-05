@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * Right-hand profile sheet for one of the user's LOCAL bots (this Mac, the
@@ -315,7 +316,7 @@
             data-testid="local-bot-detail-uid"
             title="Copy uid"
             onclick={() => void copyUid()}
-          >
+          ><RailIcon name="copy" />
             {bot.agentUid}
             <span class="ad-uid-hint">{copied ? "copied" : "copy"}</span>
           </button>
@@ -366,7 +367,7 @@
             data-testid="local-bot-detail-settings-save"
             disabled={!settingsDirty || savingSettings}
             onclick={() => void saveSettings()}
-          >
+          ><RailIcon name="save" />
             {savingSettings ? "Saving…" : "Save"}
           </button>
           {#if settingsNote}
@@ -393,12 +394,12 @@
         {/if}
         {#if pairing}
           <p class="ad-muted">Open the sign-in page and enter <strong>{pairing.code}</strong>. Sign in with the ChatGPT subscription you want this cloud bot to use. Return here afterward; we will continue automatically.</p>
-          <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}>Connect ChatGPT</button>
+          <button class="ad-btn" onclick={() => onopenurl?.(pairing!.url)} disabled={!onopenurl}><RailIcon name="plug" />Connect ChatGPT</button>
         {/if}
         {#if promotionPhase === "active"}
           <p role="status">Promoted. Continue in this conversation.</p>
         {:else}
-          <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}>
+          <button class="ad-btn" disabled={promoting || !promotionCompany || Boolean(busy)} onclick={() => void promote()}><RailIcon name="upload" />
             {promoting ? "Preparing cloud promotion…" : promotionError ? "Retry promotion" : promotionPhase ? "Check progress" : "Promote to cloud"}
           </button>
           {#if promotionError}
@@ -425,7 +426,7 @@
               data-testid="local-bot-detail-stop"
               disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("stop")}
-            >
+            ><RailIcon name="stop" />
               {busy === "stop" ? "Stopping…" : "Stop"}
             </button>
           {:else}
@@ -435,7 +436,7 @@
               data-testid="local-bot-detail-start"
               disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
               onclick={() => void run("start")}
-            >
+            ><RailIcon name="play" />
               {busy === "start" ? "Starting…" : "Start"}
             </button>
           {/if}
@@ -445,7 +446,7 @@
             data-testid="local-bot-detail-remove"
             disabled={Boolean(busy) || promoting || Boolean(promotionPhase)}
             onclick={() => (confirmRemove = true)}
-          >
+          ><RailIcon name="trash" />
             {busy === "remove" ? "Removing…" : "Remove"}
           </button>
         </div>

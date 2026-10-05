@@ -10,6 +10,7 @@
   shows the loader only on a true cold start.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import DayGroupHeader from "../chat/DayGroupHeader.svelte";
@@ -127,7 +128,7 @@
           </button>
           <div class="pop-foot">
             <span>{activeCount} active</span>
-            <button type="button" class="link" onclick={() => onfilter?.(EMPTY_MEETINGS_FILTER)}>Clear</button>
+            <button type="button" class="link" onclick={() => onfilter?.(EMPTY_MEETINGS_FILTER)}><RailIcon name="x" />Clear</button>
           </div>
         </div>
       {/if}
@@ -141,7 +142,7 @@
   {:else if sections.length === 0 && error}
     <div class="empty" data-testid="meetings-sidepane-error">
       <span>Past meetings could not load.</span>
-      <button type="button" class="retry" onclick={() => onretry?.()}>Tap to retry</button>
+      <button type="button" class="retry" onclick={() => onretry?.()}><RailIcon name="refresh" />Tap to retry</button>
     </div>
   {:else if sections.length === 0}
     <div class="empty" data-testid="meetings-sidepane-empty">

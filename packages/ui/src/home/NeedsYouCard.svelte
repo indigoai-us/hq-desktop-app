@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { Snippet } from "svelte";
   import type { HomeCardModel } from "./home-model.js";
   import "./tokens.css";
@@ -76,7 +77,7 @@
         onclick={() => void handleAction(actionFailure!.id)}
         disabled={pendingActionId !== null}
         aria-busy={pendingActionId === actionFailure.id}
-      >
+      ><RailIcon name="refresh" />
         {pendingActionId === actionFailure.id ? "Retrying…" : "Retry"}
       </button>
     </div>

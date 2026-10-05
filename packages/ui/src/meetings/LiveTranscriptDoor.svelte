@@ -4,6 +4,7 @@
   on the boot path.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import { loadLiveTranscript } from "./live-transcript-lazy";
@@ -30,7 +31,7 @@
 {#if Body}
   <Body {...rest} />
 {:else if failed}
-  <button type="button" class="retry" onclick={load}>Tap to retry</button>
+  <button type="button" class="retry" onclick={load}><RailIcon name="refresh" />Tap to retry</button>
 {:else}
   <p class="wait" data-testid="live-transcript-skeleton" aria-busy="true">Connecting to the notetaker…</p>
 {/if}

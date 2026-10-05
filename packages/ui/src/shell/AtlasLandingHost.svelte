@@ -8,6 +8,7 @@
   chips and the people filter come from the shell's presence stores.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { onMount } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import { loadAtlas } from "./atlas-lazy.js";
@@ -193,7 +194,7 @@
       {#if chunkFailed}
         <div class="note" data-testid="atlas-landing-error" role="alert">
           The map didn't load.
-          <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}>Retry</button>
+          <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}><RailIcon name="refresh" />Retry</button>
         </div>
       {:else if mod && !companyUid}<div class="note" data-testid="atlas-landing-unlinked">This company isn't linked to HQ cloud yet, so there is no map to show.</div>{/if}
     </div>

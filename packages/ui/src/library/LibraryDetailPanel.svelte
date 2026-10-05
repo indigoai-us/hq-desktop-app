@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * LibraryDetailPanel — right-side slide-over for a library item (worker or
    * skill). Structurally mirrors StoryDetailPanel (backdrop, Escape/backdrop/X
@@ -201,7 +202,7 @@
             onclick={retryLoad}
             disabled={loading}
             aria-busy={loading}
-          >
+          ><RailIcon name="refresh" />
             {loading ? "Loading…" : "Retry"}
           </button>
         </div>

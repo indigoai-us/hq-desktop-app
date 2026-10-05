@@ -1131,7 +1131,7 @@
                     aria-busy={storyRetrying || storiesLoading}
                     disabled={storyRetrying || storiesLoading}
                     onclick={() => void retryStories()}
-                  >
+                  ><RailIcon name="refresh" />
                     {storyRetrying || storiesLoading ? "Retrying…" : "Retry"}
                   </button>
                 {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { primaryEnterKeyHint } from "@hq/platform";
   /**
    * Mission Control — the Manager ⇄ Liaison conversation for one team, so the
@@ -203,7 +204,7 @@
         onclick={() => void send()}
         disabled={busy || !draft.trim()}
         aria-busy={busy && sendingSource === "compose"}
-      >
+      ><RailIcon name="send" />
         {busy && sendingSource === "compose" ? "Sending…" : "Send"}
       </button>
     </div>
@@ -215,7 +216,7 @@
           onclick={() => void send(visibleFailedSend!)}
           disabled={busy}
           aria-busy={busy && sendingSource === "retry"}
-        >
+        ><RailIcon name="refresh" />
           {busy && sendingSource === "retry" ? "Retrying…" : "Retry"}
         </button>
       </div>

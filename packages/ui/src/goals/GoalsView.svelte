@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -447,8 +448,8 @@
       {#snippet failed(_err, reset)}
         <div class="sheet-failed" role="alert" data-testid="pane-link-picker-failed">
           The project picker could not open.
-          <button type="button" onclick={reset}>Try again</button>
-          <button type="button" onclick={() => (panePicker = false)}>Close</button>
+          <button type="button" onclick={reset}><RailIcon name="refresh" />Try again</button>
+          <button type="button" onclick={() => (panePicker = false)}><RailIcon name="x" />Close</button>
         </div>
       {/snippet}
     </svelte:boundary>
@@ -468,8 +469,8 @@
       {#snippet failed(_err, reset)}
         <div class="sheet-failed" role="alert" data-testid="link-picker-failed">
           The project picker could not open.
-          <button type="button" onclick={reset}>Try again</button>
-          <button type="button" onclick={() => (picker = false)}>Close</button>
+          <button type="button" onclick={reset}><RailIcon name="refresh" />Try again</button>
+          <button type="button" onclick={() => (picker = false)}><RailIcon name="x" />Close</button>
         </div>
       {/snippet}
     </svelte:boundary>
@@ -483,8 +484,8 @@
     >
       <input placeholder="Key result" aria-label="Key result" bind:value={krTitle} />
       <input placeholder="Target" aria-label="Target" bind:value={krTarget} />
-      <button type="submit" disabled={!krTitle.trim()}>Add</button>
-      <button type="button" onclick={() => (krFormFor = null)}>Cancel</button>
+      <button type="submit" disabled={!krTitle.trim()}><RailIcon name="plus" />Add</button>
+      <button type="button" onclick={() => (krFormFor = null)}><RailIcon name="x" />Cancel</button>
     </form>
   {/if}
   {#if sheet && objectives}
@@ -497,8 +498,8 @@
       {#snippet failed(_err, reset)}
         <div class="sheet-failed" role="alert" data-testid="new-goal-sheet-failed">
           The new objective sheet could not open.
-          <button type="button" onclick={reset}>Try again</button>
-          <button type="button" onclick={() => (sheet = false)}>Close</button>
+          <button type="button" onclick={reset}><RailIcon name="refresh" />Try again</button>
+          <button type="button" onclick={() => (sheet = false)}><RailIcon name="x" />Close</button>
         </div>
       {/snippet}
     </svelte:boundary>

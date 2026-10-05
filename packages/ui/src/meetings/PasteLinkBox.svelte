@@ -4,6 +4,7 @@
   Join now, Attach to…, and Cancel. Loaded through meetings-toolbar-lazy.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { clockLabel } from "./meetings-rail-model";
@@ -76,9 +77,9 @@
   </div>
 {/if}
 <div class="actions">
-  <button type="button" class="btn primary" data-testid="paste-link-join" disabled={!provider || joining} aria-busy={joining} onclick={() => void join()}>{joining ? "Opening…" : "Join now"}</button>
+  <button type="button" class="btn primary" data-testid="paste-link-join" disabled={!provider || joining} aria-busy={joining} onclick={() => void join()}><RailIcon name="arrow-right" />{joining ? "Opening…" : "Join now"}</button>
   <button type="button" class="btn" data-testid="paste-link-attach" disabled={!provider} aria-expanded={attaching} onclick={() => (attaching = !attaching)}>Attach to…</button>
-  <button type="button" class="btn" onclick={() => onclose?.()}>Cancel</button>
+  <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
 </div>
 {#if attaching && provider}
   <div class="rule"></div>

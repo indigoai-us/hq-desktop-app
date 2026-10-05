@@ -4,6 +4,7 @@
   stay out of the initial graph. First frame is the door loader.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
   import type { MeetingsRailSection } from "./meetings-rail-model";
   import { clockLabel, initialsOf, recapHeading } from "./meetings-rail-model";
@@ -165,7 +166,7 @@
         <div class="next" role="alert" data-testid="meetings-calendar-failed">
           <h2>Couldn't read your calendar.</h2>
           <div class="actions">
-            <button type="button" class="btn" data-testid="meetings-calendar-retry" disabled={meetingsStore.loading} aria-busy={meetingsStore.loading} onclick={() => void meetingsStore.refresh()}>Try again</button>
+            <button type="button" class="btn" data-testid="meetings-calendar-retry" disabled={meetingsStore.loading} aria-busy={meetingsStore.loading} onclick={() => void meetingsStore.refresh()}><RailIcon name="refresh" />Try again</button>
           </div>
         </div>
       {:else if noCalendar}
@@ -174,15 +175,15 @@
           <h2>Connect your calendar to see meetings here</h2>
           <div class="subline">HQ reads your events and their video links so it can brief you before a call, send a notetaker, and file the recap. HQ never writes to your calendar.</div>
           <div class="actions">
-            <button type="button" class="btn primary" data-testid="no-calendar-connect-google" disabled={meetingsStore.connectPending} aria-busy={meetingsStore.connectPending} onclick={() => void connectGoogleCalendar(openExternal)}>{meetingsStore.connectPending ? "Finish in your browser…" : "Connect Google"}</button>
-            <button type="button" class="btn" data-testid="no-calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet">Connect Microsoft</button>
+            <button type="button" class="btn primary" data-testid="no-calendar-connect-google" disabled={meetingsStore.connectPending} aria-busy={meetingsStore.connectPending} onclick={() => void connectGoogleCalendar(openExternal)}><RailIcon name="plug" />{meetingsStore.connectPending ? "Finish in your browser…" : "Connect Google"}</button>
+            <button type="button" class="btn" data-testid="no-calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet"><RailIcon name="plug" />Connect Microsoft</button>
           </div>
           <div class="rule"></div>
           <div class="kind">Or paste a meeting link</div>
           <div class="actions">
             <input class="field inline" data-testid="no-calendar-paste-input" placeholder="zoom.us, meet.google.com, or teams.microsoft.com link" aria-label="Meeting link" bind:value={firstRunLink} onkeydown={(e) => e.key === "Enter" && void joinFirstRun()} />
             {#if firstRunProvider}<span class="chip" data-testid="no-calendar-paste-provider">{PROVIDER_LABEL[firstRunProvider]}</span>{/if}
-            <button type="button" class="btn" data-testid="no-calendar-paste-join" disabled={!firstRunProvider || firstRunJoining} aria-busy={firstRunJoining} onclick={() => void joinFirstRun()}>Join</button>
+            <button type="button" class="btn" data-testid="no-calendar-paste-join" disabled={!firstRunProvider || firstRunJoining} aria-busy={firstRunJoining} onclick={() => void joinFirstRun()}><RailIcon name="arrow-right" />Join</button>
           </div>
           <div class="subline">Joining from a link sends the notetaker. The meeting appears under Today until it ends.</div>
         </div>
@@ -192,8 +193,8 @@
           <h2>{nextRow.title} at {nextRow.time}</h2>
           <div class="subline">Join opens 10 min before{#if companyName} · {companyName}{/if}</div>
           <div class="actions">
-            <button type="button" class="btn primary" data-testid="prepare-brief" onclick={() => onselect?.(nextRow.id)}>Prepare brief</button>
-            <button type="button" class="btn" disabled title="Copy is on the meeting once it has a link">Copy link</button>
+            <button type="button" class="btn primary" data-testid="prepare-brief" onclick={() => onselect?.(nextRow.id)}><RailIcon name="file" />Prepare brief</button>
+            <button type="button" class="btn" disabled title="Copy is on the meeting once it has a link"><RailIcon name="link" />Copy link</button>
           </div>
         </div>
       {:else}
@@ -238,13 +239,13 @@
       {#if mode === "upcoming"}
         <NotetakerControl {event} {bot} {url} />
         <span class="hint">{canJoin ? "Ready to join" : "Join opens 10 min before"}</span>
-        <button type="button" class="btn primary" data-testid="meeting-join" disabled={!canJoin} title={canJoin ? "Opens the meeting link in your browser" : "Opens 10 min before the meeting starts"} onclick={() => url && openExternal?.(url)}>Join</button>
-        <button type="button" class="btn" data-testid="meeting-copy" disabled={!url} onclick={copyLink}>Copy link</button>
+        <button type="button" class="btn primary" data-testid="meeting-join" disabled={!canJoin} title={canJoin ? "Opens the meeting link in your browser" : "Opens 10 min before the meeting starts"} onclick={() => url && openExternal?.(url)}><RailIcon name="arrow-right" />Join</button>
+        <button type="button" class="btn" data-testid="meeting-copy" disabled={!url} onclick={copyLink}><RailIcon name="link" />Copy link</button>
       {:else if hasNotes}
-        <button type="button" class="btn" onclick={() => oncopy?.(`sources/meetings/${event.id}.md`)}>Open notes file</button>
-        <button type="button" class="btn" data-testid="copy-recap" onclick={copyRecap}>Copy recap</button>
+        <button type="button" class="btn" onclick={() => oncopy?.(`sources/meetings/${event.id}.md`)}><RailIcon name="external" />Open notes file</button>
+        <button type="button" class="btn" data-testid="copy-recap" onclick={copyRecap}><RailIcon name="copy" />Copy recap</button>
       {:else if url}
-        <button type="button" class="btn" data-testid="meeting-copy" onclick={copyLink}>Copy link</button>
+        <button type="button" class="btn" data-testid="meeting-copy" onclick={copyLink}><RailIcon name="link" />Copy link</button>
       {/if}
     </div>
 
@@ -258,7 +259,7 @@
               <div role="alert" data-testid="meeting-notes-failed">
                 <p class="sum">Couldn't load the notes.</p>
                 <div class="actions">
-                  <button type="button" class="btn" data-testid="meeting-notes-retry" onclick={() => onretrynotes?.()}>Try again</button>
+                  <button type="button" class="btn" data-testid="meeting-notes-retry" onclick={() => onretrynotes?.()}><RailIcon name="refresh" />Try again</button>
                 </div>
               </div>
             {:else if notesState === "preparing"}
@@ -291,7 +292,7 @@
               <div role="alert" data-testid="meeting-recap-failed">
                 <p class="sum">Couldn't load part of the recap.</p>
                 <div class="actions">
-                  <button type="button" class="btn" data-testid="meeting-recap-retry" onclick={() => onretrynotes?.()}>Try again</button>
+                  <button type="button" class="btn" data-testid="meeting-recap-retry" onclick={() => onretrynotes?.()}><RailIcon name="refresh" />Try again</button>
                 </div>
               </div>
             {/if}
@@ -334,7 +335,7 @@
             {#if notesRemaining > 0}
               <div class="more" data-testid="recap-more">
                 <span class="muted" data-testid="recap-more-count">{notesRemaining} more {notesRemaining === 1 ? "note" : "notes"}</span>
-                <button type="button" class="btn" data-testid="recap-load-more" disabled={notesLoadingMore} aria-busy={notesLoadingMore} onclick={() => onloadmore?.()}>{notesLoadingMore ? "Loading…" : "Load more"}</button>
+                <button type="button" class="btn" data-testid="recap-load-more" disabled={notesLoadingMore} aria-busy={notesLoadingMore} onclick={() => onloadmore?.()}><RailIcon name="chevron-down" />{notesLoadingMore ? "Loading…" : "Load more"}</button>
               </div>
             {/if}
           </div>

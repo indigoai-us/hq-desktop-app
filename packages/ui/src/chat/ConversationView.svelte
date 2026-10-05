@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Minimal conversation view (US-007) — the channel/DM surface the chat
    * sidebar targets. A faithful reduction of the desktop-alt
@@ -517,7 +518,7 @@
             data-testid="conversation-load-older"
             disabled={loadingOlder}
             onclick={() => void loadOlder()}
-          >
+          ><RailIcon name="chevron-down" />
             {loadingOlder ? "Loading…" : "Show older messages"}
           </button>
         {/if}
@@ -558,7 +559,7 @@
                     data-testid="message-reply"
                     aria-label="Reply"
                     onclick={() => openReply(m.eventId)}
-                  >
+                  ><RailIcon name="send" />
                     Reply
                   </button>
                   {#if (m.replyCount ?? 0) > 0}
@@ -604,7 +605,7 @@
                     class="conv-send-state failed"
                     data-testid="conversation-retry"
                     onclick={() => void retrySend(m.eventId)}
-                  >
+                  ><RailIcon name="refresh" />
                     Failed — tap to retry
                   </button>
                 {/if}
@@ -632,7 +633,7 @@
           disabled={sending || !draft.trim()}
           aria-busy={sending}
           onclick={() => void send()}
-        >
+        ><RailIcon name="send" />
           {sending ? "Sending…" : "Send"}
         </button>
       </div>

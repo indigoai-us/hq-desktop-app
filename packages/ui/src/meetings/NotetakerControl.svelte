@@ -4,6 +4,7 @@
   meetings-store inviteBot and cancelBot actions.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { MeetingEvent, ScheduledBot } from "./meetings-model";
   import { meetingsStore } from "./meetings-store.svelte";
   import { notetakerStatus } from "./notetaker-invite";
@@ -36,7 +37,7 @@
 <span class="nt" data-testid="meeting-notetaker" data-state={pending ? "pending" : failed ? "failed" : status.action}>
   {#if failed}
     <span class="msg" role="alert" data-testid="meeting-notetaker-failed">{failed}</span>
-    <button type="button" class="btn" data-testid="meeting-notetaker-retry" onclick={() => void run(lastAction)}>Try again</button>
+    <button type="button" class="btn" data-testid="meeting-notetaker-retry" onclick={() => void run(lastAction)}><RailIcon name="refresh" />Try again</button>
   {:else if status.action === "invite"}
     <button
       type="button"
@@ -46,11 +47,11 @@
       aria-busy={pending}
       title={url ? "Sends the notetaker to record and transcribe this meeting" : "This meeting has no link to send the notetaker to"}
       onclick={() => void run("invite")}
-    >{pending ? "Inviting…" : "Invite notetaker"}</button>
+    ><RailIcon name="user-plus" />{pending ? "Inviting…" : "Invite notetaker"}</button>
   {:else}
     <span class="msg" data-testid="meeting-notetaker-status">{status.label}</span>
     {#if status.action === "remove"}
-      <button type="button" class="btn" data-testid="meeting-notetaker-remove" disabled={pending} aria-busy={pending} onclick={() => void run("remove")}>{pending ? "Removing…" : "Remove notetaker"}</button>
+      <button type="button" class="btn" data-testid="meeting-notetaker-remove" disabled={pending} aria-busy={pending} onclick={() => void run("remove")}><RailIcon name="trash" />{pending ? "Removing…" : "Remove notetaker"}</button>
     {/if}
   {/if}
 </span>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import aurora from "./assets/new-bot-wallpapers/aurora.jpg";
   import glassWhiteboard from "./assets/new-bot-wallpapers/glass-whiteboard.jpg";
   import nodeConstellation from "./assets/new-bot-wallpapers/node-constellation.jpg";
@@ -456,7 +457,7 @@
         data-testid="new-bot-takeover-cancel"
         use:focusOnMount
         onclick={onHeaderCancel}
-      >
+      ><RailIcon name="x" />
         {activeWakingSession && (!cancelsBot || wakingStopped) ? "Close" : "Cancel"}
       </button>
     {/if}
@@ -516,7 +517,7 @@
           class="new-bot-takeover-local"
           data-testid="new-bot-takeover-local"
           onclick={onopenlocal}
-        >
+        ><RailIcon name="plus" />
           Create a local bot instead
         </button>
       {/if}

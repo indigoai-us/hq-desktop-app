@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
@@ -115,10 +116,10 @@
         <div class="uid" data-testid="bot-profile-uid">
           <span class="k0">UID</span>
           <span class="v">{uid}</span>
-          <button type="button" class="link" data-testid="bot-profile-copy-uid" onclick={() => void copyUid()}>{copied ? "Copied" : "Copy"}</button>
+          <button type="button" class="link" data-testid="bot-profile-copy-uid" onclick={() => void copyUid()}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button>
         </div>
       {/if}
-      <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}>Message</button>
+      <button type="button" class="btn primary" data-testid="bot-profile-message" onclick={() => onmessage?.()}><RailIcon name="send" />Message</button>
       <div class="act">
         <button
           type="button"
@@ -126,10 +127,10 @@
           data-testid="bot-profile-pause"
           disabled={busy}
           onclick={() => (paused ? onresume?.() : onpause?.())}
-        >{paused ? "Resume" : "Pause"}</button>
-        <button type="button" class="btn" data-testid="bot-profile-session" onclick={() => onsession?.()}>Open session</button>
-        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}>Edit</button>
-        <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}>Stop</button>
+        ><RailIcon name="stop" />{paused ? "Resume" : "Pause"}</button>
+        <button type="button" class="btn" data-testid="bot-profile-session" onclick={() => onsession?.()}><RailIcon name="external" />Open session</button>
+        <button type="button" class="btn" data-testid="bot-profile-edit" onclick={() => onedit?.("identity")}><RailIcon name="pencil" />Edit</button>
+        <button type="button" class="btn" data-testid="bot-profile-stop" disabled={busy} onclick={() => onstop?.()}><RailIcon name="stop" />Stop</button>
       </div>
       {#if actionError}
         <p class="err" role="alert" data-testid="bot-profile-action-error">{actionError}</p>
@@ -147,7 +148,7 @@
         </div>
       </section>
       <section class="g">
-        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}>Edit</button></div>
+        <div class="k">Runtime {#if snapshot.runtimeVersion}<span class="count">{snapshot.runtimeVersion}</span>{/if} <button type="button" class="link" data-testid="bot-profile-edit-runtime" onclick={() => onedit?.("runtime")}><RailIcon name="pencil" />Edit</button></div>
         <div class="kv">
           {#each snapshot.runtime as row (row.label)}
             <b>{row.label}</b><span>{row.value}</span>
@@ -156,7 +157,7 @@
       </section>
       {#if snapshot.companies.length}
         <section class="g">
-          <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}>Edit</button></div>
+          <div class="k" data-testid="bot-profile-companies-label">{#if snapshot.companiesScope === "all"}Companies <span class="count">{snapshot.companies.length}</span>{:else}In this company{/if} <button type="button" class="link" data-testid="bot-profile-edit-membership" onclick={() => onedit?.("membership")}><RailIcon name="pencil" />Edit</button></div>
           {#each snapshot.companies as co (co.name)}
             <div class="co" data-testid="bot-profile-company"><CompanyLabel name={co.name} /><span class="r">{co.role}</span></div>
           {/each}
@@ -164,7 +165,7 @@
       {/if}
       {#if snapshot.capabilities.length}
         <section class="g">
-          <div class="k">Capabilities <button type="button" class="link" data-testid="bot-profile-edit-capabilities" onclick={() => onedit?.("capabilities")}>Edit</button></div>
+          <div class="k">Capabilities <button type="button" class="link" data-testid="bot-profile-edit-capabilities" onclick={() => onedit?.("capabilities")}><RailIcon name="pencil" />Edit</button></div>
           <div class="chips">{#each snapshot.capabilities as cap (cap)}<span class="chip">{cap}</span>{/each}</div>
         </section>
       {/if}
@@ -206,7 +207,7 @@
       {/if}
       {#if snapshot.grants.length}
         <section class="g">
-          <div class="k">Vault access <button type="button" class="link" data-testid="bot-profile-edit-access" onclick={() => onedit?.("access")}>Edit</button></div>
+          <div class="k">Vault access <button type="button" class="link" data-testid="bot-profile-edit-access" onclick={() => onedit?.("access")}><RailIcon name="pencil" />Edit</button></div>
           {#each snapshot.grants as grant (grant.path)}
             <div class="va"><span class="d">{grant.path}</span><span class:w={grant.level.includes("write")}>{grant.level}</span></div>
           {/each}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -125,7 +126,7 @@
   </header>
   {#if draftRestored}
     <div class="restored" data-testid="new-project-draft-restored">
-      Draft restored · <button type="button" class="link" onclick={clearDraft}>Clear</button>
+      Draft restored · <button type="button" class="link" onclick={clearDraft}><RailIcon name="x" />Clear</button>
     </div>
   {/if}
   <div class="sb">

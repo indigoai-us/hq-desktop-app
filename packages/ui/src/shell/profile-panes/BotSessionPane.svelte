@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Live bot session pane. Transcript lines append; lists past 200 rows
@@ -144,21 +145,21 @@
   </div>
   <div class="sact">
     {#if phase === "ended"}
-      <button type="button" class="btn primary" data-testid="bot-session-rerun">Re-run</button>
+      <button type="button" class="btn primary" data-testid="bot-session-rerun"><RailIcon name="refresh" />Re-run</button>
     {:else}
-      <button type="button" class="btn dz" data-testid="bot-session-stop" onclick={() => setPhase(requestStop(phase))}>Stop</button>
-      <button type="button" class="btn">Pause</button>
+      <button type="button" class="btn dz" data-testid="bot-session-stop" onclick={() => setPhase(requestStop(phase))}><RailIcon name="stop" />Stop</button>
+      <button type="button" class="btn"><RailIcon name="stop" />Pause</button>
     {/if}
     <span class="grow"></span>
-    <button type="button" class="btn">Open in Claude Code</button>
+    <button type="button" class="btn"><RailIcon name="claude-code" />Open in Claude Code</button>
   </div>
   {#if phase === "confirm-stop"}
     <div class="confirm" role="alertdialog" aria-label="Stop session" data-testid="bot-session-confirm" use:dismissable={{ onclose: () => setPhase(cancelStop(phase)) }}>
       <div class="ct">Stop {name}'s session?</div>
       <div class="cb">{context} stops now. The transcript is kept. Scheduled jobs are untouched.</div>
       <div class="ca">
-        <button type="button" class="btn" data-testid="bot-session-stop-cancel" onclick={() => setPhase(cancelStop(phase))}>Cancel</button>
-        <button type="button" class="btn dz" data-testid="bot-session-stop-confirm" onclick={() => setPhase(confirmStop(phase))}>Stop</button>
+        <button type="button" class="btn" data-testid="bot-session-stop-cancel" onclick={() => setPhase(cancelStop(phase))}><RailIcon name="x" />Cancel</button>
+        <button type="button" class="btn dz" data-testid="bot-session-stop-confirm" onclick={() => setPhase(confirmStop(phase))}><RailIcon name="stop" />Stop</button>
       </div>
     </div>
   {/if}

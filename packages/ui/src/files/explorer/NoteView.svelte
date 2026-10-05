@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * NoteView: the reading view for one Markdown note in the Files explorer.
    *
@@ -180,7 +181,7 @@
     <div class="note-large" role="note" data-testid="note-truncated">
       <span>This note is {formatSize(size)}. Showing the first part.</span>
       {#if onopenfull}
-        <button type="button" onclick={onopenfull}>Open the whole note</button>
+        <button type="button" onclick={onopenfull}><RailIcon name="external" />Open the whole note</button>
       {/if}
     </div>
   {/if}

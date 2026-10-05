@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import { onMount } from "svelte";
   import type { AdapterResult, PlatformAdapter } from "@hq/platform";
@@ -1791,7 +1792,7 @@
           data-testid="settings-retry-load"
           disabled={loading}
           onclick={() => void loadSettings()}
-        >
+        ><RailIcon name="refresh" />
           {loading ? "Retrying…" : "Retry"}
         </button>
       </div>
@@ -1852,7 +1853,7 @@
                     onclick={handlePickFolder}
                     disabled={hqFolderChanging || !canLaunchApps}
                     aria-busy={hqFolderChanging}
-                  >
+                  ><RailIcon name="pencil" />
                     {hqFolderChanging ? "Choosing…" : "Change…"}
                   </button>
                 </div>
@@ -2168,7 +2169,7 @@
                         onclick={handleInstallAppUpdate}
                         disabled={appUpdateInstalling}
                         aria-busy={appUpdateInstalling}
-                      >
+                      ><RailIcon name="refresh" />
                         {appUpdateInstalling
                           ? "Installing…"
                           : "Restart to Update"}
@@ -2181,7 +2182,7 @@
                       onclick={handleCheckForUpdates}
                       disabled={updateChecking || appUpdateInstalling}
                       aria-busy={updateChecking}
-                    >
+                    ><RailIcon name="refresh" />
                       {updateChecking ? "Checking…" : "Check Now"}
                     </button>
                   </div>
@@ -2230,7 +2231,7 @@
                         disabled={coreLogCopyState === "copying"}
                         aria-busy={coreLogCopyState === "copying"}
                         title={`Copy install log location: ${coreInstallLogPath}`}
-                      >
+                      ><RailIcon name="copy" />
                         {coreLogCopyState === "copying"
                           ? "Copying…"
                           : coreLogCopyState === "copied"
@@ -2247,7 +2248,7 @@
                         disabled={coreLogOpenState === "opening"}
                         aria-busy={coreLogOpenState === "opening"}
                         title={`Open install log: ${coreInstallLogPath}`}
-                      >
+                      ><RailIcon name="external" />
                         {coreLogOpenState === "opening"
                           ? "Opening…"
                           : coreLogOpenState === "opened"
@@ -2270,7 +2271,7 @@
                           coreStateLoading ||
                           coreRefreshing ||
                           coreChannelPending}
-                      >
+                      ><RailIcon name="refresh" />
                         {coreChannelPending
                           ? "Saving channel…"
                           : coreStateLoading || coreRefreshing
@@ -2314,7 +2315,7 @@
                       aria-busy={coreRefreshing ||
                         coreVersionLoading ||
                         coreStateLoading}
-                    >
+                    ><RailIcon name="refresh" />
                       {coreRefreshing || coreVersionLoading || coreStateLoading
                         ? "Checking…"
                         : "Refresh"}
@@ -2366,7 +2367,7 @@
                         disabled={hqCliCmdCopying}
                         aria-busy={hqCliCmdCopying}
                         title={HQ_CLI_UPGRADE_CMD}
-                      >
+                      ><RailIcon name="copy" />
                         {hqCliCmdCopying
                           ? "Copying…"
                           : hqCliCmdCopied
@@ -2383,7 +2384,7 @@
                         onclick={handleDismissHqCliUpdate}
                         disabled={hqCliDismissing || hqCliInstalling}
                         aria-busy={hqCliDismissing || hqCliInstalling}
-                      >
+                      ><RailIcon name="x" />
                         {hqCliDismissing
                           ? "Dismissing…"
                           : hqCliUpdateErrorContext === "dismiss"
@@ -2400,7 +2401,7 @@
                         hqCliInstalling ||
                         hqCliDismissing}
                       aria-busy={hqCliChecking}
-                    >
+                    ><RailIcon name="refresh" />
                       {hqCliChecking ? "Checking…" : "Check Now"}
                     </button>
                   </div>
@@ -2430,7 +2431,7 @@
                       aria-label={packsUpdating
                         ? "Updating installed packs"
                         : "Update installed packs"}
-                    >
+                    ><RailIcon name="refresh" />
                       {packsUpdating ? "Updating…" : "Update"}
                     </button>
                   </div>
@@ -2596,7 +2597,7 @@
                     onclick={requestSignOut}
                     disabled={signingOut || quitting}
                     aria-busy={signingOut}
-                  >
+                  ><RailIcon name="logout" />
                     {signingOut
                       ? "Signing out…"
                       : accountRetryAction === "sign-out"
