@@ -313,9 +313,11 @@ describe("Settings → Bots (Work shell)", () => {
     remove.click();
     await tick();
     expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Say goodbye to Izzy?");
-    expect(removeDialog().textContent).toContain("Izzy will stop working and leave your bots.");
-    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-avatar"] [data-kind="agent"]')).not.toBeNull();
-    expect(document.querySelector('[data-testid="card-modal"]')?.dataset.appearance).toBe("surface");
+    expect(removeDialog().textContent).toContain("Izzy runs on its own cloud machine");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-keep"]')?.textContent).toBe("Keep Izzy");
+    expect(removeConfirm().textContent).toBe("Remove Izzy");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-avatar"]')?.textContent).toBe("I");
+    expect(document.querySelector<HTMLElement>('[data-testid="card-modal"]')?.dataset.appearance).toBe("surface");
     expect(document.querySelectorAll('.card-modal-art')).toHaveLength(2);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await tick();
@@ -357,15 +359,60 @@ describe("Settings → Bots (Work shell)", () => {
     await tick();
     removeConfirm().click();
     await vi.waitFor(() => {
-      expect(removeConfirm().textContent).toBe("Removing…");
+      expect(removeConfirm().textContent).toBe("Removing Izzy…");
       expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(true);
       expect(removeConfirm().disabled).toBe(true);
     });
     pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
     await vi.waitFor(() => expect(removeDialog().textContent).toContain("Could not remove Izzy. Try again."));
     expect(removeDialog().textContent).not.toContain("raw transport failure");
+    expect(removeConfirm().textContent).toBe("Try again");
+    expect(removeConfirm().disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(false);
     removeConfirm().click();
     await vi.waitFor(() => expect(deprovision).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the full bot name accessible while constraining a long dialog action label", async () => {
+    const longName = "Scout with an exceptionally long name that must not stretch the dialog";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: longName }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe(`Say goodbye to ${longName}?`);
+    expect(removeConfirm().getAttribute("aria-label")).toBe(`Remove ${longName}`);
+    expect(removeConfirm().querySelector(".remove-dialog-button-name")?.textContent).toBe(longName);
+  });
+
+  it("uses the same roster avatar in the row and removal dialog", async () => {
+    const avatarUrl = "data:image/png;base64,AA==";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: "Scout", avatarUrl }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    const rowAvatar = await vi.waitFor(() => {
+      const image = host.querySelector<HTMLImageElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}"] .bot-avatar`);
+      expect(image).not.toBeNull();
+      return image!;
+    });
+    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+    await tick();
+    const dialogAvatar = document.querySelector<HTMLImageElement>('[data-testid="settings-bot-remove-dialog-avatar"] img');
+    expect(dialogAvatar?.getAttribute("src")).toBe(rowAvatar.getAttribute("src"));
   });
 
   it("uses the same dialog for local removal and hides the row after a successful refresh", async () => {
@@ -462,7 +509,7 @@ describe("Settings → Bots (Work shell)", () => {
       return removeConfirm();
     });
     confirm.click();
-    await vi.waitFor(() => expect(confirm.textContent).toBe("Removing…"));
+    await vi.waitFor(() => expect(confirm.textContent).toBe("Removing Izzy…"));
     pending.resolve(ok({}));
     await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
   });

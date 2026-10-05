@@ -57,7 +57,7 @@
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import CardModal from "../chat/messaging/CardModal.svelte";
   import CardModalStatus from "../chat/messaging/CardModalStatus.svelte";
-  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
+  import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
   import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -212,10 +212,20 @@
   } | null>(null);
   let cloudActionTimeout: ReturnType<typeof setTimeout> | undefined;
   let removedCloud = $state<Set<string>>(new Set());
+  let brokenAvatarSources = $state<Set<string>>(new Set());
   const visibleBots = $derived(bots.filter((bot) => !removedLocal.has(bot.name)));
   const visibleCloudBots = $derived(cloudBots.filter((bot) => !removedCloud.has(bot.uid)));
   /** Bots this pane paused; the roster carries no runtime state of its own. */
   let pausedCloud = $state<Set<string>>(new Set());
+
+  function botAvatarSource(url: string | null | undefined): string | null {
+    const source = paintableAvatarSrc(url);
+    return source && !brokenAvatarSources.has(source) ? source : null;
+  }
+
+  function noteBrokenAvatar(source: string): void {
+    brokenAvatarSources = new Set(brokenAvatarSources).add(source);
+  }
 
   function runtimeLabel(id: string): string {
     return RUNTIMES.find((r) => r.id === id)?.label ?? id;
@@ -681,6 +691,7 @@
             <div class="bot-main">
               <strong>
                 <span class="dot" class:online={bot.online === true} aria-hidden="true"></span>
+                <span class="initial" aria-hidden="true">{cloudBotInitial(botRowDisplayName(bot, botDisplayNames))}</span>
                 <span data-testid={`settings-bot-${bot.name}-label`}>{botRowDisplayName(bot, botDisplayNames)}</span>
                 <BotKindChip kind="local" runtime={bot.runtime} variant="label" />
               </strong>
@@ -889,10 +900,20 @@
         </p>
       {/if}
       {#each visibleCloudBots as bot (bot.uid)}
+        {@const avatarSource = botAvatarSource(bot.avatarUrl)}
         <div class="bot-row" data-testid={`settings-cloud-bot-${bot.uid}`} data-status={bot.status}>
           <div class="bot-main">
             <strong>
-              <span class="initial" aria-hidden="true">{cloudBotInitial(bot.displayName)}</span>
+              {#if avatarSource}
+                <img
+                  class="bot-avatar"
+                  src={avatarSource}
+                  alt=""
+                  onerror={() => noteBrokenAvatar(avatarSource)}
+                />
+              {:else}
+                <span class="initial" aria-hidden="true">{cloudBotInitial(bot.displayName)}</span>
+              {/if}
               {bot.displayName}
               <BotKindChip kind="cloud" variant="label" />
             </strong>
@@ -967,7 +988,7 @@
 {#if removeDialog}
   {@const dialog = removeDialog}
   {@const dialogName = dialog.kind === "local" ? dialog.displayName : dialog.bot.displayName}
-  {@const dialogAgentUid = dialog.kind === "local" ? dialog.bot.agentUid : dialog.bot.uid}
+  {@const dialogAvatarSource = dialog.kind === "cloud" ? botAvatarSource(dialog.bot.avatarUrl) : null}
   {@const dialogBusy = dialog.kind === "local" ? busy === dialog.bot.name : cloudBusy === dialog.bot.uid}
   {@const machineInstanceId = dialog.kind === "cloud" ? dialog.instanceId : null}
   <CardModal
@@ -984,13 +1005,17 @@
   >
     {#snippet heroMark()}
       <span class="remove-bot-avatar" data-testid="settings-bot-remove-dialog-avatar">
-        <IdentityMark kind="agent" label={dialogName} agentUid={dialogAgentUid} />
+        {#if dialogAvatarSource}
+          <img src={dialogAvatarSource} alt="" onerror={() => noteBrokenAvatar(dialogAvatarSource)} />
+        {:else}
+          <span aria-hidden="true">{cloudBotInitial(dialogName)}</span>
+        {/if}
       </span>
     {/snippet}
     {#snippet body()}
       <div class="remove-dialog-body" data-testid="settings-bot-remove-dialog" data-machine={machineInstanceId ? "true" : "false"}>
         <p class="card-modal-copy">
-          {#if machineInstanceId}
+          {#if dialog.kind === "cloud"}
             {dialogName} runs on its own cloud machine. Removing {dialogName} deletes that machine and everything on it. This can't be undone.
           {:else}
             {dialogName} will stop working and leave your bots. This can't be undone.
@@ -1004,21 +1029,29 @@
     {#snippet footer()}
       <button
         type="button"
-        class="card-modal-btn is-quiet"
+        class="card-modal-btn is-quiet remove-dialog-button"
         data-testid="settings-bot-remove-dialog-keep"
+        aria-label={`Keep ${dialogName}`}
         disabled={dialogBusy}
         onclick={closeRemoveDialog}
       >
-        Keep bot
+        Keep <span class="remove-dialog-button-name">{dialogName}</span>
       </button>
       <button
         type="button"
-        class="card-modal-btn is-danger"
+        class="card-modal-btn is-danger remove-dialog-button"
         data-testid="settings-bot-remove-dialog-confirm"
+        aria-label={dialog.error ? "Try again" : `Remove ${dialogName}`}
         disabled={dialogBusy}
         onclick={confirmRemoveDialog}
       >
-        {dialogBusy ? "Removing…" : "Remove bot"}
+        {#if dialogBusy}
+          Removing <span class="remove-dialog-button-name">{dialogName}</span>…
+        {:else if dialog.error}
+          Try again
+        {:else}
+          Remove <span class="remove-dialog-button-name">{dialogName}</span>
+        {/if}
       </button>
     {/snippet}
   </CardModal>
@@ -1154,6 +1187,13 @@
     font-size: 11px;
     font-weight: 600;
   }
+  .bot-avatar {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
   .actions { display: flex; align-items: center; gap: 8px; }
   .adopt-result, .restore-result { display: grid; gap: 2px; }
   .remove-bot-avatar {
@@ -1167,13 +1207,27 @@
     background: var(--v4-surface-solid);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
   }
-  .remove-bot-avatar :global(.identity) {
+  .remove-bot-avatar > img,
+  .remove-bot-avatar > span {
     width: 48px;
     height: 48px;
-    flex-basis: 48px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    object-fit: cover;
+    background: var(--v4-control-bg);
+    color: var(--v4-text-2);
     font-size: 16px;
+    font-weight: 600;
   }
   .remove-dialog-body { display: grid; gap: 12px; }
+  .remove-dialog-button { max-width: min(208px, 100%); }
+  .remove-dialog-button-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .create { display: grid; gap: 10px; }
   .create-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   button {
