@@ -8578,6 +8578,61 @@ mod desktop_liveness_telemetry_regression_tests {
         assert!(started.elapsed() < Duration::from_millis(500));
     }
 
+    #[tokio::test]
+    async fn daily_active_liveness_flag_is_resolved_once_and_cached() {
+        let cache = AtomicU8::new(LIVENESS_FLAG_UNKNOWN);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+
+        let first = resolve_liveness_flag_once_with(&cache, || async {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
+        .await;
+        let second = resolve_liveness_flag_once_with(&cache, || async {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(true))
+        })
+        .await;
+
+        assert!(!first);
+        assert!(!second);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.load(Ordering::Acquire), LIVENESS_FLAG_OFF);
+    }
+
+    #[test]
+    fn quit_unknown_or_off_skips_flag_fetch_and_wait() {
+        for state in [LIVENESS_FLAG_UNKNOWN, LIVENESS_FLAG_OFF] {
+            let cache = AtomicU8::new(state);
+            let flag_fetches = std::sync::atomic::AtomicUsize::new(0);
+            let waits = std::sync::atomic::AtomicUsize::new(0);
+
+            let attempted = with_cached_liveness_on(&cache, || {
+                flag_fetches.fetch_add(1, Ordering::SeqCst);
+                waits.fetch_add(1, Ordering::SeqCst);
+            });
+
+            assert!(!attempted);
+            assert_eq!(flag_fetches.load(Ordering::SeqCst), 0);
+            assert_eq!(waits.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn cached_on_quit_builds_event_with_the_noted_reason() {
+        let cache = AtomicU8::new(LIVENESS_FLAG_ON);
+        let event = quit_event_for_cached_liveness(
+            &cache,
+            now(),
+            DesktopQuitReason::AppMenuQuit,
+            Some(now()),
+        )
+        .expect("cached-on quit has an event");
+
+        assert_eq!(event.event_name, "desktop_app_quit");
+        assert_eq!(event.properties["reason"], "app_menu_quit");
+    }
+
     #[test]
     fn deferred_update_restart_does_not_latch_an_update_quit_reason() {
         let source = include_str!("autostart.rs");
