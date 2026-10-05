@@ -33,6 +33,8 @@ struct LeaseRecord {
     pid: u32,
     start_time_ms: u64,
     hq_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    purpose: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,10 +97,36 @@ impl HolderAgeBucket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderPurposeBucket {
+    Absent,
+    Command,
+    ResidentPreload,
+    McpServe,
+    Hook,
+    Daemon,
+    Unknown,
+}
+
+impl HolderPurposeBucket {
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Command => "command",
+            Self::ResidentPreload => "resident-preload",
+            Self::McpServe => "mcp-serve",
+            Self::Hook => "hook",
+            Self::Daemon => "daemon",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PackageUseLeaseTimeoutSummary {
     pub live_holder_count: LiveHolderCountBucket,
     pub holder_version: HolderVersionBucket,
     pub oldest_holder_age: HolderAgeBucket,
+    pub oldest_holder_purpose: HolderPurposeBucket,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -221,6 +249,18 @@ fn holder_age_bucket(age_ms: Option<u64>) -> HolderAgeBucket {
     }
 }
 
+fn holder_purpose_bucket(purpose: Option<&str>) -> HolderPurposeBucket {
+    match purpose {
+        None => HolderPurposeBucket::Absent,
+        Some("command") => HolderPurposeBucket::Command,
+        Some("resident-preload") => HolderPurposeBucket::ResidentPreload,
+        Some("mcp-serve") => HolderPurposeBucket::McpServe,
+        Some("hook") => HolderPurposeBucket::Hook,
+        Some("daemon") => HolderPurposeBucket::Daemon,
+        Some(_) => HolderPurposeBucket::Unknown,
+    }
+}
+
 fn now_epoch_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -242,6 +282,11 @@ fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeo
             None => age_unknown = true,
         }
     }
+    let oldest_holder_purpose = records
+        .iter()
+        .min_by_key(|record| record.start_time_ms)
+        .map(|record| holder_purpose_bucket(record.purpose.as_deref()))
+        .unwrap_or(HolderPurposeBucket::Absent);
     PackageUseLeaseTimeoutSummary {
         live_holder_count: live_holder_count_bucket(records.len()),
         holder_version: classify_holder_version_bucket(versions),
@@ -250,6 +295,7 @@ fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeo
         } else {
             holder_age_bucket(oldest_age_ms)
         },
+        oldest_holder_purpose,
     }
 }
 
@@ -386,6 +432,7 @@ impl PackageUseCliGuard {
             pid: std::process::id(),
             start_time_ms: current_process_start_time_ms(),
             hq_version: env!("CARGO_PKG_VERSION").to_string(),
+            purpose: None,
         };
         let lease_path = paths
             .lease_directory
@@ -449,6 +496,7 @@ impl PackageUseUpdateRequest {
             pid: std::process::id(),
             start_time_ms: current_process_start_time_ms(),
             hq_version: env!("CARGO_PKG_VERSION").to_string(),
+            purpose: None,
         };
         atomic_write(
             &paths.update_request_path,
@@ -762,6 +810,7 @@ mod tests {
             pid,
             start_time_ms,
             hq_version: "5.304.0".to_string(),
+            purpose: None,
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
@@ -771,8 +820,81 @@ mod tests {
             pid,
             start_time_ms,
             hq_version: hq_version.to_string(),
+            purpose: None,
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lease_record_accepts_missing_and_unknown_fields_and_optional_purpose() {
+        let legacy: LeaseRecord =
+            serde_json::from_str(r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4"}"#)
+                .unwrap();
+        assert_eq!(legacy.purpose, None);
+
+        let with_purpose: LeaseRecord = serde_json::from_str(
+            r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4","purpose":"resident-preload","future_field":true}"#,
+        )
+        .unwrap();
+        assert_eq!(with_purpose.purpose.as_deref(), Some("resident-preload"));
+
+        let unknown_purpose: LeaseRecord = serde_json::from_str(
+            r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4","purpose":"future-worker"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            holder_purpose_bucket(unknown_purpose.purpose.as_deref()),
+            HolderPurposeBucket::Unknown
+        );
+    }
+
+    #[test]
+    fn holder_purpose_bucket_is_closed_and_maps_missing_separately() {
+        for (raw, expected, tag) in [
+            (Some("command"), HolderPurposeBucket::Command, "command"),
+            (
+                Some("resident-preload"),
+                HolderPurposeBucket::ResidentPreload,
+                "resident-preload",
+            ),
+            (
+                Some("mcp-serve"),
+                HolderPurposeBucket::McpServe,
+                "mcp-serve",
+            ),
+            (Some("hook"), HolderPurposeBucket::Hook, "hook"),
+            (Some("daemon"), HolderPurposeBucket::Daemon, "daemon"),
+            (None, HolderPurposeBucket::Absent, "absent"),
+            (
+                Some("unrecognized"),
+                HolderPurposeBucket::Unknown,
+                "unknown",
+            ),
+        ] {
+            let bucket = holder_purpose_bucket(raw);
+            assert_eq!(bucket, expected);
+            assert_eq!(bucket.as_tag(), tag);
+        }
+    }
+
+    #[test]
+    fn timeout_summary_uses_the_oldest_holders_purpose() {
+        let records = [
+            LeaseRecord {
+                pid: 1,
+                start_time_ms: 900,
+                hq_version: "5.342.4".to_string(),
+                purpose: Some("command".to_string()),
+            },
+            LeaseRecord {
+                pid: 2,
+                start_time_ms: 100,
+                hq_version: "5.342.4".to_string(),
+                purpose: Some("daemon".to_string()),
+            },
+        ];
+        let summary = timeout_summary(&records, 1_000);
+        assert_eq!(summary.oldest_holder_purpose, HolderPurposeBucket::Daemon);
     }
 
     #[test]
@@ -1009,6 +1131,7 @@ mod tests {
                 pid: std::process::id(),
                 start_time_ms: current_process_start_time_ms(),
                 hq_version: "test".to_string(),
+                purpose: None,
             };
             atomic_write(
                 &paths.update_request_path,
