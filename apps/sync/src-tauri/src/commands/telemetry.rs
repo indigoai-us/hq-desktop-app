@@ -833,6 +833,7 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "exitCode",
     "skipReason",
     "enabled",
+    "registered",
     "companiesAttempted",
     "filesDownloaded",
     "bytesDownloaded",
@@ -1127,6 +1128,7 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                         | "autoUpdateEnabled"
                         | "autoUpdate"
                         | "eligible"
+                        | "registered"
                         | "versionBehind"
                         | "npxResolved"
                         | "found"
@@ -1305,7 +1307,7 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action" | "desktop_update_outcome"
+        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action" | "desktop_update_outcome" | "desktop_autostart_state"
     ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
     {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
@@ -1320,7 +1322,7 @@ fn build_desktop_telemetry_event(
     let schema_version = if event_name == "desktop_update_outcome" { 2 } else { 1 };
     let install_attempt_id = matches!(
         event_name.as_str(),
-        "desktop_setup_completed" | "desktop_onboarding_step" | "desktop_update_outcome"
+        "desktop_setup_completed" | "desktop_onboarding_step" | "desktop_update_outcome" | "desktop_autostart_state"
     )
     .then(crate::commands::first_run::install_attempt_id)
     .flatten();
@@ -3707,6 +3709,29 @@ mod codex_telemetry_tests {
         );
         assert_eq!(
             serde_json::to_value(&completed).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
+
+        let (event_name, properties) =
+            crate::commands::autostart::autostart_state_event_after_reconciliation();
+        let expected_enabled = properties["enabled"].clone();
+        let expected_platform = properties["platform"].clone();
+        let expected_registered = properties.get("registered").cloned();
+        let autostart = build_desktop_telemetry_event(
+            event_name.to_string(),
+            Some(properties),
+            None,
+            None,
+            "desktop-opt-in",
+        );
+        assert_eq!(autostart.event_name, "desktop_autostart_state");
+        assert_eq!(autostart.properties["enabled"], expected_enabled);
+        assert_eq!(autostart.properties["platform"], expected_platform);
+        if let Some(expected_registered) = expected_registered {
+            assert_eq!(autostart.properties["registered"], expected_registered);
+        }
+        assert_eq!(
+            serde_json::to_value(&autostart).unwrap()["installAttemptId"],
             install_attempt_id
         );
     }
