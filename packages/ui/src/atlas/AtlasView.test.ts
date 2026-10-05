@@ -494,3 +494,38 @@ describe("Atlas project dots (activity and story ring)", () => {
     expect(Number(explorer!.getAttribute("data-done"))).toBeCloseTo(7 / 11, 2);
   });
 });
+
+describe("Atlas focus mode", () => {
+  it("gathers a selected project's repo and knowledge around it, and Escape sends them home", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    const repo = () => host.querySelector(sel("atlas-node-repo:repos/private/hq-desktop-app/")) as SVGGElement;
+    const know = () => host.querySelector(sel("atlas-node-knowledge:knowledge/design-styles.md")) as SVGGElement;
+    const other = () => host.querySelector(sel("atlas-node-knowledge:knowledge/pricing.md")) as SVGGElement;
+    expect(repo().style.transform).toBe("");
+    press(host.querySelector(sel(`atlas-node-${RAIL}`))!, window);
+    await settle();
+    flushSync();
+    expect(repo().style.transform).toMatch(/^translate\(/);
+    expect(know().style.transform).toMatch(/^translate\(/);
+    expect(other().style.transform).toBe("");
+    expect(host.querySelector('[data-testid="atlas-world"]')!.classList.contains("focusing")).toBe(true);
+    flushSync(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    flushSync();
+    expect(repo().style.transform).toBe("");
+    expect(host.querySelector('[data-testid="atlas-world"]')!.classList.contains("focusing")).toBe(false);
+  });
+
+  it("does not gather anything around a non-project", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    press(host.querySelector(sel("atlas-node-repo:repos/private/hq-desktop-app/"))!, window);
+    await settle();
+    flushSync();
+    expect(host.querySelectorAll('[data-testid^="atlas-node-"][style*="translate"]').length).toBe(0);
+  });
+});
