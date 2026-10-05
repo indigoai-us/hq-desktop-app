@@ -5443,15 +5443,22 @@ mod codex_telemetry_tests {
         use crate::commands::cdp_mirror::{
             held_auth_rows_at, hold_auth_row_at, AUTH_HELD_CAP, AUTH_HELD_TTL_MS,
         };
-        let home = setup_home();
-        write_menubar(home.path(), "{}");
-        let path = home.path().join(".hq/menubar.json");
+        let _home = setup_home();
+        write_menubar(_home.path(), "{}");
+        let other_home = tempfile::tempdir().unwrap();
+        write_menubar(other_home.path(), "{}");
+        let other_path = other_home.path().join(".hq/menubar.json");
+        let expected_install_id = crate::commands::first_run::ensure_install_attempt_id(
+            &other_path,
+            || "33333333-3333-4333-8333-333333333333".to_string(),
+        )
+        .unwrap();
         let start = 1_800_000_000_000u64;
         let session_id = "22222222-2222-4222-8222-222222222222";
         let props = |i: usize| json!({ "provider": format!("p{i}"), "step": "sign_in_started" });
         for i in 0..AUTH_HELD_CAP + 5 {
             hold_auth_row_at(
-                &path,
+                &other_path,
                 "desktop_auth_progress",
                 Some(&props(i)),
                 Some(session_id),
@@ -5459,20 +5466,24 @@ mod codex_telemetry_tests {
             )
             .unwrap();
         }
-        let rows = held_auth_rows_at(&path, start + 100);
+        let rows = held_auth_rows_at(&other_path, start + 100);
         assert_eq!(rows.len(), AUTH_HELD_CAP, "capped");
         assert_eq!(
             rows[0]["properties"]["provider"], "p5",
             "oldest dropped first"
         );
-        assert_eq!(rows[0]["installAttemptId"], crate::commands::first_run::install_attempt_id().unwrap());
+        assert_eq!(
+            rows[0]["installAttemptId"],
+            expected_install_id,
+            "held rows use the install id from the supplied menubar path"
+        );
         assert_eq!(rows[0]["sessionId"], session_id);
 
         // Past the TTL every row is gone, and the next hold prunes the file.
         let later = start + AUTH_HELD_TTL_MS + 100;
-        assert!(held_auth_rows_at(&path, later).is_empty(), "expired");
-        hold_auth_row_at(&path, "desktop_auth_failure", Some(&props(99)), None, later).unwrap();
-        let stored = hq_desktop_core::first_run::read_menubar_obj(&path);
+        assert!(held_auth_rows_at(&other_path, later).is_empty(), "expired");
+        hold_auth_row_at(&other_path, "desktop_auth_failure", Some(&props(99)), None, later).unwrap();
+        let stored = hq_desktop_core::first_run::read_menubar_obj(&other_path);
         assert_eq!(stored["cdpAuthHeld"].as_array().unwrap().len(), 1);
     }
 

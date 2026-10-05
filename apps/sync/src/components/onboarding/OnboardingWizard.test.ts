@@ -258,6 +258,9 @@ type ContinuationTestOptions = {
   identity?: unknown | (() => unknown);
   mayStart?: string | null;
   downloadAnonId?: string | null;
+  suppressFirstLaunchTelemetry?: boolean;
+  oauthResult?: { authenticated: boolean };
+  oauthExchangeError?: unknown;
   cancel?: undefined | (() => Promise<void>);
   deliver?: (args: { path: string; body: Record<string, string | number> }) => number;
 };
@@ -272,6 +275,9 @@ function stubContinuationInvoke({
   identity = { email: 'placeholder account' },
   mayStart = null,
   downloadAnonId = null,
+  suppressFirstLaunchTelemetry = false,
+  oauthResult,
+  oauthExchangeError,
   cancel,
   deliver = () => 200,
 }: ContinuationTestOptions = {}) {
@@ -289,7 +295,7 @@ function stubContinuationInvoke({
       case 'emit_desktop_operational_telemetry':
         return undefined;
       case 'desktop_continuation_context':
-        return CONTINUATION_CONTEXT;
+        return { ...CONTINUATION_CONTEXT, suppressFirstLaunchTelemetry };
       case 'web_visitor_anon_id':
         return downloadAnonId;
       case 'desktop_continuation_config':
@@ -313,8 +319,9 @@ function stubContinuationInvoke({
       case 'oauth_listen_for_code':
         return { code: 'placeholder-code' };
       case 'oauth_exchange_code':
-        authenticated = true;
-        return { authenticated: true };
+        if (oauthExchangeError) throw oauthExchangeError;
+        authenticated = oauthResult?.authenticated ?? true;
+        return oauthResult ?? { authenticated: true };
       case 'bring_main_window_to_front':
       case 'whoami':
         return undefined;
@@ -989,6 +996,65 @@ describe('first-run sign-in screen', () => {
         }),
       }),
     ]));
+  });
+
+  it('suppresses manual OAuth receipts when the continuation context disables first-launch telemetry', async () => {
+    const deliveredReceipts: Array<{ path: string; body: Record<string, string | number> }> = [];
+    stubContinuationInvoke({
+      suppressFirstLaunchTelemetry: true,
+      deliver: (receipt) => {
+        deliveredReceipts.push(receipt);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealSignIn();
+    providerButtons()[0]?.click();
+    await flushUntil(() => tauri.open.mock.calls.length === 1);
+    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'));
+    await flush();
+
+    expect(tauri.open).toHaveBeenCalledTimes(1);
+    expect(deliveredReceipts.filter((receipt) => receipt.body.flow === 'manual_oauth')).toEqual([]);
+  });
+
+  it('records a failed manual OAuth receipt when the server rejects the exchanged identity', async () => {
+    const deliveredReceipts: Array<{ path: string; body: Record<string, string | number> }> = [];
+    stubContinuationInvoke({
+      oauthResult: { authenticated: false },
+      deliver: (receipt) => {
+        deliveredReceipts.push(receipt);
+        return 200;
+      },
+    });
+    await clickGoogleSignIn();
+    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'));
+    await flushUntil(() => deliveredReceipts.some((receipt) => receipt.body.outcome === 'failed'));
+
+    expect(deliveredReceipts.some((receipt) =>
+      receipt.body.flow === 'manual_oauth' && receipt.body.outcome === 'failed',
+    )).toBe(true);
+  });
+
+  it('records a cancelled receipt when OAuth exchange is cancelled', async () => {
+    const deliveredReceipts: Array<{ path: string; body: Record<string, string | number> }> = [];
+    stubContinuationInvoke({
+      oauthExchangeError: new Error('User cancelled sign-in'),
+      deliver: (receipt) => {
+        deliveredReceipts.push(receipt);
+        return 200;
+      },
+    });
+    await clickGoogleSignIn();
+    await flushUntil(() => tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'));
+    await flushUntil(() => deliveredReceipts.some((receipt) => receipt.body.outcome === 'cancelled'));
+
+    expect(deliveredReceipts.some((receipt) =>
+      receipt.body.flow === 'manual_oauth' && receipt.body.outcome === 'cancelled',
+    )).toBe(true);
+    expect(deliveredReceipts.some((receipt) =>
+      receipt.body.flow === 'manual_oauth' && receipt.body.outcome === 'failed',
+    )).toBe(false);
   });
 
   it('keeps the successful provider sign-in path to one browser attempt', async () => {

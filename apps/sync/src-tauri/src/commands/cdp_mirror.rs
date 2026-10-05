@@ -644,6 +644,13 @@ pub fn hold_auth_row_at(
     session_id: Option<&str>,
     now: u64,
 ) -> Result<(), String> {
+    // Resolve the install id before locking the read-modify-write below. Its
+    // helper also acquires the menubar lock while minting the id.
+    let install_attempt_id = if event_name == "desktop_auth_progress" {
+        super::first_run::install_attempt_id_at(path)
+    } else {
+        None
+    };
     // The held list is read, extended and written back; hold the lock across
     // all three so no other menubar.json write lands in between.
     let _lock = hq_desktop_core::first_run::lock_menubar_writes();
@@ -657,15 +664,12 @@ pub fn hold_auth_row_at(
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut rows = held_auth_rows_at(path, now);
-    let (install_attempt_id, session_id) = if event_name == "desktop_auth_progress" {
-        (
-            super::first_run::install_attempt_id(),
-            session_id
-                .and_then(|value| uuid::Uuid::parse_str(value).ok())
-                .map(|value| value.to_string()),
-        )
+    let session_id = if event_name == "desktop_auth_progress" {
+        session_id
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .map(|value| value.to_string())
     } else {
-        (None, None)
+        None
     };
     rows.push(json!({
         "eventName": event_name,

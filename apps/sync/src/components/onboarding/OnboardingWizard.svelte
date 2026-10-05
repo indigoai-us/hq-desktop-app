@@ -1106,13 +1106,18 @@
           provider: telemetryProvider,
           outcome: 'authentication_rejected',
         });
+        recordManualOAuthReceipt(progressSessionId, 'failed');
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
-      recordManualOAuthReceipt(progressSessionId, 'failed', classifyContinuationError(err));
+      const errorKind = classifyContinuationError(err);
+      recordManualOAuthReceipt(
+        progressSessionId,
+        errorKind === 'cancelled' ? 'cancelled' : 'failed',
+        errorKind,
+      );
       void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
-      const errorKind = classifyContinuationError(err);
       if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
         console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
         void handleSignIn(provider, true);
@@ -1147,7 +1152,7 @@
     const previous = manualOAuthReceiptTails.get(sessionId) ?? Promise.resolve();
     const next = previous.then(async () => {
       const context = await getContinuationContextForReceipt();
-      if (!context) return;
+      if (!context || context.suppressFirstLaunchTelemetry) return;
       const deps = continuationDeps(context);
       const receipt = progressReceipt(deps, {
         sessionId,
