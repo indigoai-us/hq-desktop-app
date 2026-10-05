@@ -373,6 +373,31 @@ describe("NewBotTakeover", () => {
     expect(onwakingchange).toHaveBeenLastCalledWith(expect.objectContaining({ agentUid: "agt_nova", phase: "waking" }));
   });
 
+  it("logs a retry that never answers and still shows the same refusal", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const retryAgent = vi.fn(async () => {
+        throw new Error("retry network down");
+      });
+      render({
+        wakingSession: {
+          ...beginWakingSession({ agentUid: "agt_nova", channelId: "", companyUid: "cmp_acme", name: "Nova" }),
+          phase: "failed" as const,
+        },
+        retryAgent,
+      });
+      await settle();
+      document.querySelector<HTMLButtonElement>('[data-testid="new-bot-waking-retry"]')!.click();
+      await settle();
+      expect(document.querySelector('[data-testid="new-bot-waking-retry-message"]')?.textContent).toBe(
+        "We couldn't start Nova again. Try again in a moment.",
+      );
+      expect(warn).toHaveBeenCalledWith("new-bot: retry failed", "retry network down");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("reports a blocked sign-in window as not opened (review A-I13)", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     try {
