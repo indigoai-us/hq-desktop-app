@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * ModerationPanel — the desktop-alt moderation reviewer surface.
    *
@@ -394,7 +395,7 @@
             onclick={loadQueue}
             disabled={queueLoading}
             aria-busy={queueLoading}
-          >
+          ><RailIcon name="refresh" />
             {queueLoading ? "Loading…" : "Refresh"}
           </button>
         </div>
@@ -580,7 +581,7 @@
                   : "Acknowledge the instruction review to enable Approve"}
                 onclick={() => decide("approve")}
                 aria-busy={deciding}
-              >
+              ><RailIcon name="check" />
                 {deciding ? "Working…" : "Approve"}
               </button>
             </div>
@@ -605,7 +606,7 @@
               disabled={deciding || rejectNote.trim().length === 0}
               onclick={() => decide("reject")}
               aria-busy={deciding}
-            >
+            ><RailIcon name="x" />
               {deciding ? "Working…" : "Reject"}
             </button>
           </div>
@@ -705,7 +706,7 @@
             data-testid="moderation-yank-button"
             disabled={!canYank}
             onclick={armConfirm}
-          >
+          ><RailIcon name="trash" />
             Yank listing
           </button>
         {:else}
@@ -721,7 +722,7 @@
                 disabled={yanking}
                 onclick={runYank}
                 aria-busy={yanking}
-              >
+              ><RailIcon name="trash" />
                 {yanking ? "Yanking…" : "Confirm yank"}
               </button>
               <button
@@ -730,7 +731,7 @@
                 data-testid="moderation-cancel-yank"
                 disabled={yanking}
                 onclick={cancelConfirm}
-              >
+              ><RailIcon name="x" />
                 Cancel
               </button>
             </div>
@@ -768,7 +769,7 @@
             onclick={loadApplications}
             disabled={appsLoading}
             aria-busy={appsLoading}
-          >
+          ><RailIcon name="refresh" />
             {appsLoading ? "Loading…" : "Refresh"}
           </button>
         </div>
@@ -866,7 +867,7 @@
                     disabled={appDeciding === app.applicationId}
                     onclick={() => decideApplication(app, "approve")}
                     aria-busy={appDeciding === app.applicationId}
-                  >
+                  ><RailIcon name="check" />
                     {appDeciding === app.applicationId ? "Working…" : "Approve"}
                   </button>
                   <button
@@ -877,7 +878,7 @@
                       (denyNotes[app.applicationId] ?? "").trim().length === 0}
                     onclick={() => decideApplication(app, "deny")}
                     aria-busy={appDeciding === app.applicationId}
-                  >
+                  ><RailIcon name="x" />
                     {appDeciding === app.applicationId ? "Working…" : "Deny"}
                   </button>
                 </div>

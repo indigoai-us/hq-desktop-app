@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, untrack } from "svelte";
@@ -855,7 +856,7 @@
             aria-label={reporting
               ? "Reporting refresh problem"
               : "Report refresh problem"}
-          >
+          ><RailIcon name="send" />
             {reporting ? "Reporting…" : "Report a problem"}
           </button>
         {/if}
@@ -884,7 +885,7 @@
         onclick={openCalendar}
         disabled={calendarOpening}
         aria-busy={calendarOpening}
-      >
+      ><RailIcon name="external" />
         {calendarOpening ? "Opening…" : "Open calendar"}
       </button>
       <button
@@ -959,7 +960,7 @@
           ? "Inviting recording bot"
           : "Invite recording bot"}
         onclick={onUrlInvite}
-      >
+      ><RailIcon name="user-plus" />
         {urlInviting ? "Inviting…" : "Invite"}
       </button>
     </div>
@@ -1012,7 +1013,7 @@
           onclick={openDetectionSetup}
           disabled={meetingPermsOpening}
           aria-busy={meetingPermsOpening}
-        >
+        ><RailIcon name="settings" />
           {meetingPermsOpening ? "Opening…" : "Set up"}
         </button>
       </section>
@@ -1063,7 +1064,7 @@
           onclick={joinUpNext}
           disabled={upNextJoining}
           aria-busy={upNextJoining}
-        >
+        ><RailIcon name="arrow-right" />
           {upNextJoining ? "Joining…" : "Join"}
         </button>
       {/if}
@@ -1133,7 +1134,7 @@
           onclick={connectCalendar}
           disabled={connectStarting || connectPending}
           aria-busy={connectStarting || connectPending}
-        >
+        ><RailIcon name="plug" />
           {connectPending
             ? "Waiting for Google…"
             : connectStarting
@@ -1214,7 +1215,7 @@
                     onclick={() => void disconnectCalendar(row.accountId)}
                     disabled={disconnecting}
                     aria-busy={disconnecting}
-                  >
+                  ><RailIcon name="x" />
                     {disconnecting ? "Disconnecting…" : "Disconnect"}
                   </button>
                 {/if}
@@ -1234,7 +1235,7 @@
                   onclick={connectCalendar}
                   disabled={connectStarting || connectPending}
                   aria-busy={connectStarting || connectPending}
-                >
+                ><RailIcon name="plug" />
                   {connectPending
                     ? "Waiting for Google…"
                     : connectStarting
@@ -1284,7 +1285,7 @@
         class="footer-manage"
         data-testid="meetings-manage"
         onclick={openIntegrationsConsole}
-      >
+      ><RailIcon name="external" />
         Manage in console
       </button>
     </footer>

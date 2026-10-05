@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -212,7 +213,7 @@
         {#if data.host.diskUsed}<p class="sub">Disk {data.host.diskUsed} used of {data.host.diskTotal}</p>{/if}
         {#if rawId}
           <p class="sub id-line" data-testid="outpost-id"><span class="mono">{rawId}</span>
-            <button type="button" class="copy" data-testid="outpost-copy-id" aria-label="Copy Outpost id" onclick={() => void copyId()}>{copied ? "Copied" : "Copy"}</button>
+            <button type="button" class="copy" data-testid="outpost-copy-id" aria-label="Copy Outpost id" onclick={() => void copyId()}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button>
           </p>
         {/if}
       </section>

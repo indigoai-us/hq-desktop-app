@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
@@ -400,7 +401,7 @@
             data-testid="agent-detail-uid"
             title="Copy uid"
             onclick={() => void copyUid()}
-          >
+          ><RailIcon name="copy" />
             {header.uid}
             <span class="ad-uid-hint">{copied ? "copied" : "copy"}</span>
           </button>
@@ -466,7 +467,7 @@
                     pendingJobId = job.jobId;
                     confirm = "pause-job";
                   }}
-                >
+                ><RailIcon name="stop" />
                   Pause
                 </button>
               {/if}
@@ -609,7 +610,7 @@
           data-testid="agent-detail-save"
           disabled={saveBusy}
           onclick={() => void saveProfile()}
-        >
+        ><RailIcon name="save" />
           {saveBusy ? "Saving…" : "Save"}
         </button>
         <div class="ad-danger-row">
@@ -618,7 +619,7 @@
             class="ad-text-btn"
             data-testid="agent-detail-pause-agent"
             onclick={() => (confirm = "pause-agent")}
-          >
+          ><RailIcon name="stop" />
             Pause agent
           </button>
           <button
@@ -626,7 +627,7 @@
             class="ad-text-btn danger"
             data-testid="agent-detail-remove"
             onclick={() => (confirm = "remove-agent")}
-          >
+          ><RailIcon name="trash" />
             Remove from company
           </button>
         </div>

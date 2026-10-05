@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Office hours (US-018) — who is reachable, who is willing to talk, and who
    * is already in a room, as THREE independent facts.
@@ -280,7 +281,7 @@
     <div class="office-notice office-notice-error" data-testid="office-error">
       <strong>The office could not be loaded</strong>
       <span>{view.error?.message}</span>
-      <button type="button" class="office-button" onclick={() => void onretry?.()}>
+      <button type="button" class="office-button" onclick={() => void onretry?.()}><RailIcon name="refresh" />
         Try again
       </button>
     </div>
@@ -344,7 +345,7 @@
             void (onopendoor
               ? onopendoor(ttlMs)
               : store.setWillingness("open", ttlMs))}
-        >
+        ><RailIcon name="external" />
           Open my door
         </button>
         <button
@@ -353,7 +354,7 @@
           data-testid="office-start-room"
           disabled={busy || view.status === "loading"}
           onclick={() => void onstartroom?.()}
-        >
+        ><RailIcon name="play" />
           Start a room
         </button>
         <button
@@ -365,7 +366,7 @@
             void store.setConnectivity(
               self?.connectivity === "online" ? "offline" : "online",
             )}
-        >
+        ><RailIcon name="check" />
           {self?.connectivity === "online"
             ? "Mark me not reachable"
             : "Mark me reachable"}
@@ -452,7 +453,7 @@
         {#if mapMode}<OfficeMap selfUid={selfPersonUid} people={mapPeople} displayName={(uid)=>uid===selfPersonUid?"You":named(uid)} selected={selectedUid===selfPersonUid ? selfPersonUid : activeUid} onselect={(uid)=>{selectedUid=uid;if(uid===selfPersonUid)document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'});}} />{/if}
       <ul class="office-list" data-testid="office-list" aria-label={mapMode?"Selected office details":"People in this company"}>
         {#if mapMode && selectedUid===selfPersonUid}
-          <li class="office-row"><span class="office-room-eyebrow">YOUR HOME BASE</span><span class="office-person-avatar" aria-hidden="true">{initials(named(selfPersonUid))}</span><span class="office-name">Your office</span><span class="office-badges"><span>{WILLINGNESS_LABEL[self?.willingness ?? "knock"]}</span><span>{CONNECTIVITY_LABEL[self?.connectivity ?? "offline"]}</span></span><p class="office-empty">Your door stays with you while you work.</p><button class="office-button" onclick={()=>document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'})}>Manage your door</button></li>
+          <li class="office-row"><span class="office-room-eyebrow">YOUR HOME BASE</span><span class="office-person-avatar" aria-hidden="true">{initials(named(selfPersonUid))}</span><span class="office-name">Your office</span><span class="office-badges"><span>{WILLINGNESS_LABEL[self?.willingness ?? "knock"]}</span><span>{CONNECTIVITY_LABEL[self?.connectivity ?? "offline"]}</span></span><p class="office-empty">Your door stays with you while you work.</p><button class="office-button" onclick={()=>document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'})}><RailIcon name="settings" />Manage your door</button></li>
         {/if}
         {#each people as person (person.personUid)}
           <li class="office-row" hidden={!filteredPeople.includes(person) || (mapMode && (selectedUid===selfPersonUid || person.personUid!==activeUid))} data-testid={`office-row-${person.personUid}`}>
@@ -520,7 +521,7 @@
                   class="office-button office-button-primary"
                   data-testid={`office-open-room-${person.personUid}`}
                   onclick={() => void onopenroom?.(person)}
-                >
+                ><RailIcon name="arrow-right" />
                   Join
                 </button>
               {:else if knocks && knockBlockedReason(person) === null}
@@ -579,7 +580,7 @@
                     class="office-button"
                     data-testid={`office-open-room-${person.personUid}`}
                     onclick={() => void onopenroom?.(person)}
-                  >
+                  ><RailIcon name="arrow-right" />
                     Open room
                   </button>
                 {/if}
@@ -623,7 +624,7 @@
                     data-testid={`office-knock-send-${person.personUid}`}
                     disabled={knockBusy || noteTooLong}
                     onclick={() => void sendKnock(person)}
-                  >
+                  ><RailIcon name="send" />
                     Send knock
                   </button>
                   <button
@@ -634,7 +635,7 @@
                       composingFor = null;
                       note = "";
                     }}
-                  >
+                  ><RailIcon name="x" />
                     Never mind
                   </button>
                 </span>
@@ -653,7 +654,7 @@
           class="office-button"
           data-testid="office-load-more"
           onclick={() => void store.loadMore()}
-        >
+        ><RailIcon name="chevron-down" />
           Show more people
         </button>
       {/if}

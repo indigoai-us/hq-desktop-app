@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import PeoplePicker from "./PeoplePicker.svelte";
   import {
@@ -213,14 +214,14 @@
     <span class="hint">
       {#if error}{error}{:else if selected.length > 1}Two or more recipients create a group · ⌘↵ sends{:else}⌘↵ sends{/if}
     </span>
-    <button type="button" class="btn" onclick={onclose}>Cancel</button>
+    <button type="button" class="btn" onclick={onclose}><RailIcon name="x" />Cancel</button>
     <button
       type="button"
       class="btn primary"
       data-testid="new-message-send"
       disabled={sending || selected.length === 0}
       onclick={() => void send()}
-    >{sending ? "Sending…" : "Send"}</button>
+    ><RailIcon name="send" />{sending ? "Sending…" : "Send"}</button>
   </footer>
 </div>
 

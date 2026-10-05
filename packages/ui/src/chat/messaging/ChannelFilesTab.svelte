@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ChannelFilesTab — the project channel's Files view, ported faithfully from
    * the hq-sync desktop `components/messaging/ChannelFilesTab.svelte` MARKUP +
@@ -403,7 +404,7 @@
               visibleLimit + RENDER_BATCH,
             ))}
           aria-label={`Show ${Math.min(RENDER_BATCH, remainingFiles)} more files`}
-        >
+        ><RailIcon name="chevron-down" />
           Show {Math.min(RENDER_BATCH, remainingFiles)} more
         </button>
       </div>
@@ -462,7 +463,7 @@
                   disabled={actionPending !== null}
                   aria-busy={actionPending === "open"}
                   onclick={() => void runAction("open", onopen)}
-                >{actionPending === "open" ? "Opening…" : "Open in Claude Code"}</button>
+                ><RailIcon name="claude-code" />{actionPending === "open" ? "Opening…" : "Open in Claude Code"}</button>
               {/if}
             </div>
           {/if}

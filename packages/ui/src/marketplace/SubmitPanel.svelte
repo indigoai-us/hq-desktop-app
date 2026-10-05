@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SubmitPanel — the desktop-alt **Submit** tab body (US-013).
    *
@@ -206,7 +207,7 @@
           onclick={choose}
           disabled={choosing || submitting}
           aria-busy={choosing}
-        >
+        ><RailIcon name="folder" />
           {choosing
             ? "Choosing…"
             : selectedPath
@@ -230,7 +231,7 @@
         onclick={submit}
         disabled={!canSubmit}
         aria-busy={submitting}
-      >
+      ><RailIcon name="send" />
         {submitting ? "Submitting…" : "Submit for review"}
       </button>
     </section>
@@ -337,7 +338,7 @@
             onclick={submitApplication}
             disabled={!canSubmitApplication}
             aria-busy={requesting}
-          >
+          ><RailIcon name="send" />
             {requesting ? "Submitting…" : "Submit application"}
           </button>
         {/if}

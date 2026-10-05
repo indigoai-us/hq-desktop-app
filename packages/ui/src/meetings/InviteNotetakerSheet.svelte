@@ -4,6 +4,7 @@
   meetings-store inviteBotByUrl action.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import { meetingsStore } from "./meetings-store.svelte";
   import { canInviteNotetaker, notetakerLinkProblem } from "./notetaker-invite";
@@ -39,7 +40,7 @@
   <div class="hd">Invite notetaker to a meeting</div>
   {#if phase === "done"}
     <p class="line" role="status" data-testid="invite-notetaker-done">Notetaker invited. It joins the meeting at that link to record and transcribe it.</p>
-    <div class="ft"><button type="button" class="btn primary" data-testid="invite-notetaker-close" onclick={() => onclose?.()}>Done</button></div>
+    <div class="ft"><button type="button" class="btn primary" data-testid="invite-notetaker-close" onclick={() => onclose?.()}><RailIcon name="check" />Done</button></div>
   {:else}
     <input
       class="field"
@@ -54,8 +55,8 @@
     {#if problem}<p class="line" data-testid="invite-notetaker-problem">{problem}</p>{/if}
     {#if phase === "failed"}<p class="line" role="alert" data-testid="invite-notetaker-failed">{failure}</p>{/if}
     <div class="ft">
-      <button type="button" class="btn" onclick={() => onclose?.()}>Cancel</button>
-      <button type="button" class="btn primary" data-testid="invite-notetaker-confirm" disabled={!ready || phase === "pending"} aria-busy={phase === "pending"} onclick={() => void invite()}>
+      <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
+      <button type="button" class="btn primary" data-testid="invite-notetaker-confirm" disabled={!ready || phase === "pending"} aria-busy={phase === "pending"} onclick={() => void invite()}><RailIcon name="user-plus" />
         {phase === "pending" ? "Inviting…" : phase === "failed" ? "Try again" : "Invite notetaker"}
       </button>
     </div>

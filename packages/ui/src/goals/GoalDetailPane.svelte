@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Objective side pane (OWNER-R8). Opens beside the Goals list with what the
    * list already knows; linked project names and statuses fill in once the
@@ -113,7 +114,7 @@
     {#if saveError}
       <div class="failed" role="alert" data-testid="goal-pane-save-error">
         <span>{saveError}</span>
-        {#if onretrysave}<button type="button" class="act" onclick={onretrysave}>Try again</button>{/if}
+        {#if onretrysave}<button type="button" class="act" onclick={onretrysave}><RailIcon name="refresh" />Try again</button>{/if}
       </div>
     {/if}
     {#each rows as row (row.id)}
@@ -123,14 +124,14 @@
           {#if row.status}<span class="lp-status">{row.status}</span>{/if}
         </button>
         {#if canEdit}
-          <button type="button" class="act rm" aria-label={`Remove ${row.name}`} data-testid="goal-pane-remove" onclick={() => onremove(row.id)}>Remove</button>
+          <button type="button" class="act rm" aria-label={`Remove ${row.name}`} data-testid="goal-pane-remove" onclick={() => onremove(row.id)}><RailIcon name="trash" />Remove</button>
         {/if}
       </div>
     {:else}
       {#if projects === null && projectsError}
         <div class="failed" role="alert" data-testid="goal-pane-projects-error">
           <span>{projectsError}</span>
-          {#if onretryprojects}<button type="button" class="act" onclick={onretryprojects}>Try again</button>{/if}
+          {#if onretryprojects}<button type="button" class="act" onclick={onretryprojects}><RailIcon name="refresh" />Try again</button>{/if}
         </div>
       {:else if projects === null}
         <ReadLoader testid="goal-pane-loader" onretry={onretryprojects ?? null} />

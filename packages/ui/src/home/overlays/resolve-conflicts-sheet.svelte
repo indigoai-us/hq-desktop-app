@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { dismissable } from "../../common/dismissable.js";
   /**
    * Resolve-conflicts sheet (US-036). Per file: keep local, keep cloud, or
@@ -83,8 +84,8 @@
       bind:value={query}
     />
     <span class="sm">Both sides changed. Discard drops both and takes the pre-sync copy.</span>
-    <button type="button" class="lnk" data-testid="resolve-conflicts-local-all" onclick={() => pickAll("keep-local")}>Local for all</button>
-    <button type="button" class="lnk" data-testid="resolve-conflicts-cloud-all" onclick={() => pickAll("keep-remote")}>Cloud for all</button>
+    <button type="button" class="lnk" data-testid="resolve-conflicts-local-all" onclick={() => pickAll("keep-local")}><RailIcon name="check" />Local for all</button>
+    <button type="button" class="lnk" data-testid="resolve-conflicts-cloud-all" onclick={() => pickAll("keep-remote")}><RailIcon name="check" />Cloud for all</button>
   </div>
   <div class="rc-b">
     {#if rows.length === 0}
@@ -110,14 +111,14 @@
   </div>
   <footer class="rc-f">
     <span class="hint">{chosen} of {conflicts.length} chosen</span>
-    <button type="button" class="btn" onclick={onclose}>Cancel</button>
+    <button type="button" class="btn" onclick={onclose}><RailIcon name="x" />Cancel</button>
     <button
       type="button"
       class="btn primary"
       data-testid="resolve-conflicts-apply"
       disabled={chosen === 0 || applying}
       onclick={() => void applyAll()}
-    >{applying ? "Applying…" : "Apply all"}</button>
+    ><RailIcon name="check" />{applying ? "Applying…" : "Apply all"}</button>
   </footer>
 </div>
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * CompanyOperationsPanel — DESKTOP-010 company-scoped operations workspace.
    *
@@ -233,7 +234,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open console"}
               </button>
             </div>
@@ -254,7 +255,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>
@@ -272,7 +273,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>
@@ -290,7 +291,7 @@
                 onclick={() => void openCompanySettings()}
                 disabled={settingsBusy}
                 aria-busy={settingsBusy}
-              >
+              ><RailIcon name="external" />
                 {settingsBusy ? "Opening…" : "Open"}
               </button>
             </div>

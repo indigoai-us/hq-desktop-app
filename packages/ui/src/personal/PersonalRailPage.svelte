@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -284,7 +285,7 @@
           />
           <button type="button" class="toggle-pill" class:sel={secretPills.stale} aria-pressed={secretPills.stale} data-testid="secrets-stale-pill" onclick={() => (secretPills = { ...secretPills, stale: !secretPills.stale })}>Not rotated in 90 d</button>
           {#if !secretPillsAreDefault(secretPills)}
-            <button type="button" class="clear-pills" data-testid="secrets-clear-filters" onclick={() => (secretPills = { ...DEFAULT_SECRET_PILLS })}>Clear</button>
+            <button type="button" class="clear-pills" data-testid="secrets-clear-filters" onclick={() => (secretPills = { ...DEFAULT_SECRET_PILLS })}><RailIcon name="x" />Clear</button>
           {/if}
         </span>
         <span class="grow"></span>
@@ -503,7 +504,7 @@
                     if (row.status === "connected") sheet = "confirm-disconnect";
                     else openConnect(row.name);
                   }}
-                >{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</button>
+                ><RailIcon name="x" />{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</button>
               </div>
             {/each}
             {#if connectionPage.remaining > 0}

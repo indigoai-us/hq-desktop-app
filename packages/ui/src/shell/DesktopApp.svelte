@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     parseMeshProjectView,
     projectViewToBoard,
@@ -12788,7 +12789,7 @@
           data-testid="navigation-unavailable-back"
           onclick={() => void goBack()}
           disabled={!navigationCanGoBack}
-        >
+        ><RailIcon name="arrow-left" />
           Back
         </button>
       </div>
@@ -13498,7 +13499,7 @@
                   class="edit-profile-btn"
                   data-testid="agent-edit-profile"
                   onclick={openAgentProfileFromHeader}
-                >
+                ><RailIcon name="pencil" />
                   Edit profile
                 </button>
               {/if}
@@ -14120,7 +14121,7 @@
                             data-testid="local-bot-start"
                             disabled={localBotBusy === selectedLocalBot.name}
                             onclick={() => void startSelectedLocalBot()}
-                          >
+                          ><RailIcon name="play" />
                             {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
                           </button>
                         {:else}

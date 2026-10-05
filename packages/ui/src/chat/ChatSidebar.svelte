@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import DayGroupHeader from "./DayGroupHeader.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -4222,7 +4223,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-done"
         onclick={exitSelectionMode}
-      >
+      ><RailIcon name="check" />
         Done
       </button>
     </div>

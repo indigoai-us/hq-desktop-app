@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { dismissable } from "../../common/dismissable.js";
   import ReadLoader from "../../common/ReadLoader.svelte";
   /**
@@ -139,7 +140,7 @@
               data-testid="browse-packs-install"
               disabled={busyId === listing.id}
               onclick={() => void install(listing)}
-            >{busyId === listing.id ? "Installing…" : "Install"}</button>
+            ><RailIcon name="download" />{busyId === listing.id ? "Installing…" : "Install"}</button>
           </div>
         {/each}
       {/if}
@@ -148,7 +149,7 @@
   <footer class="bp-f">
     <span class="hint">Packs install into core and survive an HQ update.</span>
     <button type="button" class="btn" data-testid="browse-packs-library" onclick={() => { onopenLibrary?.(); onclose?.(); }}>Marketplace</button>
-    <button type="button" class="btn" onclick={onclose}>Done</button>
+    <button type="button" class="btn" onclick={onclose}><RailIcon name="check" />Done</button>
   </footer>
 </div>
 

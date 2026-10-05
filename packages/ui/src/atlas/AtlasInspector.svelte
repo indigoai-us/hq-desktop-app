@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { PersonName, identityFromTelemetry } from "../common/people/index.js";
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -187,7 +188,7 @@
       {:else if people.status === "failed"}
         <p class="goal" data-testid="atlas-people-failed">
           {people.forbidden ? "Only owners and admins can see team activity." : "Activity could not be read."}
-          {#if !people.forbidden}<button type="button" class="link" onclick={() => onpeopleretry?.()}>Try again</button>{/if}
+          {#if !people.forbidden}<button type="button" class="link" onclick={() => onpeopleretry?.()}><RailIcon name="refresh" />Try again</button>{/if}
         </p>
       {:else if people.status === "ok" && people.people.length === 0}
         <p class="goal" data-testid="atlas-people-empty">No activity in the last {ATLAS_PEOPLE_DAYS} days.</p>

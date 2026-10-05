@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * OWNER-R9: Joined, Role, Groups and the files and secrets a teammate can
    * reach, in the Team member pane. Loads on its own with its own loader and
@@ -71,7 +72,7 @@
   {#if phase === "loading"}
     <p class="muted" data-testid="member-access-loading" aria-busy="true">Loading access…</p>
   {:else if phase === "failed"}
-    <p class="muted" data-testid="member-access-failed">Couldn't load access. <button type="button" class="retry" onclick={() => (attempt += 1)}>Try again</button></p>
+    <p class="muted" data-testid="member-access-failed">Couldn't load access. <button type="button" class="retry" onclick={() => (attempt += 1)}><RailIcon name="refresh" />Try again</button></p>
   {:else if phase === "unavailable"}
     <p class="muted" data-testid="member-access-unavailable">Access shows once this company is connected to HQ cloud.</p>
   {:else if access}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * Step C — Details for a Local bot: name, an optional job title, the avatar
@@ -167,7 +168,7 @@
       {:else}
         <span data-testid="chat-bot-derived-handle">@{handle}</span> — type that to mention it.
         {#if !showHandleField}
-          <button type="button" class="cb-linkish" data-testid="chat-bot-handle-edit" disabled={disabled} onclick={() => (handleOpen = true)}>
+          <button type="button" class="cb-linkish" data-testid="chat-bot-handle-edit" disabled={disabled} onclick={() => (handleOpen = true)}><RailIcon name="pencil" />
             Edit handle
           </button>
         {/if}

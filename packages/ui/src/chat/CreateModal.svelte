@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { isDropdownOpen } from "../common/dropdown-open.js";
   import Dropdown from "../common/LazyDropdown.svelte";
   /**
@@ -2517,7 +2518,7 @@
                     data-testid="chat-create-company-slug-suggestion"
                     disabled={companyBusy}
                     onclick={acceptCompanySlugSuggestion}
-                  >
+                  ><RailIcon name="check" />
                     Use {companySlugState.suggestion}
                   </button>
                 {/if}
@@ -2610,13 +2611,13 @@
             disabled={companyCreating || !companyCreate?.provision}
             aria-busy={companyCreating}
             onclick={() => void retryCompanyProvision()}
-          >
+          ><RailIcon name="refresh" />
             {companyCreating ? "Setting up cloud storage…" : "Try again"}
           </button>
         {:else if companyInviteFailures.length > 0}
           <!-- The company is made; only the invites failed. The one thing left
                to do here is leave. -->
-          <button type="button" class="create-submit" onclick={() => onclose()}>
+          <button type="button" class="create-submit" onclick={() => onclose()}><RailIcon name="check" />
             Done
           </button>
         {:else if companyForm}
@@ -2626,7 +2627,7 @@
             data-testid="chat-create-company-submit"
             disabled={companySubmitDisabled}
             onclick={submitCompany}
-          >
+          ><RailIcon name="plus" />
             {companyCreating
               ? companyPhase === "provisioning"
                 ? "Setting up cloud storage…"
@@ -2643,7 +2644,7 @@
             class="create-submit"
             data-testid="chat-create-company-retry"
             onclick={() => void enterCompanyStep(companyName)}
-          >
+          ><RailIcon name="refresh" />
             Try again
           </button>
         {/if}
@@ -2748,7 +2749,7 @@
             disabled={emailSubmitDisabled}
             aria-busy={emailSending}
             onclick={() => void sendEmailMessage()}
-          >
+          ><RailIcon name="send" />
             {emailSending ? "Sending…" : emailError ? "Try again" : "Send"}
           </button>
         </div>
@@ -3090,7 +3091,7 @@
             data-testid="chat-channel-message-directly"
             disabled={creating}
             onclick={messageSoleMemberDirectly}
-          >
+          ><RailIcon name="send" />
             Message {soleHumanMember.label} directly
           </button>
         {/if}
@@ -3109,7 +3110,7 @@
           aria-busy={creating}
           aria-describedby={blockReason ? "create-submit-reason" : undefined}
           onclick={() => void submitCreate()}
-        >
+        ><RailIcon name="plus" />
           {creating
             ? "Creating…"
             : createUnconfirmed

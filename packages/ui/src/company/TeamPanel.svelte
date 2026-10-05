@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * TeamPanel — company Team tab: mixed humans + agents list/detail (DESKTOP-009).
    *
@@ -294,7 +295,7 @@
         onclick={() => void openInvite()}
         disabled={externalActionBusy !== null}
         aria-busy={externalActionBusy === "invite"}
-      >
+      ><RailIcon name="user-plus" />
         {externalActionBusy === "invite" ? "Opening…" : "Invite"}
       </button>
       <button
@@ -305,7 +306,7 @@
         onclick={() => void openConsole()}
         disabled={externalActionBusy !== null}
         aria-busy={externalActionBusy === "console"}
-      >
+      ><RailIcon name="external" />
         {externalActionBusy === "console" ? "Opening…" : "Open console"}
       </button>
     </div>

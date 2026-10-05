@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { compactNumber } from "../common/compact-number.js";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -243,7 +244,7 @@
 
   <main class="canvas">
     {#if snapshot && loadError}
-      <p class="foot" data-testid="telemetry-stale">Showing saved numbers. {loadError} <button class="lnk" onclick={() => refresh()}>Retry</button></p>
+      <p class="foot" data-testid="telemetry-stale">Showing saved numbers. {loadError} <button class="lnk" onclick={() => refresh()}><RailIcon name="refresh" />Retry</button></p>
     {/if}
     {#if snapshot?.optedOut}
       <p class="foot" data-testid="telemetry-opted-out">Personal telemetry is off for your account, so HQ has nothing recorded. Turn it on in Settings to start counting sessions.</p>
@@ -367,7 +368,7 @@
         <section data-section="skills" tabindex="-1" data-testid="telemetry-top-skills">
           <div class="sech">Skills <span class="grow"></span>
             {#if !allSkills && snapshot.skills.length > TOP_SKILLS}
-              <button class="lnk" onclick={() => (allSkills = true)}>Show all {snapshot.skills.length}</button>
+              <button class="lnk" onclick={() => (allSkills = true)}><RailIcon name="chevron-down" />Show all {snapshot.skills.length}</button>
             {/if}
           </div>
           {#each skillRows as skill (skill.name)}
@@ -386,13 +387,13 @@
             {#if sessions}<span class="meta" data-testid="telemetry-sessions-count">{sessions.total.toLocaleString("en-US")}</span>{/if}
             <span class="grow"></span>
             {#if sessions && !allSessions && sessions.total > RECENT_SESSIONS}
-              <button class="lnk" onclick={() => void showAllSessions()}>Show all {sessions.total.toLocaleString("en-US")}</button>
+              <button class="lnk" onclick={() => void showAllSessions()}><RailIcon name="chevron-down" />Show all {sessions.total.toLocaleString("en-US")}</button>
             {/if}
           </div>
           {#if !sessions && sessionsLoading}
             <ReadLoader testid="telemetry-sessions-loading" onretry={() => void loadSessions(range)} />
           {:else if !sessions && sessionsFailed}
-            <p class="foot">Could not read the sessions on this Mac. <button class="lnk" onclick={() => void loadSessions(range)}>Tap to retry</button></p>
+            <p class="foot">Could not read the sessions on this Mac. <button class="lnk" onclick={() => void loadSessions(range)}><RailIcon name="refresh" />Tap to retry</button></p>
           {:else if sessions}
             <div class="srow hd"><span>When</span><span>Company</span><span>Project</span><span>Title</span><span class="n">Length</span></div>
             {#each visibleSessions as row (row.id)}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * OWNER-R12: the worker pane. The header paints at once from the registry
    * row; details, skills, files and policies each load on their own, with
@@ -159,7 +160,7 @@
     <section class="sec viewer" data-testid="worker-file-viewer">
       <div class="sec-head">
         <h3>File</h3>
-        <button type="button" class="link" data-testid="worker-file-back" onclick={() => (viewing = null)}>Back to worker</button>
+        <button type="button" class="link" data-testid="worker-file-back" onclick={() => (viewing = null)}><RailIcon name="arrow-left" />Back to worker</button>
       </div>
       <div class="viewer-body">
         <FilePreviewPane {adapter} path={viewing} scopeRoot={dir} scopeLabel="worker" onopenpath={(p) => (viewing = p)} />

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * InstallChoice — one shared panel for the two places HQ hits a person who
    * has no coding tool on this computer: the New bot wizard's Home step and
@@ -313,7 +314,7 @@
         disabled={rechecking || disabled}
         data-testid="install-choice-recheck"
         onclick={() => void recheck()}
-      >{rechecking ? "Checking…" : "Check again"}</button>
+      ><RailIcon name="refresh" />{rechecking ? "Checking…" : "Check again"}</button>
     {/if}
   </div>
 

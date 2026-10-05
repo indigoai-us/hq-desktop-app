@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import type { SettingsApi, UpdatesApi } from "@hq/platform";
   import type { SettingsUpdater } from "../common/settings-write";
@@ -543,7 +544,7 @@
             class="vp-inline-retry"
             data-testid="version-popout-auto-retry"
             onclick={retryAutoUpdateSave}
-          >
+          ><RailIcon name="refresh" />
             Retry
           </button>
         </div>
@@ -562,7 +563,7 @@
             disabled={autoUpdateLoading}
             aria-busy={autoUpdateLoading}
             onclick={retryAutoUpdateLoad}
-          >
+          ><RailIcon name="refresh" />
             {autoUpdateLoading ? "Retrying…" : "Retry"}
           </button>
         </div>

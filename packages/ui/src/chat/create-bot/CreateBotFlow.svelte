@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The New bot flow: kind → home → details, with a live preview card and
    * one footer. Hosts it inside the create modal (and the Settings → Bots
@@ -663,7 +664,7 @@
     {/if}
 
     <div class="flow-footer">
-      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}>
+      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}><RailIcon name="x" />
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>

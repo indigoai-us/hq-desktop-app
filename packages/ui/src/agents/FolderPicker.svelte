@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Reusable vault-folder picker. Selection is a background highlight only.
@@ -44,7 +45,7 @@
   </div>
   <div class="fp-f">
     <span class="fp-note">{current || "Choose a folder"}</span>
-    <button type="button" onclick={onclose}>Cancel</button>
+    <button type="button" onclick={onclose}><RailIcon name="x" />Cancel</button>
     <button type="button" data-testid="folder-picker-choose" disabled={!current} onclick={() => onchoose(current)}>Choose</button>
   </div>
 </div>
