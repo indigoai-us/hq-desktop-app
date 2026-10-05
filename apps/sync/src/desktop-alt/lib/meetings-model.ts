@@ -294,7 +294,7 @@ export function meetingMatchesFocusId(
 }
 
 /** Prefix for locally-seeded 409 recovery rows — never a real Recall bot id. */
-export const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
+const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
 
 /**
  * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips

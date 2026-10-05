@@ -6,7 +6,7 @@ export const DESKTOP_ZOOM_REQUEST_EVENT = 'hq:desktop-zoom-request';
 export const DEFAULT_DESKTOP_ZOOM = 1;
 export const MIN_DESKTOP_ZOOM = 0.8;
 export const MAX_DESKTOP_ZOOM = 1.6;
-export const DESKTOP_ZOOM_STEP = 0.1;
+const DESKTOP_ZOOM_STEP = 0.1;
 
 export type DesktopZoomAction = 'in' | 'out' | 'reset';
 
