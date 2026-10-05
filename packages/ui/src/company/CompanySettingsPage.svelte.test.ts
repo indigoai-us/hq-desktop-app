@@ -55,6 +55,9 @@ describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
     expect(text(target, "workforce-agents")).toMatch(/^1Hosted agents/);
     expect(text(target, "workforce-limit-unavailable")).toContain("not available");
     expect(messaging.listContacts).toHaveBeenCalledWith({ companyUid: "cmp_unicom" });
+    // Owner 2026-10-05: Billing shows the counts only, not a row per roster member.
+    expect(target.querySelectorAll("[data-testid='company-settings'] .line")).toHaveLength(0);
+    expect(target.textContent).not.toContain("Scout");
 
     roster = [...roster, { personUid: "prs_cy", displayName: "Cy" }];
     current.section = "general";
