@@ -264,12 +264,48 @@ type Rec = Record<string, unknown>;
 const rec = (v: unknown): Rec => (v && typeof v === "object" ? (v as Rec) : {});
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
+/** One model's token count; reads `input` and `inputTokens` style keys. */
+function modelTokens(m: unknown): number {
+  const r = rec(m);
+  return (
+    num(r.input ?? r.inputTokens) +
+    num(r.output ?? r.outputTokens) +
+    num(r.cacheCreation ?? r.cacheCreationTokens) +
+    num(r.cacheRead ?? r.cacheReadTokens)
+  );
+}
+
+/**
+ * Per-model token rows. Production sends a `{ [model]: counts }` map; the
+ * legacy shape was `[{ model, ...counts }]`.
+ */
+function modelRows(tokensByModel: unknown): { model: string; total: number }[] {
+  if (Array.isArray(tokensByModel)) {
+    return tokensByModel.map((t) => ({ model: String(rec(t).model ?? ""), total: modelTokens(t) }));
+  }
+  return Object.entries(rec(tokensByModel)).map(([model, t]) => ({ model, total: modelTokens(t) }));
+}
+
 function tokenTotal(tokensByModel: unknown): number {
-  if (!Array.isArray(tokensByModel)) return 0;
-  return tokensByModel.reduce((sum: number, m) => {
-    const r = rec(m);
-    return sum + num(r.input) + num(r.output) + num(r.cacheCreation) + num(r.cacheRead);
-  }, 0);
+  return modelRows(tokensByModel).reduce((sum, row) => sum + row.total, 0);
+}
+
+/** Skill or service counts: `[{ skill, count }]` lists or a `{ [name]: count }` map. */
+function countRows(value: unknown, key: "skill" | "service"): { name: string; count: number }[] {
+  const list = Array.isArray(value)
+    ? value.map((k) => ({ name: String(rec(k)[key] ?? ""), count: num(rec(k).count) }))
+    : Object.entries(rec(value)).map(([name, count]) => ({ name, count: num(count) }));
+  return list.filter((k) => k.name).sort((a, b) => b.count - a.count);
+}
+
+function identityLabel(identities: unknown, id: string): { name: string; email: string } {
+  for (const group of ["persons", "agents"]) {
+    const row = rec(rec(rec(identities)[group])[id]);
+    const name = [row.displayName, row.name].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
+    const email = typeof row.email === "string" ? row.email.trim() : "";
+    if (name || email) return { name, email };
+  }
+  return { name: "", email: "" };
 }
 
 function initials(name: string): string {
@@ -286,29 +322,36 @@ function initials(name: string): string {
  * coverage: { attributed, unattributed } }`). Tokens add input, output and
  * cache reads and writes, as the web does. Members with no activity in the
  * range are left out. The response has no live-session or pulse feed, so
- * those stay empty. A body without a `perMember` list is a failed read.
+ * those stay empty. Production sends the flat shape instead: `members` with
+ * top-level `tokensByModel` / `skills` / `services` maps, `events`, and
+ * `distinctSessions`, `team.daily` for the day strip, and names in
+ * `identities`. Both shapes are read. A body with neither list is a failed read.
  */
 export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
   const root = rec(body);
-  if (!Array.isArray(root.perMember)) throw new Error("company telemetry has no perMember list");
+  const rows = Array.isArray(root.perMember) ? root.perMember : root.members;
+  if (!Array.isArray(rows)) throw new Error("company telemetry has no members list");
   const members: ActivityMember[] = [];
-  for (const item of root.perMember) {
+  for (const item of rows) {
     const m = rec(item);
     const id = typeof m.personUid === "string" ? m.personUid : "";
     if (!id) continue;
-    const totals = rec(m.totals);
+    // Legacy rows nest counts under `totals`; production rows carry them flat.
+    const totals = m.totals && typeof m.totals === "object" ? rec(m.totals) : m;
     const tokens = tokenTotal(totals.tokensByModel);
     const sessions = num(totals.distinctSessions);
     if (tokens === 0 && sessions === 0 && num(totals.events) === 0) continue;
-    const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
-    const email = typeof m.email === "string" ? m.email.trim() : "";
+    const known = identityLabel(root.identities, id);
+    const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() || known.name;
+    const email = (typeof m.email === "string" ? m.email.trim() : "") || known.email;
     const bot = id.startsWith("agt_") || m.kind === "agent";
     // Never an id: a label, else the email, else a plain stand-in.
     const name = label && !/^(prs|agt)_/.test(label) ? label : email || (bot ? "Unknown bot" : "Unnamed member");
     const byType = rec(rec(m.outcomes).byType);
-    const bySkill = Array.isArray(rec(totals.skills).bySkill) ? (rec(totals.skills).bySkill as unknown[]) : [];
-    const top = rec(bySkill[0]).skill;
-    const services = Array.isArray(rec(totals.services).byService) ? (rec(totals.services).byService as unknown[]) : [];
+    const skillsRaw = rec(totals.skills);
+    const skills = countRows(Array.isArray(skillsRaw.bySkill) ? skillsRaw.bySkill : skillsRaw, "skill");
+    const servicesRaw = rec(totals.services);
+    const services = countRows(Array.isArray(servicesRaw.byService) ? servicesRaw.byService : servicesRaw, "service");
     const efficiency = typeof m.efficiency === "number" && Number.isFinite(m.efficiency) ? m.efficiency : null;
     members.push({
       id,
@@ -320,23 +363,18 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
       sessions,
       stories: num(byType.storyCompleted),
       deploys: num(byType.deploySucceeded),
-      topSkill: typeof top === "string" ? top : "",
+      topSkill: skills[0]?.name ?? "",
       outcomesPerMillion: efficiency,
       spendUsd: null,
       email: email && email !== name ? email : "",
       prs: num(byType.prMerged),
       outcomes: num(rec(m.outcomes).total),
       trend: Array.isArray(m.trend) ? m.trend.map(num) : [],
-      tokensByModel: (Array.isArray(totals.tokensByModel) ? totals.tokensByModel : [])
-        .map((t) => ({ model: String(rec(t).model ?? ""), total: tokenTotal([t]) }))
+      tokensByModel: modelRows(totals.tokensByModel)
         .filter((t) => t.model && t.total > 0)
         .sort((a, b) => b.total - a.total),
-      skills: bySkill
-        .map((k) => ({ skill: String(rec(k).skill ?? ""), count: num(rec(k).count) }))
-        .filter((k) => k.skill),
-      services: services
-        .map((k) => ({ service: String(rec(k).service ?? ""), count: num(rec(k).count) }))
-        .filter((k) => k.service),
+      skills: skills.map((k) => ({ skill: k.name, count: k.count })),
+      services: services.map((k) => ({ service: k.name, count: k.count })),
     });
   }
   // Web order: Outcomes/1M descending, unranked members after every ranked one.
@@ -347,7 +385,8 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
     if (ar && br && a.outcomesPerMillion !== b.outcomesPerMillion) return (b.outcomesPerMillion as number) - (a.outcomesPerMillion as number);
     return b.tokens - a.tokens || a.name.localeCompare(b.name);
   });
-  const daily = Array.isArray(root.daily) ? root.daily.map(rec) : [];
+  const dailyRaw = Array.isArray(root.daily) ? root.daily : rec(root.team).daily;
+  const daily = Array.isArray(dailyRaw) ? dailyRaw.map(rec) : [];
   const dayWeights = daily
     .filter((d) => typeof d.date === "string")
     .sort((a, b) => String(a.date).localeCompare(String(b.date)))
