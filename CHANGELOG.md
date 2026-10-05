@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
+- The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
+
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 
 ## [0.10.394] — 2026-10-05
