@@ -7,8 +7,15 @@
 // Empty input means the changed-file set could not be established. Run the
 // gate in that case rather than risk hiding a platform regression.
 
+// apps/sync's `pnpm build` (run by the macOS job to satisfy tauri's
+// frontendDist) imports @hq/* from packages/* and @hq/work from apps/work, and
+// the root `pnpm install` reads every workspace package.json, so those inputs
+// feed what the macOS job builds.
 export const MACOS_RELEVANT_PATTERNS = [
   "apps/sync/**",
+  "apps/work/**",
+  "apps/*/package.json",
+  "packages/**",
   "crates/**",
   "imports/**",
   "Cargo.toml",

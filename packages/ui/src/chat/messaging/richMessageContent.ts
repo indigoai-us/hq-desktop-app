@@ -228,9 +228,9 @@ export type ConnectTarget = "slack" | "tools";
 
 /** One card a bot asks for in a {@link ConnectBlock}. Exactly one of `app` or `domain` is set. */
 export interface ConnectItem {
-  /** A built-in card: "slack" (or "tools", legacy only). */
+  /** A built-in card: "slack" (or "tools", legacy only). A bot that names `slack.com` gets this item too. */
   app?: ConnectTarget;
-  /** An integration named by its website domain, e.g. "linear.app". Normalized. */
+  /** An integration named by its website domain, e.g. "linear.app". Normalized. Never Slack's ({@link isSlackConnectDomain}). */
   domain?: string;
   /** The bot's short reason, sanitized text, at most 80 characters. */
   why?: string;
@@ -674,6 +674,26 @@ export function normalizeConnectDomain(value: unknown): string | null {
   return domain;
 }
 
+/** Slack's own website. A bot that names it means its own Slack (see {@link isSlackConnectDomain}). */
+const SLACK_DOMAIN = "slack.com";
+
+/**
+ * Whether a domain is Slack's: `slack.com` or a name under it
+ * (`acme.slack.com`, `app.slack.com`), in any form
+ * {@link normalizeConnectDomain} reads (a scheme, a path, `www.`).
+ *
+ * In a bot's conversation "Slack" always means the bot's own Slack: the
+ * built-in card that shows whether the bot is in Slack and opens the Connect
+ * Slack window. A company can also hold a Slack integration connection (one a
+ * teammate made, say). That is a different thing, and its state is never what
+ * a card titled Slack shows. So a connect item that names this domain is the
+ * built-in Slack item, and nothing that draws an integration card accepts it.
+ */
+export function isSlackConnectDomain(value: unknown): boolean {
+  const domain = normalizeConnectDomain(value);
+  return domain !== null && (domain === SLACK_DOMAIN || domain.endsWith(`.${SLACK_DOMAIN}`));
+}
+
 function parseConnectItem(entry: unknown): ConnectItem | null {
   if (typeof entry === "string") {
     // The old form: a bare target name.
@@ -690,7 +710,11 @@ function parseConnectItem(entry: unknown): ConnectItem | null {
     return entry.app === "slack" ? withWhy({ app: "slack" }) : null;
   }
   const domain = normalizeConnectDomain(entry.domain);
-  return domain ? withWhy({ domain }) : null;
+  if (!domain) return null;
+  // Slack by its domain is the bot's own Slack card, the same item as
+  // `app: "slack"`. A block that names both forms then dedupes to one card.
+  if (isSlackConnectDomain(domain)) return withWhy({ app: "slack" });
+  return withWhy({ domain });
 }
 
 function parseConnectBlock(raw: Record<string, unknown>): ConnectBlock | null {

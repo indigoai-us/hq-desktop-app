@@ -389,7 +389,7 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
       ["slack", null, "offered"],
       ["integration", "linear.app", "connected"],
     ]);
-    expect(cardIn(message("e6"), "integration").textContent).toContain("Connected. Let Nova use it?");
+    expect(cardIn(message("e6"), "integration").textContent).toContain("Let Nova use it?");
     // No catalog lookup for an app that is connected.
     expect(w.catalogSearch).not.toHaveBeenCalled();
     expect(cardsIn(message("e2"))).toHaveLength(2);
@@ -470,14 +470,24 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     expect(w.openUrl).not.toHaveBeenCalledWith(INTEGRATIONS_URL);
   });
 
-  it("adds no chip for a cloud bot this device has no record of, and reads no connections", async () => {
+  it("adds no chip and no card for a cloud bot this device has no record of, and reads its connections once so a later card is ready", async () => {
+    // Rewritten 2026-10-04: this used to assert that no connections are read
+    // while no card shows. They are now read when a cloud bot's conversation
+    // opens, so a message that brings cards draws them in its own frame
+    // instead of seconds later. Nothing is drawn from the read by itself.
     const w = world({ thread: page(mine("e3", "Hello", 1), novas("e4", "Hello Corey.", 1)) });
     await mountRow(w, DM_ROW(NOVA), "Hello Corey.");
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalled());
     await settle(40);
     expect(cardsIn(host)).toHaveLength(0);
     expect(chips()).toEqual([]);
     expect(host.querySelector('[data-testid="suggested-replies"]')).toBeNull();
-    expect(w.listConnections).not.toHaveBeenCalled();
+    expect(w.listConnections).toHaveBeenCalledTimes(1);
+    expect(w.listConnections).toHaveBeenCalledWith(COMPANY);
+    // The status poll's answer is the one the cards use: one status read, not two.
+    expect(w.getStatus).toHaveBeenCalledTimes(1);
+    // Nothing is looked up in the catalog until a message names an app.
+    expect(w.catalogSearch).not.toHaveBeenCalled();
   });
 });
 

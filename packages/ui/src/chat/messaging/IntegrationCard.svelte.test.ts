@@ -155,7 +155,7 @@ describe("an integration card", () => {
     const el = renderCard(view("linear.app", { facts: facts([connection()]) }), onaction);
     expect(el.dataset.state).toBe("connected");
     expect(el.querySelector('[data-testid="connection-card-mark"]')?.textContent?.trim()).toBe("Connected");
-    expect(el.textContent).toContain("Connected. Let Nova use it?");
+    expect(el.textContent).toContain("Let Nova use it?");
     expect(primary(el)?.textContent?.trim()).toBe("Let Nova use it");
     expect(decline(el)).toBeNull();
     primary(el)!.click();
@@ -164,14 +164,21 @@ describe("an integration card", () => {
 
   it("a connected app the bot can use, and a teammate's, have no button", () => {
     const usable = renderCard(view("linear.app", { facts: facts([connection()]), record: recordGrant(null, "acct_linear", "Linear", NOW) }));
-    expect(usable.textContent).toContain("Connected. Nova can use it.");
+    expect(usable.textContent).toContain("Nova can use it.");
     expect(usable.querySelectorAll("button")).toHaveLength(0);
     void unmount(component!);
     component = null;
     host?.remove();
     const theirs = renderCard(view("linear.app", { facts: facts([connection({ createdBy: "prs_other" })]) }));
-    expect(theirs.textContent).toContain("Connected by a teammate. Ask them to share it with Nova.");
+    expect(theirs.textContent).toContain("A teammate connected this. Ask them to share it with Nova.");
     expect(theirs.querySelectorAll("button")).toHaveLength(0);
+    // The mark says Connected once; the line under it does not say it again,
+    // and its title holds the whole sentence.
+    const line = theirs.querySelector<HTMLElement>('[data-testid="connection-card-line"]')!;
+    expect(theirs.querySelector('[data-testid="connection-card-mark"]')?.textContent?.trim()).toBe("Connected");
+    expect(line.textContent).toBe("A teammate connected this. Ask them to share it with Nova.");
+    expect(line.getAttribute("title")).toBe(line.textContent);
+    expect(theirs.textContent?.match(/Connected/g)).toHaveLength(1);
   });
 
   it("draws a declined card dimmed with no button, and a connecting card with Open again", () => {
@@ -417,7 +424,7 @@ describe("a row of integration cards in a message", () => {
     expect(noLink.querySelector('[data-testid="rich-connect-browse"]')).toBeNull();
   });
 
-  it("draws nothing while the host says the row is not ready, and the whole row once it is", () => {
+  it("draws nothing while the host says the row is not ready (the company's list is unknown), and the row once it is", () => {
     const root = renderBlock(cardsFor({ rowReady: () => false }));
     expect(cards(root)).toHaveLength(0);
     expect(root.querySelector('[data-testid="rich-connect"]')).toBeNull();
@@ -426,6 +433,49 @@ describe("a row of integration cards in a message", () => {
     host?.remove();
     const ready = renderBlock(cardsFor({ rowReady: () => true }));
     expect(cards(ready)).toHaveLength(3);
+  });
+
+  it("draws the cards it knows at once, and adds an app at the end when its lookup answers: no card on screen moves", () => {
+    // The block names Linear first. Its catalog lookup is still out, so it
+    // has no card yet; Slack and the connected Notion draw without it.
+    const first = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { app: "slack" }, { domain: "notion.so" }] }] })!;
+    const known = $state<{ lookups: Record<string, CatalogLookup> }>({ lookups: {} });
+    const props = $state({
+      content: first,
+      connections: {
+        ...cardsFor(),
+        integration: (item: { domain: string; why?: string }) =>
+          integrationCardView(item, { botName: "Nova", now: NOW, facts: COMPANY, lookup: known.lookups[item.domain] ?? "unknown" }),
+      } as ConnectionCards,
+    });
+    const root = target();
+    component = mount(RichMessageContent, { target: root, props });
+    flushSync();
+    const ids = () => cards(root).map((el) => el.dataset.domain ?? el.dataset.target);
+    expect(ids()).toEqual(["slack", "notion.so"]);
+    const [slackEl, notionEl] = cards(root);
+    const artOf = (el: HTMLElement) => el.querySelector<HTMLElement>(".connection-card-art")!.style.backgroundImage;
+    const artBefore = [artOf(slackEl!), artOf(notionEl!)];
+
+    // The lookup answers: Linear's card joins after the two already there.
+    known.lookups = { "linear.app": LINEAR };
+    flushSync();
+    expect(ids()).toEqual(["slack", "notion.so", "linear.app"]);
+    // The same two elements, in the same places, with the same wallpaper.
+    expect(cards(root)[0]).toBe(slackEl);
+    expect(cards(root)[1]).toBe(notionEl);
+    expect([artOf(slackEl!), artOf(notionEl!)]).toEqual(artBefore);
+
+    // An answer of "not found" adds nothing and moves nothing.
+    known.lookups = { "linear.app": LINEAR, "asana.com": "not-found" };
+    flushSync();
+    expect(ids()).toEqual(["slack", "notion.so", "linear.app"]);
+  });
+
+  it("draws a row whose apps were all known from the start in the block's order", () => {
+    const block = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { app: "slack" }, { domain: "notion.so" }] }] })!;
+    const root = renderBlock(cardsFor(), block);
+    expect(cards(root).map((el) => el.dataset.domain ?? el.dataset.target)).toEqual(["linear.app", "slack", "notion.so"]);
   });
 
   it("draws only the built-in cards when the host has no integration views", () => {

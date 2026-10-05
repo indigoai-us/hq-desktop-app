@@ -13,13 +13,21 @@
  * have one, else a generic glyph; never a remote image), every word, every
  * link and every state.
  *
+ * SLACK IS NOT ONE OF THESE CARDS. In a bot's conversation "Slack" means the
+ * bot's own Slack: the built-in card (connection-card-model.ts) drawn from
+ * the bot's own status. A company's Slack integration connection, a
+ * teammate's say, is never drawn as a card here, never offered by the app,
+ * and never listed to the bot ({@link isSlackConnection}).
+ *
  * WHAT DECIDES A CARD:
  * - a company connection whose listed domain is the item's (or the two are
  *   one another's subdomain): a connection card (connected, or "Let {bot} use
  *   it" for the person's own). A provider name alone never matches a domain;
  * - else a catalog match for the domain: a connectable card with its auth class;
- * - else no card. While the lookup is unknown there is no card yet, and the
- *   row waits for its lookups up to {@link ROW_SETTLE_MS}.
+ * - else no card. While the lookup is unknown that app has no card yet: it
+ *   comes in when its lookup answers. It never keeps the row's other cards
+ *   from drawing. Only the company's list being unknown holds a whole row,
+ *   for up to {@link ROW_SETTLE_MS}.
  *
  * The person's own presses (Connect, Not now) live in the per-bot record
  * (connection-card-model.ts, `apps`). "Connected" is never stored: it is
@@ -28,7 +36,7 @@
 
 import { brandMarkFor } from "./app-brand-marks.js";
 import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
-import { normalizeConnectDomain } from "./richMessageContent.js";
+import { isSlackConnectDomain, normalizeConnectDomain } from "./richMessageContent.js";
 import {
   CONNECTING_TIMEOUT_MS,
   connectionActionKey,
@@ -40,8 +48,24 @@ import {
   type IntegrationAuthClass,
 } from "./connection-card-model.js";
 
-/** How long a row waits for unknown lookups before unknown items are left out (ms). */
+/** How long a row waits for the company's list before it draws what it can without it (ms). */
 export const ROW_SETTLE_MS = 2_000;
+
+/** The first wait before a failed read of the company's list is tried again (ms). It doubles each time. */
+export const CONNECTIONS_RETRY_BASE_MS = 2_000;
+/** The longest wait between tries of a list read that keeps failing (ms). */
+export const CONNECTIONS_RETRY_MAX_MS = 60_000;
+
+/**
+ * How long to wait before reading the company's list again after `failures`
+ * failed reads in a row: 2 s, 4 s, 8 s and so on, never more than a minute.
+ * A failed read used to leave the cards without the list until the person
+ * left the conversation and came back.
+ */
+export function connectionsRetryMs(failures: number): number {
+  const n = Math.max(1, Math.floor(Number.isFinite(failures) ? failures : 1));
+  return Math.min(CONNECTIONS_RETRY_BASE_MS * 2 ** Math.min(n - 1, 20), CONNECTIONS_RETRY_MAX_MS);
+}
 
 /** How many connections the apps brief for the bot lists. */
 export const MAX_BRIEF_CONNECTIONS = 25;
@@ -147,6 +171,17 @@ export function readCompanyConnections(json: unknown): CompanyConnections | null
     recentCallsByProvider,
     recentCallsByConnection,
   };
+}
+
+/**
+ * Whether a company connection is a Slack integration connection: its listed
+ * domain is Slack's, or the list gives no domain and its provider is `slack`.
+ * Such a connection is left out of everything a bot's conversation shows or
+ * tells the bot about apps, because Slack there is the bot's own Slack.
+ */
+export function isSlackConnection(connection: Pick<CompanyConnection, "domain" | "provider">): boolean {
+  if (connection.domain !== null) return isSlackConnectDomain(connection.domain);
+  return connection.provider === "slack";
 }
 
 /** Whether one domain is the other, or a subdomain of it. */
@@ -351,6 +386,9 @@ export function integrationCardView(
 ): ConnectionCardView | null {
   const domain = normalizeConnectDomain(item.domain);
   if (!domain) return null;
+  // Slack is the bot's own Slack card, never an integration card: a company's
+  // Slack connection must not be read as the bot being in Slack.
+  if (isSlackConnectDomain(domain)) return null;
   const bot = input.botName.trim() || "your bot";
   const connection = connectionForItem(input.facts, { domain, connectionId: item.connectionId });
   const match = typeof input.lookup === "object" ? input.lookup : null;
@@ -380,14 +418,17 @@ export function integrationCardView(
   if (connection) {
     const usable = botCanUse(connection, input.record);
     const own = input.facts?.viewerUid !== "" && connection.createdBy === input.facts?.viewerUid;
+    // Every connected card carries the "Connected" mark in its header, so the
+    // line under it says what is true beyond that and never opens with the
+    // same word.
     if (usable) {
-      return { ...base, state: "connected", line: `Connected. ${bot} can use it.`, primaryLabel: null, primaryAction: "allow", mark: "Connected", note: hostNote };
+      return { ...base, state: "connected", line: `${bot} can use it.`, primaryLabel: null, primaryAction: "allow", mark: "Connected", note: hostNote };
     }
     if (own) {
       return {
         ...base,
         state: "connected",
-        line: `Connected. Let ${bot} use it?`,
+        line: `Let ${bot} use it?`,
         primaryLabel: `Let ${bot} use it`,
         primaryAction: "allow",
         primaryPending: pending("allow", connection.id),
@@ -398,7 +439,7 @@ export function integrationCardView(
     return {
       ...base,
       state: "connected",
-      line: `Connected by a teammate. Ask them to share it with ${bot}.`,
+      line: `A teammate connected this. Ask them to share it with ${bot}.`,
       primaryLabel: null,
       primaryAction: "allow",
       mark: "Connected",
@@ -454,34 +495,37 @@ export function botReason(botName: string, why: string): string {
 }
 
 /**
- * Whether an item's card is decided: it names a built-in card, or its domain
- * matches a connection, or its lookup has settled. The list itself being
- * unknown leaves a domain undecided.
+ * Whether a block's row has to wait for the company's list: the list is not
+ * known yet and the row names a domain. Nothing can be said about any domain
+ * without the list. A row of built-in cards alone never waits.
  */
-export function itemSettled(
-  item: { app?: ConnectTarget; domain?: string; connectionId?: string },
+export function rowAwaitsList(
+  items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   facts: CompanyConnections | null | undefined,
-  lookupFor: (domain: string) => CatalogLookup,
 ): boolean {
-  if (item.app) return true;
-  const domain = normalizeConnectDomain(item.domain);
-  if (!domain) return true;
-  if (!facts) return false;
-  if (connectionForItem(facts, { domain, connectionId: item.connectionId })) return true;
-  return lookupFor(domain) !== "unknown";
+  if (facts) return false;
+  return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
 }
 
 /**
- * Whether a block's row may draw: every item is settled, or the row has
- * waited {@link ROW_SETTLE_MS} since `since`. After that, unknown items are
- * simply left out, and come in when they settle.
+ * Whether a block's row may draw.
+ *
+ * A row draws as soon as the company's list is known. From then every item is
+ * decided on its own: a built-in card and a connection draw at once, and an
+ * app that still waits for its catalog lookup simply has no card until the
+ * lookup answers ({@link integrationCardView} gives null for it). One app
+ * being looked up never holds the other cards back.
+ *
+ * Only the list itself being unknown holds a whole row ({@link rowAwaitsList}).
+ * That hold ends when the list arrives, or after {@link ROW_SETTLE_MS} since
+ * `since`, when the row draws what it can without it.
  */
 export function connectRowReady(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
-  input: { facts: CompanyConnections | null | undefined; lookupFor: (domain: string) => CatalogLookup; since: number; now: number },
+  input: { facts: CompanyConnections | null | undefined; since: number; now: number },
 ): boolean {
-  if (input.now - input.since >= ROW_SETTLE_MS) return true;
-  return items.every((item) => itemSettled(item, input.facts, input.lookupFor));
+  if (!rowAwaitsList(items, input.facts)) return true;
+  return input.now - input.since >= ROW_SETTLE_MS;
 }
 
 /** The domains of a block's items that need a catalog lookup: not a built-in, not a connection. */
@@ -590,6 +634,10 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
  * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
  * all (Slack counts as one).
  *
+ * Slack is offered once, as the bot's own Slack card. The person's own Slack
+ * integration connection is not offered beside it (that gave two cards
+ * titled Slack), nor in its place once the bot is in Slack.
+ *
  * Each app's item carries the connection's id, so its card is that one
  * connection and no other. The item's domain is the one the list gives; a
  * connection the list gives no domain for is named `{provider}.com`, which
@@ -603,12 +651,14 @@ export function appChosenItems(
 ): ConnectItem[] {
   const items: ConnectItem[] = slackConnected ? [] : [{ app: "slack" }];
   if (!facts || !facts.viewerUid) return items;
-  const own = newestFirst(facts.connections.filter((c) => c.createdBy === facts.viewerUid && !botCanUse(c, record)));
+  const own = newestFirst(
+    facts.connections.filter((c) => c.createdBy === facts.viewerUid && !isSlackConnection(c) && !botCanUse(c, record)),
+  );
   const seen = new Set<string>();
   for (const connection of own) {
     if (items.length >= MAX_FALLBACK_APPS) break;
     const domain = connection.domain ?? normalizeConnectDomain(connection.provider ? `${connection.provider}.com` : null);
-    if (!domain || seen.has(domain)) continue;
+    if (!domain || seen.has(domain) || isSlackConnectDomain(domain)) continue;
     seen.add(domain);
     items.push({ domain, connectionId: connection.id });
   }
@@ -625,18 +675,21 @@ export function appChosenItems(
  * characters by dropping lines from the end. Empty when nothing is connected.
  *
  * "you can use it" is the same rule as the card's ({@link botCanUse}).
+ *
+ * Slack is not in the list. A company's Slack integration connection is left
+ * out ({@link isSlackConnection}): listed as `Slack (slack.com): connected`,
+ * it read to the bot as its own Slack, and the bot then named `slack.com` as
+ * an app to connect. Whether the bot itself is in Slack is said in the
+ * request, as its own line (agent-channel.ts, `buildAgentHelloRequest`).
  */
 export function companyAppsBrief(input: {
   facts: CompanyConnections | null | undefined;
   record?: BotConnectionRecord | null;
-  /** The bot is in Slack: said first, so the bot does not offer Slack again. */
-  slackConnected?: boolean;
 }): string {
   const lines: string[] = [];
-  if (input.slackConnected) lines.push("- Slack: connected, you can use it");
   const facts = input.facts;
   if (facts) {
-    const ranked = [...facts.connections].sort((a, b) => {
+    const ranked = facts.connections.filter((connection) => !isSlackConnection(connection)).sort((a, b) => {
       const calls = recentCallsFor(facts, b) - recentCallsFor(facts, a);
       if (calls !== 0) return calls;
       return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
