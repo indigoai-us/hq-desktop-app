@@ -26,6 +26,7 @@ interface ModalProps {
   icon: "slack" | "tools";
   art: string;
   artPosition?: string;
+  appearance?: "art" | "surface";
   onclose: () => void;
   busy?: boolean;
   steps?: CardModalSteps | null;
@@ -203,6 +204,12 @@ describe("the card modal: opening and closing", () => {
     expect(art.style.backgroundImage).toContain("/art/aurora.jpg");
     expect(art.style.backgroundPosition).toBe("center 14%");
     expect(art.children).toHaveLength(0);
+  });
+
+  it("can use the shared modal with an art header and a token-driven surface", () => {
+    render({ appearance: "surface", title: "Say goodbye to a very long bot name that needs to wrap cleanly?" });
+    expect(dialog()?.dataset.appearance).toBe("surface");
+    expect(dialog()?.classList.contains("card-modal--surface")).toBe(true);
   });
 
   it("renders the body and the footer it is given", () => {

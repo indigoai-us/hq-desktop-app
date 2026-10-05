@@ -127,6 +127,156 @@
     rgba(9, 9, 11, 0.16);
 }
 
+/* A surface modal keeps art as a deliberately cropped header. This is used
+   for consequential actions, where the words need an opaque, theme-aware
+   reading surface rather than the connection-card treatment. */
+.card-modal--surface {
+  --cm-ink: var(--v4-text-1);
+  --cm-muted: var(--v4-text-2);
+  --cm-faint: var(--v4-text-3);
+  --cm-line: var(--v4-hairline);
+  width: min(472px, 100%);
+  gap: 0;
+  padding: 0;
+  background: var(--v4-surface-solid);
+  box-shadow: var(--v4-shadow-window);
+  color: var(--cm-ink);
+  color-scheme: light dark;
+}
+
+.card-modal--surface .card-modal-art {
+  z-index: 0;
+  inset: 0 0 auto;
+  height: 144px;
+  background-position: center 42%;
+}
+
+.card-modal--surface .card-modal-art::after {
+  background: linear-gradient(to bottom, transparent 24%, var(--v4-surface-solid) 100%);
+}
+
+.card-modal--surface .card-modal-hero,
+.card-modal--surface .card-modal-glass,
+.card-modal--surface .card-modal-foot {
+  position: relative;
+  z-index: 1;
+}
+
+.card-modal--surface .card-modal-hero {
+  min-height: 0;
+  align-items: flex-start;
+  padding: 188px 28px 20px;
+}
+
+.card-modal--surface .card-modal-plate {
+  display: block;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.card-modal--surface .card-modal-hero-mark {
+  position: absolute;
+  top: 116px;
+  left: 28px;
+  z-index: 1;
+  width: 56px;
+  height: 56px;
+}
+
+.card-modal--surface .card-modal-heading {
+  gap: 0;
+}
+
+.card-modal--surface .card-modal-title {
+  overflow: visible;
+  color: var(--cm-ink);
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.card-modal--surface .card-modal-subtitle,
+.card-modal--surface .card-modal-progress {
+  margin-top: 4px;
+}
+
+.card-modal--surface .card-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+  border-color: color-mix(in srgb, #fff 36%, transparent);
+  background: rgba(9, 9, 11, 0.48);
+  color: #fff;
+}
+
+.card-modal--surface .card-modal-glass {
+  flex: 0 1 auto;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.card-modal--surface .card-modal-glass::before,
+.card-modal--surface .card-modal-glass::after {
+  display: none;
+}
+
+.card-modal--surface .card-modal-body {
+  padding: 0 28px 24px;
+  overflow: visible;
+  color: var(--cm-muted);
+  scrollbar-color: var(--cm-line) transparent;
+}
+
+.card-modal--surface .card-modal-foot {
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 20px 28px 28px;
+  border-top: 1px solid var(--cm-line);
+}
+
+.card-modal--surface .card-modal-copy {
+  color: var(--cm-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.card-modal--surface .card-modal-btn {
+  border-color: var(--v4-control-border, var(--cm-line));
+  background: var(--v4-secondary-bg, var(--v4-control-bg));
+  color: var(--v4-secondary-fg, var(--cm-ink));
+}
+
+.card-modal--surface .card-modal-btn:hover:not(:disabled) {
+  border-color: var(--cm-ink);
+  background: var(--v4-active-row, var(--v4-control-bg));
+}
+
+.card-modal--surface .card-modal-btn.is-danger {
+  border-color: var(--v4-error);
+  background: var(--v4-error);
+  color: #fff;
+}
+
+.card-modal--surface .card-modal-btn.is-quiet {
+  background: var(--v4-secondary-bg, var(--v4-control-bg));
+  color: var(--v4-secondary-fg, var(--cm-ink));
+}
+
 /* The hero: the art, with the card's icon and title on a glass plate. */
 .card-modal-hero {
   flex: 0 0 auto;

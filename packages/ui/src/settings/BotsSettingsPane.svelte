@@ -57,6 +57,7 @@
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
   import CardModal from "../chat/messaging/CardModal.svelte";
   import CardModalStatus from "../chat/messaging/CardModalStatus.svelte";
+  import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
@@ -966,7 +967,7 @@
 {#if removeDialog}
   {@const dialog = removeDialog}
   {@const dialogName = dialog.kind === "local" ? dialog.displayName : dialog.bot.displayName}
-  {@const dialogInitial = dialog.kind === "local" ? cloudBotInitial(dialog.displayName) : cloudBotInitial(dialog.bot.displayName)}
+  {@const dialogAgentUid = dialog.kind === "local" ? dialog.bot.agentUid : dialog.bot.uid}
   {@const dialogBusy = dialog.kind === "local" ? busy === dialog.bot.name : cloudBusy === dialog.bot.uid}
   {@const machineInstanceId = dialog.kind === "cloud" ? dialog.instanceId : null}
   <CardModal
@@ -975,12 +976,16 @@
     icon="tools"
     art={SETUP_HERO_ART.dark}
     artLight={SETUP_HERO_ART.light}
+    artPosition="center 42%"
+    appearance="surface"
     busy={dialogBusy}
     returnFocus={dialog.returnFocus}
     onclose={closeRemoveDialog}
   >
     {#snippet heroMark()}
-      <span class="remove-bot-avatar" aria-hidden="true">{dialogInitial}</span>
+      <span class="remove-bot-avatar" data-testid="settings-bot-remove-dialog-avatar">
+        <IdentityMark kind="agent" label={dialogName} agentUid={dialogAgentUid} />
+      </span>
     {/snippet}
     {#snippet body()}
       <div class="remove-dialog-body" data-testid="settings-bot-remove-dialog" data-machine={machineInstanceId ? "true" : "false"}>
@@ -1004,7 +1009,7 @@
         disabled={dialogBusy}
         onclick={closeRemoveDialog}
       >
-        Keep {dialogName}
+        Keep bot
       </button>
       <button
         type="button"
@@ -1013,7 +1018,7 @@
         disabled={dialogBusy}
         onclick={confirmRemoveDialog}
       >
-        {dialogBusy ? "Removing…" : `Remove ${dialogName}`}
+        {dialogBusy ? "Removing…" : "Remove bot"}
       </button>
     {/snippet}
   </CardModal>
@@ -1154,13 +1159,19 @@
   .remove-bot-avatar {
     display: grid;
     place-items: center;
-    width: 32px;
-    height: 32px;
-    border: 1px solid rgba(255, 255, 255, 0.24);
-    background: rgba(9, 9, 11, 0.58);
-    color: rgba(255, 255, 255, 0.92);
-    font-size: 13px;
-    font-weight: 500;
+    width: 56px;
+    height: 56px;
+    padding: 3px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 50%;
+    background: var(--v4-surface-solid);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+  }
+  .remove-bot-avatar :global(.identity) {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+    font-size: 16px;
   }
   .remove-dialog-body { display: grid; gap: 12px; }
   .create { display: grid; gap: 10px; }

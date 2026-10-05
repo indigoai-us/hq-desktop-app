@@ -314,7 +314,8 @@ describe("Settings → Bots (Work shell)", () => {
     await tick();
     expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Say goodbye to Izzy?");
     expect(removeDialog().textContent).toContain("Izzy will stop working and leave your bots.");
-    expect(document.querySelector('[data-testid="card-modal-hero-mark"]')?.textContent).toBe("I");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-avatar"] [data-kind="agent"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="card-modal"]')?.dataset.appearance).toBe("surface");
     expect(document.querySelectorAll('.card-modal-art')).toHaveLength(2);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await tick();

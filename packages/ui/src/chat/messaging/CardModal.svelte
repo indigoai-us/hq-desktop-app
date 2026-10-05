@@ -61,6 +61,11 @@
     artLight?: string | null;
     /** Which part of the wallpaper the hero shows (a CSS background-position). */
     artPosition?: string;
+    /**
+     * `art` keeps the connection-card treatment. `surface` reserves artwork
+     * for a cropped header and puts the dialog content on the app surface.
+     */
+    appearance?: "art" | "surface";
     /** The person asked to close: the close button, Escape, a press outside. */
     onclose: () => void;
     /**
@@ -91,6 +96,7 @@
     art,
     artLight = null,
     artPosition = "center",
+    appearance = "art",
     onclose,
     busy = false,
     steps = null,
@@ -211,8 +217,10 @@
     <div
       bind:this={panelEl}
       class="card-modal"
+      class:card-modal--surface={appearance === "surface"}
       data-testid="card-modal"
       data-icon={icon}
+      data-appearance={appearance}
       data-has-light-art={artLight ? 'true' : undefined}
       role="dialog"
       aria-modal="true"
