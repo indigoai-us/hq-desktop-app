@@ -348,7 +348,12 @@
       if (adapter.isAvailable("canSelfUpdate")) {
         // A download that finished while the popover was closed paints as
         // RESTART TO UPDATE immediately.
-        void hydrateDownloadedUpdate(orchAdapter()).catch(() => {});
+        void hydrateDownloadedUpdate(orchAdapter()).catch((error: unknown) => {
+          console.error(
+            "core-popover: hydrate downloaded update failed",
+            error instanceof Error ? error.message : String(error),
+          );
+        });
       }
       if (
         adapter.isAvailable("canSelfUpdate") &&
