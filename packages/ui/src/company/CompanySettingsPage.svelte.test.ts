@@ -83,3 +83,23 @@ describe("CompanySettingsPage HQ Workforce seats (QA-046)", () => {
     expect(target.textContent).not.toContain("HTTP 500");
   });
 });
+
+describe("CompanySettingsPage General", () => {
+  it("has no open-on-sign-in row and saving keeps the stored value (owner 2026-10-05)", async () => {
+    const { readSettingsCache, writeSettingsCache, emptySnapshot } = await import("./company-settings.js");
+    const seeded = emptySnapshot("Unicom", "unicom-signin");
+    seeded.general.openOnSignIn = false;
+    writeSettingsCache("unicom-signin", seeded);
+    const target = render({ slug: "unicom-signin", role: "Owner" });
+    expect(target.querySelector("[data-testid='settings-default-company']")).toBeNull();
+    expect(target.textContent).not.toContain("on sign-in for members");
+    const name = target.querySelector<HTMLInputElement>("input.in");
+    name!.value = "Unicom Co";
+    name!.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    target.querySelector<HTMLButtonElement>("[data-testid='settings-save']")!.click();
+    flushSync();
+    expect(readSettingsCache("unicom-signin")?.general.name).toBe("Unicom Co");
+    expect(readSettingsCache("unicom-signin")?.general.openOnSignIn).toBe(false);
+  });
+});
