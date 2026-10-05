@@ -279,7 +279,7 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     expect(linear.dataset.kind).toBe("integration");
     expect(linear.dataset.state).toBe("connected");
     expect(linear.textContent).toContain("Linear");
-    expect(linear.textContent).toContain("Connected. Let Nova use it?");
+    expect(linear.textContent).toContain("Let Nova use it?");
     expect(appPrimary("linear.app")!.textContent?.trim()).toBe("Let Nova use it");
     // The logo box is drawn from the domain: Linear's bundled mark, no favicon request, no letters.
     expect(linear.querySelector('[data-testid="connection-card-logo-mark"] path')?.getAttribute("d")).toBe(brandMarkFor("linear.app")?.path);
@@ -312,7 +312,7 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     expect(body).toMatch(/^Automatic message from HQ: Corey just connected Linear/);
     expect(body).toContain("acct_linear");
     // The card now says the bot can use it, and the button is gone.
-    await vi.waitFor(() => expect(appCard("linear.app")!.textContent).toContain("Connected. Nova can use it."));
+    await vi.waitFor(() => expect(appCard("linear.app")!.textContent).toContain("Nova can use it."));
     expect(appPrimary("linear.app")).toBeNull();
     // Asking the server again does not tell the bot a second time.
     await refocus();
@@ -532,11 +532,16 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
   });
 
   it("puts no cards under the messages of a bot that was not made here", async () => {
+    // Rewritten 2026-10-04: this also asserted that the company's
+    // connections are not read. They are read once when a cloud bot's
+    // conversation opens, whether or not a card shows, so that a message
+    // that brings cards draws them at once. No card is drawn from the read.
     const w = world();
     await mountRow(w, DM_ROW(NOVA), "Hi Corey, I am Nova.");
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalled());
     await settle(20);
     expect(cards()).toHaveLength(0);
-    expect(w.listConnections).not.toHaveBeenCalled();
+    expect(w.listConnections).toHaveBeenCalledTimes(1);
   });
 });
 
