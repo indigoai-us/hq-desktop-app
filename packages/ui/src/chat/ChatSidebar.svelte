@@ -508,12 +508,8 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    /** US-006: when true, contacts whose last message is agent-only show their preview. */
-    showBotMessages?: boolean;
     /** Optional content rendered above the account footer. */
     bottomContent?: Snippet;
-    /** Fires when the user clicks the bot-message toggle in the sidebar header. */
-    onshowbotmessageschange?: (value: boolean) => void;
     /**
      * When true (the `desktop.human-only-conversations` flag is on), rows are
      * ordered and sectioned by the last message a person typed, in three
@@ -604,9 +600,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    showBotMessages = false,
     bottomContent,
-    onshowbotmessageschange,
     humanOnly = false,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
@@ -3129,7 +3123,7 @@
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        raceTimeout(api.listContacts({ showBotMessages }), bootTimeoutMs, "list_contacts").catch(
+        raceTimeout(api.listContacts({ showBotMessages: false }), bootTimeoutMs, "list_contacts").catch(
           (err) => {
             sidebarLog("boot-error", {
               source: "list_contacts",
@@ -3221,21 +3215,6 @@
     const seq = rosterWakeSeq;
     if (seq <= 0) return;
     untrack(() => {
-      void refreshLists();
-    });
-  });
-
-  // Re-fetch contacts when the bot-message toggle flips so list previews update.
-  // Skip the initial run: `onMount` already primes the roster with the current
-  // toggle value, so re-reading here would double the boot contacts fetch.
-  let botToggleSeen = false;
-  $effect(() => {
-    const _show = showBotMessages;
-    untrack(() => {
-      if (!botToggleSeen) {
-        botToggleSeen = true;
-        return;
-      }
       void refreshLists();
     });
   });
@@ -3965,26 +3944,6 @@
             stroke-width="1.25"
             stroke-linecap="round"
           />
-        </svg>
-      </button>
-      <!-- US-006: bot-message toggle -->
-      <button
-        type="button"
-        class="chat-icon-btn"
-        class:on={showBotMessages}
-        data-testid="chat-bot-toggle"
-        aria-label={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        aria-pressed={showBotMessages}
-        title={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        onclick={() => onshowbotmessageschange?.(!showBotMessages)}
-      >
-        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
-          <rect x="2" y="4" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.25" fill="none"/>
-          <rect x="4.5" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <rect x="8" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
-          <circle cx="7" cy="1" r="0.75" fill="currentColor"/>
-          <line x1="4.5" y1="9.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
         </svg>
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>

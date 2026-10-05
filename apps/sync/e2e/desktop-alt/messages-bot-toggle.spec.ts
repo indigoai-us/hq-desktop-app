@@ -1,29 +1,69 @@
 // @vitest-environment happy-dom
 //
-// US-006 — "Show bot messages" toggle in the Messages header.
+// US-006 follow-up — the "Show bot messages" toggle was removed from the
+// Messages toolbar (owner: "remove this button").
 //
 // Locks:
-//   1. The localStorage storage key constant.
-//   2. The audience filter function (pure unit).
-//   3. MessagesShell.svelte toggle markup: button, aria-label, aria-pressed,
-//      data-storage-key, and segment buttons present.
-//   4. Toggle persists to localStorage and flips aria-pressed.
-//   5. Filtering hides agent-audience messages when toggle is off.
+//   1. Neither Messages toolbar (ChatSidebar in @hq/ui, MessagesShell here)
+//      renders the toggle or wires its handler.
+//   2. Nobody reads the old persisted preference, so a previously saved "on"
+//      cannot leave the list stuck showing bot messages; the stored value
+//      itself is left alone.
+//   3. The default behaviour holds for everyone: the contact list is fetched
+//      with bot previews off, and threads hide agent-audience messages.
+//   4. The audience filter itself (still used by DM threads) is unchanged.
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 
-// ── 1. Storage key contract ──────────────────────────────────────────────────
-describe('SHOW_BOT_MESSAGES_KEY', () => {
-  it('is the expected localStorage key', async () => {
-    const { SHOW_BOT_MESSAGES_KEY } = await import(
-      '../../src/lib/botMessageFilter'
-    );
-    expect(SHOW_BOT_MESSAGES_KEY).toBe('hq:messages:show-bot-messages');
+const REPO = resolve(__dirname, '../../../..');
+const read = (rel: string) => readFileSync(resolve(REPO, rel), 'utf8');
+const OLD_KEY = 'hq:messages:show-bot-messages';
+
+// ── 1–3. Source contract: toggle gone, preference unread, default off ────────
+describe('Messages toolbar: bot-message toggle removed', () => {
+  const chatSidebar = read('packages/ui/src/chat/ChatSidebar.svelte');
+  const desktopApp = read('packages/ui/src/shell/DesktopApp.svelte');
+  const shell = read('apps/sync/src/components/messaging/MessagesShell.svelte');
+
+  it('ChatSidebar no longer renders the toggle or accepts its props', () => {
+    expect(chatSidebar).not.toContain('chat-bot-toggle');
+    expect(chatSidebar).not.toContain('Show bot messages');
+    expect(chatSidebar).not.toContain('Hide bot messages');
+    expect(chatSidebar).not.toContain('onshowbotmessageschange');
+  });
+
+  it('ChatSidebar keeps the search and filter buttons side by side', () => {
+    const search = chatSidebar.indexOf('data-testid="chat-search"');
+    const filter = chatSidebar.indexOf('<div class="chat-filter-wrap" bind:this={filterWrapEl}>');
+    expect(search).toBeGreaterThan(-1);
+    expect(filter).toBeGreaterThan(search);
+    // Only the search button's closing tag sits between the two controls.
+    const between = chatSidebar.slice(search, filter);
+    expect(between.match(/<button\b/g) ?? []).toHaveLength(0);
+  });
+
+  it('ChatSidebar fetches contacts with bot previews off (the default)', () => {
+    expect(chatSidebar).toContain('api.listContacts({ showBotMessages: false })');
+  });
+
+  it('DesktopApp no longer reads or writes the stored preference', () => {
+    expect(desktopApp).not.toContain(OLD_KEY);
+    expect(desktopApp).not.toContain('handleShowBotMessagesChange');
+    expect(desktopApp).not.toContain('onshowbotmessageschange');
+  });
+
+  it('MessagesShell no longer renders the toggle or reads the preference', () => {
+    expect(shell).not.toContain('bot-toggle');
+    expect(shell).not.toContain('Show bot messages');
+    expect(shell).not.toContain('readShowBotMessages');
+    expect(shell).not.toContain('writeShowBotMessages');
   });
 });
 
-// ── 2. Filter function ───────────────────────────────────────────────────────
+// ── 4. Filter function (still used by DM threads) ───────────────────────────────────────────────────────
 describe('filterByAudience', () => {
   type Item = { audience?: string | null };
 
@@ -82,15 +122,28 @@ describe('filterByAudience', () => {
   });
 });
 
-// ── 3 & 4. MessagesShell component: markup + toggle behavior ─────────────────
-describe('MessagesShell: toggle markup and behavior', () => {
+// ── MessagesShell component: rendered markup ─────────────────────────────────
+describe('MessagesShell: segments only, no bot toggle', () => {
   let host: HTMLElement;
   let component: Record<string, unknown> | null = null;
+  let store: Map<string, string>;
 
   beforeEach(() => {
+    // This spec's happy-dom environment has no localStorage; give it a real
+    // in-memory Storage so the "saved preference" case can be set up.
+    store = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+      key: (i: number) => [...store.keys()][i] ?? null,
+      get length() {
+        return store.size;
+      },
+    });
     host = document.createElement('div');
     document.body.appendChild(host);
-    localStorage.clear();
   });
 
   afterEach(async () => {
@@ -99,7 +152,7 @@ describe('MessagesShell: toggle markup and behavior', () => {
       component = null;
     }
     host?.remove();
-    localStorage.clear();
+    vi.unstubAllGlobals();
   });
 
   it('renders segment buttons (All, People, Requests)', async () => {
@@ -113,71 +166,18 @@ describe('MessagesShell: toggle markup and behavior', () => {
     expect(host.querySelector('[data-testid="segment-requests"]')).not.toBeNull();
   });
 
-  it('renders the bot toggle button with correct aria attributes when off', async () => {
-    const MessagesShell = (await import('../../src/components/messaging/MessagesShell.svelte'))
-      .default;
-    component = mount(MessagesShell, {
-      target: host,
-      props: { showBotMessages: false },
-    });
-    flushSync();
-
-    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="bot-toggle"]');
-    expect(toggle).not.toBeNull();
-    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
-    expect(toggle?.getAttribute('aria-label')).toBe('Show bot messages');
-    expect(toggle?.getAttribute('data-storage-key')).toBe('hq:messages:show-bot-messages');
-  });
-
-  it('renders the bot toggle with aria-label "Hide bot messages" when on', async () => {
-    const MessagesShell = (await import('../../src/components/messaging/MessagesShell.svelte'))
-      .default;
-    component = mount(MessagesShell, {
-      target: host,
-      props: { showBotMessages: true },
-    });
-    flushSync();
-
-    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="bot-toggle"]');
-    expect(toggle?.getAttribute('aria-pressed')).toBe('true');
-    expect(toggle?.getAttribute('aria-label')).toBe('Hide bot messages');
-  });
-
-  it('toggle button is separate from segment nav (not a segment)', async () => {
+  it('renders no bot toggle, even with a previously saved "on" preference', async () => {
+    store.set(OLD_KEY, 'true');
     const MessagesShell = (await import('../../src/components/messaging/MessagesShell.svelte'))
       .default;
     component = mount(MessagesShell, { target: host, props: {} });
     flushSync();
 
-    const nav = host.querySelector('[data-testid="messages-segments"]');
-    const toggle = host.querySelector('[data-testid="bot-toggle"]');
-    // Toggle must NOT be inside the segments nav
-    expect(nav?.contains(toggle)).toBe(false);
-  });
-
-  it('clicking the toggle persists to localStorage and flips aria-pressed', async () => {
-    const MessagesShell = (await import('../../src/components/messaging/MessagesShell.svelte'))
-      .default;
-    component = mount(MessagesShell, {
-      target: host,
-      props: { showBotMessages: false },
-    });
-    flushSync();
-
-    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="bot-toggle"]')!;
-    expect(localStorage.getItem('hq:messages:show-bot-messages')).toBeNull();
-
-    toggle.click();
-    flushSync();
-
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    expect(localStorage.getItem('hq:messages:show-bot-messages')).toBe('true');
-
-    toggle.click();
-    flushSync();
-
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    expect(localStorage.getItem('hq:messages:show-bot-messages')).toBeNull();
+    expect(host.querySelector('[data-testid="bot-toggle"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Show bot messages"]')).toBeNull();
+    expect(host.querySelector('[aria-label="Hide bot messages"]')).toBeNull();
+    // The stored value is left alone.
+    expect(store.get(OLD_KEY)).toBe('true');
   });
 });
 
