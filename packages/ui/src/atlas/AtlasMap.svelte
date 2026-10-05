@@ -12,6 +12,7 @@
     type AtlasPresence,
     type AtlasRefEdge,
   } from "./atlas-model.js";
+  import { atlasFocusPlaced, type AtlasFocusOffset } from "./atlas-focus.js";
   import { ATLAS_RING_GAP, ATLAS_RING_MIN_PX, atlasStoryFraction } from "./atlas-activity.js";
   import { ATLAS_DOCK_CAP, atlasDockedChips, atlasInitials, atlasUnplacedActors } from "./atlas-presence.js";
   import {
@@ -48,6 +49,10 @@
     /** Live edge with no active object: show the quiet-map hint. */
     nothingActive?: boolean;
     nowMs: number;
+    /** Focus mode: related items gathered around the selected project (target positions). */
+    focus?: Map<string, AtlasFocusOffset> | null;
+    /** Animate focus moves and other transitions. Off (or reduced motion) shows the end state. */
+    motion?: boolean;
     view: AtlasView;
     onselect: (id: string | null) => void;
     onview: (view: AtlasView) => void;
@@ -67,6 +72,8 @@
     timeOpacity = null,
     nothingActive = false,
     nowMs,
+    focus = null,
+    motion = true,
     view,
     onselect,
     onview,
@@ -111,7 +118,11 @@
     section: string | null;
   } | null = null;
 
-  const byId = $derived(new Map(placed.map((p) => [p.id, p])));
+  // Where each object is drawn now: home, or its focus-mode orbit spot. Dots
+  // keep their home cx/cy and move with a CSS transform; everything drawn in
+  // screen space (labels, chips, cards, edges) uses these positions.
+  const shown = $derived(atlasFocusPlaced(placed, focus));
+  const byId = $derived(new Map(shown.map((p) => [p.id, p])));
   const related = $derived(atlasRelatedIds(selected ?? hovered, edges));
   const shownEdges = $derived(atlasVisibleEdges(edges, selected, hovered));
   let mapWidth = $state(0);
@@ -195,7 +206,7 @@
   const labels = $derived(
     atlasScreenLabels({
       reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box), ...chipBoxes],
-      placed,
+      placed: shown,
       selected,
       hovered,
       related,
@@ -214,7 +225,7 @@
   const CHIP_STEP = 15;
   const half = CHIP_PX / 2;
   const chips = $derived(
-    atlasDockedChips(placed, presence).map((chip) => {
+    atlasDockedChips(shown, presence).map((chip) => {
       const rimX = chip.x1 * view.k + view.x;
       const rimY = chip.y1 * view.k + view.y;
       return { ...chip, rimX, rimY, sx: rimX + 13 + chip.index * CHIP_STEP, sy: rimY - 13 };
@@ -413,7 +424,7 @@
   }
 </script>
 
-<div class="atlas-map" data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
+<div class="atlas-map" class:calm={!motion} data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
   <svg
     bind:this={svgEl}
     role="application"
@@ -422,7 +433,7 @@
     ondblclick={frame}
     onwheel={onwheel}
   >
-    <g data-testid="atlas-world" transform={viewTransform(view)}>
+    <g data-testid="atlas-world" class:focusing={focus !== null && focus.size > 0} transform={viewTransform(view)}>
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
         {@const a = byId.get(edge.source)}
         {@const b = byId.get(edge.target)}
@@ -445,6 +456,8 @@
           class:selected={node.id === selected}
           class:lit={filterIds?.has(node.id) ?? false}
           class:active={timeOpacity ? !timeOpacity.has(node.id) : false}
+          class:gathered={focus?.has(node.id) ?? false}
+          style:transform={focus?.has(node.id) ? `translate(${focus.get(node.id)!.dx.toFixed(2)}px, ${focus.get(node.id)!.dy.toFixed(2)}px)` : null}
           style:--t={timeOpacity?.get(node.id) ?? null}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
@@ -669,7 +682,25 @@
     cursor: pointer;
     outline: none;
     opacity: var(--t, 1);
-    transition: opacity 160ms ease;
+    /* Focus mode moves dots by transform only, out and back. */
+    transition:
+      opacity 160ms ease,
+      transform 480ms cubic-bezier(0.23, 1, 0.32, 1);
+  }
+  /* Focus mode: the gathered set stays bright, everything else steps further back. */
+  .focusing .node.dim {
+    opacity: calc(var(--t, 1) * 0.28);
+  }
+  .node.gathered {
+    opacity: 1;
+  }
+  .calm .node {
+    transition: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .node {
+      transition: none;
+    }
   }
   /* Type colour, pulled toward the ink so it reads in light and dark. */
   .dot {

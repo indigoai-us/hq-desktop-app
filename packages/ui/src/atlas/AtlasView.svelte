@@ -13,6 +13,7 @@
   import AtlasMap from "./AtlasMap.svelte";
   import AtlasInspector from "./AtlasInspector.svelte";
   import AtlasScrubber from "./AtlasScrubber.svelte";
+  import { atlasFocusOrbit } from "./atlas-focus.js";
   import {
     atlasDailyCounts,
     atlasDayStart,
@@ -127,6 +128,16 @@
       .map((id) => byId.get(id))
       .filter((n): n is AtlasNode => Boolean(n)),
   );
+  // Focus mode: a selected project gathers its repos, knowledge and policies
+  // around it. Computed once per selection (and per layout), never per frame.
+  const placedById = $derived(new Map(layout.placed.map((n) => [n.id, n])));
+  const focus = $derived.by(() => {
+    const center = selected ? placedById.get(selected) : undefined;
+    if (!center || center.type !== "project") return null;
+    const near = [...atlasRelatedIds(selected, edges)].map((id) => placedById.get(id)).filter((n) => n !== undefined);
+    const orbit = atlasFocusOrbit(center, near);
+    return orbit.size ? orbit : null;
+  });
   // Presence sometimes carries only an id for a name. An id never reaches the
   // screen: the activity read's names fill in, then a plain fallback.
   const presence = $derived.by(() => {
@@ -262,14 +273,31 @@
     }
   }
 
-  /** Bring one object to the middle of the map, zooming in if it is small on screen. */
+  /**
+   * Bring one object to the middle of the map, zooming in if it is small on
+   * screen. A focused project frames itself with its gathered ring.
+   */
   function flyToNode(id: string): void {
-    const node = layout.placed.find((n) => n.id === id);
+    const node = placedById.get(id);
     if (!node) return;
     measure();
-    const k = Math.max(view.k, 1.6);
-    flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    const orbit = id === selected ? focus : null;
+    if (orbit) {
+      const ring = [node, ...[...orbit.entries()].map(([oid, at]) => ({ x: at.x, y: at.y, r: placedById.get(oid)?.r ?? 2 }))];
+      const fit = frameAll(ring, size.width, size.height, 72);
+      const k = Math.min(fit.k, Math.max(view.k, 2.4));
+      flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    } else {
+      const k = Math.max(view.k, 1.6);
+      flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    }
     userMoved = true;
+  }
+
+  /** A click on the map: select it, and glide to a project so focus mode is in view. */
+  function selectFromMap(id: string | null): void {
+    selected = id;
+    if (id && placedById.get(id)?.type === "project") flyToNode(id);
   }
 
   // Find: type a name, jump to the object.
@@ -545,7 +573,9 @@
           {nothingActive}
           {nowMs}
           {view}
-          onselect={(id) => (selected = id)}
+          {focus}
+          {motion}
+          onselect={selectFromMap}
           onview={(next) => {
             stopFlight();
             view = next;
