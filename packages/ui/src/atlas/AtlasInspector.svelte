@@ -173,7 +173,7 @@
     {:else if presence.length}
       <div class="list" data-testid="atlas-inspector-working-now">
         {#each presence as who (`${who.name}:${who.nodeId}`)}
-          <button type="button" class="li rowbtn" onclick={() => onselect(who.nodeId)}>
+          <button type="button" class="li rowbtn card" onclick={() => onselect(who.nodeId)}>
             <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
             <div>
               <div class="tt">{who.name}</div>
@@ -208,7 +208,7 @@
           {#each people.people as person (person.id)}
             <button
               type="button"
-              class="li rowbtn person"
+              class="li rowbtn card person"
               data-testid="atlas-person"
               aria-pressed={selectedPersonId === person.id}
               onclick={() => onperson?.(person.id)}
@@ -239,7 +239,12 @@
   .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }
   .online summary { cursor: pointer; }
   .online-names { margin-top: 4px; line-height: 1.5; }
-  .li.person { display: block; width: 100%; text-align: left; padding: 6px 0; }
+  /* Card rows: 10px inner padding, offset by a matching negative margin so text
+     stays on the section's column and the hover/selected fill reaches past it. */
+  .li.card { padding: 8px 10px; margin: 0 -10px; }
+  .li.card + .li.card { margin-top: 3px; }
+  .li.person { display: block; width: calc(100% + 20px); text-align: left; }
+  .pmain .prow { margin-top: 4px; }
   .li.person[aria-pressed="true"] { background: var(--v4-active-row); }
   .pmain { width: 100%; min-width: 0; }
   .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
