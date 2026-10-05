@@ -141,10 +141,22 @@
   const meets = (a: AtlasScreenLabel["box"], b: AtlasScreenLabel["box"]) =>
     a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   const districts = $derived(atlasDistrictShapes(placed, regions));
+  // A section name stays on screen while any of its section is: it slides
+  // down from above the section instead of being cut off at the top edge.
+  function keepOnScreen(label: AtlasScreenLabel, shape: { y: number; r: number }): AtlasScreenLabel | null {
+    const width = mapWidth || 800;
+    const height = mapHeight || 560;
+    const bottom = (shape.y + shape.r) * view.k + view.y;
+    if (bottom < 28 || label.box.top > height || label.box.right < 0 || label.box.left > width) return null;
+    const half = (label.box.right - label.box.left) / 2;
+    const x = Math.min(Math.max(label.x, half + 8), width - half - 8);
+    const y = Math.max(label.y, 20);
+    return { ...label, x, y, box: { left: x - half, top: y - 12, right: x + half, bottom: y + 4 } };
+  }
   const districtLabels = $derived(
     districts
-      .map((d) => atlasDistrictLabel(d, view, measureLabel))
-      .filter((d) => !fixedBoxes.some((f) => meets(d.box, f))),
+      .map((d) => keepOnScreen(atlasDistrictLabel(d, view, measureLabel), d))
+      .filter((d): d is AtlasScreenLabel => d !== null && !fixedBoxes.some((f) => meets(d.box, f))),
   );
   const labels = $derived(
     atlasScreenLabels({
@@ -328,17 +340,6 @@
     onwheel={onwheel}
   >
     <g data-testid="atlas-world" transform={viewTransform(view)}>
-      {#each districts as district (district.type)}
-        <circle
-          class="district"
-          data-testid={`atlas-district-${district.type}`}
-          data-district={district.type}
-          cx={district.x}
-          cy={district.y}
-          r={district.r}
-          style:--c={ATLAS_TYPE_TINT[district.type]}
-        />
-      {/each}
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
         {@const a = byId.get(edge.source)}
         {@const b = byId.get(edge.target)}
@@ -379,6 +380,10 @@
           {/if}
           {#if live.has(node.id)}
             <circle class="halo" data-testid={`atlas-halo-${node.id}`} cx={node.x} cy={node.y} r={node.r + 4} vector-effect="non-scaling-stroke" />
+          {/if}
+          {#if timeOpacity && !timeOpacity.has(node.id)}
+            <!-- Active at the scrubbed time: a soft glow lifts it off the faded rest. -->
+            <circle class="glow" cx={node.x} cy={node.y} r={node.r * 2.4 + 2} />
           {/if}
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
         </g>
@@ -495,16 +500,7 @@
     font-size: 13px;
     font-weight: 500;
     /* Section names sit back from item labels by tone; no outline. */
-    fill: var(--v4-text-3);
-    pointer-events: none;
-  }
-  /* OWNER-R4: each section is tinted with the web type colour; no outline. */
-  .district {
-    /* Pulled toward the ink so the pale web colours still read on a light ground. */
-    fill: var(--c);
-    /* A faint wash that groups a section without reading as a shape. */
-    fill-opacity: 0.045;
-    stroke: none;
+    fill: var(--v4-text-2, var(--v4-text-3));
     pointer-events: none;
   }
   .edge {
@@ -522,6 +518,11 @@
   .dot {
     fill: color-mix(in srgb, var(--c) 80%, var(--v4-text-1));
     transition: fill 120ms ease;
+  }
+  .glow {
+    fill: var(--c);
+    fill-opacity: 0.2;
+    pointer-events: none;
   }
   .node:hover .dot,
   .node.selected .dot {

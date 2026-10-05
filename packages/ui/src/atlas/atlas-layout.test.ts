@@ -25,7 +25,7 @@ import { atlasEndpoint, createAtlasCache } from "./atlas-cache.js";
 const NOW = Date.UTC(2026, 8, 30, 12);
 
 describe("atlas layout", () => {
-  it("places six kind clusters on a ring in the fixed order", () => {
+  it("lists the six kind clusters in the fixed order and packs them around the largest", () => {
     const { regions, placed } = layoutAtlas(smokeAtlasGraph().nodes);
     expect(regions.map((r) => r.label)).toEqual([
       "Projects",
@@ -37,8 +37,13 @@ describe("atlas layout", () => {
     ]);
     expect(regions.map((r) => r.type)).toEqual([...ATLAS_RING_ORDER]);
     expect(placed).toHaveLength(smokeAtlasGraph().nodes.length);
-    expect(regions[0].y).toBeLessThan(0);
-    expect(Math.abs(regions[0].x)).toBeLessThan(1e-6);
+    // Packed, not on a fixed ring: the largest section sits at the centre and
+    // every other one is within reach of it.
+    const shapes = atlasDistrictShapes(placed, regions);
+    const largest = shapes.reduce((a, b) => (b.r > a.r ? b : a));
+    expect(Math.hypot(largest.x, largest.y)).toBeLessThan(1e-6);
+    const span = Math.max(...shapes.map((d) => Math.hypot(d.x, d.y) + d.r));
+    expect(span).toBeLessThan(shapes.reduce((sum, d) => sum + d.r * 2, 0));
   });
 
   it("sizes circles from story count, then file count", () => {
