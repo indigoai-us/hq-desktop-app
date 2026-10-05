@@ -3991,6 +3991,7 @@ mod tests {
             root_event_id: None,
             reply_count: None,
             audience: None,
+            rich_content: None,
         };
 
         let payload = thread_reply_wake_payload(

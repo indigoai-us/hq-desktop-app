@@ -268,6 +268,39 @@ export function buildAgentSlackConnectedNotice(input: { personName?: string | nu
   );
 }
 
+/**
+ * Whether a row's body is a connection-changed notice to a bot: a tool was
+ * connected and shared with it ({@link buildAgentToolConnectedNotice}), or it
+ * was connected to Slack ({@link buildAgentSlackConnectedNotice}). The hello
+ * request is not one.
+ */
+export function isConnectionChangedNotice(body: string | null | undefined): boolean {
+  const text = body ?? "";
+  if (!text.startsWith(`${AGENT_HELLO_REQUEST_LEAD} `) || text.startsWith(AGENT_HELLO_REQUEST_OPENING)) return false;
+  return / just connected (?:you to Slack\.|.+ for the company and allowed you to use it)/.test(text);
+}
+
+/**
+ * The newest connection-changed notice to a bot in a page (any order) written
+ * after `afterMs`, or null. Only a row the bot did not write counts. Cards
+ * drawn from the bot's state older than such a notice may be out of date, so
+ * the host reads the live state once for it.
+ */
+export function connectionNoticeAfter(
+  rows: ReadonlyArray<{ eventId?: string | null; fromPersonUid?: string | null; body?: string | null; createdAt?: string | null }>,
+  input: { agentUid: string; afterMs: number },
+): { eventId: string; at: number } | null {
+  let newest: { eventId: string; at: number } | null = null;
+  for (const row of rows) {
+    if ((row.fromPersonUid ?? "").trim() === input.agentUid || !isConnectionChangedNotice(row.body)) continue;
+    const at = Date.parse(row.createdAt ?? "");
+    const eventId = (row.eventId ?? "").trim();
+    if (!eventId || !Number.isFinite(at) || at <= input.afterMs) continue;
+    if (!newest || at > newest.at) newest = { eventId, at };
+  }
+  return newest;
+}
+
 type HelloRow = {
   eventId?: string | null;
   fromPersonUid?: string | null;
