@@ -267,7 +267,7 @@ async function hqProFetch(
 }
 
 /** Current provisioning state of a company from `GET /entity/{uid}`. 404 right after create is pending. */
-export async function readProvisioningState(invoke: InvokeFn, companyUid: string): Promise<ProvisioningState> {
+async function readProvisioningState(invoke: InvokeFn, companyUid: string): Promise<ProvisioningState> {
   const response = await hqProFetch(invoke, 'GET', `/entity/${encodeURIComponent(companyUid)}`);
   if (response.status === 404) return { status: 'pending' };
   if (response.status < 200 || response.status >= 300) {
@@ -281,7 +281,7 @@ export async function readProvisioningState(invoke: InvokeFn, companyUid: string
  * entity (a `uid`): a missing or empty answer is unknown, never "pending".
  * Used to decide whether to resume setup, where a guess must not win.
  */
-export async function readKnownProvisioningState(
+async function readKnownProvisioningState(
   invoke: InvokeFn,
   companyUid: string,
 ): Promise<ProvisioningState | null> {
@@ -313,7 +313,7 @@ export async function requestCompanyProvisioning(invoke: InvokeFn, companyUid: s
 }
 
 /** `activate-cloud`, or `activate-cloud:<tag>` for a tagged native error like `[forbidden] …`. */
-export function activateFailureStep(error: unknown): string {
+function activateFailureStep(error: unknown): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
   const tag = /^\[([a-z_-]{1,32})\]/i.exec(raw.trim())?.[1]?.toLowerCase();
   return tag ? `activate-cloud:${tag}` : 'activate-cloud';
@@ -331,8 +331,8 @@ export interface WaitForProvisioningOptions {
   onPoll?: (state: ProvisioningState, attempt: number) => void;
 }
 
-export const PROVISIONING_POLL_INTERVAL_MS = 2_000;
-export const PROVISIONING_TIMEOUT_MS = 120_000;
+const PROVISIONING_POLL_INTERVAL_MS = 2_000;
+const PROVISIONING_TIMEOUT_MS = 120_000;
 
 /**
  * Poll until the company is ready or failed. A timeout reports
@@ -593,7 +593,7 @@ export function isCheckoutReturnFor(payload: unknown, companyUid: string): boole
 }
 
 /** Longest handle HQ derives when the server publishes no rule. */
-export const COMPANY_HANDLE_MAX_LENGTH = 40;
+const COMPANY_HANDLE_MAX_LENGTH = 40;
 
 /** Lowercase letters, numbers and single dashes, from a company name. */
 export function slugifyCompanyName(name: string, maxLength: number = COMPANY_HANDLE_MAX_LENGTH): string {

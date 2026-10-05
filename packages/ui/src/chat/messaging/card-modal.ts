@@ -56,7 +56,7 @@ const FOCUSABLE = [
 ].join(",");
 
 /** The controls Tab can reach inside `root`, in order. */
-export function focusablesIn(root: HTMLElement | null): HTMLElement[] {
+function focusablesIn(root: HTMLElement | null): HTMLElement[] {
   if (!root) return [];
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
     (el) => !el.hasAttribute("hidden") && el.getAttribute("aria-hidden") !== "true",
