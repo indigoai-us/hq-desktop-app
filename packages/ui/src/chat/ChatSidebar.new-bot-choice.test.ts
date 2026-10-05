@@ -179,12 +179,14 @@ describe("New bot asks Cloud or Local first", () => {
     // The plain window card is not drawn.
     expect(shell!.querySelector(".create-card")).toBeNull();
 
+    // Owner (2026-10-05): "Skip it". Local was already picked, so the
+    // "Where does it run?" step is left out; its coding-tool picker moves
+    // onto Details.
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
-    expect(q('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
-    // The Home step still lets the person switch.
-    expect(q('[data-testid="chat-bot-where-cloud"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
+    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
   });
 
   it("the local flow still creates through the host's local create", async () => {
@@ -193,8 +195,6 @@ describe("New bot asks Cloud or Local first", () => {
     await settle();
     await pressNewBot();
     click('[data-testid="new-bot-choice-local"]');
-    await settle();
-    click('[data-testid="create-bot-next"]');
     await settle();
     click('[data-testid="create-bot-next"]');
     await settle();

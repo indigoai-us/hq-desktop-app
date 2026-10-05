@@ -375,6 +375,11 @@ describe("steps", () => {
     expect(nextStep("kind", { home: "local" })).toBe("home");
     expect(nextStep("home", { home: "cloud" })).toBe("details");
     expect(nextStep("details", { home: "cloud" })).toBeNull();
+    // Local already picked on the choice screen: no "Where does it run?".
+    expect(stepsFor({ home: "local" }, { skipHome: true })).toEqual(["kind", "details"]);
+    expect(nextStep("kind", { home: "local" }, { skipHome: true })).toBe("details");
+    expect(prevStep("details", { home: "local" }, { skipHome: true })).toBe("kind");
+    expect(stepsFor({ home: "cloud" }, { skipHome: true })).toEqual(["kind", "home", "details"]);
     expect(nextStep("home", { home: "local" })).toBe("details");
     expect(prevStep("kind", { home: "local" })).toBeNull();
     expect(prevStep("details", { home: "cloud" })).toBe("home");

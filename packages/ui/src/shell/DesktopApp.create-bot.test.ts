@@ -164,14 +164,12 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     // Blank is all this test needs; picking it moves straight on.
     click('[data-testid="create-bot-kind-blank"]');
     await settle();
-    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+    // Local was picked already: no "Where does it run?" step. The coding
+    // tool picker sits on Details instead.
+    expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
+    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     // Runtime readiness came from preflight: Claude is signed in, Codex is not.
     expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in");
-    expect(q('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
-
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     name.value = "scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
@@ -195,8 +193,6 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     mountApp(adapter({ create }));
     await openBotFlow();
 
-    click('[data-testid="create-bot-next"]');
-    await settle();
     click('[data-testid="create-bot-next"]');
     await settle();
     click('[data-testid="chat-bot-create"]');

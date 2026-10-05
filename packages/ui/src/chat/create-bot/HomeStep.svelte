@@ -103,6 +103,11 @@
      * clickable, so the wizard is never blocked.
      */
     onrequestaitools?: () => void;
+    /**
+     * Show only the "Thinks with" part (coding tool, sign-in, install). Used
+     * on the Details step when Local was already picked on the choice screen.
+     */
+    runtimeOnly?: boolean;
   }
 
   let {
@@ -127,6 +132,7 @@
     onopenassistant,
     onassistedinstall,
     onrequestaitools,
+    runtimeOnly = false,
   }: Props = $props();
 
   // Lazy probe: only the wizard's own mount triggers `detect_ai_tools`,
@@ -220,7 +226,8 @@
   }
 </script>
 
-<div class="cb-step" data-testid="create-bot-home-step">
+<div class="cb-step" data-testid={runtimeOnly ? "create-bot-runtime-section" : "create-bot-home-step"}>
+  {#if !runtimeOnly}
   <div class="cb-cards home-cards" role="radiogroup" aria-label="Where does it run?" data-testid="chat-bot-where" tabindex="-1" onkeydown={onHomeKey}>
     <button
       type="button"
@@ -270,7 +277,8 @@
       </button>
     {/if}
   </div>
-  {#if cloudAlwaysShown && !canCloud && cloudBlocked?.fix?.kind === "checkout"}
+  {/if}
+  {#if !runtimeOnly && cloudAlwaysShown && !canCloud && cloudBlocked?.fix?.kind === "checkout"}
     <!-- Outside the disabled card so the link stays clickable. -->
     <p class="cb-help cloud-fix">
       <a class="cb-pill-link" href={cloudBlocked.fix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-bot-where-cloud-fix">{cloudBlocked.fix.label}</a>

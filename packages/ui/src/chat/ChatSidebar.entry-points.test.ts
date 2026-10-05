@@ -142,6 +142,22 @@ async function chooseKind(kind: "cloud" | "local"): Promise<void> {
 }
 
 /** Choice → Kind step → Home step (Blank is preselected) of the "+" window's bot flow. */
+/**
+ * Choice (Local) → Kind step → Details. Local was picked already, so the
+ * "Where does it run?" step is skipped and its coding-tool picker is on Details.
+ */
+async function toLocalDetails(): Promise<void> {
+  click('[data-testid="chat-create-new-bot"]');
+  await settle();
+  await chooseKind("local");
+  expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  click('[data-testid="create-bot-next"]');
+  await settle();
+  expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
+  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+  expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
+}
+
 async function toHomeStep(kind: "cloud" | "local" = "cloud"): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
@@ -335,15 +351,11 @@ describe("ChatSidebar lifecycle entry points", () => {
     await openModal();
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row?.textContent).toContain("Runs on this computer or in the cloud");
-    // Local picked on the "Cloud or Local?" question; the Home step still
-    // lets the person switch to Cloud, which shows the company picker.
-    await toHomeStep("local");
-    // Both hosts available, Local picked → Local is checked, the picker is hidden, and Next leads to details.
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
-    expect(q('[data-testid="create-bot-next"]')).toBeTruthy();
-    click('[data-testid="chat-bot-where-cloud"]');
-    await settle();
+    // Cloud picked on the "Cloud or Local?" question: the Home step shows
+    // the company picker, and Local is still offered beside it.
+    await toHomeStep("cloud");
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(q('[data-testid="chat-bot-where-local"]')).toBeTruthy();
     expect(oncreateagent).not.toHaveBeenCalled();
     const picker = q('[data-testid="chat-create-agent-picker"]');
     expect(picker?.getAttribute("role")).toBe("listbox");
@@ -996,7 +1008,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-new-bot"]')).toBeNull();
   });
 
-  it("walks kind → home → details and submits name, runtime, and pre-approval to the host", async () => {
+  it("walks kind → details (Local already picked) and submits name, runtime, and pre-approval to the host", async () => {
     const oncreatebot = vi.fn(async () => ({
       ok: true as const,
       agentUid: "agt_new",
@@ -1010,19 +1022,9 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
-    await toHomeStep("local");
-    // Only a local host here → Local is checked and Cloud is not offered at all.
-    expect(
-      q<HTMLButtonElement>(
-        '[data-testid="chat-bot-where-local"]',
-      )?.getAttribute("aria-checked"),
-    ).toBe("true");
-    expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
+    await toLocalDetails();
     click('[data-testid="chat-bot-runtime-grok"]');
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     expect(name.value).toBe("assistant");
     expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe(
@@ -1091,7 +1093,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     });
     await settle();
     await openModal();
-    await toHomeStep("local");
+    await toLocalDetails();
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
     expect(
       q<HTMLButtonElement>(
@@ -1105,7 +1107,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="chat-bot-runtime-claude"]');
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(true);
     expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
       "Claude Code is not signed in",
@@ -1113,10 +1115,8 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="chat-bot-runtime-codex"]');
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(false);
-    click('[data-testid="create-bot-next"]');
-    await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     // Spaces and capitals are a display name now, not an error.
     name.value = "Dr Love";

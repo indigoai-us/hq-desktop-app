@@ -525,24 +525,38 @@ export function templateBringsLine(card: TemplateCard | null): string {
  * and @handle are chosen here, in front of the person, because the company
  * channel's card that used to ask for them is no longer shown.
  */
-export function stepsFor(_draft: Pick<CreateBotDraft, "home">): CreateBotStep[] {
+export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
+  if (opts.skipHome && draft.home === "local") return ["kind", "details"];
   return ["kind", "home", "details"];
 }
 
-export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">): CreateBotStep | null {
-  const steps = stepsFor(draft);
+/**
+ * `skipHome`: Local was already picked on the New bot choice screen, so the
+ * "Where does it run?" step is left out. Its coding-tool check moves onto the
+ * Details step, which then shows the sign-in and install controls.
+ */
+export interface StepOptions {
+  skipHome?: boolean;
+}
+
+export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
+  const steps = stepsFor(draft, opts);
   const at = steps.indexOf(step);
   return at >= 0 ? (steps[at + 1] ?? null) : null;
 }
 
-export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">): CreateBotStep | null {
-  const steps = stepsFor(draft);
+export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
+  const steps = stepsFor(draft, opts);
   const at = steps.indexOf(step);
   return at > 0 ? (steps[at - 1] ?? null) : null;
 }
 
 /** Why this step cannot advance yet; null when it can. */
-export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext): string | null {
+export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): string | null {
+  if (step === "details" && opts.skipHome && draft.home === "local") {
+    const homeIssue = stepIssue("home", draft, ctx);
+    if (homeIssue) return homeIssue;
+  }
   switch (step) {
     case "kind":
       if (draft.kind === "template" && !draft.templateId) return "Pick a template.";
@@ -613,19 +627,19 @@ export function scopeIssue(
   return null;
 }
 
-export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext): boolean {
-  if (nextStep(step, draft) === null) return false;
-  return stepIssue(step, draft, ctx) === null;
+export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
+  if (nextStep(step, draft, opts) === null) return false;
+  return stepIssue(step, draft, ctx, opts) === null;
 }
 
 /** Every step the draft walks is valid → Cmd-Enter may create from anywhere. */
-export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext): boolean {
-  return stepsFor(draft).every((step) => stepIssue(step, draft, ctx) === null);
+export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
+  return stepsFor(draft, opts).every((step) => stepIssue(step, draft, ctx, opts) === null);
 }
 
 /** The first step that still needs the user; null when the draft is complete. */
-export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext): CreateBotStep | null {
-  return stepsFor(draft).find((step) => stepIssue(step, draft, ctx) !== null) ?? null;
+export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): CreateBotStep | null {
+  return stepsFor(draft, opts).find((step) => stepIssue(step, draft, ctx, opts) !== null) ?? null;
 }
 
 /**
