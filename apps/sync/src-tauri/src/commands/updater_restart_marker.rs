@@ -142,6 +142,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         }
     }
 
