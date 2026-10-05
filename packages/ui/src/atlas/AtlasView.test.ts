@@ -295,6 +295,32 @@ describe("AtlasView time scrubber and empty company (US-014)", () => {
   });
 });
 
+describe("Atlas find", () => {
+  it("shows the first 8 matches and a Show more row that reveals the rest", async () => {
+    const nodes = Array.from({ length: 12 }, (_, i) => ({ id: `repo-${i}`, type: "repo", label: `alpha ${i}`, path: `repos/${i}`, folder: true, count: 1 }));
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AtlasView, {
+      target: host,
+      props: { companyUid: "cmp_x", companyName: "X", cache: createAtlasCache({ fetcher: async () => ({ company: "X", nodes } as never) }), nowMs: NOW },
+    });
+    await settle();
+    const input = host.querySelector(sel("atlas-find")) as HTMLInputElement;
+    flushSync(() => {
+      input.dispatchEvent(new FocusEvent("focus"));
+      input.value = "alpha";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const results = () => host.querySelectorAll(`${sel("atlas-find-results")} .find-row:not(.find-more)`);
+    expect(results()).toHaveLength(8);
+    const more = host.querySelector(sel("atlas-find-show-more")) as HTMLButtonElement;
+    expect(more.textContent).toContain("Show 4 more");
+    flushSync(() => more.click());
+    expect(results()).toHaveLength(12);
+    expect(host.querySelector(sel("atlas-find-show-more"))).toBeNull();
+  });
+});
+
 describe("Atlas chunk boundary", () => {
   it("nothing outside atlas/ imports the atlas module statically", () => {
     const src = join(dirname(fileURLToPath(import.meta.url)), "..");
