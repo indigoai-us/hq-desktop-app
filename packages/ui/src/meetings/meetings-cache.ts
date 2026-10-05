@@ -143,25 +143,6 @@ export function clearMeetingsCache(
   }
 }
 
-/**
- * Hours-since-cache helper — useful for tests, for future telemetry, or
- * for a debug surface that shows "cache age" in the diagnostics drawer.
- * Returns null when there is no cached entry.
- */
-export function getMeetingsCacheAgeMs(
-  storage: MeetingsStorage | null | undefined = globalThis.localStorage,
-): number | null {
-  try {
-    const raw = safeGetItem(storage, STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { cachedAt?: unknown };
-    if (typeof parsed?.cachedAt !== "number") return null;
-    return Date.now() - parsed.cachedAt;
-  } catch {
-    return null;
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // localStorage shims
 //
@@ -189,11 +170,3 @@ function safeRemoveItem(storage: MeetingsStorage | null | undefined, key: string
   if (!storage) return;
   storage.removeItem(key);
 }
-
-/** Exposed for tests — the storage key isn't part of the public API but
- *  tests need to assert on it (and on the schema-version namespacing). */
-export const __INTERNALS__ = {
-  STORAGE_KEY,
-  SCHEMA_VERSION,
-  MAX_AGE_MS,
-};
