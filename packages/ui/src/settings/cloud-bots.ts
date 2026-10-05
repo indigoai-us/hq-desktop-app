@@ -28,6 +28,8 @@ export interface CloudBotRow {
   status: AgentWorkStatus;
   /** Raw setup phase from the roster (`ready`, `provisioning`, `failed`, …). */
   phase: string;
+  /** The machine an API already disclosed for this bot, when it has one. */
+  machineInstanceId: string | null;
   /** Owner/admin of the bot's company (or explicit admin) may pause/remove it. */
   canManage: boolean;
 }
@@ -98,6 +100,7 @@ export function cloudBotsFromRoster(
         runtimeStatus: str(item.status),
       }),
       phase,
+      machineInstanceId: str(item.instanceId) || str(item.machineInstanceId) || null,
       canManage: canEditAgentProfile({
         agentUid: uid,
         agentCompanyUid: companyUid,

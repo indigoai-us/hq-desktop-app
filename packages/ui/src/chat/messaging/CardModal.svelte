@@ -57,6 +57,8 @@
     logo?: CardLogo | null;
     /** The card's wallpaper (an image url the app bundled). */
     art: string;
+    /** Optional light-appearance variant of the bundled wallpaper. */
+    artLight?: string | null;
     /** Which part of the wallpaper the hero shows (a CSS background-position). */
     artPosition?: string;
     /** The person asked to close: the close button, Escape, a press outside. */
@@ -68,6 +70,8 @@
     busy?: boolean;
     /** A small step indicator under the title. */
     steps?: CardModalSteps | null;
+    /** Optional mark in the hero plate, for flows with a local identity. */
+    heroMark?: Snippet;
     body?: Snippet;
     /** The row of actions under the body. */
     footer?: Snippet;
@@ -85,10 +89,12 @@
     icon,
     logo = null,
     art,
+    artLight = null,
     artPosition = "center",
     onclose,
     busy = false,
     steps = null,
+    heroMark,
     body,
     footer,
     returnFocus = null,
@@ -207,6 +213,7 @@
       class="card-modal"
       data-testid="card-modal"
       data-icon={icon}
+      data-has-light-art={artLight ? 'true' : undefined}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
@@ -215,14 +222,24 @@
     >
       <!-- The art is the app's own bundled image, the one on the card. -->
       <span
-        class="card-modal-art"
+        class="card-modal-art card-modal-art--dark"
         aria-hidden="true"
         style:background-image={`url("${art}")`}
         style:background-position={artPosition}
       ></span>
+      {#if artLight}
+        <span
+          class="card-modal-art card-modal-art--light"
+          aria-hidden="true"
+          style:background-image={`url("${artLight}")`}
+          style:background-position={artPosition}
+        ></span>
+      {/if}
       <header class="card-modal-hero">
         <div class="card-modal-plate">
-          {#if logo}
+          {#if heroMark}
+            <span class="card-modal-hero-mark" data-testid="card-modal-hero-mark">{@render heroMark()}</span>
+          {:else if logo}
             <ConnectionCardLogo {logo} size={34} />
           {:else}
             <span class="card-modal-icon" data-icon={icon} aria-hidden="true"><ConnectionCardIcon name={icon} size={icon === "slack" ? 20 : 18} /></span>

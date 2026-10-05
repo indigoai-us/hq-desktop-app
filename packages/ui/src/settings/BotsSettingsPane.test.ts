@@ -289,271 +289,99 @@ describe("Settings → Bots (Work shell)", () => {
     expect(host.querySelector('[data-testid="settings-bot-assistant-kind"]')).toBeNull();
   });
 
-  it("pauses, resumes, and removes a managed cloud bot through adapter.agents", async () => {
+  function removeDialog(): HTMLElement {
+    const dialog = document.querySelector<HTMLElement>('[data-testid="settings-bot-remove-dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog!;
+  }
+
+  function removeConfirm(): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-confirm"]');
+    expect(button).not.toBeNull();
+    return button!;
+  }
+
+  it("opens a themed removal dialog and returns focus when Escape cancels", async () => {
     const adapter = fakeAdapter({});
     await mountPane(adapter);
-    const pause = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    pause.click();
-    await vi.waitFor(() => expect(adapter.agents.stop).toHaveBeenCalledWith(CLOUD_UID));
-    const resume = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)?.textContent).toContain("Paused");
-    resume.click();
-    await vi.waitFor(() => expect(adapter.agents.start).toHaveBeenCalledWith(CLOUD_UID));
-
-    // Remove needs an explicit confirm (wait for the resume round-trip to settle first).
-    const remove = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      expect(el!.disabled).toBe(false);
-      return el!;
-    });
-    remove.click();
-    await tick();
-    expect(adapter.agents.deprovision).not.toHaveBeenCalled();
-    host
-      .querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!
-      .click();
-    await vi.waitFor(() => expect(adapter.agents.deprovision).toHaveBeenCalledWith(CLOUD_UID));
-  });
-
-  it("turns an HQ Agents v2 refusal into a second inline confirmation without rendering the server copy", async () => {
-    const protectedSentence = "Izzy is already on HQ Agents v2 (live box i-raw-server-copy).";
-    const deprovision = vi.fn(async () => ({
-      ok: false as const,
-      reason: "error" as const,
-      code: "AGENTS_V2_BOX_PROTECTED",
-      instanceId: "i-0abc1234def567890",
-      message: protectedSentence,
-    }));
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
     const remove = await vi.waitFor(() => {
       const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
       expect(el).not.toBeNull();
       return el!;
     });
+    remove.focus();
     remove.click();
     await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-
-    await vi.waitFor(() => {
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-v2-remove-confirm"]`)).not.toBeNull();
-    });
-    expect(host.textContent).toContain("Removing it deletes that machine and everything on it.");
-    expect(host.textContent).not.toContain(protectedSentence);
-    expect(host.textContent).not.toContain("i-raw-server-copy");
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Say goodbye to Izzy?");
+    expect(removeDialog().textContent).toContain("Izzy will stop working and leave your bots.");
+    expect(document.querySelector('[data-testid="card-modal-hero-mark"]')?.textContent).toBe("I");
+    expect(document.querySelectorAll('.card-modal-art')).toHaveLength(2);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(remove);
   });
 
-  it("sends the server-named machine only after the second confirmation", async () => {
+  it("confirms cloud removal, switches the same dialog for a protected machine, and sends its id", async () => {
     const instanceId = "i-0abc1234def567890";
     const deprovision = vi
       .fn()
-      .mockResolvedValueOnce({
-        ok: false as const,
-        reason: "error" as const,
-        code: "AGENTS_V2_BOX_PROTECTED",
-        instanceId,
-      })
+      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId })
       .mockResolvedValueOnce(ok({}));
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
     (await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
     })).click();
     await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-    await vi.waitFor(() => {
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)).not.toBeNull();
-    });
+    removeConfirm().click();
+    await vi.waitFor(() => expect(removeDialog().dataset.machine).toBe("true"));
+    expect(removeDialog().textContent).toContain("runs on its own cloud machine");
     expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID);
-
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)!.click();
-    await vi.waitFor(() => {
-      expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: instanceId });
-    });
+    removeConfirm().click();
+    await vi.waitFor(() => expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: instanceId }));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
   });
 
-  it("cancels the second confirmation without sending another removal request", async () => {
-    const deprovision = vi.fn(async () => ({
-      ok: false as const,
-      reason: "error" as const,
-      code: "AGENTS_V2_BOX_PROTECTED",
-      instanceId: "i-0abc1234def567890",
-    }));
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
-    (await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    })).click();
-    await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-    await vi.waitFor(() => {
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-cancel-v2-remove"]`)).not.toBeNull();
-    });
-
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-cancel-v2-remove"]`)!.click();
-    await tick();
-    expect(deprovision).toHaveBeenCalledTimes(1);
-    expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-v2-remove-confirm"]`)).toBeNull();
-  });
-
-  it("requires a fresh confirmation when the protected machine changes, then stops on the same machine", async () => {
-    const firstMachine = "i-0abc1234def567890";
-    const secondMachine = "i-0fedcba9876543210";
-    const deprovision = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId: firstMachine })
-      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId: secondMachine })
-      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId: secondMachine });
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
-    (await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    })).click();
-    await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)).not.toBeNull());
-
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)!.click();
-    await vi.waitFor(() => expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: firstMachine }));
-    await vi.waitFor(() => {
-      expect(host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)?.disabled).toBe(false);
-    });
-
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`)!.click();
-    await vi.waitFor(() => expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: secondMachine }));
-    await vi.waitFor(() => {
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-v2-remove-confirm"]`)).toBeNull();
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe(
-        "Could not remove Izzy. Try again.",
-      );
-    });
-  });
-
-  it("shows Removing on the cloud row immediately, disables its buttons, then removes the row on success", async () => {
+  it("keeps the dialog open while removing and leaves a friendly retry in it on failure", async () => {
     const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
     const deprovision = vi.fn(() => pending.promise);
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
     (await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
     })).click();
     await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-
+    removeConfirm().click();
     await vi.waitFor(() => {
-      const row = host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)!;
-      expect(row.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Removing…");
-      expect([...row.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+      expect(removeConfirm().textContent).toBe("Removing…");
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(true);
+      expect(removeConfirm().disabled).toBe(true);
     });
-    expect(host.querySelector('[data-testid="settings-bots-cloud-status"]')).toBeNull();
-
-    pending.resolve(ok({}));
-    await vi.waitFor(() => {
-      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull();
-    });
-  });
-
-  it("keeps a cloud removal failure on its row with a friendly retry", async () => {
-    const rawServerSentence = "Izzy is already on HQ Agents v2 (live box i-should-not-render). Refused.";
-    const deprovision = vi.fn(async () => ({
-      ok: false as const,
-      reason: "error" as const,
-      message: rawServerSentence,
-    }));
-    const adapter = fakeAdapter({ agents: { deprovision } });
-    await mountPane(adapter);
-
-    (await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    })).click();
-    await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
-
-    const row = await vi.waitFor(() => {
-      const el = host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)!;
-      expect(el.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not remove Izzy. Try again.");
-      return el;
-    });
-    expect(row.textContent).not.toContain(rawServerSentence);
-    expect(host.querySelector('[data-testid="settings-bots-cloud-status"]')).toBeNull();
-    row.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-retry-action"]`)!.click();
+    pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
+    await vi.waitFor(() => expect(removeDialog().textContent).toContain("Could not remove Izzy. Try again."));
+    expect(removeDialog().textContent).not.toContain("raw transport failure");
+    removeConfirm().click();
     await vi.waitFor(() => expect(deprovision).toHaveBeenCalledTimes(2));
   });
 
-  it("keeps a local removal failure on the bot row with a retry", async () => {
-    const remove = vi.fn(async () => ({
-      ok: false as const,
-      reason: "error" as const,
-      message: "raw local transport error",
-    }));
-    const adapter = fakeAdapter({ bots: { remove } });
-    await mountPane(adapter);
-
-    const row = await vi.waitFor(() => {
-      const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    [...row.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Remove")!.click();
-    await tick();
-    row.querySelector<HTMLButtonElement>("button.danger")!.click();
-    await vi.waitFor(() => {
-      expect(row.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}-action-status"]`)?.textContent).toBe(
-        "Could not remove assistant. Try again.",
-      );
-    });
-    expect(row.textContent).not.toContain("raw local transport error");
-    expect(host.querySelector('[data-testid="settings-bots-status"]')).toBeNull();
-    row.querySelector<HTMLButtonElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}-retry-action"]`)!.click();
-    await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
-  });
-
-  it("shows local removal progress on the row, then removes the row after its refresh", async () => {
+  it("uses the same dialog for local removal and hides the row after a successful refresh", async () => {
     let localBots = [LOCAL_BOT];
-    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["bots"]>["remove"]>>>>();
-    const remove = vi.fn(() => pending.promise);
-    const adapter = fakeAdapter({ bots: { list: vi.fn(async () => ok({ bots: localBots })), remove } });
-    await mountPane(adapter);
-
+    const remove = vi.fn(async () => ok({}));
+    await mountPane(fakeAdapter({ bots: { list: vi.fn(async () => ok({ bots: localBots })), remove } }));
     const row = await vi.waitFor(() => {
-      const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
-      expect(el).not.toBeNull();
-      return el!;
+      const element = host.querySelector<HTMLElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+      expect(element).not.toBeNull();
+      return element!;
     });
-    [...row.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Remove")!.click();
+    row.querySelector<HTMLButtonElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}-remove"]`)!.click();
     await tick();
-    row.querySelector<HTMLButtonElement>("button.danger")!.click();
-    await vi.waitFor(() => {
-      expect(row.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}-action-status"]`)?.textContent).toBe("Removing…");
-      expect([...row.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
-    });
-
+    expect(removeDialog().textContent).toContain("assistant will stop working and leave your bots.");
     localBots = [];
-    pending.resolve(ok({}));
+    removeConfirm().click();
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith(LOCAL_BOT.name));
     await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`)).toBeNull());
   });
 
@@ -603,11 +431,11 @@ describe("Settings → Bots (Work shell)", () => {
       return el!;
     })).click();
     await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+    removeConfirm().click();
     await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
   });
 
-  it("shows Removing on the second-confirmation Remove bot button", async () => {
+  it("shows Removing in the same dialog after the protected-machine confirmation", async () => {
     const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
     const deprovision = vi
       .fn()
@@ -627,11 +455,10 @@ describe("Settings → Bots (Work shell)", () => {
       return el!;
     })).click();
     await tick();
-    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+    removeConfirm().click();
     const confirm = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`);
-      expect(el).not.toBeNull();
-      return el!;
+      expect(removeDialog().dataset.machine).toBe("true");
+      return removeConfirm();
     });
     confirm.click();
     await vi.waitFor(() => expect(confirm.textContent).toBe("Removing…"));
@@ -649,7 +476,7 @@ describe("Settings → Bots (Work shell)", () => {
 
       host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
       await tick();
-      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+      removeConfirm().click();
       await settleFlow();
       expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull();
 

@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Removing a bot in Settings > Bots now shows progress and any error on that bot's row, and a bot on its own cloud machine asks for one more confirmation before the machine is deleted.
+- Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.
 
 ## [0.10.389] — 2026-10-04
 

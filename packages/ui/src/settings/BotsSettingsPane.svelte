@@ -55,6 +55,9 @@
   } from "../chat/bot-restore.js";
   import { botNeedsSignIn, expiredRuntimeOf } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import CardModal from "../chat/messaging/CardModal.svelte";
+  import CardModalStatus from "../chat/messaging/CardModalStatus.svelte";
+  import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { parseRuntimeStatus, type RuntimeStatus } from "../chat/create-bot/runtime-status.js";
   import type { RuntimeSignInApi, RuntimeSignInState } from "../chat/create-bot/RuntimeSignIn.svelte";
   import "../chat/tokens.css";
@@ -111,12 +114,12 @@
   let createBusy = $state<"bot" | null>(null);
   let createError = $state<string | null>(null);
   let workers = $state<LocalBotWorkerOption[] | null>(null);
-  let confirmRemove = $state<string | null>(null);
+  let removedLocal = $state<Set<string>>(new Set());
   let localAction = $state<{
     name: string;
     message: string;
     isError: boolean;
-    verb: "start" | "stop" | "remove";
+    verb: "start" | "stop";
   } | null>(null);
   let localActionTimeout: ReturnType<typeof setTimeout> | undefined;
   let stopPoll: (() => void) | undefined;
@@ -184,22 +187,31 @@
   let cloudLoading = $state(true);
   let cloudError = $state("");
   let cloudBusy = $state<string | null>(null);
-  let cloudConfirmRemove = $state<string | null>(null);
-  /**
-   * A second, deliberate confirm when the API says this bot owns a live HQ
-   * Agents v2 machine. The id comes from the refusal, never from the row, so
-   * a changed machine can only be removed after it is named again.
-   */
-  let cloudV2RemoveConfirm = $state<{ uid: string; instanceId: string } | null>(null);
+  type RemoveDialog =
+    | {
+        kind: "local";
+        bot: LocalBotRow;
+        displayName: string;
+        returnFocus: HTMLElement | null;
+        error: string | null;
+      }
+    | {
+        kind: "cloud";
+        bot: CloudBotRow;
+        returnFocus: HTMLElement | null;
+        instanceId: string | null;
+        error: string | null;
+      };
+  let removeDialog = $state<RemoveDialog | null>(null);
   let cloudAction = $state<{
     uid: string;
     message: string;
     isError: boolean;
-    verb: "pause" | "resume" | "remove";
-    confirmDestroyInstanceId?: string;
+    verb: "pause" | "resume";
   } | null>(null);
   let cloudActionTimeout: ReturnType<typeof setTimeout> | undefined;
   let removedCloud = $state<Set<string>>(new Set());
+  const visibleBots = $derived(bots.filter((bot) => !removedLocal.has(bot.name)));
   const visibleCloudBots = $derived(cloudBots.filter((bot) => !removedCloud.has(bot.uid)));
   /** Bots this pane paused; the roster carries no runtime state of its own. */
   let pausedCloud = $state<Set<string>>(new Set());
@@ -282,21 +294,23 @@
     if (!result.ok) {
       loadError = friendlyApiError(result, "Could not read your local bots.", "bots");
     } else {
-      bots = result.value.bots ?? [];
+      const nextBots = result.value.bots ?? [];
+      bots = nextBots;
+      removedLocal = new Set([...removedLocal].filter((name) => !nextBots.some((bot) => bot.name === name)));
       loadError = "";
     }
     loading = false;
     return result.ok;
   }
 
-  async function act(name: string, verb: "start" | "stop" | "remove"): Promise<void> {
+  async function act(name: string, verb: "start" | "stop"): Promise<void> {
     const api = adapter?.bots;
     if (!api || busy) return;
     busy = name;
     localAction = {
       name,
       verb,
-      message: `${verb === "start" ? "Starting" : verb === "stop" ? "Stopping" : "Removing"}…`,
+      message: `${verb === "start" ? "Starting" : "Stopping"}…`,
       isError: false,
     };
     const result = await api[verb](name);
@@ -304,26 +318,52 @@
       if (result.message) console.warn(`[hq-desktop] local bot ${verb} failed:`, result.message);
       localAction = { name, verb, message: `Could not ${verb} ${name}. Try again.`, isError: true };
     } else {
-      if (verb === "remove") {
-        const reloaded = await load(true);
-        if (!reloaded) {
-          localAction = {
-            name,
-            verb,
-            message: `Removed. Could not refresh the local bot list.`,
-            isError: true,
-          };
-        } else {
-          localAction = null;
-        }
-      } else {
-        localAction = { name, verb, message: `${verb === "start" ? "Started" : "Stopped"}.`, isError: false };
-        clearLocalActionAfterSuccess(name);
-        await load(true);
-      }
+      localAction = { name, verb, message: `${verb === "start" ? "Started" : "Stopped"}.`, isError: false };
+      clearLocalActionAfterSuccess(name);
+      await load(true);
     }
     busy = null;
-    confirmRemove = null;
+  }
+
+  function openLocalRemove(bot: LocalBotRow, target: EventTarget | null): void {
+    removeDialog = {
+      kind: "local",
+      bot,
+      displayName: botRowDisplayName(bot, botDisplayNames),
+      returnFocus: target instanceof HTMLElement ? target : null,
+      error: null,
+    };
+  }
+
+  function openCloudRemove(bot: CloudBotRow, target: EventTarget | null): void {
+    removeDialog = {
+      kind: "cloud",
+      bot,
+      returnFocus: target instanceof HTMLElement ? target : null,
+      instanceId: bot.machineInstanceId,
+      error: null,
+    };
+  }
+
+  function closeRemoveDialog(): void {
+    if (busy || cloudBusy) return;
+    removeDialog = null;
+  }
+
+  async function removeLocal(dialog: Extract<RemoveDialog, { kind: "local" }>): Promise<void> {
+    const api = adapter?.bots;
+    if (!api || busy) return;
+    busy = dialog.bot.name;
+    const result = await api.remove(dialog.bot.name);
+    if (!result.ok) {
+      if (result.message) console.warn("[hq-desktop] local bot remove failed:", result.message);
+      removeDialog = { ...dialog, error: `Could not remove ${dialog.displayName}. Try again.` };
+    } else {
+      removedLocal = new Set(removedLocal).add(dialog.bot.name);
+      await load(true);
+      removeDialog = null;
+    }
+    busy = null;
   }
 
   async function openCreate(): Promise<void> {
@@ -521,63 +561,62 @@
     return !cloudError;
   }
 
-  async function actCloud(
-    bot: CloudBotRow,
-    verb: "pause" | "resume" | "remove",
-    confirmDestroyInstanceId?: string,
-  ): Promise<void> {
+  async function actCloud(bot: CloudBotRow, verb: "pause" | "resume"): Promise<void> {
     const agents = adapter?.agents;
     if (!agents || cloudBusy) return;
     cloudBusy = bot.uid;
     cloudAction = {
       uid: bot.uid,
       verb,
-      confirmDestroyInstanceId,
-      message: `${verb === "pause" ? "Pausing" : verb === "resume" ? "Resuming" : "Removing"}…`,
+      message: verb === "pause" ? "Pausing…" : "Resuming…",
       isError: false,
     };
-    const result =
-      verb === "pause"
-        ? await agents.stop(bot.uid)
-        : verb === "resume"
-          ? await agents.start(bot.uid)
-          : confirmDestroyInstanceId
-            ? await agents.deprovision(bot.uid, { confirmDestroyInstanceId })
-            : await agents.deprovision(bot.uid);
-    const alreadyRemoved = verb === "remove" && !result.ok && result.status === 404;
-    if (!result.ok && !alreadyRemoved) {
-      const instanceId = result.code === "AGENTS_V2_BOX_PROTECTED" ? result.instanceId?.trim() : "";
-      if (verb === "remove" && instanceId) {
-        if (confirmDestroyInstanceId === instanceId) {
-          // Do not keep offering the same destructive request after the
-          // server refused the exact confirmation we just sent.
-          cloudV2RemoveConfirm = null;
-          cloudAction = { uid: bot.uid, verb, message: `Could not remove ${bot.displayName}. Try again.`, isError: true };
-        } else {
-          cloudV2RemoveConfirm = { uid: bot.uid, instanceId };
-          cloudAction = null;
-        }
-      } else {
-        if (result.message) console.warn(`[hq-desktop] cloud bot ${verb} failed:`, result.message);
-        cloudAction = { uid: bot.uid, verb, confirmDestroyInstanceId, message: `Could not ${verb} ${bot.displayName}. Try again.`, isError: true };
-      }
+    const result = verb === "pause" ? await agents.stop(bot.uid) : await agents.start(bot.uid);
+    if (!result.ok) {
+      if (result.message) console.warn(`[hq-desktop] cloud bot ${verb} failed:`, result.message);
+      cloudAction = { uid: bot.uid, verb, message: `Could not ${verb} ${bot.displayName}. Try again.`, isError: true };
     } else {
       const next = new Set(pausedCloud);
       if (verb === "pause") next.add(bot.uid);
       else next.delete(bot.uid);
       pausedCloud = next;
-      cloudV2RemoveConfirm = null;
-      if (verb === "remove") {
-        removedCloud = new Set(removedCloud).add(bot.uid);
-        cloudAction = null;
-      } else {
-        cloudAction = { uid: bot.uid, verb, message: verb === "pause" ? "Paused." : "Resumed.", isError: false };
-        clearCloudActionAfterSuccess(bot.uid);
-        await loadCloud(true);
-      }
+      cloudAction = { uid: bot.uid, verb, message: verb === "pause" ? "Paused." : "Resumed.", isError: false };
+      clearCloudActionAfterSuccess(bot.uid);
+      await loadCloud(true);
     }
     cloudBusy = null;
-    cloudConfirmRemove = null;
+  }
+
+  async function removeCloud(dialog: Extract<RemoveDialog, { kind: "cloud" }>): Promise<void> {
+    const agents = adapter?.agents;
+    if (!agents || cloudBusy) return;
+    const { bot, instanceId } = dialog;
+    cloudBusy = bot.uid;
+    const result = instanceId
+      ? await agents.deprovision(bot.uid, { confirmDestroyInstanceId: instanceId })
+      : await agents.deprovision(bot.uid);
+    const alreadyRemoved = !result.ok && result.status === 404;
+    if (!result.ok && !alreadyRemoved) {
+      const protectedInstanceId = result.code === "AGENTS_V2_BOX_PROTECTED" ? result.instanceId?.trim() : "";
+      if (protectedInstanceId) {
+        // The server, not a stale roster, names the machine that needs an
+        // additional deliberate confirmation. Keep the same dialog in place.
+        removeDialog = { ...dialog, instanceId: protectedInstanceId, error: null };
+      } else {
+        if (result.message) console.warn("[hq-desktop] cloud bot remove failed:", result.message);
+        removeDialog = { ...dialog, error: `Could not remove ${bot.displayName}. Try again.` };
+      }
+    } else {
+      removedCloud = new Set(removedCloud).add(bot.uid);
+      removeDialog = null;
+    }
+    cloudBusy = null;
+  }
+
+  function confirmRemoveDialog(): void {
+    if (!removeDialog) return;
+    if (removeDialog.kind === "local") void removeLocal(removeDialog);
+    else void removeCloud(removeDialog);
   }
 
   onMount(() => {
@@ -632,7 +671,7 @@
             No local bots yet — create one below. It takes about half a minute.
           </p>
         {/if}
-        {#each bots as bot (bot.name)}
+        {#each visibleBots as bot (bot.name)}
           <div
             class="bot-row"
             data-testid={`settings-bot-${bot.name}`}
@@ -676,18 +715,15 @@
                   {busy === bot.name ? "Working…" : "Start"}
                 </button>
               {/if}
-              {#if confirmRemove === bot.name}
-                <button type="button" class="danger" disabled={Boolean(busy)} onclick={() => void act(bot.name, "remove")}>
-                  Really remove
-                </button>
-                <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = null)}>
-                  Keep
-                </button>
-              {:else}
-                <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = bot.name)}>
-                  Remove
-                </button>
-              {/if}
+              <button
+                type="button"
+                class="quiet"
+                data-testid={`settings-bot-${bot.name}-remove`}
+                disabled={Boolean(busy)}
+                onclick={(event) => openLocalRemove(bot, event.currentTarget)}
+              >
+                Remove
+              </button>
               {#if localAction?.name === bot.name && localAction.isError}
                 <button
                   type="button"
@@ -899,66 +935,26 @@
                   {cloudBusy === bot.uid ? "Working…" : "Pause"}
                 </button>
               {/if}
-              {#if cloudConfirmRemove === bot.uid}
-                <button
-                  type="button"
-                  class="danger"
-                  data-testid={`settings-cloud-bot-${bot.uid}-confirm-remove`}
-                  disabled={Boolean(cloudBusy)}
-                  onclick={() => void actCloud(bot, "remove")}
-                >
-                  Really remove
-                </button>
-                <button type="button" class="quiet" disabled={Boolean(cloudBusy)} onclick={() => (cloudConfirmRemove = null)}>
-                  Keep
-                </button>
-              {:else}
-                <button
-                  type="button"
-                  class="quiet"
-                  data-testid={`settings-cloud-bot-${bot.uid}-remove`}
-                  disabled={Boolean(cloudBusy)}
-                  onclick={() => (cloudConfirmRemove = bot.uid)}
-                >
-                  Remove
-                </button>
-              {/if}
+              <button
+                type="button"
+                class="quiet"
+                data-testid={`settings-cloud-bot-${bot.uid}-remove`}
+                disabled={Boolean(cloudBusy)}
+                onclick={(event) => openCloudRemove(bot, event.currentTarget)}
+              >
+                Remove
+              </button>
               {#if cloudAction?.uid === bot.uid && cloudAction.isError}
                 <button
                   type="button"
                   class="quiet"
                   data-testid={`settings-cloud-bot-${bot.uid}-retry-action`}
                   disabled={Boolean(cloudBusy)}
-                  onclick={() => void actCloud(bot, cloudAction!.verb, cloudAction!.confirmDestroyInstanceId)}
+                  onclick={() => void actCloud(bot, cloudAction!.verb)}
                 >
                   Retry
                 </button>
               {/if}
-            </div>
-          {/if}
-          {#if cloudV2RemoveConfirm?.uid === bot.uid}
-            <div class="remove-v2-confirm" data-testid={`settings-cloud-bot-${bot.uid}-v2-remove-confirm`}>
-              <small>
-                This bot runs on its own cloud machine. Removing it deletes that machine and everything on it. This can't be undone.
-              </small>
-              <button
-                type="button"
-                class="danger"
-                data-testid={`settings-cloud-bot-${bot.uid}-confirm-v2-remove`}
-                disabled={Boolean(cloudBusy)}
-                onclick={() => void actCloud(bot, "remove", cloudV2RemoveConfirm!.instanceId)}
-              >
-                {cloudBusy === bot.uid ? "Removing…" : "Remove bot"}
-              </button>
-              <button
-                type="button"
-                class="quiet"
-                data-testid={`settings-cloud-bot-${bot.uid}-cancel-v2-remove`}
-                disabled={Boolean(cloudBusy)}
-                onclick={() => (cloudV2RemoveConfirm = null)}
-              >
-                Keep
-              </button>
             </div>
           {/if}
         </div>
@@ -966,6 +962,62 @@
     </div>
   </div>
 </section>
+
+{#if removeDialog}
+  {@const dialog = removeDialog}
+  {@const dialogName = dialog.kind === "local" ? dialog.displayName : dialog.bot.displayName}
+  {@const dialogInitial = dialog.kind === "local" ? cloudBotInitial(dialog.displayName) : cloudBotInitial(dialog.bot.displayName)}
+  {@const dialogBusy = dialog.kind === "local" ? busy === dialog.bot.name : cloudBusy === dialog.bot.uid}
+  {@const machineInstanceId = dialog.kind === "cloud" ? dialog.instanceId : null}
+  <CardModal
+    open={true}
+    title={`Say goodbye to ${dialogName}?`}
+    icon="tools"
+    art={SETUP_HERO_ART.dark}
+    artLight={SETUP_HERO_ART.light}
+    busy={dialogBusy}
+    returnFocus={dialog.returnFocus}
+    onclose={closeRemoveDialog}
+  >
+    {#snippet heroMark()}
+      <span class="remove-bot-avatar" aria-hidden="true">{dialogInitial}</span>
+    {/snippet}
+    {#snippet body()}
+      <div class="remove-dialog-body" data-testid="settings-bot-remove-dialog" data-machine={machineInstanceId ? "true" : "false"}>
+        <p class="card-modal-copy">
+          {#if machineInstanceId}
+            {dialogName} runs on its own cloud machine. Removing {dialogName} deletes that machine and everything on it. This can't be undone.
+          {:else}
+            {dialogName} will stop working and leave your bots. This can't be undone.
+          {/if}
+        </p>
+        {#if dialog.error}
+          <CardModalStatus kind="problem" text={dialog.error} />
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <button
+        type="button"
+        class="card-modal-btn is-quiet"
+        data-testid="settings-bot-remove-dialog-keep"
+        disabled={dialogBusy}
+        onclick={closeRemoveDialog}
+      >
+        Keep {dialogName}
+      </button>
+      <button
+        type="button"
+        class="card-modal-btn is-danger"
+        data-testid="settings-bot-remove-dialog-confirm"
+        disabled={dialogBusy}
+        onclick={confirmRemoveDialog}
+      >
+        {dialogBusy ? "Removing…" : `Remove ${dialogName}`}
+      </button>
+    {/snippet}
+  </CardModal>
+{/if}
 
 {#if createOpen}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1099,14 +1151,18 @@
   }
   .actions { display: flex; align-items: center; gap: 8px; }
   .adopt-result, .restore-result { display: grid; gap: 2px; }
-  .remove-v2-confirm {
-    display: flex;
-    flex: 1 0 100%;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
+  .remove-bot-avatar {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background: rgba(9, 9, 11, 0.58);
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+    font-weight: 500;
   }
-  .remove-v2-confirm small { flex: 1 0 100%; }
+  .remove-dialog-body { display: grid; gap: 12px; }
   .create { display: grid; gap: 10px; }
   .create-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   button {
@@ -1121,7 +1177,6 @@
     cursor: pointer;
   }
   button:disabled { opacity: 0.5; cursor: default; }
-  button.danger { color: var(--v4-danger, #dcaaa0); }
   .quiet {
     border: 0;
     background: transparent;

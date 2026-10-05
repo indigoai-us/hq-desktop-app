@@ -95,6 +95,28 @@
   background-repeat: no-repeat;
 }
 
+.card-modal[data-has-light-art] .card-modal-art--light {
+	display: none;
+}
+
+:root[data-force-theme="light"] .card-modal[data-has-light-art] .card-modal-art--dark {
+	display: none;
+}
+
+:root[data-force-theme="light"] .card-modal[data-has-light-art] .card-modal-art--light {
+	display: block;
+}
+
+@media (prefers-color-scheme: light) {
+	:root:not([data-force-theme="dark"]) .card-modal[data-has-light-art] .card-modal-art--dark {
+		display: none;
+	}
+
+	:root:not([data-force-theme="dark"]) .card-modal[data-has-light-art] .card-modal-art--light {
+		display: block;
+	}
+}
+
 /* The scrim: darkest at the edges, like the takeover's shade. */
 .card-modal-art::after {
   content: "";
@@ -143,6 +165,14 @@
   border-radius: 8px;
   background: rgba(9, 9, 11, 0.46);
   color: var(--cm-ink);
+}
+
+.card-modal-hero-mark {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
 }
 
 /* Slack's mark is in Slack's own colour (ConnectionCardIcon), so its box is
@@ -413,6 +443,17 @@
 .card-modal-btn.is-primary:hover:not(:disabled) {
   border-color: #fff;
   background: #fff;
+}
+
+.card-modal-btn.is-danger {
+  border-color: rgba(240, 97, 109, 0.68);
+  background: rgba(145, 41, 49, 0.84);
+  color: #fff7f6;
+}
+
+.card-modal-btn.is-danger:hover:not(:disabled) {
+  border-color: rgba(255, 176, 181, 0.92);
+  background: rgba(170, 48, 59, 0.94);
 }
 
 .card-modal-btn.is-quiet {
