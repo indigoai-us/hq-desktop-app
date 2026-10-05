@@ -107,7 +107,14 @@ function load<R extends CompanyResource>(
 
 function refreshActive(): void {
   if (active)
-    void load(active.resource, active.slug, true).catch(() => undefined);
+    void load(active.resource, active.slug, true).catch((error: unknown) => {
+      // Focus and the jittered poll both call this. A debug line keeps a
+      // failed refresh from vanishing without logging on every successful tick.
+      console.debug(
+        "company-store: refresh failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    });
 }
 
 export function startCompanyStore(): void {

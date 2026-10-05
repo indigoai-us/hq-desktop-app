@@ -64,7 +64,7 @@ const BACKLINKS: Record<string, string[]> = {
 
 const BIG_NOTE = "companies/acme/knowledge/big.md";
 
-function makeAdapter(calls: string[], failReveal = false) {
+function makeAdapter(calls: string[], failReveal = false, scopeError: Error | null = null) {
   return {
     kind: "tauri",
     capabilities: {},
@@ -72,6 +72,7 @@ function makeAdapter(calls: string[], failReveal = false) {
     appShell: {
       setActiveCompany: vi.fn(async (slug: string) => {
         calls.push(`scope:${slug}`);
+        if (scopeError) throw scopeError;
         return ok(undefined);
       }),
     },
@@ -153,9 +154,13 @@ async function settle(times = 6) {
   }
 }
 
-async function render(props: Record<string, unknown> = {}, failReveal = false) {
+async function render(
+  props: Record<string, unknown> = {},
+  failReveal = false,
+  scopeError: Error | null = null,
+) {
   const calls: string[] = [];
-  const adapter = makeAdapter(calls, failReveal);
+  const adapter = makeAdapter(calls, failReveal, scopeError);
   const onlocationchange = vi.fn();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -194,6 +199,18 @@ describe("VaultExplorer", () => {
     expect(scopeAt).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("list:companies/acme")).toBeGreaterThan(scopeAt);
     expect(calls.indexOf("summary:companies/acme")).toBeGreaterThan(scopeAt);
+  });
+
+  it("logs a failed company scope and still lists the vault", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { calls, host } = await render({}, false, new Error("scope down"));
+      expect(calls).toContain("list:companies/acme");
+      expect(rowNames(host)).toEqual(["knowledge", "README"]);
+      expect(warn).toHaveBeenCalledWith("vault-explorer: company scope failed", "scope down");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("never shows settings folders or credential files", async () => {

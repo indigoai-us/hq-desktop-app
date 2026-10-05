@@ -63,7 +63,7 @@ export const EMPTY_LIVE_SYNC: LiveSyncStatus = {
 };
 
 /** Parse the journal's `uploadsPaused` list; drops malformed rows. */
-export function parseUploadsPaused(raw: unknown): UploadsPausedCompany[] {
+function parseUploadsPaused(raw: unknown): UploadsPausedCompany[] {
   if (!Array.isArray(raw)) return [];
   const rows: UploadsPausedCompany[] = [];
   const seen = new Set<string>();
