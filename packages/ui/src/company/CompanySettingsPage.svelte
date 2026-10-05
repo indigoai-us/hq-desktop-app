@@ -176,10 +176,6 @@
         <span class="lb">Default vault access<small>What a new Member can reach before any group</small></span>
         <textarea class="in mono ta" bind:value={snap.general.defaultAccess}></textarea>
       </label>
-      <label class="fr toggle-row" data-testid="settings-default-company">
-        <span class="lb">Open {snap.general.name || "this company"} on sign-in for members</span>
-        <input type="checkbox" role="switch" class="switch" bind:checked={snap.general.openOnSignIn} />
-      </label>
       <label class="fr"><span class="lb">Meeting bot<small>display name</small></span><input class="in" bind:value={snap.general.meetingBotName} /></label>
       </fieldset>
       {#if !canEdit}<p class="note" data-testid="settings-owner-note">Only the owner can change these.</p>{/if}
@@ -325,8 +321,6 @@
     background: transparent;
   }
   .fs { border: 0; margin: 0; padding: 0; min-width: 0; display: contents; }
-  .toggle-row { align-items: center; }
-  .switch { width: 28px; height: 16px; accent-color: var(--v4-ok, currentColor); }
   .subnav, .page { min-height: 0; overflow: auto; }
   .subnav {
     border-right: 1px solid var(--line);
