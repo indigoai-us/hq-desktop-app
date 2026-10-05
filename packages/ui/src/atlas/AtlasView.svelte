@@ -24,8 +24,11 @@
     type AtlasWorkState,
   } from "./atlas-motion.js";
   import {
+    atlasBiggestChanges,
     atlasDailyCounts,
     atlasDayStart,
+    atlasPlaybackCaption,
+    atlasScrubLabel,
     atlasTimeOpacity,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
@@ -255,6 +258,16 @@
   let scrubIndex = $state<number | null>(null);
   const dailyCounts = $derived(atlasDailyCounts(graph?.nodes ?? [], timeMode, nowMs));
   const timeOpacity = $derived(atlasTimeOpacity(graph?.nodes ?? [], timeMode, scrubIndex, nowMs, live));
+  // Playback: the day in large quiet type on the map, and while playing the
+  // day's biggest changes by name.
+  let playing = $state(false);
+  const playback = $derived.by(() => {
+    if (scrubIndex == null || !graph) return null;
+    return {
+      date: atlasScrubLabel(scrubIndex, nowMs),
+      caption: playing ? atlasPlaybackCaption(atlasBiggestChanges(graph.nodes, timeMode, scrubIndex, nowMs), timeMode) : "",
+    };
+  });
   const nothingActive = $derived(
     scrubIndex == null && (graph?.nodes ?? []).every((n) => timeOpacity.has(n.id)),
   );
@@ -633,6 +646,7 @@
           {motion}
           {pulses}
           {trails}
+          {playback}
           onselect={selectFromMap}
           onview={(next) => {
             stopFlight();
@@ -665,6 +679,7 @@
       disabled={!graph || empty}
       onmode={(m) => (timeMode = m)}
       onindex={(i) => (scrubIndex = i)}
+      onplaying={(p) => (playing = p)}
     />
     </div>
     <AtlasInspector

@@ -9,6 +9,9 @@
     ATLAS_TIMELINE_DAYS,
     atlasHistogramHeights,
     atlasHotDays,
+    atlasPlaybackIndex,
+    atlasPlaybackStart,
+    atlasPlaybackStepMs,
     atlasScrubLabel,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
@@ -22,12 +25,14 @@
     disabled?: boolean;
     onmode: (mode: AtlasTimeMode) => void;
     onindex: (index: number | null) => void;
+    /** Playback started or stopped (the map shows the date and the day's changes while playing). */
+    onplaying?: (playing: boolean) => void;
   }
 
-  let { counts, mode, index, nowMs, disabled = false, onmode, onindex }: Props = $props();
+  let { counts, mode, index, nowMs, disabled = false, onmode, onindex, onplaying }: Props = $props();
 
-  /** Milliseconds per day of playback; 30 days play in about three seconds. */
-  const STEP_MS = 100;
+  /** Milliseconds per day of playback: the whole timeline plays in about 25 seconds. */
+  const STEP_MS = atlasPlaybackStepMs(ATLAS_TIMELINE_DAYS);
   const last = ATLAS_TIMELINE_DAYS - 1;
 
   const heights = $derived(atlasHistogramHeights(counts));
@@ -55,9 +60,11 @@
   let dragging = false;
 
   function stop(): void {
+    const was = playing;
     playing = false;
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
+    if (was) onplaying?.(false);
   }
 
   function play(): void {
@@ -66,13 +73,19 @@
       return;
     }
     playing = true;
+    onplaying?.(true);
     const start = performance.now();
-    const from = index == null || index >= last ? 0 : index;
+    const from = atlasPlaybackStart(index);
     onindex(from);
     const tickFrame = (t: number) => {
       if (!playing) return;
-      const next = from + Math.floor((t - start) / STEP_MS);
-      if (next >= last) {
+      // No playback while the window is hidden: pause where it is.
+      if (typeof document !== "undefined" && document.hidden) {
+        stop();
+        return;
+      }
+      const next = atlasPlaybackIndex(from, t - start, STEP_MS);
+      if (next === null) {
         onindex(null);
         stop();
         return;

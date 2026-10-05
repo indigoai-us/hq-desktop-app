@@ -58,6 +58,8 @@
     pulses?: ReadonlyMap<string, number>;
     /** Faint trails from projects active now to what they just touched. */
     trails?: readonly AtlasTrail[];
+    /** Scrubbed or playing: the day on the map, and while playing that day's biggest changes. */
+    playback?: { date: string; caption: string } | null;
     view: AtlasView;
     onselect: (id: string | null) => void;
     onview: (view: AtlasView) => void;
@@ -81,6 +83,7 @@
     motion = true,
     pulses = new Map(),
     trails = [],
+    playback = null,
     view,
     onselect,
     onview,
@@ -169,12 +172,13 @@
   let legendEl = $state<HTMLElement | null>(null);
   let toolsEl = $state<HTMLElement | null>(null);
   let dockEl = $state<HTMLElement | null>(null);
+  let dayEl = $state<HTMLElement | null>(null);
   let fixedBoxes = $state<AtlasScreenLabel["box"][]>([]);
   function measureFixed(): void {
     const origin = svgEl?.getBoundingClientRect();
     if (!origin) return;
     const next: AtlasScreenLabel["box"][] = [];
-    for (const el of [legendEl, toolsEl, dockEl]) {
+    for (const el of [legendEl, toolsEl, dockEl, dayEl]) {
       const r = el?.getBoundingClientRect();
       if (!r || r.width === 0 || r.height === 0) continue;
       next.push({ left: r.left - origin.left, top: r.top - origin.top, right: r.right - origin.left, bottom: r.bottom - origin.top });
@@ -184,6 +188,8 @@
   $effect(() => {
     void nothingActive;
     void dockEl;
+    void dayEl;
+    void playback?.caption;
     void mapWidth;
     void mapHeight;
     if (!legendEl || typeof ResizeObserver === "undefined") {
@@ -194,6 +200,7 @@
     observer.observe(legendEl);
     if (toolsEl) observer.observe(toolsEl);
     if (dockEl) observer.observe(dockEl);
+    if (dayEl) observer.observe(dayEl);
     measureFixed();
     return () => observer.disconnect();
   });
@@ -662,6 +669,13 @@
       {#each card.lines as line (line)}
         <div class="hc-line">{line}</div>
       {/each}
+    </div>
+  {/if}
+  {#if playback}
+    <!-- The scrubbed day on the map; while playing, that day's biggest changes. -->
+    <div class="day" data-testid="atlas-playback" bind:this={dayEl} aria-live="polite">
+      <div class="day-date" data-testid="atlas-playback-date">{playback.date}</div>
+      {#if playback.caption}<div class="day-caption" data-testid="atlas-playback-caption">{playback.caption}</div>{/if}
     </div>
   {/if}
   <div class="legend" bind:this={legendEl}>
@@ -1162,6 +1176,32 @@
     border-color: var(--v4-control-border);
     color: var(--v4-text-2);
     cursor: pointer;
+  }
+  /* Playback date: the canvas title size, quiet; the caption is body size. */
+  .day {
+    position: absolute;
+    left: 16px;
+    top: 12px;
+    max-width: min(420px, calc(100% - 120px));
+    pointer-events: none;
+    padding: 2px 8px 4px;
+    background: var(--v4-ground);
+    background: rgb(from var(--v4-ground) r g b);
+  }
+  .day-date {
+    font-size: var(--type-title, 20px);
+    font-weight: 400;
+    line-height: 1.25;
+    color: var(--v4-text-3);
+    font-variant-numeric: tabular-nums;
+  }
+  .day-caption {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--v4-text-2, var(--v4-text-3));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .map-tools {
     position: absolute;
