@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- The robot "Show bot messages" button is gone from the Messages toolbar. The list now always works the default way, with bot-only messages kept out of previews, even for anyone who had turned the button on before.
 - Hovering an object on the Atlas map now shows more: who is on it now with their pictures, a story progress bar, the repos it links to and counts of linked knowledge and policies, the folder for a file, and recent times such as "Touched 2 h ago". Each row appears only when there is data for it.
 - People and bots on the Atlas map, in the Not on the map group, in Working now and in the hover card now show their profile picture or bot picture, the same one Messages uses. Anyone without a picture, or whose picture does not load, keeps their initials or the bot mark.
 - Buttons in the separate windows (onboarding, sign-in, the quick window and the call window) now show a small icon before their label, like the rest of the app.
