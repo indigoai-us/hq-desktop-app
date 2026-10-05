@@ -14,6 +14,7 @@
 import type { PresenceSnapshot } from "@hq/core";
 import type { SidepaneRosterEntry } from "./sidepane-models.js";
 import type { NavigationDestination } from "./navigation-history.js";
+import { agentAvatarFor, authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
 
 /**
  * Vault access the Atlas graph builder needs in the native app (QA-016). The
@@ -114,6 +115,11 @@ export interface AtlasLiveActor {
   signal?: string;
   /** Online, but none of their sessions is in progress. */
   idle?: boolean;
+  /**
+   * Picture the rest of the app shows for this actor: the roster or profile
+   * photo, else a bot's generated avatar. Absent for a person with no photo.
+   */
+  avatarUrl?: string;
 }
 
 /** Session states that mean work is in progress right now. */
@@ -148,6 +154,7 @@ export function atlasLiveActors(
   companyUid: string,
   names: RosterNames,
   selfUid: string | null = null,
+  avatars: Readonly<Record<string, string>> | null = null,
 ): AtlasLiveActor[] {
   if (!live) return [];
   const actors = snapshot.get(companyUid);
@@ -162,7 +169,10 @@ export function atlasLiveActors(
       (p.actorUid === selfUid ? "You" : p.actorUid);
     const bot = (known?.actorType ?? p.actorType) === "agent";
     const idle = !p.sessions.some((s) => WORKING_STATUSES.has(s.status));
-    const flag = idle ? { idle: true } : {};
+    // Same order as IdentityMark: a photo the CSP can paint, then a bot's
+    // generated avatar, then nothing (the chip draws initials).
+    const picture = authorAvatarUrl(p.actorUid, avatars) ?? (bot ? agentAvatarFor(p.actorUid) : null);
+    const flag = { ...(idle ? { idle: true } : {}), ...(picture ? { avatarUrl: picture } : {}) };
     // One row per place. A session with no project still says where it is
     // when it names a repo, a working directory, a worker or a task.
     const places = new Map<string, Omit<AtlasLiveActor, "actorUid" | "name" | "bot" | "idle">>();

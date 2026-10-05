@@ -23,6 +23,8 @@ export type AtlasLiveActorInput = {
   signal?: string;
   /** Online with no session in progress. */
   idle?: boolean;
+  /** Profile or bot picture; chips fall back to initials without one. */
+  avatarUrl?: string;
 };
 
 /**
@@ -108,6 +110,7 @@ export function atlasPresenceFromActors(
       bot: a.bot,
       signal: a.signal,
       ...(a.idle ? { idle: true } : {}),
+      ...(a.avatarUrl ? { avatarUrl: a.avatarUrl } : {}),
       ...(hit ? {} : { unplaced: atlasUnplacedReason(a) }),
     });
   }
@@ -162,6 +165,8 @@ export type AtlasDockedChip = {
   signal?: string;
   /** Online with no session in progress: drawn quieter, without the pulse. */
   idle?: boolean;
+  /** Picture drawn inside the chip; initials when absent or it fails to load. */
+  avatarUrl?: string;
   /** Chip centre and the connector start on the node rim (world units). */
   x: number;
   y: number;
@@ -208,6 +213,7 @@ export function atlasDockedChips(
       index: i,
       signal: who.signal,
       ...(who.idle ? { idle: true } : {}),
+      ...(who.avatarUrl ? { avatarUrl: who.avatarUrl } : {}),
       x: x1 + 18 + i * CHIP_GAP,
       y: y1 - 18,
       x1,

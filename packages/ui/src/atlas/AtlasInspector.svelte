@@ -4,6 +4,7 @@
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
+  import AtlasFace from "./AtlasFace.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
    * chips, Here now, PRD goal, stories, related, actions, Born/Touched/Inside.
@@ -110,7 +111,7 @@
       <div class="list">
         {#each here as who (who.actorUid ?? who.name)}
           <div class="li">
-            <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
+            <span class="mini" class:sq={who.bot}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={22} fallback={who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()} /><span class="ld"></span></span>
             <div>
               <div class="tt">{who.name}</div>
               {#if who.signal}<div class="mm">{who.signal}</div>{/if}
@@ -203,7 +204,7 @@
       <div class="list" data-testid="atlas-inspector-working-now">
         {#each presence as who (`${who.name}:${who.nodeId}`)}
           <button type="button" class="li rowbtn card" onclick={() => onselect(who.nodeId)}>
-            <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
+            <span class="mini" class:sq={who.bot}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={22} fallback={who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()} /><span class="ld"></span></span>
             <div>
               <div class="tt">{who.name}</div>
               {#if who.place || who.signal}<div class="mm">{[who.place, who.signal].filter(Boolean).join(" · ")}</div>{/if}

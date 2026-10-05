@@ -15,7 +15,8 @@
   import { ATLAS_PULSE_MS, type AtlasTrail } from "./atlas-motion.js";
   import { atlasFocusPlaced, type AtlasFocusOffset } from "./atlas-focus.js";
   import { ATLAS_RING_GAP, ATLAS_RING_MIN_PX, atlasStoryFraction } from "./atlas-activity.js";
-  import { ATLAS_DOCK_CAP, atlasDockedChips, atlasInitials, atlasUnplacedActors } from "./atlas-presence.js";
+  import { ATLAS_DOCK_CAP, atlasDockedChips, atlasUnplacedActors } from "./atlas-presence.js";
+  import AtlasFace from "./AtlasFace.svelte";
   import {
     ATLAS_LABEL_PX,
     atlasRelatedIds,
@@ -122,6 +123,15 @@
 
   // One id per map so two maps on a page never share a gradient.
   const glowId = `atlas-glow-${Math.random().toString(36).slice(2, 8)}`;
+  // Chip picture clips, sized to each chip by objectBoundingBox units.
+  const clipRoundId = `${glowId}-round`;
+  const clipBotId = `${glowId}-bot`;
+  // Picture URLs that failed to load; their chips draw initials instead.
+  let brokenPictures = $state<ReadonlySet<string>>(new Set());
+  function pictureFailed(url: string): void {
+    if (brokenPictures.has(url)) return;
+    brokenPictures = new Set([...brokenPictures, url]);
+  }
 
   let hovered = $state<string | null>(null);
   /** Key of the actor chip under the pointer; its card replaces the object card. */
@@ -290,7 +300,9 @@
     /** Section colour for the dot beside the kind; none for a person or bot. */
     tint?: string;
     title: string;
-    people: { key: string; name: string; bot: boolean; signal?: string }[];
+    people: { key: string; name: string; bot: boolean; signal?: string; avatarUrl?: string }[];
+    /** The hovered person or bot, drawn beside the title. */
+    face?: { name: string; bot: boolean; avatarUrl?: string };
     lines: string[];
   };
   function cardAt(cx: number, cy: number, reach: number): Pick<HoverCard, "left" | "top" | "above"> {
@@ -309,6 +321,7 @@
         ...cardAt(dockHover.x, dockHover.y, half + 2),
         kind: away.bot ? "Bot" : "Person",
         title: away.name,
+        face: { name: away.name, bot: away.bot, avatarUrl: away.avatarUrl },
         people: [],
         lines: [away.unplaced ?? "", away.signal ?? ""].filter(Boolean),
       };
@@ -320,6 +333,7 @@
         ...cardAt(chip.sx, chip.sy, half + 2),
         kind: chip.bot ? "Bot" : "Person",
         title: chip.name,
+        face: { name: chip.name, bot: chip.bot, avatarUrl: chip.avatarUrl },
         people: [],
         lines: [on ? `Working on ${on.label}` : "", chip.signal ?? ""].filter(Boolean),
       };
@@ -337,7 +351,7 @@
       kind: districtLabel(node.type).replace(/s$/, ""),
       tint: ATLAS_TYPE_TINT[node.type],
       title: node.label,
-      people: here.map((p) => ({ key: p.actorUid ?? p.name, name: p.name, bot: p.bot, signal: p.signal })),
+      people: here.map((p) => ({ key: p.actorUid ?? p.name, name: p.name, bot: p.bot, signal: p.signal, avatarUrl: p.avatarUrl })),
       lines: [
         node.stories ? `${node.stories.done} of ${node.stories.total} stories done` : "",
         atlasRelatedCountsLine([...counts].map(([type, count]) => ({ type, count }))),
@@ -469,6 +483,8 @@
         <stop class="glow-mid" offset="45%" />
         <stop class="glow-edge" offset="100%" />
       </radialGradient>
+      <clipPath id={clipRoundId} clipPathUnits="objectBoundingBox"><circle cx="0.5" cy="0.5" r="0.5" /></clipPath>
+      <clipPath id={clipBotId} clipPathUnits="objectBoundingBox"><rect width="1" height="1" rx="0.15" /></clipPath>
     </defs>
     <g data-testid="atlas-world" class:focusing={focus !== null && focus.size > 0} transform={viewTransform(view)}>
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
@@ -577,6 +593,7 @@
     </g>
     <g class="docks" data-testid="atlas-chips">
       {#each chips as chip (chip.key)}
+        {@const picture = chip.avatarUrl && !brokenPictures.has(chip.avatarUrl) ? chip.avatarUrl : null}
         <g
           class="dock"
           class:dim={filterActor ? chip.actorUid !== filterActor : dimmed(chip.nodeId)}
@@ -602,12 +619,28 @@
           {#if !chip.idle}
             <circle class="pulse" cx={chip.sx} cy={chip.sy} r={half + 3} />
           {/if}
-          {#if chip.bot}
-            <rect class="mark" x={chip.sx - half} y={chip.sy - half} width={CHIP_PX} height={CHIP_PX} rx="3" />
-          {:else}
-            <circle class="mark" cx={chip.sx} cy={chip.sy} r={half} />
+          {#if picture}
+            <image
+              class="face"
+              data-testid="atlas-chip-picture"
+              href={picture}
+              x={chip.sx - half}
+              y={chip.sy - half}
+              width={CHIP_PX}
+              height={CHIP_PX}
+              preserveAspectRatio="xMidYMid slice"
+              clip-path={`url(#${chip.bot ? clipBotId : clipRoundId})`}
+              onerror={() => pictureFailed(picture)}
+            />
           {/if}
-          <text class="initials" x={chip.sx} y={chip.sy + 3.5} text-anchor="middle">{chip.initials}</text>
+          {#if chip.bot}
+            <rect class="mark" class:pictured={picture !== null} x={chip.sx - half} y={chip.sy - half} width={CHIP_PX} height={CHIP_PX} rx="3" />
+          {:else}
+            <circle class="mark" class:pictured={picture !== null} cx={chip.sx} cy={chip.sy} r={half} />
+          {/if}
+          {#if !picture}
+            <text class="initials" x={chip.sx} y={chip.sy + 3.5} text-anchor="middle">{chip.initials}</text>
+          {/if}
         </g>
       {/each}
     </g>
@@ -630,7 +663,7 @@
             onpointerleave={() => {
               if (dockHover?.key === (who.actorUid ?? who.name)) dockHover = null;
             }}
-          >{who.bot ? "⌁" : atlasInitials(who.name)}</span>
+          ><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={20} /></span>
         {/each}
         {#if dockMore > 0}
           <button
@@ -654,12 +687,14 @@
       style:width={`${CARD_WIDTH}px`}
     >
       <div class="hc-kind">{#if card.tint}<i class="hc-dot" style:background={card.tint}></i>{/if}{card.kind}</div>
-      <div class="hc-title">{card.title}</div>
+      <div class="hc-title">
+        {#if card.face}<span class="hc-avatar" class:bot={card.face.bot} data-testid="atlas-hover-face"><AtlasFace name={card.face.name} bot={card.face.bot} avatarUrl={card.face.avatarUrl} size={20} /></span>{/if}{card.title}
+      </div>
       {#if card.people.length}
         <div class="hc-people">
           {#each card.people as who (who.key)}
             <div class="hc-who">
-              <i class="hc-live" class:bot={who.bot}></i>
+              <span class="hc-face" class:bot={who.bot}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={14} /></span>
               <span class="hc-name">{who.name}</span>
               {#if who.signal}<span class="hc-signal">{who.signal}</span>{/if}
             </div>
@@ -944,6 +979,16 @@
   .dock.idle .connector {
     stroke: var(--v4-text-3);
   }
+  /* With a picture the mark is only the ring drawn over it. */
+  .mark.pictured {
+    fill: none;
+  }
+  .face {
+    pointer-events: none;
+  }
+  .dock.idle .face {
+    opacity: 0.7;
+  }
   .dock.idle .initials {
     fill: var(--v4-text-3);
   }
@@ -1044,20 +1089,40 @@
   }
   .hc-who {
     display: grid;
-    grid-template-columns: 8px auto 1fr;
+    grid-template-columns: 14px auto 1fr;
     align-items: baseline;
     gap: 6px;
     min-width: 0;
   }
-  .hc-live {
-    width: 6px;
-    height: 6px;
+  /* A live person or bot: their picture (or initials) in a green ring. */
+  .hc-face,
+  .hc-avatar {
+    box-sizing: border-box;
+    display: inline-grid;
+    place-items: center;
+    overflow: hidden;
     border-radius: 50%;
-    background: var(--v4-ok);
+    border: 1px solid var(--v4-ok);
+    font-size: 7px;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--v4-text-2, var(--v4-text-1));
+  }
+  .hc-face {
+    width: 14px;
+    height: 14px;
     align-self: center;
   }
-  .hc-live.bot {
-    border-radius: 1px;
+  .hc-avatar {
+    width: 20px;
+    height: 20px;
+    margin-right: 6px;
+    vertical-align: -5px;
+    font-size: 8px;
+  }
+  .hc-face.bot,
+  .hc-avatar.bot {
+    border-radius: 3px;
   }
   .hc-signal {
     color: var(--v4-text-3);
@@ -1157,6 +1222,9 @@
     line-height: 1;
     padding: 0;
     cursor: default;
+  }
+  .away {
+    overflow: hidden;
   }
   .away.bot {
     border-radius: 3px;
