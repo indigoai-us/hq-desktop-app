@@ -1834,6 +1834,77 @@ mod authenticated_receipt_tests {
     }
 
     #[test]
+    fn first_run_login_receipt_uses_attempt_id_persisted_during_launch_classification() {
+        let _env_guard = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().expect("temp home");
+        fs::create_dir_all(home.path().join(".hq")).expect("create temp HQ directory");
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        assert_eq!(
+            crate::commands::first_run::classify_launch(&handle),
+            crate::commands::first_run::LaunchKind::FirstRun
+        );
+        let menubar_path = home.path().join(".hq/menubar.json");
+        let stored: serde_json::Value = serde_json::from_slice(
+            &fs::read(&menubar_path).expect("launch classification persists first-run settings"),
+        )
+        .expect("persisted menubar settings are JSON");
+        let attempt_id = stored["installAttemptId"]
+            .as_str()
+            .expect("first-run initialization persists an attempt ID")
+            .to_string();
+        uuid::Uuid::parse_str(&attempt_id).expect("attempt ID is a UUID");
+
+        tauri::async_runtime::block_on(record_desktop_login_completed_durably(
+            &handle,
+            "person-a",
+            "manual_oauth",
+            "control",
+            Some("Google"),
+        ))
+        .expect("login receipt persists");
+
+        let path = authenticated_receipt_queue_path_from_home(home.path());
+        let receipts = read_authenticated_receipt_queue(&path).expect("read persisted receipts");
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].body["installAttemptId"], attempt_id);
+
+        drop(_home);
+        let existing_home = tempfile::tempdir().expect("temp home with an existing attempt ID");
+        fs::create_dir_all(existing_home.path().join(".hq")).expect("create temp HQ directory");
+        fs::write(
+            existing_home.path().join(".hq/menubar.json"),
+            r#"{"installAttemptId":"11111111-1111-4111-8111-111111111111"}"#,
+        )
+        .expect("write existing attempt ID");
+        let _existing_home = crate::util::test_support::scoped_home(existing_home.path());
+        let existing_app = tauri::test::mock_app();
+        let existing_handle = existing_app.handle().clone();
+        crate::commands::first_run::classify_launch(&existing_handle);
+        tauri::async_runtime::block_on(record_desktop_login_completed_durably(
+            &existing_handle,
+            "person-a",
+            "manual_oauth",
+            "control",
+            Some("Google"),
+        ))
+        .expect("login receipt with an existing attempt ID persists");
+        let existing_path = authenticated_receipt_queue_path_from_home(existing_home.path());
+        let existing_receipts =
+            read_authenticated_receipt_queue(&existing_path).expect("read existing-ID receipt");
+        assert_eq!(existing_receipts.len(), 1);
+        assert_eq!(
+            existing_receipts[0].body["installAttemptId"],
+            "11111111-1111-4111-8111-111111111111",
+            "login receipts reuse the existing ID rather than replacing it"
+        );
+    }
+
+    #[test]
     fn login_receipt_durability_gate_returns_only_after_the_queue_file_contains_it() {
         let _env_guard = crate::util::test_support::ENV_MUTEX
             .lock()
