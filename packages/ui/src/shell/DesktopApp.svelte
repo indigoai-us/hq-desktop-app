@@ -11671,6 +11671,7 @@
           companyPaneCompany.uid,
           atlasRosterNames,
           self?.uid ?? null,
+          avatarByUid,
         )
       : [],
   );

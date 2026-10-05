@@ -419,7 +419,9 @@ describe("Atlas chunk boundary", () => {
 });
 
 describe("Atlas: live actors not on the map", () => {
-  function mountActors(actors: { actorUid: string; name: string; bot: boolean; repo?: string; projectId?: string }[]) {
+  function mountActors(
+    actors: { actorUid: string; name: string; bot: boolean; repo?: string; projectId?: string; avatarUrl?: string }[],
+  ) {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(AtlasView, {
@@ -460,6 +462,51 @@ describe("Atlas: live actors not on the map", () => {
     // The placed actor is on its node, not in the dock.
     expect(host.querySelector(sel("atlas-chip-b_on"))).not.toBeNull();
     expect(dock.querySelector(sel("atlas-unplaced-b_on"))).toBeNull();
+  });
+
+  it("draws profile and bot pictures on chips, initials and glyph without one", async () => {
+    mountActors([
+      { actorUid: "u_pia", name: "Pia Lee", bot: false, projectId: "hq-desktop-console-rail", avatarUrl: "data:image/png;base64,PIA" },
+      { actorUid: "b_bo", name: "Bo", bot: true, projectId: "hq-desktop-console-rail", avatarUrl: "data:image/png;base64,BO" },
+      { actorUid: "u_ned", name: "Ned Fox", bot: false, projectId: "hq-desktop-console-rail" },
+      { actorUid: "u_amy", name: "Amy Ray", bot: false, repo: "elsewhere", avatarUrl: "data:image/png;base64,AMY" },
+      { actorUid: "b_x", name: "scout", bot: true },
+    ]);
+    await settle();
+    // On the map: an <image> fills the chip, clipped to its shape, and no initials.
+    const pia = host.querySelector(sel("atlas-chip-u_pia"))!;
+    const piaImage = pia.querySelector(sel("atlas-chip-picture"))!;
+    expect(piaImage.getAttribute("href")).toBe("data:image/png;base64,PIA");
+    expect(piaImage.getAttribute("clip-path")).toMatch(/-round\)$/u);
+    expect(pia.querySelector(".initials")).toBeNull();
+    const bo = host.querySelector(sel("atlas-chip-b_bo"))!;
+    expect(bo.querySelector(sel("atlas-chip-picture"))!.getAttribute("clip-path")).toMatch(/-bot\)$/u);
+    expect(bo.querySelector(".initials")).toBeNull();
+    // No picture: the initials as before, never an empty chip.
+    const ned = host.querySelector(sel("atlas-chip-u_ned"))!;
+    expect(ned.querySelector(sel("atlas-chip-picture"))).toBeNull();
+    expect(ned.querySelector(".initials")!.textContent).toBe("NF");
+    // A picture that fails to load falls back to the initials, for that chip only.
+    flushSync(() => piaImage.dispatchEvent(new Event("error")));
+    expect(pia.querySelector(sel("atlas-chip-picture"))).toBeNull();
+    expect(pia.querySelector(".initials")!.textContent).toBe("PL");
+    expect(bo.querySelector(sel("atlas-chip-picture"))).not.toBeNull();
+    // In the dock: the same picture, and the bot glyph for a bot with none.
+    const amy = host.querySelector(sel("atlas-unplaced-u_amy"))!;
+    const amyImg = amy.querySelector("img")!;
+    expect(amyImg.getAttribute("src")).toBe("data:image/png;base64,AMY");
+    expect(amy.textContent).toBe("");
+    expect(host.querySelector(sel("atlas-unplaced-b_x"))!.textContent).toBe("⌁");
+    // Hovering a docked person shows their picture in the card too.
+    flushSync(() => amy.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false })));
+    expect(host.querySelector(`${sel("atlas-hover-face")} img`)!.getAttribute("src")).toBe("data:image/png;base64,AMY");
+    flushSync(() => amy.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false })));
+    flushSync(() => amyImg.dispatchEvent(new Event("error")));
+    expect(amy.querySelector("img")).toBeNull();
+    expect(amy.textContent).toBe("AR");
+    // Working now in the inspector uses the same pictures.
+    const working = host.querySelector(sel("atlas-inspector-working-now"))!;
+    expect([...working.querySelectorAll("img")].map((i) => i.getAttribute("src"))).toContain("data:image/png;base64,BO");
   });
 
   it("explains in plain words why a docked actor is not placed", async () => {

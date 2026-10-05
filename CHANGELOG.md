@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- People and bots on the Atlas map, in the Not on the map group, in Working now and in the hover card now show their profile picture or bot picture, the same one Messages uses. Anyone without a picture, or whose picture does not load, keeps their initials or the bot mark.
 - Buttons in the separate windows (onboarding, sign-in, the quick window and the call window) now show a small icon before their label, like the rest of the app.
 - With nothing selected, the Atlas inspector now opens with a Today at <company> section listing what changed on the map today, projects first, each one clickable to fly to it on the map, with Show more for long days. Working now follows it as before. On a quiet day it says so in one line.
 - Pressing play under the Atlas map now plays the last 30 days forward in about 25 seconds. Items appear as of each day, the day shows in large quiet type on the map, and a short line names that day's biggest changes. Playback stops at today, and when you scrub or use the arrow keys.

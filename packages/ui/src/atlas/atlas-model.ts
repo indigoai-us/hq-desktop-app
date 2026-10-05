@@ -85,6 +85,8 @@ export type AtlasPresence = {
   place?: string;
   /** Not on the map: plain words for why (the dock's hover card shows it). */
   unplaced?: string;
+  /** Profile or bot picture the app already shows elsewhere; initials when absent. */
+  avatarUrl?: string;
 };
 
 const DISTRICT_TYPES = new Set<string>(ATLAS_DISTRICTS.map((d) => d.type));
