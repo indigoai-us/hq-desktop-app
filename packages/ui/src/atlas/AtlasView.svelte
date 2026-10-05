@@ -7,7 +7,8 @@
    * cached graph for the company in the first frame, then refreshes from the
    * Console atlas endpoint in the background. Loaded only via dynamic import.
    */
-  import { atlasPeopleFromTelemetry, atlasPersonNodeIds, isForbidden, type AtlasPeopleState } from "./atlas-people.js";
+  import { atlasNamesFromTelemetry, atlasPeopleFromTelemetry, atlasPersonNodeIds, isForbidden, type AtlasPeopleState } from "./atlas-people.js";
+  import { isRawPersonId } from "../common/people/people.js";
   import { onMount, untrack } from "svelte";
   import AtlasMap from "./AtlasMap.svelte";
   import AtlasInspector from "./AtlasInspector.svelte";
@@ -119,10 +120,24 @@
       .map((id) => byId.get(id))
       .filter((n): n is AtlasNode => Boolean(n)),
   );
-  const presence = $derived(
-    actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp,
+  // Presence sometimes carries only an id for a name. An id never reaches the
+  // screen: the activity read's names fill in, then a plain fallback.
+  const presence = $derived.by(() => {
+    const raw = actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp;
+    const names = people.status === "ok" ? people.names : undefined;
+    return raw.map((p) =>
+      isRawPersonId(p.name)
+        ? { ...p, name: (p.actorUid && names?.get(p.actorUid)) || (p.bot ? "Unnamed bot" : "Unnamed member") }
+        : p,
+    );
+  });
+  // People first, then bots; "working" means a session in progress. Actors
+  // who are only online are counted apart so they do not bury the list.
+  const everyone = $derived(
+    atlasDistinctActors(presence).sort((a, b) => Number(a.bot) - Number(b.bot) || a.name.localeCompare(b.name)),
   );
-  const working = $derived(atlasDistinctActors(presence));
+  const working = $derived(everyone.filter((p) => !p.idle));
+  const online = $derived(everyone.filter((p) => p.idle));
   const live = $derived(new Set(presence.map((p) => p.nodeId)));
   const actorFilterIds = $derived(atlasActorNodeIds(presence, filterActor));
   const selectedPerson = $derived(
@@ -150,7 +165,7 @@
     requestAnimationFrame(() => {
       read()
         .then((body) => {
-          if (alive()) people = { status: "ok", people: atlasPeopleFromTelemetry(body) };
+          if (alive()) people = { status: "ok", people: atlasPeopleFromTelemetry(body), names: atlasNamesFromTelemetry(body) };
         })
         .catch((err: unknown) => {
           console.error("atlas people read failed:", err);
@@ -420,6 +435,7 @@
       {detailLoading}
       {related}
       presence={selectedNode ? presence : working}
+      {online}
       {people}
       selectedPersonId={personFilter}
       onperson={(id) => (personFilter = personFilter === id ? null : id)}

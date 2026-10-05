@@ -322,7 +322,8 @@ export function atlasDistrictLabel(
 ): AtlasScreenLabel {
   const cx = shape.x * view.k + view.x;
   const y = (shape.y - shape.r) * view.k + view.y - 6;
-  const w = measure(shape.label);
+  // Drawn uppercase with tracking at 11px: about the width of the 13px label.
+  const w = measure(shape.label.toUpperCase());
   return {
     id: `district:${shape.type}`,
     text: shape.label,
@@ -355,6 +356,8 @@ export function atlasShortLabel(label: string): string {
 export interface AtlasScreenLabel {
   id: string;
   text: string;
+  /** 0 hovered, 1 selected, 2 related, 3 recent, 4 everything else; drives label tone. */
+  rank?: number;
   x: number;
   y: number;
   box: { left: number; top: number; right: number; bottom: number };
@@ -458,7 +461,7 @@ export function atlasScreenLabels(input: {
       );
       if (onDot) continue;
       if (r >= 3) ambient += 1;
-      kept.push({ id: n.id, text, x: spot.x, y: spot.y, box });
+      kept.push({ id: n.id, text, rank: r, x: spot.x, y: spot.y, box });
       break;
     }
   }

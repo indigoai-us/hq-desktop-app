@@ -25,7 +25,7 @@ export interface AtlasPerson {
 
 export type AtlasPeopleState =
   | { status: "idle" | "loading" }
-  | { status: "ok"; people: AtlasPerson[] }
+  | { status: "ok"; people: AtlasPerson[]; names?: ReadonlyMap<string, string> }
   | { status: "failed"; forbidden: boolean };
 
 export const ATLAS_PEOPLE_DAYS = 30;
@@ -59,6 +59,23 @@ function skillCounts(raw: unknown): { skill: string; count: number }[] {
     ? skills.bySkill.map((s) => ({ skill: String(rec(s).skill ?? ""), count: num(rec(s).count) }))
     : Object.entries(skills).map(([skill, v]) => ({ skill, count: typeof v === "number" ? num(v) : num(rec(v).count) }));
   return rows.filter((s) => s.skill && s.count > 0).sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Display names by person or agent uid from the telemetry `identities` block.
+ * It names every member and agent, including ones with no activity in the
+ * window, so the live list can show a name where presence only has an id.
+ */
+export function atlasNamesFromTelemetry(body: unknown): Map<string, string> {
+  const identities = rec(rec(body).identities);
+  const out = new Map<string, string>();
+  for (const group of [identities.persons, identities.agents]) {
+    for (const [uid, raw] of Object.entries(rec(group))) {
+      const name = rec(raw).name;
+      if (typeof name === "string" && name.trim() && !/^(prs|agt)_/.test(name.trim())) out.set(uid, name.trim());
+    }
+  }
+  return out;
 }
 
 /** One trend point: a number, or a daily row carrying events or tokens. */

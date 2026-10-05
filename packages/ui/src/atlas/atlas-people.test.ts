@@ -67,3 +67,16 @@ describe("atlasPeopleFromTelemetry", () => {
     expect(() => atlasPeopleFromTelemetry({ team: {} })).toThrow(/missing/);
   });
 });
+
+describe("atlasNamesFromTelemetry", () => {
+  it("names every member and agent in identities, and never returns an id as a name", async () => {
+    const { atlasNamesFromTelemetry } = await import("./atlas-people.js");
+    const names = atlasNamesFromTelemetry({
+      identities: {
+        persons: { prs_amy: { name: "Amy Chen" }, prs_raw: { name: "prs_raw" } },
+        agents: { agt_scout: { name: "scout" } },
+      },
+    });
+    expect([...names]).toEqual([["prs_amy", "Amy Chen"], ["agt_scout", "scout"]]);
+  });
+});

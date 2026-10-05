@@ -16,6 +16,8 @@ export type AtlasLiveActorInput = {
   bot: boolean;
   projectId?: string;
   signal?: string;
+  /** Online with no session in progress. */
+  idle?: boolean;
 };
 
 /** Project slug for a project node: last path segment, lower-cased. */
@@ -46,7 +48,7 @@ export function atlasPresenceFromActors(
     const key = `${a.actorUid}>${nodeId}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ nodeId, actorUid: a.actorUid, name: a.name, bot: a.bot, signal: a.signal });
+    out.push({ nodeId, actorUid: a.actorUid, name: a.name, bot: a.bot, signal: a.signal, ...(a.idle ? { idle: true } : {}) });
   }
   return out;
 }

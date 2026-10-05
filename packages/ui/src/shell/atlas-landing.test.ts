@@ -83,8 +83,20 @@ describe("atlasLiveActors (US-013)", () => {
   it("keeps online actors, one row per open project, PresenceStore wins", () => {
     const actors = atlasLiveActors(live, snapshot, "co_a", new Map([["u_amy", "Amy B"]]));
     expect(actors).toEqual([
-      { actorUid: "u_amy", name: "Amy B", bot: false },
+      // Online with no session in progress: kept, but marked so Working now can set it apart.
+      { actorUid: "u_amy", name: "Amy B", bot: false, idle: true },
       { actorUid: "b_scout", name: "scout", bot: true, projectId: "billing-v2", signal: "US-7" },
+    ]);
+  });
+
+  it("marks an actor idle when every session is idle or ended", () => {
+    const quiet = {
+      participants: [
+        { actorUid: "b_nap", actorType: "agent", displayName: "nap", presence: "online", sessions: [{ projectId: "p", status: "idle" }, { status: "ended" }] },
+      ],
+    };
+    expect(atlasLiveActors(quiet, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "b_nap", name: "nap", bot: true, projectId: "p", signal: undefined, idle: true },
     ]);
   });
 
