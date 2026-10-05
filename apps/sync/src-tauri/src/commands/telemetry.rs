@@ -2697,19 +2697,32 @@ fn usage_retry_delay_secs(consecutive_failures: u8) -> u64 {
     (5 * 60 * 2u64.pow(exponent)).min(60 * 60)
 }
 
+const MAX_UNACCEPTED_FLUSH_ATTEMPTS: u8 = 8;
+
+fn usage_status_is_retryable(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
 fn upload_backoff_remaining_secs(cursor: &TelemetryCursor, now_unix_secs: u64) -> Option<u64> {
     (cursor.consecutive_unaccepted_flushes >= 3 && now_unix_secs < cursor.retry_after_unix_secs)
         .then(|| cursor.retry_after_unix_secs - now_unix_secs)
 }
 
-fn record_unaccepted_flush(cursor: &mut TelemetryCursor, now_unix_secs: u64) {
+fn record_unaccepted_flush(cursor: &mut TelemetryCursor, now_unix_secs: u64) -> bool {
     cursor.consecutive_unaccepted_flushes = cursor.consecutive_unaccepted_flushes.saturating_add(1);
+    if cursor.consecutive_unaccepted_flushes >= MAX_UNACCEPTED_FLUSH_ATTEMPTS {
+        cursor.retry_after_unix_secs = 0;
+        return true;
+    }
     let delay_secs = usage_retry_delay_secs(cursor.consecutive_unaccepted_flushes);
     cursor.retry_after_unix_secs = if delay_secs == 0 {
         0
     } else {
         now_unix_secs.saturating_add(delay_secs)
     };
+    false
 }
 
 fn reset_unaccepted_flushes(cursor: &mut TelemetryCursor) {
@@ -2728,6 +2741,7 @@ fn unix_now_secs() -> u64 {
 enum FlushOutcome {
     Accepted,
     Unaccepted { reason: &'static str },
+    Dropped { reason: &'static str },
     ConsentRevoked,
     BudgetReached,
 }
@@ -2985,11 +2999,13 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                         )
                         .await
                         {
-                            FlushOutcome::Accepted if upload_plan.budget_exhausted() => {
+                            FlushOutcome::Accepted | FlushOutcome::Dropped { .. }
+                                if upload_plan.budget_exhausted() =>
+                            {
                                 sync_budget_reached = true;
                                 break 'claude_files;
                             }
-                            FlushOutcome::Accepted => continue,
+                            FlushOutcome::Accepted | FlushOutcome::Dropped { .. } => continue,
                             FlushOutcome::BudgetReached => {
                                 sync_budget_reached = true;
                                 break 'claude_files;
@@ -3121,7 +3137,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                                 )
                                 .await
                                 {
-                                    FlushOutcome::Accepted => {
+                                    FlushOutcome::Accepted | FlushOutcome::Dropped { .. } => {
                                         if batch_contains_codex {
                                             codex_batches_sent += 1;
                                             rollout_batches_sent += 1;
@@ -3208,7 +3224,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             )
             .await;
         } else if let Some(sources) = upload_plan.take_zero_event_sources() {
-            commit_acknowledged_sources(&sources, &mut newly_committed);
+            commit_settled_sources(&sources, &mut newly_committed);
         }
     }
 
@@ -3258,7 +3274,7 @@ fn single_event_fits(machine_id: &str, installer_version: &str, event: &Value) -
     build_wire_payload(machine_id, installer_version, &[], event).len() <= MAX_BATCH_BYTES
 }
 
-fn commit_acknowledged_sources(
+fn commit_settled_sources(
     sources: &[UsageUploadSource],
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) {
@@ -3314,10 +3330,12 @@ async fn flush_batch(
         Ok(body) => body,
         Err(_) => {
             eprintln!("[telemetry] usage flush not accepted: serialization_failed");
-            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
-            return FlushOutcome::Unaccepted {
-                reason: "serialization_failed",
-            };
+            return abandon_usage_batch(
+                cursor,
+                &plan_batch,
+                newly_committed,
+                "serialization_failed",
+            );
         }
     };
     if !planner.reserve_request(body.len()) {
@@ -3335,7 +3353,17 @@ async fn flush_batch(
         Ok(response) => response,
         Err(_) => {
             eprintln!("[telemetry] usage flush not accepted: request_failed");
-            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            if record_unaccepted_flush(
+                cursor,
+                unix_now_secs().max(cycle_started_at_unix_secs),
+            ) {
+                return abandon_usage_batch(
+                    cursor,
+                    &plan_batch,
+                    newly_committed,
+                    "attempt_limit",
+                );
+            }
             return FlushOutcome::Unaccepted {
                 reason: "request_failed",
             };
@@ -3348,7 +3376,17 @@ async fn flush_batch(
             "[telemetry] usage flush not accepted: http_status={}",
             status.as_u16()
         );
-        record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+        if !usage_status_is_retryable(status) {
+            return abandon_usage_batch(cursor, &plan_batch, newly_committed, "http_status");
+        }
+        if record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs)) {
+            return abandon_usage_batch(
+                cursor,
+                &plan_batch,
+                newly_committed,
+                "attempt_limit",
+            );
+        }
         return FlushOutcome::Unaccepted {
             reason: "http_status",
         };
@@ -3361,7 +3399,14 @@ async fn flush_batch(
                 "[telemetry] usage flush not accepted: http_status={} unparseable_ack",
                 status.as_u16()
             );
-            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            if record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs)) {
+                return abandon_usage_batch(
+                    cursor,
+                    &plan_batch,
+                    newly_committed,
+                    "attempt_limit",
+                );
+            }
             return FlushOutcome::Unaccepted {
                 reason: "unparseable_ack",
             };
@@ -3371,7 +3416,7 @@ async fn flush_batch(
     let skipped_count = ack.skipped.len();
     if usage_ack_is_complete(&ack, event_count) {
         let sources = UsageUploadPlanner::committable_sources(&plan_batch, true);
-        commit_acknowledged_sources(&sources, newly_committed);
+        commit_settled_sources(&sources, newly_committed);
         reset_unaccepted_flushes(cursor);
         if skipped_count > 0 {
             eprintln!(
@@ -3400,9 +3445,28 @@ async fn flush_batch(
         // Any partial/malformed acknowledgment retains the whole source range.
         // Continuing could acknowledge a later batch from the same file and
         // advance its cursor across this unacknowledged gap.
-        record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+        if record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs)) {
+            return abandon_usage_batch(
+                cursor,
+                &plan_batch,
+                newly_committed,
+                "attempt_limit",
+            );
+        }
         FlushOutcome::Unaccepted { reason }
     }
+}
+
+fn abandon_usage_batch(
+    cursor: &mut TelemetryCursor,
+    plan_batch: &UsageUploadBatch,
+    newly_committed: &mut HashMap<String, CursorEntry>,
+    reason: &'static str,
+) -> FlushOutcome {
+    commit_settled_sources(&plan_batch.sources, newly_committed);
+    reset_unaccepted_flushes(cursor);
+    eprintln!("[telemetry] usage batch abandoned: reason={reason}");
+    FlushOutcome::Dropped { reason }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -7556,6 +7620,116 @@ mod codex_telemetry_tests {
         let cursor = read_cursor(home.path());
         assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
         assert_eq!(cursor.retry_after_unix_secs, 0);
+    }
+
+    #[tokio::test]
+    async fn retryable_failures_stop_after_a_bounded_count_and_clear_pending_sources() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        const EXPECTED_ATTEMPTS: usize = MAX_UNACCEPTED_FLUSH_ATTEMPTS as usize;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        let posts = Arc::new(AtomicUsize::new(0));
+        let post_counter = posts.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(move |_request: &wiremock::Request| {
+                post_counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(503).set_body_string("retry")
+            })
+            .mount(&server)
+            .await;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"bounded-retry"}"#);
+        let source_path = write_jsonl(home.path(), "project", "session.jsonl", &[USER_ROW]);
+        let source_key = normalize_cursor_file_key(&source_path);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let app = make_app_handle();
+
+        for _ in 0..EXPECTED_ATTEMPTS {
+            send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+                .await
+                .unwrap();
+            let mut cursor = read_cursor(home.path());
+            cursor.retry_after_unix_secs = 0;
+            save_cursor(&cursor).unwrap();
+        }
+
+        let cursor = read_cursor(home.path());
+        assert_eq!(posts.load(Ordering::SeqCst), EXPECTED_ATTEMPTS);
+        assert_eq!(
+            cursor.files[&source_key].offset,
+            fs::metadata(&source_path).unwrap().len(),
+            "an exhausted batch must be settled so later syncs cannot queue it again"
+        );
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
+
+        send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+            .await
+            .unwrap();
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(posts.load(Ordering::SeqCst), EXPECTED_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn non_retryable_usage_response_clears_pending_source_without_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/usage/opt-in"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"enabled": true})))
+            .mount(&server)
+            .await;
+        let posts = Arc::new(AtomicUsize::new(0));
+        let post_counter = posts.clone();
+        Mock::given(method("POST"))
+            .and(path("/v1/usage"))
+            .respond_with(move |_request: &wiremock::Request| {
+                post_counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(400).set_body_string("invalid payload")
+            })
+            .mount(&server)
+            .await;
+
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"non-retryable"}"#);
+        let source_path = write_jsonl(home.path(), "project", "session.jsonl", &[USER_ROW]);
+        let source_key = normalize_cursor_file_key(&source_path);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("HQ_TEST_HOME", home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        let app = make_app_handle();
+
+        for _ in 0..2 {
+            send_telemetry_if_opted_in(&app, "/hq", "test-jwt")
+                .await
+                .unwrap();
+        }
+
+        let cursor = read_cursor(home.path());
+        std::env::remove_var("HOME");
+        std::env::remove_var("HQ_TEST_HOME");
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(posts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            cursor.files[&source_key].offset,
+            fs::metadata(&source_path).unwrap().len()
+        );
+        assert_eq!(cursor.consecutive_unaccepted_flushes, 0);
     }
 
     #[tokio::test]
