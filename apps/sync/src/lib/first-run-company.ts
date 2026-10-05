@@ -22,7 +22,7 @@ import {
   type CreateCompanyApi,
   type SlugConstraints,
 } from '@hq/ui';
-import { pendingInviteWorkspaces, type Workspace, type WorkspacesResult } from './workspaces';
+import { pendingInviteWorkspaces, type WorkspacesResult } from './workspaces';
 import {
   activeMembershipCompanies,
   decideCompanyRoute,
@@ -74,13 +74,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function activeCompanyUids(payload: Record<string, unknown>): string[] | null {
   const companies = activeMembershipCompanies(payload);
   return companies === null ? null : companies.map((company) => company.companyUid);
-}
-
-export function invitesFromWorkspaces(workspaces: readonly Workspace[]): FirstRunInvite[] {
-  return pendingInviteWorkspaces([...workspaces]).map((workspace) => ({
-    slug: workspace.slug,
-    displayName: workspace.displayName || workspace.slug,
-  }));
 }
 
 export interface ResolvedCompanyRoute {
@@ -508,8 +501,6 @@ export function parseInviteEmails(raw: string): { valid: string[]; invalid: stri
 }
 
 export type FirstRunPlan = 'starter' | 'workforce';
-
-export const WORKFORCE_PRICE_LABEL = '$500/mo';
 
 /** The return pair hq-pro's team checkout accepts for the desktop app. */
 export function workforceCheckoutBody(companyUid: string): Record<string, string> {
