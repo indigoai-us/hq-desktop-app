@@ -125,6 +125,14 @@ async function settleFlow(times = 6): Promise<void> {
   }
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: resolve! };
+}
+
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
@@ -281,39 +289,322 @@ describe("Settings → Bots (Work shell)", () => {
     expect(host.querySelector('[data-testid="settings-bot-assistant-kind"]')).toBeNull();
   });
 
-  it("pauses, resumes, and removes a managed cloud bot through adapter.agents", async () => {
+  function removeDialog(): HTMLElement {
+    const dialog = document.querySelector<HTMLElement>('[data-testid="settings-bot-remove-dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog!;
+  }
+
+  function removeConfirm(): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-confirm"]');
+    expect(button).not.toBeNull();
+    return button!;
+  }
+
+  it("opens a themed removal dialog and returns focus when Escape cancels", async () => {
     const adapter = fakeAdapter({});
     await mountPane(adapter);
-    const pause = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    pause.click();
-    await vi.waitFor(() => expect(adapter.agents.stop).toHaveBeenCalledWith(CLOUD_UID));
-    const resume = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)?.textContent).toContain("Paused");
-    resume.click();
-    await vi.waitFor(() => expect(adapter.agents.start).toHaveBeenCalledWith(CLOUD_UID));
-
-    // Remove needs an explicit confirm (wait for the resume round-trip to settle first).
     const remove = await vi.waitFor(() => {
       const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
       expect(el).not.toBeNull();
-      expect(el!.disabled).toBe(false);
       return el!;
     });
+    remove.focus();
     remove.click();
     await tick();
-    expect(adapter.agents.deprovision).not.toHaveBeenCalled();
-    host
-      .querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!
-      .click();
-    await vi.waitFor(() => expect(adapter.agents.deprovision).toHaveBeenCalledWith(CLOUD_UID));
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Say goodbye to Izzy?");
+    expect(removeDialog().textContent).toContain("Izzy runs on its own cloud machine");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-keep"]')?.textContent).toBe("Keep Izzy");
+    expect(removeConfirm().textContent).toBe("Remove Izzy");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-avatar"]')?.textContent).toBe("I");
+    expect(document.querySelector<HTMLElement>('[data-testid="card-modal"]')?.dataset.appearance).toBe("surface");
+    expect(document.querySelectorAll('.card-modal-art')).toHaveLength(2);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(remove);
+  });
+
+  it("confirms cloud removal, switches the same dialog for a protected machine, and sends its id", async () => {
+    const instanceId = "i-0abc1234def567890";
+    const deprovision = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId })
+      .mockResolvedValueOnce(ok({}));
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => expect(removeDialog().dataset.machine).toBe("true"));
+    expect(removeDialog().textContent).toContain("runs on its own cloud machine");
+    expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID);
+    removeConfirm().click();
+    await vi.waitFor(() => expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: instanceId }));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("keeps the dialog open while removing and leaves a friendly retry in it on failure", async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
+    const deprovision = vi.fn(() => pending.promise);
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => {
+      expect(removeConfirm().textContent).toBe("Removing Izzy…");
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(true);
+      expect(removeConfirm().disabled).toBe(true);
+    });
+    pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
+    await vi.waitFor(() =>
+      expect(removeDialog().querySelector('[data-testid="card-modal-status"]')?.textContent?.trim()).toBe(
+        "Couldn't remove Izzy. Check your connection.",
+      ),
+    );
+    // The line names the cause; only the button says "Try again".
+    expect(removeDialog().textContent).not.toContain("Try again");
+    expect(removeDialog().textContent).not.toContain("raw transport failure");
+    expect(removeConfirm().textContent).toBe("Try again");
+    expect(removeConfirm().classList.contains("is-danger")).toBe(true);
+    expect(removeConfirm().disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(false);
+    removeConfirm().click();
+    await vi.waitFor(() => expect(deprovision).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the full bot name accessible while constraining a long dialog action label", async () => {
+    const longName = "Scout with an exceptionally long name that must not stretch the dialog";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: longName }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe(`Say goodbye to ${longName}?`);
+    expect(removeConfirm().getAttribute("aria-label")).toBe(`Remove ${longName}`);
+    // One truncating label per button, so the words keep a single space and
+    // the ellipsis comes from the label's own overflow.
+    expect(removeConfirm().querySelectorAll(".remove-dialog-button-label")).toHaveLength(1);
+    expect(removeConfirm().querySelector(".remove-dialog-button-label")?.textContent).toBe(`Remove ${longName}`);
+    const keep = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')!;
+    expect(keep.querySelector(".remove-dialog-button-label")?.textContent).toBe(`Keep ${longName}`);
+    // Both actions share one row container.
+    expect(keep.parentElement).toBe(removeConfirm().parentElement);
+    expect(keep.parentElement?.classList.contains("remove-dialog-actions")).toBe(true);
+  });
+
+  it("uses the same roster avatar in the row and removal dialog", async () => {
+    const avatarUrl = "data:image/png;base64,AA==";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: "Scout", avatarUrl }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    const rowAvatar = await vi.waitFor(() => {
+      const image = host.querySelector<HTMLImageElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}"] .bot-avatar`);
+      expect(image).not.toBeNull();
+      return image!;
+    });
+    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+    await tick();
+    const dialogAvatar = document.querySelector<HTMLImageElement>('[data-testid="settings-bot-remove-dialog-avatar"] img');
+    expect(dialogAvatar?.getAttribute("src")).toBe(rowAvatar.getAttribute("src"));
+  });
+
+  it("uses the same dialog for local removal and hides the row after a successful refresh", async () => {
+    let localBots = [LOCAL_BOT];
+    const remove = vi.fn(async () => ok({}));
+    await mountPane(fakeAdapter({ bots: { list: vi.fn(async () => ok({ bots: localBots })), remove } }));
+    const row = await vi.waitFor(() => {
+      const element = host.querySelector<HTMLElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    row.querySelector<HTMLButtonElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}-remove"]`)!.click();
+    await tick();
+    expect(removeDialog().textContent).toContain("assistant will stop working and leave your bots.");
+    localBots = [];
+    removeConfirm().click();
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith(LOCAL_BOT.name));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`)).toBeNull());
+  });
+
+  it("keeps pause and resume failures on the cloud bot row", async () => {
+    const stop = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const adapter = fakeAdapter({ agents: { stop } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not pause Izzy. Try again.");
+    });
+
+    const start = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const resumeAdapter = fakeAdapter({ agents: { stop: vi.fn(async () => ok({})), start } });
+    await unmount(component!);
+    component = null;
+    host.remove();
+    await mountPane(resumeAdapter);
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not resume Izzy. Try again.");
+    });
+  });
+
+  it("treats a 404 cloud delete as already removed", async () => {
+    const deprovision = vi.fn(async () => ({ ok: false as const, reason: "error" as const, status: 404 }));
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows Removing in the same dialog after the protected-machine confirmation", async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
+    const deprovision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: "error" as const,
+        code: "AGENTS_V2_BOX_PROTECTED",
+        instanceId: "i-0abc1234def567890",
+      })
+      .mockImplementationOnce(() => pending.promise);
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    const confirm = await vi.waitFor(() => {
+      expect(removeDialog().dataset.machine).toBe("true");
+      return removeConfirm();
+    });
+    confirm.click();
+    await vi.waitFor(() => expect(confirm.textContent).toBe("Removing Izzy…"));
+    pending.resolve(ok({}));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows a row again when a later roster still contains the removed bot", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const adapter = fakeAdapter({});
+      await mountPane(adapter);
+      await settleFlow();
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+      await tick();
+      removeConfirm().click();
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears successful start, stop, pause, and resume notes after a few seconds", async () => {
+    const adapter = fakeAdapter({});
+    await mountPane(adapter);
+    vi.useFakeTimers();
+    try {
+      const localRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      localRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(localRow.textContent).toContain("Stopped.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(localRow.textContent).not.toContain("Stopped.");
+
+      await unmount(component!);
+      component = null;
+      host.remove();
+      await mountPane(
+        fakeAdapter({
+          bots: { list: vi.fn(async () => ok({ bots: [{ ...LOCAL_BOT, processAlive: false }] })) },
+        }),
+      );
+      const stoppedLocalRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      stoppedLocalRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).toContain("Started.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).not.toContain("Started.");
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`)!.click();
+      await settleFlow();
+      const cloudRow = host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)!;
+      expect(cloudRow.textContent).toContain("Paused.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Paused.");
+
+      cloudRow.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`)!.click();
+      await settleFlow();
+      expect(cloudRow.textContent).toContain("Resumed.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Resumed.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the Cloud group alone on the web adapter (no adapter.bots)", async () => {
