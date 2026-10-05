@@ -74,7 +74,7 @@ export interface AuthConfigOptions {
  * deployment (preview or production) stays fail-closed: it must supply
  * its own Cognito + PUBLIC_APP_ORIGIN (work-web, not vault-client).
  */
-export function useLocalVaultClientDefaults(
+function useLocalVaultClientDefaults(
   runtime: { vercel?: string; vercelEnv?: string } = {
     vercel: env.VERCEL,
     vercelEnv: env.VERCEL_ENV,

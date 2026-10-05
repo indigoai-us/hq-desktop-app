@@ -36,7 +36,7 @@ export interface SessionCookieJar {
   delete(name: string, opts: { path: string }): void;
 }
 
-export function sessionCookieOptions(secure: boolean, maxAge: number) {
+function sessionCookieOptions(secure: boolean, maxAge: number) {
   return {
     path: "/",
     httpOnly: true as const,
