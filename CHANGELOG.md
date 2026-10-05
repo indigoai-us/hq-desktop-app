@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Rsync failure reports now include fixed categories for the exit status and sync phase.
+- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 
 ## [0.10.392] — 2026-10-05
 
@@ -32,7 +33,6 @@ The release moves it under the version it ships in.
 
 - Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
 - Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
-- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 - The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
 
 ## [0.10.390] — 2026-10-04
