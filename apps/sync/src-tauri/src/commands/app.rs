@@ -6,6 +6,9 @@ use tauri::Manager;
 /// to mirror what the tray's Quit menu item does (`app.exit(0)`).
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
+    crate::commands::telemetry::note_desktop_quit_reason(
+        crate::commands::telemetry::DesktopQuitReason::AppMenuQuit,
+    );
     app.exit(0);
 }
 
