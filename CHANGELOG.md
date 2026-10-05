@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Rsync failure reports now include fixed categories for the exit status and sync phase.
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
 
 ## [0.10.392] — 2026-10-05
