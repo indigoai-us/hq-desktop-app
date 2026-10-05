@@ -19,6 +19,7 @@ The release moves it under the version it ships in.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
 - Settings: the "Open this company on sign-in for members" switch is gone from General. It did not change anything.
 - Billing: the page shows the seat and hosted agent counts without the long list of names under them.
+- Connections: Connected sources in the Google detail panel now show each product's own icon (Gmail, Drive, Calendar and others) in a compact two-column list.
 
 ## [0.10.392] — 2026-10-05
 
