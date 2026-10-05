@@ -5307,7 +5307,8 @@ fn watcher_exit_context_extras(
         (
             "runner_exit_meaning",
             sentry::protocol::Value::String(
-                hq_desktop_core::sync_outcome::runner_exit_meaning(code).to_string(),
+                hq_desktop_core::sync_outcome::runner_exit_meaning(code, context.saw_auth_error)
+                    .to_string(),
             ),
         ),
         (

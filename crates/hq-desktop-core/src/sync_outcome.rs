@@ -2834,11 +2834,12 @@ pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str = "runner:memory-exhausted";
 
 /// Bounded meaning for a runner exit code. This is diagnostic metadata only;
 /// it must not affect the exit disposition or retry policy.
-pub fn runner_exit_meaning(code: Option<i32>) -> &'static str {
-    match code {
-        Some(18) => "auth_required_pass",
-        Some(_) => "other",
-        None => "no_exit_code",
+pub fn runner_exit_meaning(code: Option<i32>, saw_auth_error: bool) -> &'static str {
+    match (code, saw_auth_error) {
+        (Some(18), true) => "auth_required_pass",
+        (Some(18), false) => "exit_18_unattributed",
+        (Some(_), _) => "other",
+        (None, _) => "no_exit_code",
     }
 }
 
@@ -4163,9 +4164,10 @@ mod tests {
 
     #[test]
     fn runner_exit_meaning_uses_closed_values() {
-        assert_eq!(runner_exit_meaning(Some(18)), "auth_required_pass");
-        assert_eq!(runner_exit_meaning(Some(2)), "other");
-        assert_eq!(runner_exit_meaning(None), "no_exit_code");
+        assert_eq!(runner_exit_meaning(Some(18), true), "auth_required_pass");
+        assert_eq!(runner_exit_meaning(Some(18), false), "exit_18_unattributed");
+        assert_eq!(runner_exit_meaning(Some(2), false), "other");
+        assert_eq!(runner_exit_meaning(None, false), "no_exit_code");
     }
 
     // ── grouping / suppression invariance (attribution must only ADD info) ───────
