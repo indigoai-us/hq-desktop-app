@@ -219,7 +219,7 @@
         return null;
       })) ?? '';
     }
-    const memberships = workspaces.value as Json[];
+    const memberships = workspaces as Json[];
     const active = scope?.companyUid
       ? memberships.find(
           (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
@@ -232,7 +232,7 @@
             (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
           ) ?? (memberships.length === 1 ? memberships[0] : undefined);
     const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
-    return { personUid: person.value.personUid, companyUid: companyUid || null };
+    return { personUid: person.personUid, companyUid: companyUid || null };
   }
 
   function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
