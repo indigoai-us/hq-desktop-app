@@ -9,7 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
-
+- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
 
 ## [0.10.393] — 2026-10-05

@@ -1381,8 +1381,16 @@ export interface AgentsApi {
  * reaches `AGENT_PATHS`.
  */
 export const INTEGRATION_PATHS = {
+  /**
+   * The summary view (`view=summary`): the same connections, `access`,
+   * `viewer` and audit rows as the full view, without write policy, tool
+   * grants, Slack destinations, creator names or audit actor names, which
+   * the bot cards and hello never read. The full view took 7 to 9 s for a
+   * company with 135 connections. An older server ignores the parameter and
+   * answers with the full view, which reads the same.
+   */
   connections: (companyUid: string) =>
-    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}`,
+    `/v1/integrations/admin?companyUid=${encodeURIComponent(companyUid)}&view=summary`,
   grantAccess: "/v1/integrations/factory/access/grant",
   /** The catalog of apps HQ can connect. `limit` is left out when not given; the server bounds it to 1..100. */
   catalog: (companyUid: string, query: string, limit?: number) =>
@@ -1502,7 +1510,7 @@ export function connectionGrantBody(input: ConnectionAccessGrant): {
 /** A company's connected apps (HQ Integrations). */
 export interface IntegrationsApi {
   /**
-   * GET /v1/integrations/admin?companyUid=: the company's connections, each
+   * GET /v1/integrations/admin?companyUid=&view=summary: the company's connections, each
    * with its status and who may use it, plus what the caller may manage.
    */
   listConnections(companyUid: string): AdapterPromise<Json>;

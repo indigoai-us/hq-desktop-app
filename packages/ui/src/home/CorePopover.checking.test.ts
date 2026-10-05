@@ -52,6 +52,9 @@ function makeAdapter(overrides: {
       checkForUpdates: async () => ok(null),
       checkCliUpdate: async () => ok(null),
       installUpdate: async () => ok(undefined),
+      // A missing reader used to throw inside the swallowed hydrate. The
+      // default keeps these rows on the version path; the log test replaces it.
+      getDownloadedUpdate: async () => ok(null),
     },
     // Unused surface for these tests.
   } as never;
@@ -106,6 +109,32 @@ describe("CorePopover core-row checking state", () => {
       expect(coreRowText()).toContain("HQ core v15.0.118");
     });
     state.resolve(ok(null));
+  });
+
+  it("logs a failed downloaded-update hydrate and still paints the core row", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const adapter = makeAdapter({}) as {
+        updates: { getDownloadedUpdate?: () => Promise<unknown> };
+      };
+      adapter.updates.getDownloadedUpdate = async () => {
+        throw new Error("staged package missing");
+      };
+      mountPopover(adapter);
+      await vi.waitFor(() => {
+        flushSync();
+        expect(error).toHaveBeenCalledWith(
+          "core-popover: hydrate downloaded update failed",
+          "staged package missing",
+        );
+      });
+      // The version read resolves on its own. A failed hydrate must not
+      // replace that row or surface the staged-package error in the UI.
+      expect(coreRowText()).toContain("HQ core v15.0.118");
+      expect(coreRowText()).not.toContain("staged package missing");
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("says not detected only after the version read resolves empty", async () => {
