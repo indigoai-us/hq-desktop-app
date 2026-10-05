@@ -9882,6 +9882,58 @@ mod tests {
     }
 
     #[test]
+    fn holder_root_relation_and_failure_tags_match_their_closed_vocabularies() {
+        let holder_root_relation_tags = [
+            HolderRootRelation::Same.as_tag(),
+            HolderRootRelation::Older.as_tag(),
+            HolderRootRelation::Legacy.as_tag(),
+            HolderRootRelation::Unknown.as_tag(),
+        ];
+        assert_eq!(
+            holder_root_relation_tags,
+            ["same", "older", "legacy", "unknown"]
+        );
+
+        let failure_tags = [
+            InstallFailureKind::ExpectedPrefixPermission.fingerprint_component(),
+            InstallFailureKind::ExpectedWindowsAbort.fingerprint_component(),
+            InstallFailureKind::ExpectedWindowsLockedBinary.fingerprint_component(),
+            InstallFailureKind::WindowsLockedInstallTarget.fingerprint_component(),
+            InstallFailureKind::ExpectedTransientRegistry.fingerprint_component(),
+            InstallFailureKind::ExpectedBinCollision.fingerprint_component(),
+            InstallFailureKind::ExpectedDiskFull.fingerprint_component(),
+            InstallFailureKind::UnexpectedLifecycle.fingerprint_component(),
+            InstallFailureKind::Unexpected.fingerprint_component(),
+            InstallFailureKind::UnsupportedNode.fingerprint_component(),
+            InstallFailureKind::MissingGlobalInstallTarget.fingerprint_component(),
+            InstallFailureKind::ForeignRegistryPackageMissing.fingerprint_component(),
+        ];
+        assert_eq!(
+            failure_tags,
+            [
+                "expected-prefix-permission",
+                "expected-windows-abort",
+                "expected-windows-locked-binary",
+                "windows-locked-install-target",
+                "expected-transient-registry",
+                "expected-bin-collision",
+                "expected-disk-full",
+                "unexpected-lifecycle",
+                "unexpected",
+                "unsupported-node",
+                "missing-global-install-target",
+                "foreign-registry-404",
+            ]
+        );
+        // The lease-timeout report uses a separate fixed failure tag, asserted
+        // together with its capture and fingerprint above.
+        assert_eq!(
+            "package_use_lease_timeout",
+            "package_use_lease_timeout"
+        );
+    }
+
+    #[test]
     fn package_use_lease_retry_schedule_is_bounded_and_only_has_timeout_delays() {
         assert_eq!(
             auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 0),

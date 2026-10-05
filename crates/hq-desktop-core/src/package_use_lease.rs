@@ -1458,6 +1458,87 @@ mod tests {
         assert_eq!(summary.holder_version, HolderVersionBucket::Pre53424);
     }
 
+    #[tokio::test]
+    async fn older_root_holder_does_not_block_new_root_install_wait() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let older_root = paths.lease_directory.join(format!("{pid}-{start}-older.json"));
+        record_with_root(&older_root, pid, start, Some("older-root-a1"));
+        let request = PackageUseUpdateRequest::begin_at_with_root_id(
+            paths.clone(),
+            Some("new-root-a2"),
+        )
+        .unwrap();
+
+        let guard = request
+            .wait_for_root_with_summary("new-root-a2", Duration::ZERO)
+            .await
+            .expect("a holder on an older root must not block the new-root install");
+
+        assert!(older_root.exists(), "the live older-root lease must survive");
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn same_root_holder_blocks_destructive_mutation() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_root(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            Some("new-root-a2"),
+        );
+        let request = PackageUseUpdateRequest::begin_at_with_root_id(
+            paths,
+            Some("new-root-a2"),
+        )
+        .unwrap();
+
+        let error = match request
+            .wait_for_root_with_summary("new-root-a2", Duration::ZERO)
+            .await
+        {
+            Err(error) => error,
+            Ok(_guard) => panic!("a same-root holder must block destructive mutation"),
+        };
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("a same-root holder must produce the existing timeout error");
+        };
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+    }
+
+    #[tokio::test]
+    async fn rootless_lease_protects_the_legacy_tree() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+        );
+        let request = PackageUseUpdateRequest::begin_at_with_root_id(
+            paths,
+            Some(LEGACY_ROOT_ID),
+        )
+        .unwrap();
+
+        let error = match request
+            .wait_for_root_with_summary(LEGACY_ROOT_ID, Duration::ZERO)
+            .await
+        {
+            Err(error) => error,
+            Ok(_guard) => panic!("a rootless legacy lease must protect the legacy tree"),
+        };
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("a rootless legacy lease must produce the existing timeout error");
+        };
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+    }
+
     #[test]
     fn legacy_scoped_acquire_matches_prefix_wide_for_legacy_holders() {
         let (_temp, paths) = fixture();
