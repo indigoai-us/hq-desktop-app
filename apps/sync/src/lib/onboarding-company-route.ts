@@ -315,7 +315,7 @@ export type ProvisioningState =
   | { status: 'failed'; step: string };
 
 /** Short, telemetry-safe provisioning step label (hq-pro `step` values like `kms-create`). */
-export function provisioningStepLabel(raw: unknown): string {
+function provisioningStepLabel(raw: unknown): string {
   if (typeof raw !== 'string') return 'unknown';
   const step = raw.trim().toLowerCase();
   return /^[a-z0-9:_-]{1,64}$/.test(step) ? step : 'unknown';

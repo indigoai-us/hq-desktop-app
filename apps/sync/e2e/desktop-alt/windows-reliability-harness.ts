@@ -437,7 +437,7 @@ export function assertContentSafeDiagnostics(diagnostics: unknown): void {
 
 const appRoot = fileURLToPath(new URL('../..', import.meta.url));
 
-export function resolveSyncAppRoot(): string {
+function resolveSyncAppRoot(): string {
   // Prefer process.cwd() when tests run from apps/sync (vitest default).
   if (existsSync(join(process.cwd(), 'src-tauri', 'capabilities'))) {
     return process.cwd();
@@ -445,7 +445,7 @@ export function resolveSyncAppRoot(): string {
   return appRoot;
 }
 
-export function listCapabilityIdentifiers(root = resolveSyncAppRoot()): string[] {
+function listCapabilityIdentifiers(root = resolveSyncAppRoot()): string[] {
   const dir = join(root, 'src-tauri', 'capabilities');
   return readdirSync(dir)
     .filter((name) => name.endsWith('.json'))
@@ -993,7 +993,7 @@ export function isWindowsPlatform(): boolean {
   return process.platform === 'win32';
 }
 
-export function resolveLiveAppPath(): { appPath: string | null; reason?: string } {
+function resolveLiveAppPath(): { appPath: string | null; reason?: string } {
   const fromEnv =
     process.env.HQ_SYNC_DESKTOP_ALT_APP_PATH?.trim() ||
     process.env.HQ_SYNC_DESKTOP_ALT_APP?.trim() ||

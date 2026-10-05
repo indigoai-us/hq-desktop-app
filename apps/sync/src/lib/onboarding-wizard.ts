@@ -49,7 +49,7 @@ export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
  * The sole index mapping for wizard panels, graphics, and router transitions.
  * Keep panel identifiers in `WIZARD_STEPS`; do not hand-number a panel.
  */
-export const WIZARD_STEP_INDEX = Object.fromEntries(
+const WIZARD_STEP_INDEX = Object.fromEntries(
   WIZARD_STEPS.map((step) => [step.id, step.index]),
 ) as Record<WizardStepId, number>;
 

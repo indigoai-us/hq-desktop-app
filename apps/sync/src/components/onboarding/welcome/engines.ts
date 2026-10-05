@@ -72,7 +72,7 @@ export function placeUnder(top: number, bottom: number, blockH: number, extra: n
 
 /** The forward button sits right under each screen's content. */
 export const NAVH = 44;
-export const NAVGAP = 44;
+const NAVGAP = 44;
 /** Room kept above the bottom edge (Back / the install card). */
 export const FLOOR = 64;
 /** Scene cross-fade, matching `.scene` opacity .7s. */

@@ -6,7 +6,7 @@ import type { CompanyMembership } from "./meetings-model.js";
  * current granted membership in the desktop API and must not be displayed as
  * Personal while the Meetings action path accepts it.
  */
-export function isRecordingMembershipStatus(status: string | null | undefined): boolean {
+function isRecordingMembershipStatus(status: string | null | undefined): boolean {
   const normalized = status?.trim().toLowerCase();
   return normalized === "active" || normalized === "accepted";
 }
