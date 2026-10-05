@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Projects — portfolio Kanban (DESKTOP-004).
@@ -1041,7 +1042,7 @@
           onclick={createProject}
           disabled={newProjectPending}
           aria-busy={newProjectPending}
-        >
+        ><RailIcon name="plus" />
           {newProjectPending ? "Opening…" : "New project"}
         </button>
       </div>
@@ -1270,7 +1271,7 @@
                       data-testid={`show-more-projects-${column}`}
                       onclick={() =>
                         showMoreProjects(column, renderWindow.nextCount)}
-                    >
+                    ><RailIcon name="chevron-down" />
                       Show {renderWindow.nextCount - renderWindow.items.length} more
                       <span>· {renderWindow.remaining} remaining</span>
                     </button>
@@ -1339,7 +1340,7 @@
                             void requestLinkProject(project);
                           }}
                           disabled={actionBusy !== null}
-                        >
+                        ><RailIcon name="link" />
                           {actionBusy === `link-${projectIdentity(project)}`
                             ? "Opening…"
                             : "Link"}
@@ -1383,7 +1384,7 @@
                   data-testid={`show-more-projects-${column}`}
                   onclick={() =>
                     showMoreProjects(column, renderWindow.nextCount)}
-                >
+                ><RailIcon name="chevron-down" />
                   Show {renderWindow.nextCount - renderWindow.items.length} more
                   <span>· {renderWindow.remaining} remaining</span>
                 </button>

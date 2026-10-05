@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupIncompleteCard — shown at the top of Home when the HQ tree does not
    * exist yet (setup never finished). Offers the same two launch actions the
@@ -299,7 +300,7 @@
         disabled={launching !== null}
         onclick={launchClaude}
         data-testid="setup-open-claude"
-      >
+      ><RailIcon name="claude-code" />
         {launching === "claude" ? "Opening…" : "Open in Claude Code"}
       </button>
       <button
@@ -308,10 +309,10 @@
         disabled={launching !== null}
         onclick={launchCodex}
         data-testid="setup-open-codex"
-      >
+      ><RailIcon name="codex" />
         {launching === "codex" ? "Opening…" : "Open in Codex"}
       </button>
-      <button type="button" class="setup-btn ghost" onclick={copySetupPrompt}>
+      <button type="button" class="setup-btn ghost" onclick={copySetupPrompt}><RailIcon name="copy" />
         {promptCopied ? "Copied" : "Copy /setup"}
       </button>
     </div>
@@ -376,7 +377,7 @@
     color: var(--muted-2);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     /* No color transition: it keeps the old theme's text after a live theme

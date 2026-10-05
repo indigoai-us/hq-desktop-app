@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * MemberProfilePanel — Slack-style right-side profile panel for a channel
    * member. Opened by clicking a name in the conversation, a row in the members
@@ -127,7 +128,7 @@
             // it just opened is what the person wants to look at.
             onclose?.();
           }}
-        >
+        ><RailIcon name="send" />
           Message
         </button>
       {/if}

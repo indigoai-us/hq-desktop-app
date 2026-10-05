@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Reusable skill list. Selection is a background highlight only.
@@ -57,7 +58,7 @@
   </ul>
   <div class="sp-f">
     <span>{selected.length} selected</span>
-    <button type="button" class="sp-done" onclick={onclose}>Done</button>
+    <button type="button" class="sp-done" onclick={onclose}><RailIcon name="check" />Done</button>
   </div>
 </div>
 

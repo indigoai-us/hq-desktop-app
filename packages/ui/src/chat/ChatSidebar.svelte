@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import DayGroupHeader from "./DayGroupHeader.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -4205,7 +4206,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-all"
         onclick={selectAllVisible}
-      >
+      ><RailIcon name="check-circle" />
         Select all
       </button>
       <button
@@ -4214,7 +4215,7 @@
         data-testid="chat-selection-archive"
         disabled={selectionCount === 0}
         onclick={archiveSelection}
-      >
+      ><RailIcon name="archive" />
         {selectionAllArchived ? "Unarchive" : "Archive"}
       </button>
       <button
@@ -4222,7 +4223,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-done"
         onclick={exitSelectionMode}
-      >
+      ><RailIcon name="check" />
         Done
       </button>
     </div>
@@ -4326,7 +4327,7 @@
             data-testid="create-or-join-company"
             onclick={() => void oncreatecompany?.()}
           >
-            <span class="chat-glyph" aria-hidden="true">+</span>
+            <span class="chat-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
             <span class="chat-row-title">Create or join a company</span>
           </button>
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
@@ -4490,7 +4491,7 @@
       class="chat-history-affordance"
       data-testid="chat-show-history"
       onclick={openHistory}
-    >
+    ><RailIcon name="chevron-down" />
       Show all history{historyHiddenCount > 0
         ? ` (${historyHiddenCount})`
         : ""}…

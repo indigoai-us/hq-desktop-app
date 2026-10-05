@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
@@ -346,7 +347,7 @@
         onclick={retryRoot}
         disabled={rootLoading}
         aria-busy={rootLoading}
-      >
+      ><RailIcon name="refresh" />
         {rootLoading ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -434,7 +435,7 @@
                 onclick={() => void ensureLoaded(node)}
                 disabled={loadingPaths.has(node.path)}
                 aria-busy={loadingPaths.has(node.path)}
-              >
+              ><RailIcon name="refresh" />
                 {loadingPaths.has(node.path) ? "Retrying…" : "Retry"}
               </button>
             </div>

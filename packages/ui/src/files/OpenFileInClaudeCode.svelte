@@ -204,7 +204,7 @@
     color: var(--muted-2);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition:

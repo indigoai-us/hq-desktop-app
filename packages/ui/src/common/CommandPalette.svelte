@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "./button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import { onMount, tick, untrack } from "svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
@@ -432,7 +433,7 @@
           onclick={() => void execute(failure.command)}
           disabled={!!executingId}
           aria-busy={executingId === failure.command.id}
-        >
+        ><RailIcon name="refresh" />
           {executingId === failure.command.id ? "Retrying…" : "Retry"}
         </button>
       </div>

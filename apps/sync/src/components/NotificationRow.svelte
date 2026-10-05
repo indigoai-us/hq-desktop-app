@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { onDestroy } from 'svelte';
   import { relativeTime } from '../lib/notificationFeedData';
 
@@ -568,7 +569,7 @@
           disabled={resolvePending}
           onclick={() => closeResolver()}
         >
-          Cancel
+          <RailIcon name="x" />Cancel
         </button>
       </div>
     {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { OfficePerson } from './office-store.svelte.js';
   import { officeMapRooms, projectFloor, memberLabel, initials } from './office-map.js';
   let { people, displayName, selected, onselect, selfUid }: {people: readonly OfficePerson[]; selfUid?: string; displayName: (uid:string)=>string; selected:string|null; onselect:(uid:string)=>void}=$props();
@@ -105,7 +106,7 @@
   <div class="floor-caption"><strong>Different rooms. Same team.</strong><span>Scroll to pan · Ctrl-scroll or pinch to zoom · ⌘/Ctrl-drag to rotate</span></div>
   <div class="map-tools" aria-label="Floor controls">
 
-    <button aria-label="Zoom out" onclick={()=>zoomAt(zoom/1.2)}>−</button><button aria-label="Zoom in" onclick={()=>zoomAt(zoom*1.2)}>+</button><button onclick={reset}>Fit all</button>
+    <button aria-label="Zoom out" onclick={()=>zoomAt(zoom/1.2)}>−</button><button aria-label="Zoom in" onclick={()=>zoomAt(zoom*1.2)}>+</button><button onclick={reset}><RailIcon name="search" />Fit all</button>
   </div>
 </div>
 <style>

@@ -48,6 +48,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * SetupInstallGuide - the guided path US-005 asked for. When setup finds no
    * coding tool installed (or none signed in), the SetupIncompleteCard used to
@@ -531,7 +532,7 @@
         class="secondary"
         onclick={() => void restartSignIn()}
         data-testid="setup-install-guide-restart-signin"
-      >Open the sign-in page again</button>
+      ><RailIcon name="external" />Open the sign-in page again</button>
     {/if}
 
     {#if phase === "install-failed"}
@@ -540,7 +541,7 @@
         class="secondary"
         onclick={() => void downloadManually()}
         data-testid="setup-install-guide-download"
-      >Download {toolLabel} instead</button>
+      ><RailIcon name="download" />Download {toolLabel} instead</button>
     {/if}
   </div>
 

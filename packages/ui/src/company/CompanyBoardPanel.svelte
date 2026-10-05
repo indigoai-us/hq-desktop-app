@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * CompanyBoardPanel — the per-company Overview board (US-011 + DESKTOP-003).
@@ -863,7 +864,7 @@
                   class="section-link"
                   data-testid="overview-view-projects"
                   onclick={() => onopenprojects?.()}
-                >
+                ><RailIcon name="eye" />
                   View projects
                 </button>
               </div>
@@ -966,7 +967,7 @@
                 class="section-link"
                 data-testid="overview-view-goals"
                 onclick={() => onopengoals?.()}
-              >
+              ><RailIcon name="eye" />
                 View all
               </button>
             </header>

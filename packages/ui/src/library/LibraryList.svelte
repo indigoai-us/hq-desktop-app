@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * LibraryList — Foundry/"ops console" card grid of library items (workers +
    * skills), shared by the root Library page and the per-company panel.
@@ -145,7 +146,7 @@
             visibleLimit + RENDER_BATCH,
           ))}
         aria-label={`Show ${Math.min(RENDER_BATCH, remaining)} more library items`}
-      >
+      ><RailIcon name="chevron-down" />
         Show {Math.min(RENDER_BATCH, remaining)} more
       </button>
     </div>
@@ -347,7 +348,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

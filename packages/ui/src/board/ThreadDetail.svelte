@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Work-mesh thread detail view (US-008).
    *
@@ -26,7 +27,7 @@
       type="button"
       class="back-btn"
       data-testid="thread-detail-back"
-      onclick={() => onback?.()}>← Board</button
+      onclick={() => onback?.()}><RailIcon name="arrow-left" />Board</button
     >
   </header>
 

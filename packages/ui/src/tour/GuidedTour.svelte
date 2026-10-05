@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Spotlight layer for the first-run guided tour. Dims the window, cuts a
    * rounded hole around the current step's target and anchors a small card
@@ -265,7 +266,7 @@
         class="hq-tour-btn hq-tour-skip"
         data-testid="guided-tour-skip"
         onclick={onskip}
-      >
+      ><RailIcon name="arrow-right" />
         Skip
       </button>
       <span class="hq-tour-spacer"></span>
@@ -275,7 +276,7 @@
           class="hq-tour-btn hq-tour-back"
           data-testid="guided-tour-back"
           onclick={onback}
-        >
+        ><RailIcon name="arrow-left" />
           Back
         </button>
       {/if}

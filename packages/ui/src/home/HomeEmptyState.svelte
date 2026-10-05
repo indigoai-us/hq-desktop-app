@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Home with nothing selected (console-rail US-016, scene home-empty).
    * Paints immediately: no fetch, no spinner.
@@ -19,9 +20,9 @@
     Bots are the rounded squares.
   </p>
   <div class="keys">
-    <button type="button" onclick={() => onfind?.()}><kbd>⌘K</kbd> Find anything</button>
-    <button type="button" onclick={() => onnewmessage?.()}><kbd>⇧⌘K</kbd> New message</button>
-    <button type="button" onclick={() => onnewchannel?.()}><kbd>⇧⌘N</kbd> New channel</button>
+    <button type="button" onclick={() => onfind?.()}><RailIcon name="search" /><kbd>⌘K</kbd> Find anything</button>
+    <button type="button" onclick={() => onnewmessage?.()}><RailIcon name="send" /><kbd>⇧⌘K</kbd> New message</button>
+    <button type="button" onclick={() => onnewchannel?.()}><RailIcon name="plus" /><kbd>⇧⌘N</kbd> New channel</button>
   </div>
 </div>
 

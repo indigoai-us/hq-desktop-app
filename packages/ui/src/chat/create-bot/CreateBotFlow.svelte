@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The New bot flow: kind → home → details, with a live preview card and
    * one footer. Hosts it inside the create modal (and the Settings → Bots
@@ -655,15 +656,15 @@
         {#if entryFix?.kind === "checkout"}
           <a class="flow-error-fix" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
         {:else if entryFix?.kind === "reload_quote"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Get the new price</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}><RailIcon name="refresh" />Get the new price</button>
         {:else if entryFix?.kind === "edit_handle" && step !== "details"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}>Change handle</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}><RailIcon name="pencil" />Change handle</button>
         {/if}
       </p>
     {/if}
 
     <div class="flow-footer">
-      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}>
+      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}><RailIcon name="x" />
         {prevStep(step, draft) ? "Back" : "Cancel"}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>

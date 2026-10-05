@@ -37,7 +37,13 @@ export type LineIconName =
   | "circle-dot"
   | "logout"
   | "key"
-  | "save";
+  | "save"
+  | "archive"
+  | "ban"
+  | "check-circle"
+  | "bell"
+  | "door"
+  | "sliders";
 
 export type BrandIconName = "claude-code" | "codex" | "grok";
 
@@ -74,6 +80,12 @@ export const LINE_ICONS: Record<LineIconName, string> = {
   "circle-dot": "M8 13.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11zM8 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2z",
   logout: "M6 13.5H3v-11h3M10 5l3 3-3 3M13 8H6",
   key: "M5.5 10.5a3 3 0 1 1 2.6-1.5L14 15M11 12l1.5-1.5",
+  archive: "M2.5 3.5h11v3h-11zM3.5 6.5V13h9V6.5M6.5 9h3",
+  ban: "M8 13.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11zM4.1 4.1l7.8 7.8",
+  "check-circle": "M8 13.5a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11zM5.5 8.2l1.7 1.7 3.3-3.6",
+  bell: "M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3zM6.5 14h3",
+  door: "M4 14V2.5h8V14M2.5 14h11M9.5 8.5v.5",
+  sliders: "M2.5 5h11M2.5 11h11M6 3.5v3M10 9.5v3",
 };
 
 /**
@@ -167,6 +179,23 @@ const EXACT: Record<string, RailIconName> = {
   continue: "arrow-right",
   next: "arrow-right",
   "sign out": "logout",
+  archive: "archive",
+  unarchive: "archive",
+  reject: "ban",
+  choose: "check-circle",
+  "select all": "check-circle",
+  knock: "bell",
+  enable: "bell",
+  manage: "sliders",
+  "more options": "sliders",
+  "check for updates": "refresh",
+  "check all updates": "refresh",
+  "restart to update": "refresh",
+  install: "download",
+  "download & install": "download",
+  reply: "send",
+  share: "link",
+  "sign in": "key",
 };
 
 const PREFIX: Array<[string, RailIconName]> = [
@@ -177,6 +206,8 @@ const PREFIX: Array<[string, RailIconName]> = [
   ["export ", "download"],
   ["open in claude", "claude-code"],
   ["open in codex", "codex"],
+  ["open the door", "door"],
+  ["open my door", "door"],
   ["open ", "external"],
   ["clear ", "x"],
   ["delete ", "trash"],
@@ -185,6 +216,9 @@ const PREFIX: Array<[string, RailIconName]> = [
   ["connect ", "plug"],
   ["edit ", "pencil"],
   ["change ", "pencil"],
+  ["manage ", "sliders"],
+  ["show in ", "folder"],
+  ["attach ", "link"],
 ];
 
 export function normaliseLabel(label: string): string {

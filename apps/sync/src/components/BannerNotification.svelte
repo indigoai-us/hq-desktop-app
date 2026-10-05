@@ -491,7 +491,7 @@
     background: transparent;
     color: var(--popover-text-heading);
     font: inherit;
-    font-weight: 650;
+    font-weight: 500;
     cursor: pointer;
   }
 

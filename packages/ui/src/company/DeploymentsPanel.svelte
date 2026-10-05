@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { openAgentWorkflow, type AgentWorkflowApi } from "./agent-workflow";
   import { companyStore } from "./company-store.svelte";
   import { isCompanyResourceUnavailable } from "./company-store.svelte";
@@ -228,7 +229,7 @@
         disabled={deployBusy || !resourcesEnabled}
         aria-busy={deployBusy}
         title="Deploy with HQ"
-      >
+      ><RailIcon name="upload" />
         {deployBusy ? "Opening…" : "Deploy"}
       </button>
     </div>
@@ -279,7 +280,7 @@
         onclick={retry}
         disabled={loading}
         aria-busy={loading}
-      >
+      ><RailIcon name="refresh" />
         {loading ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -408,7 +409,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
    * Chrome says “Thread” (Slack). Overlay vs third-column lives in the
@@ -1272,7 +1273,7 @@
                   class="reply-send-state failed"
                   data-testid="reply-panel-retry"
                   onclick={() => void retrySend(msg.eventId)}
-                >
+                ><RailIcon name="refresh" />
                   {msg.sendError
                     ? `${msg.sendError} Tap to retry.`
                     : "Failed — tap to retry"}

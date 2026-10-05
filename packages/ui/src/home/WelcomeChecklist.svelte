@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * First run with no company (console-rail US-016, scene home-first-run).
    * Static checklist; actions are callbacks the host already owns.
@@ -56,13 +57,13 @@
           <b>Create a company</b>
           <span class="d">A company is the boundary for people, files, bots, and secrets. You can join one you were invited to instead.</span>
           <div class="act">
-            <button type="button" class="primary" data-testid="welcome-create" onclick={() => oncreate?.()}>Create a company</button>
-            <button type="button" data-testid="welcome-invite-code" title="Pastes an invite code; joins the company" onclick={() => (inviteOpen = !inviteOpen)}>I have an invite</button>
+            <button type="button" class="primary" data-testid="welcome-create" onclick={() => oncreate?.()}><RailIcon name="plus" />Create a company</button>
+            <button type="button" data-testid="welcome-invite-code" title="Pastes an invite code; joins the company" onclick={() => (inviteOpen = !inviteOpen)}><RailIcon name="key" />I have an invite</button>
           </div>
           {#if inviteOpen}
             <form class="act" onsubmit={(e) => { e.preventDefault(); submitInvite(); }}>
               <input data-testid="welcome-invite-input" bind:value={inviteCode} placeholder="Invite code" aria-label="Invite code" />
-              <button type="submit">Join</button>
+              <button type="submit"><RailIcon name="arrow-right" />Join</button>
             </form>
           {/if}
         </div>
@@ -74,7 +75,7 @@
           <span class="d">Sync, secrets, and agent runs come from the CLI. Paste one line in Terminal; the app detects it when it is done.</span>
           <div class="act">
             <code>{installCommand}</code>
-            <button type="button" data-testid="welcome-copy-cli" onclick={() => void copyInstall()}>{copied ? "Copied" : "Copy"}</button>
+            <button type="button" data-testid="welcome-copy-cli" onclick={() => void copyInstall()}><RailIcon name="copy" />{copied ? "Copied" : "Copy"}</button>
           </div>
         </div>
       </li>
@@ -84,7 +85,7 @@
           <b>Invite a teammate</b>
           <span class="d">Invites are magic links that expire in 7 days. Members see only the folders you grant.</span>
           <div class="act">
-            <button type="button" data-testid="welcome-invite-teammate" onclick={() => oninvite?.()}>Invite a teammate</button>
+            <button type="button" data-testid="welcome-invite-teammate" onclick={() => oninvite?.()}><RailIcon name="user-plus" />Invite a teammate</button>
           </div>
         </div>
       </li>

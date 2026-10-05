@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The card a new Local bot's DM shows until the bot is online: Creating
    * identity → Installing on this Mac → Online. A failure shows the reason
@@ -112,7 +113,7 @@
           data-testid="bot-progress-retry"
           disabled={retrying || !canRetry}
           onclick={() => void onretry?.()}
-        >
+        ><RailIcon name="refresh" />
           {retrying ? "Retrying…" : "Retry"}
         </button>
       {/if}

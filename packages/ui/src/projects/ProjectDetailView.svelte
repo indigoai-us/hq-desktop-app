@@ -612,7 +612,7 @@
         class="back-button"
         data-testid="detail-back"
         onclick={onback}
-      >
+      ><RailIcon name="arrow-left" />
         <span>Projects</span>
       </button>
       <span class="crumb-sep" aria-hidden="true">/</span>
@@ -1131,7 +1131,7 @@
                     aria-busy={storyRetrying || storiesLoading}
                     disabled={storyRetrying || storiesLoading}
                     onclick={() => void retryStories()}
-                  >
+                  ><RailIcon name="refresh" />
                     {storyRetrying || storiesLoading ? "Retrying…" : "Retry"}
                   </button>
                 {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ChannelConversation — the real channel timeline + composer, ported faithfully
    * from the hq-sync desktop `Conversation.svelte` message-row + reply-composer
@@ -1849,7 +1850,7 @@
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
             onclick={showEarlier}
-          >
+          ><RailIcon name="chevron-down" />
             Look further back
           </button>
         {:else if windowed.hidden > 0 || hasEarlier}
@@ -1858,7 +1859,7 @@
             class="dm-load-earlier"
             data-testid="conversation-load-earlier"
             onclick={showEarlier}
-          >
+          ><RailIcon name="chevron-down" />
             {earlierError ? "Couldn't load earlier messages. Retry" : windowed.hidden > 0 ? `Show ${windowed.hidden} earlier messages` : "Load earlier messages"}
           </button>
         {/if}
@@ -2256,7 +2257,7 @@
                       aria-label="Reply in thread"
                       title="Reply in thread"
                       onclick={() => openReply(msg.eventId)}
-                    >
+                    ><RailIcon name="send" />
                       Reply
                     </button>
                   {/if}
@@ -2268,7 +2269,7 @@
                       aria-label="Copy message text"
                       title="Copy message"
                       onclick={() => copyMessage(msg)}
-                    >
+                    ><RailIcon name="copy" />
                       {copiedEventId === msg.eventId ? "Copied" : "Copy"}
                     </button>
                   {/if}
@@ -2280,7 +2281,7 @@
                       aria-label="Start a session from this message"
                       title="Start session"
                       onclick={() => onstartsession(msg.eventId)}
-                    >
+                    ><RailIcon name="play" />
                       Session
                     </button>
                   {/if}

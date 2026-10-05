@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import {
     botAttachmentState,
@@ -235,7 +236,7 @@
                     onclick={() => void openMeeting(event.id, url)}
                     disabled={openingEventIds.has(event.id)}
                     aria-busy={openingEventIds.has(event.id)}
-                  >
+                  ><RailIcon name="refresh" />
                     {openingEventIds.has(event.id) ? "Retrying…" : "Retry"}
                   </button>
                 </div>
@@ -274,7 +275,7 @@
                 >
                   {#if openingEventIds.has(event.id)}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
-                  {:else}
+                  {:else}<RailIcon name="arrow-right" />
                     Join
                   {/if}
                 </button>

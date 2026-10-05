@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { onMount } from "svelte";
   import {
     applyWakingCheckFailure,
@@ -379,7 +380,7 @@
           data-testid="new-bot-approval-restart"
           disabled={!restartBrainApproval || actionBusy}
           onclick={() => void restartApproval()}
-        >{actionBusy ? "Starting again..." : "Start again"}</button>
+        ><RailIcon name="refresh" />{actionBusy ? "Starting again..." : "Start again"}</button>
       {:else}
         <p class="new-bot-approval-ask">{approvalAsk}</p>
 
@@ -415,7 +416,7 @@
             disabled={actionBusy}
             use:focusOnMount
             onclick={() => void openApproval()}
-          >{actionBusy
+          ><RailIcon name="external" />{actionBusy
             ? "Opening..."
             : approvalOpened
               ? `Open ${brainApprovalLabel(approval.provider)} again`
@@ -426,7 +427,7 @@
               class="new-bot-waking-secondary"
               data-testid="new-bot-approval-done"
               onclick={confirmSignedIn}
-            >I've signed in</button>
+            ><RailIcon name="check" />I've signed in</button>
           {/if}
         </div>
 
@@ -447,7 +448,7 @@
             data-testid="new-bot-claude-submit"
             disabled={actionBusy || !submitClaudeLoginCode}
             onclick={() => void submitClaudeCode()}
-          >{actionBusy ? "Submitting..." : "Submit code"}</button>
+          ><RailIcon name="send" />{actionBusy ? "Submitting..." : "Submit code"}</button>
         {/if}
 
         {#if approvalOpened && approval.provider !== "claude" && !actionMessage}
@@ -469,7 +470,7 @@
       aria-busy={retryBusy ? "true" : undefined}
       use:focusOnMount
       onclick={onretry}
-    >{retryBusy ? "Trying again..." : "Try again"}</button>
+    ><RailIcon name="refresh" />{retryBusy ? "Trying again..." : "Try again"}</button>
     {#if retryMessage}
       <p class="new-bot-approval-note" data-testid="new-bot-waking-retry-message" role="status">{retryMessage}</p>
     {/if}
@@ -477,7 +478,7 @@
 
   <!-- One way out. There is no chat to open until the bot is live; the screen
        opens it by itself at that point. -->
-  <button type="button" class="new-bot-waking-close" data-testid="new-bot-waking-close" onclick={onclose}>
+  <button type="button" class="new-bot-waking-close" data-testid="new-bot-waking-close" onclick={onclose}><RailIcon name="x" />
     {session.phase === "failed" || session.phase === "stopped" ? "Close" : approval ? "Do this later" : "Close and keep working"}
   </button>
 </section>

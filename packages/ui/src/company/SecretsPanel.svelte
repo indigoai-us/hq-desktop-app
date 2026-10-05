@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { buildClaudeCodeUrl } from "../projects/claude-code-link";
   import {
     companyStore,
@@ -257,7 +258,7 @@
       disabled={actionBusy !== null || !resourcesEnabled}
       aria-busy={actionBusy === "export"}
       title="Export via HQ secrets workflow"
-    >
+    ><RailIcon name="download" />
       {actionBusy === "export" ? "Opening…" : "Export .env"}
     </button>
     <button
@@ -267,7 +268,7 @@
       disabled={actionBusy !== null || !resourcesEnabled}
       aria-busy={actionBusy === "new"}
       title="Create via HQ secrets workflow"
-    >
+    ><RailIcon name="plus" />
       {actionBusy === "new" ? "Opening…" : "New key"}
     </button>
   </div>
@@ -316,7 +317,7 @@
         onclick={retry}
         disabled={loading}
         aria-busy={loading}
-      >
+      ><RailIcon name="refresh" />
         {loading ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -415,7 +416,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }

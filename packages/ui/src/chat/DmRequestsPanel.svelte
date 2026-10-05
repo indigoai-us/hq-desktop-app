@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Pending DM connection requests, rendered in the main conversation area.
    *
@@ -149,7 +150,7 @@
   {:else if loadError}
     <div class="dm-requests-status" data-testid="dm-requests-error" role="alert">
       <span>{loadError}</span>
-      <button type="button" onclick={() => void refresh()}>Retry</button>
+      <button type="button" onclick={() => void refresh()}><RailIcon name="refresh" />Retry</button>
     </div>
   {:else if requests.length === 0}
     <p class="dm-requests-status" data-testid="dm-requests-empty" role="status">
@@ -207,7 +208,7 @@
                   data-testid="dm-request-accept"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "accept")}
-                >
+                ><RailIcon name="check" />
                   {inflight === "accept" ? "Accepting…" : "Accept"}
                 </button>
                 <button
@@ -216,7 +217,7 @@
                   data-testid="dm-request-decline"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "decline")}
-                >
+                ><RailIcon name="x" />
                   {inflight === "decline" ? "Declining…" : "Decline"}
                 </button>
                 <button
@@ -225,7 +226,7 @@
                   data-testid="dm-request-block"
                   disabled={inflight !== null}
                   onclick={() => void respond(req, "block")}
-                >
+                ><RailIcon name="x" />
                   {inflight === "block" ? "Blocking…" : "Block"}
                 </button>
               </div>

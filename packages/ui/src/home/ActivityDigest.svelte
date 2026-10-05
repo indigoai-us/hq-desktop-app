@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { HomeDigestGroup } from "./home-model.js";
   import "./tokens.css";
 
@@ -70,7 +71,7 @@
         onclick={openLog}
         disabled={openingLog}
         aria-busy={openingLog}
-      >
+      ><RailIcon name="refresh" />
         {openingLog ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -176,7 +177,7 @@
     background: transparent;
     color: currentColor;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * In-app preview for one attachment in a share, with previous/next.
    * Images, PDFs, and text/markdown render inline via a presigned GET.
@@ -207,7 +208,7 @@
           disabled={!canPrev}
           onclick={goPrev}
         >
-          Previous
+          <RailIcon name="arrow-left" />Previous
         </button>
         <button
           type="button"
@@ -217,7 +218,7 @@
           disabled={!canNext}
           onclick={goNext}
         >
-          Next
+          <RailIcon name="arrow-right" />Next
         </button>
         <button
           type="button"
@@ -272,7 +273,7 @@
               data-testid="attachment-preview-open-in-files"
               onclick={openInFiles}
             >
-              Open in Files
+              <RailIcon name="folder" />Open in Files
             </button>
           {/if}
         </div>

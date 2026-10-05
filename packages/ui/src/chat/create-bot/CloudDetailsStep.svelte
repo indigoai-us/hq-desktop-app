@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Step C for a Cloud bot: the name, the @handle it is created under, and an
    * optional job title.
@@ -163,7 +164,7 @@
         <p class="cb-help" role="status" data-testid="cloud-bot-quote-loading">Loading your company’s price quote…</p>
       {:else if cloudQuoteStatus === "error"}
         <p class="cb-help error" role="alert" data-testid="cloud-bot-quote-error">Your company’s price quote couldn’t be loaded, so creation is paused.</p>
-        <button type="button" class="cloud-retry" disabled={disabled} data-testid="cloud-bot-quote-retry" onclick={onretryquote}>Try again</button>
+        <button type="button" class="cloud-retry" disabled={disabled} data-testid="cloud-bot-quote-retry" onclick={onretryquote}><RailIcon name="refresh" />Try again</button>
       {:else if cloudProvisionOptions?.options.length}
         {#each cloudProvisionOptions.options as option (option.key)}
           <label class="cloud-size-option" class:selected={draft.size === option.key} class:unavailable={!option.selectable || option.netMonthlyCents === null}>

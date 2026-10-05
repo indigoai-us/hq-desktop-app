@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Trusted renderer for structured agent message content (stat / table /
    * chart / markdown blocks). See richMessageContent.ts for the security model:
@@ -518,7 +519,7 @@
               disabled={answered}
               data-testid="rich-decision-other"
               onclick={() => pickDecision(block, blockIndex, null)}
-            >
+            ><RailIcon name="pencil" />
               Other…
             </button>
           {/if}
@@ -924,7 +925,7 @@
     background: color-mix(in srgb, var(--vio-ink) 22%, transparent);
     box-shadow: inset 0 0 0 1px var(--vio-ink);
     opacity: 1;
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-check {
     display: inline-flex;
@@ -945,7 +946,7 @@
     font-weight: 500;
   }
   .rich-decision-btn.is-chosen .rich-decision-btn-label {
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-tag {
     font-size: 11px;

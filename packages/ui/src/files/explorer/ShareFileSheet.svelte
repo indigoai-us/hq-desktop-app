@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Share sheet for one explorer file (QA-005). Shows the path a grant would
    * name and, while the app cannot grant access itself, a disabled Share
@@ -27,8 +28,8 @@
     <p class="sf-reason" data-testid="file-share-unavailable">{target.reason}</p>
   {/if}
   <footer class="sf-foot">
-    <button type="button" class="sf-btn" onclick={onclose}>Close</button>
-    <button type="button" class="sf-btn primary" disabled={!target.available} aria-disabled={!target.available} data-testid="file-share-submit">Share</button>
+    <button type="button" class="sf-btn" onclick={onclose}><RailIcon name="x" />Close</button>
+    <button type="button" class="sf-btn primary" disabled={!target.available} aria-disabled={!target.available} data-testid="file-share-submit"><RailIcon name="link" />Share</button>
   </footer>
 </div>
 

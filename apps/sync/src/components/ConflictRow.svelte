@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Props {
@@ -74,10 +75,10 @@
   {:else}
     <div class="actions">
       <button class="action-btn local-btn" aria-label="Keep local version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-local')}>
-        Keep Local
+        <RailIcon name="check" />Keep Local
       </button>
       <button class="action-btn remote-btn" aria-label="Keep remote version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-remote')}>
-        Keep Remote
+        <RailIcon name="download" />Keep Remote
       </button>
       <button class="action-btn editor-btn" onclick={() => onopen(conflict.path)} title="Open in editor" aria-label="Open {fileName} in editor">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

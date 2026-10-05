@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { innerFitViolations } from './sheet-inner-fit';
 
 /**
- * QA-105: Goals > New objective > + Link. The sheet and the nested project
+ * QA-105: Goals > New objective > Link. The sheet and the nested project
  * picker fit the window at 1440x900 and 1000x700, header and footer stay
  * visible, Escape closes the picker first and then the sheet.
  * QA-107: every input and control inside the sheet and the picker sits inside
