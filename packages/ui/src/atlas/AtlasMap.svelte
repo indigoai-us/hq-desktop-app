@@ -117,6 +117,9 @@
     return () => document.removeEventListener("visibilitychange", sync);
   });
 
+  // One id per map so two maps on a page never share a gradient.
+  const glowId = `atlas-glow-${Math.random().toString(36).slice(2, 8)}`;
+
   let hovered = $state<string | null>(null);
   /** Key of the actor chip under the pointer; its card replaces the object card. */
   let hoveredChip = $state<string | null>(null);
@@ -441,6 +444,9 @@
 </script>
 
 <div class="atlas-map" class:calm={!motion} class:paused={pageHidden} style:--pulse-ms={`${ATLAS_PULSE_MS}ms`} data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
+  <!-- Static ground: a soft vignette and fine grain under the map, so the map
+       reads as one image. Under the SVG, so labels are drawn over it. -->
+  <div class="ground" aria-hidden="true"></div>
   <svg
     bind:this={svgEl}
     role="application"
@@ -449,6 +455,14 @@
     ondblclick={frame}
     onwheel={onwheel}
   >
+    <defs>
+      <!-- Soft glow behind active objects: a wide radial falloff, no blur filter. -->
+      <radialGradient id={glowId} data-testid="atlas-glow-gradient">
+        <stop class="glow-core" offset="0%" />
+        <stop class="glow-mid" offset="45%" />
+        <stop class="glow-edge" offset="100%" />
+      </radialGradient>
+    </defs>
     <g data-testid="atlas-world" class:focusing={focus !== null && focus.size > 0} transform={viewTransform(view)}>
       {#each shownEdges as edge (`${edge.kind}:${edge.source}>${edge.target}`)}
         {@const a = byId.get(edge.source)}
@@ -504,7 +518,7 @@
           {/if}
           {#if timeOpacity && !timeOpacity.has(node.id)}
             <!-- Active at the scrubbed time: a soft glow lifts it off the faded rest. -->
-            <circle class="glow" cx={node.x} cy={node.y} r={node.r * 2.4 + 2} />
+            <circle class="glow" cx={node.x} cy={node.y} r={node.r * 4 + 6} fill={`url(#${glowId})`} />
           {/if}
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
           {#if node.stories && node.r * view.k >= ATLAS_RING_MIN_PX}
@@ -668,6 +682,25 @@
     overflow: hidden;
     min-height: 0;
     height: 100%;
+    isolation: isolate;
+  }
+  /* Static depth: a vignette that darkens the far edges a little, and a fine
+     grain at very low strength. Nothing here animates. */
+  .ground {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: radial-gradient(ellipse 75% 70% at 50% 46%, transparent 55%, rgb(0 0 0 / 0.1) 100%);
+  }
+  /* Grain: a tiled noise image at 5% strength, the same in both themes. */
+  .ground::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 0 0.5 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 160px 160px;
+    opacity: 0.05;
   }
   svg {
     display: block;
@@ -754,16 +787,26 @@
     stroke-opacity: 0.8;
   }
   .glow {
-    fill: var(--c);
-    fill-opacity: 0.2;
     pointer-events: none;
+  }
+  .glow-core {
+    stop-color: var(--v4-text-1);
+    stop-opacity: 0.16;
+  }
+  .glow-mid {
+    stop-color: var(--v4-text-1);
+    stop-opacity: 0.06;
+  }
+  .glow-edge {
+    stop-color: var(--v4-text-1);
+    stop-opacity: 0;
   }
   /* Active now: lifted toward white so it reads from a framed-out map. */
   .node.active .dot {
     fill: color-mix(in srgb, var(--c) 62%, white);
   }
   .node.active .glow {
-    fill-opacity: 0.28;
+    opacity: 1;
   }
   .node:hover .dot,
   .node.selected .dot {
