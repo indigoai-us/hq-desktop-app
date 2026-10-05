@@ -19,6 +19,7 @@
   import type { NavigationDestination } from "./navigation-history.js";
   import { loadLocalProjects, ProjectsUnavailableError } from "../projects/local-projects.js";
   import { boardProjectsInProgress } from "../projects/projects-model.js";
+  import { requestLiveRefresh } from "../mesh/live-refresh.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
   type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
@@ -77,6 +78,14 @@
     atlasLocal = null,
     loadPeople = null,
   }: Props = $props();
+
+  // Who is working now comes from the live read. Ask for it when Atlas opens
+  // on a company: until now it only arrived on a realtime reconnect or a live
+  // wake, so a company with no wake since launch showed "Nobody is working".
+  $effect(() => {
+    const uid = companyUid?.trim();
+    if (uid) requestLiveRefresh(uid);
+  });
 
   // Shared cache with the company sidepane: paints the warm summary first and
   // refreshes in the background. No poller.

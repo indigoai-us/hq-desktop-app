@@ -5,6 +5,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 
 import AtlasLandingHost from "./AtlasLandingHost.svelte";
 import { loadAtlas } from "./atlas-lazy.js";
+import { bindLiveRefresh } from "../mesh/live-refresh.js";
 import { createAtlasCache } from "../atlas/atlas-cache.js";
 import { smokeAtlasGraph } from "../atlas/atlas-model.js";
 import { configureProjectsApi } from "../projects/local-projects.js";
@@ -113,6 +114,18 @@ describe("AtlasLandingHost live presence (US-013)", () => {
     expect(fetcher).toHaveBeenCalledWith("co_indigo");
     // Only one halo: nobody else is live.
     expect(target.querySelectorAll(".halo")).toHaveLength(1);
+  });
+
+  it("asks for the company's live read when Atlas opens, so Working now is not empty until a wake", () => {
+    const asked: string[] = [];
+    const unbind = bindLiveRefresh((uid) => asked.push(uid));
+    try {
+      mountMap({});
+      flushSync();
+      expect(asked).toEqual(["co_indigo"]);
+    } finally {
+      unbind();
+    }
   });
 
   it("filters the map to a person's objects and dims the rest; clearing restores", async () => {
