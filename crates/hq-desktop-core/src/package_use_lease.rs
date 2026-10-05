@@ -171,6 +171,12 @@ pub struct PackageUseLeaseTimeoutSummary {
     pub oldest_holder_purpose: HolderPurposeBucket,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackageUseLeaseRootSummary {
+    pub same_root: PackageUseLeaseTimeoutSummary,
+    pub other_root: PackageUseLeaseTimeoutSummary,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum PackageUseLeaseWaitError {
     Timeout(PackageUseLeaseTimeoutSummary),
@@ -339,6 +345,65 @@ fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeo
         },
         oldest_holder_purpose,
     }
+}
+
+fn root_scoped_timeout_summary(
+    records: &[LeaseRecord],
+    target_root_id: &str,
+    now_ms: u64,
+) -> PackageUseLeaseRootSummary {
+    let (same_root, other_root) = split_live_records_by_root(records, target_root_id);
+    let same_root: Vec<_> = same_root.into_iter().cloned().collect();
+    let other_root: Vec<_> = other_root.into_iter().cloned().collect();
+    PackageUseLeaseRootSummary {
+        same_root: timeout_summary(&same_root, now_ms),
+        other_root: timeout_summary(&other_root, now_ms),
+    }
+}
+
+fn lease_record_is_live(record: &LeaseRecord) -> bool {
+    process_start_time_ms(record.pid)
+        .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
+}
+
+fn scan_live_lease_records(paths: &PackageUseLeasePaths) -> Result<Vec<LeaseRecord>, String> {
+    let entries = fs::read_dir(&paths.lease_directory).map_err(|error| {
+        format!(
+            "Could not inspect HQ CLI package-use leases ({})",
+            error_label(&error)
+        )
+    })?;
+    let mut live_records = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Could not inspect an HQ CLI package-use lease ({})",
+                error_label(&error)
+            )
+        })?;
+        let path = entry.path();
+        if path == paths.update_request_path
+            || path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not read an HQ CLI package-use lease ({})",
+                    error_label(&error)
+                ))
+            }
+        };
+        let record = serde_json::from_slice::<LeaseRecord>(&bytes)
+            .map_err(|error| format!("Could not decode an HQ CLI package-use lease ({error})"))?;
+        if lease_record_is_live(&record) {
+            live_records.push(record);
+        }
+    }
+    Ok(live_records)
 }
 
 fn lease_paths(prefix: &Path, state_directory: &Path) -> Result<PackageUseLeasePaths, String> {
@@ -553,6 +618,20 @@ impl PackageUseUpdateRequest {
         })
     }
 
+    /// Read live holders and summarize them relative to a target package root.
+    /// This snapshot is read-only; dead records are excluded but not removed.
+    pub fn live_holder_summary_by_root(
+        &self,
+        target_root_id: &str,
+    ) -> Result<PackageUseLeaseRootSummary, String> {
+        let live_records = scan_live_lease_records(&self.paths)?;
+        Ok(root_scoped_timeout_summary(
+            &live_records,
+            target_root_id,
+            now_epoch_ms(),
+        ))
+    }
+
     /// Clear stale reader records under the caller's exclusive updater lock;
     /// return `None` while at least one PID/start-time identity is live.
     fn try_acquire_with_live_records(
@@ -591,9 +670,7 @@ impl PackageUseUpdateRequest {
             let record = serde_json::from_slice::<LeaseRecord>(&bytes).map_err(|error| {
                 format!("Could not decode an HQ CLI package-use lease ({error})")
             })?;
-            if process_start_time_ms(record.pid)
-                .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
-            {
+            if lease_record_is_live(&record) {
                 live_records.push(record);
             } else {
                 match fs::remove_file(&path) {
@@ -850,12 +927,27 @@ mod tests {
     }
 
     fn record(path: &Path, pid: u32, start_time_ms: u64) {
+        record_with_root(path, pid, start_time_ms, None);
+    }
+
+    fn record_with_root(path: &Path, pid: u32, start_time_ms: u64, root_id: Option<&str>) {
+        record_with_details(path, pid, start_time_ms, "5.304.0", None, root_id);
+    }
+
+    fn record_with_details(
+        path: &Path,
+        pid: u32,
+        start_time_ms: u64,
+        hq_version: &str,
+        purpose: Option<&str>,
+        root_id: Option<&str>,
+    ) {
         let value = LeaseRecord {
             pid,
             start_time_ms,
-            hq_version: "5.304.0".to_string(),
-            purpose: None,
-            root_id: None,
+            hq_version: hq_version.to_string(),
+            purpose: purpose.map(str::to_string),
+            root_id: root_id.map(str::to_string),
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
@@ -944,6 +1036,120 @@ mod tests {
                 .map(|record| record.pid)
                 .collect::<Vec<_>>(),
             [4]
+        );
+    }
+
+    #[test]
+    fn root_scoped_live_summary_splits_roots_and_excludes_dead_records() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start_time_ms = process_start_time_ms(pid).unwrap();
+        record_with_details(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start_time_ms}.json")),
+            pid,
+            start_time_ms,
+            "5.342.3",
+            Some("hook"),
+            None,
+        );
+        record_with_details(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start_time_ms}-other.json")),
+            pid,
+            start_time_ms,
+            "5.342.4",
+            Some("daemon"),
+            Some("root-b"),
+        );
+        record_with_root(&paths.lease_directory.join("stale.json"), u32::MAX, 1, None);
+        record_with_root(
+            &paths.lease_directory.join("stale-other.json"),
+            u32::MAX,
+            1,
+            Some("root-b"),
+        );
+
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+        let summary = request.live_holder_summary_by_root("legacy").unwrap();
+        assert_eq!(
+            summary.same_root.live_holder_count,
+            LiveHolderCountBucket::One
+        );
+        assert_eq!(
+            summary.other_root.live_holder_count,
+            LiveHolderCountBucket::One
+        );
+        assert_eq!(
+            summary.same_root.holder_version,
+            HolderVersionBucket::Pre53424
+        );
+        assert_eq!(
+            summary.other_root.holder_version,
+            HolderVersionBucket::Current
+        );
+        assert_eq!(
+            summary.same_root.oldest_holder_purpose,
+            HolderPurposeBucket::Hook
+        );
+        assert_eq!(
+            summary.other_root.oldest_holder_purpose,
+            HolderPurposeBucket::Daemon
+        );
+        assert_ne!(
+            summary.same_root.oldest_holder_age,
+            HolderAgeBucket::Unknown
+        );
+        assert_eq!(
+            summary.same_root.oldest_holder_age,
+            summary.other_root.oldest_holder_age
+        );
+    }
+
+    #[test]
+    fn legacy_root_summary_matches_prefix_wide_for_legacy_records() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start_time_ms = process_start_time_ms(pid).unwrap();
+        record(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start_time_ms}.json")),
+            pid,
+            start_time_ms,
+        );
+        record(
+            &paths
+                .lease_directory
+                .join(format!("{pid}-{start_time_ms}-second.json")),
+            pid,
+            start_time_ms,
+        );
+
+        let request = PackageUseUpdateRequest::begin_at(paths.clone()).unwrap();
+        let live_records = scan_live_lease_records(&paths).unwrap();
+        let now_ms = 1_000_000_000_000;
+        let prefix_wide = timeout_summary(&live_records, now_ms);
+        let legacy_target = root_scoped_timeout_summary(&live_records, "legacy", now_ms);
+        let invalid_target = root_scoped_timeout_summary(&live_records, "Bad/Root", now_ms);
+
+        assert_eq!(legacy_target.same_root, prefix_wide);
+        assert_eq!(invalid_target.same_root, prefix_wide);
+        assert_eq!(
+            legacy_target.other_root.live_holder_count,
+            LiveHolderCountBucket::Zero
+        );
+        let from_api = request
+            .live_holder_summary_by_root("legacy")
+            .unwrap()
+            .same_root;
+        assert_eq!(from_api.live_holder_count, prefix_wide.live_holder_count);
+        assert_eq!(from_api.holder_version, prefix_wide.holder_version);
+        assert_eq!(
+            from_api.oldest_holder_purpose,
+            prefix_wide.oldest_holder_purpose
         );
     }
 
