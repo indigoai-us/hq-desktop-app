@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
 
+- Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
 - First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
 
