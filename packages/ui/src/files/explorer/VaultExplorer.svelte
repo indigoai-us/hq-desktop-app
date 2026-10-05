@@ -130,21 +130,38 @@
   let summaryLoading = $state(false);
   let summaryError = $state<string | null>(null);
   let summaryGeneration = 0;
+  // This component remains mounted while the person moves between vaults.
+  // Retain each vault's own last answer so switching does not blank the home;
+  // a new account replaces `companies`, which clears this tenant-local cache.
+  let summaryCache = $state<Map<string, VaultSummaryWire>>(new Map());
+
+  const summaryCacheKey = (v: Vault, includeSystem: boolean) => `${v.id}:${includeSystem ? "system" : "content"}`;
+
+  $effect(() => {
+    void companies;
+    untrack(() => {
+      summaryCache = new Map();
+    });
+  });
 
   async function loadSummary(v: Vault, includeSystem: boolean): Promise<void> {
     const gen = ++summaryGeneration;
-    summary = null;
+    const key = summaryCacheKey(v, includeSystem);
+    summary = summaryCache.get(key) ?? null;
     summaryError = null;
     const api = vaultApi;
     if (!api) return;
-    summaryLoading = true;
+    summaryLoading = summary === null;
     const res = await ensureScope(v).then(() => api.summary(v.root, includeSystem)).catch((err: unknown) => {
       console.warn("VaultExplorer: vault summary did not finish:", err);
       return { ok: false as const, message: "vault summary did not finish" };
     });
     if (gen !== summaryGeneration) return;
     summaryLoading = false;
-    if (res.ok) summary = res.value;
+    if (res.ok) {
+      summary = res.value;
+      summaryCache = new Map(summaryCache).set(key, res.value);
+    }
     else {
       // AUDIT-3: plain copy only; the host message goes to the log.
       console.warn("VaultExplorer: vault summary failed:", res.message);
