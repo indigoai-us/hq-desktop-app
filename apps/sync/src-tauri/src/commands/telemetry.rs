@@ -1171,6 +1171,26 @@ fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
         || input.get("selfHeal").and_then(Value::as_str).is_some()
 }
 
+const POST_READY_ACTION_VALUES: &[&str] = &[
+    "open_folder",
+    "start_sync",
+    "open_cli",
+    "invite",
+    "ready_first_action_shown",
+    "ready_first_action_clicked",
+    "close_window",
+];
+
+const POST_READY_ACTION_DROP_REASON_VALUES: &[&str] = &[
+    "not_ready",
+    "already_sent",
+    "session_ended",
+    "flag_off",
+    "flag_error",
+    "identity_error",
+    "identity_missing",
+];
+
 fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
     let Some(Value::Object(input)) = properties else {
         return Value::Object(Map::new());
@@ -1191,12 +1211,7 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
     if let Some(action) = input
         .get("action")
         .and_then(Value::as_str)
-        .filter(|action| {
-            matches!(
-                *action,
-                "open_folder" | "start_sync" | "open_cli" | "invite" | "close_window"
-            )
-        })
+        .filter(|action| POST_READY_ACTION_VALUES.contains(action))
     {
         out.insert("action".to_string(), Value::String(action.to_string()));
     }
@@ -1206,6 +1221,28 @@ fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
         .filter(|value| matches!(*value, "shown" | "clicked" | "dismissed"))
     {
         out.insert("returnNudge".to_string(), Value::String(return_nudge.to_string()));
+    }
+    Value::Object(out)
+}
+
+fn sanitize_post_ready_action_dropped_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    if let Some(reason) = input
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| POST_READY_ACTION_DROP_REASON_VALUES.contains(reason))
+    {
+        out.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| POST_READY_ACTION_VALUES.contains(action))
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
     }
     Value::Object(out)
 }
@@ -1241,10 +1278,13 @@ fn build_desktop_telemetry_event(
             })
             .unwrap_or(false);
     let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let is_post_ready_action_dropped = event_name == "desktop_post_ready_action_dropped";
     let is_desktop_quit = event_name == "desktop_app_quit";
     let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
     let mut properties = if is_post_ready_action {
         sanitize_post_ready_action_properties(properties)
+    } else if is_post_ready_action_dropped {
+        sanitize_post_ready_action_dropped_properties(properties)
     } else if is_desktop_quit {
         sanitize_desktop_quit_properties(properties)
     } else {
@@ -1312,12 +1352,17 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed" | "desktop_post_ready_action" | "desktop_update_outcome" | "desktop_autostart_state"
+        "desktop_onboarding_step"
+            | "desktop_setup_completed"
+            | "desktop_post_ready_action"
+            | "desktop_post_ready_action_dropped"
+            | "desktop_update_outcome"
+            | "desktop_autostart_state"
     ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
     {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
-    if is_post_ready_action {
+    if is_post_ready_action || is_post_ready_action_dropped {
         properties["os"] = Value::String(std::env::consts::OS.to_string());
     }
     attach_anon_id(
@@ -1435,6 +1480,7 @@ const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_quit",
     "desktop_onboarding_step",
     "desktop_post_ready_action",
+    "desktop_post_ready_action_dropped",
     "desktop_setup_completed",
     "desktop_auto_update_post_cap_outcome",
     "desktop_update_outcome",
@@ -3384,6 +3430,61 @@ mod codex_telemetry_tests {
                 "returnNudge": value,
             })));
             assert!(sanitized.get("returnNudge").is_none(), "{value}");
+        }
+    }
+
+    #[test]
+    fn post_ready_action_sanitizer_keeps_all_supported_actions_and_drops_unknown() {
+        for action in ["ready_first_action_shown", "ready_first_action_clicked"] {
+            let sanitized = sanitize_post_ready_action_properties(Some(json!({
+                "action": action,
+            })));
+            assert_eq!(sanitized["action"], action);
+        }
+
+        let sanitized = sanitize_post_ready_action_properties(Some(json!({
+            "action": "unknown_action",
+        })));
+        assert!(sanitized.get("action").is_none());
+    }
+
+    #[test]
+    fn post_ready_drop_reason_sanitizer_keeps_only_bounded_reason_and_action() {
+        let accepted = sanitize_post_ready_action_dropped_properties(Some(json!({
+            "reason": "identity_missing",
+            "action": "ready_first_action_clicked",
+            "privateDetail": "discard me",
+        })));
+        assert_eq!(accepted, json!({
+            "reason": "identity_missing",
+            "action": "ready_first_action_clicked",
+        }));
+
+        let session_ended = sanitize_post_ready_action_dropped_properties(Some(json!({
+            "reason": "session_ended",
+            "action": "open_folder",
+        })));
+        assert_eq!(session_ended, json!({
+            "reason": "session_ended",
+            "action": "open_folder",
+        }));
+
+        for (properties, expected) in [
+            (
+                json!({ "reason": "free text", "action": "open_folder" }),
+                json!({ "action": "open_folder" }),
+            ),
+            (
+                json!({ "reason": "flag_off", "action": "free text" }),
+                json!({ "reason": "flag_off" }),
+            ),
+            (
+                json!({ "reason": 7, "action": "open_folder" }),
+                json!({ "action": "open_folder" }),
+            ),
+        ] {
+            let sanitized = sanitize_post_ready_action_dropped_properties(Some(properties));
+            assert_eq!(sanitized, expected);
         }
     }
 
