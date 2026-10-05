@@ -15,7 +15,7 @@
  */
 
 export const PLAN_LIMIT_NOTIFICATION_TYPE = 'plan_limit';
-export const PLAN_LIMIT_ID_PREFIX = 'local:plan-limit:';
+const PLAN_LIMIT_ID_PREFIX = 'local:plan-limit:';
 /** Rows kept in history. Old ended episodes fall off first. */
 export const PLAN_LIMIT_HISTORY_CAP = 100;
 const STORAGE_PREFIX = 'hq.desktop.planLimitNotifications.v1:';
@@ -53,7 +53,7 @@ export interface StorageLike {
   setItem(key: string, value: string): void;
 }
 
-export function planLimitNotificationTitle(company: string): string {
+function planLimitNotificationTitle(company: string): string {
   return `New files are paused for ${company}.`;
 }
 
@@ -84,7 +84,7 @@ function newRow(pause: PlanLimitPause, now: number, nonce: string): PlanLimitNot
   };
 }
 
-export function isPlanLimitNotificationId(id: string): boolean {
+function isPlanLimitNotificationId(id: string): boolean {
   return id.startsWith(PLAN_LIMIT_ID_PREFIX);
 }
 

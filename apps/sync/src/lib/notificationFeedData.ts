@@ -183,7 +183,7 @@ function fileKey(company: string, path: string): string {
 }
 
 /** Server max per-source page size (matches Rust `MAX_LIMIT`). */
-export const NOTIFICATION_HISTORY_LIMIT = 200;
+const NOTIFICATION_HISTORY_LIMIT = 200;
 
 /**
  * Load + merge the notification timeline (newest-first). Server-retained
@@ -193,7 +193,7 @@ export const NOTIFICATION_HISTORY_LIMIT = 200;
  * Requests the full retained page (200/source) so Inbox and the menubar feed
  * show previous notifications rather than a short default slice.
  */
-export async function loadNotificationTimeline(
+async function loadNotificationTimeline(
   limit: number = NOTIFICATION_HISTORY_LIMIT,
   options: NotificationLoadOptions = {},
 ): Promise<NotificationLoadResult> {

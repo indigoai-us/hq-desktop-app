@@ -56,7 +56,7 @@ export type InboundReply = {
 };
 
 /** A row is a reply iff `rootEventId` is set and is not the row's own eventId. */
-export function isThreadReply(row: ThreadReplyRef): boolean {
+function isThreadReply(row: ThreadReplyRef): boolean {
   const root = (row.rootEventId ?? '').trim();
   if (!root) return false;
   const id = (row.eventId ?? '').trim();

@@ -1,4 +1,4 @@
-export const RETURN_NUDGE_STORAGE_PREFIX = "hq:desktop:first-week-return-nudge:v1:";
+const RETURN_NUDGE_STORAGE_PREFIX = "hq:desktop:first-week-return-nudge:v1:";
 
 export interface ReturnNudgeStorage {
   getItem(key: string): string | null;
