@@ -32,6 +32,7 @@ The release moves it under the version it ships in.
 - Atlas is easier to read. Names on the map no longer have an outline, the shaded areas behind each section are much fainter, and sections sit close together instead of spread around a wide ring. Names no longer run across another item's dot.
 - Atlas shows who is working where at a readable size at every zoom: people and bots appear as markers beside the item they are working on. Hovering an item or a marker opens a card with who is there, what they are doing, story progress, related items and dates.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
+- Atlas: the Find on the map box shows a Show more row when more than eight things match, instead of hiding the rest.
 
 ## [0.10.392] — 2026-10-05
 

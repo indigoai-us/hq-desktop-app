@@ -272,7 +272,10 @@
   let query = $state("");
   let findOpen = $state(false);
   let findEl = $state<HTMLInputElement | null>(null);
-  const found = $derived.by(() => {
+  const FIND_PAGE = 8;
+  // The query whose full match list is showing; a new query starts paged again.
+  let findExpandedFor = $state<string | null>(null);
+  const matches = $derived.by(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
     return (graph?.nodes ?? [])
@@ -282,9 +285,9 @@
           Number(b.label.toLowerCase().startsWith(q)) - Number(a.label.toLowerCase().startsWith(q)) ||
           (b.touched ?? 0) - (a.touched ?? 0) ||
           a.label.localeCompare(b.label),
-      )
-      .slice(0, 8);
+      );
   });
+  const found = $derived(findExpandedFor === query ? matches : matches.slice(0, FIND_PAGE));
   function pickFound(id: string): void {
     query = "";
     findOpen = false;
@@ -479,6 +482,11 @@
             {:else}
               <div class="find-none">Nothing on the map by that name.</div>
             {/each}
+            {#if matches.length > found.length}
+              <button type="button" class="find-row find-more" data-testid="atlas-find-show-more" onmousedown={(e) => e.preventDefault()} onclick={() => (findExpandedFor = query)}>
+                <span class="find-name">Show {matches.length - found.length} more</span>
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -657,6 +665,8 @@
       linear-gradient(var(--v4-control-bg), var(--v4-control-bg)),
       rgb(from var(--v4-ground) r g b);
     box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    max-height: 320px;
+    overflow-y: auto;
   }
   .find-row {
     display: flex;
@@ -682,6 +692,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .find-more {
+    color: var(--v4-text-3);
   }
   .find-kind {
     color: var(--v4-text-3);
