@@ -5,11 +5,6 @@
  * identically.
  */
 export {
-  EMOJI_SHORTCODES,
-  JUMBO_EMOJI_MAX,
-  emojiForShortcode,
-  emojiOnlyCount,
   isJumboEmojiBody,
-  replaceEmojiShortcodes,
   replaceEmojiShortcodesInHtml,
 } from '@hq/ui/emoji-shortcodes';

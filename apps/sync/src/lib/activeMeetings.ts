@@ -101,13 +101,13 @@ export function upsertActiveMeeting(meeting: ActiveMeeting): void {
   });
 }
 
-export function updateActiveMeeting(windowId: string, patch: Partial<ActiveMeeting>): void {
+function updateActiveMeeting(windowId: string, patch: Partial<ActiveMeeting>): void {
   activeMeetings.update((rows) =>
     rows.map((row) => (row.windowId === windowId ? { ...row, ...patch } : row)),
   );
 }
 
-export function removeActiveMeeting(windowId: string): void {
+function removeActiveMeeting(windowId: string): void {
   activeMeetings.update((rows) => rows.filter((row) => row.windowId !== windowId));
 }
 
