@@ -195,16 +195,6 @@ export function setCompanyErrorMessage(err: SetCompanyError): string {
   }
 }
 
-export function listScheduledBots(): Promise<ScheduledBotLike[]> {
-  return invoke<ScheduledBotLike[]>('meetings_list_scheduled_bots', {
-    calendarEventIds: null,
-  });
-}
-
-export function listMemberships(): Promise<CompanyMembershipLike[]> {
-  return invoke<CompanyMembershipLike[]>('meetings_list_memberships');
-}
-
 export async function setMeetingCompany(
   meetingId: string,
   companyId: string,
