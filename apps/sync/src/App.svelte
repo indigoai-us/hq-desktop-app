@@ -97,6 +97,7 @@
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import {
     createPostReadyActionTelemetry,
+    postReadyIdentityAdapterValue,
     isPostReadyAction,
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
@@ -209,10 +210,8 @@
   async function resolvePostReadyIdentity(
     scope?: { companyUid?: string; companySlug?: string },
   ): Promise<{ personUid: string; companyUid: string | null } | null> {
-    const person = await traySyncAdapter.identity.whoami();
-    if (!person.ok) return null;
-    const workspaces = await traySyncAdapter.identity.listWorkspaces();
-    if (!workspaces.ok) return null;
+    const person = postReadyIdentityAdapterValue(await traySyncAdapter.identity.whoami());
+    const workspaces = postReadyIdentityAdapterValue(await traySyncAdapter.identity.listWorkspaces());
     let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
     if (!activeSlug && !scope?.companyUid) {
       activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {

@@ -46,6 +46,13 @@ export const POST_READY_ACTION_DROP_REASONS = [
 ] as const;
 export type PostReadyActionDropReason = (typeof POST_READY_ACTION_DROP_REASONS)[number];
 
+export function postReadyIdentityAdapterValue<T>(
+  result: { ok: true; value: T } | { ok: false },
+): T {
+  if (!result.ok) throw new Error('Post-ready identity adapter lookup failed');
+  return result.value;
+}
+
 export interface PostReadyActionDroppedEvent {
   eventName: 'desktop_post_ready_action_dropped';
   sessionId?: string;
@@ -134,11 +141,13 @@ export function createPostReadyActionTelemetry(
   );
   const newSessionId = options.newSessionId ?? createUuid;
   let state = loadState(storage);
+  let dropReasonSentInMemory = state.dropReasonSent;
   let operation = Promise.resolve(false);
   let dropReasonPending: Promise<void> | null = null;
 
   async function reportDropReason(action: PostReadyAction, reason: PostReadyActionDropReason): Promise<void> {
-    if (state.dropReasonSent) return;
+    if (state.dropReasonSent) dropReasonSentInMemory = true;
+    if (dropReasonSentInMemory) return;
     if (dropReasonPending) {
       await dropReasonPending;
       return;
@@ -151,8 +160,12 @@ export function createPostReadyActionTelemetry(
         console.warn('[post-ready telemetry] drop-reason flag lookup failed:', err);
         return;
       }
-      if (!enabled || state.dropReasonSent) return;
+      if (!enabled) return;
+      state = loadState(storage);
+      if (state.dropReasonSent) dropReasonSentInMemory = true;
+      if (dropReasonSentInMemory) return;
       state = { ...state, dropReasonSent: true };
+      dropReasonSentInMemory = true;
       saveState(storage, state);
       try {
         await emit({
@@ -294,29 +307,47 @@ export function createPostReadyActionTelemetry(
     scope: { companyUid: string },
   ): Promise<boolean> {
     state = loadState(storage);
-    if (!['shown', 'clicked', 'dismissed'].includes(value) || !beginFirstSessionIfReady(true)) return false;
+    if (!['shown', 'clicked', 'dismissed'].includes(value)) return false;
+    if (!beginFirstSessionIfReady(true)) {
+      await reportDropReason('start_sync', 'not_ready');
+      return false;
+    }
     const pending = operation.then(async () => {
-      if (!beginFirstSessionIfReady(true)) return false;
+      if (!beginFirstSessionIfReady(true)) {
+        await reportDropReason('start_sync', 'not_ready');
+        return false;
+      }
       let enabled = false;
       try {
         enabled = await options.isFlagEnabled();
       } catch (err) {
         console.warn('[post-ready telemetry] flag lookup failed:', err);
+        await reportDropReason('start_sync', 'flag_error');
         return false;
       }
-      if (!enabled) return false;
+      if (!enabled) {
+        await reportDropReason('start_sync', 'flag_off');
+        return false;
+      }
       let identity: Awaited<ReturnType<typeof options.getIdentity>>;
       try {
         identity = await options.getIdentity(scope);
       } catch (err) {
         console.warn('[post-ready telemetry] identity lookup failed:', err);
+        await reportDropReason('start_sync', 'identity_error');
         return false;
       }
       const personUid = identity?.personUid.trim() ?? '';
       const companyUid = identity?.companyUid?.trim() ?? '';
-      if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || companyUid !== scope.companyUid || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) return false;
+      if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || companyUid !== scope.companyUid || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) {
+        await reportDropReason('start_sync', 'identity_missing');
+        return false;
+      }
       const sessionId = state.sessionId;
-      if (!sessionId) return false;
+      if (!sessionId) {
+        await reportDropReason('start_sync', 'not_ready');
+        return false;
+      }
       const utcDay = new Date().toISOString().slice(0, 10);
       try {
         await emit({

@@ -5,6 +5,7 @@ import {
   createPostReadyActionTelemetry,
   isPostReadyActionReady,
   markPostReadyActionReady,
+  postReadyIdentityAdapterValue,
   type PostReadyActionEvent,
   type PostReadyActionDroppedEvent,
   type PostReadyActionStorage,
@@ -22,8 +23,12 @@ class MemoryStorage implements PostReadyActionStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
+type TestIdentityAdapterResult =
+  | { ok: true; value: { personUid: string; companyUid: string | null } }
+  | { ok: false };
+
 function makeTracker(
-  storage = new MemoryStorage(),
+  storage: PostReadyActionStorage | null = new MemoryStorage(),
   flagEnabled = true,
   dropReasonEnabled = false,
   identity: { personUid: string; companyUid: string | null } | null = {
@@ -31,7 +36,14 @@ function makeTracker(
     companyUid: 'cmp_company',
   },
 ) {
-  const gate = { flagEnabled, dropReasonEnabled, identity, flagThrows: false, identityThrows: false };
+  const gate = {
+    flagEnabled,
+    dropReasonEnabled,
+    identity,
+    flagThrows: false,
+    identityThrows: false,
+    identityAdapterResult: null as TestIdentityAdapterResult | null,
+  };
   const emit = vi.fn<((event: PostReadyActionEvent | PostReadyActionDroppedEvent) => Promise<void>)>(async () => {});
   const tracker = createPostReadyActionTelemetry({
     storage,
@@ -42,6 +54,7 @@ function makeTracker(
     isDropReasonFlagEnabled: async () => gate.dropReasonEnabled,
     getIdentity: async () => {
       if (gate.identityThrows) throw new Error('identity lookup failed');
+      if (gate.identityAdapterResult) return postReadyIdentityAdapterValue(gate.identityAdapterResult);
       return gate.identity;
     },
     appVersion: '0.10.322',
@@ -189,6 +202,41 @@ describe('post-ready action telemetry', () => {
     }
   });
 
+  it('reports return-nudge readiness, flag, and identity rejections through the capped diagnostic', async () => {
+    const cases = [
+      ['not_ready', (_setup: ReturnType<typeof makeTracker>) => {}],
+      ['flag_off', (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.flagEnabled = false;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['flag_error', (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.flagThrows = true;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['identity_error', (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.identityThrows = true;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['identity_missing', (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.identity = null;
+        markPostReadyActionReady(setup.storage);
+      }],
+    ] as const;
+
+    for (const [reason, prepare] of cases) {
+      const setup = makeTracker(new MemoryStorage(), true, true);
+      prepare(setup);
+      expect(await setup.tracker.recordReturnNudge('shown', { companyUid: 'cmp_company' })).toBe(false);
+      const dropped = setup.emit.mock.calls
+        .map(([event]) => event)
+        .filter((event): event is PostReadyActionDroppedEvent =>
+          event.eventName === 'desktop_post_ready_action_dropped');
+      expect(dropped.map((event) => event.properties)).toEqual([
+        { reason, action: 'start_sync' },
+      ]);
+    }
+  });
+
   it('sends only the allow-listed identity and environment fields, never folder names or paths', async () => {
     const setup = makeTracker();
     markPostReadyActionReady(setup.storage);
@@ -250,6 +298,19 @@ describe('post-ready action telemetry', () => {
     }
   });
 
+  it('reports failed identity adapter results as identity_error, not identity_missing', async () => {
+    const setup = makeTracker(new MemoryStorage(), true, true);
+    setup.gate.identityAdapterResult = { ok: false };
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+    const dropped = setup.emit.mock.calls
+      .map(([event]) => event)
+      .filter((event): event is PostReadyActionDroppedEvent =>
+        event.eventName === 'desktop_post_ready_action_dropped');
+    expect(dropped.map((event) => event.properties.reason)).toEqual(['identity_error']);
+  });
+
   it('caps drop-reason telemetry at one event per app session', async () => {
     const setup = makeTracker(new MemoryStorage(), false, true);
     markPostReadyActionReady(setup.storage);
@@ -268,6 +329,50 @@ describe('post-ready action telemetry', () => {
     const resumed = makeTracker(setup.storage, true, true, null);
     expect(await resumed.tracker.record('invite')).toBe(false);
     expect(resumed.emit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the diagnostic cap in memory when storage is unavailable or unreadable', async () => {
+    const unreadableStorage: PostReadyActionStorage = {
+      getItem: () => { throw new Error('storage read failed'); },
+      setItem: () => {},
+      removeItem: () => {},
+    };
+
+    for (const storage of [null, unreadableStorage]) {
+      const setup = makeTracker(storage, true, true);
+      expect(await setup.tracker.record('open_folder')).toBe(false);
+      expect(await setup.tracker.record('start_sync')).toBe(false);
+      const dropped = setup.emit.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.eventName === 'desktop_post_ready_action_dropped');
+      expect(dropped).toHaveLength(1);
+    }
+  });
+
+  it('merges the persisted ready marker before saving the drop-reason cap', async () => {
+    const storage = new MemoryStorage();
+    let releaseFlag!: (enabled: boolean) => void;
+    const flagWait = new Promise<boolean>((resolve) => { releaseFlag = resolve; });
+    const lookupStarted = vi.fn();
+    const emit = vi.fn<((event: PostReadyActionEvent | PostReadyActionDroppedEvent) => Promise<void>)>(async () => {});
+    const tracker = createPostReadyActionTelemetry({
+      storage,
+      isFlagEnabled: async () => true,
+      isDropReasonFlagEnabled: () => { lookupStarted(); return flagWait; },
+      getIdentity: async () => ({ personUid: 'prs_person', companyUid: 'cmp_company' }),
+      appVersion: '0.10.322',
+      os: 'macos',
+      emit,
+      newSessionId: () => 'session-1',
+    });
+
+    const dropped = tracker.record('open_folder');
+    expect(lookupStarted).toHaveBeenCalledOnce();
+    markPostReadyActionReady(storage);
+    releaseFlag(true);
+    await dropped;
+
+    expect(isPostReadyActionReady(storage)).toBe(true);
   });
 
   it('does not emit a drop reason when its diagnostic flag is off', async () => {
