@@ -12,7 +12,7 @@
     type AtlasPresence,
     type AtlasRefEdge,
   } from "./atlas-model.js";
-  import { atlasDockedChips } from "./atlas-presence.js";
+  import { ATLAS_DOCK_CAP, atlasDockedChips, atlasInitials, atlasUnplacedActors } from "./atlas-presence.js";
   import {
     ATLAS_LABEL_PX,
     atlasRelatedIds,
@@ -137,12 +137,13 @@
   // label or section name is drawn under them at any zoom.
   let legendEl = $state<HTMLElement | null>(null);
   let toolsEl = $state<HTMLElement | null>(null);
+  let dockEl = $state<HTMLElement | null>(null);
   let fixedBoxes = $state<AtlasScreenLabel["box"][]>([]);
   function measureFixed(): void {
     const origin = svgEl?.getBoundingClientRect();
     if (!origin) return;
     const next: AtlasScreenLabel["box"][] = [];
-    for (const el of [legendEl, toolsEl]) {
+    for (const el of [legendEl, toolsEl, dockEl]) {
       const r = el?.getBoundingClientRect();
       if (!r || r.width === 0 || r.height === 0) continue;
       next.push({ left: r.left - origin.left, top: r.top - origin.top, right: r.right - origin.left, bottom: r.bottom - origin.top });
@@ -151,6 +152,7 @@
   }
   $effect(() => {
     void nothingActive;
+    void dockEl;
     void mapWidth;
     void mapHeight;
     if (!legendEl || typeof ResizeObserver === "undefined") {
@@ -160,6 +162,7 @@
     const observer = new ResizeObserver(() => measureFixed());
     observer.observe(legendEl);
     if (toolsEl) observer.observe(toolsEl);
+    if (dockEl) observer.observe(dockEl);
     measureFixed();
     return () => observer.disconnect();
   });
@@ -217,6 +220,25 @@
     }),
   );
 
+  // Live actors with no object on the map: a screen-space dock at the bottom
+  // left, so nobody who is working is missing from the map. Computed from
+  // presence, which changes once per live update, never per pointer move.
+  const unplaced = $derived(atlasUnplacedActors(presence));
+  let dockOpen = $state(false);
+  const dockShown = $derived(dockOpen ? unplaced : unplaced.slice(0, ATLAS_DOCK_CAP));
+  const dockMore = $derived(unplaced.length - dockShown.length);
+  /** Dock chip under the pointer and its centre in map screen space. */
+  let dockHover = $state<{ key: string; x: number; y: number } | null>(null);
+  function hoverDock(key: string, event: PointerEvent): void {
+    const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const origin = svgEl?.getBoundingClientRect();
+    dockHover = {
+      key,
+      x: box.left + box.width / 2 - (origin?.left ?? 0),
+      y: box.top + box.height / 2 - (origin?.top ?? 0),
+    };
+  }
+
   const chipBoxes = $derived(
     chips.map((c) => ({ left: c.sx - half, top: c.sy - half, right: c.sx + half, bottom: c.sy + half })),
   );
@@ -243,6 +265,16 @@
   }
   const card = $derived.by((): HoverCard | null => {
     if (dragging) return null;
+    const away = dockHover ? unplaced.find((p) => (p.actorUid ?? p.name) === dockHover!.key) : undefined;
+    if (away && dockHover) {
+      return {
+        ...cardAt(dockHover.x, dockHover.y, half + 2),
+        kind: away.bot ? "Bot" : "Person",
+        title: away.name,
+        people: [],
+        lines: [away.unplaced ?? "", away.signal ?? ""].filter(Boolean),
+      };
+    }
     const chip = hoveredChip ? chips.find((c) => c.key === hoveredChip) : undefined;
     if (chip) {
       const on = byId.get(chip.nodeId);
@@ -495,6 +527,38 @@
       {/each}
     </g>
   </svg>
+  {#if unplaced.length}
+    <div class="unplaced" data-testid="atlas-unplaced" bind:this={dockEl}>
+      <div class="unplaced-cap">Not on the map <span data-testid="atlas-unplaced-count">{unplaced.length}</span></div>
+      <div class="unplaced-chips">
+        {#each dockShown as who (who.actorUid ?? who.name)}
+          <span
+            class="away"
+            class:bot={who.bot}
+            class:idle={who.idle ?? false}
+            class:dim={filterActor ? who.actorUid !== filterActor : false}
+            data-testid={`atlas-unplaced-${who.actorUid ?? who.name}`}
+            data-kind={who.bot ? "bot" : "human"}
+            role="img"
+            aria-label={`${who.name}: ${who.unplaced ?? "not on the map"}`}
+            onpointerenter={(event) => hoverDock(who.actorUid ?? who.name, event)}
+            onpointerleave={() => {
+              if (dockHover?.key === (who.actorUid ?? who.name)) dockHover = null;
+            }}
+          >{who.bot ? "⌁" : atlasInitials(who.name)}</span>
+        {/each}
+        {#if dockMore > 0}
+          <button
+            type="button"
+            class="away more"
+            data-testid="atlas-unplaced-more"
+            aria-label={`Show all ${unplaced.length}`}
+            onclick={() => (dockOpen = true)}
+          >+{dockMore}</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
   {#if card}
     <div
       class="hover-card"
@@ -845,6 +909,67 @@
     border-radius: 50%;
     border: 1.5px solid var(--v4-ok);
     box-sizing: border-box;
+  }
+  /* Not on the map: screen space, above the legend; does not pan or zoom. */
+  .unplaced {
+    position: absolute;
+    left: 14px;
+    bottom: 44px;
+    max-width: min(360px, calc(100% - 28px));
+    padding: 6px 8px;
+    border-radius: var(--v4-radius-button, 6px);
+    background: var(--v4-ground);
+    background: rgb(from var(--v4-ground) r g b);
+  }
+  .unplaced-cap {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--v4-text-3);
+    margin-bottom: 6px;
+  }
+  .unplaced-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .away {
+    box-sizing: border-box;
+    width: 20px;
+    height: 20px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1.5px solid var(--v4-ok);
+    background: var(--v4-ground);
+    background: rgb(from var(--v4-ground) r g b);
+    color: var(--v4-text-1);
+    font-family: var(--font-sans, "Geist", sans-serif);
+    font-size: 9px;
+    font-weight: 500;
+    line-height: 1;
+    padding: 0;
+    cursor: default;
+  }
+  .away.bot {
+    border-radius: 3px;
+  }
+  .away.idle {
+    border-color: var(--v4-text-3);
+    color: var(--v4-text-3);
+  }
+  .away.dim {
+    opacity: 0.35;
+  }
+  .away.more {
+    width: auto;
+    min-width: 20px;
+    padding: 0 5px;
+    border-radius: 10px;
+    border-color: var(--v4-control-border);
+    color: var(--v4-text-2);
+    cursor: pointer;
   }
   .map-tools {
     position: absolute;

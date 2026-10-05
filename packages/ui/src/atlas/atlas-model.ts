@@ -83,6 +83,8 @@ export type AtlasPresence = {
   idle?: boolean;
   /** Name of the object on the map they are working on, when there is one. */
   place?: string;
+  /** Not on the map: plain words for why (the dock's hover card shows it). */
+  unplaced?: string;
 };
 
 const DISTRICT_TYPES = new Set<string>(ATLAS_DISTRICTS.map((d) => d.type));

@@ -33,6 +33,7 @@ The release moves it under the version it ships in.
 - Atlas shows who is working where at a readable size at every zoom: people and bots appear as markers beside the item they are working on. Hovering an item or a marker opens a card with who is there, what they are doing, story progress, related items and dates.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
 - Atlas: the Find on the map box shows a Show more row when more than eight things match, instead of hiding the rest.
+- Atlas now shows everyone who is working. People and bots whose session names a repo, folder or worker on the map are placed there, and anyone the map cannot place is listed in a small Not on the map group in the corner of the map, with a note saying why when you hover them.
 
 ## [0.10.392] — 2026-10-05
 

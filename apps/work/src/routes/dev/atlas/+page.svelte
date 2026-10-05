@@ -82,6 +82,8 @@
           { nodeId: "project:projects/hq-desktop-console-rail/", name: "Corey", bot: false, signal: "editing design/design.md · 12 s" },
           { nodeId: "project:projects/hq-desktop-console-rail/", name: "deacon", bot: true, signal: "US-014 · desktop-alt e2e running · 14m" },
           { nodeId: "repo:repos/private/hq-desktop-app/", name: "Eric B.", bot: false, signal: "41m" },
+          { nodeId: "person:b_lumen", actorUid: "b_lumen", name: "lumen", bot: true, unplaced: "In a session with no project" },
+          { nodeId: "person:b_ferry", actorUid: "b_ferry", name: "ferry", bot: true, unplaced: "Working in billing-v3, which is not on this map" },
         ]}
         loadDetail={async () => mod?.ATLAS_SMOKE_DETAIL}
       />

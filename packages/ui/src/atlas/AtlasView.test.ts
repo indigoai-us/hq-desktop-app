@@ -417,3 +417,65 @@ describe("Atlas chunk boundary", () => {
     expect(host.querySelector(sel("atlas-retry"))).not.toBeNull();
   });
 });
+
+describe("Atlas: live actors not on the map", () => {
+  function mountActors(actors: { actorUid: string; name: string; bot: boolean; repo?: string; projectId?: string }[]) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AtlasView, {
+      target: host,
+      props: {
+        companyUid: "cmp_indigo",
+        companyName: "Indigo",
+        cache: createAtlasCache({ fetcher: async () => smokeAtlasGraph() }),
+        nowMs: NOW,
+        actors,
+        loadDetail: async () => ATLAS_SMOKE_DETAIL,
+      },
+    });
+  }
+
+  it("docks 20 unplaced actors as 12 plus +8, people first, and expands to all 20", async () => {
+    mountActors([
+      { actorUid: "b_on", name: "placed", bot: true, projectId: "hq-desktop-console-rail" },
+      ...Array.from({ length: 18 }, (_, i) => ({ actorUid: `b_${i}`, name: `bot ${String(i).padStart(2, "0")}`, bot: true })),
+      { actorUid: "u_amy", name: "Amy", bot: false, repo: "elsewhere" },
+      { actorUid: "u_bo", name: "Bo", bot: false },
+    ]);
+    await settle();
+    const dock = host.querySelector(sel("atlas-unplaced"))!;
+    expect(dock.textContent).toContain("Not on the map");
+    expect(dock.querySelector(sel("atlas-unplaced-count"))!.textContent).toBe("20");
+    const chips = () => [...dock.querySelectorAll('[data-testid^="atlas-unplaced-"][data-kind]')];
+    expect(chips()).toHaveLength(12);
+    expect(chips().slice(0, 2).map((c) => c.getAttribute("data-testid"))).toEqual([
+      "atlas-unplaced-u_amy",
+      "atlas-unplaced-u_bo",
+    ]);
+    const more = dock.querySelector(sel("atlas-unplaced-more")) as HTMLButtonElement;
+    expect(more.textContent).toBe("+8");
+    flushSync(() => more.click());
+    expect(chips()).toHaveLength(20);
+    expect(dock.querySelector(sel("atlas-unplaced-more"))).toBeNull();
+    // The placed actor is on its node, not in the dock.
+    expect(host.querySelector(sel("atlas-chip-b_on"))).not.toBeNull();
+    expect(dock.querySelector(sel("atlas-unplaced-b_on"))).toBeNull();
+  });
+
+  it("explains in plain words why a docked actor is not placed", async () => {
+    mountActors([
+      { actorUid: "u_amy", name: "Amy", bot: false, repo: "elsewhere" },
+      { actorUid: "b_x", name: "scout", bot: true },
+    ]);
+    await settle();
+    const amy = host.querySelector(sel("atlas-unplaced-u_amy"))!;
+    flushSync(() => amy.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false })));
+    const card = host.querySelector(sel("atlas-hover-card"))!;
+    expect(card.textContent).toContain("Amy");
+    expect(card.textContent).toContain("Working in elsewhere, which is not on this map");
+    flushSync(() => amy.dispatchEvent(new PointerEvent("pointerleave", { bubbles: false })));
+    const bot = host.querySelector(sel("atlas-unplaced-b_x"))!;
+    flushSync(() => bot.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false })));
+    expect(host.querySelector(sel("atlas-hover-card"))!.textContent).toContain("In a session with no project");
+  });
+});

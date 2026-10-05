@@ -105,6 +105,31 @@ describe("atlasLiveActors (US-013)", () => {
   it("returns nothing without a live read", () => {
     expect(atlasLiveActors(undefined, snapshot, "co_a", new Map())).toEqual([]);
   });
+
+  it("keeps where a session with no project runs: repo, cwd, worker, task", () => {
+    const away = {
+      participants: [
+        {
+          actorUid: "b_box",
+          actorType: "agent",
+          displayName: "box",
+          presence: "online",
+          sessions: [
+            { repo: "hq-pro", taskId: "US-2", status: "active" },
+            { cwd: "/srv/work/hq-console/", status: "open" },
+            { cwd: "/srv/work/hq-console/", status: "open" },
+            { workerId: "reviewer", status: "ended" },
+          ],
+        },
+        { actorUid: "b_bare", actorType: "agent", displayName: "bare", presence: "online", sessions: [{ status: "active" }] },
+      ],
+    };
+    expect(atlasLiveActors(away, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "b_bare", name: "bare", bot: true },
+      { actorUid: "b_box", name: "box", bot: true, cwd: "/srv/work/hq-console/", signal: undefined },
+      { actorUid: "b_box", name: "box", bot: true, repo: "hq-pro", taskId: "US-2", signal: "US-2" },
+    ]);
+  });
 });
 
 describe("atlasNodeDestination: Open files shows a file, not a tree", () => {

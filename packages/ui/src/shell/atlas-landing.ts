@@ -96,15 +96,21 @@ export function atlasWorkingNow(roster: readonly SidepaneRosterEntry[]): AtlasWo
 }
 
 /**
- * One live actor on the Atlas map (US-013), one row per project they have an
- * open Work Mesh session on. Actors with no project-bound session appear once
- * with no `projectId`; they stay in Working now but dock nowhere.
+ * One live actor on the Atlas map (US-013), one row per place they have an
+ * open Work Mesh session on. A place is the session's project id, or, when
+ * there is none, any repo, working directory or worker the session names.
+ * Actors with no such session appear once with no place; the map lists them
+ * in its Not on the map dock.
  */
 export interface AtlasLiveActor {
   actorUid: string;
   name: string;
   bot: boolean;
   projectId?: string;
+  repo?: string;
+  cwd?: string;
+  workerId?: string;
+  taskId?: string;
   signal?: string;
   /** Online, but none of their sessions is in progress. */
   idle?: boolean;
@@ -119,7 +125,14 @@ type LiveReadLike = {
     actorType: string;
     displayName: string;
     presence: string;
-    sessions: readonly { projectId?: string; taskId?: string; status: string }[];
+    sessions: readonly {
+      projectId?: string;
+      taskId?: string;
+      repo?: string;
+      cwd?: string;
+      workerId?: string;
+      status: string;
+    }[];
   }[];
 };
 
@@ -150,25 +163,40 @@ export function atlasLiveActors(
     const bot = (known?.actorType ?? p.actorType) === "agent";
     const idle = !p.sessions.some((s) => WORKING_STATUSES.has(s.status));
     const flag = idle ? { idle: true } : {};
-    const projects = new Map<string, string | undefined>();
+    // One row per place. A session with no project still says where it is
+    // when it names a repo, a working directory, a worker or a task.
+    const places = new Map<string, Omit<AtlasLiveActor, "actorUid" | "name" | "bot" | "idle">>();
     for (const s of p.sessions) {
-      const project = s.projectId?.trim().toLowerCase();
-      if (!project || s.status === "ended" || projects.has(project)) continue;
-      projects.set(project, s.taskId?.trim() || undefined);
+      if (s.status === "ended") continue;
+      const projectId = s.projectId?.trim().toLowerCase() || undefined;
+      const taskId = s.taskId?.trim() || undefined;
+      const hints = projectId
+        ? { projectId }
+        : {
+            ...(s.repo?.trim() ? { repo: s.repo.trim() } : {}),
+            ...(s.cwd?.trim() ? { cwd: s.cwd.trim() } : {}),
+            ...(s.workerId?.trim() ? { workerId: s.workerId.trim() } : {}),
+            ...(taskId ? { taskId } : {}),
+          };
+      const key = projectId ? `project:${projectId}` : Object.values(hints).join("|");
+      if (!Object.keys(hints).length || places.has(key)) continue;
+      places.set(key, { ...hints, signal: taskId });
     }
-    if (!projects.size) {
+    if (!places.size) {
       out.push({ actorUid: p.actorUid, name, bot, ...flag });
       continue;
     }
-    for (const [projectId, taskId] of projects) {
-      out.push({ actorUid: p.actorUid, name, bot, projectId, signal: taskId, ...flag });
+    for (const place of places.values()) {
+      out.push({ actorUid: p.actorUid, name, bot, ...place, ...flag });
     }
   }
   return out.sort(
     (a, b) =>
       a.name.localeCompare(b.name) ||
       a.actorUid.localeCompare(b.actorUid) ||
-      (a.projectId ?? "").localeCompare(b.projectId ?? ""),
+      (a.projectId ?? a.repo ?? a.cwd ?? a.workerId ?? a.taskId ?? "").localeCompare(
+        b.projectId ?? b.repo ?? b.cwd ?? b.workerId ?? b.taskId ?? "",
+      ),
   );
 }
 
