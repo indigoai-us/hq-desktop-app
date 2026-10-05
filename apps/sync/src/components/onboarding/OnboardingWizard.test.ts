@@ -872,6 +872,48 @@ describe('first-run sign-in screen', () => {
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
   });
 
+  it('records the provider start and browser callback on the install session', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+
+    await clickGoogleSignIn();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'),
+    );
+    await flush();
+
+    const welcomeEvents = tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as {
+        eventName?: string;
+        sessionId?: string;
+        properties?: { step?: string; action?: string; provider?: string };
+      };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'welcome-signin'
+        ? [args]
+        : [];
+    });
+
+    expect(welcomeEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: CONTINUATION_CONTEXT.installAttemptId,
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'started',
+          provider: 'google',
+        }),
+      }),
+      expect.objectContaining({
+        sessionId: CONTINUATION_CONTEXT.installAttemptId,
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'callback_received',
+          provider: 'google',
+        }),
+      }),
+    ]));
+  });
+
   it('keeps the successful provider sign-in path to one browser attempt', async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
     const attempts = stubOAuthAttempts();

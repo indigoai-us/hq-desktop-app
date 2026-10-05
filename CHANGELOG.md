@@ -9,6 +9,11 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
+
+- Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+
+## [0.10.393] — 2026-10-05
+
 - Rsync failure reports now include fixed categories for the exit status and sync phase.
 - A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
 - Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.

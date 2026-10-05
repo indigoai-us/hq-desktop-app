@@ -53,6 +53,7 @@ const INSTALL_ATTEMPT_ID_RE =
 export type OnboardingAction =
   | 'entered'
   | 'started'
+  | 'callback_received'
   | 'completed'
   | 'skipped'
   | 'failed'
