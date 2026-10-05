@@ -275,11 +275,13 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   });
 
   it("adds no chip once nothing is left to decide: the bot suggested nothing, so nothing is drawn", async () => {
-    // The bot is in Slack and the person has no apps of their own: no cards at all.
+    // The bot is in Slack and the person has no apps of their own.
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
+    // The one card is Slack, connected: nothing is left to decide.
     const w = world({ slackCapability: "ok" });
     await mountNewBotDm(w, "Quite a lot already.");
     await settle(40);
-    expect(cardsIn(host)).toHaveLength(0);
+    expect(cardsIn(host).map((el) => [el.dataset.target, el.dataset.state])).toEqual([["slack", "connected"]]);
     expect(chips()).toEqual([]);
     expect(host.querySelector('[data-testid="suggested-replies"]')).toBeNull();
     expect(host.querySelector('[data-testid="suggested-reply-other"]')).toBeNull();
@@ -343,11 +345,12 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   });
 
   it("the bot's own 'Connect more tools' suggestion sends exactly one message, the person's own, and no hidden request", async () => {
-    // The bot is in Slack; the person's Linear is the one card, already connected.
+    // The bot is in Slack; the person's Linear is the other card, already connected.
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
     const own = fence([{ kind: "suggestions", items: ["Connect more tools", "List our open projects"] }]);
     const w = world({ slackCapability: "ok", connections: [LINEAR], thread: answered(own) });
     await mountNewBotDm(w, "Quite a lot already.");
-    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(1));
+    await vi.waitFor(() => expect(cardsIn(message("e2"))).toHaveLength(2));
     await vi.waitFor(() => expect(chips()).toEqual(["Connect more tools", "List our open projects"]));
     const button = chip("Connect more tools");
     button.click();
@@ -365,9 +368,10 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
     // The words stay in the conversation as the person's own message.
     expect(threadText()).toContain("Connect more tools");
     expect(threadText()).not.toContain("Automatic message from HQ");
-    // The row is put away, and nothing extra is drawn until the bot answers.
+    // The row is put away, and nothing extra is drawn until the bot answers
+    // (the hello's two cards, Slack and Linear, are all there is).
     expect(chips()).toEqual([]);
-    expect(cardsIn(host)).toHaveLength(1);
+    expect(cardsIn(host)).toHaveLength(2);
   });
 
   it("a typed 'Connect more tools' is one message too, and the bot shows as working on it", async () => {
@@ -428,9 +432,10 @@ describe("DesktopApp Connect more in a cloud bot's direct message", () => {
   it("gives no second set to an answer that already has a connect block", async () => {
     const w = world({ thread: askedAgain(`Here you go.${fence([{ kind: "connect", targets: ["tools"] }])}`) });
     await mountNewBotDm(w, "Here you go.");
-    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(1));
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
+    await vi.waitFor(() => expect(cardsIn(message("e6"))).toHaveLength(2));
     await settle(20);
-    expect(cardsIn(message("e6")).map((el) => el.dataset.target)).toEqual(["tools"]);
+    expect(cardsIn(message("e6")).map((el) => el.dataset.target)).toEqual(["slack", "tools"]);
     expect(message("e6").querySelectorAll('[data-testid="rich-connect"]')).toHaveLength(1);
   });
 

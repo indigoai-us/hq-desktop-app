@@ -447,6 +447,28 @@ describe("a card that keeps one height", () => {
     expect(scroll).toMatch(/overflow-y:\s*auto/);
   });
 
+  it("has no green edge in any state: a connected card keeps the neutral edge every other card has", () => {
+    // Owner, 2026-10-05: "can we get rid of these green borders they're ugly".
+    // happy-dom does not apply the component's stylesheet, so the rules are read from the source.
+    const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ConnectionCard.svelte"), "utf8");
+    const css = cardSource.slice(cardSource.indexOf("<style"));
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.trim(), body: m[2]! }));
+    for (const rule of rules) {
+      if (!/border/.test(rule.body)) continue;
+      // No border of a card or its glass is drawn in the green the "Connected" mark uses.
+      expect(rule.body, rule.selector).not.toMatch(/border[^;]*(--cc-ok|#4ade80|#16a34a|74,\s*222,\s*128)/);
+    }
+    // No state sets a connected card's or its glass's edge at all.
+    const connectedEdges = rules.filter(
+      (rule) => /\[data-state="connected"\]/.test(rule.selector) && /border(-color)?\s*:/.test(rule.body),
+    );
+    expect(connectedEdges.map((rule) => rule.selector)).toEqual([]);
+    // No left accent bar anywhere.
+    expect(css).not.toMatch(/border-left\s*:/);
+    // The "Connected" mark keeps its green.
+    expect(css).toMatch(/\.connection-card\[data-state="connected"\] \.connection-card-icon\s*\{[^}]*var\(--cc-ok\)/);
+  });
+
   it("makes the scroll area reachable from the keyboard, with a name", () => {
     const el = renderCard(connectionCardView("tools", input({ tools: waitingFacts(5) })));
     const area = scroller(el)!;

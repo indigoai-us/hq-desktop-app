@@ -20,7 +20,7 @@
  */
 
 import type { BrandMark } from "./app-brand-marks.js";
-import type { ConnectTarget } from "./richMessageContent.js";
+import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
 import {
   slackCapabilityFromStatus,
   slackRowFromStatus,
@@ -924,6 +924,13 @@ export interface ConnectionCards {
    * and its card then joins the row. Absent: draw at once.
    */
   rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>) => boolean) | null;
+  /**
+   * The host's order for a block's items, applied before anything is drawn
+   * (a cloud bot's DM puts the bot's own Slack card first). It may add a
+   * built-in card; the row still draws at most `MAX_CONNECT_ITEMS` cards.
+   * Absent: the block's own order.
+   */
+  arrange?: ((items: ReadonlyArray<ConnectItem>) => ReadonlyArray<ConnectItem>) | null;
   /**
    * The quiet "Browse all in HQ Integrations" link under a row with an
    * integration card in it: the page it names, and how the host opens it.

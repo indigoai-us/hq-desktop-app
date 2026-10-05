@@ -22,7 +22,7 @@ import {
   type ConnectionCards,
   type ConnectionCardView,
 } from "./connection-card-model.js";
-import { appLogo, integrationCardView, readCompanyConnections, type CatalogLookup, type IntegrationCardInput } from "./integration-cards-model.js";
+import { appLogo, integrationCardView, readCompanyConnections, slackFirst, type CatalogLookup, type IntegrationCardInput } from "./integration-cards-model.js";
 import { parseRichContent } from "./richMessageContent.js";
 
 const NOW = Date.parse("2026-10-02T15:00:00.000Z");
@@ -470,6 +470,49 @@ describe("a row of integration cards in a message", () => {
     known.lookups = { "linear.app": LINEAR, "asana.com": "not-found" };
     flushSync();
     expect(ids()).toEqual(["slack", "notion.so", "linear.app"]);
+  });
+
+  it("with the cloud bot's order, draws the bot's own Slack card first from the first frame, and a late app joins after it", () => {
+    // Owner, 2026-10-05: "make sure that Slack is the first card every time".
+    // The block names no Slack; Linear's lookup is still out at first.
+    const first = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { domain: "notion.so" }] }] })!;
+    const known = $state<{ lookups: Record<string, CatalogLookup> }>({ lookups: {} });
+    const props = $state({
+      content: first,
+      connections: {
+        ...cardsFor({ arrange: slackFirst }),
+        integration: (item: { domain: string; why?: string }) =>
+          integrationCardView(item, { botName: "Nova", now: NOW, facts: COMPANY, lookup: known.lookups[item.domain] ?? "unknown" }),
+      } as ConnectionCards,
+    });
+    const root = target();
+    component = mount(RichMessageContent, { target: root, props });
+    flushSync();
+    const ids = () => cards(root).map((el) => el.dataset.domain ?? el.dataset.target);
+    expect(ids()).toEqual(["slack", "notion.so"]);
+    const slackEl = cards(root)[0];
+    known.lookups = { "linear.app": LINEAR };
+    flushSync();
+    expect(ids()).toEqual(["slack", "notion.so", "linear.app"]);
+    expect(cards(root)[0]).toBe(slackEl);
+  });
+
+  it("with the cloud bot's order, moves Slack named third to the front and draws it once", () => {
+    const block = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { domain: "notion.so" }, { domain: "slack.com" }] }] })!;
+    const root = renderBlock(cardsFor({ arrange: slackFirst }), block);
+    expect(cards(root).map((el) => el.dataset.domain ?? el.dataset.target)).toEqual(["slack", "linear.app", "notion.so"]);
+  });
+
+  it("draws at most three cards when the host's order adds Slack", () => {
+    const block = parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { domain: "notion.so" }, { domain: "asana.com" }] }] })!;
+    const root = renderBlock(
+      cardsFor({
+        arrange: slackFirst,
+        integration: (item) => integrationCardView(item, { botName: "Nova", now: NOW, facts: COMPANY, lookup: { domain: item.domain, name: item.domain, authClass: "oauth" } }),
+      }),
+      block,
+    );
+    expect(cards(root).map((el) => el.dataset.domain ?? el.dataset.target)).toEqual(["slack", "linear.app", "notion.so"]);
   });
 
   it("draws a row whose apps were all known from the start in the block's order", () => {
