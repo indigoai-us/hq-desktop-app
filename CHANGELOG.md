@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
 
 ## [0.10.394] — 2026-10-05
