@@ -27,7 +27,8 @@ describe("createHqReconcileFetcher", () => {
         return {
           ok: true,
           status: 200,
-          json: () => Promise.reject(new Error("invalid json")),
+          json: () =>
+            Promise.reject(new SyntaxError("Unexpected token secret-body")),
         } as unknown as Response;
       });
       const fetchState = createHqReconcileFetcher(
@@ -38,9 +39,9 @@ describe("createHqReconcileFetcher", () => {
       ).resolves.toEqual({ state: null, cursor: undefined });
       expect(debug).toHaveBeenCalledWith(
         "mesh-runtime: reconcile body was not JSON",
-        "invalid json",
+        "SyntaxError",
       );
-      expect(JSON.stringify(debug.mock.calls)).not.toContain("<html");
+      expect(JSON.stringify(debug.mock.calls)).not.toContain("secret-body");
 
       const httpFail = vi.fn(async () => {
         return { ok: false, status: 500 } as Response;

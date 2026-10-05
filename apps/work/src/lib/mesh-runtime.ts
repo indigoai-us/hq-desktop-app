@@ -49,11 +49,11 @@ export function createHqReconcileFetcher(
       throw new Error(`reconcile ${route.path} failed (${res.status})`);
     }
     const state = await res.json().catch((error: unknown) => {
-      // Reconcile runs on wakes. A non-JSON body stays absent; the message
-      // is logged at debug so a poll does not warn on every tick.
+      // Reconcile runs on wakes. A SyntaxError message can quote the body,
+      // so the log keeps only the name. Debug, not warn: this is a poll.
       console.debug(
         "mesh-runtime: reconcile body was not JSON",
-        error instanceof Error ? error.message : String(error),
+        error instanceof Error ? error.name : typeof error,
       );
       return null;
     });
