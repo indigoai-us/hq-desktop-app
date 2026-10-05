@@ -150,7 +150,7 @@ export function isStoryScene(scene: SceneId): scene is StorySceneId {
  * steps (first-folder sync, teammate invite, connector import) are offered
  * from the ready screen, so they read as the ready position.
  */
-export function storyIndex(scene: SceneId): number | null {
+function storyIndex(scene: SceneId): number | null {
   if (
     scene === 'company' ||
     scene === 'first-folder' ||
@@ -308,9 +308,9 @@ export interface InstallCardModel {
   total: number;
 }
 
-export const INSTALL_CARD_TITLE = 'Installing HQ in the background';
-export const INSTALL_CARD_DONE_TITLE = 'HQ is installed';
-export const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
+const INSTALL_CARD_TITLE = 'Installing HQ in the background';
+const INSTALL_CARD_DONE_TITLE = 'HQ is installed';
+const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
 export const READY_PROGRESS_DONE_TEXT = 'Installed and synced across your devices.';
 
 /**
