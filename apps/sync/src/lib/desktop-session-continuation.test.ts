@@ -225,6 +225,38 @@ describe('fetching the rollout document', () => {
 });
 
 describe('the receipt queue', () => {
+  it('adds the installer visitor key only when the download-join flag is enabled', () => {
+    const { deps } = harness({
+      downloadJoinEnabled: true,
+      downloadAnonId: 'download-key',
+    } as Partial<ContinuationDeps>);
+
+    const receipt = launchReceipt(deps);
+    expect(Object.prototype.hasOwnProperty.call(receipt.body, 'anonId')).toBe(true);
+    expect(receipt.body.anonId).toBe('download-key');
+  });
+
+  it('keeps the existing launch receipt fields when the flag is off or no installer tag exists', () => {
+    const expectedBody = {
+      installAttemptId: INSTALL,
+      eventId: 'id-1',
+      occurredAt: new Date(1_800_000_000_000).toISOString(),
+      platform: 'mac',
+      version: '1.4.2',
+    };
+    const off = harness({
+      downloadJoinEnabled: false,
+      downloadAnonId: 'download-key',
+    } as Partial<ContinuationDeps>);
+    const noTag = harness({
+      downloadJoinEnabled: true,
+      downloadAnonId: null,
+    } as Partial<ContinuationDeps>);
+
+    expect(launchReceipt(off.deps).body).toEqual(expectedBody);
+    expect(launchReceipt(noTag.deps).body).toEqual(expectedBody);
+  });
+
   it('persists a receipt before it tries to deliver it', async () => {
     const { deps, storage } = harness();
     let sawStoredReceipt = false;
