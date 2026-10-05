@@ -346,19 +346,22 @@ export function newestMessageAtFrom(
  * - `start`: only the intro is there — show the row, pinned to the intro so
  *   the intro itself never clears it and the kickoff answer does;
  * - `done`: the answer already landed (or the DM already has more than the
- *   intro), so there is nothing left to wait for.
+ *   intro), so there is nothing left to wait for; or the intro HOLDS the
+ *   kickoff (`holdsKickoff`): the setup bot's "continue setup in the Claude /
+ *   Codex app?" offer is sent in place of the intro and the kickoff waits for
+ *   the person's answer, so no turn is running. Their "Keep going here" is an
+ *   ordinary send, which starts the row itself.
  */
-export function kickoffThinkingState(
-  messages: ReadonlyArray<{
-    fromPersonUid?: string | null;
-    createdAt?: string | null;
-  }>,
+export function kickoffThinkingState<M extends { fromPersonUid?: string | null; createdAt?: string | null }>(
+  messages: ReadonlyArray<M>,
   agentUid: string,
+  opts?: { holdsKickoff?: (message: M) => boolean },
 ): { state: 'waiting' } | { state: 'start'; afterMs: number } | { state: 'done' } {
   const uid = agentUid.trim();
   const fromBot = messages.filter((m) => (m.fromPersonUid ?? '').trim() === uid);
   if (fromBot.length === 0) return { state: 'waiting' };
   if (fromBot.length > 1) return { state: 'done' };
+  if (opts?.holdsKickoff?.(fromBot[0]!)) return { state: 'done' };
   const afterMs = newestMessageAtFrom(fromBot, uid);
   return afterMs === undefined ? { state: 'done' } : { state: 'start', afterMs };
 }

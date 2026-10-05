@@ -448,6 +448,14 @@ describe('kickoffThinkingState', () => {
   it('is done when the answer already landed', () => {
     expect(kickoffThinkingState([intro, reply], bot)).toEqual({ state: 'done' });
   });
+  it('starts no row when the only message holds the kickoff (the setup bot\'s app offer)', () => {
+    type Msg = { fromPersonUid: string; createdAt: string; offer?: boolean };
+    const offer: Msg = { ...intro, offer: true };
+    const holdsKickoff = (m: Msg) => m.offer === true;
+    expect(kickoffThinkingState<Msg>([offer], bot, { holdsKickoff })).toEqual({ state: 'done' });
+    // No offer: unchanged, the intro starts the row.
+    expect(kickoffThinkingState<Msg>([intro], bot, { holdsKickoff })).toEqual({ state: 'start', afterMs: Date.parse(intro.createdAt) });
+  });
 });
 
 describe('helloThinkingState (B-4): a hello request the bot already answered starts no row', () => {
