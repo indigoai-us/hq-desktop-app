@@ -112,6 +112,12 @@
   let createError = $state<string | null>(null);
   let workers = $state<LocalBotWorkerOption[] | null>(null);
   let confirmRemove = $state<string | null>(null);
+  let localAction = $state<{
+    name: string;
+    message: string;
+    isError: boolean;
+    verb: "start" | "stop" | "remove";
+  } | null>(null);
   let stopPoll: (() => void) | undefined;
 
   // ── Bots this account owns that are not set up on this Mac ─────────────────
@@ -176,9 +182,22 @@
   let cloudLoading = $state(true);
   let cloudError = $state("");
   let cloudBusy = $state<string | null>(null);
-  let cloudLine = $state("");
-  let cloudLineIsError = $state(false);
   let cloudConfirmRemove = $state<string | null>(null);
+  /**
+   * A second, deliberate confirm when the API says this bot owns a live HQ
+   * Agents v2 machine. The id comes from the refusal, never from the row, so
+   * a changed machine can only be removed after it is named again.
+   */
+  let cloudV2RemoveConfirm = $state<{ uid: string; instanceId: string } | null>(null);
+  let cloudAction = $state<{
+    uid: string;
+    message: string;
+    isError: boolean;
+    verb: "pause" | "resume" | "remove";
+    confirmDestroyInstanceId?: string;
+  } | null>(null);
+  let removedCloud = $state<Set<string>>(new Set());
+  const visibleCloudBots = $derived(cloudBots.filter((bot) => !removedCloud.has(bot.uid)));
   /** Bots this pane paused; the roster carries no runtime state of its own. */
   let pausedCloud = $state<Set<string>>(new Set());
 
@@ -256,14 +275,18 @@
     const api = adapter?.bots;
     if (!api || busy) return;
     busy = name;
-    line = `${verb === "start" ? "Starting" : verb === "stop" ? "Stopping" : "Removing"} ${name}…`;
-    lineIsError = false;
+    localAction = {
+      name,
+      verb,
+      message: `${verb === "start" ? "Starting" : verb === "stop" ? "Stopping" : "Removing"}…`,
+      isError: false,
+    };
     const result = await api[verb](name);
     if (!result.ok) {
-      line = friendlyApiError(result, `Could not ${verb} ${name}.`, "bots");
-      lineIsError = true;
+      if (result.message) console.warn(`[hq-desktop] local bot ${verb} failed:`, result.message);
+      localAction = { name, verb, message: `Could not ${verb} ${name}. Try again.`, isError: true };
     } else {
-      line = "";
+      localAction = verb === "remove" ? null : { name, verb, message: `${verb === "start" ? "Started" : "Stopped"}.`, isError: false };
       await load(true);
     }
     busy = null;
@@ -464,28 +487,55 @@
   async function actCloud(
     bot: CloudBotRow,
     verb: "pause" | "resume" | "remove",
+    confirmDestroyInstanceId?: string,
   ): Promise<void> {
     const agents = adapter?.agents;
     if (!agents || cloudBusy) return;
     cloudBusy = bot.uid;
-    cloudLine = `${verb === "pause" ? "Pausing" : verb === "resume" ? "Resuming" : "Removing"} ${bot.displayName}…`;
-    cloudLineIsError = false;
+    cloudAction = {
+      uid: bot.uid,
+      verb,
+      confirmDestroyInstanceId,
+      message: `${verb === "pause" ? "Pausing" : verb === "resume" ? "Resuming" : "Removing"}…`,
+      isError: false,
+    };
     const result =
       verb === "pause"
         ? await agents.stop(bot.uid)
         : verb === "resume"
           ? await agents.start(bot.uid)
-          : await agents.deprovision(bot.uid);
+          : confirmDestroyInstanceId
+            ? await agents.deprovision(bot.uid, { confirmDestroyInstanceId })
+            : await agents.deprovision(bot.uid);
     if (!result.ok) {
-      cloudLine = friendlyApiError(result, `Could not ${verb} ${bot.displayName}.`, "bots");
-      cloudLineIsError = true;
+      const instanceId = result.code === "AGENTS_V2_BOX_PROTECTED" ? result.instanceId?.trim() : "";
+      if (verb === "remove" && instanceId) {
+        if (confirmDestroyInstanceId === instanceId) {
+          // Do not keep offering the same destructive request after the
+          // server refused the exact confirmation we just sent.
+          cloudV2RemoveConfirm = null;
+          cloudAction = { uid: bot.uid, verb, message: `Could not remove ${bot.displayName}. Try again.`, isError: true };
+        } else {
+          cloudV2RemoveConfirm = { uid: bot.uid, instanceId };
+          cloudAction = null;
+        }
+      } else {
+        if (result.message) console.warn(`[hq-desktop] cloud bot ${verb} failed:`, result.message);
+        cloudAction = { uid: bot.uid, verb, confirmDestroyInstanceId, message: `Could not ${verb} ${bot.displayName}. Try again.`, isError: true };
+      }
     } else {
-      cloudLine = "";
       const next = new Set(pausedCloud);
       if (verb === "pause") next.add(bot.uid);
       else next.delete(bot.uid);
       pausedCloud = next;
-      await loadCloud(true);
+      cloudV2RemoveConfirm = null;
+      if (verb === "remove") {
+        removedCloud = new Set(removedCloud).add(bot.uid);
+        cloudAction = null;
+      } else {
+        cloudAction = { uid: bot.uid, verb, message: verb === "pause" ? "Paused." : "Resumed.", isError: false };
+        await loadCloud(true);
+      }
     }
     cloudBusy = null;
     cloudConfirmRemove = null;
@@ -562,6 +612,16 @@
                   {stoppedRemedy(bot)}
                 </small>
               {/if}
+              {#if localAction?.name === bot.name}
+                <small
+                  class="muted"
+                  class:error={localAction.isError}
+                  aria-live="polite"
+                  data-testid={`settings-bot-${bot.name}-action-status`}
+                >
+                  {localAction.message}
+                </small>
+              {/if}
             </div>
             <div class="actions">
               {#if bot.processAlive}
@@ -583,6 +643,17 @@
               {:else}
                 <button type="button" class="quiet" disabled={Boolean(busy)} onclick={() => (confirmRemove = bot.name)}>
                   Remove
+                </button>
+              {/if}
+              {#if localAction?.name === bot.name && localAction.isError}
+                <button
+                  type="button"
+                  class="quiet"
+                  data-testid={`settings-bot-${bot.name}-retry-action`}
+                  disabled={Boolean(busy)}
+                  onclick={() => void act(bot.name, localAction!.verb)}
+                >
+                  Retry
                 </button>
               {/if}
             </div>
@@ -725,12 +796,12 @@
       </p>
     {/if}
     <div class="settings-card" data-testid="settings-bots-cloud-list">
-      {#if !cloudLoading && cloudBots.length === 0 && !cloudError}
+        {#if !cloudLoading && visibleCloudBots.length === 0 && !cloudError}
         <p class="muted empty" data-testid="settings-bots-cloud-empty">
           No cloud bots yet — add one from a company channel with Add bot.
         </p>
       {/if}
-      {#each cloudBots as bot (bot.uid)}
+      {#each visibleCloudBots as bot (bot.uid)}
         <div class="bot-row" data-testid={`settings-cloud-bot-${bot.uid}`} data-status={bot.status}>
           <div class="bot-main">
             <strong>
@@ -746,6 +817,16 @@
                 ? "Paused"
                 : cloudBotStatusLabel(bot.status, bot.phase)}
             </small>
+            {#if cloudAction?.uid === bot.uid}
+              <small
+                class="muted"
+                class:error={cloudAction.isError}
+                aria-live="polite"
+                data-testid={`settings-cloud-bot-${bot.uid}-action-status`}
+              >
+                {cloudAction.message}
+              </small>
+            {/if}
           </div>
           {#if bot.canManage}
             <div class="actions">
@@ -768,7 +849,31 @@
                   {cloudBusy === bot.uid ? "Working…" : "Pause"}
                 </button>
               {/if}
-              {#if cloudConfirmRemove === bot.uid}
+              {#if cloudV2RemoveConfirm?.uid === bot.uid}
+                <div class="remove-v2-confirm" data-testid={`settings-cloud-bot-${bot.uid}-v2-remove-confirm`}>
+                  <small>
+                    This bot runs on its own cloud machine. Removing it deletes that machine and everything on it. This can't be undone.
+                  </small>
+                  <button
+                    type="button"
+                    class="danger"
+                    data-testid={`settings-cloud-bot-${bot.uid}-confirm-v2-remove`}
+                    disabled={Boolean(cloudBusy)}
+                    onclick={() => void actCloud(bot, "remove", cloudV2RemoveConfirm!.instanceId)}
+                  >
+                    {cloudBusy === bot.uid ? "Removing…" : "Remove bot"}
+                  </button>
+                  <button
+                    type="button"
+                    class="quiet"
+                    data-testid={`settings-cloud-bot-${bot.uid}-cancel-v2-remove`}
+                    disabled={Boolean(cloudBusy)}
+                    onclick={() => (cloudV2RemoveConfirm = null)}
+                  >
+                    Keep
+                  </button>
+                </div>
+              {:else if cloudConfirmRemove === bot.uid}
                 <button
                   type="button"
                   class="danger"
@@ -792,14 +897,22 @@
                   Remove
                 </button>
               {/if}
+              {#if cloudAction?.uid === bot.uid && cloudAction.isError}
+                <button
+                  type="button"
+                  class="quiet"
+                  data-testid={`settings-cloud-bot-${bot.uid}-retry-action`}
+                  disabled={Boolean(cloudBusy)}
+                  onclick={() => void actCloud(bot, cloudAction!.verb, cloudAction!.confirmDestroyInstanceId)}
+                >
+                  Retry
+                </button>
+              {/if}
             </div>
           {/if}
         </div>
       {/each}
     </div>
-    {#if cloudLine}
-      <p class="status" class:error={cloudLineIsError} aria-live="polite" data-testid="settings-bots-cloud-status">{cloudLine}</p>
-    {/if}
   </div>
 </section>
 
