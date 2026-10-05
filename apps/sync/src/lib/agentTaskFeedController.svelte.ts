@@ -45,7 +45,7 @@ export interface AgentTaskFeedOptions {
   pollMs?: number;
 }
 
-export const AGENT_TASK_POLL_MS = 15_000;
+const AGENT_TASK_POLL_MS = 15_000;
 
 const defaultFetch: TaskFetcher = (agentUid) =>
   invoke<unknown>('list_agent_tasks', { agentUid });

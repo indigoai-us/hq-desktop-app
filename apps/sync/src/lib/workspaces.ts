@@ -44,12 +44,6 @@ export interface Workspace {
   brand?: CompanyBrandSettings | null;
 }
 
-export function isWorkspaceSyncEnabled(
-  workspace: Pick<Workspace, 'syncEnabled'> | null | undefined,
-): boolean {
-  return workspace?.syncEnabled !== false;
-}
-
 // Mirrors src-tauri/src/commands/workspaces.rs::WorkspacesResult.
 export interface WorkspacesResult {
   workspaces: Workspace[];
@@ -132,9 +126,4 @@ export function pendingInviteWorkspaces(workspaces: Workspace[]): Workspace[] {
       w.membershipStatus === 'pending' &&
       w.slug !== 'personal',
   );
-}
-
-/** Count of pending company invites (for NEEDS YOU + chrome badges). */
-export function countPendingInvites(workspaces: Workspace[]): number {
-  return pendingInviteWorkspaces(workspaces).length;
 }
