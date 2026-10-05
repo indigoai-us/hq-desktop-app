@@ -183,7 +183,7 @@
       <div class="page-head">
         <div>
           <h2>Brand</h2>
-          <p class="sub">Logo, accent color, and voice</p>
+          <p class="sub">Accent color and voice</p>
         </div>
         <span class="grow"></span>
         <div class="seg" role="tablist">
@@ -193,8 +193,7 @@
         {#if canEdit}<RailButton icon="check" variant="primary" type="button" data-testid="brand-save" disabled={!dirty} onclick={remember}>Save</RailButton>{/if}
       </div>
       <fieldset class="fs" disabled={!canEdit}>
-      <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
-      <p class="note">The logo shows on this company's rail tile. The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
+      <p class="note">The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
       <label class="fr"><span class="lb">Accent</span><input class="in mono" bind:value={snap.brand.accent} placeholder="#4F46E5" /></label>
       <label class="fr"><span class="lb">Voice notes</span><textarea class="in ta" bind:value={snap.brand.voice}></textarea></label>
       <label class="fr"><span class="lb">Bot branding</span><input class="in" bind:value={snap.brand.botIntro} /></label>

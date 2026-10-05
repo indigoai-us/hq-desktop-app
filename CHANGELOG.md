@@ -21,6 +21,7 @@ The release moves it under the version it ships in.
 - Billing: the page shows the seat and hosted agent counts without the long list of names under them.
 - Connections: Connected sources in the Google detail panel now show each product's own icon (Gmail, Drive, Calendar and others) in a compact two-column list.
 - Company switcher: companies that are only on this Mac and not synced yet now appear in the list, marked "Local, not synced".
+- Brand: the Logo file-name box is gone. It did not change anything.
 
 ## [0.10.392] — 2026-10-05
 
