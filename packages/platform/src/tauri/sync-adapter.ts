@@ -50,6 +50,7 @@ import {
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createFeatureFlagGate,
@@ -210,6 +211,10 @@ export function createSyncPlatformAdapter(
     if (flag === POST_READY_ACTION_TELEMETRY_FLAG) {
       // The measurement event is opt-in and stays off until the hq-flags
       // registry contains an explicit enabled value.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === POST_READY_DROP_REASON_FLAG) {
+      // Drop diagnostics remain off until an operator explicitly enables them.
       return Promise.resolve(ok(false));
     }
     if (flag === READY_FIRST_ACTION_FLAG) {

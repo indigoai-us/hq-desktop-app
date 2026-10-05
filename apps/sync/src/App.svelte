@@ -5,6 +5,7 @@
   import {
     createSyncPlatformAdapter,
     POST_READY_ACTION_TELEMETRY_FLAG,
+    POST_READY_DROP_REASON_FLAG,
     type Json,
   } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
@@ -135,6 +136,10 @@
         const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
         return result.ok && result.value === true;
       },
+      isDropReasonFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
+        return result.ok && result.value === true;
+      },
       getIdentity: async (scope) => resolvePostReadyIdentity(scope),
     }))
     .catch((err) => {
@@ -144,6 +149,10 @@
         os: desktopTelemetryOs(),
         isFlagEnabled: async () => {
           const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        isDropReasonFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
           return result.ok && result.value === true;
         },
         getIdentity: async (scope) => resolvePostReadyIdentity(scope),

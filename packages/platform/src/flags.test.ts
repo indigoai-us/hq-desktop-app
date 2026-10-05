@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
-import { FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG } from "./index.js";
+import {
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG,
+  POST_READY_DROP_REASON_FLAG as PUBLIC_POST_READY_DROP_REASON_FLAG,
+} from "./index.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
@@ -16,6 +19,7 @@ import {
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   bearerTokenFromHeaders,
@@ -245,6 +249,22 @@ describe("registry key mapping", () => {
 
     await expect(adapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG)).resolves.toEqual(ok(false));
     expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps post-ready drop diagnostics off until hq-flags configures them", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(PUBLIC_POST_READY_DROP_REASON_FLAG).toBe("desktop.post-ready-drop-reason-v1");
   });
 
   it("keeps login receipt durability off when the registry is unavailable", async () => {

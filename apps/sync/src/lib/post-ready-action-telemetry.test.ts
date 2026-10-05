@@ -6,6 +6,7 @@ import {
   isPostReadyActionReady,
   markPostReadyActionReady,
   type PostReadyActionEvent,
+  type PostReadyActionDroppedEvent,
   type PostReadyActionStorage,
 } from './post-ready-action-telemetry';
 
@@ -21,18 +22,34 @@ class MemoryStorage implements PostReadyActionStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
-function makeTracker(storage = new MemoryStorage(), flagEnabled = true) {
-  const emit = vi.fn<(event: PostReadyActionEvent) => Promise<void>>(async () => {});
+function makeTracker(
+  storage = new MemoryStorage(),
+  flagEnabled = true,
+  dropReasonEnabled = false,
+  identity: { personUid: string; companyUid: string | null } | null = {
+    personUid: 'prs_person',
+    companyUid: 'cmp_company',
+  },
+) {
+  const gate = { flagEnabled, dropReasonEnabled, identity, flagThrows: false, identityThrows: false };
+  const emit = vi.fn<((event: PostReadyActionEvent | PostReadyActionDroppedEvent) => Promise<void>)>(async () => {});
   const tracker = createPostReadyActionTelemetry({
     storage,
-    isFlagEnabled: async () => flagEnabled,
-    getIdentity: async () => ({ personUid: 'prs_person', companyUid: 'cmp_company' }),
+    isFlagEnabled: async () => {
+      if (gate.flagThrows) throw new Error('flag lookup failed');
+      return gate.flagEnabled;
+    },
+    isDropReasonFlagEnabled: async () => gate.dropReasonEnabled,
+    getIdentity: async () => {
+      if (gate.identityThrows) throw new Error('identity lookup failed');
+      return gate.identity;
+    },
     appVersion: '0.10.322',
     os: 'macos',
     emit,
     newSessionId: () => 'session-1',
   });
-  return { storage, emit, tracker };
+  return { storage, emit, tracker, gate };
 }
 
 describe('post-ready action telemetry', () => {
@@ -142,5 +159,71 @@ describe('post-ready action telemetry', () => {
     }));
     expect(JSON.stringify(setup.emit.mock.calls)).not.toContain('Private Project');
     expect(JSON.stringify(setup.emit.mock.calls)).not.toContain('/Users/ada');
+  });
+
+  it('emits each bounded drop reason through the opt-in diagnostic event', async () => {
+    const cases = [
+      ['not_ready', async () => {}],
+      ['already_sent', async (setup: ReturnType<typeof makeTracker>) => {
+        markPostReadyActionReady(setup.storage);
+        expect(await setup.tracker.record('open_folder')).toBe(true);
+      }],
+      ['flag_off', async (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.flagEnabled = false;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['flag_error', async (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.flagThrows = true;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['identity_error', async (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.identityThrows = true;
+        markPostReadyActionReady(setup.storage);
+      }],
+      ['identity_missing', async (setup: ReturnType<typeof makeTracker>) => {
+        setup.gate.identity = null;
+        markPostReadyActionReady(setup.storage);
+      }],
+    ] as const;
+
+    for (const [reason, prepare] of cases) {
+      const setup = makeTracker(new MemoryStorage(), true, true);
+      await prepare(setup as ReturnType<typeof makeTracker>);
+      expect(await setup.tracker.record('open_folder')).toBe(false);
+      const dropped = setup.emit.mock.calls
+        .map(([event]) => event)
+        .filter((event): event is PostReadyActionDroppedEvent =>
+          event.eventName === 'desktop_post_ready_action_dropped');
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0].properties).toEqual({ reason, action: 'open_folder' });
+    }
+  });
+
+  it('caps drop-reason telemetry at one event per app session', async () => {
+    const setup = makeTracker(new MemoryStorage(), false, true);
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+    setup.gate.flagEnabled = true;
+    setup.gate.identity = null;
+    expect(await setup.tracker.record('start_sync')).toBe(false);
+
+    const dropped = setup.emit.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.eventName === 'desktop_post_ready_action_dropped');
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].properties).toEqual({ reason: 'flag_off', action: 'open_folder' });
+
+    const resumed = makeTracker(setup.storage, true, true, null);
+    expect(await resumed.tracker.record('invite')).toBe(false);
+    expect(resumed.emit).not.toHaveBeenCalled();
+  });
+
+  it('does not emit a drop reason when its diagnostic flag is off', async () => {
+    const setup = makeTracker(new MemoryStorage(), false, false);
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+    expect(setup.emit).not.toHaveBeenCalled();
   });
 });
