@@ -2,7 +2,7 @@
 //!
 //! `spawn_process` — spawns a child, streams stdout as `process://{handle}/stdout`
 //!                    events, emits `process://{handle}/exit` on termination.
-//! `cancel_process` — sends SIGTERM to the process group; after 5 s, SIGKILL.
+//! `cancel_process` — sends SIGTERM to the process group, then SIGKILL after its bounded grace.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -274,6 +274,11 @@ static NEXT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// still resolving. On expiry the attribution degrades to "not effected",
 /// which keeps the exit alertable rather than silently suppressing it.
 const CANCELLATION_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Keep the watch runner's SIGKILL escalation beyond hq-cloud's 7.5-second
+/// shutdown cap, including when app exit tears down the whole process group.
+/// The bound keeps desktop shutdown finite while allowing the runner to finish.
+pub const SYNC_RUNNER_STOP_GRACE: Duration = Duration::from_secs(9);
 
 /// Raised at the single application-exit choke point before child teardown.
 /// The daemon reads this as exit evidence; it does not alter cancellation or

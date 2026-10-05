@@ -95,8 +95,8 @@ pub use hq_desktop_core::daemon::{
 /// Singleton handle for daemon process.
 const DAEMON_HANDLE: &str = "hq-sync-daemon";
 
-/// SIGKILL delay after SIGTERM when stopping daemon.
-const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+/// SIGKILL delay after SIGTERM when stopping the watch runner.
+const SIGKILL_DELAY: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 
 /// A healthy watch daemon emits protocol progress or completion records on
 /// every pass. If no record arrives for this interval, terminate the process so
@@ -730,8 +730,8 @@ fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
     terminate_daemon_once_with_delay(category, SIGKILL_DELAY)
 }
 
-/// Testable core of [`terminate_daemon_once`]. Production always supplies the
-/// five-second grace period; native process tests shorten only the wait while
+/// Testable core of [`terminate_daemon_once`]. Production supplies the shared
+/// runner grace period; native process tests shorten only the wait while
 /// exercising the identical cancellation and lifecycle path.
 fn terminate_daemon_once_with_delay(
     category: DaemonFailureCategory,
@@ -7255,7 +7255,7 @@ fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
 /// `start_daemon` run first) and the interval between checks thereafter.
 const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
-const WATCH_OWNER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const WATCH_OWNER_TERMINATION_GRACE: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 static ORPHAN_TAKEOVER_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
@@ -8759,7 +8759,19 @@ mod tests {
 
     #[test]
     fn test_sigkill_delay_constant() {
-        assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
+        assert_eq!(SIGKILL_DELAY, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn watcher_stop_graces_exceed_runner_shutdown_deadline() {
+        let runner_deadline = Duration::from_millis(7_500);
+        assert!(SIGKILL_DELAY > runner_deadline);
+        assert!(WATCH_OWNER_TERMINATION_GRACE > runner_deadline);
+        assert_eq!(SIGKILL_DELAY, crate::commands::process::SYNC_RUNNER_STOP_GRACE);
+        assert_eq!(
+            WATCH_OWNER_TERMINATION_GRACE,
+            crate::commands::process::SYNC_RUNNER_STOP_GRACE
+        );
     }
 
     // ── Crash-vs-teardown decision (HQ-SYNC-5) ───────────────────────────
