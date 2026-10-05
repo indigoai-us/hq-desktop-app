@@ -9,6 +9,8 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Project dots on the Atlas map now grow with recent activity (the project's own last change and the linked items changed in the last 14 days), and projects with stories carry a thin ring that fills clockwise as stories are done.
+- Atlas now shows everyone who is working. People and bots whose session names a repo, folder or worker on the map are placed there, and anyone the map cannot place is listed in a small Not on the map group in the corner of the map, with a note saying why when you hover them.
 
 ### Rail and navigation
 

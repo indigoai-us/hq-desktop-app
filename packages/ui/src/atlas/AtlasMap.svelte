@@ -12,6 +12,7 @@
     type AtlasPresence,
     type AtlasRefEdge,
   } from "./atlas-model.js";
+  import { ATLAS_RING_GAP, ATLAS_RING_MIN_PX, atlasStoryFraction } from "./atlas-activity.js";
   import { ATLAS_DOCK_CAP, atlasDockedChips, atlasInitials, atlasUnplacedActors } from "./atlas-presence.js";
   import {
     ATLAS_LABEL_PX,
@@ -470,6 +471,27 @@
             <circle class="glow" cx={node.x} cy={node.y} r={node.r * 2.4 + 2} />
           {/if}
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
+          {#if node.stories && node.r * view.k >= ATLAS_RING_MIN_PX}
+            {@const done = atlasStoryFraction(node)}
+            {#if done !== null}
+              <!-- Story progress: a thin track and the done share, clockwise from the top. -->
+              <g class="ring" data-testid={`atlas-ring-${node.id}`} data-done={done.toFixed(3)}>
+                <circle class="ring-track" cx={node.x} cy={node.y} r={node.r + ATLAS_RING_GAP} vector-effect="non-scaling-stroke" />
+                {#if done > 0}
+                  <circle
+                    class="ring-done"
+                    cx={node.x}
+                    cy={node.y}
+                    r={node.r + ATLAS_RING_GAP}
+                    pathLength="100"
+                    stroke-dasharray={`${(done * 100).toFixed(2)} 100`}
+                    transform={`rotate(-90 ${node.x} ${node.y})`}
+                    vector-effect="non-scaling-stroke"
+                  />
+                {/if}
+              </g>
+            {/if}
+          {/if}
         </g>
       {/each}
     </g>
@@ -653,6 +675,23 @@
   .dot {
     fill: color-mix(in srgb, var(--c) 80%, var(--v4-text-1));
     transition: fill 120ms ease;
+  }
+  /* Story ring: monochrome, 1.25px on screen, quiet until hovered or selected. */
+  .ring circle {
+    fill: none;
+    stroke: var(--v4-text-1);
+    stroke-width: 1.25px;
+    pointer-events: none;
+  }
+  .ring-track {
+    stroke-opacity: 0.12;
+  }
+  .ring-done {
+    stroke-opacity: 0.45;
+  }
+  .node:hover .ring-done,
+  .node.selected .ring-done {
+    stroke-opacity: 0.8;
   }
   .glow {
     fill: var(--c);

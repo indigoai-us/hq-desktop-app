@@ -479,3 +479,18 @@ describe("Atlas: live actors not on the map", () => {
     expect(host.querySelector(sel("atlas-hover-card"))!.textContent).toContain("In a session with no project");
   });
 });
+
+describe("Atlas project dots (activity and story ring)", () => {
+  it("draws a story ring only on projects that have stories", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    const rings = [...host.querySelectorAll('[data-testid^="atlas-ring-"]')];
+    const ids = rings.map((el) => el.getAttribute("data-testid")!.slice("atlas-ring-".length));
+    for (const id of ids) expect(id.startsWith("project:")).toBe(true);
+    expect(ids).not.toContain("project:projects/launch-landing/");
+    const explorer = host.querySelector(sel("atlas-ring-project:projects/hq-explorer/"));
+    expect(explorer).not.toBeNull();
+    expect(Number(explorer!.getAttribute("data-done"))).toBeCloseTo(7 / 11, 2);
+  });
+});
