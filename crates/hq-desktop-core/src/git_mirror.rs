@@ -5303,6 +5303,23 @@ fn git_output_with_lock_tracking(
     result
 }
 
+// Test-only override of the git program for the current thread. Tests run in
+// parallel in one process, so swapping PATH would hand a fake git to every
+// other test that spawns git in that window.
+#[cfg(test)]
+thread_local! {
+    static TEST_GIT_PROGRAM: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn git_program() -> std::ffi::OsString {
+    #[cfg(test)]
+    if let Some(program) = TEST_GIT_PROGRAM.with(|program| program.borrow().clone()) {
+        return program.into_os_string();
+    }
+    "git".into()
+}
+
 fn git_output_inner(
     cwd: &str,
     args: &[&str],
@@ -5310,7 +5327,7 @@ fn git_output_inner(
     tracked_lock: Option<(&Path, bool)>,
     killed_lock: &mut Option<IndexLockIdentity>,
 ) -> Result<Output, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = Command::new(git_program());
     paths::no_window(&mut cmd);
     cmd.arg("-C")
         .arg(cwd)
@@ -14230,13 +14247,16 @@ mod tests {
                 .find(|candidate| candidate.is_file())
                 .unwrap_or_else(|| panic!("{name} must be available on PATH"))
         };
-        let lsof = find_program("lsof");
-        let pgrep = find_program("pgrep");
+        // The kill path proves lock ownership with lsof and pgrep from PATH.
+        find_program("lsof");
+        find_program("pgrep");
+        let pid_file = bin.path().join("git.pid");
         let fake_git = bin.path().join("git");
         fs::write(
             &fake_git,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"rev-parse\" ]; then\n  printf '%s\\n' \"$2/.git\"\n  exit 0\nfi\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"add\" ]; then\n  printf '%s\\n' \"$$\" > \"$HQ_TEST_GIT_PID_FILE\"\n  exec 3>\"$2/.git/index.lock\"\n  printf 'partial index data' >&3\n  /bin/sleep 30 &\n  wait\nfi\nexit 1\n"
+                "#!/bin/sh\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"rev-parse\" ]; then\n  printf '%s\\n' \"$2/.git\"\n  exit 0\nfi\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"add\" ]; then\n  printf '%s\\n' \"$$\" > '{}'\n  exec 3>\"$2/.git/index.lock\"\n  printf 'partial index data' >&3\n  /bin/sleep 30 &\n  wait\nfi\nexit 1\n",
+                pid_file.display()
             ),
         )
         .unwrap();
@@ -14244,29 +14264,17 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
-            std::os::unix::fs::symlink(lsof, bin.path().join("lsof")).unwrap();
-            std::os::unix::fs::symlink(pgrep, bin.path().join("pgrep")).unwrap();
         }
 
-        let previous_path = std::env::var_os("PATH");
-        let pid_file = bin.path().join("git.pid");
-        let previous_pid_file = std::env::var_os("HQ_TEST_GIT_PID_FILE");
-        std::env::set_var("PATH", bin.path());
-        std::env::set_var("HQ_TEST_GIT_PID_FILE", &pid_file);
+        // Point only this thread's git spawns at the fake; PATH stays intact
+        // for tests running in parallel.
+        TEST_GIT_PROGRAM.with(|program| *program.borrow_mut() = Some(fake_git.clone()));
         let result = run_git(
             repo.path().to_str().unwrap(),
             &["add", "-A"],
             Duration::from_millis(250),
         );
-        if let Some(previous_path) = previous_path {
-            std::env::set_var("PATH", previous_path);
-        } else {
-            std::env::remove_var("PATH");
-        }
-        match previous_pid_file {
-            Some(previous_pid_file) => std::env::set_var("HQ_TEST_GIT_PID_FILE", previous_pid_file),
-            None => std::env::remove_var("HQ_TEST_GIT_PID_FILE"),
-        }
+        TEST_GIT_PROGRAM.with(|program| *program.borrow_mut() = None);
         if let Ok(pid) = fs::read_to_string(&pid_file).unwrap_or_default().trim().parse::<i32>() {
             // The baseline kills only the direct child, so clean its deliberate
             // helper descendant before asserting the regression outcome.
