@@ -3,6 +3,7 @@
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { sourceIconUrl, sourceNames } from "./google-source-icons.js";
   import { dismissable } from "../common/dismissable.js";
   /**
