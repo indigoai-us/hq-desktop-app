@@ -61,7 +61,7 @@ export function googleIntegrationsFromBody(body: unknown): PersonalIntegration[]
   return rows(body).flatMap((row) => {
     const accountId = str(row.accountId);
     if (!accountId) return [];
-    const caps = Array.isArray(row.capabilities) ? row.capabilities.map(str) : [];
+    const caps = Array.isArray(row.capabilities) ? row.capabilities.map((cap) => str(cap).toLowerCase()) : [];
     const sources = Object.keys(GOOGLE_SOURCE_LABEL)
       .filter((key) => caps.includes(key))
       .map((key) => GOOGLE_SOURCE_LABEL[key]);

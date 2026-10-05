@@ -54,7 +54,12 @@
     preloadDoorsWhenIdle,
     profilePaneDoor,
   } from "./lazy-doors.js";
-  import { pinCompany, type MoreCompany } from "./more-companies.js";
+  import {
+    localCompanyKey,
+    pinCompany,
+    type MoreCompany,
+  } from "./more-companies.js";
+  import type { LocalOnlyCompany } from "../company/company-display-map.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import {
@@ -938,6 +943,11 @@
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
     /**
+     * Company folders on this Mac with no cloud id. Listed in the company
+     * switcher only; they cannot be opened until they sync.
+     */
+    localCompanies?: readonly LocalOnlyCompany[];
+    /**
      * A company's home channel was just created/adopted client-side
      * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
      * `companies` roster prop hasn't caught up yet. The host should patch
@@ -1221,6 +1231,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    localCompanies = [],
     onhomechannelresolved,
     syncEvents = null,
     rosterStatus = null,
@@ -7273,17 +7284,6 @@
   let contactAvatarByUid = $state<Record<string, string>>({});
   let avatarOverridesByUid = $state<Record<string, string>>({});
   let rosterWakeSeq = $state(0);
-  const BOT_TOGGLE_KEY = 'hq:messages:show-bot-messages';
-  let showBotMessages = $state(
-    typeof localStorage !== 'undefined' && localStorage.getItem(BOT_TOGGLE_KEY) === 'true',
-  );
-  function handleShowBotMessagesChange(value: boolean) {
-    showBotMessages = value;
-    if (typeof localStorage !== 'undefined') {
-      if (value) localStorage.setItem(BOT_TOGGLE_KEY, 'true');
-      else localStorage.removeItem(BOT_TOGGLE_KEY);
-    }
-  }
   let agentAvatarSaving = $state(false);
   let agentAvatarSaveError = $state<string | null>(null);
   let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
@@ -11477,13 +11477,31 @@
 
   const moreCompanyList = $derived.by((): MoreCompany[] => {
     const snap = presenceSnapshot();
-    return railCompanyRoster.map((company) => ({
+    const cloud: MoreCompany[] = railCompanyRoster.map((company) => ({
       uid: company.uid,
       name: company.label,
       slug: company.slug,
       iconUrl: company.iconUrl,
       liveCount: companyLiveCount(snap, company.uid),
     }));
+    // A company with a cloud id is listed once, from the roster, even when
+    // its folder is also on this Mac.
+    const cloudSlugs = new Set(
+      (effectiveCompanies ?? [])
+        .filter((c) => (c.cloudUid ?? "").trim())
+        .map((c) => c.slug.toLowerCase()),
+    );
+    const local: MoreCompany[] = localCompanies
+      .filter((c) => !cloudSlugs.has(c.slug.toLowerCase()))
+      .map((c) => ({
+        uid: localCompanyKey(c.slug),
+        name: c.name,
+        slug: c.slug,
+        iconUrl: null,
+        liveCount: 0,
+        localOnly: true,
+      }));
+    return [...cloud, ...local];
   });
 
   $effect(() => {
@@ -13007,8 +13025,6 @@
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
-          {showBotMessages}
-          onshowbotmessageschange={handleShowBotMessagesChange}
         >
         </ChatSidebar>
         {/key}

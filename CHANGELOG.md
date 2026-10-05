@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Company logos in the left rail now fill their whole circle instead of sitting small inside a grey one. Companies without a logo still show their initials.
+
 - Connection cards in a cloud bot's direct message can now come from the bot itself. A bot on the new runtime sends each card with the state it looked up (whether the app is connected, whether the bot can use it, who connected it, and whether the bot is in Slack), in the message's structured content instead of inside its text. The app draws those cards straight from what the bot sent, without reading the company's connection list: "Nova can use it." when the bot can use the app (for a bot named Nova), "Let Nova use it?" with the button when you connected it, "A teammate connected this. Ask them to share it with Nova." when someone else did, Connect when you can add apps, and "Ask a company admin" when you cannot. When you press one of these cards, the app first checks the live state and then acts on that, and it checks again when a note that a connection changed reaches the bot. Slack is still the first card and a row still shows three cards at most. Messages from older bots, and cards without state, work as before. The app now also keeps a direct message's structured content when it loads the conversation; it used to drop it.
 
 - Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
@@ -17,6 +19,12 @@ The release moves it under the version it ships in.
 - The file sync status of a cloud bot moved into the header of its direct message. The full-width "Syncing your company's files" strip and its progress bar under the header are gone. In their place a small sync icon and one short grey line sit to the right of "Direct message", next to the bot's name, for example "Syncing your company's files, 10 files so far", or with a percent when there is a real one. Nothing in it moves. In a narrow window the line is cut with "..." before anything else in the header gives way, and hovering it shows the full text. It goes away when the files are up to date, as the strip did.
 - Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
+- Settings: the "Open this company on sign-in for members" switch is gone from General. It did not change anything.
+- Billing: the page shows the seat and hosted agent counts without the long list of names under them.
+- Connections: Connected sources in the Google detail panel now show each product's own icon (Gmail, Drive, Calendar and others) in a compact two-column list.
+- Company switcher: companies that are only on this Mac and not synced yet now appear in the list, marked "Local, not synced".
+- Brand: the Logo file-name box is gone. It did not change anything.
+- The robot "Show bot messages" button is gone from the Messages toolbar. The list now always works the default way, with bot-only messages kept out of previews, even for anyone who had turned the button on before.
 
 ## [0.10.392] — 2026-10-05
 

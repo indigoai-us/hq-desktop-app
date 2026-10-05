@@ -176,10 +176,6 @@
         <span class="lb">Default vault access<small>What a new Member can reach before any group</small></span>
         <textarea class="in mono ta" bind:value={snap.general.defaultAccess}></textarea>
       </label>
-      <label class="fr toggle-row" data-testid="settings-default-company">
-        <span class="lb">Open {snap.general.name || "this company"} on sign-in for members</span>
-        <input type="checkbox" role="switch" class="switch" bind:checked={snap.general.openOnSignIn} />
-      </label>
       <label class="fr"><span class="lb">Meeting bot<small>display name</small></span><input class="in" bind:value={snap.general.meetingBotName} /></label>
       </fieldset>
       {#if !canEdit}<p class="note" data-testid="settings-owner-note">Only the owner can change these.</p>{/if}
@@ -187,7 +183,7 @@
       <div class="page-head">
         <div>
           <h2>Brand</h2>
-          <p class="sub">Logo, accent color, and voice</p>
+          <p class="sub">Accent color and voice</p>
         </div>
         <span class="grow"></span>
         <div class="seg" role="tablist">
@@ -197,8 +193,7 @@
         {#if canEdit}<RailButton icon="check" variant="primary" type="button" data-testid="brand-save" disabled={!dirty} onclick={remember}>Save</RailButton>{/if}
       </div>
       <fieldset class="fs" disabled={!canEdit}>
-      <label class="fr"><span class="lb">Logo<small>file name</small></span><input class="in" bind:value={snap.brand.logoName} placeholder="wordmark.svg" /></label>
-      <p class="note">The logo shows on this company's rail tile. The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
+      <p class="note">The accent color tints this company's buttons and highlights. The live indicator stays green.</p>
       <label class="fr"><span class="lb">Accent</span><input class="in mono" bind:value={snap.brand.accent} placeholder="#4F46E5" /></label>
       <label class="fr"><span class="lb">Voice notes</span><textarea class="in ta" bind:value={snap.brand.voice}></textarea></label>
       <label class="fr"><span class="lb">Bot branding</span><input class="in" bind:value={snap.brand.botIntro} /></label>
@@ -290,22 +285,6 @@
       {#if seatLimit && snap.seatsLimit === null}
         <p class="note" data-testid="workforce-limit-unavailable">Plan limits are not available yet. Counts come from the Team roster.</p>
       {/if}
-      {#each snap.agents as a (a.id)}
-        <div class="line">
-          <span class="nm">{a.name}</span>
-          <span class="mono">{a.box}</span>
-          <span class:live={a.healthy}>{a.health}</span>
-          <span class="c">{a.task}</span>
-        </div>
-      {:else}
-        {#each rosterAgents as a (a.id)}
-          <div class="line">
-            <span class="nm">{a.displayName}</span>
-          </div>
-        {:else}
-          <p class="note">Hosted agents show here after the roster refresh. Local bots on an Outpost do not count.</p>
-        {/each}
-      {/each}
       <div class="up">
         <div>
           <b>Need more seats or agents?</b>
@@ -341,8 +320,6 @@
     background: transparent;
   }
   .fs { border: 0; margin: 0; padding: 0; min-width: 0; display: contents; }
-  .toggle-row { align-items: center; }
-  .switch { width: 28px; height: 16px; accent-color: var(--v4-ok, currentColor); }
   .subnav, .page { min-height: 0; overflow: auto; }
   .subnav {
     border-right: 1px solid var(--line);
@@ -432,8 +409,6 @@
   .gt.hd { color: var(--t3); }
   .nm { color: var(--t1); }
   .soon { color: var(--t3); }
-  .live { color: var(--t2); }
-  .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok); vertical-align: 1px; }
   .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
   .plan span { display: block; color: var(--t3); font-size: 13px; }
   .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
