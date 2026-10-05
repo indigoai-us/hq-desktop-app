@@ -290,22 +290,6 @@
       {#if seatLimit && snap.seatsLimit === null}
         <p class="note" data-testid="workforce-limit-unavailable">Plan limits are not available yet. Counts come from the Team roster.</p>
       {/if}
-      {#each snap.agents as a (a.id)}
-        <div class="line">
-          <span class="nm">{a.name}</span>
-          <span class="mono">{a.box}</span>
-          <span class:live={a.healthy}>{a.health}</span>
-          <span class="c">{a.task}</span>
-        </div>
-      {:else}
-        {#each rosterAgents as a (a.id)}
-          <div class="line">
-            <span class="nm">{a.displayName}</span>
-          </div>
-        {:else}
-          <p class="note">Hosted agents show here after the roster refresh. Local bots on an Outpost do not count.</p>
-        {/each}
-      {/each}
       <div class="up">
         <div>
           <b>Need more seats or agents?</b>
@@ -432,8 +416,6 @@
   .gt.hd { color: var(--t3); }
   .nm { color: var(--t1); }
   .soon { color: var(--t3); }
-  .live { color: var(--t2); }
-  .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok); vertical-align: 1px; }
   .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
   .plan span { display: block; color: var(--t3); font-size: 13px; }
   .up { display: flex; align-items: center; gap: 12px; margin-top: 18px; max-width: 720px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }
