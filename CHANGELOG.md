@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
 
