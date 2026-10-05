@@ -1063,7 +1063,13 @@ describe('first-run sign-in screen', () => {
   });
 
   it('opens the browser only when Google is clicked, with no continuation to wait on', async () => {
-    stubContinuationInvoke();
+    const deliveredReceipts: Array<{ path: string; body: Record<string, string | number> }> = [];
+    stubContinuationInvoke({
+      deliver: (receipt) => {
+        deliveredReceipts.push(receipt);
+        return 200;
+      },
+    });
     component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
     await revealSignIn();
     expectNothingOpenedInBrowser();
@@ -1077,8 +1083,22 @@ describe('first-run sign-in screen', () => {
     expect(host.textContent).toContain('A browser window opened for Google sign-in.');
 
     await flushUntil(() => tauri.open.mock.calls.length > 0);
+    await flushUntil(() => deliveredReceipts.some((receipt) => receipt.body.outcome === 'started'));
     expect(tauri.open).toHaveBeenCalledTimes(1);
     expect(tauri.open.mock.calls[0]?.[0]).toBe('https://placeholder.test/authorize');
+    const startReceipt = deliveredReceipts.find((receipt) => receipt.body.outcome === 'started');
+    expect(startReceipt?.path).toBe('/v1/desktop/onboarding/progress');
+    expect(startReceipt?.body).toMatchObject({
+      installAttemptId: CONTINUATION_CONTEXT.installAttemptId,
+      outcome: 'started',
+      flow: 'manual_oauth',
+      variant: 'control',
+    });
+    expect(startReceipt?.body.sessionId).toMatch(/^[0-9a-f-]{36}$/i);
+    const receiptDeliveryIndex = tauri.invoke.mock.calls.findIndex(([command]) => command === 'desktop_continuation_deliver');
+    const providerOpenIndex = tauri.open.mock.invocationCallOrder[0];
+    expect(receiptDeliveryIndex).toBeGreaterThanOrEqual(0);
+    expect(tauri.invoke.mock.invocationCallOrder[receiptDeliveryIndex]).toBeLessThan(providerOpenIndex);
     expect(continuationAttemptCalls()).toEqual([]);
 
     await flushUntil(
@@ -1087,6 +1107,35 @@ describe('first-run sign-in screen', () => {
         true,
     );
     expect(tauri.invoke).toHaveBeenCalledWith('oauth_exchange_code', { code: 'placeholder-code' });
+    await flushUntil(() => deliveredReceipts.some((receipt) => receipt.body.outcome === 'identity_verified'));
+    const manualProgressReceipts = deliveredReceipts.filter(
+      (receipt) => receipt.body.flow === 'manual_oauth',
+    );
+    expect(manualProgressReceipts.map((receipt) => receipt.body.outcome).sort()).toEqual([
+      'browser_opened',
+      'callback_received',
+      'identity_verified',
+      'started',
+    ]);
+    expect(manualProgressReceipts.every(
+      (receipt) => receipt.body.sessionId === startReceipt?.body.sessionId,
+    )).toBe(true);
+  });
+
+  it('does not wait for a failed anonymous sign-in receipt before opening the provider', async () => {
+    stubContinuationInvoke({
+      deliver: () => {
+        throw new Error('offline');
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await revealSignIn();
+    providerButtons()[0]?.click();
+    flushSync();
+
+    await flushUntil(() => tauri.open.mock.calls.length > 0);
+    expect(tauri.open).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain('A browser window opened for Google sign-in.');
   });
 
   it('starts Microsoft sign-in with the Microsoft provider', async () => {

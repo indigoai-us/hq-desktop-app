@@ -69,8 +69,10 @@
     flushReceipts,
     FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
     launchReceipt,
+    progressReceipt,
     recordReceipt,
     shouldSendFirstLaunchReceipt,
+    type ContinuationOutcome,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -308,6 +310,8 @@
       }>
     | null = null;
   let onboardingIdentityPrepared = false;
+  let continuationContextPromise: Promise<ContinuationContext | null> | null = null;
+  const manualOAuthReceiptTails = new Map<string, Promise<void>>();
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
@@ -1042,8 +1046,10 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    const progressSessionId = crypto.randomUUID();
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
-    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+    recordManualOAuthReceipt(progressSessionId, 'started');
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
@@ -1061,7 +1067,8 @@
       }
       await openExternal(authorizeUrl);
       authStep = 'provider_page_opened';
-      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+      recordManualOAuthReceipt(progressSessionId, 'browser_opened');
       if (!isCurrentSignInCall(call)) return;
 
       const { code } = await invokeCommand<{ code: string }>(
@@ -1069,7 +1076,8 @@
         { state },
       );
       authStep = 'callback_received';
-      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+      recordManualOAuthReceipt(progressSessionId, 'callback_received');
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'callback_received', {
         provider: telemetryProvider,
       });
@@ -1084,7 +1092,8 @@
 
       if (result.authenticated) {
         authStep = 'token_exchange_ok';
-        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+        recordManualOAuthReceipt(progressSessionId, 'identity_verified');
         await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         void emitDesktopAuthFailure({
@@ -1100,6 +1109,7 @@
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
+      recordManualOAuthReceipt(progressSessionId, 'failed', classifyContinuationError(err));
       void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
       const errorKind = classifyContinuationError(err);
@@ -1118,6 +1128,43 @@
       if (isCurrentSignInCall(call)) {
         loadingProvider = null;
       }
+    }
+  }
+
+  function getContinuationContextForReceipt(): Promise<ContinuationContext | null> {
+    continuationContextPromise ??= loadContinuationContext();
+    return continuationContextPromise;
+  }
+
+  function recordManualOAuthReceipt(
+    sessionId: string,
+    outcome: ContinuationOutcome,
+    errorKind?: ReturnType<typeof classifyContinuationError>,
+  ): void {
+    // This side channel is best-effort and deliberately never awaited by the
+    // sign-in flow. The same session id also rides on the existing operational
+    // progress event so its durable auth hold can be deduped against receipts.
+    const previous = manualOAuthReceiptTails.get(sessionId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const context = await getContinuationContextForReceipt();
+      if (!context) return;
+      const deps = continuationDeps(context);
+      const receipt = progressReceipt(deps, {
+        sessionId,
+        outcome,
+        variant: 'control',
+        flow: 'manual_oauth',
+        ...(errorKind ? { errorKind } : {}),
+      });
+      await recordReceipt(deps, receipt);
+    }).catch((error) => {
+      console.warn('onboarding: anonymous sign-in receipt context unavailable', error);
+    });
+    manualOAuthReceiptTails.set(sessionId, next);
+    if (outcome === 'identity_verified' || outcome === 'failed' || outcome === 'cancelled') {
+      void next.then(() => {
+        if (manualOAuthReceiptTails.get(sessionId) === next) manualOAuthReceiptTails.delete(sessionId);
+      });
     }
   }
 
@@ -1215,7 +1262,7 @@
             if (!firstLaunch) flushQueuedOnboardingStepRecords();
             return firstLaunch;
           });
-        const contextPromise = loadContinuationContext();
+        const contextPromise = getContinuationContextForReceipt();
         const reachVisitorIdPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? loadInstallAttemptId() : null,
         );

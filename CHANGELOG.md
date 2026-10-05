@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
 
 ## [0.10.396] — 2026-10-05
