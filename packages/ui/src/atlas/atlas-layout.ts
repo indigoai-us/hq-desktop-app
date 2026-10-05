@@ -358,7 +358,7 @@ export function atlasShortLabel(label: string): string {
 export interface AtlasScreenLabel {
   id: string;
   text: string;
-  /** 0 hovered, 1 selected, 2 related, 3 recent, 4 everything else; drives label tone. */
+  /** 0 hovered, 1 selected, 2 related, 3 recent project, 4 everything else; drives label tone. */
   rank?: number;
   x: number;
   y: number;
@@ -367,18 +367,24 @@ export interface AtlasScreenLabel {
 
 /**
  * OWNER-D 4 (AUDIT-3-19): which labels to draw, in screen space, at a fixed
- * readable size. Ranked hovered, selected, related, then by significance:
- * touched in the last two days first, then most recently touched, then larger
- * objects (size comes from the object's item count). With an object
- * selected, only it, its relations and recent objects are labelled; the same
- * holds while hovering below ATLAS_LABEL_ALL_ZOOM. Below
- * ATLAS_LABEL_ALL_ZOOM, at most ATLAS_FIT_LABEL_CAP labels go to objects
- * nobody is looking at. A label is kept only when it fits inside the map and
- * does not overlap a label already kept or another object's dot, so crowded maps show the most
- * significant names and the rest appear on hover or as the map zooms in.
+ * readable size. Ranked hovered, selected, related, then projects by
+ * recency: touched in the last two days first, then most recently touched,
+ * then larger projects (size comes from the item count).
+ *
+ * Owner 2026-10-05: with nothing hovered or selected only projects carry a
+ * name. Knowledge, policies, repos, workers and skills are named only when
+ * they are the focus or related to it (hovering or selecting a project names
+ * its related items), or once the map is zoomed to ATLAS_LABEL_ALL_ZOOM or
+ * further. With an object selected, only it, its relations and recent
+ * projects are labelled; the same holds while hovering below
+ * ATLAS_LABEL_ALL_ZOOM. Below ATLAS_LABEL_ALL_ZOOM, at most
+ * ATLAS_FIT_LABEL_CAP labels go to objects nobody is looking at. A label is
+ * kept only when it fits inside the map and does not overlap a label already
+ * kept or another object's dot, so crowded maps show the most significant
+ * names and the rest appear on hover or as the map zooms in.
  */
 export function atlasScreenLabels(input: {
-  placed: Pick<AtlasPlaced, "id" | "label" | "touched" | "x" | "y" | "r">[];
+  placed: (Pick<AtlasPlaced, "id" | "label" | "touched" | "x" | "y" | "r"> & { type?: AtlasDistrictType })[];
   selected: string | null;
   hovered: string | null;
   related: Set<string>;
@@ -398,11 +404,15 @@ export function atlasScreenLabels(input: {
     if (n.id === input.hovered) return 0;
     if (n.id === input.selected) return 1;
     if (input.related.has(n.id)) return 2;
-    if (recent(n)) return 3;
+    // Only projects are named without a focus; other sections wait for a
+    // hover, a selection or a zoomed-in map.
+    const project = n.type === undefined || n.type === "project";
+    if (project && recent(n)) return 3;
     // A selection is a deliberate focus: only it, its relations and recent
-    // objects keep a name. Hovering alone never blanks a zoomed-in map.
+    // projects keep a name. Hovering alone never blanks a zoomed-in map.
     if (input.selected) return -1;
-    return all || !input.hovered ? 4 : -1;
+    if (all) return 4;
+    return project && !input.hovered ? 4 : -1;
   };
   const candidates = input.placed
     .map((n) => ({ n, r: rank(n) }))
