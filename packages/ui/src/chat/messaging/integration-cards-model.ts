@@ -83,7 +83,7 @@ function text(value: unknown): string {
 }
 
 /** `factory:linear` → `linear`. */
-export function providerSlug(provider: string): string {
+function providerSlug(provider: string): string {
   return provider.replace(/^factory:/i, "").trim().toLowerCase();
 }
 
