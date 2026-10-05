@@ -41,15 +41,15 @@ export interface LaunchEntry {
   installUrl: string;
 }
 
-export const CLAUDE_INSTALL_URL = 'https://claude.ai/download';
+const CLAUDE_INSTALL_URL = 'https://claude.ai/download';
 /**
  * Desktop Codex ships inside the ChatGPT app — the download page states
  * "Existing Codex app users can update to ChatGPT and open Codex" — so this
  * is the one download that yields a working "Open in Codex" button without
  * making someone install a CLI first.
  */
-export const CODEX_INSTALL_URL = 'https://chatgpt.com/download';
-export const GROK_INSTALL_URL = 'https://x.ai/';
+const CODEX_INSTALL_URL = 'https://chatgpt.com/download';
+const GROK_INSTALL_URL = 'https://x.ai/';
 
 const LAUNCH_CANDIDATES: Array<{
   kind: LaunchKind;

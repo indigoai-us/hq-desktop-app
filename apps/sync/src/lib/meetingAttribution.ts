@@ -105,7 +105,7 @@ export function selectRecorded(bots: ScheduledBotLike[]): ScheduledBotLike[] {
   return bots.filter(isRecorded);
 }
 
-export function recordedTimestamp(bot: ScheduledBotLike): number {
+function recordedTimestamp(bot: ScheduledBotLike): number {
   const raw = bot.scheduledStartTime ?? bot.createdAt;
   if (!raw) return -Infinity;
   const timestamp = new Date(raw).getTime();

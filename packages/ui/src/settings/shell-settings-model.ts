@@ -19,7 +19,7 @@ import {
 } from "./appearance-seam.js";
 import type { SettingsUiSize } from "./settings-prefs.js";
 
-export const THEME_STORAGE_KEY = "hq-work-color-theme";
+const THEME_STORAGE_KEY = "hq-work-color-theme";
 
 export const APPEARANCE_THEMES: ReadonlyArray<{
   id: ColorTheme;

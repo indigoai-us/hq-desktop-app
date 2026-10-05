@@ -28,7 +28,7 @@ const SUFFIX_HOSTS = ['.zoom.us', '.webex.com'] as const;
  * recovery action. Keep this exact string separate from browser URL approval:
  * no caller can use this seam to launch an arbitrary local scheme.
  */
-export const MACOS_NOTIFICATIONS_SETTINGS_URL =
+const MACOS_NOTIFICATIONS_SETTINGS_URL =
   'x-apple.systempreferences:com.apple.preference.notifications';
 
 function approvedHost(hostname: string): boolean {
