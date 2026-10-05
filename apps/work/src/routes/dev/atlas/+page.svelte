@@ -18,9 +18,11 @@
   /**
    * `?crowd=1` adds a company-sized map (about 1,900 objects with a few huge
    * folders and long names) to the smoke graph, to judge the layout at the
-   * scale a real vault has. Deterministic.
+   * scale a real vault has. The first 40 projects use a repo and cite a
+   * knowledge file and a policy, so hovering a project lights its relations.
+   * Deterministic.
    */
-  function crowdGraph<G extends { nodes: unknown[] }>(base: G, scale: number): G {
+  function crowdGraph<G extends { nodes: unknown[]; edges?: unknown[] }>(base: G, scale: number): G {
     const now = Date.UTC(2026, 8, 30, 12);
     const sizes = { project: 700, knowledge: 520, policy: 430, repo: 22, worker: 60, skill: 90 } as const;
     const folders = { project: "projects", knowledge: "knowledge", policy: "policies", repo: "repos", worker: "workers", skill: "skills" } as const;
@@ -46,7 +48,15 @@
         });
       }
     }
-    return { ...base, nodes };
+    const edges = [...(base.edges ?? [])];
+    for (let i = 0; i < Math.min(40, Math.round(sizes.project * scale)); i += 1) {
+      const source = `project:projects/crowd-${i}/`;
+      const pick = (type: keyof typeof sizes, n: number) => `${type}:${folders[type]}/crowd-${n % Math.max(1, Math.round(sizes[type] * scale))}/`;
+      edges.push({ source, target: pick("repo", i), kind: "uses" });
+      edges.push({ source, target: pick("knowledge", i * 7), kind: "cites" });
+      edges.push({ source, target: pick("policy", i * 11), kind: "cites" });
+    }
+    return { ...base, nodes, edges };
   }
 
   onMount(() => {

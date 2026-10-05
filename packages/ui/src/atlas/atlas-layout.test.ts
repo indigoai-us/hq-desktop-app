@@ -119,6 +119,80 @@ describe("atlas layout", () => {
     expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
   });
 
+  describe("owner 2026-10-05: only recent projects are named until a project is hovered", () => {
+    type T = "project" | "knowledge" | "policy" | "repo" | "worker" | "skill";
+    const at = (id: string, type: T, x: number, touched?: number) => ({ id, type, label: id, x, y: 0, r: 4, touched });
+    const placed = [
+      at("p-old", "project", 0, NOW - 90 * 86_400_000),
+      at("p-new", "project", 100, NOW - 1000),
+      at("p-mid", "project", 200, NOW - 10 * 86_400_000),
+      at("k-recent", "knowledge", 300, NOW - 10),
+      at("pol", "policy", 400, NOW - 10),
+      at("repo", "repo", 500, NOW - 10),
+      at("w", "worker", 600, NOW - 10),
+      at("s", "skill", 700, NOW - 10),
+    ];
+    const edges = [
+      { source: "p-old", target: "repo", kind: "uses" as const },
+      { source: "p-old", target: "k-recent", kind: "cites" as const },
+      { source: "p-old", target: "pol", kind: "cites" as const },
+    ];
+    const base = { placed, nowMs: NOW, view: { x: 20, y: 100, k: 0.5 }, width: 2000, height: 400, measure: () => 20 };
+
+    it("idle labels are all projects, ordered by recency", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: null, related: new Set() });
+      expect(labels.map((l) => l.id)).toEqual(["p-new", "p-mid", "p-old"]);
+    });
+
+    it("idle state at fit zoom names no knowledge, policy, repo, worker or skill", () => {
+      const { placed: real } = layoutAtlas(smokeAtlasGraph().nodes);
+      const types = new Map(real.map((n) => [n.id, n.type]));
+      const view = frameAll(real, 1440, 900);
+      const fit = { ...view, k: Math.min(view.k, ATLAS_LABEL_ALL_ZOOM * 0.5) };
+      const labels = atlasScreenLabels({
+        placed: real,
+        selected: null,
+        hovered: null,
+        related: new Set(),
+        nowMs: NOW,
+        view: fit,
+        width: 1440,
+        height: 900,
+        measure: (t) => t.length * 8,
+      });
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.every((l) => types.get(l.id) === "project")).toBe(true);
+    });
+
+    it("hovering a project names it and its related repo, knowledge and policy", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: "p-old", related: atlasRelatedIds("p-old", edges) });
+      const ids = labels.map((l) => l.id);
+      expect(ids.slice(0, 4).sort()).toEqual(["k-recent", "p-old", "pol", "repo"].sort());
+      expect(labels.find((l) => l.id === "p-old")?.rank).toBe(0);
+      expect(ids).not.toContain("w");
+      expect(ids).not.toContain("s");
+      // Recent projects keep their names; idle older ones step back.
+      expect(ids).toContain("p-new");
+      expect(ids).not.toContain("p-mid");
+    });
+
+    it("selecting a project keeps its related items named", () => {
+      const labels = atlasScreenLabels({ ...base, selected: "p-old", hovered: null, related: atlasRelatedIds("p-old", edges) });
+      expect(labels.map((l) => l.id).sort()).toEqual(["k-recent", "p-new", "p-old", "pol", "repo"]);
+    });
+
+    it("hovering a non-project item names that item", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: "w", related: new Set() });
+      expect(labels[0]?.id).toBe("w");
+      expect(labels.map((l) => l.id)).not.toContain("s");
+    });
+
+    it("zoomed in past the label-all zoom, other sections may be named again", () => {
+      const labels = atlasScreenLabels({ ...base, view: { x: 20, y: 100, k: ATLAS_LABEL_ALL_ZOOM }, width: 4000, selected: null, hovered: null, related: new Set() });
+      expect(labels.map((l) => l.id)).toContain("w");
+    });
+  });
+
   it("reveals more labels as the map zooms in (OWNER-D 4)", () => {
     const { placed } = layoutAtlas(smokeAtlasGraph().nodes);
     const base = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, measure: (t: string) => t.length * 8 };
