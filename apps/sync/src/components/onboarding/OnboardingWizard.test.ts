@@ -263,6 +263,7 @@ type ContinuationTestOptions = {
   config?: unknown | (() => unknown);
   identity?: unknown | (() => unknown);
   mayStart?: string | null;
+  downloadAnonId?: string | null;
   cancel?: undefined | (() => Promise<void>);
   deliver?: (args: { path: string; body: Record<string, string | number> }) => number;
 };
@@ -276,6 +277,7 @@ function stubContinuationInvoke({
   config = CONTINUATION_CONFIG,
   identity = { email: 'placeholder account' },
   mayStart = null,
+  downloadAnonId = null,
   cancel,
   deliver = () => 200,
 }: ContinuationTestOptions = {}) {
@@ -294,6 +296,8 @@ function stubContinuationInvoke({
         return undefined;
       case 'desktop_continuation_context':
         return CONTINUATION_CONTEXT;
+      case 'web_visitor_anon_id':
+        return downloadAnonId;
       case 'desktop_continuation_config':
         return typeof config === 'function' ? config() : config;
       case 'desktop_continuation_may_start':
@@ -766,6 +770,79 @@ describe('onboarding directory selection', () => {
 });
 
 describe('first-run sign-in screen', () => {
+  it('adds the installer visitor key to the launch receipt only when its public flag is on', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    httpFetch.mockImplementation(async (input) => {
+      const key = new URL(String(input)).searchParams.get('key');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ key, enabled: key === 'desktop.first-launch-download-join-v1' }),
+        text: async () => '',
+      };
+    });
+    stubContinuationInvoke({
+      downloadAnonId: 'download-key',
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(true);
+    expect(deliveredLaunches[0].anonId).toBe('download-key');
+  });
+
+  it('omits the installer visitor key when the flag is off or the tag is missing', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    httpFetch.mockImplementation(async (input) => {
+      const key = new URL(String(input)).searchParams.get('key');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ key, enabled: false }),
+        text: async () => '',
+      };
+    });
+    stubContinuationInvoke({
+      downloadAnonId: 'download-key',
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(false);
+    await unmount(component);
+    component = null;
+    host.replaceChildren();
+    localStorage.clear();
+
+    deliveredLaunches.length = 0;
+    httpFetch.mockImplementation(async (input) => {
+      const key = new URL(String(input)).searchParams.get('key');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ key, enabled: key === 'desktop.first-launch-download-join-v1' }),
+        text: async () => '',
+      };
+    });
+    stubContinuationInvoke({
+      downloadAnonId: null,
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(false);
+  });
+
   it('records one launch receipt and retries the same receipt after a resumed wizard', async () => {
     const deliveredLaunches: Array<Record<string, string | number>> = [];
     stubContinuationInvoke({
@@ -876,6 +953,48 @@ describe('first-run sign-in screen', () => {
       'That sign-in attempt no longer matches. Choose a provider to start again.',
     );
     expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('records the provider start and browser callback on the install session', async () => {
+    stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
+
+    await clickGoogleSignIn();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'oauth_exchange_code'),
+    );
+    await flush();
+
+    const welcomeEvents = tauri.invoke.mock.calls.flatMap(([command, rawArgs]) => {
+      const args = rawArgs as {
+        eventName?: string;
+        sessionId?: string;
+        properties?: { step?: string; action?: string; provider?: string };
+      };
+      return command === 'emit_desktop_operational_telemetry' &&
+        args.eventName === 'desktop_onboarding_step' &&
+        args.properties?.step === 'welcome-signin'
+        ? [args]
+        : [];
+    });
+
+    expect(welcomeEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sessionId: CONTINUATION_CONTEXT.installAttemptId,
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'started',
+          provider: 'google',
+        }),
+      }),
+      expect.objectContaining({
+        sessionId: CONTINUATION_CONTEXT.installAttemptId,
+        properties: expect.objectContaining({
+          step: 'welcome-signin',
+          action: 'callback_received',
+          provider: 'google',
+        }),
+      }),
+    ]));
   });
 
   it('keeps the successful provider sign-in path to one browser attempt', async () => {

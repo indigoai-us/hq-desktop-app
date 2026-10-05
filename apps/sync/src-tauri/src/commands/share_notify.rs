@@ -76,6 +76,67 @@ pub(crate) fn desktop_push_events_enabled() -> bool {
     DESKTOP_PUSH_EVENTS_ENABLED.load(Ordering::Acquire)
 }
 
+/// The hq-pro flag is company-canary scoped. Use the desktop install's primary
+/// company from config.json; other company flags keep their existing unscoped
+/// behavior. If setup has not produced a usable config yet, preserve the old
+/// unscoped resolution path.
+fn primary_company_uid() -> Option<String> {
+    primary_company_uid_from_config(
+        crate::commands::config::read_hq_config_lenient()
+            .ok()
+            .flatten(),
+    )
+}
+
+fn primary_company_uid_from_config(
+    config: Option<crate::commands::config::HqConfig>,
+) -> Option<String> {
+    config
+        .map(|config| config.company_uid)
+        .map(|uid| uid.trim().to_string())
+        .filter(|uid| !uid.is_empty())
+}
+
+async fn desktop_push_events_flag_enabled() -> bool {
+    let company_uid = primary_company_uid();
+    crate::commands::hq_pro::feature_flag_enabled_for_company(
+        DESKTOP_PUSH_EVENTS_FLAG,
+        company_uid.as_deref(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod company_flag_tests {
+    use super::*;
+
+    fn hq_config(company_uid: &str) -> crate::commands::config::HqConfig {
+        crate::commands::config::HqConfig {
+            company_uid: company_uid.to_string(),
+            company_slug: "primary-company".to_string(),
+            person_uid: "prs_test".to_string(),
+            role: "member".to_string(),
+            bucket_name: "hq-vault-test".to_string(),
+            vault_api_url: "https://hqapi.hq.computer".to_string(),
+            hq_folder_path: None,
+        }
+    }
+
+    #[test]
+    fn push_events_uses_the_primary_company_from_hq_config() {
+        assert_eq!(
+            primary_company_uid_from_config(Some(hq_config("cmp_primary"))).as_deref(),
+            Some("cmp_primary")
+        );
+    }
+
+    #[test]
+    fn push_events_uses_unscoped_resolution_without_a_primary_company() {
+        assert_eq!(primary_company_uid_from_config(None), None);
+        assert_eq!(primary_company_uid_from_config(Some(hq_config("  "))), None);
+    }
+}
+
 // ── Gate check ───────────────────────────────────────────────────────────────
 
 /// Returns true when the user preference allows polling. Re-reads menubar.json
@@ -108,7 +169,7 @@ async fn should_poll() -> bool {
 pub fn setup_share_notify_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        let enabled = crate::commands::hq_pro::feature_flag_enabled(DESKTOP_PUSH_EVENTS_FLAG).await;
+        let enabled = desktop_push_events_flag_enabled().await;
         DESKTOP_PUSH_EVENTS_ENABLED.store(enabled, Ordering::Release);
 
         let mut poll_ticker = hq_desktop_core::share_notify::share_poll_interval();
@@ -127,8 +188,7 @@ pub fn setup_share_notify_poller(app: AppHandle) {
         loop {
             tokio::select! {
                 _ = flag_ticker.tick() => {
-                let enabled =
-                    crate::commands::hq_pro::feature_flag_enabled(DESKTOP_PUSH_EVENTS_FLAG).await;
+                let enabled = desktop_push_events_flag_enabled().await;
                 let previously_enabled =
                     DESKTOP_PUSH_EVENTS_ENABLED.swap(enabled, Ordering::AcqRel);
                 if enabled && !previously_enabled {

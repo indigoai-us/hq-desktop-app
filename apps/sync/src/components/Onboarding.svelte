@@ -63,7 +63,9 @@
   // takes it off and re-applies it on the hand-back.
   async function setWindowVibrancy(enabled: boolean) {
     if (typeof invoke !== 'function') return;
-    await invoke('set_main_window_vibrancy', { enabled }).catch(() => {});
+    await invoke('set_main_window_vibrancy', { enabled }).catch((error) => {
+      console.error('onboarding: window vibrancy failed', error);
+    });
   }
 
   async function setWelcomeBackdrop(enabled: boolean) {
@@ -71,12 +73,16 @@
     await invoke('set_welcome_backdrop', {
       enabled,
       fadeMs: WELCOME_BACKDROP_FADE_MS,
-    }).catch(() => {});
+    }).catch((error) => {
+      console.error('onboarding: welcome backdrop failed', error);
+    });
   }
 
   async function setWelcomeWindow(enabled: boolean) {
     if (typeof invoke !== 'function') return;
-    await invoke('set_welcome_window', { enabled }).catch(() => {});
+    await invoke('set_welcome_window', { enabled }).catch((error) => {
+      console.error('onboarding: welcome window failed', error);
+    });
   }
 
   async function readWallpaper(): Promise<string | null> {
@@ -114,7 +120,9 @@
     await setWindowVibrancy(true);
     try {
       const win = getCurrentWindow();
-      await win.setShadow(true).catch(() => {});
+      await win.setShadow(true).catch((error) => {
+        console.error('onboarding: window shadow failed', error);
+      });
       await win.setSize(COMPACT_WINDOW_SIZE);
       await win.center();
     } catch {

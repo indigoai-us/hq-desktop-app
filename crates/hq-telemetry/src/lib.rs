@@ -1721,6 +1721,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unclassified"
                 | "not_applicable"
         )),
+        "rsync_exit_status" => Some(matches!(value, "23" | "24" | "other")),
+        "rsync_phase" => Some(matches!(value, "dry_run" | "overlay" | "unknown")),
         "rsync_translated_path_shape" => Some(matches!(
             value,
             "cygwin_drive"
@@ -2342,6 +2344,30 @@ fn valid_node_top_frame(value: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Extract only the two bounded dimensions encoded in the runner's rescue
+/// reason. None of the reason text is copied into a tag.
+fn bounded_rsync_status_and_phase(reason: Option<&str>) -> (&'static str, &'static str) {
+    let Some(reason) = reason else {
+        return ("other", "unknown");
+    };
+    let Some(marker_index) = reason.find("rsync status ") else {
+        return ("other", "unknown");
+    };
+    let marker = &reason[marker_index + "rsync status ".len()..];
+    let mut parts = marker.split_whitespace();
+    let status = match parts.next() {
+        Some("23") => "23",
+        Some("24") => "24",
+        Some(_) | None => "other",
+    };
+    let phase = match (parts.next(), parts.next()) {
+        (Some("during"), Some("dry-run")) => "dry_run",
+        (Some("during"), Some("overlay")) => "overlay",
+        _ => "unknown",
+    };
+    (status, phase)
+}
+
 fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
     for (key, value) in event.tags.iter_mut() {
         if valid_runner_diagnostic_field(key, value) == Some(false) {
@@ -2358,6 +2384,19 @@ fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
         if !is_valid {
             *value = Value::String("[Filtered]".to_string());
         }
+    }
+
+    if event.tags.get("rescue_step").map(String::as_str) == Some("rsync")
+        && event.tags.get("rescue_error_class").map(String::as_str) == Some("rsync_partial")
+    {
+        let reason = event.extra.get("rescueErrorReason").and_then(Value::as_str);
+        let (status, phase) = bounded_rsync_status_and_phase(reason);
+        event
+            .tags
+            .insert("rsync_exit_status".to_string(), status.to_string());
+        event
+            .tags
+            .insert("rsync_phase".to_string(), phase.to_string());
     }
 
     if event
@@ -3274,6 +3313,49 @@ mod tests {
             expected.map(str::to_string),
             "known Core update classes should survive the before_send allowlist"
         );
+    }
+
+    #[test]
+    fn rsync_status_phase_and_stderr_tags_are_bounded_at_before_send() {
+        for (reason, expected_status, expected_phase) in [
+            ("rsync status 23 during dry-run", "23", "dry_run"),
+            ("rsync status 24 during overlay", "24", "overlay"),
+            ("rsync status 12 during overlay", "other", "overlay"),
+            ("unrecognized runner output", "other", "unknown"),
+        ] {
+            let mut event = Event::default();
+            event.fingerprint = std::borrow::Cow::Owned(vec![
+                std::borrow::Cow::Borrowed("existing-fingerprint"),
+            ]);
+            event.tags.insert("rescue_step".into(), "rsync".into());
+            event
+                .tags
+                .insert("rescue_error_class".into(), "rsync_partial".into());
+            event
+                .tags
+                .insert("rsync_stderr_class".into(), "file_locked".into());
+            event
+                .extra
+                .insert("rescueErrorReason".into(), Value::String(reason.into()));
+            event.extra.insert(
+                "rsyncStderrReason".into(),
+                Value::String(
+                    "rsync: open C:\\Users\\fixture\\private\\file failed: Permission denied"
+                        .into(),
+                ),
+            );
+
+            let filtered = before_send(event).expect("rsync failure remains reportable");
+            assert_eq!(filtered.tags["rsync_exit_status"], expected_status);
+            assert_eq!(filtered.tags["rsync_phase"], expected_phase);
+            assert_eq!(filtered.tags["rsync_stderr_class"], "file_locked");
+            assert_eq!(filtered.fingerprint.len(), 1);
+            assert_eq!(filtered.fingerprint[0].as_ref(), "existing-fingerprint");
+            assert!(filtered
+                .tags
+                .values()
+                .all(|tag| !tag.contains("C:\\Users\\fixture\\private\\file")));
+        }
     }
 
     #[test]

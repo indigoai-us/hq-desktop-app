@@ -18,6 +18,30 @@ The release moves it under the version it ships in.
 - Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
 
+## [0.10.395] — 2026-10-05
+
+- Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
+- With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
+
+- Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
+- First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
+- The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
+
+- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
+
+## [0.10.394] — 2026-10-05
+
+- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
+- Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+
+## [0.10.393] — 2026-10-05
+
+- Rsync failure reports now include fixed categories for the exit status and sync phase.
+- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
+- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
+- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
+
 ## [0.10.392] — 2026-10-05
 
 - The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.

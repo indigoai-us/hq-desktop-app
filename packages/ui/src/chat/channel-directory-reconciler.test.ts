@@ -327,6 +327,35 @@ describe("createChannelDirectoryReconciler", () => {
     }
   });
 
+  it("logs a failed safety refetch and keeps the last directory", async () => {
+    vi.useFakeTimers();
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      const fetchFeed = vi
+        .fn()
+        .mockResolvedValueOnce(snapshotFeed([row("ch_a")]))
+        .mockRejectedValueOnce(new Error("directory down"));
+      const r = createChannelDirectoryReconciler({
+        fetchFeed,
+        onApply: () => {},
+        now: () => NOW,
+      });
+      await r.reconcile("startup");
+      r.start();
+      await vi.advanceTimersByTimeAsync(CHANNEL_DIRECTORY_SAFETY_REFETCH_MS * 1.2);
+      expect(r.snapshot().map((x) => x.channelId)).toEqual(["ch_a"]);
+      expect(r.status()).not.toBe("contract_error");
+      expect(debug).toHaveBeenCalledWith(
+        "channel-directory: safety poll failed",
+        "directory down",
+      );
+      r.stop();
+    } finally {
+      debug.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("jitters the safety pass within ±20% instead of polling in phase", async () => {
     const armed: number[] = [];
     const draws = [0, 0.5, 0.999_999];

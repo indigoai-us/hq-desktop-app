@@ -86,10 +86,25 @@
     const unlock = () => {
       if (typeof AudioContext === "undefined" || !chimeEnabled) return;
       chimeContext ??= new AudioContext();
-      void chimeContext.resume().catch(() => undefined);
+      void chimeContext.resume().catch((error: unknown) => {
+        // pointerdown can repeat while audio stays blocked; keep this at debug.
+        console.debug(
+          "office: audio resume failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     };
     window.addEventListener("pointerdown", unlock);
-    return () => { window.removeEventListener("pointerdown", unlock); void chimeContext?.close().catch(() => undefined); chimeContext = null; };
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      void chimeContext?.close().catch((error: unknown) => {
+        console.warn(
+          "office: audio close failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+      chimeContext = null;
+    };
   });
   function playKnockChime(): void {
     if (!chimeEnabled || !chimeContext || chimeContext.state !== "running") return;
@@ -218,7 +233,14 @@
       if (!(await prepare())) return;
       if (cancelled) return;
       const members = adapter.company?.listMembers
-        ? await adapter.company.listMembers(target).catch(() => null) : null;
+        ? await adapter.company.listMembers(target).catch((error: unknown) => {
+            console.warn(
+              "office: member list failed",
+              error instanceof Error ? error.message : String(error),
+            );
+            return null;
+          })
+        : null;
       if (cancelled) return;
       directory = members?.ok ? parseOfficeMembers(members.value) : [];
       await store.load(target);
@@ -365,7 +387,12 @@
         body: `They would like a quick word${note}`,
         route: "office",
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        console.warn(
+          "office: knock notification failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
   }
 
   function sessionIdOf(room: {

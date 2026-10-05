@@ -64,6 +64,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  cross-repo-consumers:
+    name: Cross-repository consumer contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Test cross-repo consumer guard
+        run: node --test .github/scripts/check-cross-repo-consumers.test.mjs
+      - name: Check cross-repo consumer files
+        run: node .github/scripts/check-cross-repo-consumers.mjs
+
   # The required macOS Rust check stays present for every PR. This cheap
   # preflight only skips the runner when the changed paths cannot affect its
   # app, shared-crate, dependency, script, or workflow inputs.

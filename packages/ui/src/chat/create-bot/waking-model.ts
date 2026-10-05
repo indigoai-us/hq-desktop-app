@@ -29,7 +29,7 @@ export const WAKING_ESTIMATE_MS = 180_000;
  * chat. Measured 2026-10-02: the computer checked in 54 seconds after the
  * sign-in when only the server's once-a-minute pass was moving setup along.
  */
-export const WAKING_FINISH_ESTIMATE_MS = 60_000;
+const WAKING_FINISH_ESTIMATE_MS = 60_000;
 export const WAKING_POLL_MS = 3_000;
 /**
  * Setup only moves forward when something asks the server to re-check the
@@ -112,7 +112,7 @@ export function signInConfirmMessage(elapsedMs: number, brainLabel: string): str
   }
   return "Checking your sign-in.";
 }
-export const WAKING_RECONNECT_AFTER_FAILURES = 3;
+const WAKING_RECONNECT_AFTER_FAILURES = 3;
 
 /**
  * "stopped": there is nothing left to wait for, and asking again will not
@@ -138,7 +138,7 @@ export type WakingStop =
  * One 404 right after the create can be a read that ran ahead of the write,
  * and one 401 can be a token being renewed.
  */
-export const WAKING_STOP_AFTER_SIGNALS = 2;
+const WAKING_STOP_AFTER_SIGNALS = 2;
 
 export interface WakingBotSession {
   agentUid: string;
