@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
+- With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
 
 - Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
 - First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
