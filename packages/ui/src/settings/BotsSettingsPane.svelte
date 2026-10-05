@@ -32,7 +32,6 @@
   import { LOCAL_BOT_RUNTIMES, localBotCompanies, localBotKindLabel } from "../chat/local-bots.js";
   import { botRowDisplayName, loadBotDisplayNames, rememberBotDisplayName } from "../chat/bot-display-names.js";
   import {
-    BOT_RESTORE_FAILED,
     BOT_RESTORE_FROM_SETTINGS,
     BOT_START_HERE,
     BOT_START_HERE_BUSY,
@@ -88,6 +87,7 @@
   type Runtime = LocalBotRow["runtime"];
   const RUNTIMES = LOCAL_BOT_RUNTIMES;
   const POLL_MS = 30_000;
+  const SUCCESS_NOTE_MS = 4_000;
 
   /**
    * The plain-language name for the host machine ("Mac", "PC", or
@@ -118,6 +118,7 @@
     isError: boolean;
     verb: "start" | "stop" | "remove";
   } | null>(null);
+  let localActionTimeout: ReturnType<typeof setTimeout> | undefined;
   let stopPoll: (() => void) | undefined;
 
   // ── Bots this account owns that are not set up on this Mac ─────────────────
@@ -136,6 +137,7 @@
   let remoteFailure = $state<RemoteBotListFailure | null>(null);
   const remoteFailureNotice = $derived(remoteBotListingNotice(remoteFailure));
   let adoptBusy = $state<string | null>(null);
+  let adoptAction = $state<{ name: string; message: string; isError: boolean } | null>(null);
   let restoreBusy = $state(false);
   let restoreResult = $state<BotRestoreResult | null>(null);
   /**
@@ -196,6 +198,7 @@
     verb: "pause" | "resume" | "remove";
     confirmDestroyInstanceId?: string;
   } | null>(null);
+  let cloudActionTimeout: ReturnType<typeof setTimeout> | undefined;
   let removedCloud = $state<Set<string>>(new Set());
   const visibleCloudBots = $derived(cloudBots.filter((bot) => !removedCloud.has(bot.uid)));
   /** Bots this pane paused; the roster carries no runtime state of its own. */
@@ -250,12 +253,26 @@
     };
   });
 
-  async function load(quiet = false): Promise<void> {
+  function clearLocalActionAfterSuccess(name: string): void {
+    if (localActionTimeout) clearTimeout(localActionTimeout);
+    localActionTimeout = setTimeout(() => {
+      if (localAction?.name === name && !localAction.isError) localAction = null;
+    }, SUCCESS_NOTE_MS);
+  }
+
+  function clearCloudActionAfterSuccess(uid: string): void {
+    if (cloudActionTimeout) clearTimeout(cloudActionTimeout);
+    cloudActionTimeout = setTimeout(() => {
+      if (cloudAction?.uid === uid && !cloudAction.isError) cloudAction = null;
+    }, SUCCESS_NOTE_MS);
+  }
+
+  async function load(quiet = false): Promise<boolean> {
     const api = adapter?.bots;
     if (!api) {
       loading = false;
       loadError = "";
-      return;
+      return false;
     }
     if (!quiet) {
       loading = true;
@@ -269,6 +286,7 @@
       loadError = "";
     }
     loading = false;
+    return result.ok;
   }
 
   async function act(name: string, verb: "start" | "stop" | "remove"): Promise<void> {
@@ -286,8 +304,23 @@
       if (result.message) console.warn(`[hq-desktop] local bot ${verb} failed:`, result.message);
       localAction = { name, verb, message: `Could not ${verb} ${name}. Try again.`, isError: true };
     } else {
-      localAction = verb === "remove" ? null : { name, verb, message: `${verb === "start" ? "Started" : "Stopped"}.`, isError: false };
-      await load(true);
+      if (verb === "remove") {
+        const reloaded = await load(true);
+        if (!reloaded) {
+          localAction = {
+            name,
+            verb,
+            message: `Removed. Could not refresh the local bot list.`,
+            isError: true,
+          };
+        } else {
+          localAction = null;
+        }
+      } else {
+        localAction = { name, verb, message: `${verb === "start" ? "Started" : "Stopped"}.`, isError: false };
+        clearLocalActionAfterSuccess(name);
+        await load(true);
+      }
     }
     busy = null;
     confirmRemove = null;
@@ -387,19 +420,21 @@
     const api = adapter?.bots;
     if (!api?.adopt || adoptBusy) return;
     adoptBusy = name;
-    line = `Bringing ${name} back to this ${hostNoun}…`;
-    lineIsError = false;
+    adoptAction = { name, message: `Bringing ${name} back to this ${hostNoun}…`, isError: false };
     const result = await api.adopt(name);
     if (!result.ok) {
       // The CLI's own words go to the log, never onto the pane.
       if (result.message) console.warn("[hq-desktop] bot adopt failed:", result.message);
       // A named refusal is permanent, so it must not read "please try again".
-      line = isNotRunnableHereReason(botFailureReason(result.message))
-        ? botStaysInCloudLine(name)
-        : `Could not bring ${name} back to this ${hostNoun}. Please try again.`;
-      lineIsError = true;
+      adoptAction = {
+        name,
+        message: isNotRunnableHereReason(botFailureReason(result.message))
+          ? botStaysInCloudLine(name)
+          : `Could not bring ${name} back to this ${hostNoun}. Please try again.`,
+        isError: true,
+      };
     } else {
-      line = `${name} is back on this ${hostNoun}.`;
+      adoptAction = { name, message: `${name} is back on this ${hostNoun}.`, isError: false };
       await Promise.all([load(true), loadRemote()]);
     }
     adoptBusy = null;
@@ -411,14 +446,11 @@
     if (!api?.restore || restoreBusy) return;
     restoreBusy = true;
     restoreResult = null;
-    line = "";
-    lineIsError = false;
     const result = await api.restore({ all: true });
     restoreBusy = false;
     if (!result.ok || !result.value) {
       if (!result.ok && result.message) console.warn("[hq-desktop] bot restore failed:", result.message);
-      line = BOT_RESTORE_FAILED;
-      lineIsError = true;
+      restoreResult = { ok: false, dryRun: false, restored: 0, repaired: 0, skipped: 0, failed: 1, bots: [] };
       return;
     }
     restoreResult = result.value;
@@ -456,12 +488,12 @@
     await loadPreflight();
   }
 
-  async function loadCloud(quiet = false): Promise<void> {
+  async function loadCloud(quiet = false): Promise<boolean> {
     const agents = adapter?.agents;
     if (!agents?.listMobileRoster) {
       cloudLoading = false;
       cloudError = "Cloud bots are unavailable in this host.";
-      return;
+      return false;
     }
     if (!quiet) {
       cloudLoading = true;
@@ -475,13 +507,18 @@
       if (roster.failure) {
         cloudError = friendlyApiError(roster.failure, "Could not read your cloud bots.", "bots");
       } else {
-        cloudBots = cloudBotsFromRoster({ agents: roster.agents }, { companies, isAdmin });
+        const nextCloudBots = cloudBotsFromRoster({ agents: roster.agents }, { companies, isAdmin });
+        cloudBots = nextCloudBots;
+        // A successful delete hides the row immediately. A later authoritative
+        // roster that still carries it wins: the server did not delete it.
+        removedCloud = new Set([...removedCloud].filter((uid) => !nextCloudBots.some((bot) => bot.uid === uid)));
         cloudError = "";
       }
     } catch (error) {
       cloudError = friendlyApiError(error, "Could not read your cloud bots.", "bots");
     }
     cloudLoading = false;
+    return !cloudError;
   }
 
   async function actCloud(
@@ -507,7 +544,8 @@
           : confirmDestroyInstanceId
             ? await agents.deprovision(bot.uid, { confirmDestroyInstanceId })
             : await agents.deprovision(bot.uid);
-    if (!result.ok) {
+    const alreadyRemoved = verb === "remove" && !result.ok && result.status === 404;
+    if (!result.ok && !alreadyRemoved) {
       const instanceId = result.code === "AGENTS_V2_BOX_PROTECTED" ? result.instanceId?.trim() : "";
       if (verb === "remove" && instanceId) {
         if (confirmDestroyInstanceId === instanceId) {
@@ -534,6 +572,7 @@
         cloudAction = null;
       } else {
         cloudAction = { uid: bot.uid, verb, message: verb === "pause" ? "Paused." : "Resumed.", isError: false };
+        clearCloudActionAfterSuccess(bot.uid);
         await loadCloud(true);
       }
     }
@@ -553,7 +592,11 @@
       },
     });
   });
-  onDestroy(() => stopPoll?.());
+  onDestroy(() => {
+    stopPoll?.();
+    if (localActionTimeout) clearTimeout(localActionTimeout);
+    if (cloudActionTimeout) clearTimeout(cloudActionTimeout);
+  });
 </script>
 
 <section class="settings-section bots-pane" data-testid="settings-bots">
@@ -715,6 +758,14 @@
                 >
                   {restoreBusy ? "Restoring…" : BOT_RESTORE_FROM_SETTINGS}
                 </button>
+                {#if restoreResult}
+                  <div class="restore-result" aria-live="polite" data-testid="settings-bots-restore-result">
+                    <small class:error={restoreResult.failed > 0}>{botRestoreSummary(restoreResult)}</small>
+                    {#each restoreResult.bots ?? [] as row (row.agentUid)}
+                      <small data-testid={`settings-bots-restore-row-${row.name}`}>{botRestoreRowLine(row)}</small>
+                    {/each}
+                  </div>
+                {/if}
               </div>
             {/if}
           </div>
@@ -741,21 +792,20 @@
                   >
                     {adoptBusy === bot.name ? BOT_START_HERE_BUSY : BOT_START_HERE}
                   </button>
+                  {#if adoptAction?.name === bot.name}
+                    <small
+                      class="muted adopt-result"
+                      class:error={adoptAction.isError}
+                      aria-live="polite"
+                      data-testid={`settings-remote-bot-${bot.name}-action-status`}
+                    >
+                      {adoptAction.message}
+                    </small>
+                  {/if}
                 </div>
               {/if}
             </div>
           {/each}
-        </div>
-      {/if}
-
-      {#if restoreResult}
-        <div class="settings-card" data-testid="settings-bots-restore-result">
-          <div class="bot-main">
-            <strong>{botRestoreSummary(restoreResult)}</strong>
-            {#each restoreResult.bots ?? [] as row (row.agentUid)}
-              <small data-testid={`settings-bots-restore-row-${row.name}`}>{botRestoreRowLine(row)}</small>
-            {/each}
-          </div>
         </div>
       {/if}
 
@@ -849,31 +899,7 @@
                   {cloudBusy === bot.uid ? "Working…" : "Pause"}
                 </button>
               {/if}
-              {#if cloudV2RemoveConfirm?.uid === bot.uid}
-                <div class="remove-v2-confirm" data-testid={`settings-cloud-bot-${bot.uid}-v2-remove-confirm`}>
-                  <small>
-                    This bot runs on its own cloud machine. Removing it deletes that machine and everything on it. This can't be undone.
-                  </small>
-                  <button
-                    type="button"
-                    class="danger"
-                    data-testid={`settings-cloud-bot-${bot.uid}-confirm-v2-remove`}
-                    disabled={Boolean(cloudBusy)}
-                    onclick={() => void actCloud(bot, "remove", cloudV2RemoveConfirm!.instanceId)}
-                  >
-                    {cloudBusy === bot.uid ? "Removing…" : "Remove bot"}
-                  </button>
-                  <button
-                    type="button"
-                    class="quiet"
-                    data-testid={`settings-cloud-bot-${bot.uid}-cancel-v2-remove`}
-                    disabled={Boolean(cloudBusy)}
-                    onclick={() => (cloudV2RemoveConfirm = null)}
-                  >
-                    Keep
-                  </button>
-                </div>
-              {:else if cloudConfirmRemove === bot.uid}
+              {#if cloudConfirmRemove === bot.uid}
                 <button
                   type="button"
                   class="danger"
@@ -908,6 +934,31 @@
                   Retry
                 </button>
               {/if}
+            </div>
+          {/if}
+          {#if cloudV2RemoveConfirm?.uid === bot.uid}
+            <div class="remove-v2-confirm" data-testid={`settings-cloud-bot-${bot.uid}-v2-remove-confirm`}>
+              <small>
+                This bot runs on its own cloud machine. Removing it deletes that machine and everything on it. This can't be undone.
+              </small>
+              <button
+                type="button"
+                class="danger"
+                data-testid={`settings-cloud-bot-${bot.uid}-confirm-v2-remove`}
+                disabled={Boolean(cloudBusy)}
+                onclick={() => void actCloud(bot, "remove", cloudV2RemoveConfirm!.instanceId)}
+              >
+                {cloudBusy === bot.uid ? "Removing…" : "Remove bot"}
+              </button>
+              <button
+                type="button"
+                class="quiet"
+                data-testid={`settings-cloud-bot-${bot.uid}-cancel-v2-remove`}
+                disabled={Boolean(cloudBusy)}
+                onclick={() => (cloudV2RemoveConfirm = null)}
+              >
+                Keep
+              </button>
             </div>
           {/if}
         </div>
@@ -1047,6 +1098,15 @@
     font-weight: 600;
   }
   .actions { display: flex; align-items: center; gap: 8px; }
+  .adopt-result, .restore-result { display: grid; gap: 2px; }
+  .remove-v2-confirm {
+    display: flex;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .remove-v2-confirm small { flex: 1 0 100%; }
   .create { display: grid; gap: 10px; }
   .create-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   button {

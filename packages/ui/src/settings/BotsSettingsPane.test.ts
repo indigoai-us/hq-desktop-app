@@ -532,6 +532,191 @@ describe("Settings → Bots (Work shell)", () => {
     await vi.waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
   });
 
+  it("shows local removal progress on the row, then removes the row after its refresh", async () => {
+    let localBots = [LOCAL_BOT];
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["bots"]>["remove"]>>>>();
+    const remove = vi.fn(() => pending.promise);
+    const adapter = fakeAdapter({ bots: { list: vi.fn(async () => ok({ bots: localBots })), remove } });
+    await mountPane(adapter);
+
+    const row = await vi.waitFor(() => {
+      const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    [...row.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Remove")!.click();
+    await tick();
+    row.querySelector<HTMLButtonElement>("button.danger")!.click();
+    await vi.waitFor(() => {
+      expect(row.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}-action-status"]`)?.textContent).toBe("Removing…");
+      expect([...row.querySelectorAll("button")].every((button) => button.disabled)).toBe(true);
+    });
+
+    localBots = [];
+    pending.resolve(ok({}));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`)).toBeNull());
+  });
+
+  it("keeps pause and resume failures on the cloud bot row", async () => {
+    const stop = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const adapter = fakeAdapter({ agents: { stop } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not pause Izzy. Try again.");
+    });
+
+    const start = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const resumeAdapter = fakeAdapter({ agents: { stop: vi.fn(async () => ok({})), start } });
+    await unmount(component!);
+    component = null;
+    host.remove();
+    await mountPane(resumeAdapter);
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not resume Izzy. Try again.");
+    });
+  });
+
+  it("treats a 404 cloud delete as already removed", async () => {
+    const deprovision = vi.fn(async () => ({ ok: false as const, reason: "error" as const, status: 404 }));
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows Removing on the second-confirmation Remove bot button", async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
+    const deprovision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: "error" as const,
+        code: "AGENTS_V2_BOX_PROTECTED",
+        instanceId: "i-0abc1234def567890",
+      })
+      .mockImplementationOnce(() => pending.promise);
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+    const confirm = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-v2-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    confirm.click();
+    await vi.waitFor(() => expect(confirm.textContent).toBe("Removing…"));
+    pending.resolve(ok({}));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows a row again when a later roster still contains the removed bot", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const adapter = fakeAdapter({});
+      await mountPane(adapter);
+      await settleFlow();
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+      await tick();
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!.click();
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears successful start, stop, pause, and resume notes after a few seconds", async () => {
+    const adapter = fakeAdapter({});
+    await mountPane(adapter);
+    vi.useFakeTimers();
+    try {
+      const localRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      localRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(localRow.textContent).toContain("Stopped.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(localRow.textContent).not.toContain("Stopped.");
+
+      await unmount(component!);
+      component = null;
+      host.remove();
+      await mountPane(
+        fakeAdapter({
+          bots: { list: vi.fn(async () => ok({ bots: [{ ...LOCAL_BOT, processAlive: false }] })) },
+        }),
+      );
+      const stoppedLocalRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      stoppedLocalRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).toContain("Started.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).not.toContain("Started.");
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`)!.click();
+      await settleFlow();
+      const cloudRow = host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)!;
+      expect(cloudRow.textContent).toContain("Paused.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Paused.");
+
+      cloudRow.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`)!.click();
+      await settleFlow();
+      expect(cloudRow.textContent).toContain("Resumed.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Resumed.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the Cloud group alone on the web adapter (no adapter.bots)", async () => {
     const adapter = fakeAdapter({ bots: null });
     await mountPane(adapter);
