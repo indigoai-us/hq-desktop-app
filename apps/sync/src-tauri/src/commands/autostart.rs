@@ -2,7 +2,7 @@ use crate::commands::config::MenubarPrefs;
 use crate::util::logfile::log;
 use crate::util::paths;
 use hq_desktop_core::first_run::merge_menubar_flags;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// One-time in-app copy when a stale LaunchAgent was healed or an old bundle
 /// was retired. Persisted untyped in menubar.json so a settings save cannot
@@ -34,16 +34,44 @@ fn effective_start_at_login(prefs: Option<&MenubarPrefs>) -> bool {
     prefs.and_then(|p| p.start_at_login).unwrap_or(true)
 }
 
+fn build_autostart_state_event(
+    prefs: Option<&MenubarPrefs>,
+    platform: &str,
+    registered: Option<bool>,
+) -> (&'static str, Value) {
+    let mut properties = json!({
+        "enabled": effective_start_at_login(prefs),
+        "platform": platform,
+    });
+    if let Some(registered) = registered {
+        properties["registered"] = Value::Bool(registered);
+    }
+    ("desktop_autostart_state", properties)
+}
+
+fn read_menubar_prefs() -> Option<MenubarPrefs> {
+    let path = paths::menubar_json_path().ok()?;
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str(&contents).ok())
+}
+
+/// Build the bounded launch-state event after platform reconciliation.
+/// Registration state is omitted on unsupported platforms or when unreadable.
+pub fn autostart_state_event_after_reconciliation() -> (&'static str, Value) {
+    let prefs = read_menubar_prefs();
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let registered = hq_platform::autostart::is_enabled().ok();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let registered = None;
+
+    build_autostart_state_event(prefs.as_ref(), std::env::consts::OS, registered)
+}
+
 /// Read `startAtLogin` from ~/.hq/menubar.json (best-effort), applying the
 /// default-on semantics of `effective_start_at_login`.
 fn start_at_login_pref() -> bool {
-    let path = match paths::menubar_json_path() {
-        Ok(p) => p,
-        Err(_) => return true,
-    };
-    let prefs: Option<MenubarPrefs> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok());
+    let prefs = read_menubar_prefs();
     effective_start_at_login(prefs.as_ref())
 }
 
@@ -327,6 +355,25 @@ mod tests {
             native_notify_shares: None,
             native_notify_meetings: None,
             native_notify_only_when_unfocused: None,
+        }
+    }
+
+    #[test]
+    fn autostart_state_event_reports_effective_preference() {
+        let cases = [(None, true), (Some(false), false), (Some(true), true)];
+
+        for (preference, expected_enabled) in cases {
+            let prefs = preference.map(|value| prefs_with_start(Some(value)));
+            let (event_name, properties) = build_autostart_state_event(
+                prefs.as_ref(),
+                std::env::consts::OS,
+                Some(expected_enabled),
+            );
+
+            assert_eq!(event_name, "desktop_autostart_state");
+            assert_eq!(properties["enabled"], expected_enabled);
+            assert_eq!(properties["platform"], std::env::consts::OS);
+            assert_eq!(properties["registered"], expected_enabled);
         }
     }
 

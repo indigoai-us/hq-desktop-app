@@ -1269,6 +1269,12 @@ fn main() {
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             commands::autostart::ensure_autostart_on_launch();
 
+            // Record the effective start-at-login preference after platform
+            // reconciliation. This is best-effort and consent-gated.
+            let (event_name, properties) =
+                commands::autostart::autostart_state_event_after_reconciliation();
+            commands::telemetry::emit_desktop_telemetry_best_effort(event_name, properties);
+
             // macOS activation policy, driven by the `dockIcon` pref
             // (default OFF). `Regular` = Dock icon + CMD-Tab entry + app menu
             // bar; `Accessory` = the classic menubar-only posture where the
