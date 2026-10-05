@@ -174,6 +174,25 @@ pub fn persist_core_drift_baseline_with_diagnostics(
     commit: &str,
     normalized_blobs: BTreeMap<String, String>,
 ) -> Result<(), Box<CoreDriftBaselinePersistenceError>> {
+    persist_core_drift_baseline_with_diagnostics_and_rename(
+        hq_folder,
+        source_repo,
+        commit,
+        normalized_blobs,
+        |from, to| std::fs::rename(from, to),
+    )
+}
+
+fn persist_core_drift_baseline_with_diagnostics_and_rename<F>(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+    normalized_blobs: BTreeMap<String, String>,
+    mut rename: F,
+) -> Result<(), Box<CoreDriftBaselinePersistenceError>>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     let dir = hq_folder.join(BASELINE_DIR);
     if source_repo.trim().is_empty() || commit.trim().len() < 7 {
         let unknown = dir.join("unknown.json");
@@ -223,7 +242,7 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             temp_preexisting,
         )
     })?;
-    std::fs::write(&temp, bytes).map_err(|error| {
+    std::fs::write(&temp, &bytes).map_err(|error| {
         baseline_persistence_error(
             "write_temp",
             persistence_error_kind(error.kind()),
@@ -247,8 +266,44 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             )
         })?;
     }
-    std::fs::rename(&temp, &path).map_err(|error| {
-        baseline_persistence_error(
+    match rename(&temp, &path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                baseline_persistence_error(
+                    "create_directory",
+                    persistence_error_kind(error.kind()),
+                    format!("create baseline directory {}: {error}", dir.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })?;
+            std::fs::write(&temp, &bytes).map_err(|error| {
+                baseline_persistence_error(
+                    "write_temp",
+                    persistence_error_kind(error.kind()),
+                    format!("write baseline temp {}: {error}", temp.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })?;
+            rename(&temp, &path).map_err(|error| {
+                baseline_persistence_error(
+                    "rename_temp",
+                    persistence_error_kind(error.kind()),
+                    format!("commit baseline {}: {error}", path.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })
+        }
+        Err(error) => Err(baseline_persistence_error(
             "rename_temp",
             persistence_error_kind(error.kind()),
             format!("commit baseline {}: {error}", path.display()),
@@ -256,8 +311,8 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             &path,
             &temp,
             temp_preexisting,
-        )
-    })
+        )),
+    }
 }
 
 pub fn load_core_drift_baseline(
@@ -787,6 +842,7 @@ fn test_write(root: &Path, rel: &str, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::fs;
 
     #[test]
@@ -1054,6 +1110,70 @@ contributes:
             load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
                 .unwrap();
         assert_eq!(loaded.normalized_blobs, second);
+    }
+
+    #[test]
+    fn baseline_persistence_recovers_once_when_parent_disappears_before_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blobs = BTreeMap::new();
+        blobs.insert(
+            "core/policies/example.md".into(),
+            git_blob_sha(b"recovered\n"),
+        );
+        let attempts = Cell::new(0);
+
+        persist_core_drift_baseline_with_diagnostics_and_rename(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            blobs.clone(),
+            |from, to| {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                if attempt == 0 {
+                    fs::remove_dir_all(from.parent().unwrap()).unwrap();
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "injected missing baseline directory",
+                    ))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(attempts.get(), 2);
+        let loaded =
+            load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
+                .unwrap();
+        assert_eq!(loaded.normalized_blobs, blobs);
+    }
+
+    #[test]
+    fn baseline_persistence_returns_diagnostic_after_second_rename_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let attempts = Cell::new(0);
+
+        let error = persist_core_drift_baseline_with_diagnostics_and_rename(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            BTreeMap::new(),
+            |_from, _to| {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "injected missing baseline directory",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 2);
+        let detail = error.to_string();
+        assert!(detail.contains("commit baseline "));
+        assert!(detail.contains("write_path=rename_temp error_kind=not_found"));
     }
 
     #[test]
