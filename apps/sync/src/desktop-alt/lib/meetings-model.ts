@@ -88,38 +88,18 @@ export interface ConnectedCalendarRow {
   status: string;
 }
 
-export function eventStart(event: MeetingEvent): Date | null {
+function eventStart(event: MeetingEvent): Date | null {
   const raw = event.start.dateTime ?? event.start.date;
   if (!raw) return null;
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-export function eventEnd(event: MeetingEvent): Date | null {
+function eventEnd(event: MeetingEvent): Date | null {
   const raw = event.end.dateTime ?? event.end.date;
   if (!raw) return eventStart(event);
   const date = new Date(raw);
   return Number.isNaN(date.getTime()) ? eventStart(event) : date;
-}
-
-export function timeLabel(event: MeetingEvent): string {
-  const start = eventStart(event);
-  if (!start) return 'Time pending';
-  return start.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
-export function rangeLabel(event: MeetingEvent): string {
-  const start = eventStart(event);
-  const end = eventEnd(event);
-  if (!start) return 'Time pending';
-  if (!end || end.getTime() === start.getTime()) return timeLabel(event);
-  return `${timeLabel(event)}-${end.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  })}`;
 }
 
 /**
@@ -167,7 +147,7 @@ export function isRecurringMeeting(event: MeetingEvent): boolean {
   return recurringSeriesId(event) !== null;
 }
 
-export function isActiveBotStatus(status: string): boolean {
+function isActiveBotStatus(status: string): boolean {
   return (
     status === 'scheduled' ||
     status === 'joining' ||
@@ -294,14 +274,7 @@ export function meetingMatchesFocusId(
 }
 
 /** Prefix for locally-seeded 409 recovery rows — never a real Recall bot id. */
-export const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
-
-/**
- * Wall-clock TTL for an optimistic "already invited" seed. If a real server
- * row has not replaced it within this window, drop the seed so the agenda
- * cannot stay on "Already invited — refreshing." forever.
- */
-export const OPTIMISTIC_ALREADY_INVITED_TTL_MS = 2 * 60 * 1000;
+const OPTIMISTIC_ALREADY_INVITED_BOT_PREFIX = 'local-already-invited:';
 
 /**
  * Optimistic bot row seeded on HTTP 409 invite conflicts so the agenda flips
@@ -399,48 +372,12 @@ export function mergeScheduledBotLookups(
   return fullBots;
 }
 
-export function isToday(event: MeetingEvent, now = new Date()): boolean {
-  const start = eventStart(event);
-  if (!start) return false;
-  return (
-    start.getFullYear() === now.getFullYear() &&
-    start.getMonth() === now.getMonth() &&
-    start.getDate() === now.getDate()
-  );
-}
-
-export function sortByStart(a: MeetingEvent, b: MeetingEvent): number {
+function sortByStart(a: MeetingEvent, b: MeetingEvent): number {
   return (eventStart(a)?.getTime() ?? 0) - (eventStart(b)?.getTime() ?? 0);
-}
-
-export function pickUpNext(events: MeetingEvent[], now = new Date()): MeetingEvent | null {
-  return (
-    events
-      .filter((event) => (eventEnd(event)?.getTime() ?? 0) >= now.getTime())
-      .sort(sortByStart)[0] ?? null
-  );
 }
 
 /** Row lifecycle state, mirrored from the Claude Design `.meeting-row` mock. */
 export type MeetingRowState = 'live' | 'next' | 'past' | 'scheduled';
-
-/**
- * Resolve a row's display state. `live` wins when the event is the active
- * detection/recording (matched by id against the live meeting's sourceEventId),
- * then `next` for the up-next pick, then `past` once the event has ended, else
- * `scheduled`. Pure + `now`-injectable so the agenda stays presentational.
- */
-export function meetingState(
-  event: MeetingEvent,
-  opts: { liveEventId?: string | null; upNextId?: string | null; now?: Date } = {},
-): MeetingRowState {
-  const { liveEventId = null, upNextId = null, now = new Date() } = opts;
-  if (liveEventId && event.id === liveEventId) return 'live';
-  if (upNextId && event.id === upNextId) return 'next';
-  const end = eventEnd(event);
-  if (end && end.getTime() < now.getTime()) return 'past';
-  return 'scheduled';
-}
 
 /**
  * Subtitle label for a meeting row — the routed company name when known,
@@ -558,7 +495,7 @@ export function totalSignalCounts(events: MeetingEvent[]): SignalCounts {
   );
 }
 
-export function signalCounts(event: MeetingEvent): SignalCounts {
+function signalCounts(event: MeetingEvent): SignalCounts {
   const signals = normalizeSignals(event.signals);
   return {
     actions: countSignalKind(signals, 'action'),
@@ -567,22 +504,7 @@ export function signalCounts(event: MeetingEvent): SignalCounts {
   };
 }
 
-/**
- * Compact, human signal summary for a meeting row — only non-zero kinds,
- * pluralized, joined with " · " (e.g. "2 actions · 1 decision"). Empty string
- * when the meeting has no extracted signals, so the `.msig` cell stays blank
- * rather than rendering "0 actions · 0 decisions".
- */
-export function signalSummary(counts: SignalCounts): string {
-  const parts: string[] = [];
-  if (counts.actions) parts.push(`${counts.actions} action${counts.actions === 1 ? '' : 's'}`);
-  if (counts.decisions)
-    parts.push(`${counts.decisions} decision${counts.decisions === 1 ? '' : 's'}`);
-  if (counts.risks) parts.push(`${counts.risks} risk${counts.risks === 1 ? '' : 's'}`);
-  return parts.join(' · ');
-}
-
-export function extractedSignalLabels(event: MeetingEvent): string[] {
+function extractedSignalLabels(event: MeetingEvent): string[] {
   return normalizeSignals(event.signals)
     .map((signal) => signal.title ?? signal.summary ?? signal.text ?? signal.type ?? signal.kind)
     .filter((label): label is string => typeof label === 'string' && label.trim().length > 0)
@@ -648,7 +570,7 @@ export function buildConnectedCalendarRows(
  * to the raw `hangoutLink` for events served by a pre-BE-5 backend. Pure mirror
  * of the classic MeetingsWindow helper so row actions resolve identically.
  */
-export function eventMeetingUrl(e: MeetingEvent): string | null {
+function eventMeetingUrl(e: MeetingEvent): string | null {
   return e.meetingUrl ?? e.hangoutLink ?? null;
 }
 

@@ -1721,6 +1721,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unclassified"
                 | "not_applicable"
         )),
+        "rsync_exit_status" => Some(matches!(value, "23" | "24" | "other")),
+        "rsync_phase" => Some(matches!(value, "dry_run" | "overlay" | "unknown")),
         "rsync_translated_path_shape" => Some(matches!(
             value,
             "cygwin_drive"
@@ -1871,6 +1873,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "minus_one"
                 | "sigterm"
                 | "sigkill"
+                | "already_owned"
                 | "node_fatal"
                 | "other"
         )),
@@ -2214,6 +2217,20 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // so accidental raw process output fails closed at egress.
         "exit_producer" => Some(matches!(value, "launcher" | "runner" | "unknown")),
         "watch_owner_result" => Some(matches!(value, "acquired" | "busy" | "lost" | "unknown")),
+        "watch_owner_holder_owner" => Some(
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        ),
+        "watch_owner_holder_pid" => Some(
+            value == "unknown" || value.parse::<u32>().is_ok_and(|pid| pid > 0),
+        ),
+        "watch_owner_holder_process" => Some(matches!(value, "sync-runner" | "unknown")),
+        "watch_owner_holder_started_at" => Some(
+            value == "unknown" || valid_watch_owner_started_at(value),
+        ),
         "stderr_cause" => Some(matches!(
             value,
             "libuv_assert"
@@ -2257,6 +2274,25 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         )),
         _ => None,
     }
+}
+
+fn valid_watch_owner_started_at(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (20..=24).contains(&bytes.len())
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'T')
+        && bytes.get(13) == Some(&b':')
+        && bytes.get(16) == Some(&b':')
+        && bytes.last() == Some(&b'Z')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            (matches!(index, 4 | 7) && *byte == b'-')
+                || (index == 10 && *byte == b'T')
+                || (matches!(index, 13 | 16) && *byte == b':')
+                || (index == bytes.len() - 1 && *byte == b'Z')
+                || (index == 19 && *byte == b'.')
+                || byte.is_ascii_digit()
+        })
 }
 
 fn valid_node_error_code(value: &str) -> bool {
@@ -2308,6 +2344,30 @@ fn valid_node_top_frame(value: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Extract only the two bounded dimensions encoded in the runner's rescue
+/// reason. None of the reason text is copied into a tag.
+fn bounded_rsync_status_and_phase(reason: Option<&str>) -> (&'static str, &'static str) {
+    let Some(reason) = reason else {
+        return ("other", "unknown");
+    };
+    let Some(marker_index) = reason.find("rsync status ") else {
+        return ("other", "unknown");
+    };
+    let marker = &reason[marker_index + "rsync status ".len()..];
+    let mut parts = marker.split_whitespace();
+    let status = match parts.next() {
+        Some("23") => "23",
+        Some("24") => "24",
+        Some(_) | None => "other",
+    };
+    let phase = match (parts.next(), parts.next()) {
+        (Some("during"), Some("dry-run")) => "dry_run",
+        (Some("during"), Some("overlay")) => "overlay",
+        _ => "unknown",
+    };
+    (status, phase)
+}
+
 fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
     for (key, value) in event.tags.iter_mut() {
         if valid_runner_diagnostic_field(key, value) == Some(false) {
@@ -2324,6 +2384,19 @@ fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
         if !is_valid {
             *value = Value::String("[Filtered]".to_string());
         }
+    }
+
+    if event.tags.get("rescue_step").map(String::as_str) == Some("rsync")
+        && event.tags.get("rescue_error_class").map(String::as_str) == Some("rsync_partial")
+    {
+        let reason = event.extra.get("rescueErrorReason").and_then(Value::as_str);
+        let (status, phase) = bounded_rsync_status_and_phase(reason);
+        event
+            .tags
+            .insert("rsync_exit_status".to_string(), status.to_string());
+        event
+            .tags
+            .insert("rsync_phase".to_string(), phase.to_string());
     }
 
     if event
@@ -3243,6 +3316,49 @@ mod tests {
     }
 
     #[test]
+    fn rsync_status_phase_and_stderr_tags_are_bounded_at_before_send() {
+        for (reason, expected_status, expected_phase) in [
+            ("rsync status 23 during dry-run", "23", "dry_run"),
+            ("rsync status 24 during overlay", "24", "overlay"),
+            ("rsync status 12 during overlay", "other", "overlay"),
+            ("unrecognized runner output", "other", "unknown"),
+        ] {
+            let mut event = Event::default();
+            event.fingerprint = std::borrow::Cow::Owned(vec![
+                std::borrow::Cow::Borrowed("existing-fingerprint"),
+            ]);
+            event.tags.insert("rescue_step".into(), "rsync".into());
+            event
+                .tags
+                .insert("rescue_error_class".into(), "rsync_partial".into());
+            event
+                .tags
+                .insert("rsync_stderr_class".into(), "file_locked".into());
+            event
+                .extra
+                .insert("rescueErrorReason".into(), Value::String(reason.into()));
+            event.extra.insert(
+                "rsyncStderrReason".into(),
+                Value::String(
+                    "rsync: open C:\\Users\\fixture\\private\\file failed: Permission denied"
+                        .into(),
+                ),
+            );
+
+            let filtered = before_send(event).expect("rsync failure remains reportable");
+            assert_eq!(filtered.tags["rsync_exit_status"], expected_status);
+            assert_eq!(filtered.tags["rsync_phase"], expected_phase);
+            assert_eq!(filtered.tags["rsync_stderr_class"], "file_locked");
+            assert_eq!(filtered.fingerprint.len(), 1);
+            assert_eq!(filtered.fingerprint[0].as_ref(), "existing-fingerprint");
+            assert!(filtered
+                .tags
+                .values()
+                .all(|tag| !tag.contains("C:\\Users\\fixture\\private\\file")));
+        }
+    }
+
+    #[test]
     fn core_update_diagnostic_axes_are_closed_and_path_free() {
         for (key, value) in [
             ("rescue_step", "clone"),
@@ -3988,6 +4104,7 @@ mod tests {
             "minus_one",
             "sigterm",
             "sigkill",
+            "already_owned",
             "node_fatal",
             "other",
         ] {
@@ -5205,6 +5322,13 @@ mod tests {
                 "stderr_cause",
                 vec!["already_owned", "owner_lease_lost", "node_fatal", "other"],
             ),
+            ("watch_owner_holder_owner", vec!["hq-daemon"]),
+            ("watch_owner_holder_pid", vec!["123", "unknown"]),
+            ("watch_owner_holder_process", vec!["sync-runner", "unknown"]),
+            (
+                "watch_owner_holder_started_at",
+                vec!["2026-10-04T08:10:11.123Z", "unknown"],
+            ),
             ("node_error_code", vec!["ERR_MODULE_NOT_FOUND", "unknown"]),
             ("node_error_name", vec!["Error", "TypeError", "unknown"]),
             (
@@ -5224,6 +5348,10 @@ mod tests {
         for (key, value) in [
             ("exit_producer", "/private/npx"),
             ("watch_owner_result", "owner=123"),
+            ("watch_owner_holder_owner", "/private/path"),
+            ("watch_owner_holder_pid", "pid=123"),
+            ("watch_owner_holder_process", "node /private/secret"),
+            ("watch_owner_holder_started_at", "secret"),
             ("stderr_cause", "already_owned pid=123"),
             ("node_error_code", "ERR_BAD/path"),
             ("node_error_name", "Error: private message"),
@@ -5242,6 +5370,10 @@ mod tests {
             ("sync_route", "watcher"),
             ("exit_producer", "runner"),
             ("watch_owner_result", "busy"),
+            ("watch_owner_holder_owner", "hq-daemon"),
+            ("watch_owner_holder_pid", "123"),
+            ("watch_owner_holder_process", "sync-runner"),
+            ("watch_owner_holder_started_at", "2026-10-04T08:10:11.123Z"),
             ("stderr_cause", "already_owned"),
             ("node_error_code", "ERR_MODULE_NOT_FOUND"),
             ("node_error_name", "Error"),
@@ -5252,6 +5384,13 @@ mod tests {
         let event = before_send(event).expect("event remains sendable");
         assert_eq!(event.tags["exit_producer"], "runner");
         assert_eq!(event.tags["watch_owner_result"], "busy");
+        assert_eq!(event.tags["watch_owner_holder_owner"], "hq-daemon");
+        assert_eq!(event.tags["watch_owner_holder_pid"], "123");
+        assert_eq!(event.tags["watch_owner_holder_process"], "sync-runner");
+        assert_eq!(
+            event.tags["watch_owner_holder_started_at"],
+            "2026-10-04T08:10:11.123Z"
+        );
         assert_eq!(event.tags["stderr_cause"], "already_owned");
         assert_eq!(event.tags["node_error_code"], "ERR_MODULE_NOT_FOUND");
         assert_eq!(event.tags["node_error_name"], "Error");

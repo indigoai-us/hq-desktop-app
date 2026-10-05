@@ -31,11 +31,9 @@
 /** The protocol version this build implements. */
 export const SUPPORTED_PROTOCOL_VERSION = 1;
 
-/** How long a fetched config is trusted before it is fetched again. */
-export const CONFIG_CACHE_TTL_MS = 120_000;
-
 /** Most receipts held for a backend that is not answering. */
 export const MAX_QUEUED_RECEIPTS = 50;
+export const FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG = 'desktop.first-launch-download-join-v1';
 
 const QUEUE_STORAGE_KEY = 'hq-sync:desktop-continuation-receipts:v1';
 
@@ -138,6 +136,9 @@ export interface ContinuationDeps {
   installAttemptId: string;
   appVersion: string;
   platform: ContinuationPlatform;
+  /** The installer visitor key is attached only after its rollout flag resolves on. */
+  downloadJoinEnabled?: boolean;
+  downloadAnonId?: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -344,15 +345,19 @@ export function progressReceipt(
 
 /** Build the once-per-installation launch receipt. */
 export function launchReceipt(deps: ContinuationDeps): ContinuationReceipt {
+  const body: Record<string, string | number> = {
+    installAttemptId: deps.installAttemptId,
+    eventId: deps.newId(),
+    occurredAt: new Date(deps.now()).toISOString(),
+    platform: deps.platform,
+    version: deps.appVersion,
+  };
+  if (deps.downloadJoinEnabled === true && deps.downloadAnonId) {
+    body.anonId = deps.downloadAnonId;
+  }
   return {
     path: '/v1/desktop/onboarding/launch',
-    body: {
-      installAttemptId: deps.installAttemptId,
-      eventId: deps.newId(),
-      occurredAt: new Date(deps.now()).toISOString(),
-      platform: deps.platform,
-      version: deps.appVersion,
-    },
+    body,
   };
 }
 

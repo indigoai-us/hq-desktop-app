@@ -17,6 +17,13 @@ function tokenProvider(value: string | null): BrowserTokenProvider {
   };
 }
 
+function lambdaInvokeError(status: number, headers: HeadersInit = {}): Response {
+  return new Response(JSON.stringify({ message: "Internal server error" }), {
+    status,
+    headers: { "content-type": "application/json", ...Object.fromEntries(new Headers(headers)) },
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   window.history.replaceState({}, "", "/");
@@ -200,5 +207,175 @@ describe("direct hq-pro browser transport", () => {
       "https://hqapi.example.test/v1/future-api/not-yet-known-to-work",
       expect.objectContaining({ credentials: "omit" }),
     );
+  });
+
+  it("retries a GET 504 without a Lambda request id once and returns the success", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(lambdaInvokeError(504))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/work-mesh/threads");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a second 504", async () => {
+    const fetchImpl = vi.fn(async () => lambdaInvokeError(504));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/agents/agt_test/inbox");
+
+    expect(response.status).toBe(504);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([502, 503])("does not retry a %s even with the generic body", async (status) => {
+    const fetchImpl = vi.fn(async () => lambdaInvokeError(status));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/agents/agt_test/inbox");
+
+    expect(response.status).toBe(status);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a HEAD 504", async () => {
+    const fetchImpl = vi.fn(async () => lambdaInvokeError(504));
+    const direct = createHqProFetch({
+      baseUrl: "https://hq-pro.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me", { method: "HEAD" });
+
+    expect(response.status).toBe(504);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a POST 504", async () => {
+    const fetchImpl = vi.fn(async () => lambdaInvokeError(504));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/files/presign", { method: "POST", body: "{}" });
+
+    expect(response.status).toBe(504);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a generic 504 carrying API Gateway's request id header", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(lambdaInvokeError(504, { "x-amzn-requestid": "gateway-id" }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me");
+
+    expect(response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("routes a 401 returned by the 504 retry through token refresh", async () => {
+    const onUnauthorized = vi.fn();
+    const provider: BrowserTokenProvider = {
+      getToken: vi.fn()
+        .mockResolvedValueOnce("initial-token")
+        .mockResolvedValueOnce("initial-token")
+        .mockResolvedValueOnce("refreshed-token"),
+      clear: vi.fn(),
+    };
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(lambdaInvokeError(504))
+      .mockResolvedValueOnce(new Response("expired", { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: provider,
+      onUnauthorized,
+    });
+
+    const response = await direct("/v1/work-mesh/threads");
+
+    expect(response.status).toBe(200);
+    expect(provider.clear).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retry a 504 whose body carries a function request id", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ message: "Internal server error", requestId: "function-id" }),
+      { status: 504, headers: { "content-type": "application/json" } },
+    ));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me");
+
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toEqual({ message: "Internal server error", requestId: "function-id" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a function 500 with its JSON error body", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "function failed", requestId: "function-id" }),
+      { status: 500, headers: { "content-type": "application/json" } },
+    ));
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    const response = await direct("/v1/entities/me");
+
+    expect(response.status).toBe(500);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when the caller aborts after the first response", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async () => {
+      controller.abort();
+      return lambdaInvokeError(504);
+    });
+    const direct = createHqProFetch({
+      baseUrl: "https://hqapi.example.test",
+      fetchImpl,
+      tokenProvider: tokenProvider("id-token"),
+    });
+
+    await expect(
+      direct("/v1/agents/agt_test/inbox", { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

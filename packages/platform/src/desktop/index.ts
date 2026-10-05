@@ -69,6 +69,7 @@ export function createDesktopAdapter(
     marketplace: web.marketplace,
     company: web.company,
     agents: web.agents,
+    integrations: web.integrations,
     feedback: web.feedback,
     // Same console shelf as web — person/team scoped, not the local HQ tree.
     library: web.library,

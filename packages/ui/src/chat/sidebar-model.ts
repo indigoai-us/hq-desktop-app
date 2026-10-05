@@ -16,11 +16,6 @@ import {
 } from "./channels";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
-import {
-  filterAgentStubRows,
-  type AgentVisibilityOptions,
-} from "./agent-stubs";
-import { automatedAgentJoinNoticeKey } from "../inbox/automated-notices";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
@@ -121,6 +116,188 @@ export interface ConversationRow {
   notifyLevel?: NotifyLevel | null;
   /** Channel creator uid, when known. */
   createdBy?: string | null;
+  /** A newly created cloud bot that is still waking up. */
+  wakingBot?: {
+    agentUid: string;
+    progress: number;
+  } | null;
+  /** A cancelled cloud bot that still exists: being removed, or not removed. */
+  removingBot?: {
+    agentUid: string;
+    phase: "removing" | "failed";
+  } | null;
+}
+
+export interface WakingSidebarBot {
+  agentUid: string;
+  channelId: string;
+  companyUid: string;
+  name: string;
+  startedAt: number;
+  progress: number;
+}
+
+/**
+ * Keeps a just-created bot visible before its conversation reaches the
+ * directory. The bot's conversation is its direct message: the real directory
+ * row replaces this optimistic row by id. A channel an older server made for
+ * the bot is left out, because the person talks to the bot in the direct
+ * message and nowhere else.
+ */
+export function withWakingBotRow(
+  rows: readonly ConversationRow[],
+  bot: WakingSidebarBot | null,
+): ConversationRow[] {
+  if (!bot || (!bot.agentUid && !bot.channelId)) return [...rows];
+  const wakingBot = { agentUid: bot.agentUid, progress: bot.progress };
+  if (bot.agentUid) {
+    const visible = bot.channelId
+      ? rows.filter((row) => row.channelId !== bot.channelId)
+      : [...rows];
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    if (known) {
+      return visible.map((row) => row === known ? { ...row, wakingBot } : row);
+    }
+    return [{
+      id: `dm:${bot.agentUid}`,
+      kind: "dm",
+      title: bot.name || "Your bot",
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: bot.startedAt,
+      pinned: false,
+      personUid: bot.agentUid,
+      wakingBot,
+    }, ...visible];
+  }
+  // No bot id (a server that named only the channel): keep the channel row.
+  const id = `ch:${bot.channelId}`;
+  const known = rows.find((row) => row.id === id);
+  if (known) {
+    return rows.map((row) => row.id === id ? { ...row, wakingBot } : row);
+  }
+  return [{
+    id,
+    kind: "channel",
+    title: bot.name || "Your bot",
+    companyUid: bot.companyUid || null,
+    unreadDot: false,
+    lastActivityAt: bot.startedAt,
+    pinned: false,
+    channelId: bot.channelId,
+    channelScope: "company",
+    wakingBot,
+  }, ...rows];
+}
+
+/** A cancelled bot, as the sidebar needs to know it. */
+export interface CancelledSidebarBot {
+  agentUid: string;
+  channelId: string;
+  name: string;
+  phase: "stopping" | "removing" | "removed" | "failed" | "not-created";
+  /** True when the bot had a row before Cancel. */
+  hadRow: boolean;
+  /** When Cancel was pressed. */
+  startedAt: number;
+}
+
+/**
+ * Rows for cancelled bots. The list never says more than the server did:
+ *
+ * - removed: the bot's rows are left out, even if an older directory answer
+ *   still lists them.
+ * - removing: a bot that already had a row keeps it, marked, until the server
+ *   says it is gone. A bot cancelled before it had a row gets none.
+ * - failed: the bot still exists, so it has a marked row either way.
+ */
+export function withCancelledBotRows(
+  rows: readonly ConversationRow[],
+  bots: readonly CancelledSidebarBot[],
+  removedAgentUids: readonly string[] = [],
+): ConversationRow[] {
+  const removed = new Set(removedAgentUids);
+  let next = removed.size
+    ? rows.filter((row) => !(row.kind === "dm" && row.personUid && removed.has(row.personUid)))
+    : [...rows];
+  for (const bot of bots) {
+    if (!bot.agentUid && !bot.channelId) continue;
+    const isBotRow = (row: ConversationRow): boolean =>
+      (!!bot.agentUid && row.kind === "dm" && row.personUid === bot.agentUid) ||
+      (!!bot.channelId && row.channelId === bot.channelId);
+    if (bot.phase === "removed") {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    if (bot.phase !== "removing" && bot.phase !== "failed") continue;
+    const shown = !!bot.agentUid && (bot.phase === "failed" || bot.hadRow);
+    if (!shown) {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    const removingBot = { agentUid: bot.agentUid, phase: bot.phase };
+    const visible = bot.channelId
+      ? next.filter((row) => row.channelId !== bot.channelId)
+      : next;
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    next = known
+      ? visible.map((row) => row === known ? { ...row, wakingBot: null, removingBot } : row)
+      : [{
+          id: `dm:${bot.agentUid}`,
+          kind: "dm",
+          title: bot.name || "Your bot",
+          companyUid: null,
+          unreadDot: false,
+          lastActivityAt: bot.startedAt,
+          pinned: false,
+          personUid: bot.agentUid,
+          removingBot,
+        }, ...visible];
+  }
+  return next;
+}
+
+export const BOT_SETUP_CHANNELS_STORAGE_KEY = "hq.chat.botSetupChannels.v1";
+
+/**
+ * Channels an older server created alongside a bot made in the new bot flow.
+ * The flow's conversation is the direct message, so these stay off the list.
+ */
+export function loadBotSetupChannels(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(BOT_SETUP_CHANNELS_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberBotSetupChannel(
+  channelIds: readonly string[],
+  channelId: string,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): string[] {
+  const id = channelId.trim();
+  if (!id || channelIds.includes(id)) return [...channelIds];
+  const next = [id, ...channelIds].slice(0, 200);
+  try {
+    storage?.setItem(BOT_SETUP_CHANNELS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // best-effort
+  }
+  return next;
+}
+
+export function withoutBotSetupChannels(
+  rows: readonly ConversationRow[],
+  channelIds: readonly string[],
+): ConversationRow[] {
+  if (channelIds.length === 0) return [...rows];
+  const hidden = new Set(channelIds);
+  return rows.filter((row) => !(row.channelId && hidden.has(row.channelId)));
 }
 
 /**
@@ -360,13 +537,6 @@ export interface DmContactInput {
    */
   unreadCount?: number | null;
   /**
-   * True when the ONLY inbound event we have seen for this agent is the
-   * server's membership announcement ("🤖 Izzy (an agent) just joined
-   * Indigo."). A join notice is not a conversation, so it neither stamps
-   * activity nor lights an unread badge.
-   */
-  agentJoinOnly?: boolean;
-  /**
    * Audience of the last message: "human" | "agent" | "both". Absent on
    * older servers. US-006 reads this to decide whether to show or suppress
    * the preview in the DM rail (default: hide agent-only previews).
@@ -464,37 +634,10 @@ export interface InboxEventInput {
   fromEmail?: string | null;
   fromDisplayName?: string | null;
   createdAt?: string | null;
-  /**
-   * Message body, when the source carries one (the notify inbox page does;
-   * the pair-unread activity rollup and the `dm:new-message` wake do not).
-   * Present bodies let the merge recognise — and refuse to stamp — the
-   * automated agent join announcement.
-   */
+  /** Message body, when the source carries one. */
   body?: string | null;
   details?: string | null;
   prompt?: string | null;
-}
-
-/**
- * True when this inbox event is the server-authored agent membership
- * announcement rather than a message the agent actually sent the user.
- * Events with no body are NOT join notices — an unknown body is treated as a
- * real message so a windowed feed never hides a live conversation.
- */
-export function isAgentJoinNoticeEvent(event: InboxEventInput): boolean {
-  const body = (event.body ?? "").trim();
-  if (!body) return false;
-  return (
-    automatedAgentJoinNoticeKey({
-      kind: "dm",
-      body,
-      fromPersonUid: event.fromPersonUid,
-      fromEmail: event.fromEmail,
-      fromDisplayName: event.fromDisplayName,
-      details: event.details,
-      prompt: event.prompt,
-    }) !== null
-  );
 }
 
 export interface PairUnreadInput {
@@ -513,19 +656,9 @@ export function mergeContactsWithInbox(
   pairUnreads: readonly PairUnreadInput[] = [],
 ): DmContactInput[] {
   const latest = new Map<string, InboxEventInput>();
-  /** Agents whose only inbound event in this batch is the join announcement. */
-  const joinNoticeOnly = new Set<string>();
   for (const event of inboxEvents) {
     const uid = (event.fromPersonUid ?? "").trim();
     if (!uid) continue;
-    // A membership announcement is not a message. Record who announced, but
-    // never let it stamp activity — that stamp is what puts a never-used bot
-    // at the top of TODAY on every teammate's rail.
-    if (isAgentJoinNoticeEvent(event)) {
-      if (!latest.has(uid)) joinNoticeOnly.add(uid);
-      continue;
-    }
-    joinNoticeOnly.delete(uid);
     const prev = latest.get(uid);
     if (!prev || String(event.createdAt ?? "") > String(prev.createdAt ?? "")) {
       latest.set(uid, event);
@@ -565,9 +698,6 @@ export function mergeContactsWithInbox(
       lastMessageAt: at ?? contact.lastMessageAt,
       lastActivityAt: at ?? contact.lastActivityAt,
       ...(unread.has(uid) ? { unreadCount: unread.get(uid) } : {}),
-      ...(joinNoticeOnly.has(uid) && !contact.lastMessageAt
-        ? { agentJoinOnly: true }
-        : {}),
     });
   }
   for (const [uid, event] of latest) {
@@ -590,15 +720,7 @@ export function mergeContactsWithInbox(
     out.push({
       personUid: uid,
       unreadCount: count,
-      ...(joinNoticeOnly.has(uid) ? { agentJoinOnly: true } : {}),
     });
-  }
-  // An agent that only ever announced itself is still a contact (it must be
-  // findable in the typeahead) — just never a conversation.
-  for (const uid of joinNoticeOnly) {
-    if (seen.has(uid)) continue;
-    seen.add(uid);
-    out.push({ personUid: uid, agentJoinOnly: true });
   }
   return out;
 }
@@ -730,14 +852,6 @@ export interface NormalizeOptions {
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
   recentDms?: ReadonlySet<string> | readonly string[];
-  /**
-   * Agent uids with proven real-message evidence (`hq.chat.agent-engaged`).
-   * An agent with no entry here and no user-side interaction is a directory
-   * stub, not a conversation — see `agent-stubs.ts`.
-   */
-  engagedAgentUids?: ReadonlySet<string> | readonly string[];
-  /** The user's own agents (local bots + owned cloud bots) — always visible. */
-  ownAgentUids?: ReadonlySet<string> | readonly string[];
   now?: number;
   /** Local project id → title so provisioned "Project slug hash" rows read as names. */
   projectTitles?: ReadonlyArray<{
@@ -866,14 +980,7 @@ export function normalizeDm(
   const humanMessageActivity = parseActivityMs(contact.lastHumanMessageAt);
   const localDot =
     contact.activityDot === true || dmDots.has(contact.personUid);
-  // A membership announcement must never read as an unread message. Suppress
-  // both the badge and the dot for an agent with no real conversation, so any
-  // surface that still renders the row (search, palette, deep link) agrees
-  // with the rail.
-  const joinNoticeOnlyAgent =
-    isAgentUid(contact.personUid) &&
-    !contactHasConversation(contact, options);
-  const serverUnread = joinNoticeOnlyAgent ? 0 : contact.unreadCount;
+  const serverUnread = contact.unreadCount;
   const hasServerUnread =
     typeof serverUnread === "number" && Number.isFinite(serverUnread);
   const unreadCount =
@@ -882,13 +989,11 @@ export function normalizeDm(
       : undefined;
   // Numeric badge replaces the server-driven dot; local dots still apply when
   // the server says zero (or when the field is absent and only local dots exist).
-  const unreadDot = joinNoticeOnlyAgent
-    ? false
-    : hasServerUnread
-      ? (serverUnread as number) > 0
-        ? false
-        : localDot
-      : localDot;
+  const unreadDot = hasServerUnread
+    ? (serverUnread as number) > 0
+      ? false
+      : localDot
+    : localDot;
 
   return {
     id,
@@ -965,18 +1070,6 @@ export function contactHasConversation(
   contact: DmContactInput,
   options: NormalizeOptions = {},
 ): boolean {
-  // Agents are held to a stricter rule than people: creating one announces it
-  // to the whole company, so a timestamp or an unread on an `agt_*` contact is
-  // evidence that the agent EXISTS, not that it ever talked to this user. The
-  // announcement itself is the "1" badge everyone was seeing. Only a proven
-  // real message, or the user opening/starting the thread, makes it a row.
-  if (isAgentUid(contact.personUid)) {
-    return (
-      toIdSet(options.engagedAgentUids).has(contact.personUid) ||
-      toIdSet(options.recentDms).has(contact.personUid) ||
-      toIdSet(options.ownAgentUids).has(contact.personUid)
-    );
-  }
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -1015,17 +1108,7 @@ export function normalizeConversations(
     seen.add(row.id);
     deduped.push(row);
   }
-  // Agent rows (DM stubs AND provisioning channels) drop out unless they have
-  // a real conversation or a pin. Applied here, after dedupe, so every caller
-  // and every company scope — including "All" — gets the same rail.
-  const visible = filterAgentStubRows(deduped, {
-    engagedAgentUids: options.engagedAgentUids,
-    recentDmUids: options.recentDms,
-    ownAgentUids: options.ownAgentUids,
-    includeAgentsWithoutConversation:
-      options.includeContactsWithoutConversation === true,
-  } satisfies AgentVisibilityOptions);
-  return collapseDuplicateGroupRows(collapseDuplicateDmRows(visible));
+  return collapseDuplicateGroupRows(collapseDuplicateDmRows(deduped));
 }
 
 /**

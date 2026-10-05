@@ -22,7 +22,8 @@ export const WIZARD_STEPS = [
   { index: 2, id: 'setup', label: 'Setup' },
   // Name a company (or join a pending invite) and pick a plan. The website no
   // longer creates a company, so first run has to. Skipped for anyone who is
-  // already an active member of a company.
+  // already an active member of a company. Shown after the setup explainers
+  // and before the ready screen, without waiting for the install.
   { index: 3, id: 'company', label: 'Your company' },
   { index: 4, id: 'first-folder-sync', label: 'Sync your first folder' },
   { index: 5, id: 'invite-teammate', label: 'Invite a teammate' },
@@ -48,7 +49,7 @@ export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
  * The sole index mapping for wizard panels, graphics, and router transitions.
  * Keep panel identifiers in `WIZARD_STEPS`; do not hand-number a panel.
  */
-export const WIZARD_STEP_INDEX = Object.fromEntries(
+const WIZARD_STEP_INDEX = Object.fromEntries(
   WIZARD_STEPS.map((step) => [step.id, step.index]),
 ) as Record<WizardStepId, number>;
 

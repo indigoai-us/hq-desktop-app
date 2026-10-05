@@ -14,6 +14,7 @@ import {
 import {
   normalizeDirectoryFeed,
   parseAgentStatusWake,
+  parseDmAgentStatusWake,
   dispatchEmbeddedNavigation,
   destinationFromEmbeddedTarget,
   OPEN_SETTINGS_EVENT,
@@ -352,10 +353,18 @@ export async function subscribeHqWorkNativeWakes(
       });
       config.onNotificationWake();
     }),
-    // An agent's live "still working" status (native agent:status event).
+    // An agent's live "still working" status (native agent:status event). The
+    // one native event carries both shapes: a channel status has a channelId,
+    // a status in the bot's DM has withPersonUid instead.
     register('agent:status', (payload) => {
-      const wake = parseAgentStatusWake(nativeRecords(payload)[0] ?? payload);
-      if (wake) config.wakes.emit?.('agent:status', wake);
+      const record = nativeRecords(payload)[0] ?? payload;
+      const wake = parseAgentStatusWake(record);
+      if (wake) {
+        config.wakes.emit?.('agent:status', wake);
+        return;
+      }
+      const dmWake = parseDmAgentStatusWake(record);
+      if (dmWake) config.wakes.emit?.('agent:dm-status', dmWake);
     }),
     register('thread:new-reply', (payload) => {
       const row = nativeRecords(payload)[0];
@@ -601,7 +610,7 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
  * empty: MessagesShell resolves the peer from the directory by uid, and the
  * empty-email path is the same one the sidebar uses for an unresolved peer.
  */
-export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
+function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
   if (target.channelId) {
     requestChannelOpen(target.channelId, {
       replyRootEventId: target.replyRootEventId,

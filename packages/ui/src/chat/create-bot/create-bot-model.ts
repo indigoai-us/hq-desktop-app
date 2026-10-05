@@ -196,6 +196,33 @@ export function firstReadyRuntime(ready: Record<string, boolean> | null | undefi
   return LOCAL_BOT_RUNTIMES.find((r) => ready[r.id] !== false)?.id ?? "claude";
 }
 
+/**
+ * The brains the full-window New Bot flow offers. Claude is offered only when
+ * the host read the Claude provider flag as on: the server refuses a Claude
+ * bot for everyone else (403 CLAUDE_PROVIDER_NOT_ENABLED), so a brain that is
+ * not offered must never be shown or preselected.
+ */
+export function cloudBrainChoices(claudeEnabled: boolean): BotRuntime[] {
+  return claudeEnabled ? ["codex", "claude", "grok"] : ["codex", "grok"];
+}
+
+/**
+ * Cloud creation is subscription-only. Prefer the provider already signed in
+ * on this Mac, but make Codex the predictable first choice when none are.
+ * `offered` narrows the answer to the brains the caller shows: a signed-in
+ * brain that is not offered is never the answer.
+ */
+export function firstSignedInCloudRuntime(
+  ready: Record<string, boolean> | null | undefined,
+  offered?: readonly BotRuntime[],
+): BotRuntime {
+  const candidates = offered
+    ? LOCAL_BOT_RUNTIMES.filter((runtime) => offered.includes(runtime.id))
+    : LOCAL_BOT_RUNTIMES;
+  const fallback = !offered || offered.includes("codex") ? "codex" : candidates[0]?.id ?? "codex";
+  return candidates.find((runtime) => ready?.[runtime.id] === true)?.id ?? fallback;
+}
+
 export function runtimeIsReady(ready: Record<string, boolean> | null | undefined, id: string): boolean {
   if (!ready) return true;
   return ready[id] !== false;
@@ -652,3 +679,109 @@ export const STEP_TITLES: Record<CreateBotStep, string> = {
   home: "Where does it run?",
   details: "Details",
 };
+
+// ── Why the New Bot flow cannot price a company ────────────────────────────
+
+/**
+ * Why the company's bot options could not be loaded. "permission": the
+ * server says this person may not add bots there. "load": the read failed
+ * for any other reason, and asking again may work. "unpriced": the options
+ * came back, and not one of them has a price this company could be charged,
+ * so there is nothing Create bot could ask for.
+ */
+export interface ProvisionOptionsProblem {
+  kind: "permission" | "load" | "unpriced";
+  /** People who can add a bot or allow it, as the server named them. At most three. */
+  askNames: string[];
+}
+
+/** The server's code for a member without the capability to add bots. */
+export const CREATE_AGENTS_NOT_ALLOWED_CODE = "CREATE_AGENTS_NOT_ALLOWED";
+
+/**
+ * Read a failed provision-options answer. The shape is loose on purpose:
+ * hosts differ in what they keep of the server's refusal (`code`, `status`,
+ * `admins`), and a thrown read arrives as null. Never throws.
+ */
+export function provisionOptionsProblem(result: unknown): ProvisionOptionsProblem {
+  const answer = typeof result === "object" && result !== null ? (result as Record<string, unknown>) : null;
+  const code = typeof answer?.code === "string" ? answer.code.trim() : "";
+  const message = typeof answer?.message === "string" ? answer.message : "";
+  const refused =
+    code === CREATE_AGENTS_NOT_ALLOWED_CODE ||
+    code === "http-403" ||
+    answer?.status === 403 ||
+    /\bforbidden\b|createAgents capability/i.test(message);
+  if (!refused) return { kind: "load", askNames: [] };
+  const askNames: string[] = [];
+  for (const entry of Array.isArray(answer?.admins) ? answer.admins : []) {
+    const row = typeof entry === "object" && entry !== null ? (entry as Record<string, unknown>) : null;
+    const name = typeof row?.displayName === "string" ? row.displayName.trim() : "";
+    // The server falls back to the person's id when it has no name for them.
+    if (!name || /^prs_/i.test(name) || askNames.includes(name)) continue;
+    askNames.push(name);
+    if (askNames.length >= 3) break;
+  }
+  return { kind: "permission", askNames };
+}
+
+/** "Corey", "Corey or Dana", "Corey, Dana or Lee". */
+function oneOf(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+}
+
+/** The one line the New Bot screen shows when Create bot is off for this reason. */
+export function provisionOptionsProblemLine(problem: ProvisionOptionsProblem, companyLabel: string): string {
+  const company = companyLabel.trim() || "this company";
+  if (problem.kind === "permission") {
+    const ask = problem.askNames.length ? oneOf(problem.askNames) : "an owner or admin";
+    return `You don't have permission to add bots in ${company}. Ask ${ask}.`;
+  }
+  if (problem.kind === "unpriced") {
+    return `We don't have a price for a bot in ${company} right now. Try again in a moment.`;
+  }
+  return `We couldn't load the price for ${company}. Check your connection and try again.`;
+}
+
+/**
+ * True when a bot can be created from these options: at least one size the
+ * person may pick has a price.
+ */
+export function provisionOptionsPriced(options: { options?: ReadonlyArray<{ selectable?: boolean; netMonthlyCents?: number | null }> } | null | undefined): boolean {
+  return (options?.options ?? []).some(
+    (option) => option.selectable === true && typeof option.netMonthlyCents === "number",
+  );
+}
+
+/**
+ * Shown when the company selected on the New Bot screen is no longer one of
+ * the companies the screen offers. Create bot is off: nothing is sent to it.
+ */
+export const NEW_BOT_COMPANY_GONE_REASON =
+  "This company can't be used for a new bot right now. Close this screen and try again.";
+
+/** What the New Bot screen's second way out is called when it leads only to a local bot. */
+export const NEW_BOT_LOCAL_LABEL = "Create a local bot instead";
+
+/**
+ * The label of the New Bot screen's second way out, the button that opens
+ * the "+" window's own bot step. That step makes local bots, and cloud bots
+ * in the companies this screen does not offer, so the label says which of
+ * the two a person can reach through it. Empty when it leads nowhere.
+ */
+export function newBotOtherWayLabel(input: { local: boolean; otherCompanies: boolean }): string {
+  if (input.local && input.otherCompanies) return "Another company or a local bot";
+  if (input.otherCompanies) return "Create in another company";
+  return input.local ? NEW_BOT_LOCAL_LABEL : "";
+}
+
+/** The line on the last step that says where the bot will be made. */
+export function newBotTargetLine(name: string, companyLabel: string): string {
+  return `${name.trim() || "This bot"} will be created in ${companyLabel.trim()}.`;
+}
+
+/** What the New Bot screen says while the host looks for a bot whose create got no answer. */
+export function newBotCheckingLine(name: string): string {
+  return `Checking whether ${name.trim() || "your bot"} was created...`;
+}

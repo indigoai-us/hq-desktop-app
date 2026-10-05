@@ -15,14 +15,18 @@
     isHeavyMessageBody,
     renderMessageBodyMarkdown,
   } from "../../common/messageMarkdown.js";
+  import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
-  import { HOST_PLACED_BLOCK_KINDS } from "./richMessageContent.js";
+  import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
+  import { HOST_PLACED_BLOCK_KINDS, MAX_CONNECT_ITEMS } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
     ChartBlock,
+    ConnectBlock,
     DecisionBlock,
     DecisionOption,
+    RichBlock,
     RichContentModel,
     StatItem,
     TableBlock,
@@ -53,6 +57,14 @@
      * answered even if it is absent from `answeredQuestionIds`.
      */
     answeredChoices?: ReadonlyMap<string, string>;
+    /**
+     * The host's connection cards for a `connect` block: one view per target
+     * (built by the app, see connection-card-model.ts) and where a press goes.
+     * Without it (a channel, a conversation between people, an older host) a
+     * `connect` block draws nothing. No agent-supplied text, style or link is
+     * ever used: the block only names which cards to show.
+     */
+    connections?: ConnectionCards | null;
   }
 
   let {
@@ -60,7 +72,81 @@
     ondecision,
     answeredQuestionIds,
     answeredChoices,
+    connections = null,
   }: Props = $props();
+
+  /**
+   * The order each `connect` row's cards were first drawn in, by block index.
+   * Held outside the reactive state on purpose: it is a note of what is
+   * already on screen, written while drawing, and nothing redraws from it.
+   */
+  const drawnOrder = new Map<number, string[]>();
+
+  /**
+   * The cards a `connect` block draws here: the host's view for each item. A
+   * built-in card by name, an app by domain (null when the app draws none,
+   * or none yet).
+   *
+   * The row's first cards are in the block's order. An app whose card comes
+   * later (its catalog lookup answered after the row was drawn) takes the
+   * next free place, after the cards already there: a card on screen never
+   * moves aside for one that arrives. The row is a grid of fixed columns, so
+   * a card added at the end changes no other card's place or size.
+   *
+   * While the host says the row is not ready (the company's list is not
+   * known yet) nothing is drawn, so no card appears and then goes away.
+   *
+   * The host may set the row's order first (`arrange`): a cloud bot's DM puts
+   * the bot's own Slack card at the front. The row draws at most
+   * {@link MAX_CONNECT_ITEMS} cards; one that arrives when the row is full
+   * is not drawn, and no drawn card is ever taken away for it.
+   */
+  function connectCards(block: ConnectBlock, blockIndex: number): Array<{ key: string; view: ConnectionCardView }> {
+    const cards = connections;
+    if (!cards) return [];
+    const items = cards.arrange ? cards.arrange(block.items) : block.items;
+    if (cards.rowReady && !cards.rowReady(items)) return [];
+    const out: Array<{ key: string; view: ConnectionCardView }> = [];
+    for (const item of items) {
+      if (item.app) {
+        // A built-in item that carries the bot's own state draws from it when the host says how.
+        const view = (cards.builtin ? cards.builtin(item) : null) ?? cards.views[item.app];
+        if (view) out.push({ key: item.app, view });
+      } else if (item.domain && cards.integration) {
+        const view = cards.integration({
+          domain: item.domain,
+          ...(item.why ? { why: item.why } : {}),
+          // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
+          ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+          // The bot's state for the app, when its runtime sent one.
+          ...(item.state ? { state: item.state } : {}),
+          ...(item.asOf ? { asOf: item.asOf } : {}),
+        });
+        if (view) out.push({ key: `domain:${item.domain}`, view });
+      }
+    }
+    // Cards already drawn keep their places; new ones follow, in the block's order.
+    const before = drawnOrder.get(blockIndex) ?? [];
+    const kept = before.filter((key) => out.some((card) => card.key === key));
+    const order = [...kept, ...out.map((card) => card.key).filter((key) => !kept.includes(key))].slice(
+      0,
+      Math.max(kept.length, MAX_CONNECT_ITEMS),
+    );
+    drawnOrder.set(blockIndex, order);
+    return order.map((key) => out.find((card) => card.key === key)!);
+  }
+
+  /** The browse-all link is offered under a row with at least one integration card. */
+  function browseAllFor(cards: ReadonlyArray<{ view: ConnectionCardView }>): { url: string; open: () => void } | null {
+    const link = connections?.browseAll ?? null;
+    return link && cards.some((card) => card.view.kind === "integration") ? link : null;
+  }
+
+  /** Does this block put anything inside the bubble? */
+  function drawsInBubble(block: RichBlock, blockIndex: number): boolean {
+    if (HOST_PLACED_BLOCK_KINDS.has(block.kind)) return false;
+    return block.kind !== "connect" || connectCards(block, blockIndex).length > 0;
+  }
 
   // Optimistic local disable after a click, keyed by block index (stable per
   // message). Mirrors LifecycleCard's `localPending`. Value = chosen label
@@ -228,7 +314,7 @@
   }
 </script>
 
-{#if content.blocks.some((b) => !HOST_PLACED_BLOCK_KINDS.has(b.kind))}
+{#if content.blocks.some(drawsInBubble)}
 <div class="rich-content" data-testid="rich-message-content">
   {#each content.blocks as block, blockIndex (blockIndex)}
     {#if block.kind === "stat"}
@@ -443,6 +529,33 @@
           </div>
         {/if}
       </div>
+    {:else if block.kind === "connect"}
+      {@const cards = connectCards(block, blockIndex)}
+      {@const browse = browseAllFor(cards)}
+      {#if cards.length > 0}
+        <div class="rich-connect" data-testid="rich-connect-block">
+          <div class="rich-connect-row" data-testid="rich-connect">
+            {#each cards as card, index (card.key)}
+              <ConnectionCard view={card.view} {index} onaction={connections?.onaction} />
+            {/each}
+          </div>
+          {#if browse}
+            <!-- The app's own link, by the company's slug. The host opens it the way every other link here opens. -->
+            <a
+              class="rich-connect-browse"
+              data-testid="rich-connect-browse"
+              href={browse.url}
+              rel="noopener noreferrer"
+              onclick={(event) => {
+                event.preventDefault();
+                browse.open();
+              }}
+            >
+              Browse all in HQ Integrations
+            </a>
+          {/if}
+        </div>
+      {/if}
     {/if}
   {/each}
 </div>
@@ -853,5 +966,39 @@
   .rich-decision-answered {
     font-size: 12px;
     color: var(--t3, var(--pop-muted));
+  }
+
+  /* Connection cards: a grid of equal columns, as many as fit at 220px,
+     every card the one fixed height. Narrow: one column. */
+  .rich-connect {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rich-connect-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+  }
+  /* The quiet way to everything else, after the cards the bot chose. */
+  .rich-connect-browse {
+    align-self: flex-start;
+    font-size: 12px;
+    color: var(--t3, var(--pop-muted));
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+    text-underline-offset: 2px;
+  }
+  .rich-connect-browse:hover {
+    color: var(--t2, var(--pop-muted));
+    text-decoration-color: currentColor;
+  }
+  .rich-connect-browse:focus-visible {
+    outline: 2px solid var(--vio-ink, #7c5cff);
+    outline-offset: 2px;
+    border-radius: 3px;
   }
 </style>

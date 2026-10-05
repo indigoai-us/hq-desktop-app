@@ -27,11 +27,11 @@ export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
 
-export function ease(u: number): number {
+function ease(u: number): number {
   return u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2;
 }
 
-export function rnd(n: number): number {
+function rnd(n: number): number {
   const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
   return x - Math.floor(x);
 }
@@ -58,7 +58,7 @@ function context2d(canvas: HTMLCanvasElement | null): CanvasRenderingContext2D |
 }
 
 /** Screens 01-03 share one title position so the heading never shifts. */
-export function copyTop(height = vh()): number {
+function copyTop(height = vh()): number {
   return Math.max(56, Math.round(height * 0.13));
 }
 
@@ -66,15 +66,15 @@ export function copyTop(height = vh()): number {
  * Content under the title keeps a near-fixed gap: on a tall window it may
  * drift down by at most `extra`, and the rest of the spare room goes below.
  */
-export function placeUnder(top: number, bottom: number, blockH: number, extra: number): number {
+function placeUnder(top: number, bottom: number, blockH: number, extra: number): number {
   return Math.round(top + Math.min(extra, Math.max(0, (bottom - top - blockH) / 2)));
 }
 
 /** The forward button sits right under each screen's content. */
-export const NAVH = 44;
-export const NAVGAP = 44;
+const NAVH = 44;
+const NAVGAP = 44;
 /** Room kept above the bottom edge (Back / the install card). */
-export const FLOOR = 64;
+const FLOOR = 64;
 /** Scene cross-fade, matching `.scene` opacity .7s. */
 export const FADE_MS = 700;
 
@@ -111,7 +111,7 @@ function flushBeats(beats: Beat[]): void {
 // Pointer: the mark's particles and the skyline react to the cursor.
 // ---------------------------------------------------------------------------
 
-export const pointer = { x: -9999, y: -9999, lastMove: -1e9 };
+const pointer = { x: -9999, y: -9999, lastMove: -1e9 };
 
 export function trackPointer(target: Window = window): () => void {
   const onMove = (event: MouseEvent) => {
@@ -338,7 +338,7 @@ export interface KeepOut {
   b: number;
 }
 
-export function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RISE0: number) {
+function createSkyline(cv: HTMLCanvasElement, keepOut: () => KeepOut, RISE0: number) {
   const ctx = context2d(cv);
   const SPARSE = '.,/';
   const DENSE = '#HQ*';
@@ -805,7 +805,7 @@ export const KEYBOARD_ROWS: KeyDef[][] = (() => {
   ];
 })();
 
-export const CHORD = ['alt', 'shift', 'o'] as const;
+const CHORD = ['alt', 'shift', 'o'] as const;
 
 export interface KeyboardRefs {
   kb: HTMLElement;
@@ -1085,10 +1085,26 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
 export function createPanelEngine(block: HTMLElement, options: { reveal: () => void }): SceneEngine {
   let t0 = 0;
   let revealed = false;
+  let active = false;
+  let placedHeight = -1;
+  let observer: ResizeObserver | null = null;
   function size() {
     const H = vh();
     const bh = rect(block).height;
+    placedHeight = bh;
     block.style.top = `${Math.max(56, Math.round((H - bh) / 2))}px`;
+  }
+  // A panel's content can change height after it is shown (the company step
+  // goes from "Getting things ready…" to its form, then to the plan cards).
+  // Centre it again whenever that happens, not only on enter and window
+  // resize; otherwise it keeps the short block's position and runs off the
+  // bottom of the window.
+  function watch() {
+    if (observer || typeof ResizeObserver === 'undefined') return;
+    observer = new ResizeObserver(() => {
+      if (active && rect(block).height !== placedHeight) size();
+    });
+    observer.observe(block);
   }
   return {
     size,
@@ -1098,13 +1114,22 @@ export function createPanelEngine(block: HTMLElement, options: { reveal: () => v
     enter(now) {
       t0 = now;
       revealed = false;
+      active = true;
+      watch();
       size();
+    },
+    exit() {
+      active = false;
     },
     frame(now) {
       if (!revealed && (now - t0) / 1000 > 0.6) {
         revealed = true;
         options.reveal();
       }
+    },
+    destroy() {
+      observer?.disconnect();
+      observer = null;
     },
   };
 }

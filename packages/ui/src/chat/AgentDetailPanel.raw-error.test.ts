@@ -89,6 +89,9 @@ function agentsApi(over: Partial<AgentsApi> = {}): AgentsApi {
     stop: async () => ok({ uid: "agt_izzy" }),
     start: async () => ok({ uid: "agt_izzy" }),
     deprovision: async () => ok({ uid: "agt_izzy" }),
+    attachSlack: async () => ok({}),
+    submitSlackAppToken: async () => ok({}),
+    retryProvisioning: async () => ok({}),
     listOwners: async () =>
       ok({
         owners: [

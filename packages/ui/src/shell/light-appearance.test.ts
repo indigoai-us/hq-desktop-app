@@ -23,7 +23,6 @@ const FILES = [
   "../atlas/AtlasInspector.svelte",
   "../atlas/AtlasScrubber.svelte",
   "../projects/CompanyProjectsPage.svelte",
-  "../projects/BoardCard.svelte",
   "../meetings/MeetingsPage.svelte",
   "../meetings/MeetingsAgenda.svelte",
   "../meetings/MeetingsSidepane.svelte",

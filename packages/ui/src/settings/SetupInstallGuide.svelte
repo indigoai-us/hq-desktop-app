@@ -157,11 +157,17 @@
    * Tools this guide installed itself. Counted as installed straight away:
    * the `tools` prop can lag a re-detect behind the install landing (a
    * Windows PATH refresh), and a retry must sign in, not install again.
+   *
+   * Only the CLI counts. Sign-in and setup run through the CLI, so the
+   * Claude or ChatGPT desktop app on its own does not make a tool
+   * "installed" here: offering "Sign in" for it failed with "Could not check
+   * sign-in". Where a desktop app carries a usable CLI (Claude's managed copy,
+   * ChatGPT's bundled codex), the host already reports `*_cli: true`.
    */
   let installedHere = $state<Record<CodingTool, boolean>>({ claude: false, codex: false });
   const installed = $derived<Record<CodingTool, boolean>>({
-    claude: installedHere.claude || Boolean(tools?.claude_cli || tools?.claude_desktop),
-    codex: installedHere.codex || Boolean(tools?.codex_cli || tools?.codex_desktop),
+    claude: installedHere.claude || Boolean(tools?.claude_cli),
+    codex: installedHere.codex || Boolean(tools?.codex_cli),
   });
 
   type Phase =

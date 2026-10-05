@@ -17,7 +17,7 @@
  * in `src-tauri/src/commands/app.rs`), not the generic shell `open()`
  * plugin — the dedicated command keeps the surface tight (rejects non-
  * `claude://` URLs) so we don't have to widen `shell:allow-open` to the
- * world. See `OpenInClaudeCodeButton.svelte` for the call site.
+ * world.
  *
  * Kept pure and side-effect-free so the URL shape can be unit-tested in
  * isolation. A failing test here is the early-warning that the wire

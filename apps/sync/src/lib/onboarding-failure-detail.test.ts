@@ -44,7 +44,7 @@ describe('setup failure telemetry details', () => {
         failedDependency: 'node',
         errorCategory: 'network',
       }),
-    ).toEqual({ failedDependency: 'node', errorCategory: 'network' });
+    ).toEqual({ failedDependency: 'node', depsOperation: 'node', errorCategory: 'network' });
     expect(
       setupFailureTelemetryDetails({ stageId: 'content', errorCategory: 'timeout' }),
     ).toEqual({ errorCategory: 'timeout' });
@@ -63,7 +63,7 @@ describe('setup failure telemetry details', () => {
         failedDependency: 'qmd',
         errorCategory: 'checksum',
       }),
-    ).toEqual({ failedDependency: 'qmd', errorCategory: 'checksum' });
+    ).toEqual({ failedDependency: 'qmd', depsOperation: 'qmd', errorCategory: 'checksum' });
     expect(
       setupFailureTelemetryDetails({
         stageId: 'git-init',

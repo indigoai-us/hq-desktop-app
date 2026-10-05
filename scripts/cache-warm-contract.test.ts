@@ -6,6 +6,14 @@ const pinnedAction = readFileSync(
   new URL("../.github/actions/pinned-rust-toolchain/action.yml", import.meta.url),
   "utf8",
 );
+const windowsCheckWorkflow = readFileSync(
+  new URL("../.github/workflows/windows-check.yml", import.meta.url),
+  "utf8",
+);
+const releaseWorkflow = readFileSync(
+  new URL("../.github/workflows/release.yml", import.meta.url),
+  "utf8",
+);
 
 function jobBody(name: string): string {
   const start = workflow.indexOf(`\n  ${name}:\n`);
@@ -99,4 +107,73 @@ describe("cache-warm.yml prebuilt-shell warmers", () => {
       expect(check).toBeLessThan(upload.indexOf("gh release upload"));
     });
   }
+});
+
+describe("cache-warm.yml Rust-cache warmers", () => {
+  const jobs = [
+    {
+      job: "release-macos",
+      key: "release-macos-universal",
+      consumers: [releaseWorkflow],
+      work: ["Install dependencies", "Install Recall sidecar dependencies", "Compile release dependencies (universal)"],
+    },
+    {
+      job: "release-windows",
+      key: "release-${{ matrix.target }}",
+      consumers: [releaseWorkflow],
+      work: [
+        "Install dependencies",
+        "Install Recall sidecar dependencies",
+        "Download native ARM64 Node runtime for Recall launcher",
+        "Build Recall SDK sidecar (${{ matrix.target }})",
+        "Compile release dependencies (${{ matrix.target }})",
+      ],
+    },
+    {
+      job: "windows-check-debug",
+      key: "windows-check-debug",
+      consumers: [windowsCheckWorkflow],
+      work: [
+        "Install JS deps",
+        "Install Recall sidecar deps (build.rs resource)",
+        "Build Svelte bundle (satisfies tauri frontendDist)",
+        "Rust check (Windows target)",
+        "Build Windows test binaries",
+        "Install Tauri WebDriver bridge",
+      ],
+    },
+    {
+      job: "windows-installer-release",
+      key: "windows-installer-release",
+      consumers: [windowsCheckWorkflow],
+      work: [
+        "Install JS deps",
+        "Install Recall sidecar deps",
+        "Install Tauri WebDriver bridge",
+        "Compile release dependencies (x86_64-pc-windows-msvc)",
+      ],
+    },
+  ];
+
+  function namedStep(job: string, name: string): string {
+    const body = jobBody(job);
+    const start = body.indexOf(`- name: ${name}`);
+    if (start < 0) throw new Error(`${job} is missing the ${name} step`);
+    const next = body.indexOf("\n      - ", start + 1);
+    return next < 0 ? body.slice(start) : body.slice(start, next);
+  }
+
+  it("skips post-cache work only on exact hits and preserves cache writers and consumer keys", () => {
+    for (const { job, key, consumers, work } of jobs) {
+      const body = jobBody(job);
+      const cache = body.slice(body.indexOf("- uses: Swatinem/rust-cache@"), body.indexOf("\n\n", body.indexOf("- uses: Swatinem/rust-cache@")));
+      expect(body).toContain("id: rust-cache");
+      expect(cache).toContain(`shared-key: ${key}`);
+      expect(cache).not.toContain("lookup-only: true");
+      for (const consumer of consumers) expect(consumer).toContain(`shared-key: ${key}`);
+      for (const step of work) {
+        expect(namedStep(job, step)).toContain("steps.rust-cache.outputs.cache-hit != 'true'");
+      }
+    }
+  });
 });

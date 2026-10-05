@@ -16,7 +16,7 @@ import type { DmRequest, RequestAction } from "./dm-requests";
 import type { ChannelDirectoryFeed } from "./channel-directory-reconciler";
 import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
-import type { AgentStatusWake } from "./agent-thinking";
+import type { AgentStatusWake, DmAgentStatusWake } from "./agent-thinking";
 import type { NotifyLevel } from "./notify-level";
 
 export const MESSAGE_SEARCH_MIN_QUERY_LENGTH = 2;
@@ -35,6 +35,7 @@ export function messageSearchQueryProblem(query: string): MessageSearchQueryProb
 export interface ContactsResponse {
   contacts: DmContactInput[];
 }
+export type ProjectMemberAddResult = "added" | "not-enabled";
 export interface ChannelsResponse {
   channels?: Channel[];
 }
@@ -609,6 +610,8 @@ export interface ChatWakeEvents {
   "reply:new": ReplyNewWake;
   /** An agent reported it is still working in a channel (ephemeral status). */
   "agent:status": AgentStatusWake;
+  /** A bot reported it is working in its 1:1 DM with a person (ephemeral status). */
+  "agent:dm-status": DmAgentStatusWake;
 }
 
 /** Ids-only reply doorbell. Hosts re-fetch; they must not payload-apply. */

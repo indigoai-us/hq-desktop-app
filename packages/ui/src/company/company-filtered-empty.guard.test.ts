@@ -11,7 +11,6 @@ import { listEmptyState } from "../common/list-empty-state.js";
 const PANES = [
   "files-connect/FilesConnectPage.svelte",
   "brain/BrainPage.svelte",
-  "../projects/ProjectListView.svelte",
   "../files/CompanyFileTree.svelte",
   "DeploymentsPanel.svelte",
   "SecretsPanel.svelte",

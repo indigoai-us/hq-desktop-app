@@ -4,6 +4,7 @@ export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
 export * from "./post-ready-actions.js";
+export * from "./setup-tool-offer-telemetry.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";
@@ -11,12 +12,14 @@ export * from "./plan-limit.js";
 export * from "./api-error.js";
 export {
   CLAUDE_PROVIDER_FLAG,
-  DESKTOP_AGENT_CREATION_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_WEEK_RETURN_NUDGE_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_WORKSPACE_BOARD_FLAG,
