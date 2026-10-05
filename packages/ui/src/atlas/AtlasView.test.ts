@@ -586,3 +586,43 @@ describe("Atlas playback", () => {
     }
   });
 });
+
+describe("Atlas Today panel", () => {
+  it("titles the section with the company and lists what changed today, each row flying to it", async () => {
+    const graph = smokeAtlasGraph();
+    graph.nodes.find((x) => x.id === RAIL)!.touched = NOW - 20 * 60_000;
+    graph.nodes.find((x) => x.id === "knowledge:knowledge/pricing.md")!.touched = NOW - 60_000;
+    mountView(createAtlasCache({ fetcher: async () => graph }));
+    await settle();
+    flushSync();
+    expect(host.querySelector(sel("atlas-today-title"))?.textContent).toBe("Today at Indigo");
+    const rows = [...host.querySelectorAll(sel("atlas-today-row"))];
+    expect(rows.map((r) => r.querySelector(".tt")?.textContent)).toEqual(["hq desktop console rail", "pricing", "hq desktop app"]);
+    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("20 min ago · 0 of 9 stories");
+    flushSync(() => (rows[1] as HTMLButtonElement).click());
+    expect(inspectorPath()).toBe("knowledge/pricing.md");
+  });
+
+  it("shows one quiet line when nothing changed today", async () => {
+    const graph = smokeAtlasGraph();
+    for (const x of graph.nodes) x.touched = NOW - 3 * 86_400_000;
+    mountView(createAtlasCache({ fetcher: async () => graph }));
+    await settle();
+    flushSync();
+    expect(host.querySelector(sel("atlas-today-empty"))?.textContent).toBe("Nothing on the map changed today.");
+    expect(host.querySelector(sel("atlas-today-changed"))).toBeNull();
+  });
+
+  it("pages a long day with a real Show N more", async () => {
+    const graph = smokeAtlasGraph();
+    for (const x of graph.nodes) x.touched = NOW - 60_000;
+    mountView(createAtlasCache({ fetcher: async () => graph }));
+    await settle();
+    flushSync();
+    expect(host.querySelectorAll(sel("atlas-today-row")).length).toBe(5);
+    const more = host.querySelector(sel("atlas-today-more")) as HTMLButtonElement;
+    expect(more.textContent?.trim()).toBe(`Show ${graph.nodes.length - 5} more`);
+    flushSync(() => more.click());
+    expect(host.querySelectorAll(sel("atlas-today-row")).length).toBe(graph.nodes.length);
+  });
+});

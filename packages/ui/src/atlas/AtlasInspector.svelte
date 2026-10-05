@@ -18,6 +18,7 @@
     type AtlasPresence,
   } from "./atlas-model.js";
   import { ATLAS_PEOPLE_DAYS, type AtlasPeopleState } from "./atlas-people.js";
+  import { ATLAS_TODAY_PAGE, atlasAgo } from "./atlas-today.js";
 
   interface Props {
     node: AtlasNode | null;
@@ -46,6 +47,8 @@
     onpeopleretry?: () => void;
     /** Map objects lit for the picked person; 0 means none of their skills are on the map. */
     personMatches?: number;
+    /** Today panel: objects changed today, busiest first; null hides the panel (no map). */
+    today?: AtlasNode[] | null;
   }
 
   let {
@@ -69,7 +72,11 @@
     onperson,
     onpeopleretry,
     personMatches = 0,
+    today = null,
   }: Props = $props();
+
+  let todayOpen = $state(false);
+  const todayShown = $derived(today ? (todayOpen ? today : today.slice(0, ATLAS_TODAY_PAGE)) : []);
 
   function sparkPath(values: number[]): string {
     if (values.length < 2) return "";
@@ -164,6 +171,28 @@
       {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}
       {#if projectsInProgress !== null}<span class="chip">{projectsInProgress} projects in progress</span>{/if}
     </div>
+    {#if today && !mapFailed}
+      <div class="hr"></div>
+      <div class="section" data-testid="atlas-today-title">Today at {company || "this company"}</div>
+      {#if today.length}
+        <div class="kind sub">Changed today</div>
+        <div class="list" data-testid="atlas-today-changed">
+          {#each todayShown as item (item.id)}
+            <button type="button" class="li rowbtn card" data-testid="atlas-today-row" onclick={() => onselect(item.id)}>
+              <span class="r">{ATLAS_KIND_TAG[item.type]}</span>
+              <div><div class="tt">{item.label}</div><div class="mm">{atlasAgo(item.touched ?? nowMs, nowMs)}{item.stories ? ` · ${item.stories.done} of ${item.stories.total} stories` : ""}</div></div>
+            </button>
+          {/each}
+          {#if today.length > todayShown.length}
+            <button type="button" class="li rowbtn card more" data-testid="atlas-today-more" onclick={() => (todayOpen = true)}>
+              <span class="r"></span><div class="tt mm">Show {today.length - todayShown.length} more</div>
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <p class="goal" data-testid="atlas-today-empty">Nothing on the map changed today.</p>
+      {/if}
+    {/if}
     {#if !mapFailed || presence.length || online.length}
     <div class="hr"></div>
     <div class="kind">Working now</div>
@@ -236,6 +265,10 @@
 
 <style>
   .people-head { display: flex; gap: 8px; align-items: baseline; }
+  /* Section title: small, uppercase, muted (owner rule for section titles). */
+  .section { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--v4-text-3); }
+  .kind.sub { margin-top: 8px; }
+  .more .tt { margin-top: 0; }
   .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }
   .online summary { cursor: pointer; }
   .online-names { margin-top: 4px; line-height: 1.5; }
