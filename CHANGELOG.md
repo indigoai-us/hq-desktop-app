@@ -42,6 +42,8 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 ### Company pages
 
+- Activity and the Atlas people list load again for every company and range. Both had stopped reading the server's current data and showed an error instead.
+- When Activity can't load, it says why: you're offline, your sign-in expired, or HQ had a problem. Try again is always there, and Sign in again appears when your sign-in expired.
 - Team lists people and bots with their roles, join dates, groups and access in one place, and you can invite people from the same page. A team you have already loaded stays on screen while it refreshes.
 - The company panel has Groups and Grants under People, and a Settings group with General, Brand and Billing. The separate Company settings page is gone.
 - Activity shows the team's real activity, with a detail pane for each member.
