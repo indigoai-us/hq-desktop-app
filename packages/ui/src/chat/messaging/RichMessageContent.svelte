@@ -76,12 +76,27 @@
   }: Props = $props();
 
   /**
-   * The cards a `connect` block draws here: the host's view for each item,
-   * in the block's order. A built-in card by name, an app by domain (null
-   * when the app draws none). A row with apps still being looked up draws
-   * nothing yet, so no card appears and then goes away.
+   * The order each `connect` row's cards were first drawn in, by block index.
+   * Held outside the reactive state on purpose: it is a note of what is
+   * already on screen, written while drawing, and nothing redraws from it.
    */
-  function connectCards(block: ConnectBlock): Array<{ key: string; view: ConnectionCardView }> {
+  const drawnOrder = new Map<number, string[]>();
+
+  /**
+   * The cards a `connect` block draws here: the host's view for each item. A
+   * built-in card by name, an app by domain (null when the app draws none,
+   * or none yet).
+   *
+   * The row's first cards are in the block's order. An app whose card comes
+   * later (its catalog lookup answered after the row was drawn) takes the
+   * next free place, after the cards already there: a card on screen never
+   * moves aside for one that arrives. The row is a grid of fixed columns, so
+   * a card added at the end changes no other card's place or size.
+   *
+   * While the host says the row is not ready (the company's list is not
+   * known yet) nothing is drawn, so no card appears and then goes away.
+   */
+  function connectCards(block: ConnectBlock, blockIndex: number): Array<{ key: string; view: ConnectionCardView }> {
     const cards = connections;
     if (!cards) return [];
     if (cards.rowReady && !cards.rowReady(block.items)) return [];
@@ -100,7 +115,12 @@
         if (view) out.push({ key: `domain:${item.domain}`, view });
       }
     }
-    return out;
+    // Cards already drawn keep their places; new ones follow, in the block's order.
+    const before = drawnOrder.get(blockIndex) ?? [];
+    const kept = before.filter((key) => out.some((card) => card.key === key));
+    const order = [...kept, ...out.map((card) => card.key).filter((key) => !kept.includes(key))];
+    drawnOrder.set(blockIndex, order);
+    return order.map((key) => out.find((card) => card.key === key)!);
   }
 
   /** The browse-all link is offered under a row with at least one integration card. */
@@ -110,9 +130,9 @@
   }
 
   /** Does this block put anything inside the bubble? */
-  function drawsInBubble(block: RichBlock): boolean {
+  function drawsInBubble(block: RichBlock, blockIndex: number): boolean {
     if (HOST_PLACED_BLOCK_KINDS.has(block.kind)) return false;
-    return block.kind !== "connect" || connectCards(block).length > 0;
+    return block.kind !== "connect" || connectCards(block, blockIndex).length > 0;
   }
 
   // Optimistic local disable after a click, keyed by block index (stable per
@@ -497,7 +517,7 @@
         {/if}
       </div>
     {:else if block.kind === "connect"}
-      {@const cards = connectCards(block)}
+      {@const cards = connectCards(block, blockIndex)}
       {@const browse = browseAllFor(cards)}
       {#if cards.length > 0}
         <div class="rich-connect" data-testid="rich-connect-block">

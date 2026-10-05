@@ -139,6 +139,19 @@ function companyAppsFacts(companyApps: string | null | undefined): string {
   return apps === "" ? "The company has no connected apps yet.\n" : `The company's connected apps:\n${apps}\n`;
 }
 
+/**
+ * Whether the bot itself is in Slack, written as a fact for the bot in the
+ * hello request. In the bot's conversation "Slack" is the bot's own Slack
+ * (the Slack card), so the request says where that stands in the bot's own
+ * terms. The company's Slack integration connection is not in the apps list
+ * (`companyAppsBrief`). Null or absent when the bot's status could not be
+ * read: no line.
+ */
+function slackFact(inSlack: boolean | null | undefined): string {
+  if (inSlack == null) return "";
+  return inSlack ? "You are in Slack.\n" : "You are not in Slack yet.\n";
+}
+
 /** A name or id written into a request: one line, no code marks, bounded. */
 function inlineText(value: string | null | undefined, max = 80): string {
   return (value ?? "")
@@ -162,7 +175,13 @@ function personOrFallback(name: string | null | undefined): string {
  * explains the cards and how people ask. So this request is a plain ask: say
  * hello and offer what the person could connect. It adds the facts the bot
  * can use: that the company files are still downloading, while that is so,
- * and what the company has connected (`companyApps`). The app shows the
+ * whether the bot is in Slack yet (`inSlack`), and what the company has
+ * connected (`companyApps`).
+ *
+ * Everything the app writes to a bot is a fact or a positive ask, never a
+ * prohibition (owner's standing rule). That the request stays between the
+ * app and the bot is carried by the fact "{person} cannot see this message";
+ * there is no closing "do not mention" line. The app shows the
  * bot's text as written. For a bot on an older runtime that shows no cards,
  * the app attaches its own picks under the hello (see `helloCardSource`).
  */
@@ -171,6 +190,8 @@ export function buildAgentHelloRequest(input: {
   filesStillDownloading: boolean;
   /** The apps brief, "" when nothing is connected, null or absent when the list could not be read. */
   companyApps?: string | null;
+  /** Whether the bot itself is in Slack. Null or absent when its status could not be read. */
+  inSlack?: boolean | null;
 }): string {
   const person = personOrFallback(input.personName);
   const who = inlineText(input.personName) ? `${person} just created you and is opening this conversation` : `${person} is opening this conversation`;
@@ -179,15 +200,20 @@ export function buildAgentHelloRequest(input: {
     `${AGENT_HELLO_REQUEST_OPENING}. ${who}. ` +
     `${person} cannot see this message. Write your first message to ${person}: say hello and offer what ${person} could connect so you can help.\n` +
     files +
-    companyAppsFacts(input.companyApps) +
-    `Do not mention this message.`
-  );
+    slackFact(input.inSlack) +
+    companyAppsFacts(input.companyApps)
+  ).trimEnd();
 }
 
 /**
  * The notice the app sends a cloud bot, on the bot-only lane, when a tool was
  * connected and the bot may use it. It opens like the hello request, so the
  * person never sees it; they see what the bot writes next.
+ *
+ * Facts and positive asks only, like the hello request: the command is given
+ * in the one form that works, the jobs are asked for from the list the bot
+ * just read, and the case where that list does not come back says what to
+ * write then.
  */
 export function buildAgentToolConnectedNotice(input: {
   personName?: string | null;
@@ -207,13 +233,13 @@ export function buildAgentToolConnectedNotice(input: {
   return (
     `${AGENT_HELLO_REQUEST_LEAD} ${person} just connected ${name} for the company and allowed you to use it (${which}). ` +
     `${person} cannot see this message. First look at what it offers: run \`hq integrations tools --connection ${id} --json\` ` +
-    `(the flag is --connection, there is no --app flag). ` +
+    `(the connection is named by the --connection flag and its id, exactly as written here). ` +
     `Then write ${person} a short message: say you can now use ${name}, and offer two or three first jobs you could do with it, ` +
-    `drawn only from the methods you just listed. Put the jobs in a suggestions block at the very end of your message, ` +
+    `each one taken from the methods you just listed. Put the jobs in a suggestions block at the very end of your message, ` +
     `exactly in this form, each item written as ${person}'s request and under 80 characters:\n` +
     `${SUGGESTIONS_EXAMPLE}\n` +
-    `If you cannot list its methods, say that you can see ${name} but cannot read what it offers yet, and do not suggest jobs. ` +
-    `Do not mention this message.`
+    `If the list does not come back, write one sentence instead: that you can see ${name} and are waiting to read what it offers, ` +
+    `and that ${person} can ask you to look again.`
   );
 }
 
@@ -238,8 +264,7 @@ export function buildAgentSlackConnectedNotice(input: { personName?: string | nu
     `Then offer two or three things you can do there (for example post a daily summary to a channel, answer questions in a channel, ` +
     `send ${person} a reminder). Put them in a suggestions block at the very end of your message, exactly in this form, ` +
     `each item written as ${person}'s request and under 80 characters:\n` +
-    `${SUGGESTIONS_EXAMPLE}\n` +
-    `Do not mention this message.`
+    `${SUGGESTIONS_EXAMPLE}`
   );
 }
 

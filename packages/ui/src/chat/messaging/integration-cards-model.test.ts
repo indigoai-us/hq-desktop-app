@@ -5,6 +5,8 @@ import {
   MAX_BRIEF_CHARS,
   MAX_FALLBACK_APPS,
   PRESS_CLOCK_SKEW_MS,
+  CONNECTIONS_RETRY_BASE_MS,
+  CONNECTIONS_RETRY_MAX_MS,
   ROW_SETTLE_MS,
   appChosenItems,
   appLogo,
@@ -15,15 +17,18 @@ import {
   connectActionFor,
   connectFailureSentence,
   connectRowReady,
+  connectionsRetryMs,
   connectionAnswersPress,
   connectionForDomain,
   connectionForItem,
   defaultAppName,
   domainsToLookUp,
   integrationCardView,
+  isSlackConnection,
   keyRejectedSentence,
   readCompanyConnections,
   readKeyBlueprint,
+  rowAwaitsList,
   recentCallsFor,
   type CatalogLookup,
   type CompanyConnections,
@@ -360,12 +365,12 @@ describe("integrationCardView", () => {
   it("shows a connected app the bot can use, with no button", () => {
     const open = facts([connection({ access: { mode: "everyone" } })]);
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: open }))!;
-    expect(view).toMatchObject({ state: "connected", line: "Connected. Nova can use it.", primaryLabel: null, declineLabel: null, mark: "Connected", connectionId: "acct_linear" });
+    expect(view).toMatchObject({ state: "connected", line: "Nova can use it.", primaryLabel: null, declineLabel: null, mark: "Connected", connectionId: "acct_linear" });
     const granted = integrationCardView(
       { domain: "linear.app" },
       input({ facts: facts([connection()]), record: recordGrant(null, "acct_linear", "Linear", NOW) }),
     )!;
-    expect(granted.line).toBe("Connected. Nova can use it.");
+    expect(granted.line).toBe("Nova can use it.");
     expect(granted.primaryLabel).toBeNull();
   });
 
@@ -373,7 +378,7 @@ describe("integrationCardView", () => {
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection()]) }))!;
     expect(view).toMatchObject({
       state: "connected",
-      line: "Connected. Let Nova use it?",
+      line: "Let Nova use it?",
       primaryLabel: "Let Nova use it",
       primaryAction: "allow",
       connectionId: "acct_linear",
@@ -387,12 +392,43 @@ describe("integrationCardView", () => {
   it("names a teammate's connection as theirs to share, with no button", () => {
     const theirs = facts([connection({ createdBy: "prs_teammate" })]);
     const view = integrationCardView({ domain: "linear.app" }, input({ facts: theirs }))!;
-    expect(view.line).toBe("Connected by a teammate. Ask them to share it with Nova.");
+    expect(view.line).toBe("A teammate connected this. Ask them to share it with Nova.");
     expect(view.primaryLabel).toBeNull();
     expect(view.state).toBe("connected");
     // A list that does not say who is looking is not this person's to share either.
     const anon = facts([connection()], { viewer: { canManageIntegrations: true } });
     expect(integrationCardView({ domain: "linear.app" }, input({ facts: anon }))!.primaryLabel).toBeNull();
+  });
+
+  it("draws no integration card for Slack's domain, whatever the company has connected", () => {
+    // Slack in a bot's conversation is the bot's own Slack card. A teammate's
+    // Slack integration connection must never be read as the bot's state.
+    const f = facts([connection({ id: "acct_slack", provider: "factory:slack", createdBy: "prs_teammate", installation: { displayName: "Slack", domain: "slack.com" } })]);
+    const slackMatch = { domain: "slack.com", name: "Slack", authClass: "oauth" as const };
+    for (const domain of ["slack.com", "www.slack.com", "https://slack.com/", "acme.slack.com"]) {
+      expect(integrationCardView({ domain }, input({ facts: f })), domain).toBeNull();
+      expect(integrationCardView({ domain, connectionId: "acct_slack" }, input({ facts: f })), domain).toBeNull();
+      expect(integrationCardView({ domain }, input({ facts: f, lookup: slackMatch })), domain).toBeNull();
+    }
+  });
+
+  it("never repeats the Connected mark in the line under it, in any connected state", () => {
+    // Owner, 2026-10-04: a green "Connected" mark with a line that also began
+    // "Connected" read as the same word twice, and the one-row clamp then cut
+    // the instruction off.
+    const usable = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection({ access: { mode: "everyone" } })]) }))!;
+    const own = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection()]) }))!;
+    const theirs = integrationCardView({ domain: "linear.app" }, input({ facts: facts([connection({ createdBy: "prs_teammate" })]) }))!;
+    for (const view of [usable, own, theirs]) {
+      expect(view.mark).toBe("Connected");
+      expect(view.line).not.toMatch(/^connected\b/i);
+      expect(view.line.toLowerCase().startsWith(view.mark!.toLowerCase())).toBe(false);
+    }
+    expect([usable.line, own.line, theirs.line]).toEqual([
+      "Nova can use it.",
+      "Let Nova use it?",
+      "A teammate connected this. Ask them to share it with Nova.",
+    ]);
   });
 
   it("a connection wins over the catalog, a decline and a wait", () => {
@@ -450,26 +486,52 @@ describe("integrationCardView", () => {
   });
 });
 
-describe("the row waits for its lookups", () => {
-  const lookups = (known: Record<string, CatalogLookup>) => (domain: string): CatalogLookup => known[domain] ?? "unknown";
-
-  it("is ready when every app is connected or looked up, and not before", () => {
+describe("the row waits for the company's list, never for one app's lookup", () => {
+  it("is ready as soon as the list is known, whatever is still being looked up", () => {
     const f = facts([connection()]);
+    // Slack, a connection, and an app that still needs a catalog lookup: the
+    // row draws, and the app being looked up has no card yet.
     const items = [{ app: "slack" as const }, { domain: "linear.app" }, { domain: "notion.so" }];
-    expect(connectRowReady(items, { facts: f, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(false);
-    expect(connectRowReady(items, { facts: f, lookupFor: lookups({ "notion.so": "not-found" }), since: NOW, now: NOW })).toBe(true);
-    // Only built-in cards: ready at once, even with no list.
-    expect(connectRowReady([{ app: "slack" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(true);
-    // No list yet: an app is undecided.
-    expect(connectRowReady([{ domain: "linear.app" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(false);
-    // A domain that is not one is decided (it draws nothing).
-    expect(connectRowReady([{ domain: "nope" }], { facts: null, lookupFor: lookups({}), since: NOW, now: NOW })).toBe(true);
+    expect(connectRowReady(items, { facts: f, since: NOW, now: NOW })).toBe(true);
+    expect(integrationCardView({ domain: "linear.app" }, input({ facts: f }))).not.toBeNull();
+    expect(integrationCardView({ domain: "notion.so" }, input({ facts: f, lookup: "unknown" }))).toBeNull();
+    // Every app still being looked up: the row is ready all the same, and empty until one answers.
+    expect(connectRowReady([{ domain: "notion.so" }, { domain: "asana.com" }], { facts: facts(), since: NOW, now: NOW })).toBe(true);
   });
 
-  it("gives up waiting after the settle time", () => {
-    const items = [{ domain: "notion.so" }];
-    expect(connectRowReady(items, { facts: facts(), lookupFor: lookups({}), since: NOW, now: NOW + ROW_SETTLE_MS - 1 })).toBe(false);
-    expect(connectRowReady(items, { facts: facts(), lookupFor: lookups({}), since: NOW, now: NOW + ROW_SETTLE_MS })).toBe(true);
+  it("holds a row that names an app while the list itself is unknown, and no other row", () => {
+    // Only built-in cards: ready at once, even with no list.
+    expect(connectRowReady([{ app: "slack" }], { facts: null, since: NOW, now: NOW })).toBe(true);
+    // No list yet: nothing can be said about an app, so its row waits.
+    expect(connectRowReady([{ domain: "linear.app" }], { facts: null, since: NOW, now: NOW })).toBe(false);
+    expect(connectRowReady([{ app: "slack" }, { domain: "linear.app" }], { facts: undefined, since: NOW, now: NOW })).toBe(false);
+    // A domain that is not one is decided (it draws nothing).
+    expect(connectRowReady([{ domain: "nope" }], { facts: null, since: NOW, now: NOW })).toBe(true);
+  });
+
+  it("says which rows have to wait for the list: one that names an app, while the list is unknown", () => {
+    expect(rowAwaitsList([{ app: "slack" }, { domain: "linear.app" }], null)).toBe(true);
+    expect(rowAwaitsList([{ domain: "https://www.notion.so/" }], undefined)).toBe(true);
+    expect(rowAwaitsList([{ app: "slack" }, { app: "tools" }], null)).toBe(false);
+    expect(rowAwaitsList([{ domain: "nope" }], null)).toBe(false);
+    expect(rowAwaitsList([], null)).toBe(false);
+    // The list is known: no row waits, whatever it names.
+    expect(rowAwaitsList([{ app: "slack" }, { domain: "linear.app" }, { domain: "notion.so" }], facts())).toBe(false);
+  });
+
+  it("gives up waiting for the list after the settle time", () => {
+    const items = [{ app: "slack" as const }, { domain: "notion.so" }];
+    expect(connectRowReady(items, { facts: null, since: NOW, now: NOW + ROW_SETTLE_MS - 1 })).toBe(false);
+    expect(connectRowReady(items, { facts: null, since: NOW, now: NOW + ROW_SETTLE_MS })).toBe(true);
+  });
+
+  it("tries a failed list read again after 2 s, then twice as long each time, never more than a minute", () => {
+    expect([1, 2, 3, 4, 5, 6, 7, 50].map(connectionsRetryMs)).toEqual([2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000, 60_000]);
+    expect(connectionsRetryMs(1)).toBe(CONNECTIONS_RETRY_BASE_MS);
+    expect(connectionsRetryMs(1_000)).toBe(CONNECTIONS_RETRY_MAX_MS);
+    // A count that is not one is the first try.
+    expect(connectionsRetryMs(0)).toBe(2_000);
+    expect(connectionsRetryMs(Number.NaN)).toBe(2_000);
   });
 
   it("names the domains that need a lookup: not built-ins, not connections, each once", () => {
@@ -616,7 +678,25 @@ describe("appChosenItems: the cards the app picks when the bot does not", () => 
     expect(view).toMatchObject({ state: "connected", connectionId: "a1", primaryLabel: "Let Nova use it" });
     // Its row is settled and asks the catalog nothing.
     expect(domainsToLookUp(appChosenItems(f, null, true), f)).toEqual([]);
-    expect(connectRowReady(appChosenItems(f, null, true), { facts: f, lookupFor: () => "unknown", since: NOW, now: NOW })).toBe(true);
+    expect(connectRowReady(appChosenItems(f, null, true), { facts: f, since: NOW, now: NOW })).toBe(true);
+  });
+
+  it("offers Slack once, as the bot's own card: the person's own Slack integration connection is never a second card", () => {
+    const f = facts([
+      own("a1", "Slack", "slack.com", "2026-10-05T00:00:00.000Z"),
+      own("a2", "Notion", "notion.so", "2026-10-03T00:00:00.000Z"),
+      own("a3", "Slack", "acme.slack.com", "2026-10-04T00:00:00.000Z"),
+      // No domain on the list: it would be named slack.com from its provider.
+      connection({ id: "a4", provider: "slack", createdAt: "2026-10-06T00:00:00.000Z", installation: { displayName: "Slack" } }),
+    ]);
+    const notion = { domain: "notion.so", connectionId: "a2" };
+    expect(appChosenItems(f, null, false)).toEqual([{ app: "slack" }, notion]);
+    // Once the bot is in Slack there is no Slack card at all.
+    expect(appChosenItems(f, null, true)).toEqual([notion]);
+    expect(isSlackConnection({ domain: "slack.com", provider: "slack" })).toBe(true);
+    expect(isSlackConnection({ domain: null, provider: "slack" })).toBe(true);
+    expect(isSlackConnection({ domain: "linear.app", provider: "slack" })).toBe(false);
+    expect(isSlackConnection({ domain: null, provider: "linear" })).toBe(false);
   });
 
   it("offers nothing of a list that does not say who is looking", () => {
@@ -649,17 +729,42 @@ describe("companyAppsBrief: what the bot is told about the company's apps", () =
     );
   });
 
-  it("says Slack first when the bot is in Slack, and says what was granted from here as usable", () => {
+  it("says what was granted from here as usable", () => {
     const f = readCompanyConnections(rows());
-    const brief = companyAppsBrief({ facts: f, record: recordGrant(null, "acct_linear", "Linear", NOW), slackConnected: true });
-    expect(brief.split("\n")[0]).toBe("- Slack: connected, you can use it");
+    const brief = companyAppsBrief({ facts: f, record: recordGrant(null, "acct_linear", "Linear", NOW) });
     expect(brief).toContain("- Linear (linear.app): connected, you can use it");
   });
 
-  it("is empty with no apps and no Slack, and still names Slack with no list", () => {
+  it("is empty with no apps, and with no list", () => {
     expect(companyAppsBrief({ facts: readCompanyConnections(envelope()) })).toBe("");
     expect(companyAppsBrief({ facts: null })).toBe("");
-    expect(companyAppsBrief({ facts: null, slackConnected: true })).toBe("- Slack: connected, you can use it");
+  });
+
+  it("leaves the company's Slack integration connection out: Slack is the bot's own, said in the request", () => {
+    // Live, 2026-10-04: the brief listed a teammate's connection as
+    // "Slack (slack.com): connected, not shared with you", the bot named
+    // slack.com as an app to connect, and its card then showed the
+    // teammate's connection as if the bot were in Slack.
+    const slack = (over: Record<string, unknown> = {}) =>
+      connection({ id: "acct_slack", provider: "factory:slack", createdBy: "prs_teammate", installation: { displayName: "Slack", domain: "slack.com" }, ...over });
+    for (const row of [
+      slack(),
+      slack({ installation: { displayName: "Slack", domain: "https://acme.slack.com/" } }),
+      // No domain on the list: named by its provider.
+      slack({ provider: "slack", installation: { displayName: "Slack" } }),
+      // Open to everyone, and called a lot: still not an app in the bot's list.
+      slack({ access: { mode: "everyone" } }),
+    ]) {
+      const f = readCompanyConnections(envelope([connection(), row], { audit: Array.from({ length: 9 }, () => ({ connectionId: "acct_slack" })) }));
+      const brief = companyAppsBrief({ facts: f });
+      expect(brief).toBe("- Linear (linear.app): connected, not shared with you");
+      expect(brief.toLowerCase()).not.toContain("slack");
+    }
+    // Slack alone leaves nothing to list.
+    expect(companyAppsBrief({ facts: readCompanyConnections(envelope([slack()])) })).toBe("");
+    // A name that only resembles Slack's is some other app, and is listed.
+    const other = connection({ id: "acct_x", provider: "factory:slackbot-tools", installation: { displayName: "Slack Tools", domain: "slack-tools.com" } });
+    expect(companyAppsBrief({ facts: readCompanyConnections(envelope([other])) })).toBe("- Slack Tools (slack-tools.com): connected, not shared with you");
   });
 
   it("names an app with no domain by its provider, and keeps a name to one clean line", () => {

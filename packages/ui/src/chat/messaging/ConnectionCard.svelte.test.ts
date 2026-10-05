@@ -422,17 +422,26 @@ describe("a card that keeps one height", () => {
     expect(el.getAttribute("style")).toBeNull();
   });
 
-  it("is 168px tall in every state, with one line of copy, and the rows scroll inside", () => {
+  it("is 168px tall in every state, with the sentence on two rows at most, and the rows scroll inside", () => {
     // happy-dom does not lay out the component's stylesheet, so the rule is
     // read from the source: one constant, one clamp. Owner, 2026-10-03: the
-    // 240px cards took too much room; about 168px, header, one line, buttons.
+    // 240px cards took too much room; about 168px, header, the sentence,
+    // buttons. Owner, 2026-10-04: one row cut "Ask them to share it with
+    // ..." off, so the sentence may take two rows. The card's height is the
+    // same constant either way, so the cards of one row stay equal.
     const cardSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ConnectionCard.svelte"), "utf8");
     const heightRule = cardSource.match(/--cc-height:\s*(\d+)px/);
     expect(heightRule?.[1]).toBe("168");
     expect(cardSource).toMatch(/\.connection-card\s*\{[^}]*height:\s*var\(--cc-height\)/);
+    // The height is set once, on the card, and no state changes it.
+    expect(cardSource.match(/--cc-height:/g)).toHaveLength(1);
+    expect(cardSource.match(/[^-]height:\s*var\(--cc-height\)/g)).toHaveLength(1);
     const line = cardSource.match(/\.connection-card-line\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(line).toMatch(/-webkit-line-clamp:\s*1\b/);
-    expect(line).toMatch(/\bline-clamp:\s*1\b/);
+    expect(line).toMatch(/-webkit-line-clamp:\s*2\b/);
+    expect(line).toMatch(/\bline-clamp:\s*2\b/);
+    // The bot's reason stays one row under it.
+    const reason = cardSource.match(/\.connection-card-reason\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(reason).toMatch(/-webkit-line-clamp:\s*1\b/);
     // The scroll area keeps scrolling inside the shorter card.
     const scroll = cardSource.match(/\.connection-card-scroll\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(scroll).toMatch(/overflow-y:\s*auto/);
