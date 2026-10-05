@@ -59,6 +59,7 @@ mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
+mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
 mod webview_asset_cache;

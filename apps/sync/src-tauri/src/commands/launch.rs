@@ -198,24 +198,32 @@ fn validate_reveal_target(path: &str) -> Result<PathBuf, String> {
 }
 
 /// Where the ChatGPT app carries its embedded Codex CLI. Codex desktop is
-/// distributed inside ChatGPT.app, and the bundle ships the full CLI at
-/// Contents/Resources/codex — so a machine with the app needs NOTHING
-/// installed for a workspace launch.
+/// distributed inside ChatGPT.app, and the bundle ships the full CLI, so a
+/// machine with the app needs NOTHING installed for a workspace launch.
+///
+/// The CLI's place in the bundle has moved: ChatGPT 26.928 (bundle id
+/// `com.openai.codex`) ships it at `Contents/Resources/codex-cli/bin/codex`
+/// and no longer at `Contents/Resources/codex`, where older builds had it.
+/// Both are tried, newest layout first.
 #[cfg(target_os = "macos")]
 pub fn bundled_codex_bin() -> Option<std::path::PathBuf> {
-    let candidates = [
-        std::path::PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"),
-        std::path::PathBuf::from("/Applications/Codex.app/Contents/Resources/codex"),
-    ];
-    let home = dirs::home_dir();
-    candidates
-        .into_iter()
-        .chain(home.into_iter().flat_map(|h| {
-            [
-                h.join("Applications/ChatGPT.app/Contents/Resources/codex"),
-                h.join("Applications/Codex.app/Contents/Resources/codex"),
-            ]
-        }))
+    let mut app_dirs = vec![std::path::PathBuf::from("/Applications")];
+    if let Some(home) = dirs::home_dir() {
+        app_dirs.push(home.join("Applications"));
+    }
+    bundled_codex_bin_in(&app_dirs)
+}
+
+/// The bundled Codex CLI inside ChatGPT.app or Codex.app under any of
+/// `app_dirs`, checked in order.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn bundled_codex_bin_in(app_dirs: &[std::path::PathBuf]) -> Option<std::path::PathBuf> {
+    const BUNDLES: [&str; 2] = ["ChatGPT.app", "Codex.app"];
+    const CLI_PATHS: [&str; 2] = ["Contents/Resources/codex-cli/bin/codex", "Contents/Resources/codex"];
+    app_dirs
+        .iter()
+        .flat_map(|dir| BUNDLES.iter().map(move |bundle| dir.join(bundle)))
+        .flat_map(|app| CLI_PATHS.iter().map(move |rel| app.join(rel)))
         .find(|p| p.is_file())
 }
 
@@ -625,6 +633,35 @@ mod tests {
         assert!(validate_claude_deep_link("https://evil.example/x").is_err());
         assert!(validate_claude_deep_link("file:///etc/passwd").is_err());
         assert!(validate_claude_deep_link("claude:/oops").is_err());
+    }
+
+    #[test]
+    fn bundled_codex_bin_finds_the_cli_where_current_and_older_chatgpt_builds_keep_it() {
+        let root = std::env::temp_dir().join(format!("hq-codex-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let system = root.join("Applications");
+        let user = root.join("home/Applications");
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), None);
+
+        // Older ChatGPT.app: Contents/Resources/codex, in the user folder.
+        let old = user.join("ChatGPT.app/Contents/Resources/codex");
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(old.clone()));
+
+        // Current ChatGPT.app (26.928): Contents/Resources/codex-cli/bin/codex.
+        let current = system.join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        std::fs::write(&current, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[system.clone(), user.clone()]), Some(current));
+
+        // A standalone Codex.app with the new layout.
+        let standalone_root = root.join("standalone");
+        let standalone = standalone_root.join("Codex.app/Contents/Resources/codex-cli/bin/codex");
+        std::fs::create_dir_all(standalone.parent().unwrap()).unwrap();
+        std::fs::write(&standalone, b"#!/bin/sh\n").unwrap();
+        assert_eq!(bundled_codex_bin_in(&[standalone_root]), Some(standalone));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
