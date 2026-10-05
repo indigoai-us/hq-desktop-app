@@ -273,6 +273,22 @@ describe("which state a card draws from", () => {
     expect(connectionForStateItem(null, { domain: "linear.app" })).toBeNull();
   });
 
+  it("never takes a bot's id for a connection the list gives no domain for", () => {
+    const facts = readCompanyConnections({
+      viewer: { personUid: "prs_me", canManageIntegrations: true },
+      connections: [
+        { id: "acct_custom", provider: "factory:custom", status: "connected", createdBy: "prs_teammate", createdAt: "2026-10-01" },
+        { id: "acct_notion", provider: "factory:notion", status: "connected", createdAt: "2026-10-02", installation: { displayName: "Notion", domain: "notion.so" } },
+      ],
+    });
+    expect(connectionForStateItem(facts, { domain: "notion.so", connectionId: "acct_custom" })?.id).toBe("acct_notion");
+    const noNotion = readCompanyConnections({
+      viewer: { personUid: "prs_me", canManageIntegrations: true },
+      connections: [{ id: "acct_custom", provider: "factory:custom", status: "connected", createdBy: "prs_teammate", createdAt: "2026-10-01" }],
+    });
+    expect(connectionForStateItem(noNotion, { domain: "notion.so", connectionId: "acct_custom" })).toBeNull();
+  });
+
   it("Slack stays first and the row three cards for state-carrying items", () => {
     const items = connectItems([
       { domain: "linear.app", state: STATE },

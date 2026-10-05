@@ -6956,7 +6956,15 @@
     setConnectionNote(agentUid, noteKey, null);
     const connection = connectionForStateItem(company, { domain, connectionId: detail.connectionId ?? null });
     if (detail.action === "allow") {
-      return connection ? { target: "integration", action: "allow", domain, connectionId: connection.id } : null;
+      if (!connection) return null;
+      // The live card with the old path's checks: act only if it still offers
+      // "Let {bot} use it" (the person looking made it, the bot cannot use it yet).
+      const live = integrationCardView(
+        { domain, connectionId: connection.id },
+        { botName: input.botName, record: input.record, facts: company, lookup: input.lookupFor(domain), now: Date.now() },
+      );
+      const offersAllow = live?.primaryAction === "allow" && live.primaryLabel !== null && live.connectionId === connection.id;
+      return offersAllow ? { target: "integration", action: "allow", domain, connectionId: connection.id } : null;
     }
     // Connect (or its modal): not when it is connected now, or the person may not add apps.
     if (connection || !company.canManage) return null;

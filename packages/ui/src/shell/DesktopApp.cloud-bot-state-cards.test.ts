@@ -174,7 +174,10 @@ async function settle(times = 20): Promise<void> {
 
 const DM_ROW = { id: `dm:${NOVA}`, kind: "dm", title: "Nova", personUid: NOVA, companyUid: COMPANY } as ConversationRow;
 
-async function mountDm(w: World, options: { role?: string; wakes?: ChatWakeBus; opened?: string } = {}): Promise<void> {
+async function mountDm(
+  w: World,
+  options: { role?: string; wakes?: ChatWakeBus; opened?: string; hostThread?: Row[] } = {},
+): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(DesktopApp, {
@@ -189,6 +192,7 @@ async function mountDm(w: World, options: { role?: string; wakes?: ChatWakeBus; 
       wakes: options.wakes ?? createChatWakeBus(),
       coreFixtures: false,
       onopenurl: () => {},
+      ...(options.hostThread ? { messagesByRow: () => options.hostThread as never } : {}),
     },
   });
   await vi.waitFor(() => expect(threadText()).toContain(options.opened ?? "Hello"));
@@ -279,6 +283,48 @@ describe("DesktopApp: cards drawn from the bot's state", () => {
     expect(w.grantConnectionAccess).not.toHaveBeenCalled();
   });
 
+  it("a bot's id for a connection the list gives no domain for is never shared from an app's card", async () => {
+    // A teammate's custom connection with no listed domain, and no Notion in the list.
+    const custom: Row = {
+      id: "acct_custom",
+      provider: "factory:custom",
+      status: "connected",
+      createdBy: "prs_me",
+      createdAt: "2026-10-02T13:00:00.000Z",
+      access: { mode: "private", grantCount: 0 },
+      installation: { displayName: "Custom" },
+    };
+    const notionClaim = {
+      domain: "notion.so",
+      state: { connected: true, usableByBot: false, connectionId: "acct_custom", createdByPersonUid: "prs_me", accessMode: "private" },
+      asOf: AS_OF,
+    };
+    const w = world(page(HELLO, novaCards("b1", [SLACK_ABSENT, notionClaim], 20)), {
+      listConnections: vi.fn(async () => ok(list([custom]))),
+    });
+    await mountDm(w);
+    await vi.waitFor(() => expect(primary("notion.so")?.textContent?.trim()).toBe("Let Nova use it"));
+    primary("notion.so")!.click();
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settle();
+    expect(w.grantConnectionAccess).not.toHaveBeenCalled();
+  });
+
+  it("an allow press shares nothing when the live list says someone else made the connection", async () => {
+    // The bot says the person made Linear; the list says a teammate did.
+    const theirs = { ...LINEAR_ROW, createdBy: "prs_teammate" };
+    const w = world(page(HELLO, novaCards("b1", [SLACK_ABSENT, LINEAR_MINE, NOTION_OFF], 20)), {
+      listConnections: vi.fn(async () => ok(list([theirs]))),
+    });
+    await mountDm(w);
+    await vi.waitFor(() => expect(primary("linear.app")).not.toBeNull());
+    primary("linear.app")!.click();
+    await vi.waitFor(() => expect(line("linear.app")).toBe("A teammate connected this. Ask them to share it with Nova."));
+    expect(w.listConnections).toHaveBeenCalledTimes(1);
+    expect(w.grantConnectionAccess).not.toHaveBeenCalled();
+  });
+
   it("Connect on a state card reads the list and the catalog, then starts the connection", async () => {
     const w = world(page(HELLO, novaCards("b1", [SLACK_ABSENT, LINEAR_MINE, NOTION_OFF], 20)));
     await mountDm(w);
@@ -324,6 +370,17 @@ describe("DesktopApp: cards drawn from the bot's state", () => {
     await mountDm(w);
     await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(line("linear.app")).toBe("Nova can use it."));
+    await settle();
+    expect(w.listConnections).toHaveBeenCalledTimes(1);
+  });
+
+  it("a notice in the host's stored thread newer than the bot's state reads the live state once", async () => {
+    const notice = mine("n1", buildAgentToolConnectedNotice({ personName: "Corey", name: "Linear", connectionId: "acct_linear" }), 40);
+    const cardsMessage = novaCards("b1", [SLACK_ABSENT, LINEAR_MINE, NOTION_OFF], 20);
+    // The server's page has no notice; the host's stored thread does.
+    const w = world(page(HELLO, cardsMessage));
+    await mountDm(w, { hostThread: [HELLO, cardsMessage, notice] });
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledTimes(1));
     await settle();
     expect(w.listConnections).toHaveBeenCalledTimes(1);
   });

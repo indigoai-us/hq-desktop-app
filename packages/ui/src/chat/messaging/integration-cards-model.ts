@@ -662,8 +662,8 @@ export function stateIsCurrent(stateAt: number | null, liveAt: number | null | u
 /**
  * The live connection a card drawn from the bot's state stands for: the one
  * with the state's connection id, when the list has it and its listed domain
- * is the card's (or the list gives none), else the one the domain names. A
- * bot's id never ties a card titled one app to another app's connection.
+ * is the card's, else the one the domain names. A bot's id never ties a card
+ * titled one app to another app's connection, nor to one with no listed domain.
  */
 export function connectionForStateItem(
   facts: CompanyConnections | null | undefined,
@@ -674,7 +674,9 @@ export function connectionForStateItem(
   if (!domain) return null;
   const id = item.connectionId?.trim();
   const byId = id ? facts.connections.find((c) => c.id === id) : undefined;
-  if (byId && (byId.domain === null || sameSite(byId.domain, domain))) return byId;
+  // A connection the list gives no domain for is reached by id only from the
+  // app's own picks (`connectionForDomain`), never from a bot's id.
+  if (byId && byId.domain !== null && sameSite(byId.domain, domain)) return byId;
   return connectionForDomain(facts, domain);
 }
 
