@@ -130,7 +130,7 @@ export type SummaryLaunchState =
 
 const FALLBACK_HQ_PATH = '~/hq';
 
-export function primaryCli(tools: AiTools | null): CliTool | null {
+function primaryCli(tools: AiTools | null): CliTool | null {
   if (!tools) return null;
   if (tools.claude_cli) return 'claude';
   if (tools.codex_cli) return 'codex';
@@ -138,13 +138,13 @@ export function primaryCli(tools: AiTools | null): CliTool | null {
   return null;
 }
 
-export function toolDisplayName(tool: CliTool): string {
+function toolDisplayName(tool: CliTool): string {
   if (tool === 'claude') return 'Claude';
   if (tool === 'codex') return 'Codex';
   return 'Grok';
 }
 
-export function cliTerminalLabel(tool: CliTool): string {
+function cliTerminalLabel(tool: CliTool): string {
   if (tool === 'claude') return 'Claude Code';
   if (tool === 'codex') return 'Codex CLI';
   return 'Grok CLI';
