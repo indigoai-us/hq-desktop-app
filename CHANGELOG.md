@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 

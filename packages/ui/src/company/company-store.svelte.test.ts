@@ -7,6 +7,8 @@ import {
   companyStore,
   configureCompanyApi,
   isCompanyResourceUnavailable,
+  setActiveCompanyResource,
+  startCompanyStore,
   stopCompanyStore,
 } from "./company-store.svelte";
 import {
@@ -60,5 +62,25 @@ describe("companyStore Activity request lifecycle", () => {
     await expect(companyStore.loadActivity("indigo")).rejects.toSatisfy(
       (err: unknown) => isCompanyResourceUnavailable(err),
     );
+  });
+
+  it("logs a failed focus refresh and still accepts the next load", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const getSecrets = vi.fn<CompanyApi["getSecrets"]>(async () => {
+      throw new Error("secrets down");
+    });
+    configureCompanyApi({ getActivity, getSecrets } as unknown as CompanyApi);
+    try {
+      setActiveCompanyResource("indigo", "secrets");
+      startCompanyStore();
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() =>
+        expect(debug).toHaveBeenCalledWith("company-store: refresh failed", "secrets down"),
+      );
+      getSecrets.mockResolvedValueOnce(ok([]));
+      await expect(companyStore.loadSecrets("indigo", true)).resolves.toEqual([]);
+    } finally {
+      debug.mockRestore();
+    }
   });
 });
