@@ -1729,6 +1729,81 @@ fn index_lock_path(git_dir: &Path) -> PathBuf {
     git_dir.join("index.lock")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexLockIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    len: u64,
+    #[cfg(not(unix))]
+    modified: Option<SystemTime>,
+}
+
+fn index_lock_identity(path: &Path) -> Option<IndexLockIdentity> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(IndexLockIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Some(IndexLockIdentity {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// True only when this exact git PID has the lock open. Used once on HQ's kill
+/// path; routine stale-lock probing remains fail-closed and process-agnostic.
+#[cfg(unix)]
+fn index_lock_held_by_pid(lock_path: &Path, pid: u32) -> bool {
+    let mut cmd = Command::new("lsof");
+    paths::no_window(&mut cmd);
+    cmd.arg("-t").arg("--").arg(lock_path);
+    match cmd.output() {
+        Ok(out) => out
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| std::str::from_utf8(line).ok())
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .any(|holder| holder == pid),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn index_lock_held_by_pid(_lock_path: &Path, _pid: u32) -> bool {
+    // Windows does not provide the lsof-based ownership proof. Preserve the
+    // hard-timeout recovery path there rather than guessing who made the lock.
+    false
+}
+
+fn remove_killed_git_lock(lock_path: &Path, identity: IndexLockIdentity) -> bool {
+    if index_lock_identity(lock_path) != Some(identity) || holder_present(lock_path) {
+        return false;
+    }
+    match fs::remove_file(lock_path) {
+        Ok(()) => true,
+        Err(err) => {
+            log(
+                LOG_TAG,
+                &format!("could not remove index.lock owned by the killed git child: {err}"),
+            );
+            false
+        }
+    }
+}
+
 /// `(holder_present, git_process_running)`. Both probes fail closed: if we
 /// cannot answer, we answer "in use".
 #[cfg(test)]
@@ -3063,7 +3138,7 @@ fn run_mirror(
     // newly-added oversized file is caught before it is committed — measuring
     // HEAD instead would let this pass commit and push it into history, where
     // nothing short of a history rewrite could remove it again.
-    run_git(hq_folder, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
+    run_git_in_git_dir(hq_folder, git_dir, &["add", "-A"], GIT_INDEX_TIMEOUT)?;
 
     // The scope-shrink path preserves clean out-of-scope files under
     // `.hq/scope-quarantine/<journalSlug>/<original path>`. `.hq` is ignored,
@@ -3144,8 +3219,9 @@ fn run_mirror(
     // dies with "gpg: signing failed: No pinentry" → "fatal: failed to write
     // commit object". Observed in the wild: dozens of silently lost mirror
     // commits a day. An automated snapshot gains nothing from a signature.
-    match run_git(
+    match run_git_in_git_dir(
         hq_folder,
+        git_dir,
         &["commit", "--no-gpg-sign", "--no-verify", "-m", &msg],
         GIT_INDEX_TIMEOUT,
     ) {
@@ -3512,7 +3588,7 @@ fn guard_bulk_deletions(hq_folder: &str, git_dir: &Path) -> Result<BulkGuard, St
             // the index for the next writer (ours or the autocommit hook) to
             // commit. This only rewinds the index to HEAD; the working tree is
             // untouched.
-            if let Err(e) = run_git(hq_folder, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
+            if let Err(e) = run_git_in_git_dir(hq_folder, git_dir, &["reset", "-q"], GIT_INDEX_TIMEOUT) {
                 log(
                     LOG_TAG,
                     &format!("{hq_folder}: index reset after refusal failed: {e}"),
@@ -4424,8 +4500,11 @@ fn reset_quarantined_mirror_paths(hq_folder: &str, paths: &[String]) -> Result<u
     }
     let pathspec = write_pathspec_file(hq_folder, "mirror-quarantine-reset-", paths)?;
     let pathspec_arg = format!("--pathspec-from-file={}", pathspec.path().display());
-    let out = git_output(
+    let git_dir = resolve_git_dir(hq_folder)
+        .map_err(|_| "git reset of quarantined mirror paths failed to run".to_string())?;
+    let out = git_output_for_git_dir(
         hq_folder,
+        &git_dir,
         &[
             "--literal-pathspecs",
             "reset",
@@ -5155,8 +5234,19 @@ fn count_nul_terminated(bytes: &[u8]) -> usize {
     bytes.iter().filter(|b| **b == 0).count()
 }
 
+#[cfg(test)]
 fn run_git(cwd: &str, args: &[&str], timeout: Duration) -> Result<(), String> {
-    let out = git_output(cwd, args, timeout)?;
+    let git_dir = resolve_git_dir(cwd)?;
+    run_git_in_git_dir(cwd, &git_dir, args, timeout)
+}
+
+fn run_git_in_git_dir(
+    cwd: &str,
+    git_dir: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<(), String> {
+    let out = git_output_for_git_dir(cwd, git_dir, args, timeout)?;
     if !out.status.success() {
         return Err(format!(
             "git {} failed (exit {}): {}",
@@ -5171,10 +5261,55 @@ fn run_git(cwd: &str, args: &[&str], timeout: Duration) -> Result<(), String> {
     Ok(())
 }
 
+fn git_output_for_git_dir(
+    cwd: &str,
+    git_dir: &Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, String> {
+    let lock_path = index_lock_path(git_dir);
+    let lock_was_absent = matches!(
+        fs::symlink_metadata(&lock_path),
+        Err(ref error) if error.kind() == ErrorKind::NotFound
+    );
+    git_output_with_lock_tracking(
+        cwd,
+        args,
+        timeout,
+        Some((&lock_path, lock_was_absent)),
+    )
+}
+
 /// Run git with a hard ceiling. The mirror runs on a detached thread with no
 /// supervision, so an unbounded `.output()` here is how `.git/index.lock` ends
 /// up held for hours.
 fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, String> {
+    git_output_with_lock_tracking(cwd, args, timeout, None)
+}
+
+fn git_output_with_lock_tracking(
+    cwd: &str,
+    args: &[&str],
+    timeout: Duration,
+    tracked_lock: Option<(&Path, bool)>,
+) -> Result<Output, String> {
+    let mut killed_lock = None;
+    let result = git_output_inner(cwd, args, timeout, tracked_lock, &mut killed_lock);
+    if let (Some((lock_path, true)), Some(identity)) = (tracked_lock, killed_lock) {
+        if remove_killed_git_lock(lock_path, identity) {
+            log(LOG_TAG, "removed index.lock left by an HQ git child killed at its timeout");
+        }
+    }
+    result
+}
+
+fn git_output_inner(
+    cwd: &str,
+    args: &[&str],
+    timeout: Duration,
+    tracked_lock: Option<(&Path, bool)>,
+    killed_lock: &mut Option<IndexLockIdentity>,
+) -> Result<Output, String> {
     let mut cmd = Command::new("git");
     paths::no_window(&mut cmd);
     cmd.arg("-C")
@@ -5208,7 +5343,13 @@ fn git_output(cwd: &str, args: &[&str], timeout: Duration) -> Result<Output, Str
     let stdout_rx = drain_pipe(child.stdout.take());
     let stderr_rx = drain_pipe(child.stderr.take());
 
-    let status = wait_with_timeout(&mut child, timeout, &label)?;
+    let status = wait_with_timeout(
+        &mut child,
+        timeout,
+        &label,
+        tracked_lock,
+        killed_lock,
+    )?;
 
     // A stalled drain must never look like empty output: `count_staged_
     // deletions` reading an empty stdout as "zero deletions" would wave a mass
@@ -5240,6 +5381,19 @@ fn put_git_in_own_process_group(cmd: &mut Command) {
 #[cfg(not(unix))]
 fn put_git_in_own_process_group(_cmd: &mut Command) {}
 
+fn kill_git_process_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as libc::pid_t;
+        // `put_git_in_own_process_group` made the child PID its process-group
+        // ID. Stop hooks and helpers too, so none can outlive the failed write.
+        if unsafe { libc::killpg(pgid, libc::SIGKILL) } == 0 {
+            return;
+        }
+    }
+    let _ = child.kill();
+}
+
 /// Read a child pipe to EOF on its own thread and deliver the bytes over a
 /// channel. The thread is deliberately never joined — see [`git_output`].
 fn drain_pipe<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> {
@@ -5254,12 +5408,25 @@ fn drain_pipe<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u
     rx
 }
 
+fn captured_killed_lock(
+    child: &std::process::Child,
+    tracked_lock: Option<(&Path, bool)>,
+) -> Option<IndexLockIdentity> {
+    let (lock_path, absent_before) = tracked_lock?;
+    if !absent_before || !index_lock_held_by_pid(lock_path, child.id()) {
+        return None;
+    }
+    index_lock_identity(lock_path)
+}
+
 /// Poll a child to completion, killing it once `timeout` elapses. Extracted so
 /// the kill path is testable against a child that genuinely blocks.
 fn wait_with_timeout(
     child: &mut std::process::Child,
     timeout: Duration,
     label: &str,
+    tracked_lock: Option<(&Path, bool)>,
+    killed_lock: &mut Option<IndexLockIdentity>,
 ) -> Result<std::process::ExitStatus, String> {
     // The ceiling counts only time git was actually allowed to run. The CPU
     // throttle duty-cycles this child's process group, so plain wall time would
@@ -5272,7 +5439,8 @@ fn wait_with_timeout(
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
                 if deadline.expired() {
-                    let _ = child.kill();
+                    *killed_lock = captured_killed_lock(child, tracked_lock);
+                    kill_git_process_group(child);
                     let _ = child.wait();
                     return Err(format!(
                         "git {label} timed out after {}s of runnable time and was killed",
@@ -5282,7 +5450,8 @@ fn wait_with_timeout(
                 std::thread::sleep(GIT_POLL_INTERVAL);
             }
             Err(e) => {
-                let _ = child.kill();
+                *killed_lock = captured_killed_lock(child, tracked_lock);
+                kill_git_process_group(child);
                 let _ = child.wait();
                 return Err(format!("wait for git {label}: {e}"));
             }
@@ -14028,10 +14197,13 @@ mod tests {
             .expect("git available in test env");
         let _stdin = child.stdin.take().expect("piped stdin");
 
+        let mut killed_lock = None;
         let err = wait_with_timeout(
             &mut child,
             Duration::from_millis(200),
             "hash-object --stdin",
+            None,
+            &mut killed_lock,
         )
         .expect_err("a blocked child must time out");
 
@@ -14040,6 +14212,70 @@ mod tests {
             child.try_wait().expect("try_wait").is_some(),
             "the timed-out child must have been killed and reaped"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_git_write_removes_its_lock_before_the_next_write() {
+        let _serial = serial();
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let git_dir = git_dir_of(repo.path());
+        let lock_path = index_lock_path(&git_dir);
+
+        let bin = TempDir::new().unwrap();
+        let find_program = |name: &str| {
+            std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
+                .map(|directory| directory.join(name))
+                .find(|candidate| candidate.is_file())
+                .unwrap_or_else(|| panic!("{name} must be available on PATH"))
+        };
+        let lsof = find_program("lsof");
+        let pgrep = find_program("pgrep");
+        let fake_git = bin.path().join("git");
+        fs::write(
+            &fake_git,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"rev-parse\" ]; then\n  printf '%s\\n' \"$2/.git\"\n  exit 0\nfi\nif [ \"$1\" = \"-C\" ] && [ \"$3\" = \"add\" ]; then\n  printf '%s\\n' \"$$\" > \"$HQ_TEST_GIT_PID_FILE\"\n  exec 3>\"$2/.git/index.lock\"\n  printf 'partial index data' >&3\n  /bin/sleep 30 &\n  wait\nfi\nexit 1\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink(lsof, bin.path().join("lsof")).unwrap();
+            std::os::unix::fs::symlink(pgrep, bin.path().join("pgrep")).unwrap();
+        }
+
+        let previous_path = std::env::var_os("PATH");
+        let pid_file = bin.path().join("git.pid");
+        let previous_pid_file = std::env::var_os("HQ_TEST_GIT_PID_FILE");
+        std::env::set_var("PATH", bin.path());
+        std::env::set_var("HQ_TEST_GIT_PID_FILE", &pid_file);
+        let result = run_git(
+            repo.path().to_str().unwrap(),
+            &["add", "-A"],
+            Duration::from_millis(250),
+        );
+        if let Some(previous_path) = previous_path {
+            std::env::set_var("PATH", previous_path);
+        } else {
+            std::env::remove_var("PATH");
+        }
+        match previous_pid_file {
+            Some(previous_pid_file) => std::env::set_var("HQ_TEST_GIT_PID_FILE", previous_pid_file),
+            None => std::env::remove_var("HQ_TEST_GIT_PID_FILE"),
+        }
+        if let Ok(pid) = fs::read_to_string(&pid_file).unwrap_or_default().trim().parse::<i32>() {
+            // The baseline kills only the direct child, so clean its deliberate
+            // helper descendant before asserting the regression outcome.
+            unsafe { libc::killpg(pid, libc::SIGKILL) };
+        }
+
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(!lock_path.exists(), "HQ's killed writer left index.lock behind");
+        git_ok(repo.path(), &["add", "-A"]);
     }
 
     // ── B7: mirror commits are never gpg-signed ──────────────────────────
