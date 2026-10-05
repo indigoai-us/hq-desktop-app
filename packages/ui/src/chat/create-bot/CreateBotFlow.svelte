@@ -656,9 +656,9 @@
         {#if entryFix?.kind === "checkout"}
           <a class="flow-error-fix" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
         {:else if entryFix?.kind === "reload_quote"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Get the new price</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}><RailIcon name="refresh" />Get the new price</button>
         {:else if entryFix?.kind === "edit_handle" && step !== "details"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}>Change handle</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}><RailIcon name="pencil" />Change handle</button>
         {/if}
       </p>
     {/if}

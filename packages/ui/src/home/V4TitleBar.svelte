@@ -778,7 +778,7 @@
             aria-label="Open HQ folder in an AI tool"
             aria-describedby={describedBy || undefined}
             onclick={toggleLaunch}
-          >
+          ><RailIcon name="play" />
             Launch
             <Caret tone="var(--t3)" />
           </button>

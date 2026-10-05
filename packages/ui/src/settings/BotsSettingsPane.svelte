@@ -812,7 +812,7 @@
                   data-testid="settings-bots-restore-all"
                   disabled={restoreBusy || Boolean(adoptBusy)}
                   onclick={() => void restoreAll()}
-                >
+                ><RailIcon name="refresh" />
                   {restoreBusy ? "Restoring…" : BOT_RESTORE_FROM_SETTINGS}
                 </button>
                 {#if restoreResult}

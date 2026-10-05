@@ -512,7 +512,7 @@
                 onclick={copyRepairCommand}
                 disabled={repairCommandState === "copying"}
                 aria-busy={repairCommandState === "copying"}
-              >
+              ><RailIcon name="refresh" />
                 {repairCommandState === "copying" ? "Retrying…" : "Retry"}
               </button>
             </span>

@@ -147,7 +147,7 @@
             <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}>✕</button>
           </div>
         {/each}
-        <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</RailButton>
+        <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>Link</RailButton>
       </div>
     </div>
   </div>

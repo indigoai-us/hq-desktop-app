@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type { PlatformAdapter, SessionProviderId } from "@hq/platform";
   import { hostComputerNoun } from "@hq/platform";
   import "./settings-chrome.css";
@@ -230,7 +231,7 @@
               class="ss-btn"
               disabled={Boolean(busy) || loading}
               onclick={() => void connect(provider.id)}
-            >
+            ><RailIcon name="plug" />
               {busy === provider.id && action === "connect" ? "Connecting…" : `Connect ${provider.short}`}
             </button>
           {:else}
@@ -239,7 +240,7 @@
               class="ss-btn"
               disabled={Boolean(busy) || loading || !adapter?.sessions.installProvider}
               onclick={() => void install(provider.id)}
-            >
+            ><RailIcon name="download" />
               {busy === provider.id && action === "install" ? "Installing…" : `Install ${provider.short}`}
             </button>
           {/if}

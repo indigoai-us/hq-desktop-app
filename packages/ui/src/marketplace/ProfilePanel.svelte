@@ -479,7 +479,7 @@
           type="button"
           class="btn btn-secondary add-social"
           data-testid="profile-add-social"
-          onclick={addSocial}>+ Add link</button
+          onclick={addSocial}><RailIcon name="plus" />Add link</button
         >
       </div>
 

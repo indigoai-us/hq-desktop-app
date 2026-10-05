@@ -345,7 +345,7 @@
             void (onopendoor
               ? onopendoor(ttlMs)
               : store.setWillingness("open", ttlMs))}
-        ><RailIcon name="external" />
+        ><RailIcon name="door" />
           Open my door
         </button>
         <button
@@ -366,7 +366,7 @@
             void store.setConnectivity(
               self?.connectivity === "online" ? "offline" : "online",
             )}
-        ><RailIcon name="check" />
+        ><RailIcon name="bell" />
           {self?.connectivity === "online"
             ? "Mark me not reachable"
             : "Mark me reachable"}
@@ -453,7 +453,7 @@
         {#if mapMode}<OfficeMap selfUid={selfPersonUid} people={mapPeople} displayName={(uid)=>uid===selfPersonUid?"You":named(uid)} selected={selectedUid===selfPersonUid ? selfPersonUid : activeUid} onselect={(uid)=>{selectedUid=uid;if(uid===selfPersonUid)document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'});}} />{/if}
       <ul class="office-list" data-testid="office-list" aria-label={mapMode?"Selected office details":"People in this company"}>
         {#if mapMode && selectedUid===selfPersonUid}
-          <li class="office-row"><span class="office-room-eyebrow">YOUR HOME BASE</span><span class="office-person-avatar" aria-hidden="true">{initials(named(selfPersonUid))}</span><span class="office-name">Your office</span><span class="office-badges"><span>{WILLINGNESS_LABEL[self?.willingness ?? "knock"]}</span><span>{CONNECTIVITY_LABEL[self?.connectivity ?? "offline"]}</span></span><p class="office-empty">Your door stays with you while you work.</p><button class="office-button" onclick={()=>document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'})}><RailIcon name="settings" />Manage your door</button></li>
+          <li class="office-row"><span class="office-room-eyebrow">YOUR HOME BASE</span><span class="office-person-avatar" aria-hidden="true">{initials(named(selfPersonUid))}</span><span class="office-name">Your office</span><span class="office-badges"><span>{WILLINGNESS_LABEL[self?.willingness ?? "knock"]}</span><span>{CONNECTIVITY_LABEL[self?.connectivity ?? "offline"]}</span></span><p class="office-empty">Your door stays with you while you work.</p><button class="office-button" onclick={()=>document.querySelector('[data-testid="office-self"]')?.scrollIntoView({block:'nearest'})}><RailIcon name="sliders" />Manage your door</button></li>
         {/if}
         {#each people as person (person.personUid)}
           <li class="office-row" hidden={!filteredPeople.includes(person) || (mapMode && (selectedUid===selfPersonUid || person.personUid!==activeUid))} data-testid={`office-row-${person.personUid}`}>
@@ -536,7 +536,7 @@
                         ? null
                         : person.personUid)}
                   aria-expanded={composingFor === person.personUid}
-                >
+                ><RailIcon name="bell" />
                   Knock
                 </button>
                 <span

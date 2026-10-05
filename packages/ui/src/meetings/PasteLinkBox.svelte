@@ -78,7 +78,7 @@
 {/if}
 <div class="actions">
   <button type="button" class="btn primary" data-testid="paste-link-join" disabled={!provider || joining} aria-busy={joining} onclick={() => void join()}><RailIcon name="arrow-right" />{joining ? "Opening…" : "Join now"}</button>
-  <button type="button" class="btn" data-testid="paste-link-attach" disabled={!provider} aria-expanded={attaching} onclick={() => (attaching = !attaching)}>Attach to…</button>
+  <button type="button" class="btn" data-testid="paste-link-attach" disabled={!provider} aria-expanded={attaching} onclick={() => (attaching = !attaching)}><RailIcon name="link" />Attach to…</button>
   <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
 </div>
 {#if attaching && provider}

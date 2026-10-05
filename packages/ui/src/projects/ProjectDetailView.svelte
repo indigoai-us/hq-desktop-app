@@ -612,7 +612,7 @@
         class="back-button"
         data-testid="detail-back"
         onclick={onback}
-      >
+      ><RailIcon name="arrow-left" />
         <span>Projects</span>
       </button>
       <span class="crumb-sep" aria-hidden="true">/</span>

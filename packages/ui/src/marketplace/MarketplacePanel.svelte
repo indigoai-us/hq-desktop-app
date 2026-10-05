@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
@@ -643,7 +644,7 @@
             disabled={installing || !chosenTarget?.enabled}
             aria-busy={installing}
             onclick={runInstall}
-          >
+          ><RailIcon name="download" />
             {#if installing}
               <span
                 class="install-spinner"

@@ -769,7 +769,7 @@
                   data-testid="goal-detail-back"
                   aria-label="Back to goals list"
                   onclick={clearGoalSelection}
-                >
+                ><RailIcon name="arrow-left" />
                   Goals
                 </button>
                 <div class="goal-detail-heading title-stack">

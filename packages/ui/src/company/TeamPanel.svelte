@@ -397,7 +397,7 @@
                 data-testid="team-detail-back"
                 aria-label="Back to team list"
                 onclick={clearMemberSelection}
-              >
+              ><RailIcon name="arrow-left" />
                 Team
               </button>
               <div class="team-detail-heading title-stack">

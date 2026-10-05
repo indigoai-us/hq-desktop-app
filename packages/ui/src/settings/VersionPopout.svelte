@@ -457,7 +457,7 @@
         {#if checkingAnyUpdate}
           <span class="vp-inline-spinner" aria-hidden="true"></span>
           Checking app + Core…
-        {:else}
+        {:else}<RailIcon name="refresh" />
           Check all updates
         {/if}
       </button>
@@ -474,7 +474,7 @@
           {#if phase === "downloading"}
             <span class="vp-inline-spinner" aria-hidden="true"></span>
             Downloading…
-          {:else}
+          {:else}<RailIcon name="refresh" />
             Restart to update
           {/if}
         </button>
