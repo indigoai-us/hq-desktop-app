@@ -38,10 +38,28 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
         .map(|handle| handle.current())
 }
 
+/// Closed launch-source label using only evidence available on this platform.
+/// LaunchAgent argv distinguishes login-item launches on macOS. Windows' Run
+/// registration has no reliable process-origin signal, so it remains unknown
+/// unless the updater marker identifies the relaunch.
+pub fn desktop_liveness_launch_source(app: &AppHandle) -> &'static str {
+    let Some(inputs) = app.try_state::<LifecycleInputsHandle>() else {
+        return "unknown";
+    };
+    let from_login_item = std::env::args()
+        .any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    crate::commands::telemetry::classify_desktop_launch_source(
+        inputs.from_updater_restart,
+        from_login_item,
+        cfg!(target_os = "macos"),
+    )
+}
+
 /// Immutable lifecycle inputs captured at startup, for use by diagnostic
 /// commands that run after setup_lifecycle has returned.
 pub struct LifecycleInputsHandle {
     pub inputs: LifecycleInputs,
+    pub from_updater_restart: bool,
     pub manifest_incomplete: bool,
     pub tools_present: bool,
     pub bundled_cli_ready: bool,
@@ -119,6 +137,14 @@ pub fn setup_lifecycle(app: &AppHandle) {
     let _ = SETUP_LIFECYCLE_TIME.get_or_init(Instant::now);
     let launch_agent_relaunch =
         std::env::args().any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    let marker_matches = crate::commands::updater_restart_marker::consume_for_startup(
+        app,
+        crate::app_version::current(),
+    );
+    let from_updater_restart = crate::commands::updater_restart_marker::startup_is_updater_restart(
+        launch_agent_relaunch,
+        marker_matches,
+    );
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
         Err(e) => {
@@ -159,6 +185,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
                 consent_answered: false,
                 evidence_unreadable: true,
             },
+            from_updater_restart,
             manifest_incomplete: false,
             tools_present: false,
             bundled_cli_ready: false,
@@ -212,7 +239,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     // LaunchAgent starts include login and KeepAlive relaunches as well as an
     // updater kick. Recheck an initially missing root briefly so a just-updated
     // app does not mistake a settling filesystem for a deleted HQ folder.
-    let root_probe = probe_hq_root_for_startup(&hq_root, launch_agent_relaunch);
+    let root_probe = probe_hq_root_for_startup(&hq_root, from_updater_restart);
     let hq_root_valid = root_probe == HqRootProbe::Valid;
     let hq_root_unreadable = root_probe == HqRootProbe::Unreadable;
     if hq_root_unreadable {
@@ -277,7 +304,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // fresh installs still reach onboarding immediately when tools are absent.
         let mut resolved_programs = None;
         let tools_present = probe_local_toolchain_for_startup(
-            launch_agent_relaunch,
+            from_updater_restart,
             matches!(
                 classified.state,
                 LifecycleState::SteadyState
@@ -303,7 +330,11 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+                classified,
+                tools_present,
+                from_updater_restart,
+            )
         };
         let require_local_toolchain_demoted = !evidence_unreadable
             && classified.state != verdict.state
@@ -471,6 +502,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
+        from_updater_restart,
         manifest_incomplete,
         tools_present,
         bundled_cli_ready,
@@ -736,7 +768,7 @@ pub fn report_unexpected_startup_surface(
         diagnostic_tags.keychain_status,
         diagnostic_tags.ms_since_launch,
         diagnostic_tags.prior_surface,
-        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
+        state.from_updater_restart,
         crate::app_version::current(),
         diagnostic_tags.invalidation_marker_present,
         diagnostic_tags.marker_kind,
@@ -762,8 +794,7 @@ pub fn report_unexpected_startup_surface(
         return;
     }
 
-    let from_updater_restart =
-        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    let from_updater_restart = state.from_updater_restart;
 
     let payload = hq_desktop_core::unexpected_surface::build_payload(
         surface.clone(),

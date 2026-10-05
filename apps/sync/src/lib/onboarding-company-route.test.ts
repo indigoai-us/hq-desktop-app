@@ -8,6 +8,7 @@ import {
   isPaidMembershipRow,
   maskEmail,
   otherIdentityFromLookup,
+  priorPlanFromPayload,
   provisioningStateFromEntity,
   type CompanyInviteOffer,
   type MembershipCompany,
@@ -152,5 +153,29 @@ describe('provisioning states', () => {
     expect(isMissingBucketMessage(message)).toBe(true);
     expect(companyUidFromMissingBucket(message)).toBe('cmp_01ABC');
     expect(companyUidFromMissingBucket('timeout')).toBeNull();
+  });
+});
+
+describe('priorPlanFromPayload', () => {
+  it('reads a website plan pick from /membership/me', () => {
+    expect(priorPlanFromPayload({ planIntent: 'free', memberships: [] })).toBe('starter');
+    expect(priorPlanFromPayload({ planIntent: 'Starter' })).toBe('starter');
+    expect(priorPlanFromPayload({ signupPlan: 'team' })).toBe('workforce');
+    expect(priorPlanFromPayload({ planIntent: 'workforce' })).toBe('workforce');
+  });
+
+  it('reads it from the visitor block of the anonId lookup', () => {
+    expect(priorPlanFromPayload({ webIdentity: { plan: 'team' } })).toBe('workforce');
+    expect(priorPlanFromPayload({ visitorIdentity: { planIntent: 'free' } })).toBe('starter');
+  });
+
+  it('is unknown (the step asks) when nothing usable was sent', () => {
+    expect(priorPlanFromPayload(null)).toBeNull();
+    expect(priorPlanFromPayload({ memberships: [] })).toBeNull();
+    expect(priorPlanFromPayload({ planIntent: 'individual' })).toBeNull();
+    expect(priorPlanFromPayload({ planIntent: 'individual-free' })).toBeNull();
+    expect(priorPlanFromPayload({ planIntent: 42 })).toBeNull();
+    // A paid company's tier is not a pick for a NEW company.
+    expect(priorPlanFromPayload({ memberships: [{ planTier: 'team', teamPlanEnabled: true }] })).toBeNull();
   });
 });

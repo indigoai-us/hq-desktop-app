@@ -24,19 +24,6 @@ import type {
   UpdateInfo,
 } from './notificationGroups';
 
-/** Same-webview signal that keeps Inbox chrome aligned with the loaded feed. */
-export const NOTIFICATION_UNREAD_COUNT_EVENT =
-  'hq:notifications-unread-count';
-
-export function broadcastNotificationUnreadCount(count: number): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(
-    new CustomEvent<number>(NOTIFICATION_UNREAD_COUNT_EVENT, {
-      detail: Math.max(0, Math.round(count)),
-    }),
-  );
-}
-
 // ── Wire types (mirror the Rust structs, camelCase) ──────────────────────────
 export interface ActivityEntry {
   company: string;
@@ -100,7 +87,7 @@ export interface NotificationLoadResult {
  * the explicit tri-state so cold-start "unchecked" is never mistaken for a
  * trusted absence.
  */
-export function resolvePendingUpdateState(
+function resolvePendingUpdateState(
   value: PendingUpdateState | UpdateInfo | null,
 ): { state: UpdateLoadState; value: UpdateInfo | null } {
   if (value == null) return { state: 'resolved', value: null };
@@ -196,7 +183,7 @@ function fileKey(company: string, path: string): string {
 }
 
 /** Server max per-source page size (matches Rust `MAX_LIMIT`). */
-export const NOTIFICATION_HISTORY_LIMIT = 200;
+const NOTIFICATION_HISTORY_LIMIT = 200;
 
 /**
  * Load + merge the notification timeline (newest-first). Server-retained
@@ -206,7 +193,7 @@ export const NOTIFICATION_HISTORY_LIMIT = 200;
  * Requests the full retained page (200/source) so Inbox and the menubar feed
  * show previous notifications rather than a short default slice.
  */
-export async function loadNotificationTimeline(
+async function loadNotificationTimeline(
   limit: number = NOTIFICATION_HISTORY_LIMIT,
   options: NotificationLoadOptions = {},
 ): Promise<NotificationLoadResult> {
@@ -373,12 +360,4 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   } catch {
     return '';
   }
-}
-
-/** Up-to-two-letter initials for the 24px avatar chip ("Maya Chen" → "MC"). */
-export function initials(name: string): string {
-  const words = name.trim().split(/[\s._@-]+/).filter(Boolean);
-  if (words.length === 0) return '?';
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
 }

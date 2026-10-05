@@ -59,10 +59,12 @@ function sliceBetween(
 }
 
 // The captured-message expression in record_unexpected_watcher_exit — the seam
-// that decides whether a signal-only exit is named or dumped as a raw tuple.
+// that decides whether a signal-only exit is named or dumped as a raw tuple. Its
+// first arm is the exit-20 owner refusal (hq-desktop-app #1317), so the slice
+// starts there and still runs to the end of the whole expression.
 const messageBlock = sliceBetween(
   daemonSource,
-  'let message = if let Some(exit_description) = normalized_abort {',
+  'let message = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)',
   '    };',
   'watcher exit message expression',
 );
@@ -85,6 +87,17 @@ describe('watcher hangup attribution — source contracts', () => {
     // The both-present guard precedes the surviving raw rendering.
     expect(messageBlock).toMatch(
       /code\.is_some\(\) && signal\.is_some\(\)[\s\S]*?code=\{code:\?\} signal=\{signal:\?\}/,
+    );
+  });
+
+  it('names an exit-20 owner refusal only for a signal-free exit 20, ahead of the abort arm', () => {
+    // A SIGHUP or other signal never takes the refusal arm, so this seam still
+    // names signal exits through describe_exit below.
+    expect(messageBlock).toMatch(
+      /^let message = if code == Some\(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT\)\s*&& signal\.is_none\(\)/,
+    );
+    expect(messageBlock).toMatch(
+      /auto-sync watcher refused: another sync runner owns this HQ root[\s\S]*?\} else if let Some\(exit_description\) = normalized_abort \{/,
     );
   });
 

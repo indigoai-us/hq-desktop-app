@@ -186,6 +186,13 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   "packages/ui/src/marketplace/MarketplacePanel.svelte::.kind-chip, .cover-version",
   // Sticky settings error banner: only exists when a settings write failed.
   "packages/ui/src/settings/SettingsPage.svelte::.error",
+  // Card modal (Connect Slack, connect an app with a key): a dialog, the
+  // modal a person opens to connect an app. It is on screen only while they
+  // are in it, over the modal's own still art. Only the title plate and the
+  // glass panel blur; the full-window layer, the close button and the quiet
+  // buttons do not.
+  "packages/ui/src/chat/messaging/card-modal.css::.card-modal-plate",
+  "packages/ui/src/chat/messaging/card-modal.css::.card-modal-glass",
 ]);
 
 describe("backdrop-filter budget (live shell)", () => {

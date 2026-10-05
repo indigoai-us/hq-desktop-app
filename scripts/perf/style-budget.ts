@@ -38,7 +38,7 @@ export interface StyleFinding {
 }
 
 /** Strip `/* ... *\/` comments while preserving line breaks (line numbers must survive). */
-export function stripBlockComments(source: string): string {
+function stripBlockComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, (match) =>
     match.replace(/[^\n]/g, " "),
   );
@@ -50,7 +50,7 @@ export function stripBlockComments(source: string): string {
  * (`.a,\n.b {`). At-rules (`@media`, `@supports`, `@keyframes`) are skipped so
  * a declaration inside a media query still reports the real selector.
  */
-export function enclosingSelector(lines: string[], lineIndex: number): string {
+function enclosingSelector(lines: string[], lineIndex: number): string {
   let i = lineIndex;
   while (i >= 0 && !/\{\s*$/.test(lines[i])) i -= 1;
   if (i < 0) return "<unknown>";
@@ -100,7 +100,7 @@ export function findBackdropFilters(
  * subtree, 60x a second, on the main thread. `transform` and `opacity` are
  * composited on the GPU and cost effectively nothing.
  */
-export const LAYOUT_PROPERTIES = [
+const LAYOUT_PROPERTIES = [
   "width",
   "height",
   "top",
@@ -181,7 +181,7 @@ export function findLayoutTransitions(
  * overlay moved with `transform: translateX()`, which is what the skeleton
  * shimmer was converted to.
  */
-export const NON_COMPOSITED_KEYFRAME_PROPERTIES = [
+const NON_COMPOSITED_KEYFRAME_PROPERTIES = [
   "background-position",
   "background-position-x",
   "background-position-y",

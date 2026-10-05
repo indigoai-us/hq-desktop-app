@@ -1,8 +1,12 @@
 <script lang="ts">
   /**
-   * First-run company step. Shown once the install is done to a person with no
-   * active company: join a pending invite, or name a company (handle, optional
-   * website, teammates), then pick Starter or Workforce. Workforce opens the
+   * First-run company step. Shown after the setup explainers and before the
+   * ready ("Open HQ Desktop") screen, while the install runs, to a person with
+   * no active company: join a pending invite, or name a company (optional website,
+   * teammates), then pick Starter or Workforce. The company handle (slug) is
+   * made from the name and checked in the background; nobody types it. When
+   * the person already picked a plan on the website (`priorPlan`), the plan
+   * screen is skipped and that plan is used. Workforce opens the
    * Stripe checkout in the browser; the `hq-desktop://setup` return comes back
    * through the deep-link handler as `messages:open-setup`.
    *
@@ -22,18 +26,21 @@
     type SlugWatcher,
   } from '@hq/ui';
   import {
+    COMPANY_NAME_NEEDS_LETTERS,
+    COMPANY_NAME_UNUSABLE,
     createFirstRunCompanyApi,
+    deriveCompanyHandle,
     isCheckoutReturnFor,
     requestCompanyProvisioning,
     waitForProvisioning,
     parseInviteEmails,
     startWorkforceCheckout,
-    WORKFORCE_PRICE_LABEL,
     type FirstRunCompanyPath,
     type FirstRunPlan,
     type InvokeFn,
     type PlanLimitRefusal,
   } from '../../lib/first-run-company';
+  import { PLAN_CARDS, PLAN_PICKER_COPY, type PlanRowState } from '../../lib/plan-cards';
   import PlanUpgradeAction from '../PlanUpgradeAction.svelte';
   import { flushPendingCompanyInvites, queuePendingCompanyInvites } from '../../lib/pending-company-invites';
   import type { ProvisioningState } from '../../lib/onboarding-company-route';
@@ -87,6 +94,11 @@
     oncomplete: (result: CompanyStepResult) => void;
     namePrefillEnabled?: boolean;
     signedInEmail?: string | null;
+    /**
+     * The plan the person already picked on the website. When set, the plan
+     * screen is skipped: Starter finishes, Workforce opens checkout.
+     */
+    priorPlan?: FirstRunPlan | null;
   }
 
   let {
@@ -100,6 +112,7 @@
     oncomplete,
     namePrefillEnabled = false,
     signedInEmail = null,
+    priorPlan = null,
   }: Props = $props();
 
   type Phase = 'other-identity' | 'existing' | 'join' | 'loading' | 'details' | 'provisioning' | 'provision-failed' | 'plan' | 'checkout';
@@ -141,8 +154,12 @@
   let form = $state<CompanyDraftForm | null>(null);
   let values = $state<Record<string, string>>({});
   let prefilledCompanyName = $state<string | null>(null);
-  let slugEdited = false;
   let slugFieldId = $state<string | null>(null);
+  /** The name cannot give a usable handle; shown under the name field. */
+  let nameProblem = $state<string | null>(null);
+  /** Automatic retries (server suggestion, numbered suffix) for the current name. */
+  let handleRetries = 0;
+  const MAX_HANDLE_RETRIES = 5;
   let slugState = $state<SlugState>(SLUG_IDLE);
   let slugWatcher: SlugWatcher | null = null;
   let inviteText = $state('');
@@ -154,11 +171,18 @@
   let stopCheckoutListen: (() => void) | null = null;
 
   const invites = $derived(parseInviteEmails(inviteText));
+  /** The handle is derived from the name, so its field is never shown. */
+  const visibleFields = $derived((form?.fields ?? []).filter((field) => field.id !== slugFieldId));
   const missing = $derived(
     (form?.fields ?? []).filter((field) => field.required && !(values[field.id] ?? '').trim()),
   );
   const canCreate = $derived(
-    !busy && form !== null && missing.length === 0 && !slugBlocksSubmit(slugState) && invites.invalid.length === 0,
+    !busy &&
+      form !== null &&
+      missing.length === 0 &&
+      nameProblem === null &&
+      !slugBlocksSubmit(slugState) &&
+      invites.invalid.length === 0,
   );
 
   function browserStorage(): Storage | null {
@@ -167,15 +191,6 @@
     } catch {
       return null;
     }
-  }
-
-  function toHandle(name: string): string {
-    return name
-      .toLowerCase()
-      .normalize('NFKD')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40);
   }
 
   async function loadForm(): Promise<void> {
@@ -206,7 +221,7 @@
       ? createSlugWatcher({
           check: (slug) => invoke<unknown>('check_company_slug', { slug }),
           constraints: draft.form.fields.find((field) => field.id === slugFieldId)?.constraints ?? null,
-          onstate: (next) => (slugState = next),
+          onstate: onHandleState,
           onerror: (err) => console.warn('onboarding: company handle check failed', err),
         })
       : null;
@@ -220,21 +235,55 @@
 
   function setValue(fieldId: string, value: string): void {
     values = { ...values, [fieldId]: value };
-    if (fieldId === slugFieldId) {
-      slugEdited = true;
-      slugWatcher?.input(value);
-    } else if (fieldId === form?.nameFieldId && slugFieldId && !slugEdited) {
-      const handle = toHandle(value);
-      values = { ...values, [slugFieldId]: handle };
-      slugWatcher?.input(handle);
-    }
+    if (fieldId === form?.nameFieldId) deriveHandle(value, 0);
   }
 
-  function takeSuggestion(): void {
-    if (!slugFieldId || !slugState.suggestion) return;
-    slugEdited = true;
-    values = { ...values, [slugFieldId]: slugState.suggestion };
-    slugWatcher?.input(slugState.suggestion);
+  function useHandle(handle: string): void {
+    if (!slugFieldId) return;
+    values = { ...values, [slugFieldId]: handle };
+    slugWatcher?.input(handle);
+  }
+
+  /** Make the handle from the company name; `attempt` > 0 adds a number. */
+  function deriveHandle(name: string, attempt: number): void {
+    if (!slugFieldId) return;
+    if (attempt === 0) handleRetries = 0;
+    nameProblem = null;
+    if (!name.trim()) {
+      values = { ...values, [slugFieldId]: '' };
+      slugWatcher?.input('');
+      return;
+    }
+    const handle = deriveCompanyHandle(name, slugWatcher?.constraints() ?? null, attempt);
+    if (!handle) {
+      values = { ...values, [slugFieldId]: '' };
+      slugWatcher?.cancel();
+      slugState = SLUG_IDLE;
+      nameProblem = attempt === 0 ? COMPANY_NAME_NEEDS_LETTERS : COMPANY_NAME_UNUSABLE;
+      return;
+    }
+    useHandle(handle);
+  }
+
+  /**
+   * A taken handle moves on by itself: the server's suggestion first, else the
+   * next numbered handle. Nothing about the handle is shown unless no handle
+   * works, and then the message is about the name.
+   */
+  function onHandleState(next: SlugState): void {
+    slugState = next;
+    if (next.status !== 'taken' && next.status !== 'invalid') return;
+    const name = form?.nameFieldId ? (values[form.nameFieldId] ?? '') : '';
+    if (handleRetries >= MAX_HANDLE_RETRIES) {
+      nameProblem = COMPANY_NAME_UNUSABLE;
+      return;
+    }
+    handleRetries += 1;
+    if (next.status === 'taken' && next.suggestion && next.suggestion !== next.value) {
+      useHandle(next.suggestion);
+      return;
+    }
+    deriveHandle(name, handleRetries);
   }
 
   async function createCompany(): Promise<void> {
@@ -329,6 +378,11 @@
     } else {
       await sendHeldInvites(uid);
     }
+    if (priorPlan) {
+      // Already picked on the website: use it, never ask twice.
+      await confirmPlan(priorPlan);
+      return;
+    }
     phase = 'plan';
   }
 
@@ -398,8 +452,15 @@
     onswitchaccount?.();
   }
 
-  async function confirmPlan(): Promise<void> {
+  /** A plan card's CTA (or a plan already picked on the website). */
+  /** Spoken meaning of a row's mark. */
+  function markLabel(state: PlanRowState): string {
+    return state === 'on' ? 'included' : state === 'off' ? 'not included' : 'included with limits';
+  }
+
+  async function confirmPlan(choice: FirstRunPlan): Promise<void> {
     if (!companyUid || busy) return;
+    plan = choice;
     onTelemetry?.({ action: 'plan_chosen', companyUid, plan });
     if (plan === 'starter') {
       oncomplete({ outcome: 'created', companyUid, plan, paid: false });
@@ -417,6 +478,8 @@
       busy = false;
       error = result.reason;
       onTelemetry?.({ action: 'checkout_failed', companyUid });
+      // A skipped plan screen comes back so Starter is still one click away.
+      phase = 'plan';
       return;
     }
     checkoutUrl = result.url;
@@ -516,6 +579,16 @@
   }
 
 </script>
+
+{#snippet mark(state: PlanRowState)}
+  {#if state === 'on'}
+    <svg viewBox="0 0 16 16" width="12" height="12"><path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+  {:else if state === 'off'}
+    <svg viewBox="0 0 16 16" width="12" height="12"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /></svg>
+  {:else}
+    <svg viewBox="0 0 16 16" width="12" height="12"><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M5.5 7V5.2a2.5 2.5 0 015 0V7" fill="none" stroke="currentColor" stroke-width="1.5" /></svg>
+  {/if}
+{/snippet}
 
 <div class="follow-on on" data-testid="onboarding-company">
   {#if phase === 'other-identity' && path.kind === 'other-identity'}
@@ -666,7 +739,8 @@
           void createCompany();
         }}
       >
-        {#each form.fields as field (field.id)}
+        {#each visibleFields as field (field.id)}
+          {@const isName = field.id === form.nameFieldId}
           <label for={`onboarding-company-${field.id}`}>
             {fieldLabel(field)}
           </label>
@@ -678,16 +752,16 @@
             oninput={(event) => setValue(field.id, event.currentTarget.value)}
             required={field.required}
             disabled={busy}
-            aria-invalid={field.id === slugFieldId && (slugState.status === 'taken' || slugState.status === 'invalid')}
-            aria-describedby={field.id === slugFieldId ? 'onboarding-company-slug-status' : undefined}
+            aria-invalid={isName && nameProblem !== null}
+            aria-describedby={isName && nameProblem ? 'onboarding-company-name-problem' : undefined}
           />
-          {#if field.id === slugFieldId && slugState.message}
-            <p class="note inline-note" id="onboarding-company-slug-status" role="status" aria-live="polite">
-              {slugState.message}
-              {#if slugState.suggestion}
-                <button class="link" type="button" onclick={takeSuggestion}>Use {slugState.suggestion}</button>
-              {/if}
-            </p>
+          {#if isName && nameProblem}
+            <p
+              class="note inline-note warning"
+              id="onboarding-company-name-problem"
+              role="alert"
+              data-testid="onboarding-company-name-problem"
+            >{nameProblem}</p>
           {:else if field.error}
             <p class="note inline-note warning">{field.error}</p>
           {/if}
@@ -705,7 +779,7 @@
         {#if invites.invalid.length > 0}
           <p class="note inline-note warning" role="alert">Check these addresses: {invites.invalid.join(', ')}</p>
         {/if}
-        <div class="btns split">
+        <div class="btns company-actions" data-testid="onboarding-company-actions">
           <button
             class="btn btn-primary"
             type="submit"
@@ -734,33 +808,53 @@
       </div>
     {/if}
   {:else if phase === 'plan'}
-    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Choose a plan</h2>
-    <p class="body">Your company is ready. Pick how you want to start. You can change plans later.</p>
+    <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>{PLAN_PICKER_COPY.heading}</h2>
+    <p class="body">{PLAN_PICKER_COPY.subtitle}</p>
     {#if note}<p class="note inline-note" role="status">{note}</p>{/if}
     {#if error}<p class="note inline-note warning" role="alert" data-testid="onboarding-company-error">{error}</p>{/if}
-    <fieldset class="plan-options" disabled={busy}>
-      <legend class="sr-only">Plan</legend>
-      <label class="plan-option" class:selected={plan === 'starter'}>
-        <input type="radio" name="onboarding-plan" value="starter" bind:group={plan} data-testid="onboarding-plan-starter" />
-        <span class="plan-name">Starter</span>
-        <span class="plan-detail">Free. Shared files and HQ for a small team.</span>
-      </label>
-      <label class="plan-option" class:selected={plan === 'workforce'}>
-        <input type="radio" name="onboarding-plan" value="workforce" bind:group={plan} data-testid="onboarding-plan-workforce" />
-        <span class="plan-name">Workforce · {WORKFORCE_PRICE_LABEL}</span>
-        <span class="plan-detail">Hosted agents, Slack bots and meeting recording for the whole team.</span>
-      </label>
-    </fieldset>
-    <div class="btns split">
-      <button
-        class="btn btn-primary"
-        type="button"
-        data-testid="onboarding-plan-continue"
-        disabled={busy}
-        aria-busy={busy}
-        onclick={() => void confirmPlan()}
-      >{busy ? 'Opening checkout…' : plan === 'workforce' ? 'Continue to checkout' : 'Continue'}</button>
+    <div class="plan-cards" data-testid="onboarding-plan-options">
+      {#each PLAN_CARDS as card (card.plan)}
+        <section
+          class="plan-card"
+          class:featured={card.featured}
+          data-testid={`onboarding-plan-card-${card.plan}`}
+          aria-labelledby={`onboarding-plan-name-${card.plan}`}
+        >
+          <div class="plan-head">
+            <h3 class="plan-name" id={`onboarding-plan-name-${card.plan}`}>{card.name}</h3>
+            {#if card.badge}<span class="plan-badge" data-testid="onboarding-plan-badge">{card.badge}</span>{/if}
+          </div>
+          <p class="plan-price"><span class="plan-amount">{card.price}</span> <span class="plan-suffix">{card.suffix}</span></p>
+          <p class="plan-blurb">{card.blurb}</p>
+          <ul class="plan-rows">
+            {#each card.rows as row (row.label)}
+              <li class="plan-row" data-state={row.state}>
+                <span class="plan-mark" aria-hidden="true">{@render mark(row.state)}</span>
+                <span class="plan-row-text">
+                  <span class="sr-only">{row.label}, {markLabel(row.state)}: </span><span class="plan-value">{row.value}</span>{#if row.detail}<span class="plan-row-detail">{` · ${row.detail}`}</span>{/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+          <div class="plan-spacer" aria-hidden="true"></div>
+          <button
+            class="btn plan-cta"
+            class:btn-primary={card.featured}
+            class:btn-secondary={!card.featured}
+            type="button"
+            data-testid={`onboarding-plan-choose-${card.plan}`}
+            disabled={busy}
+            aria-busy={busy && plan === card.plan}
+            onclick={() => void confirmPlan(card.plan)}
+          >{busy && plan === card.plan && card.plan === 'workforce' ? PLAN_PICKER_COPY.checkoutBusy : card.cta}</button>
+          <p class="plan-cta-note">{card.ctaNote}</p>
+        </section>
+      {/each}
     </div>
+    <p class="plan-custom">
+      {PLAN_PICKER_COPY.customSetupLead}
+      <button class="link" type="button" data-testid="onboarding-plan-book-call" onclick={() => void openUrl(PLAN_PICKER_COPY.customSetupUrl)}>{PLAN_PICKER_COPY.customSetupCta}</button>
+    </p>
   {:else if phase === 'checkout'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Finish checkout in your browser</h2>
     <p class="body">
@@ -788,34 +882,168 @@
 </div>
 
 <style>
-  .plan-options {
-    border: 0;
-    margin: 0 0 16px;
-    padding: 0;
+  /*
+   * One centered column, the same width as the other onboarding forms
+   * (welcome.css .invite-form, 360px): the company form and its buttons sit
+   * on the heading's center line.
+   */
+  .company-form {
+    box-sizing: border-box;
+    width: min(360px, 100%);
+    margin-left: auto;
+    margin-right: auto;
+  }
+  .company-actions {
+    justify-content: center;
+  }
+  /*
+   * The line under the heading and any status line stay inside that same
+   * column, so nothing on the screen is wider than the form (the welcome
+   * panel itself is 560px wide). The plan cards are the one exception.
+   */
+  .follow-on > .body,
+  .follow-on > .note {
+    box-sizing: border-box;
+    max-width: 360px;
+    margin: 14px auto 0;
+  }
+
+  /*
+   * "Choose how your HQ runs.": the website's two company cards side by side,
+   * stacked when the window is too narrow for both. The pair is wider than
+   * the 560px welcome panel, so it is centred on the panel's own centre line
+   * (left 50%, back by half its width) rather than left-aligned in it.
+   */
+  .plan-cards {
+    box-sizing: border-box;
+    width: min(640px, 92vw);
+    margin: 20px 0 0 50%;
+    transform: translateX(-50%);
     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(272px, 1fr));
+    gap: 12px;
+    text-align: left;
+  }
+  .plan-card {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    --plan-accent: #fff;
+  }
+  /* Workforce: the website's peach fill and orange accent. */
+  .plan-card.featured {
+    background: rgba(255, 204, 178, 0.15);
+    border-color: rgba(255, 204, 178, 0.28);
+    --plan-accent: #f96;
+  }
+  .plan-head {
+    min-height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 8px;
   }
-  .plan-option {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    column-gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--hairline, rgba(255, 255, 255, 0.16));
-    border-radius: 10px;
-    cursor: pointer;
-  }
-  .plan-option.selected {
-    border-color: var(--accent, currentColor);
-  }
-  .plan-option input {
-    grid-row: span 2;
-    align-self: center;
-  }
   .plan-name {
+    margin: 0;
+    color: var(--plan-accent);
+    font-size: 11px;
+    line-height: 16px;
     font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
-  .plan-detail {
-    opacity: 0.75;
+  .plan-badge {
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #f96;
+    color: #000;
+    font-size: 10px;
+    line-height: 16px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .plan-price {
+    margin: 8px 0 0;
+    line-height: 28px;
+  }
+  .plan-amount {
+    color: #fff;
+    font-size: 28px;
+    letter-spacing: -0.04em;
+  }
+  .plan-suffix {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .plan-blurb {
+    margin: 6px 0 0;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .plan-rows {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 8px 0 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    display: grid;
+    gap: 5px;
+  }
+  .plan-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12px;
+    line-height: 16px;
+  }
+  /* The mark sits on the first line of a wrapped value. */
+  .plan-mark {
+    display: flex;
+    align-items: center;
+    height: 16px;
+    flex: none;
+    color: rgba(255, 255, 255, 0.5);
+  }
+  .plan-row[data-state='on'] .plan-mark {
+    color: var(--plan-accent);
+  }
+  .plan-value {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  .plan-row[data-state='on'] .plan-value {
+    color: #fff;
+  }
+  .plan-row-detail {
+    color: rgba(255, 255, 255, 0.4);
+  }
+  /* Takes up the height difference so both CTAs share a baseline. */
+  .plan-spacer {
+    flex: 1 1 auto;
+    min-height: 12px;
+  }
+  .plan-cta {
+    width: 100%;
+    justify-content: center;
+  }
+  .plan-cta-note {
+    margin: 6px 0 0;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 10px;
+    line-height: 12px;
+  }
+  .plan-custom {
+    margin: 14px 0 0;
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 12px;
+    line-height: 16px;
   }
   .link {
     background: none;

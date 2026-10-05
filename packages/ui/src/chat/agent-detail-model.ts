@@ -74,7 +74,7 @@ function finiteNumber(value: unknown): number | null {
   return null;
 }
 
-export function isoDay(d: Date = new Date()): string {
+function isoDay(d: Date = new Date()): string {
   return d.toISOString().slice(0, 10);
 }
 

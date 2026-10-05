@@ -33,6 +33,8 @@ export interface PersonalDeployment {
   project: string;
   detail: string;
   scope: "personal" | "company";
+  /** Scope id is stable even when two companies share a display name. */
+  scopeId?: string;
   scopeLabel: string;
   scopeMark: string;
   status: PersonalDeployStatus;
@@ -210,6 +212,7 @@ export function deploymentFromApp(
     project: str(app.project) || str(app.projectSlug),
     detail,
     scope: scope.id === "personal" ? "personal" : "company",
+    scopeId: scope.id,
     scopeLabel,
     scopeMark: initials(scopeLabel),
     status: statusOf(app),
@@ -294,10 +297,12 @@ export type DeployScopePill = "all" | "personal" | "company";
 export interface DeployFilterPills {
   status: DeployStatusPill;
   scope: DeployScopePill;
+  /** A specific personal or company deployment scope, or every company. */
+  company: string;
   byYou: boolean;
   byBots: boolean;
 }
-export const DEFAULT_DEPLOY_PILLS: DeployFilterPills = { status: "all", scope: "all", byYou: false, byBots: false };
+export const DEFAULT_DEPLOY_PILLS: DeployFilterPills = { status: "all", scope: "all", company: "all", byYou: false, byBots: false };
 
 export function filterDeploymentsBy(
   rows: readonly PersonalDeployment[],
@@ -306,13 +311,54 @@ export function filterDeploymentsBy(
 ): PersonalDeployment[] {
   let out = filterDeployments(rows, pills.status, query);
   if (pills.scope !== "all") out = filterDeployments(out, pills.scope === "personal" ? "scope-personal" : "scope-company", "");
+  if (pills.company !== "all") out = out.filter((row) => (row.scopeId ?? row.scopeLabel) === pills.company);
   if (pills.byYou) out = filterDeployments(out, "by-you", "");
   if (pills.byBots) out = filterDeployments(out, "by-bots", "");
   return out;
 }
 
 export function pillsAreDefault(pills: DeployFilterPills): boolean {
-  return pills.status === "all" && pills.scope === "all" && !pills.byYou && !pills.byBots;
+  return pills.status === "all" && pills.scope === "all" && pills.company === "all" && !pills.byYou && !pills.byBots;
+}
+
+export type DeploySortKey = "app" | "scope" | "status" | "access" | "views" | "lastVisit";
+export type DeploySortDirection = "ascending" | "descending";
+export interface DeploySort {
+  key: DeploySortKey;
+  direction: DeploySortDirection;
+}
+
+function compareText(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+}
+
+function compareMissingLast<T>(left: T | null, right: T | null, compare: (a: T, b: T) => number, direction: DeploySortDirection): number {
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  const result = compare(left, right);
+  return direction === "descending" ? -result : result;
+}
+
+/** Sort filtered deployment rows. A null sort preserves the API's default scope/name order. */
+export function sortDeployments(rows: readonly PersonalDeployment[], sort: DeploySort | null): PersonalDeployment[] {
+  if (!sort) return [...rows];
+  return rows.map((row, index) => ({ row, index })).sort((left, right) => {
+    const { key, direction } = sort;
+    let result = 0;
+    if (key === "app") result = compareText(left.row.name, right.row.name);
+    else if (key === "scope") result = compareText(left.row.scopeLabel, right.row.scopeLabel) || compareText(left.row.name, right.row.name);
+    else if (key === "status") result = compareText(statusLabel(left.row), statusLabel(right.row));
+    else if (key === "access") result = compareText(left.row.access, right.row.access);
+    else if (key === "views") result = compareMissingLast(left.row.views30d, right.row.views30d, (a, b) => a - b, direction);
+    else result = compareMissingLast(
+      Number.isNaN(Date.parse(left.row.lastVisitAt ?? "")) ? null : Date.parse(left.row.lastVisitAt ?? ""),
+      Number.isNaN(Date.parse(right.row.lastVisitAt ?? "")) ? null : Date.parse(right.row.lastVisitAt ?? ""),
+      (a, b) => a - b,
+      direction,
+    );
+    if (key !== "views" && key !== "lastVisit" && direction === "descending") result = -result;
+    return result || left.index - right.index;
+  }).map(({ row }) => row);
 }
 
 export function progressFor(row: PersonalDeployment): DeployProgress {

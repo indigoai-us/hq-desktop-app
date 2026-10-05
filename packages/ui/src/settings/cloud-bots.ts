@@ -6,9 +6,9 @@
  * once per company, in parallel. The unscoped form (no companyUid) scans every
  * company in one sequential server request and runs past the 15s client
  * timeout for people in many companies (QA-080), so it is only a fallback when
- * no company uid is known. Rows carry setup phase but no runtime (paused/running) state
- * and no avatar; the pane renders an initial and infers "paused" only from its
- * own successful Pause action.
+ * no company uid is known. Rows carry setup phase but no runtime (paused/running)
+ * state; the pane renders the server avatar when present and infers "paused"
+ * only from its own successful Pause action.
  */
 
 import type { AdapterResult, Json } from "@hq/platform";
@@ -23,11 +23,15 @@ import { deriveAgentWorkStatus, type AgentWorkStatus } from "../chat/agent-detai
 export interface CloudBotRow {
   uid: string;
   displayName: string;
+  /** Server-provided bot portrait, when the roster includes one. */
+  avatarUrl: string | null;
   companyUid: string | null;
   companyLabel: string | null;
   status: AgentWorkStatus;
   /** Raw setup phase from the roster (`ready`, `provisioning`, `failed`, …). */
   phase: string;
+  /** The machine an API already disclosed for this bot, when it has one. */
+  machineInstanceId: string | null;
   /** Owner/admin of the bot's company (or explicit admin) may pause/remove it. */
   canManage: boolean;
 }
@@ -88,9 +92,11 @@ export function cloudBotsFromRoster(
     if (phase === "deprovisioned" || phase === "archived") continue;
     seen.add(uid);
     const companyUid = str(item.companyUid) || null;
+    const profile = isRecord(item.profile) ? item.profile : null;
     rows.push({
       uid,
       displayName: str(item.displayName) || str(item.name) || uid,
+      avatarUrl: str(item.avatarUrl) || str(profile?.avatarUrl) || null,
       companyUid,
       companyLabel: companyUid ? (names.get(companyUid) ?? companyUid) : null,
       status: deriveAgentWorkStatus({
@@ -98,6 +104,7 @@ export function cloudBotsFromRoster(
         runtimeStatus: str(item.status),
       }),
       phase,
+      machineInstanceId: str(item.instanceId) || str(item.machineInstanceId) || null,
       canManage: canEditAgentProfile({
         agentUid: uid,
         agentCompanyUid: companyUid,

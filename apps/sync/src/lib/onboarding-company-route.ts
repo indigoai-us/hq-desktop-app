@@ -98,6 +98,41 @@ function provisioningField(row: Record<string, unknown>): MembershipCompany['pro
   return value === 'pending' || value === 'ready' || value === 'failed' ? value : null;
 }
 
+/** The company plan a person picked before the desktop asked. */
+export type PriorPlanChoice = 'starter' | 'workforce';
+
+const STARTER_PLAN_NAMES = new Set(['starter', 'free']);
+const WORKFORCE_PLAN_NAMES = new Set(['workforce', 'team']);
+
+function planChoiceFrom(value: unknown): PriorPlanChoice | null {
+  if (typeof value !== 'string') return null;
+  const key = value.trim().toLowerCase();
+  if (STARTER_PLAN_NAMES.has(key)) return 'starter';
+  if (WORKFORCE_PLAN_NAMES.has(key)) return 'workforce';
+  // Individual plans (`individual`, `individual-free`) are not company plans.
+  return null;
+}
+
+/**
+ * The company plan the person already picked on the website, when the server
+ * says so. hq-pro does not send this yet: today the website keeps a Starter
+ * pick in the browser only and a Workforce pick becomes a paid company (which
+ * `decideCompanyRoute` already skips). Read, in order:
+ * - top-level `planIntent` / `signupPlan` on `GET /membership/me`;
+ * - `plan` / `planIntent` inside the visitor block of the
+ *   `GET /membership/me?anonId=…` answer (`webIdentity` / `visitorIdentity` /
+ *   `anonIdentity`), the same block `otherIdentityFromLookup` reads.
+ * Missing or unknown values are null: the desktop asks.
+ */
+export function priorPlanFromPayload(payload: unknown): PriorPlanChoice | null {
+  if (!isRecord(payload)) return null;
+  const direct = planChoiceFrom(payload.planIntent) ?? planChoiceFrom(payload.signupPlan);
+  if (direct) return direct;
+  const block = [payload.webIdentity, payload.visitorIdentity, payload.anonIdentity].find(isRecord);
+  if (!block) return null;
+  return planChoiceFrom(block.planIntent) ?? planChoiceFrom(block.plan);
+}
+
 /** `c•••@acme.com`. Already-masked input passes through. */
 export function maskEmail(email: string): string {
   const trimmed = email.trim();
@@ -280,7 +315,7 @@ export type ProvisioningState =
   | { status: 'failed'; step: string };
 
 /** Short, telemetry-safe provisioning step label (hq-pro `step` values like `kms-create`). */
-export function provisioningStepLabel(raw: unknown): string {
+function provisioningStepLabel(raw: unknown): string {
   if (typeof raw !== 'string') return 'unknown';
   const step = raw.trim().toLowerCase();
   return /^[a-z0-9:_-]{1,64}$/.test(step) ? step : 'unknown';

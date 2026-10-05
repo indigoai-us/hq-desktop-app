@@ -7,6 +7,7 @@ import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../stat
 import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
+import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -1792,6 +1793,10 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     const counts = ((window as Window & { __hqInvokeCounts?: Record<string, number> })
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
+  }
+  if (companyFlowEnabled()) {
+    const answer = await companyFlowAnswer(cmd, args);
+    if (answer !== NOT_HANDLED) return answer as T;
   }
   if (cmd === 'hq_pro_fetch') {
     const notify = harnessNotifyFetch(args);

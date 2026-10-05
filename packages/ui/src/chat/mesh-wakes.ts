@@ -15,10 +15,21 @@ import {
 } from "@hq/core";
 
 import { createChatWakeBus, type ReplyNewWake } from "./chat-api.js";
-import { parseAgentStatusWake, type AgentStatusWake } from "./agent-thinking.js";
+import {
+  parseAgentStatusWake,
+  parseDmAgentStatusWake,
+  type AgentStatusWake,
+  type DmAgentStatusWake,
+} from "./agent-thinking.js";
 
-/** An explicit `type:"agent_status"` payload on the shared DM topic, parsed. */
-function agentStatusFromPayload(payload: unknown): AgentStatusWake | null {
+/**
+ * An explicit `type:"agent_status"` payload on the shared DM topic, parsed:
+ * the channel shape (it has a `channelId`) or the DM shape (it has a
+ * `withPersonUid` and no `channelId`).
+ */
+function agentStatusFromPayload(
+  payload: unknown,
+): { channel: AgentStatusWake } | { dm: DmAgentStatusWake } | null {
   let parsed: unknown = payload;
   if (typeof payload === "string" || !(payload && typeof payload === "object") || payload instanceof Uint8Array) {
     const text = typeof payload === "string" ? payload : mqttPayloadToText(payload);
@@ -29,7 +40,10 @@ function agentStatusFromPayload(payload: unknown): AgentStatusWake | null {
     }
   }
   if (!parsed || typeof parsed !== "object" || (parsed as { type?: unknown }).type !== "agent_status") return null;
-  return parseAgentStatusWake(parsed);
+  const channel = parseAgentStatusWake(parsed);
+  if (channel) return { channel };
+  const dm = parseDmAgentStatusWake(parsed);
+  return dm ? { dm } : null;
 }
 
 export type ChatMeshWakeBus = ReturnType<typeof createChatWakeBus>;
@@ -78,7 +92,8 @@ export function routeMeshWake(
   if (reply) return "reply";
   const status = agentStatusFromPayload(payload);
   if (status) {
-    wakes.emit("agent:status", status);
+    if ("channel" in status) wakes.emit("agent:status", status.channel);
+    else wakes.emit("agent:dm-status", status.dm);
     return null;
   }
   const text =

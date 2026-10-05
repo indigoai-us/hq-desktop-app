@@ -2,7 +2,9 @@
   /**
    * Preview of the first-run company step (?view=onboarding-company).
    * ?scenario=create (default) | join | paused | existing | other-email |
-   * expired | slow | provisioning-failed | resume | other-account | plan-limit. Uses its own in-page answers
+   * expired | slow | provisioning-failed | resume | other-account | plan-limit.
+   * ?plan=starter|workforce acts as a plan already picked on the website (the
+   * "Choose how your HQ runs." plan screen is skipped). Uses its own in-page answers
    * for the server so every screen of the step can be reached in a browser:
    * name the company, pick a plan, open checkout, and the checkout return
    * (the harness emits `messages:open-setup` for "Simulate checkout return").
@@ -15,10 +17,12 @@
     type CompanyStepEvent,
     type CompanyStepResult,
   } from '../src/components/onboarding/CompanyStep.svelte';
-  import type { FirstRunCompanyPath, InvokeFn } from '../src/lib/first-run-company';
+  import type { FirstRunCompanyPath, FirstRunPlan, InvokeFn } from '../src/lib/first-run-company';
 
   const params = new URLSearchParams(window.location.search);
   const scenario = params.get('scenario') ?? 'create';
+  const planParam = params.get('plan');
+  const priorPlan: FirstRunPlan | null = planParam === 'starter' || planParam === 'workforce' ? planParam : null;
 
   const card = {
     v: 1,
@@ -161,6 +165,7 @@
         <CompanyStep
           {path}
           {invoke}
+          {priorPlan}
           provisioningPoll={{ intervalMs: 150, timeoutMs: 5_000 }}
           onswitchaccount={() => (result = { outcome: 'skipped' })}
           openUrl={(url) => open(url)}

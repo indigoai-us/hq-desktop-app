@@ -1,0 +1,582 @@
+// @vitest-environment happy-dom
+
+/**
+ * The New Bot takeover's headless cloud-bot entry point.
+ *
+ * Creating a company-hosted bot exists on the server as the Team tab's
+ * `add_agent` action plus the `create_agent` card. The server keeps one such
+ * card per company channel and updates it in place, so the driver never reads
+ * it: it asks where the card lives and answers it once with everything the
+ * person chose.
+ *
+ * This is the one-shot driver. Only the takeover uses it, and only for a
+ * company with the `agents.desktop-agent-creation` flag. The "+" modal's
+ * Cloud option keeps the card-walk driver, tested in
+ * lifecycle-entry-points.cloud-bot.test.ts.
+ */
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  claudeSubscriptionSignInUrl,
+  CLOUD_BOT_NAME_INVALID_REASON,
+  CLOUD_BOT_NAME_TAKEN_REASON,
+  CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON,
+  CLOUD_BOT_NO_NEXT_STEP_REASON,
+  CLOUD_BOT_SERVER_FAILED_REASON,
+  isUpgradePlanCard,
+  runCreateCloudBotOneShotEntry,
+  type CloudBotDraft,
+  type CloudBotOneShotApi,
+} from "./lifecycle-entry-points.js";
+
+const DRAFT: CloudBotDraft = {
+  name: "Polar",
+  handle: "ice-bear",
+  runtime: "codex",
+  size: "basic",
+};
+const CHANNEL = "chn_acme";
+const AGENT_CHANNEL = "chn_polar";
+
+/** What production answers for `team:spend/add_agent` on a paid company. */
+const OPENED = {
+  cardId: "team:spend",
+  actionId: "add_agent",
+  state: "open",
+  navigateTo: "chat" as const,
+  focusCardId: "create_agent",
+  channelId: CHANNEL,
+};
+
+function harness(over: {
+  opened?: Record<string, unknown> | Error;
+  created?: Record<string, unknown> | Error;
+} = {}) {
+  const opened = over.opened ?? OPENED;
+  const created = over.created ?? {
+    cardId: "create_agent",
+    actionId: "create",
+    state: "done",
+    agentChannelId: AGENT_CHANNEL,
+    agentUid: "agt_polar",
+  };
+  const runCompanyTabAction = vi.fn(async (_args: Record<string, unknown>) => {
+    if (opened instanceof Error) throw opened;
+    return opened;
+  });
+  const runCardAction = vi.fn(async (_args: Record<string, unknown>) => {
+    if (created instanceof Error) throw created;
+    return created;
+  });
+  const logToFile = vi.fn(async (_tag: string, _message: string) => undefined);
+  const api = {
+    runCompanyTabAction,
+    runCardAction,
+    logToFile,
+  } as unknown as CloudBotOneShotApi;
+  return { api, runCompanyTabAction, runCardAction, logToFile };
+}
+
+describe("runCreateCloudBotOneShotEntry", () => {
+  it("opens the console authorization page only for Claude subscription auth", () => {
+    expect(
+      claudeSubscriptionSignInUrl(
+        { runtime: "claude", authMode: "subscription" },
+        "agt_123",
+      ),
+    ).toBe("https://hq.getindigo.ai/resolve/agents/agt_123");
+    expect(
+      claudeSubscriptionSignInUrl(
+        { runtime: "claude", authMode: "apiKey" },
+        "agt_123",
+      ),
+    ).toBeNull();
+    expect(
+      claudeSubscriptionSignInUrl(
+        { runtime: "grok", authMode: "subscription" },
+        "agt_123",
+      ),
+    ).toBeNull();
+    expect(
+      claudeSubscriptionSignInUrl(
+        { runtime: "claude", authMode: "subscription" },
+        "  ",
+      ),
+    ).toBeNull();
+  });
+
+  it("creates the bot with one complete action when the server answers the tab row id in cardId and the card in focusCardId", async () => {
+    // Regression: production answers `cardId: "team:spend"` with the lifecycle
+    // card in `focusCardId`. Reading only `cardId` ended every attempt with
+    // "The server didn't send the next step" before anything was created.
+    const { api, runCompanyTabAction, runCardAction, logToFile } = harness();
+    const result = await runCreateCloudBotOneShotEntry(api, " cmp_acme ", DRAFT, {
+      idempotencyKey: "idem-1",
+    });
+    expect(result).toEqual({
+      ok: true,
+      target: {
+        channelId: AGENT_CHANNEL,
+        cardId: null,
+        cardKind: null,
+        agentUid: "agt_polar",
+      },
+    });
+    expect(runCompanyTabAction).toHaveBeenCalledTimes(1);
+    expect(runCompanyTabAction).toHaveBeenCalledWith({
+      companyUid: "cmp_acme",
+      tab: "team",
+      cardId: "team:spend",
+      actionId: "add_agent",
+      values: {},
+      idempotencyKey: "idem-1",
+    });
+    expect(runCardAction).toHaveBeenCalledTimes(1);
+    expect(runCardAction).toHaveBeenCalledWith({
+      channelId: CHANNEL,
+      cardId: "create_agent",
+      actionId: "create",
+      values: {
+        name: "Polar",
+        handle: "ice-bear",
+        runtime: "codex",
+        size: "basic",
+        authMode: "subscription",
+        deferChannels: "true",
+        conversation: "dm",
+        surface: "desktop_new_bot",
+      },
+      // Review A-C5: the create itself carries the key. It used to go out
+      // with none, and the native command minted a fresh one per call.
+      idempotencyKey: "idem-1",
+    });
+    expect(logToFile).not.toHaveBeenCalled();
+  });
+
+  describe("the create's own key (review A-C5)", () => {
+    it("sends the draft's key with the create action, and not with the opening action", async () => {
+      const { api, runCompanyTabAction, runCardAction } = harness();
+      await runCreateCloudBotOneShotEntry(api, "cmp_acme", { ...DRAFT, idempotencyKey: " key-for-polar " });
+      expect(runCardAction.mock.calls[0]![0]).toMatchObject({ actionId: "create", idempotencyKey: "key-for-polar" });
+      expect(runCompanyTabAction.mock.calls[0]![0]).toMatchObject({ actionId: "add_agent", idempotencyKey: undefined });
+      // The key is not a value of the card: it never reaches the card's fields.
+      expect(JSON.stringify((runCardAction.mock.calls[0]![0] as { values: unknown }).values)).not.toContain("key-for-polar");
+    });
+
+    it("sends the same key again on a retry of the same draft, so the server can answer with the first bot", async () => {
+      // First answer lost; the server made the bot. The retry under the same
+      // key gets the stored answer back (`replayed`), bot included.
+      const calls: unknown[] = [];
+      const answers: Array<Record<string, unknown> | Error> = [
+        new Error("Request failed (status 504)"),
+        { cardId: "create_agent", actionId: "create", state: "done", replayed: true, agentUid: "agt_polar" },
+      ];
+      const api = {
+        runCompanyTabAction: vi.fn(async () => OPENED),
+        runCardAction: vi.fn(async (args: unknown) => {
+          calls.push(args);
+          const answer = answers.shift()!;
+          if (answer instanceof Error) throw answer;
+          return answer;
+        }),
+        logToFile: vi.fn(async () => undefined),
+      } as unknown as CloudBotOneShotApi;
+      const draft = { ...DRAFT, idempotencyKey: "key-for-polar" };
+
+      expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", draft)).toMatchObject({ ok: false, outcomeUnknown: true });
+      expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", draft)).toEqual({
+        ok: true,
+        target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_polar" },
+      });
+      expect(calls.map((call) => (call as { idempotencyKey?: string }).idempotencyKey)).toEqual(["key-for-polar", "key-for-polar"]);
+    });
+
+    it("sends no key when the draft has none, as before", async () => {
+      const { api, runCardAction } = harness();
+      await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect("idempotencyKey" in (runCardAction.mock.calls[0]![0] as object)).toBe(false);
+    });
+
+    it.each([
+      ["Request failed (status 504)", true],
+      ["Request failed (status 502)", true],
+      ["Network error: operation timed out", true],
+      ["[run_card_action] network down", true],
+      ['agent create returned status 500: {"statusCode":500}', true],
+      ["User: arn:aws:sts::000000000000:assumed-role/fn is not authorized to perform: dynamodb:Scan", true],
+      // The server's own refusals of the request: nothing was made.
+      ["403 forbidden", false],
+      ["Viewer cannot act on this card (403)", false],
+      ["Card not found", false],
+      ["Unknown actionId for this card", false],
+      ["[plan-limit url=https://example.test/u] You have reached the limit of your plan", false],
+      // Review item 5: the server's refusal in its own words, with no status
+      // (the native command passes the body's `error` text on alone).
+      ['lifecycle create_agent: size "basic" (t4g.medium) cannot be priced for this company (plan)', false],
+      ["Card envelope is not a lifecycle_card v1", false],
+      ["That runtime is not available for this company.", false],
+      // A refusal with no words in its body keeps its status.
+      ["Request failed (status 400)", false],
+      ["Request failed (status 422)", false],
+      // The server did not take the request up.
+      ["Request failed (status 429)", false],
+      // Timeouts and server failures: the request may have run.
+      ["Request failed (status 408)", true],
+      ["Request failed (status 500)", true],
+      ["Request failed (status 503)", true],
+      ["Network error: error sending request for url (https://api.example.test/x)", true],
+      ["Internal Server Error", true],
+      ["Service Unavailable", true],
+    ])("says whether the outcome is known when the create fails with %j", async (text, unknown) => {
+      const { api, logToFile } = harness({ created: new Error(text) });
+      const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect(result.ok).toBe(false);
+      expect("outcomeUnknown" in result && result.outcomeUnknown === true).toBe(unknown);
+      expect(String(logToFile.mock.calls[0]![1])).toContain(`outcome=${unknown ? "unknown" : "refused"}`);
+    });
+
+    it("shows the server's own reason for a refusal, and not a line about a lost answer (review item 5)", async () => {
+      const text = 'lifecycle create_agent: size "basic" (t4g.medium) cannot be priced for this company (plan)';
+      const { api } = harness({ created: new Error(text) });
+      const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+      expect(result).toEqual({ ok: false, reason: text, blocked: false });
+      // A refusal with no words gets the plain line, and is still a refusal.
+      const bare = harness({ created: new Error("Request failed (status 429)") });
+      expect(await runCreateCloudBotOneShotEntry(bare.api, "cmp_acme", DRAFT)).toEqual({
+        ok: false,
+        reason: "We couldn't create this bot. Try again in a moment.",
+        blocked: false,
+      });
+    });
+
+    it("never calls an answer the server gave an unknown outcome", async () => {
+      const taken = harness({
+        created: { cardId: "create_agent", state: "open", fields: [{ id: "handle", value: "ice-bear", error: "This handle is already taken" }] },
+      });
+      const result = await runCreateCloudBotOneShotEntry(taken.api, "cmp_acme", DRAFT);
+      expect(result).toEqual({ ok: false, reason: CLOUD_BOT_NAME_TAKEN_REASON, blocked: false });
+      // A failure before the create was sent is not an unknown outcome either.
+      const notOpened = harness({ opened: new Error("Request failed (status 504)") });
+      const opened = await runCreateCloudBotOneShotEntry(notOpened.api, "cmp_acme", DRAFT);
+      expect("outcomeUnknown" in opened).toBe(false);
+      expect(notOpened.runCardAction).not.toHaveBeenCalled();
+    });
+  });
+
+  it("never reads the channel: the stored card cannot decide what is created", async () => {
+    const { api } = harness();
+    const fetchChannel = vi.fn();
+    (api as unknown as { fetchChannel: unknown }).fetchChannel = fetchChannel;
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(fetchChannel).not.toHaveBeenCalled();
+  });
+
+  it("carries the chosen runtime and write-only API-key auth on the create action only", async () => {
+    const { api, runCardAction, runCompanyTabAction } = harness();
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", {
+      ...DRAFT,
+      runtime: "claude",
+      authMode: "apiKey",
+      apiKey: "sk-test-not-a-real-key",
+    });
+    expect(runCardAction.mock.calls[0]![0]).toMatchObject({
+      values: {
+        runtime: "claude",
+        authMode: "apiKey",
+        apiKey: "sk-test-not-a-real-key",
+      },
+    });
+    expect(JSON.stringify(runCompanyTabAction.mock.calls)).not.toContain("sk-test");
+  });
+
+  it("never sends the title: the card has no field for it", async () => {
+    const { api, runCardAction } = harness();
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", { ...DRAFT, title: "Analyst" });
+    const sent = runCardAction.mock.calls[0]![0] as { values: Record<string, string> };
+    expect(Object.keys(sent.values).sort()).toEqual(
+      ["authMode", "conversation", "deferChannels", "handle", "name", "runtime", "size", "surface"].sort(),
+    );
+  });
+
+  it("accepts a server that answers the lifecycle card directly in cardId", async () => {
+    const { api, runCardAction } = harness({
+      opened: { cardId: "create_agent", state: "open", channelId: CHANNEL },
+    });
+    const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(result.ok).toBe(true);
+    expect(runCardAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("succeeds when the server made no channel for the bot: the conversation is the direct message", async () => {
+    // Owner, 2026-10-02: a new bot must not come with a team channel.
+    const h = harness({
+      created: { cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_polar" },
+    });
+    const result = await runCreateCloudBotOneShotEntry(h.api, "cmp_acme", DRAFT);
+    expect(result).toEqual({
+      ok: true,
+      target: { channelId: "", cardId: null, cardKind: null, agentUid: "agt_polar" },
+    });
+  });
+
+  it("reports and logs when the server names no channel or card", async () => {
+    const { api, runCardAction, logToFile } = harness({
+      opened: { cardId: "team:spend", state: "open" },
+    });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: CLOUD_BOT_NO_NEXT_STEP_REASON,
+      blocked: false,
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
+    expect(logToFile).toHaveBeenCalledWith(
+      "cloud-bot",
+      expect.stringContaining("exit=open-no-target"),
+    );
+  });
+
+  it("reports the server's own refusal of add_agent without creating anything", async () => {
+    const { api, runCardAction } = harness({
+      opened: {
+        cardId: "team:spend",
+        state: "blocked",
+        fields: [
+          { id: "blocked_reason", value: "permission" },
+          { id: "owner", value: "Corey" },
+        ],
+      },
+    });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: "You don't have permission to add bots here. Ask Corey.",
+      blocked: true,
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("lands on the upgrade card when the company's plan cannot host a bot", async () => {
+    const { api, runCardAction } = harness({
+      opened: { ...OPENED, focusCardId: "upgrade_plan" },
+    });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: true,
+      target: { channelId: CHANNEL, cardId: "upgrade_plan", cardKind: null },
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("tells the upgrade card from any other card the server may send the person to (review A-I16)", async () => {
+    expect(isUpgradePlanCard("upgrade_plan")).toBe(true);
+    expect(isUpgradePlanCard(" upgrade_plan ")).toBe(true);
+    expect(isUpgradePlanCard("upgrade_plan:cmp_acme")).toBe(true);
+    expect(isUpgradePlanCard("setup:upgrade_plan")).toBe(true);
+    expect(isUpgradePlanCard("activate_cloud")).toBe(false);
+    expect(isUpgradePlanCard("create_agent")).toBe(false);
+    expect(isUpgradePlanCard("")).toBe(false);
+    expect(isUpgradePlanCard(null)).toBe(false);
+    // Any other card is still a destination, named by id.
+    const { api, runCardAction } = harness({ opened: { ...OPENED, focusCardId: "activate_cloud" } });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: true,
+      target: { channelId: CHANNEL, cardId: "activate_cloud", cardKind: null },
+    });
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("reports a plan refusal from the create action in plain words", async () => {
+    const { api, logToFile } = harness({
+      created: {
+        cardId: "create_agent",
+        state: "blocked",
+        fields: [{ id: "blocked_reason", value: "plan" }],
+      },
+    });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: "This company's plan doesn't include cloud bots yet.",
+      blocked: true,
+      upgrade: { channelId: CHANNEL, cardId: "upgrade_plan" },
+    });
+    expect(logToFile).toHaveBeenCalledWith(
+      "cloud-bot",
+      expect.stringContaining("exit=create-blocked why=plan"),
+    );
+  });
+
+  it.each([
+    ["This handle is already taken", CLOUD_BOT_NAME_TAKEN_REASON],
+    ["Use lowercase letters, numbers and dashes", CLOUD_BOT_NAME_INVALID_REASON],
+  ])(
+    "speaks about the name, not the hidden handle, when the server says %j",
+    async (error, reason) => {
+      const { api } = harness({
+        created: {
+          cardId: "create_agent",
+          state: "open",
+          fields: [
+            { id: "name", value: "Polar" },
+            { id: "handle", value: "ice-bear", error },
+          ],
+        },
+      });
+      expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+        ok: false,
+        reason,
+        blocked: false,
+      });
+    },
+  );
+
+  it("says the server is not ready when it moves the card a turn instead of creating", async () => {
+    const { api, logToFile } = harness({
+      created: {
+        cardId: "create_agent",
+        state: "open",
+        fields: [
+          { id: "turn", value: "2" },
+          { id: "name", value: "Someone else" },
+        ],
+      },
+    });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON,
+      blocked: false,
+    });
+    const line = String(logToFile.mock.calls[0]![1]);
+    expect(line).toContain("exit=create-no-agent state=open turn=2");
+    // Ids and states only: nothing a person typed reaches the log.
+    expect(line).not.toContain("Someone else");
+    expect(line).not.toContain("Polar");
+  });
+
+  it("offers no upgrade path for a permission refusal", async () => {
+    const { api } = harness({
+      created: {
+        cardId: "create_agent",
+        state: "blocked",
+        fields: [
+          { id: "blocked_reason", value: "permission" },
+          { id: "owner", value: "Corey" },
+        ],
+      },
+    });
+    const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(result).toEqual({
+      ok: false,
+      reason: "You don't have permission to add bots here. Ask Corey.",
+      blocked: true,
+    });
+  });
+
+  it("stops before any server call when the draft is missing a size or brain", async () => {
+    const { api, runCardAction } = harness();
+    expect(
+      await runCreateCloudBotOneShotEntry(api, "cmp_acme", { name: "Polar", handle: "ice-bear" }),
+    ).toEqual({ ok: false, reason: CLOUD_BOT_ONE_SHOT_NEEDS_MORE_REASON, blocked: false });
+    expect(runCardAction).not.toHaveBeenCalled();
+  });
+
+  it("reports a transport failure of the create action and flags permission errors", async () => {
+    const plain = harness({ created: new Error("[run_card_action] network down") });
+    expect(await runCreateCloudBotOneShotEntry(plain.api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: "network down",
+      blocked: false,
+      // The request left and no answer came back: the bot may exist.
+      outcomeUnknown: true,
+    });
+    const denied = harness({ created: new Error("403 forbidden") });
+    expect(await runCreateCloudBotOneShotEntry(denied.api, "cmp_acme", DRAFT)).toEqual({
+      ok: false,
+      reason: "403 forbidden",
+      blocked: true,
+    });
+  });
+
+  it("never shows a transport error or its URL when the opening step cannot reach the server", async () => {
+    // The native command's own text for a request that did not complete. It
+    // is short, so the length check does not catch it.
+    const { api } = harness({
+      opened: new Error("Network error: error sending request for url (https://api.example.test/v1/tab)"),
+    });
+    const result = await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe(CLOUD_BOT_SERVER_FAILED_REASON);
+      expect(result.reason).not.toMatch(/https?:|sending request/);
+    }
+  });
+
+  it("never shows a raw backend error: a plain line on screen, and only a code in the support log", async () => {
+    // Regression (owner walkthrough 2026-10-02): a missing cloud permission
+    // put the full "User: arn:aws:sts::... is not authorized to perform:
+    // dynamodb:Scan on resource: arn:aws:dynamodb:..." text on the screen.
+    //
+    // Review A-I15: the same text then went to the support log, up to 400
+    // characters of it. The log now names the kind of failure and nothing
+    // from its text. (This test used to assert the text WAS in the log; that
+    // is the behaviour the review asked to change.)
+    const denial =
+      "User: arn:aws:sts::000000000000:assumed-role/fn-role/fn is not authorized to perform: dynamodb:Scan on resource: arn:aws:dynamodb:us-east-1:000000000000:table/entities because no identity-based policy allows the dynamodb:Scan action";
+    const { api, logToFile } = harness({ created: new Error(denial) });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toMatchObject({
+      ok: false,
+      reason: CLOUD_BOT_SERVER_FAILED_REASON,
+      // The word "authorized" must not make this read as the person's refusal.
+      blocked: false,
+    });
+    const line = String(logToFile.mock.calls[0]![1]);
+    expect(line).toBe("exit=create-failed code=denied raw=true outcome=unknown");
+    expect(line).not.toContain("dynamodb");
+    expect(line).not.toContain("arn:aws");
+    expect(line).not.toContain("Polar");
+  });
+
+  it.each([
+    ["[run_card_action] network down", "run_card_action"],
+    ["[plan-limit url=https://example.test/upgrade?x=1] Too many bots", "plan-limit"],
+    ["Request failed (status 504)", "http-504"],
+    ['agent create returned status 409: {"statusCode":409,"body":"{\"handle\":\"ice-bear\"}"}', "http-409"],
+    ["Network error: operation timed out for https://api.example.test/v1/x", "timeout"],
+    ["Network error: connection refused", "network"],
+    ["A bot named Polar (@ice-bear) could not be made", "error"],
+  ])("logs a code for the failure %j, never its text", async (text, code) => {
+    const { api, logToFile } = harness({ created: new Error(text) });
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    const line = String(logToFile.mock.calls[0]![1]);
+    expect(line).toMatch(new RegExp(`^exit=create-failed code=${code} raw=(true|false) outcome=(unknown|refused)$`));
+    // Nothing the person typed, no address, no payload.
+    for (const leaked of ["Polar", "ice-bear", "https://", "statusCode", "connection", "Too many"]) {
+      expect(line).not.toContain(leaked);
+    }
+  });
+
+  it("logs a code, never the text, when the opening action fails", async () => {
+    const { api, logToFile } = harness({ opened: new Error("403 forbidden for Polar in Acme") });
+    await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT);
+    expect(String(logToFile.mock.calls[0]![1])).toBe("exit=open-failed code=http-403 raw=false");
+  });
+
+  it.each([
+    'agent create returned status 409: {"statusCode":409,"body":"{}"}',
+    "AgentsFunction Unhandled: TypeError: x is not a function at handler (/var/task/bundle.js:1:1)",
+    "x".repeat(200),
+  ])("replaces backend text %j with the plain line", async (text) => {
+    const { api } = harness({ created: new Error(text) });
+    expect(await runCreateCloudBotOneShotEntry(api, "cmp_acme", DRAFT)).toMatchObject({
+      ok: false,
+      reason: CLOUD_BOT_SERVER_FAILED_REASON,
+    });
+  });
+
+  it("asks for a company before doing anything", async () => {
+    const { api, runCompanyTabAction } = harness();
+    expect(await runCreateCloudBotOneShotEntry(api, "  ", DRAFT)).toEqual({
+      ok: false,
+      reason: "Pick a company first",
+      blocked: false,
+    });
+    expect(runCompanyTabAction).not.toHaveBeenCalled();
+  });
+});

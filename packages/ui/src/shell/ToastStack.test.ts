@@ -224,6 +224,12 @@ describe("update toast copy guard (OWNER-004)", () => {
     expect(updateToastCopy(states[5]).progress).toBe("indeterminate");
     expect(updateToastCopy(states[0])).toMatchObject({ progress: null, installDisabled: false, installLabel: "Restart to update" });
     expect(updateToastCopy({ ...states[0], reasons: ["uploadInFlight"] }).detail).toBe("Waiting for an upload to finish");
+    // An upload delays the automatic install only; Restart stays available.
+    expect(updateToastCopy({ ...states[0], reasons: ["uploadInFlight"] })).toMatchObject({ installDisabled: false, installTitle: null });
+    expect(updateToastCopy(states[1])).toMatchObject({
+      installDisabled: true,
+      installTitle: "Waiting for the HQ folder update to finish. Restart becomes available when it finishes.",
+    });
   });
 
   it("the rendered toast carries no state key", () => {

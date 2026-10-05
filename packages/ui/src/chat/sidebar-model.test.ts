@@ -61,6 +61,10 @@ import {
   resolveRailCompanyName,
   titlebarDayDate,
   togglePin,
+  withWakingBotRow,
+  loadBotSetupChannels,
+  rememberBotSetupChannel,
+  withoutBotSetupChannels,
   type ConversationRow,
   type GroupedConversations,
   type DmContactInput,
@@ -167,6 +171,70 @@ describe("isStrictlyRicherConversationRow", () => {
     expect(
       isStrictlyRicherConversationRow({ ...enriched, id: "ch:chn_other" }, stub),
     ).toBe(false);
+  });
+});
+
+describe("withWakingBotRow", () => {
+  const BOT = {
+    agentUid: "agt_nova",
+    channelId: "chn_nova",
+    companyUid: "cmp_acme",
+    name: "Nova",
+    startedAt: NOW,
+    progress: 42,
+  };
+
+  it("keeps a newly created bot visible as a direct message until the directory catches up", () => {
+    // Regression (owner walkthrough 2026-10-02): the new bot showed up as a
+    // "team channel". Its conversation is a direct message.
+    const rows = withWakingBotRow([], BOT);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "dm:agt_nova",
+      kind: "dm",
+      title: "Nova",
+      personUid: "agt_nova",
+      wakingBot: { agentUid: "agt_nova", progress: 42 },
+    });
+    expect(rows[0]?.channelId).toBeUndefined();
+  });
+
+  it("marks the bot's own direct-message row and leaves out a channel an older server made for it", () => {
+    const botDm = normalizeDm(dm({ personUid: "agt_nova", displayName: "Nova" }));
+    const leftover = normalizeChannel(channel({ channelId: "chn_nova", name: "Nova" }));
+    const other = normalizeChannel(channel({ channelId: "chn_other", name: "#launch" }));
+    const rows = withWakingBotRow([leftover, botDm, other], BOT);
+    expect(rows.map((row) => row.id)).toEqual(["dm:agt_nova", "ch:chn_other"]);
+    expect(rows[0]?.wakingBot).toEqual({ agentUid: "agt_nova", progress: 42 });
+  });
+
+  it("falls back to the channel row only when the server named no bot", () => {
+    const rows = withWakingBotRow([], { ...BOT, agentUid: "" });
+    expect(rows[0]).toMatchObject({ id: "ch:chn_nova", kind: "channel" });
+  });
+});
+
+describe("bot setup channels", () => {
+  it("keeps channels an older server made for a new bot off the list, across restarts", () => {
+    const store = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value); },
+    };
+    const remembered = rememberBotSetupChannel([], "chn_nova", storage);
+    expect(rememberBotSetupChannel(remembered, "chn_nova", storage)).toEqual(["chn_nova"]);
+    expect(loadBotSetupChannels(storage)).toEqual(["chn_nova"]);
+
+    const leftover = normalizeChannel(channel({ channelId: "chn_nova", name: "Nova" }));
+    const other = normalizeChannel(channel({ channelId: "chn_other", name: "#launch" }));
+    expect(withoutBotSetupChannels([leftover, other], loadBotSetupChannels(storage)).map((row) => row.id))
+      .toEqual(["ch:chn_other"]);
+    expect(withoutBotSetupChannels([leftover, other], [])).toHaveLength(2);
+  });
+
+  it("reads a damaged list as empty", () => {
+    expect(loadBotSetupChannels({ getItem: () => "{not json" })).toEqual([]);
+    expect(loadBotSetupChannels(null)).toEqual([]);
   });
 });
 
@@ -2009,6 +2077,37 @@ describe("G3: contacts directory never renders as sidebar conversation rows", ()
   it("excludes contacts with no conversation signal (incl. agt_* ids)", () => {
     const rows = normalizeConversations([], [...directoryContacts, realDm]);
     expect(rows.map((r) => r.id)).toEqual(["dm:prs_jacob"]);
+  });
+
+  it("shows a bot DM from the same activity, unread, or dot signals as a human DM", () => {
+    const rows = normalizeConversations(
+      [],
+      [
+        dm({ personUid: "agt_activity", lastDmAt: iso(msOnDay(0, 8)) }),
+        dm({ personUid: "agt_unread", unreadCount: 1 }),
+        dm({ personUid: "agt_dot" }),
+      ],
+      { dmDots: ["agt_dot"] },
+    );
+    expect(rows.map((row) => row.id).sort()).toEqual([
+      "dm:agt_activity",
+      "dm:agt_dot",
+      "dm:agt_unread",
+    ]);
+  });
+
+  it("keeps an agent channel under the same channel rule as every other channel", () => {
+    const rows = normalizeConversations(
+      [
+        channel({
+          channelId: "chn_agent",
+          name: "bot-project",
+          members: [{ personUid: "agt_izzy", displayName: "Izzy" }],
+        }),
+      ],
+      [],
+    );
+    expect(rows.map((row) => row.id)).toContain("ch:chn_agent");
   });
 
   it("dedupes the same personUid if the roster listed them twice", () => {

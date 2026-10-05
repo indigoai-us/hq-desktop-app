@@ -42,9 +42,9 @@ export interface UpdateToastCopy {
 const FINISHING = "Finishing download";
 
 /**
- * What the Restart button does while HQ holds the update (OWNER leftover):
- * nothing yet, so it is disabled and says when it will work. The toast and
- * Settings > Updates share this sentence.
+ * What the Restart button says while a recording, a transcript or an HQ
+ * folder update holds the restart: it is disabled and says when it will work.
+ * The toast and Settings > Updates share this sentence.
  */
 export function heldRestartTitle(hold: string): string {
   return `${hold}. Restart becomes available when it finishes.`;
@@ -63,6 +63,18 @@ export function looksLikeStateKey(text: string): boolean {
   const value = text.trim();
   if (!value || /\s/.test(value)) return false;
   return /[a-z][A-Z]/.test(value) || /[_:]/.test(value);
+}
+
+/**
+ * The holds that stop a restart the person asked for. A recording, a
+ * transcript still saving and an HQ folder update do. An upload does not: sync
+ * is nearly always running, so it only delays the automatic install (the
+ * native gate's `blocks_restart`).
+ */
+export function restartHoldText(reasons: string[]): string | null {
+  return holdReasonText(
+    reasons.filter((reason) => reason.replace(/[_\s-]/g, "").toLowerCase() !== "uploadinflight"),
+  );
 }
 
 export function holdReasonText(reasons: string[]): string | null {
@@ -127,7 +139,10 @@ export function updateToastCopy(input: UpdateToastInput): UpdateToastCopy {
   }
   const hold = holdReasonText(input.reasons);
   if (hold) {
-    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: true, installTitle: heldRestartTitle(hold), progress: null };
+    // The automatic install waits for every hold. Restart, which the person
+    // asks for, waits only for the ones that would lose their work.
+    const blocking = restartHoldText(input.reasons);
+    return { phase: "held", title: "Update available", detail: hold, error: null, installLabel: "Restart to update", installDisabled: blocking !== null, installTitle: blocking ? heldRestartTitle(blocking) : null, progress: null };
   }
   return { phase: "ready", title: "Update available", detail: ready, error: null, installLabel: "Restart to update", installDisabled: false, installTitle: null, progress: null };
 }

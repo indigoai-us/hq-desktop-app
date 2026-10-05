@@ -382,7 +382,14 @@ export function createChannelDirectoryReconciler(
         tick: () =>
           // Errors already reach onError/status; the poll must never produce
           // an unhandled rejection.
-          reconcile("interval").catch(() => {}),
+          reconcile("interval").catch((error: unknown) => {
+            // The interval is a poll. onError already classified the failure;
+            // this only keeps the timer from surfacing an unhandled rejection.
+            console.debug(
+              "channel-directory: safety poll failed",
+              error instanceof Error ? error.message : String(error),
+            );
+          }),
         ...(random ? { random } : {}),
         ...(setTimeoutFn ? { setTimeoutFn } : {}),
         ...(clearTimeoutFn ? { clearTimeoutFn } : {}),

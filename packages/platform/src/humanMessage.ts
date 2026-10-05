@@ -8,8 +8,8 @@
  *      definition).
  *   2. Otherwise `audience` decides: `null` / `undefined` / `"human"` /
  *      `"both"` are human; `"bot"` / `"mesh"` / anything else is not.
- *   3. As a last-resort fallback, `fromPersonUid` starting with `bot_`,
- *      `agent_`, `agt_`, or `sys_` is non-human, but only when `audience`
+ *   3. As a last-resort fallback, legacy `bot_`, `agent_`, or `sys_` senders
+ *      are non-human, but only when `audience`
  *      is unspecified. A bot's reply to a DM/thread a human started with
  *      that bot (audience "both") is KEPT.
  *
@@ -24,7 +24,7 @@
  */
 
 const HUMAN_AUDIENCES = new Set(["human", "both"]);
-const NON_HUMAN_UID_PREFIXES = ["bot_", "agent_", "agt_", "sys_"];
+const NON_HUMAN_UID_PREFIXES = ["bot_", "agent_", "sys_"];
 
 export interface HumanClassifiable {
   audience?: string | null;

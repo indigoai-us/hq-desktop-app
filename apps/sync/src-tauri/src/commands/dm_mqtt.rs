@@ -406,14 +406,20 @@ fn client_id() -> String {
     )
 }
 
-/// Tauri event carrying an agent's live status in a channel.
+/// Tauri event carrying an agent's live status in a channel or in its DM.
 pub const EVENT_AGENT_STATUS: &str = "agent:status";
 
-/// Parse hq-pro's `{type:"agent_status", channelId, agentUid, status, threadRoot?, ts}`
-/// wake (published on the person DM topic while an agent works in a channel).
-/// Returns the camelCase event payload, or `None` for any other wake so it
-/// keeps its wake-and-poll behavior. The status text is server-capped at 140
-/// chars; it is capped again here because it is rendered as-is.
+/// Parse an hq-pro `agent_status` wake (published on the person DM topic while
+/// an agent works). Two shapes share the type:
+///
+/// - channel: `{type:"agent_status", channelId, agentUid, status, threadRoot?, ts}`
+/// - DM with the person: `{type:"agent_status", agentUid, withPersonUid, status, ts, sentAt?, rootEventId?}`
+///   (no `channelId`)
+///
+/// Returns the camelCase event payload in the same shape it arrived in, or
+/// `None` for any other wake so it keeps its wake-and-poll behavior. Unknown
+/// fields are ignored. The status text is server-capped at 140 chars; it is
+/// capped again here because it is rendered as-is.
 pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
     let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
     if value.get("type")?.as_str()? != "agent_status" {
@@ -426,18 +432,33 @@ pub(crate) fn agent_status_event(payload: &[u8]) -> Option<serde_json::Value> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
     };
-    let channel_id = field("channelId")?;
     let agent_uid = field("agentUid")?;
     let ts = field("ts")?;
     let status: String = field("status").unwrap_or("").chars().take(140).collect();
+    if let Some(channel_id) = field("channelId") {
+        let mut event = serde_json::json!({
+            "channelId": channel_id,
+            "agentUid": agent_uid,
+            "status": status,
+            "ts": ts,
+        });
+        if let Some(root) = field("threadRoot") {
+            event["threadRoot"] = serde_json::Value::String(root.to_string());
+        }
+        return Some(event);
+    }
+    // No channel: the agent is working in its DM with this person.
+    let with_person_uid = field("withPersonUid")?;
     let mut event = serde_json::json!({
-        "channelId": channel_id,
         "agentUid": agent_uid,
+        "withPersonUid": with_person_uid,
         "status": status,
         "ts": ts,
     });
-    if let Some(root) = field("threadRoot") {
-        event["threadRoot"] = serde_json::Value::String(root.to_string());
+    for key in ["sentAt", "rootEventId"] {
+        if let Some(text) = field(key) {
+            event[key] = serde_json::Value::String(text.to_string());
+        }
     }
     Some(event)
 }
@@ -941,6 +962,41 @@ mod tests {
             agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none()
         );
         assert!(agent_status_event(b"not json").is_none());
+    }
+
+    #[test]
+    fn agent_status_event_passes_the_dm_shape_through() {
+        let wake = br#"{"type":"agent_status","agentUid":"agt_nova","withPersonUid":"prs_me","status":" Searching the web ","ts":"2026-10-03T10:00:00.000Z","rootEventId":" evt_root ","somethingNew":1}"#;
+        let event = agent_status_event(wake).expect("dm agent status");
+        assert_eq!(event["agentUid"], "agt_nova");
+        assert_eq!(event["withPersonUid"], "prs_me");
+        assert_eq!(event["status"], "Searching the web");
+        assert_eq!(event["ts"], "2026-10-03T10:00:00.000Z");
+        assert_eq!(event["rootEventId"], "evt_root");
+        assert!(event.get("channelId").is_none());
+        assert!(event.get("somethingNew").is_none());
+
+        assert!(event.get("sentAt").is_none());
+
+        let no_root = br#"{"type":"agent_status","agentUid":"agt_nova","withPersonUid":"prs_me","status":"Working","ts":"t","sentAt":" 2026-10-03T09:59:58.000Z "}"#;
+        let event = agent_status_event(no_root).expect("dm agent status with sentAt");
+        assert!(event.get("rootEventId").is_none());
+        assert_eq!(event["sentAt"], "2026-10-03T09:59:58.000Z");
+
+        // A channel status keeps the channel shape even if it names a person.
+        let channel = br#"{"type":"agent_status","channelId":"chn_1","agentUid":"agt_c","withPersonUid":"prs_me","status":"x","ts":"t"}"#;
+        let event = agent_status_event(channel).expect("channel agent status");
+        assert_eq!(event["channelId"], "chn_1");
+        assert!(event.get("withPersonUid").is_none());
+
+        // Neither a channel nor a person: not a status this app can place.
+        assert!(
+            agent_status_event(br#"{"type":"agent_status","agentUid":"agt_c","ts":"t"}"#).is_none()
+        );
+        assert!(agent_status_event(
+            br#"{"type":"agent_status","withPersonUid":"prs_me","status":"x","ts":"t"}"#
+        )
+        .is_none());
     }
 
     #[test]

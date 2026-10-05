@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount, tick } from "svelte";
 import BoardTab from "./BoardTab.svelte";
+import { dropdownDoor } from "../../shell/lazy-doors.js";
 import type {
   BoardColumnModel,
   BoardStoryPanelModel,
@@ -49,17 +50,99 @@ afterEach(async () => {
   host?.remove();
 });
 
-function renderBoard(): HTMLDivElement {
+function renderBoard(
+  onAddMember?: (personUid: string) => Promise<"added" | "not-enabled">,
+  extraProps: Record<string, unknown> = {},
+): HTMLDivElement {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(BoardTab, {
     target: host,
-    props: { columns, stories },
+    props: { columns, stories, onAddMember, ...extraProps },
   });
   return host;
 }
 
+// The member picker is the shared dropdown, loaded on demand: load it first.
+beforeAll(async () => {
+  await dropdownDoor.load();
+});
+
+const MEMBER_PICKER = '[data-testid="board-member-uid"]';
+
+/** Open the member picker and return its option for a person, if listed. */
+async function memberOption(root: HTMLElement, personUid: string): Promise<HTMLElement | null> {
+  const picker = root.querySelector<HTMLButtonElement>(MEMBER_PICKER)!;
+  if (picker.getAttribute("aria-expanded") !== "true") picker.click();
+  await tick();
+  flushSync();
+  return root.querySelector<HTMLElement>(`[role="option"][data-value="${personUid}"]`);
+}
+
+/** Pick a person in the member picker once the roster has loaded. */
+async function pickMember(root: HTMLElement, personUid: string): Promise<void> {
+  await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(MEMBER_PICKER)?.disabled).toBe(false));
+  const option = await memberOption(root, personUid);
+  expect(option).not.toBeNull();
+  option!.click();
+  await tick();
+  flushSync();
+  expect(root.querySelector(MEMBER_PICKER)?.getAttribute("data-value")).toBe(personUid);
+}
+
 describe("BoardTab column filter", () => {
+  it("adds a member through the host project API callback", async () => {
+    const addMember = vi.fn(async () => "added" as const);
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers: async () => ({ contacts: [{ personUid: "prs_member", displayName: "Project teammate" }] }),
+    });
+    await vi.waitFor(() => expect(root.querySelector(MEMBER_PICKER)).not.toBeNull());
+    await pickMember(root, "prs_member");
+    const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await tick();
+    flushSync();
+    expect(addMember).toHaveBeenCalledWith("prs_member");
+    expect(root.querySelector('[role="status"]')?.textContent).toContain("Member added to the project.");
+  });
+
+  it("uses the existing company member roster as the Add member selector", async () => {
+    const addMember = vi.fn(async () => "added" as const);
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_member", displayName: "Project teammate" }],
+    }));
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers,
+    });
+    await vi.waitFor(() => expect(listCompanyMembers).toHaveBeenCalledWith("cmp_work"));
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(MEMBER_PICKER)?.disabled).toBe(false));
+    const option = await memberOption(root, "prs_member");
+    expect(option?.querySelector(".dd-label")?.textContent).toBe("Project teammate");
+  });
+
+  it("hides the member form when the server says membership management is not enabled", async () => {
+    const addMember = vi.fn(async () => "not-enabled" as const);
+    const listCompanyMembers = vi.fn(async () => ({
+      contacts: [{ personUid: "prs_member", displayName: "Project teammate" }],
+    }));
+    const root = renderBoard(addMember, {
+      companyUid: "cmp_work",
+      listCompanyMembers,
+    });
+    await vi.waitFor(() => expect(root.querySelector(MEMBER_PICKER)).not.toBeNull());
+    await pickMember(root, "prs_member");
+    const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
+    await vi.waitFor(() => expect(button.disabled).toBe(false));
+    button.click();
+    await vi.waitFor(() => expect(root.querySelector('[aria-label="Add project member"]')).toBeNull());
+    expect(root.querySelector('[role="status"]')?.textContent).toBe(
+      "Adding project members is not turned on for this company yet.",
+    );
+  });
+
   it("does not advertise a changes action without an authoritative diff", () => {
     const root = renderBoard();
     flushSync(() =>

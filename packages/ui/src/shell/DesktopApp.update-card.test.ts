@@ -202,9 +202,10 @@ describe("DesktopApp update-available card", () => {
     const events = createSyncEventHost();
     await mountApp(events.host);
 
+    // A hold that stops Restart. (An upload no longer does: #1237.)
     events.emit(
       "update-gate://deferred",
-      gatePayload(VERSION_A, ["UploadInFlight"]),
+      gatePayload(VERSION_A, ["TranscriptFinishing"]),
     );
     await settle();
     expect(
@@ -457,17 +458,30 @@ describe("DesktopApp update-available card", () => {
     }
   });
 
-  it("while held, Restart is disabled, not drawn as primary, and says when it will work", async () => {
+  it("while a recording holds it, Restart is disabled, not drawn as primary, and says when it will work", async () => {
     const events = createSyncEventHost();
     await mountApp(events.host);
-    events.emit("update-gate://deferred", gatePayload(VERSION_A, ["UploadInFlight"]));
+    events.emit("update-gate://deferred", gatePayload(VERSION_A, ["MeetingRecording"]));
     await settle();
     const install = document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!;
     expect(install.disabled).toBe(true);
     expect(install.classList.contains("primary")).toBe(false);
     expect(install.getAttribute("title")).toBe(
-      "Waiting for an upload to finish. Restart becomes available when it finishes.",
+      "Waiting for your recording to finish. Restart becomes available when it finishes.",
     );
+  });
+
+  it("an upload alone does not hold Restart (the rule from main, #1237)", async () => {
+    // Sync is nearly always uploading. Holding Restart for it left people
+    // unable to update at all. (This case used to assert Restart was disabled.)
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A, ["UploadInFlight"]));
+    await settle();
+    const install = document.querySelector<HTMLButtonElement>('[data-testid="update-install"]')!;
+    expect(install.disabled).toBe(false);
+    expect(install.classList.contains("primary")).toBe(true);
+    expect(install.getAttribute("title")).toBeNull();
   });
 
   it("Later snoozes the version for this session only", async () => {

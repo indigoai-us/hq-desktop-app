@@ -686,7 +686,7 @@ fn spawn_restart_after_flush(countdown_seconds: u64) {
     tauri::async_runtime::spawn(async move {
         if crate::updater::restart_is_held(&app).is_some() {
             log(LOG_TAG, "RESTART_APP deferred until protected activity clears");
-            crate::updater::defer_restart_until_safe(app);
+            crate::updater::defer_restart_until_safe(app, None);
             return;
         }
         // The countdown notice is already visible; hold it, then restart. The

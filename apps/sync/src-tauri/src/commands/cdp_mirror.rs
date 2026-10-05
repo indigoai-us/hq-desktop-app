@@ -150,6 +150,7 @@ pub fn load_persisted(
     path: &std::path::Path,
     now_ms: u64,
 ) -> (Option<String>, Option<String>, u64) {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let obj = read_menubar_obj(path);
     let string = |key: &str| {
         obj.get(key)
@@ -191,6 +192,7 @@ pub fn apply_download_tag(
     tag: Option<&hq_desktop_core::download_tag::DownloadTag>,
     now_ms: u64,
 ) -> Option<TagReadReport> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let obj = read_menubar_obj(path);
     if obj.get(DOWNLOAD_TAG_READ_AT_KEY).is_some() {
         return None;
@@ -519,10 +521,39 @@ static FIRST_OPEN_FLUSHING: std::sync::atomic::AtomicBool =
 /// Returns whether a held row was delivered. The row stays held on failure
 /// (no session yet, network), so the next sign-in sends it.
 pub async fn flush_pending_first_open_now() -> bool {
-    use std::sync::atomic::Ordering;
     let Ok(path) = paths::menubar_json_path() else {
         return false;
     };
+    flush_pending_first_open_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+/// The task must not resolve HOME after another caller has changed it.
+pub(crate) fn capture_background_flush_path() -> Option<std::path::PathBuf> {
+    paths::menubar_json_path().ok()
+}
+
+pub(crate) fn flush_path_matches_current_home(path: &std::path::Path) -> bool {
+    paths::menubar_json_path().is_ok_and(|current| current == path)
+}
+
+pub(crate) fn pending_first_open_flush_task() -> impl std::future::Future<Output = bool> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        match path {
+            Some(path) => flush_pending_first_open_at(path).await,
+            None => false,
+        }
+    }
+}
+
+async fn flush_pending_first_open_at(path: std::path::PathBuf) -> bool {
+    use std::sync::atomic::Ordering;
+    // Do not send one installation's held row with another installation's
+    // access token if HOME changed before this background task was polled.
+    if !flush_path_matches_current_home(&path) {
+        return false;
+    }
     let pending = || {
         read_menubar_obj(&path)
             .get(FIRST_OPEN_PENDING_KEY)
@@ -611,6 +642,9 @@ pub fn hold_auth_row_at(
     properties: Option<&Value>,
     now: u64,
 ) -> Result<(), String> {
+    // The held list is read, extended and written back; hold the lock across
+    // all three so no other menubar.json write lands in between.
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let mut props = Map::new();
     for key in ["provider", "step", "errorCategory"] {
         if let Some(value) = held_label(properties, key) {
@@ -645,6 +679,7 @@ pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
 
 /// Drop the delivered row `key` and any expired rows; keeps rows held meanwhile.
 fn clear_held_auth_row(path: &std::path::Path, key: &str) -> Result<(), String> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let rows: Vec<Value> = held_auth_rows_at(path, now_ms())
         .into_iter()
         .filter(|row| row.get("idempotencyKey").and_then(Value::as_str) != Some(key))
@@ -664,10 +699,32 @@ static AUTH_HELD_FLUSHING: std::sync::atomic::AtomicBool =
 /// a resend is stored once. Stops at the first failure; the rest stay held.
 /// Returns how many were delivered.
 pub async fn flush_held_auth_rows_now() -> usize {
-    use std::sync::atomic::Ordering;
     let Ok(path) = paths::menubar_json_path() else {
         return 0;
     };
+    flush_held_auth_rows_at(path).await
+}
+
+/// Capture the install's menubar path before dispatching a background flush.
+pub(crate) fn held_auth_flush_task() -> impl std::future::Future<Output = usize> + Send {
+    let path = capture_background_flush_path();
+    async move {
+        if let Some(path) = path {
+            flush_held_auth_rows_at(path).await
+        } else {
+            0
+        }
+    }
+}
+
+pub(crate) async fn flush_held_auth_rows_at(path: std::path::PathBuf) -> usize {
+    use std::sync::atomic::Ordering;
+    // Leave the rows when this file is no longer the current install. The
+    // post reads the token beside `path`, so a resolver home that has moved
+    // cannot deliver or clear them under another profile.
+    if !flush_path_matches_current_home(&path) {
+        return 0;
+    }
     if held_auth_rows_at(&path, now_ms()).is_empty()
         || AUTH_HELD_FLUSHING.swap(true, Ordering::SeqCst)
     {
@@ -678,7 +735,7 @@ pub async fn flush_held_auth_rows_now() -> usize {
         let Some(key) = row.get("idempotencyKey").and_then(Value::as_str) else {
             continue;
         };
-        if super::telemetry::post_held_auth_row(&row).await.is_err() {
+        if super::telemetry::post_held_auth_row(&row, &path).await.is_err() {
             crate::util::logfile::log("cdp", "WARN auth_held send_failed_held_for_retry");
             break;
         }
@@ -693,9 +750,7 @@ pub async fn flush_held_auth_rows_now() -> usize {
 }
 
 fn flush_held_auth_rows() {
-    tauri::async_runtime::spawn(async {
-        flush_held_auth_rows_now().await;
-    });
+    tauri::async_runtime::spawn(held_auth_flush_task());
 }
 
 /// `idempotencyKey` for the first launch's `desktop_app_opened` row: one per
@@ -705,9 +760,7 @@ pub fn first_open_idempotency_key(install_attempt_id: &str) -> String {
 }
 
 fn flush_pending_first_open() {
-    tauri::async_runtime::spawn(async {
-        flush_pending_first_open_now().await;
-    });
+    tauri::async_runtime::spawn(pending_first_open_flush_task());
 }
 
 /// Send one consent-free hq-pro row; `emit_desktop_operational_telemetry`
@@ -741,6 +794,7 @@ fn account_linked_key(props: &Value) -> String {
 /// it as sent when it does.
 pub fn claim_account_linked_at(path: &std::path::Path, props: &Value) -> bool {
     let key = account_linked_key(props);
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     if read_menubar_obj(path)
         .get(ACCOUNT_LINKED_KEY)
         .and_then(Value::as_str)
