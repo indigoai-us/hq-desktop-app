@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+
 ## [0.10.392] — 2026-10-05
 
 - The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.

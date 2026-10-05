@@ -1068,6 +1068,9 @@
       );
       authStep = 'callback_received';
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'callback_received', {
+        provider: telemetryProvider,
+      });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
