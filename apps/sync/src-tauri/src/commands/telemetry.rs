@@ -3565,6 +3565,7 @@ mod codex_telemetry_tests {
                 "exitCode",
                 "skipReason",
                 "enabled",
+                "registered",
                 "companiesAttempted",
                 "filesDownloaded",
                 "bytesDownloaded",
