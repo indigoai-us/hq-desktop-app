@@ -106,7 +106,12 @@ export interface AtlasLiveActor {
   bot: boolean;
   projectId?: string;
   signal?: string;
+  /** Online, but none of their sessions is in progress. */
+  idle?: boolean;
 }
+
+/** Session states that mean work is in progress right now. */
+const WORKING_STATUSES = new Set(["active", "open", "running"]);
 
 type LiveReadLike = {
   participants: readonly {
@@ -143,6 +148,8 @@ export function atlasLiveActors(
       p.displayName?.trim() ||
       (p.actorUid === selfUid ? "You" : p.actorUid);
     const bot = (known?.actorType ?? p.actorType) === "agent";
+    const idle = !p.sessions.some((s) => WORKING_STATUSES.has(s.status));
+    const flag = idle ? { idle: true } : {};
     const projects = new Map<string, string | undefined>();
     for (const s of p.sessions) {
       const project = s.projectId?.trim().toLowerCase();
@@ -150,11 +157,11 @@ export function atlasLiveActors(
       projects.set(project, s.taskId?.trim() || undefined);
     }
     if (!projects.size) {
-      out.push({ actorUid: p.actorUid, name, bot });
+      out.push({ actorUid: p.actorUid, name, bot, ...flag });
       continue;
     }
     for (const [projectId, taskId] of projects) {
-      out.push({ actorUid: p.actorUid, name, bot, projectId, signal: taskId });
+      out.push({ actorUid: p.actorUid, name, bot, projectId, signal: taskId, ...flag });
     }
   }
   return out.sort(

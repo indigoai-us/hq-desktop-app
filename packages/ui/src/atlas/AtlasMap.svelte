@@ -397,6 +397,8 @@
         <text
           class="label"
           class:dim={dimmed(label.id)}
+          class:focus={(label.rank ?? 4) <= 2}
+          class:recent={label.rank === 3}
           data-testid={`atlas-label-${label.id}`}
           x={label.x}
           y={label.y}
@@ -494,13 +496,15 @@
     cursor: grabbing;
   }
   .region {
-    /* AUDIT-3: section labels are sans, sentence case, no tracking.
-       OWNER-D 7: drawn at 13px / 500 in full text colour, above item labels. */
+    /* Owner, 2026-10-04: section titles are the quietest text on the map:
+       small, uppercase, muted. Item names carry the hierarchy. */
     font-family: var(--font-ui, var(--font-sans, "Geist", sans-serif));
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 500;
-    /* Section names sit back from item labels by tone; no outline. */
-    fill: var(--v4-text-2, var(--v4-text-3));
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    fill: var(--v4-text-3);
+    fill-opacity: 0.8;
     pointer-events: none;
   }
   .edge {
@@ -582,9 +586,18 @@
   .label {
     font-family: var(--font-sans, "Geist", sans-serif);
     font-size: 13px;
+    /* Three tones: everything else, recently touched, and the focus set
+       (hovered, selected and their relations). */
     fill: var(--v4-text-1);
-    fill-opacity: 0.92;
+    fill-opacity: 0.5;
     pointer-events: none;
+  }
+  .label.recent {
+    fill-opacity: 0.8;
+  }
+  .label.focus {
+    fill-opacity: 1;
+    font-weight: 500;
   }
   .hover-card {
     position: absolute;

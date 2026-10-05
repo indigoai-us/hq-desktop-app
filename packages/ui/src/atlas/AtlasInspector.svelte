@@ -25,6 +25,8 @@
     detailLoading: boolean;
     related: AtlasNode[];
     presence: AtlasPresence[];
+    /** Online with no session in progress; summarised under Working now. */
+    online?: AtlasPresence[];
     company: string;
     /** Null hides the objects chip (the US-009 landing has no map yet). */
     objectCount: number | null;
@@ -52,6 +54,7 @@
     detailLoading,
     related,
     presence,
+    online = [],
     company,
     objectCount,
     projectsInProgress,
@@ -161,7 +164,7 @@
       {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}
       {#if projectsInProgress !== null}<span class="chip">{projectsInProgress} projects in progress</span>{/if}
     </div>
-    {#if !mapFailed || presence.length}
+    {#if !mapFailed || presence.length || online.length}
     <div class="hr"></div>
     <div class="kind">Working now</div>
     {/if}
@@ -178,6 +181,12 @@
       </div>
     {:else}
       <p class="goal">Nobody is working in this company right now.</p>
+    {/if}
+    {#if online.length}
+      <details class="online" data-testid="atlas-inspector-online">
+        <summary>{online.length} more online, not in a session</summary>
+        <div class="online-names">{online.map((who) => who.name).join(", ")}</div>
+      </details>
     {/if}
     {#if people.status !== "idle"}
       <div class="hr"></div>
@@ -224,6 +233,9 @@
 
 <style>
   .people-head { display: flex; gap: 8px; align-items: baseline; }
+  .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }
+  .online summary { cursor: pointer; }
+  .online-names { margin-top: 4px; line-height: 1.5; }
   .li.person { display: block; width: 100%; text-align: left; padding: 6px 0; }
   .li.person[aria-pressed="true"] { background: var(--v4-active-row); }
   .pmain { width: 100%; min-width: 0; }

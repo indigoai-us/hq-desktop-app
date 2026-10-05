@@ -73,6 +73,12 @@ function inspectorPath(): string | null | undefined {
   return host.querySelector(sel("atlas-inspector-path"))?.textContent;
 }
 
+// A faded object sits between the age floor and the faded baseline (oldest lowest).
+const faded = (el: SVGGElement): boolean => {
+  const t = Number.parseFloat(el.style.getPropertyValue("--t"));
+  return t >= 0.06 && t <= 0.25;
+};
+
 describe("AtlasView", () => {
   it("QA-064: a click on a node opens its inspector exactly like Return", async () => {
     mountView();
@@ -222,20 +228,20 @@ describe("AtlasView time scrubber and empty company (US-014)", () => {
     const node = () => host.querySelector(sel(`atlas-node-${RAIL}`)) as SVGGElement;
     expect(node().style.getPropertyValue("--t")).toBe("");
     const policyAtNow = host.querySelector(sel("atlas-node-policy:policies/tenancy.md")) as SVGGElement;
-    expect(policyAtNow.style.getPropertyValue("--t")).toBe("0.25");
+    expect(faded(policyAtNow)).toBe(true);
     expect(host.querySelector(sel("atlas-nothing-active"))).toBeNull();
     flushSync(() => {
       hist.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     });
     expect(host.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Sep 29");
     const policy = host.querySelector(sel("atlas-node-policy:policies/tenancy.md")) as SVGGElement;
-    expect(policy.style.getPropertyValue("--t")).toBe("0.25");
+    expect(faded(policy)).toBe(true);
     expect(policy.getAttribute("transform")).toBeNull();
     flushSync(() => {
       hist.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
     });
     expect(host.querySelector(sel("atlas-scrub-date"))?.textContent).toBe("Now");
-    expect(policy.style.getPropertyValue("--t")).toBe("0.25");
+    expect(faded(policy)).toBe(true);
     expect(node().style.getPropertyValue("--t")).toBe("");
   });
 
@@ -256,7 +262,7 @@ describe("AtlasView time scrubber and empty company (US-014)", () => {
     await settle();
     const nodes = [...host.querySelectorAll('[data-testid^="atlas-node-"]')] as SVGGElement[];
     expect(nodes.length).toBeGreaterThan(2);
-    for (const n of nodes) expect(n.style.getPropertyValue("--t")).toBe("0.25");
+    for (const n of nodes) expect(faded(n)).toBe(true);
     expect(host.querySelector(sel("atlas-nothing-active"))?.textContent).toBe("Nothing active right now");
   });
 

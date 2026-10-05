@@ -77,6 +77,8 @@ export type AtlasPresence = {
   name: string;
   bot: boolean;
   signal?: string;
+  /** Online with no session in progress; listed apart from Working now. */
+  idle?: boolean;
 };
 
 const DISTRICT_TYPES = new Set<string>(ATLAS_DISTRICTS.map((d) => d.type));

@@ -17,7 +17,24 @@ const DAY = 86_400_000;
 export const ATLAS_TOUCH_WINDOW_DAYS = 7;
 /** Opacity for objects outside the scrubbed moment. */
 export const ATLAS_BORN_HIDDEN = 0.06;
+/** A faded object touched at the scrubbed moment; older ones fall below it. */
 export const ATLAS_TOUCH_FADED = 0.25;
+/** Where the oldest and undated objects settle. */
+export const ATLAS_AGE_FLOOR = 0.06;
+/** Days for a faded object to lose about two thirds of its way to the floor. */
+export const ATLAS_AGE_FADE_DAYS = 21;
+
+/**
+ * Opacity of an object outside the scrubbed moment, by how long before `ref`
+ * it was last touched: ATLAS_TOUCH_FADED when just touched, easing down to
+ * ATLAS_AGE_FLOOR for the oldest. Undated objects sit at the floor.
+ */
+export function atlasAgeFade(touched: number | undefined, ref: number): number {
+  if (touched == null) return ATLAS_AGE_FLOOR;
+  const days = Math.max(0, (ref - touched) / DAY);
+  const value = ATLAS_AGE_FLOOR + (ATLAS_TOUCH_FADED - ATLAS_AGE_FLOOR) * Math.exp(-days / ATLAS_AGE_FADE_DAYS);
+  return Math.round(value * 1000) / 1000;
+}
 /** At the live edge an object counts as active if touched this recently. */
 export const ATLAS_LIVE_WINDOW_MS = 10 * 60_000;
 
@@ -96,7 +113,7 @@ export function atlasTimeOpacity(
   const out = new Map<string, number>();
   if (index == null || index >= ATLAS_TIMELINE_DAYS - 1) {
     for (const n of nodes) {
-      if (!atlasActiveNow(n, nowMs, live)) out.set(n.id, ATLAS_TOUCH_FADED);
+      if (!atlasActiveNow(n, nowMs, live)) out.set(n.id, atlasAgeFade(n.touched, nowMs));
     }
     return out;
   }
@@ -112,7 +129,7 @@ export function atlasTimeOpacity(
     }
     const t = n.touched;
     const fresh = t != null && t <= cutoff && t > cutoff - ATLAS_TOUCH_WINDOW_DAYS * DAY;
-    if (!fresh) out.set(n.id, ATLAS_TOUCH_FADED);
+    if (!fresh) out.set(n.id, atlasAgeFade(t != null && t <= cutoff ? t : undefined, cutoff));
   }
   return out;
 }
