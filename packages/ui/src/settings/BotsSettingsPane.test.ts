@@ -449,7 +449,7 @@ describe("Settings → Bots (Work shell)", () => {
   });
 
   it("shows Removing on the cloud row immediately, disables its buttons, then removes the row on success", async () => {
-    const pending = deferred<ReturnType<typeof ok>>();
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
     const deprovision = vi.fn(() => pending.promise);
     const adapter = fakeAdapter({ agents: { deprovision } });
     await mountPane(adapter);
