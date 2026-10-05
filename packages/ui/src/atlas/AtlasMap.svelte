@@ -153,9 +153,14 @@
     const y = Math.max(label.y, 20);
     return { ...label, x, y, box: { left: x - half, top: y - 12, right: x + half, bottom: y + 4 } };
   }
+  const sectionCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const n of placed) counts.set(n.type, (counts.get(n.type) ?? 0) + 1);
+    return counts;
+  });
   const districtLabels = $derived(
     districts
-      .map((d) => keepOnScreen(atlasDistrictLabel(d, view, measureLabel), d))
+      .map((d) => keepOnScreen(atlasDistrictLabel(d, view, measureLabel, sectionCounts.get(d.type)), d))
       .filter((d): d is AtlasScreenLabel => d !== null && !fixedBoxes.some((f) => meets(d.box, f))),
   );
   const labels = $derived(
@@ -197,6 +202,8 @@
     top: number;
     above: boolean;
     kind: string;
+    /** Section colour for the dot beside the kind; none for a person or bot. */
+    tint?: string;
     title: string;
     people: { key: string; name: string; bot: boolean; signal?: string }[];
     lines: string[];
@@ -233,6 +240,7 @@
     return {
       ...cardAt(node.x * view.k + view.x, node.y * view.k + view.y, node.r * view.k + (here.length ? 22 : 0)),
       kind: districtLabel(node.type).replace(/s$/, ""),
+      tint: ATLAS_TYPE_TINT[node.type],
       title: node.label,
       people: here.map((p) => ({ key: p.actorUid ?? p.name, name: p.name, bot: p.bot, signal: p.signal })),
       lines: [
@@ -360,6 +368,7 @@
           class="node"
           class:dim={dimmed(node.id)}
           class:selected={node.id === selected}
+          class:lit={filterIds?.has(node.id) ?? false}
           style:--t={timeOpacity?.get(node.id) ?? null}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
@@ -391,7 +400,7 @@
     </g>
     <g class="labels" data-testid="atlas-labels">
       {#each districtLabels as label (label.id)}
-        <text class="region" data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}</text>
+        <text class="region" data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}<tspan class="count" dx="7">{sectionCounts.get(label.id.slice("district:".length)) ?? ""}</tspan></text>
       {/each}
       {#each labels as label (label.id)}
         <text
@@ -399,6 +408,7 @@
           class:dim={dimmed(label.id)}
           class:focus={(label.rank ?? 4) <= 2}
           class:recent={label.rank === 3}
+          style:--t={(label.rank ?? 4) <= 2 ? null : (timeOpacity?.get(label.id) ?? null)}
           data-testid={`atlas-label-${label.id}`}
           x={label.x}
           y={label.y}
@@ -410,6 +420,7 @@
         <g
           class="dock"
           class:dim={filterActor ? chip.actorUid !== filterActor : dimmed(chip.nodeId)}
+          class:idle={chip.idle ?? false}
           data-testid={`atlas-chip-${chip.actorUid ?? chip.name}`}
           data-node={chip.nodeId}
           data-atlas-node={chip.nodeId}
@@ -427,6 +438,9 @@
         >
           {#if chip.index === 0}
             <line class="connector" x1={chip.rimX} y1={chip.rimY} x2={chip.sx - half * 0.7} y2={chip.sy + half * 0.7} />
+          {/if}
+          {#if !chip.idle}
+            <circle class="pulse" cx={chip.sx} cy={chip.sy} r={half + 3} />
           {/if}
           {#if chip.bot}
             <rect class="mark" x={chip.sx - half} y={chip.sy - half} width={CHIP_PX} height={CHIP_PX} rx="3" />
@@ -447,7 +461,7 @@
       style:top={`${card.top}px`}
       style:width={`${CARD_WIDTH}px`}
     >
-      <div class="hc-kind">{card.kind}</div>
+      <div class="hc-kind">{#if card.tint}<i class="hc-dot" style:background={card.tint}></i>{/if}{card.kind}</div>
       <div class="hc-title">{card.title}</div>
       {#if card.people.length}
         <div class="hc-people">
@@ -504,11 +518,17 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     fill: var(--v4-text-3);
-    fill-opacity: 0.8;
+    fill-opacity: 0.7;
     pointer-events: none;
   }
+  .region .count {
+    letter-spacing: 0;
+    fill-opacity: 0.6;
+    font-variant-numeric: tabular-nums;
+  }
   .edge {
-    stroke: var(--v4-text-3);
+    stroke: var(--v4-text-2, var(--v4-text-3));
+    stroke-opacity: 0.45;
     stroke-width: 1;
   }
   /* --t is the scrubber's per-object opacity; playback animates opacity only. */
@@ -532,11 +552,26 @@
   .node.selected .dot {
     fill: var(--v4-text-1);
   }
+  /* Out of focus: stepped back, but the map stays readable behind the focus set. */
   .node.dim {
-    opacity: calc(var(--t, 1) * 0.35);
+    opacity: calc(var(--t, 1) * 0.55);
+  }
+  /* Picked out by the people filter: full strength whatever its age. */
+  .node.lit {
+    opacity: 1;
+  }
+  .node:hover {
+    opacity: 1;
+  }
+  .node:hover .dot {
+    stroke: var(--v4-text-1);
+    stroke-opacity: 0.35;
+    stroke-width: 4px;
+    vector-effect: non-scaling-stroke;
+    paint-order: stroke;
   }
   .label.dim {
-    opacity: calc(var(--t, 1) * 0.35);
+    opacity: 0.4;
   }
   .sel-bg {
     fill: var(--v4-active-row);
@@ -560,6 +595,34 @@
   .dock.dim {
     opacity: 0.35;
   }
+  /* Working: a slow ring around the marker. Only online: grey, no ring. */
+  .pulse {
+    fill: none;
+    stroke: var(--v4-ok);
+    stroke-width: 1;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: atlas-chip-pulse 2.4s ease-out infinite;
+    pointer-events: none;
+  }
+  @keyframes atlas-chip-pulse {
+    0% {
+      opacity: 0.6;
+      transform: scale(0.85);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(1.35);
+    }
+  }
+  .dock.idle .mark,
+  .dock.idle .connector {
+    stroke: var(--v4-text-3);
+  }
+  .dock.idle .initials {
+    fill: var(--v4-text-3);
+  }
   .connector {
     stroke: var(--v4-ok);
     stroke-width: 1;
@@ -579,7 +642,8 @@
     pointer-events: none;
   }
   @media (prefers-reduced-motion: reduce) {
-    .halo {
+    .halo,
+    .pulse {
       animation: none;
     }
   }
@@ -589,11 +653,13 @@
     /* Three tones: everything else, recently touched, and the focus set
        (hovered, selected and their relations). */
     fill: var(--v4-text-1);
-    fill-opacity: 0.5;
+    /* An item's name follows its dot: older items carry a quieter name. */
+    fill-opacity: calc(0.38 + 0.34 * var(--t, 1));
     pointer-events: none;
+    transition: fill-opacity 160ms ease;
   }
   .label.recent {
-    fill-opacity: 0.8;
+    fill-opacity: 0.85;
   }
   .label.focus {
     fill-opacity: 1;
@@ -630,7 +696,16 @@
     transform-origin: bottom left;
   }
   .hc-kind {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--v4-text-3);
+  }
+  .hc-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
   }
   .hc-title {
     font-weight: 500;
@@ -701,7 +776,7 @@
     gap: 5px;
   }
   .legend .hint {
-    opacity: 0.7;
+    opacity: 0.55;
     margin-left: 6px;
   }
   .ldot {
@@ -725,7 +800,11 @@
     gap: 4px;
   }
   .zoom-btn {
-    padding: 4px 8px;
+    width: 28px;
+    height: 28px;
+    display: inline-grid;
+    place-items: center;
+    padding: 0;
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
     background: var(--v4-control-bg);

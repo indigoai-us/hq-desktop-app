@@ -319,11 +319,13 @@ export function atlasDistrictLabel(
   shape: AtlasDistrictShape,
   view: AtlasView,
   measure: (text: string) => number,
+  /** Object count drawn after the name; widens the reserved box. */
+  count?: number,
 ): AtlasScreenLabel {
   const cx = shape.x * view.k + view.x;
   const y = (shape.y - shape.r) * view.k + view.y - 6;
   // Drawn uppercase with tracking at 11px: about the width of the 13px label.
-  const w = measure(shape.label.toUpperCase());
+  const w = measure(count == null ? shape.label.toUpperCase() : `${shape.label.toUpperCase()}  ${count}`);
   return {
     id: `district:${shape.type}`,
     text: shape.label,

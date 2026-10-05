@@ -18,9 +18,9 @@ export const ATLAS_TOUCH_WINDOW_DAYS = 7;
 /** Opacity for objects outside the scrubbed moment. */
 export const ATLAS_BORN_HIDDEN = 0.06;
 /** A faded object touched at the scrubbed moment; older ones fall below it. */
-export const ATLAS_TOUCH_FADED = 0.25;
+export const ATLAS_TOUCH_FADED = 0.42;
 /** Where the oldest and undated objects settle. */
-export const ATLAS_AGE_FLOOR = 0.06;
+export const ATLAS_AGE_FLOOR = 0.12;
 /** Days for a faded object to lose about two thirds of its way to the floor. */
 export const ATLAS_AGE_FADE_DAYS = 21;
 
