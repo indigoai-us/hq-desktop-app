@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * Upcoming Meetings — standalone Tauri window (label: `meetings-window`).
    * Mirrors the new-files-detail pattern: own window, decorated, resizable.
@@ -1888,7 +1889,7 @@
                 onclick={() => void dispatchActiveAction('stop', meeting.windowId)}
                 disabled={pendingActiveAction !== undefined}
                 aria-busy={pendingActiveAction === 'stop'}
-              >Stop</button>
+              ><RailIcon name="stop" />Stop</button>
             {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
               <button type="button" class="active-action" disabled aria-busy="true">
                 {meeting.state === 'starting' ? 'Starting…' : 'Stopping…'}
@@ -1900,7 +1901,7 @@
                 onclick={() => void dispatchActiveAction('start', meeting.windowId)}
                 disabled={pendingActiveAction !== undefined}
                 aria-busy={pendingActiveAction === 'start'}
-              >Record</button>
+              ><RailIcon name="circle-dot" />Record</button>
             {/if}
           </div>
           {#if activeFailure}

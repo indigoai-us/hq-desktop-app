@@ -16,6 +16,10 @@
       "default": "./src/common/emojiShortcodes.ts"
     },
     "./settings/appearance-seam": "./src/settings/appearance-seam.ts",
+    "./rail-icon": {
+      "svelte": "./src/common/button/RailIcon.svelte",
+      "default": "./src/common/button/RailIcon.svelte"
+    },
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"

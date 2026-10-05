@@ -20,6 +20,7 @@ The release moves it under the version it ships in.
 - Buttons across the app now show a small icon before their label, including New project, Choose folder, Submit for review and Refresh.
 - Packs: the Uninstall button is no longer red, and every button on the page has an icon.
 - Buttons: the remaining action buttons now have icons, including Archive, Reject, Choose, Knock and Manage, and labels such as Back to queue and Create channel use real plus and arrow icons instead of typed symbols.
+- Buttons in the separate windows (onboarding, sign-in, the quick window and the call window) now show a small icon before their label, like the rest of the app.
 
 ## [0.10.392] — 2026-10-05
 

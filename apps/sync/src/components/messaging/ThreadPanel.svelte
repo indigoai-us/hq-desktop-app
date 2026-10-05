@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * Thread panel: wraps DmThreadPane with audience-based filtering (US-006).
    * When the bot toggle is off, agent-audience messages are hidden and a quiet
@@ -40,7 +41,7 @@
         onclick={() => onrequestshowbotmessages?.()}
         data-testid="show-hidden-bot-messages"
       >
-        {singleHidden} bot {singleHidden === 1 ? 'message' : 'messages'} hidden
+        <RailIcon name="eye" />{singleHidden} bot {singleHidden === 1 ? 'message' : 'messages'} hidden
       </button>
     </div>
   {/if}

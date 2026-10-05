@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   // Channel roster (US-018): the member list for one channel, opened from the
   // ChannelView header member-count button. Each row shows the member's name +
   // role; the channel owner additionally sees a "Remove" affordance per other
@@ -181,7 +182,7 @@
               <span class="invite-error" role="alert">{inviteError}</span>
             {/if}
             <button class="btn btn-ghost" type="button" onclick={() => (inviting = false)}>
-              Cancel
+              <RailIcon name="x" />Cancel
             </button>
             <button
               class="btn btn-primary"
@@ -195,7 +196,7 @@
         </div>
       {:else}
         <button class="invite-open" type="button" onclick={() => (inviting = true)}>
-          + Invite people
+          <RailIcon name="user-plus" />Invite people
         </button>
       {/if}
     {/if}

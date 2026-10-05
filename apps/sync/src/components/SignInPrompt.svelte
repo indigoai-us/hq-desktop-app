@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
@@ -474,14 +475,14 @@
           onclick={handleContinuationConfirm}
           disabled={continuationBusy}
         >
-          {continuationBusy ? 'Signing in…' : `Continue as ${continuation.identity.email}`}
+          <RailIcon name="arrow-right" />{continuationBusy ? 'Signing in…' : `Continue as ${continuation.identity.email}`}
         </button>
         <button
           class="cancel-btn"
           onclick={handleContinuationReject}
           disabled={continuationBusy}
         >
-          Use another account
+          <RailIcon name="user-plus" />Use another account
         </button>
       </div>
     {:else if continuation.phase === 'opening' || continuation.phase === 'waiting'}
@@ -489,7 +490,7 @@
         Finishing your sign-in in the browser…
       </p>
       <button class="cancel-btn" onclick={handleContinuationReject} disabled={continuationBusy}>
-        Cancel
+        <RailIcon name="x" />Cancel
       </button>
     {/if}
 
@@ -564,7 +565,7 @@
             data-testid="microsoft-email-continue"
             disabled={loadingProvider !== null || quitting || microsoftEmail.trim() === ''}
           >
-            Continue
+            <RailIcon name="arrow-right" />Continue
           </button>
         </form>
       {/if}
@@ -583,7 +584,7 @@
         disabled={cancelling || quitting || !authorizeUrl}
         data-testid="reopen-browser-signin"
       >
-        Reopen {loadingProvider} sign-in
+        <RailIcon name="external" />Reopen {loadingProvider} sign-in
       </button>
       <button
         class="cancel-btn"
@@ -625,7 +626,7 @@
         <p class="error">{error}</p>
         {#if lastProvider}
           <button class="retry-btn" onclick={handleRetry} data-testid="retry-signin">
-            Try again
+            <RailIcon name="refresh" />Try again
           </button>
         {/if}
         <CopyPromptButton

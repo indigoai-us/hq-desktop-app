@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -509,8 +510,7 @@
   {/if}
   <footer class="qw-rail-footer">
     <button type="button" onclick={() => onopenfull?.()}>
-      Open full desktop view
-      <span aria-hidden="true">↗</span>
+      <RailIcon name="external" />Open full desktop view
     </button>
   </footer>
 </aside>
