@@ -146,9 +146,6 @@ pub fn restart_after_update_preferring_launch_agent(
     app: &tauri::AppHandle,
     expected_version: &str,
 ) -> bool {
-    crate::commands::telemetry::note_desktop_quit_reason(
-        crate::commands::telemetry::DesktopQuitReason::UpdateRestart,
-    );
     restart_preferring_launch_agent_with_update_version(app, Some(expected_version))
 }
 
@@ -163,6 +160,11 @@ fn restart_preferring_launch_agent_with_update_version(
         );
         crate::updater::defer_restart_until_safe(app.clone(), update_version.map(str::to_owned));
         return false;
+    }
+    if update_version.is_some() {
+        crate::commands::telemetry::note_desktop_quit_reason(
+            crate::commands::telemetry::DesktopQuitReason::UpdateRestart,
+        );
     }
     #[cfg(target_os = "macos")]
     {

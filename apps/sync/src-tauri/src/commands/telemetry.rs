@@ -8539,6 +8539,22 @@ mod desktop_liveness_telemetry_regression_tests {
     }
 
     #[test]
+    fn deferred_update_restart_does_not_latch_an_update_quit_reason() {
+        let source = include_str!("autostart.rs");
+        let restart = source
+            .split("fn restart_preferring_launch_agent_with_update_version(")
+            .nth(1)
+            .expect("restart implementation");
+        let deferred = restart
+            .find("return false;")
+            .expect("protected activity defers restart");
+        let reason_latched = restart
+            .find("note_desktop_quit_reason(")
+            .expect("successful update restart labels its exit");
+        assert!(reason_latched > deferred);
+    }
+
+    #[test]
     fn desktop_quit_is_an_approved_operational_event() {
         assert!(is_operational_desktop_event_name("desktop_app_quit"));
     }
