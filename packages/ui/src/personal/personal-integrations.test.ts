@@ -15,6 +15,11 @@ describe("personal integrations loader", () => {
     expect(rows).toEqual([{ id: "google:g1", provider: "google", accountId: "g1", app: "Google", identity: "me@example.com", status: "active", connectedAt: "2026-09-30T00:00:00Z", sources: ["Calendar", "Gmail", "Sheets"] }]);
   });
 
+  it("matches capabilities case-insensitively and tolerates non-array capabilities", () => {
+    const rows = googleIntegrationsFromBody({ accounts: [{ accountId: "g1", capabilities: ["GMAIL", "Drive"] }, { accountId: "g2", capabilities: "gmail" }] });
+    expect(rows.map((row) => row.sources)).toEqual([["Drive", "Gmail"], []]);
+  });
+
   it("maps personal Slack and flags reconnect", () => {
     const rows = slackIntegrationsFromBody({ accounts: [{ accountId: "s1", slackUserDisplay: "Corey", teamName: "Acme", connectedAt: "", reconnectNeeded: true }] });
     expect(rows[0]).toMatchObject({ id: "slack:s1", app: "Slack (personal)", identity: "Corey · Acme", status: "reconnect", sources: [] });
