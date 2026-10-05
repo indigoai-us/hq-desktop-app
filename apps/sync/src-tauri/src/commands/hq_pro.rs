@@ -161,10 +161,29 @@ pub async fn hq_pro_fetch(
 /// user and company scope, so each eligible update check reads the current
 /// authenticated scope instead of reusing a process-global cached snapshot.
 pub(crate) async fn feature_flag_enabled(flag: &str) -> bool {
-    feature_flag_enabled_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
-    })
-    .await
+    feature_flag_enabled_for_company(flag, None).await
+}
+
+/// Resolve a flag in an explicitly selected company scope when one is known.
+/// Callers that do not have a company keep the historical unscoped request.
+pub(crate) async fn feature_flag_enabled_for_company(
+    flag: &str,
+    company_uid: Option<&str>,
+) -> bool {
+    let path = feature_flag_resolve_path(company_uid);
+    feature_flag_enabled_with_fetch(flag, || hq_pro_fetch(path, "GET".to_string(), None)).await
+}
+
+fn feature_flag_resolve_path(company_uid: Option<&str>) -> String {
+    match company_uid.filter(|uid| !uid.trim().is_empty()) {
+        Some(uid) => {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("companyUid", uid)
+                .finish();
+            format!("/v1/flags/resolve?{query}")
+        }
+        None => "/v1/flags/resolve".to_string(),
+    }
 }
 
 async fn feature_flag_enabled_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> bool
@@ -271,6 +290,20 @@ fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn company_scoped_flag_resolution_includes_company_uid() {
+        assert_eq!(
+            feature_flag_resolve_path(Some("cmp_indigo")),
+            "/v1/flags/resolve?companyUid=cmp_indigo"
+        );
+    }
+
+    #[test]
+    fn flag_resolution_keeps_unscoped_request_when_company_is_unknown() {
+        assert_eq!(feature_flag_resolve_path(None), "/v1/flags/resolve");
+        assert_eq!(feature_flag_resolve_path(Some("  ")), "/v1/flags/resolve");
+    }
 
     #[test]
     fn joins_relative_path_onto_vault_base() {
