@@ -60,11 +60,31 @@ describe("rail company icon", () => {
     );
   });
 
-  it("renders the icon in the 18px CompanyIcon frame with initials as the else branch", () => {
+  it("renders the icon at the full 30px tile size with initials as the else branch", () => {
     const rail = readFileSync(join(here, "AppRail.svelte"), "utf8");
     expect(rail).toMatch(
-      /\{#if item\.iconUrl\}\s*<CompanyIcon iconUrl=\{item\.iconUrl\} size=\{18\}/,
+      /\{#if item\.iconUrl\}\s*<CompanyIcon iconUrl=\{item\.iconUrl\} size=\{30\}[^>]*\/>\s*\{:else\}\s*\{initials\(item\.label\)\}/,
     );
+  });
+
+  it("fills the circle with the logo: cover fit, no padding, no grey plate", () => {
+    const rail = readFileSync(join(here, "AppRail.svelte"), "utf8");
+    expect(rail).toContain('class:has-logo={Boolean(item.iconUrl)}');
+    const fill = rail.match(
+      /\.co-tile\.has-logo :global\(\.company-icon\),\s*\.co-tile\.has-logo :global\(\.company-icon-img\) \{([^}]*)\}/,
+    );
+    expect(fill).not.toBeNull();
+    const body = fill![1];
+    expect(body).toContain("width: 100%;");
+    expect(body).toContain("height: 100%;");
+    expect(body).toContain("object-fit: cover;");
+    expect(body).toContain("border-radius: 50%;");
+    expect(body).toContain("box-shadow: none;");
+    expect(body).not.toMatch(/padding/);
+    const plate = rail.match(/\.co-tile\.has-logo,[^{]*\{([^}]*)\}/);
+    expect(plate![1]).toContain("background: transparent;");
+    expect(plate![1]).toContain("overflow: hidden;");
+    expect(plate![1]).not.toMatch(/padding/);
   });
 });
 
