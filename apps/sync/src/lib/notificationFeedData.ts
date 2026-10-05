@@ -87,7 +87,7 @@ export interface NotificationLoadResult {
  * the explicit tri-state so cold-start "unchecked" is never mistaken for a
  * trusted absence.
  */
-export function resolvePendingUpdateState(
+function resolvePendingUpdateState(
   value: PendingUpdateState | UpdateInfo | null,
 ): { state: UpdateLoadState; value: UpdateInfo | null } {
   if (value == null) return { state: 'resolved', value: null };
@@ -360,12 +360,4 @@ export function relativeTime(ms: number, now: number = Date.now()): string {
   } catch {
     return '';
   }
-}
-
-/** Up-to-two-letter initials for the 24px avatar chip ("Maya Chen" → "MC"). */
-export function initials(name: string): string {
-  const words = name.trim().split(/[\s._@-]+/).filter(Boolean);
-  if (words.length === 0) return '?';
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
 }

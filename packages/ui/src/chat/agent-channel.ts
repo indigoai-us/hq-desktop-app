@@ -121,7 +121,7 @@ const SUGGESTIONS_EXAMPLE = fencedBlockExample({ kind: "suggestions", items: [".
 /** The whole hello request stays under this many characters. */
 export const AGENT_HELLO_REQUEST_MAX_CHARS = 4_000;
 /** The apps section of a request stays under this many characters (see `companyAppsBrief`). */
-export const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
+const AGENT_REQUEST_APPS_MAX_CHARS = 1_400;
 
 /**
  * What the company has connected, written as a fact for the bot in the
