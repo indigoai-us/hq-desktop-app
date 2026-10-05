@@ -14,6 +14,7 @@
   import AtlasInspector from "./AtlasInspector.svelte";
   import AtlasScrubber from "./AtlasScrubber.svelte";
   import { atlasFocusOrbit } from "./atlas-focus.js";
+  import { atlasTodayChanges } from "./atlas-today.js";
   import {
     ATLAS_PULSE_MS,
     atlasMotionAllowed,
@@ -272,6 +273,7 @@
     scrubIndex == null && (graph?.nodes ?? []).every((n) => timeOpacity.has(n.id)),
   );
   const empty = $derived(graph !== null && graph.nodes.length === 0);
+  const today = $derived(graph ? atlasTodayChanges(graph.nodes, nowMs) : null);
   const emptyLabels = ATLAS_RING_ORDER.map((type, i) => {
     const a = -Math.PI / 2 + (i / ATLAS_RING_ORDER.length) * Math.PI * 2;
     return { type, label: districtLabel(type), x: 450 + Math.cos(a) * 290, y: 320 + Math.sin(a) * 250 };
@@ -694,6 +696,7 @@
       onperson={(id) => (personFilter = personFilter === id ? null : id)}
       onpeopleretry={() => (peopleNonce += 1)}
       personMatches={personIds?.size ?? 0}
+      {today}
       company={companyName ?? graph?.company ?? ""}
       objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
       projectsInProgress={(loadFailed && boardInProgress == null) || projectsInProgress === 0 ? null : projectsInProgress}

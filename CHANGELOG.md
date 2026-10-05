@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- With nothing selected, the Atlas inspector now opens with a Today at <company> section listing what changed on the map today, projects first, each one clickable to fly to it on the map, with Show more for long days. Working now follows it as before. On a quiet day it says so in one line.
 - Pressing play under the Atlas map now plays the last 30 days forward in about 25 seconds. Items appear as of each day, the day shows in large quiet type on the map, and a short line names that day's biggest changes. Playback stops at today, and when you scrub or use the arrow keys.
 - The Atlas map has more depth: a faint vignette and fine grain under the map, and a softer, wider glow behind items that are active. None of it moves, and labels stay as readable as before.
 - Atlas now shows where work is happening. A project gives one soft pulse when a refresh shows it changed or when someone live on it moves off a task or finishes, and a project someone is working on right now draws faint drifting lines to the items it touched in the last two days. Nothing moves on a quiet map, and nothing moves when motion is reduced.
