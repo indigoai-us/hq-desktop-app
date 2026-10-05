@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
+const LEGACY_ROOT_ID: &str = "legacy";
 // The Node writer and macOS kernel reader derive process-start timestamps from
 // separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
@@ -29,12 +30,53 @@ pub struct PackageUseLeasePaths {
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-struct LeaseRecord {
-    pid: u32,
-    start_time_ms: u64,
-    hq_version: String,
+pub struct LeaseRecord {
+    pub pid: u32,
+    pub start_time_ms: u64,
+    pub hq_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    purpose: Option<String>,
+    pub purpose: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_id: Option<String>,
+}
+
+impl LeaseRecord {
+    /// Return the validated root identity, treating missing or invalid values as legacy.
+    pub fn effective_root_id(&self) -> &str {
+        self.root_id
+            .as_deref()
+            .filter(|root_id| is_valid_root_id(root_id))
+            .unwrap_or(LEGACY_ROOT_ID)
+    }
+}
+
+fn is_valid_root_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(*byte, b'.' | b'_' | b'-')
+        })
+}
+
+/// Split records that have already passed the package-use liveness filter.
+/// Invalid target ids use the same legacy identity as invalid record values.
+pub fn split_live_records_by_root<'a>(
+    records: &'a [LeaseRecord],
+    target_root_id: &str,
+) -> (Vec<&'a LeaseRecord>, Vec<&'a LeaseRecord>) {
+    let target_root_id = if is_valid_root_id(target_root_id) {
+        target_root_id
+    } else {
+        LEGACY_ROOT_ID
+    };
+    let (same_root, other_root): (Vec<_>, Vec<_>) = records
+        .iter()
+        .partition(|record| record.effective_root_id() == target_root_id);
+    (same_root, other_root)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -433,6 +475,7 @@ impl PackageUseCliGuard {
             start_time_ms: current_process_start_time_ms(),
             hq_version: env!("CARGO_PKG_VERSION").to_string(),
             purpose: None,
+            root_id: None,
         };
         let lease_path = paths
             .lease_directory
@@ -497,6 +540,7 @@ impl PackageUseUpdateRequest {
             start_time_ms: current_process_start_time_ms(),
             hq_version: env!("CARGO_PKG_VERSION").to_string(),
             purpose: None,
+            root_id: None,
         };
         atomic_write(
             &paths.update_request_path,
@@ -811,6 +855,7 @@ mod tests {
             start_time_ms,
             hq_version: "5.304.0".to_string(),
             purpose: None,
+            root_id: None,
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
@@ -821,6 +866,7 @@ mod tests {
             start_time_ms,
             hq_version: hq_version.to_string(),
             purpose: None,
+            root_id: None,
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     }
@@ -828,9 +874,9 @@ mod tests {
     #[test]
     fn lease_record_accepts_missing_and_unknown_fields_and_optional_purpose() {
         let legacy: LeaseRecord =
-            serde_json::from_str(r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4"}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4"}"#).unwrap();
         assert_eq!(legacy.purpose, None);
+        assert_eq!(legacy.effective_root_id(), LEGACY_ROOT_ID);
 
         let with_purpose: LeaseRecord = serde_json::from_str(
             r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4","purpose":"resident-preload","future_field":true}"#,
@@ -845,6 +891,59 @@ mod tests {
         assert_eq!(
             holder_purpose_bucket(unknown_purpose.purpose.as_deref()),
             HolderPurposeBucket::Unknown
+        );
+    }
+
+    #[test]
+    fn lease_record_root_id_is_optional_and_validated() {
+        let legacy: LeaseRecord =
+            serde_json::from_str(r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4"}"#).unwrap();
+        assert_eq!(legacy.root_id, None);
+        assert_eq!(legacy.effective_root_id(), "legacy");
+
+        let valid: LeaseRecord = serde_json::from_str(
+            r#"{"pid":1,"start_time_ms":2,"hq_version":"5.342.4","root_id":"team.root-1_a"}"#,
+        )
+        .unwrap();
+        assert_eq!(valid.root_id.as_deref(), Some("team.root-1_a"));
+        assert_eq!(valid.effective_root_id(), "team.root-1_a");
+
+        let too_long = "a".repeat(65);
+        for invalid in ["Upper", "a/b", too_long.as_str(), ""] {
+            let json = format!(
+                r#"{{"pid":1,"start_time_ms":2,"hq_version":"5.342.4","root_id":"{invalid}"}}"#
+            );
+            let record: LeaseRecord = serde_json::from_str(&json).unwrap();
+            assert_eq!(record.effective_root_id(), "legacy", "root_id={invalid:?}");
+        }
+    }
+
+    #[test]
+    fn live_holder_split_groups_legacy_and_other_roots() {
+        let records: Vec<LeaseRecord> = [
+            r#"{"pid":1,"start_time_ms":1,"hq_version":"5.342.4"}"#,
+            r#"{"pid":2,"start_time_ms":2,"hq_version":"5.342.4","root_id":"legacy"}"#,
+            r#"{"pid":3,"start_time_ms":3,"hq_version":"5.342.4","root_id":"bad/root"}"#,
+            r#"{"pid":4,"start_time_ms":4,"hq_version":"5.342.4","root_id":"root-b"}"#,
+        ]
+        .into_iter()
+        .map(|json| serde_json::from_str(json).unwrap())
+        .collect();
+
+        let (same_root, other_root) = split_live_records_by_root(&records, "legacy");
+        assert_eq!(
+            same_root
+                .iter()
+                .map(|record| record.pid)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
+        );
+        assert_eq!(
+            other_root
+                .iter()
+                .map(|record| record.pid)
+                .collect::<Vec<_>>(),
+            [4]
         );
     }
 
@@ -885,12 +984,14 @@ mod tests {
                 start_time_ms: 900,
                 hq_version: "5.342.4".to_string(),
                 purpose: Some("command".to_string()),
+                root_id: None,
             },
             LeaseRecord {
                 pid: 2,
                 start_time_ms: 100,
                 hq_version: "5.342.4".to_string(),
                 purpose: Some("daemon".to_string()),
+                root_id: None,
             },
         ];
         let summary = timeout_summary(&records, 1_000);
@@ -1132,6 +1233,7 @@ mod tests {
                 start_time_ms: current_process_start_time_ms(),
                 hq_version: "test".to_string(),
                 purpose: None,
+                root_id: None,
             };
             atomic_write(
                 &paths.update_request_path,
