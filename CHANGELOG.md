@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+- Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
 
 ## [0.10.396] — 2026-10-05
 
