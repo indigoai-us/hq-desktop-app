@@ -9,6 +9,10 @@ describe("macOS Rust gate path scope", () => {
     for (const path of [
       "apps/sync/src-tauri/src/main.rs",
       "apps/sync/sidecar/package.json",
+      "apps/work/src/App.svelte",
+      "apps/intro/package.json",
+      "packages/ui/src/Button.test.ts",
+      "packages/core/src/index.ts",
       "crates/hq-desktop-core/src/lib.rs",
       "imports/hq-sync-win/src-tauri/src/main.rs",
       "Cargo.lock",
@@ -26,9 +30,9 @@ describe("macOS Rust gate path scope", () => {
     expect(
       isMacosRelevant([
         "CHANGELOG.md",
-        "apps/work/src/App.svelte",
-        "packages/ui/src/Button.test.ts",
+        "apps/intro/src/App.svelte",
         "docs/README.md",
+        "e2e/README.md",
       ]),
     ).toBe(false);
   });
@@ -42,6 +46,9 @@ describe("macOS Rust gate path scope", () => {
     expect(MACOS_RELEVANT_PATTERNS).toEqual(
       expect.arrayContaining([
         "apps/sync/**",
+        "apps/work/**",
+        "apps/*/package.json",
+        "packages/**",
         "crates/**",
         "imports/**",
         "Cargo.toml",
