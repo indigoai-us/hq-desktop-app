@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Desktop push-events canaries now use the company configured for that install.
+- Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
 
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
 
