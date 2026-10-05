@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
 
 ## [0.10.393] — 2026-10-05
