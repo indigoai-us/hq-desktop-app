@@ -14,6 +14,7 @@ import {
   type AtlasNode,
   type AtlasRefEdge,
 } from "./atlas-model.js";
+import { atlasHasActivityData, atlasProjectActivity } from "./atlas-activity.js";
 
 export const ATLAS_ORBIT = 420;
 export const ATLAS_SQUASH = 0.77;
@@ -202,7 +203,20 @@ function packSections(
   return out;
 }
 
-export function layoutAtlas(nodes: AtlasNode[]): {
+/**
+ * Project dot size from recent activity (see atlas-activity.ts): an idle
+ * project is a small dot and a busy one grows, on the same soft cap as every
+ * other dot. Without `nowMs`, or when no project has a touched time, the
+ * size comes from story total or file count as before.
+ */
+export function atlasActivityRadius(score: number): number {
+  return atlasRadius({ type: "project", count: Math.max(1, 1 + score) });
+}
+
+export function layoutAtlas(
+  nodes: AtlasNode[],
+  opts: { nowMs?: number; edges?: AtlasRefEdge[] } = {},
+): {
   placed: AtlasPlaced[];
   regions: AtlasRegion[];
 } {
@@ -218,7 +232,12 @@ export function layoutAtlas(nodes: AtlasNode[]): {
   });
   // Offsets from the section centre: the web hash scatter, inside a disc
   // sized to the area its dots need, then relaxed so no two dots overlap.
-  const sized = roots.map((n) => ({ n, r: atlasRadius(n) }));
+  const activity =
+    opts.nowMs != null && atlasHasActivityData(roots) ? atlasProjectActivity(nodes, opts.edges, opts.nowMs) : null;
+  const sized = roots.map((n) => {
+    const score = n.type === "project" ? activity?.get(n.id) : undefined;
+    return { n, r: score == null ? atlasRadius(n) : atlasActivityRadius(score) };
+  });
   const discArea = new Map<AtlasDistrictType, number>();
   for (const { n, r } of sized) discArea.set(n.type, (discArea.get(n.type) ?? 0) + (r + DOT_GAP / 2) ** 2);
   const offsets = sized.map(({ n, r }) => {

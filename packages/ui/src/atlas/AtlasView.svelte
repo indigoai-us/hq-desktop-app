@@ -15,6 +15,7 @@
   import AtlasScrubber from "./AtlasScrubber.svelte";
   import {
     atlasDailyCounts,
+    atlasDayStart,
     atlasTimeOpacity,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
@@ -114,7 +115,10 @@
   let detailLoading = $state(false);
   const details = new Map<string, AtlasDetail | undefined>();
 
-  const layout = $derived(layoutAtlas(graph?.nodes ?? []));
+  // Project dots are sized by recent activity. The layout keys on the day,
+  // not the minute, so a ticking clock never re-lays out the map.
+  const layoutDay = $derived(atlasDayStart(nowMs));
+  const layout = $derived(layoutAtlas(graph?.nodes ?? [], { nowMs: layoutDay, edges: graph?.edges }));
   const edges = $derived(atlasEdges(graph?.edges, graph?.nodes ?? []));
   const byId = $derived(new Map((graph?.nodes ?? []).map((n) => [n.id, n])));
   const selectedNode = $derived(selected ? (byId.get(selected) ?? null) : null);

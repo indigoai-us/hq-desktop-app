@@ -34,6 +34,7 @@ The release moves it under the version it ships in.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
 - Atlas: the Find on the map box shows a Show more row when more than eight things match, instead of hiding the rest.
 - Atlas now shows everyone who is working. People and bots whose session names a repo, folder or worker on the map are placed there, and anyone the map cannot place is listed in a small Not on the map group in the corner of the map, with a note saying why when you hover them.
+- Project dots on the Atlas map now grow with recent activity (the project's own last change and the linked items changed in the last 14 days), and projects with stories carry a thin ring that fills clockwise as stories are done.
 
 ## [0.10.392] — 2026-10-05
 
