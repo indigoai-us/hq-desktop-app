@@ -348,7 +348,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

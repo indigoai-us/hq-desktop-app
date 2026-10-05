@@ -454,7 +454,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -469,7 +469,7 @@
     padding: 0.3125rem 0.75rem;
     border-radius: 7px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     border: none;
     font-family: inherit;

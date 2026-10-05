@@ -851,7 +851,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 650;
+    font-weight: 500;
     cursor: pointer;
     transition: transform 120ms var(--ease-out);
   }

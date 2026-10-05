@@ -424,7 +424,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition:
       background 140ms ease,

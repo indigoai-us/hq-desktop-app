@@ -798,7 +798,7 @@
   }
 
   .office-button-primary {
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .office-segment:focus-visible,

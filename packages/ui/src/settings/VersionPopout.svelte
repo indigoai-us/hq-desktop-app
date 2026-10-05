@@ -730,7 +730,7 @@
     color: var(--fg);
     font: inherit;
     font-size: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   }

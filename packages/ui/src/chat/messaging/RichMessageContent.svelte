@@ -925,7 +925,7 @@
     background: color-mix(in srgb, var(--vio-ink) 22%, transparent);
     box-shadow: inset 0 0 0 1px var(--vio-ink);
     opacity: 1;
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-check {
     display: inline-flex;
@@ -946,7 +946,7 @@
     font-weight: 500;
   }
   .rich-decision-btn.is-chosen .rich-decision-btn-label {
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-tag {
     font-size: 11px;

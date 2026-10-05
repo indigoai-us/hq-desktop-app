@@ -600,7 +600,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 
