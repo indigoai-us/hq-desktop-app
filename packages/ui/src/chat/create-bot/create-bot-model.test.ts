@@ -123,6 +123,18 @@ function draft(over: Partial<CreateBotDraft> = {}, c: CreateBotContext = ctx()):
 }
 
 describe("initialDraft", () => {
+  it("opens on the home picked on the Cloud or Local choice, when that home can be used", () => {
+    const both = ctx({ canLocal: true, canCloud: true, runtimeReady: { claude: false, codex: true, grok: false } });
+    expect(initialDraft(both, null, null, "cloud").home).toBe("cloud");
+    expect(initialDraft(both, null, null, "local").home).toBe("local");
+    expect(initialDraft(both, null, null, "local").runtime).toBe("codex");
+    // A pick that cannot be used falls back to the usual default.
+    expect(initialDraft(ctx({ canLocal: true, canCloud: false }), null, null, "cloud").home).toBe("local");
+    expect(initialDraft(ctx({ canLocal: false, canCloud: true }), null, null, "local").home).toBe("cloud");
+    // No pick: unchanged default (Local when it can be used).
+    expect(initialDraft(both).home).toBe("local");
+  });
+
   it("defaults to a blank Local bot with the first signed-in runtime and a free name", () => {
     const d = initialDraft(ctx({ runtimeReady: { claude: false, codex: true, grok: true }, existingNames: ["assistant"] }));
     expect(d).toMatchObject({ kind: "blank", home: "local", runtime: "codex", name: "scout", memory: "synced", autoApprove: true });

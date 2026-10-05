@@ -103,7 +103,7 @@ describe("PersonalDeploymentsPage preview card", () => {
   it("shows no card for a deployment without a URL", async () => {
     const root = await mountPage((scope) => {
       const page = deployAppsFixture(scope);
-      return { ...page, apps: page.apps.map((app) => ({ ...app, url: null })) };
+      return { ...page, apps: (page.apps ?? []).map((app) => ({ ...(app as Record<string, unknown>), url: null })) };
     });
     await choose(root, "indigo-standup-report");
 

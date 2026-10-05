@@ -88,7 +88,10 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('rail-company').click();
     await page.locator('[data-row-id="team"]').click();
     await page.getByTestId('team-add-agent').click();
-    // The one bot-creation flow: the same three-step modal as Messages +.
+    // New bot asks "Cloud or Local?" first, in the full-window takeover.
+    await expect(page.getByTestId('new-bot-kind-choice')).toBeVisible();
+    await page.getByTestId('new-bot-choice-local').click();
+    // The one bot-creation flow: the same three-step flow as Messages +, in the takeover shell.
     const flow = page.getByTestId('chat-create-bot-step');
     await expect(flow).toBeVisible();
     await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);

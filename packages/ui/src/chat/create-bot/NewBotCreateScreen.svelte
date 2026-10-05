@@ -63,6 +63,8 @@
     nameCompany?: boolean;
     /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
+    /** Back from the first step: the "Cloud or Local?" question. Without it the first step has no Back. */
+    onback?: (() => void) | null;
   }
   let {
     companies,
@@ -73,6 +75,7 @@
     oncreate,
     oncomplete,
     onopenlocal = null,
+    onback = null,
     otherWayLabel = "",
     nameCompany = false,
     checking = false,
@@ -318,7 +321,7 @@
        does not go through the shared page header. -->
   <div class="new-bot-create-head">
     <div class="new-bot-progress" aria-label={`Step ${step} of ${finalStep}`}>{#each Array(finalStep) as _, index}<span class:active={index + 1 === step}></span>{/each}</div>
-    {#if step > 1}<button type="button" class="new-bot-back" onclick={() => go((step - 1) as 1 | 2)}><RailIcon name="arrow-left" />Back</button>{/if}
+    {#if step > 1}<button type="button" class="new-bot-back" onclick={() => go((step - 1) as 1 | 2)}><RailIcon name="arrow-left" />Back</button>{:else if onback}<button type="button" class="new-bot-back" data-testid="new-bot-back-to-choice" disabled={busy} onclick={onback}><RailIcon name="arrow-left" />Back</button>{/if}
     {#if step === 1}<p class="new-bot-takeover-kicker">A new teammate</p><h1 id="new-bot-takeover-title">Enter a <em>name.</em></h1>{:else if step === 2}<p class="new-bot-takeover-kicker">Choose a brain</p><h1 id="new-bot-takeover-title">Pick the <em>brain.</em></h1>{:else}<p class="new-bot-takeover-kicker">Your workspace</p><h1 id="new-bot-takeover-title">Choose a <em>company.</em></h1>{/if}
   </div>
 

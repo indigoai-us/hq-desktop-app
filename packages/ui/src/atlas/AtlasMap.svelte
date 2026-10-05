@@ -236,20 +236,6 @@
       .map((d) => keepOnScreen(atlasDistrictLabel(d, view, measureLabel, sectionCounts.get(d.type)), d))
       .filter((d): d is AtlasScreenLabel => d !== null && !fixedBoxes.some((f) => meets(d.box, f))),
   );
-  const labels = $derived(
-    atlasScreenLabels({
-      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box), ...chipBoxes],
-      placed: shown,
-      selected,
-      hovered,
-      related,
-      nowMs,
-      view,
-      width: mapWidth || 800,
-      height: mapHeight || 560,
-      measure: measureLabel,
-    }),
-  );
   const focusIds = $derived(selected || hovered ? new Set([selected, hovered, ...related]) : null);
   // Actor chips are drawn in screen space, like labels, so they stay one
   // readable size at every zoom. Each stack starts just off the node rim and
@@ -286,6 +272,21 @@
 
   const chipBoxes = $derived(
     chips.map((c) => ({ left: c.sx - half, top: c.sy - half, right: c.sx + half, bottom: c.sy + half })),
+  );
+
+  const labels = $derived(
+    atlasScreenLabels({
+      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box), ...chipBoxes],
+      placed: shown,
+      selected,
+      hovered,
+      related,
+      nowMs,
+      view,
+      width: mapWidth || 800,
+      height: mapHeight || 560,
+      measure: measureLabel,
+    }),
   );
 
   const CARD_WIDTH = 280;

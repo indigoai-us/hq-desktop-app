@@ -149,6 +149,11 @@ export function initialDraft(
     Partial<Pick<CreateBotContext, "ownerCompanies" | "claudeProviderEnabled" | "directCloudOn">>,
   preferredCompanyUid: string | null = null,
   preferredCompanySlug: string | null = null,
+  /**
+   * Where the person said the bot should run, on the New bot choice screen.
+   * Honoured only when that home can be used; otherwise the usual default.
+   */
+  preferredHome: "local" | "cloud" | null = null,
 ): CreateBotDraft {
   // Opened from a company's page: start on that company, not the first one.
   const preferred = preferredCompanyUid
@@ -158,10 +163,16 @@ export function initialDraft(
   const ownerSlug = preferredCompanySlug?.trim()
     ? (ctx.ownerCompanies ?? []).find((c) => c.slug === preferredCompanySlug.trim())?.slug
     : undefined;
+  const local =
+    preferredHome === "cloud" && ctx.canCloud
+      ? false
+      : preferredHome === "local" && ctx.canLocal
+        ? true
+        : ctx.canLocal;
   return {
     kind: "blank",
-    home: ctx.canLocal ? "local" : "cloud",
-    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
+    home: local ? "local" : "cloud",
+    runtime: local ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
     size: "",
     companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
     scope: ownerSlug ? "company" : "personal",

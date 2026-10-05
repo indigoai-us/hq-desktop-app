@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import RailIcon from "../common/button/RailIcon.svelte";
   import { isDropdownOpen } from "../common/dropdown-open.js";
   import Dropdown from "../common/LazyDropdown.svelte";
@@ -97,6 +98,8 @@
     type ChannelCreateMember,
   } from "./channel-create-scope.js";
   import "./tokens.css";
+  import "./create-bot/new-bot-takeover.css";
+  import { newBotWallpaper } from "./create-bot/new-bot-wallpapers.js";
   import "./chat-tokens.css";
 
   interface Props {
@@ -146,7 +149,7 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
-    /** Opens Desktop's cloud-only New Bot takeover. */
+    /** Opens Desktop's New Bot takeover, which starts on the Cloud or Local choice. */
     onnewcloudbot?: (() => void) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
@@ -216,6 +219,16 @@
     botCompanyUid?: string | null;
     /** Slug of that company, so a Local bot starts as its company bot. */
     botCompanySlug?: string | null;
+    /**
+     * Opened from the New bot "Cloud or Local?" choice: the bot step wears
+     * the New bot takeover's shell (wallpaper, header, centered card) in
+     * place of the plain window card.
+     */
+    sunrise?: boolean;
+    /** The home picked on that choice; the bot flow opens with it selected. */
+    initialBotHome?: "local" | "cloud" | null;
+    /** Back from the bot flow's first step when opened from the choice: return to it. */
+    onsunriseback?: (() => void) | null;
   }
 
   let {
@@ -257,6 +270,9 @@
     initialStep = "find",
     botCompanyUid = null,
     botCompanySlug = null,
+    sunrise = false,
+    initialBotHome = null,
+    onsunriseback = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -588,7 +604,9 @@
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────
   function newBot(): void {
     if (!canCreateLocalBot && !canCreateCloudBot) return;
-    if (canCreateCloudBot && onnewcloudbot) {
+    // The host's New bot takeover asks "Cloud or Local?" first, for every
+    // New bot entry; it hands Local (and companies it does not list) back here.
+    if (onnewcloudbot) {
       onnewcloudbot();
       return;
     }
@@ -668,7 +686,13 @@
     return { ...partial, resolved: null, pending: false, error: null };
   }
 
-  let step = $state<Step>("find");
+  // Opened from the New bot choice: start on the bot step itself, so the
+  // takeover shell paints at once instead of the search window flashing first.
+  let step = $state<Step>(
+    untrack(() => (sunrise && initialStep === "bot" && (canCreateLocalBot || canCreateCloudBot) ? "bot" : "find")),
+  );
+  /** The bot step is shown in the takeover shell. */
+  const sunriseBot = $derived(sunrise && step === "bot");
   // Opened as "New company" (sidebar switcher): go straight to the second
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
@@ -2143,6 +2167,96 @@
   createBotFlowDoor.preload();
 </script>
 
+{#snippet botFlow()}
+    <!-- The flow loads on first open (preloaded when this modal mounts), so
+         it stays out of the shell's startup JS. -->
+    <LazyDoor
+      door={createBotFlowDoor}
+      props={{
+        botRuntimeReady,
+        botRuntimeStatus,
+        onrecheckruntimes,
+        aiTools,
+        hqFolderPath,
+        onopenassistant,
+        onassistedinstall,
+        onrequestaitools,
+        botWorkers,
+        existingNames: existingBotNames,
+        botCompanies,
+        agentTargets: canCreateCloudBot ? agentTargets : [],
+        initialCompanyUid: botCompanyUid,
+        initialCompanySlug: botCompanySlug,
+        initialHome: initialBotHome,
+        firstBackLabel: sunrise && onsunriseback ? "Back" : "Cancel",
+        onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+        loadClaudeProviderFlag,
+        loadCloudProvisionOptions,
+        directCloud,
+        oncreate: canCreateLocalBot ? submitLocalBot : null,
+        onback: sunrise && onsunriseback
+          ? () => {
+              if (entryBusy) return;
+              onsunriseback?.();
+            }
+          : () => {
+              botOpenedDirect = false;
+              entryError = null;
+              step = "find";
+            },
+        entryBusy,
+        entryError,
+        entryFix,
+        signInApi: botSignIn,
+        onsignedin: onbotsignedin,
+        avatarPacks,
+        loadAvatarPacks,
+      }}
+    />
+{/snippet}
+
+{#if sunriseBot}
+  <!-- The New bot takeover's shell around the bot flow (opened from the
+       "Cloud or Local?" choice). Same classes and stylesheet as
+       NewBotTakeover; only the card is wider for the flow's preview rail. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="new-bot-takeover chat-shell"
+    data-testid="chat-create-modal"
+    data-sunrise="true"
+    role="presentation"
+    style={`--new-bot-wallpaper: url("${newBotWallpaper(0)}")`}
+    use:portal
+    onkeydown={onDialogKey}
+  >
+    <div class="new-bot-takeover-shade" aria-hidden="true"></div>
+    <header class="new-bot-takeover-header">
+      <span class="new-bot-takeover-wordmark">HQ</span>
+      <button
+        type="button"
+        class="new-bot-takeover-cancel"
+        data-testid="new-bot-takeover-cancel"
+        disabled={entryBusy !== null}
+        onclick={closeAll}
+      >
+        Cancel
+      </button>
+    </header>
+    <main class="new-bot-takeover-stage">
+      <div
+        bind:this={dialogEl}
+        class="new-bot-takeover-card new-bot-takeover-card--flow"
+        data-testid="new-bot-sunrise-flow"
+        role="dialog"
+        aria-modal="true"
+        aria-label="New bot"
+        tabindex="-1"
+      >
+        {@render botFlow()}
+      </div>
+    </main>
+  </div>
+{:else}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="create-overlay chat-shell"
@@ -2650,44 +2764,7 @@
         {/if}
       </div>
     {:else if step === "bot"}
-      <!-- The flow loads on first open (preloaded when this modal mounts), so
-           it stays out of the shell's startup JS. -->
-      <LazyDoor
-        door={createBotFlowDoor}
-        props={{
-          botRuntimeReady,
-          botRuntimeStatus,
-          onrecheckruntimes,
-          aiTools,
-          hqFolderPath,
-          onopenassistant,
-          onassistedinstall,
-          onrequestaitools,
-          botWorkers,
-          existingNames: existingBotNames,
-          botCompanies,
-          agentTargets: canCreateCloudBot ? agentTargets : [],
-          initialCompanyUid: botCompanyUid,
-          initialCompanySlug: botCompanySlug,
-          onCloudCreate: canCreateCloudBot ? newAgentFor : null,
-          loadClaudeProviderFlag,
-          loadCloudProvisionOptions,
-          directCloud,
-          oncreate: canCreateLocalBot ? submitLocalBot : null,
-          onback: () => {
-            botOpenedDirect = false;
-            entryError = null;
-            step = "find";
-          },
-          entryBusy,
-          entryError,
-          entryFix,
-          signInApi: botSignIn,
-          onsignedin: onbotsignedin,
-          avatarPacks,
-          loadAvatarPacks,
-        }}
-      />
+      {@render botFlow()}
     {:else if step === "email"}
       {#if emailOutcome}
         <div
@@ -3222,6 +3299,7 @@
     {/if}
   </div>
 </div>
+{/if}
 
 <style>
   .create-overlay {

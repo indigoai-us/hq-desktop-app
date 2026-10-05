@@ -140,6 +140,9 @@ async function openTakeover(): Promise<void> {
   await settle();
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
+  // "New bot" asks "Cloud or Local?" first; these bots are made in the cloud.
+  click('[data-testid="new-bot-choice-cloud"]');
+  await settle();
 }
 
 async function typeName(value: string): Promise<void> {

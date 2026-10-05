@@ -43,7 +43,9 @@ export type LineIconName =
   | "check-circle"
   | "bell"
   | "door"
-  | "sliders";
+  | "sliders"
+  | "cloud"
+  | "laptop";
 
 export type BrandIconName = "claude-code" | "codex" | "grok";
 
@@ -86,6 +88,8 @@ export const LINE_ICONS: Record<LineIconName, string> = {
   bell: "M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3zM6.5 14h3",
   door: "M4 14V2.5h8V14M2.5 14h11M9.5 8.5v.5",
   sliders: "M2.5 5h11M2.5 11h11M6 3.5v3M10 9.5v3",
+  cloud: "M4.75 12.5h6.5a2.75 2.75 0 0 0 .3-5.48 3.75 3.75 0 0 0-7.2-.52A3 3 0 0 0 4.75 12.5Z",
+  laptop: "M3.5 4h9v6.5h-9zM1.5 12.5h13",
 };
 
 /**

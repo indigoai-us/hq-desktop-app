@@ -214,6 +214,11 @@ async function createPolar(): Promise<void> {
   await settle(10);
   clickAnywhere('[data-testid="chat-create-menu-agent"]');
   await settle(10);
+  // "New bot" asks "Cloud or Local?" first. This host makes no local bots:
+  // Cloud opens the "+" window's bot flow with Home on Cloud.
+  expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
+  clickAnywhere('[data-testid="new-bot-choice-cloud"]');
+  await settle(10);
   clickAnywhere('[data-testid="create-bot-next"]');
   await settle(10);
   clickAnywhere('[data-testid="chat-bot-where-cloud"]');

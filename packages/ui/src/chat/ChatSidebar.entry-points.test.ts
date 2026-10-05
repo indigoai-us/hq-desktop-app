@@ -128,10 +128,24 @@ function click(selector: string): void {
   el.click();
 }
 
-/** Kind step → Home step (Blank is preselected) for the unchanged local flow. */
-async function toHomeStep(): Promise<void> {
+/**
+ * "New bot" asks "Cloud or Local?" first, inside the full-window takeover.
+ * Pick one; the rest of the flow follows from that answer.
+ */
+async function chooseKind(kind: "cloud" | "local"): Promise<void> {
+  expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+  expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  const option = q<HTMLButtonElement>(`[data-testid="new-bot-choice-${kind}"]`);
+  expect(option?.disabled).toBe(false);
+  option!.click();
+  await settle();
+}
+
+/** Choice → Kind step → Home step (Blank is preselected) of the "+" window's bot flow. */
+async function toHomeStep(kind: "cloud" | "local" = "cloud"): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
+  await chooseKind(kind);
   expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   click('[data-testid="create-bot-next"]');
   await settle();
@@ -321,8 +335,10 @@ describe("ChatSidebar lifecycle entry points", () => {
     await openModal();
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row?.textContent).toContain("Runs on this computer or in the cloud");
-    await toHomeStep();
-    // Both hosts available → Local is the default, the picker is hidden, and Next leads to details.
+    // Local picked on the "Cloud or Local?" question; the Home step still
+    // lets the person switch to Cloud, which shows the company picker.
+    await toHomeStep("local");
+    // Both hosts available, Local picked → Local is checked, the picker is hidden, and Next leads to details.
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
     expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
     expect(q('[data-testid="create-bot-next"]')).toBeTruthy();
@@ -433,6 +449,10 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain(
       "url(",
     );
+    // The first screen asks where the bot runs; Cloud leads to the name step.
+    expect(takeover?.textContent).toContain("Where should it run?");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    await chooseKind("cloud");
     expect(takeover?.textContent).toContain("Enter a name");
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
@@ -466,6 +486,7 @@ describe("ChatSidebar lifecycle entry points", () => {
       await openModal();
       click('[data-testid="chat-create-new-bot"]');
       await settle();
+      await chooseKind("cloud");
       const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
       name.value = "Nova";
       name.dispatchEvent(new Event("input", { bubbles: true }));
@@ -526,6 +547,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
 
     const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
     name.value = "Nova";
@@ -599,6 +621,7 @@ describe("ChatSidebar lifecycle entry points", () => {
       await openModal();
       click('[data-testid="chat-create-new-bot"]');
       await settle();
+      await chooseKind("cloud");
 
       const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
       name.value = "Nova";
@@ -661,6 +684,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     click('[data-testid="new-bot-takeover-local"]');
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
@@ -770,7 +794,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     ).map((el) => el.dataset.companyUid ?? "");
   }
 
-  it("with no flagged company, New bot opens the in-modal step and there is no takeover", async () => {
+  it("with no flagged company, Cloud on the choice opens the in-modal step in the takeover shell", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     const oncreatenewbot = vi.fn(async () => okTarget);
     mountSidebar({
@@ -783,10 +807,11 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
 
-    // Main's flow: the modal stays, on its own first bot step.
+    // The "+" window's own bot flow, worn in the takeover shell.
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 
@@ -808,7 +833,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
   });
 
-  it("does not offer the takeover when the host has no takeover create", async () => {
+  it("does not offer the takeover's cloud create when the host has no takeover create", async () => {
     mountSidebar({
       companies: [INDIGO],
       oncreateagent: async () => okTarget,
@@ -818,6 +843,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   });
@@ -845,6 +871,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
 
@@ -875,6 +902,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     await nameTakeoverBot("Nova");
     click('[data-testid="new-bot-continue-brain"]');
@@ -893,7 +921,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     );
   });
 
-  it("a flag for a company the person cannot add a bot to opens no takeover", async () => {
+  it("a flag for a company the person cannot add a bot to opens no takeover cloud create", async () => {
     mountSidebar({
       companies: [INDIGO],
       oncreateagent: async () => okTarget,
@@ -904,6 +932,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   });
@@ -927,6 +956,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
     click('[data-testid="new-bot-takeover-local"]');
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
@@ -980,7 +1010,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
-    await toHomeStep();
+    await toHomeStep("local");
     // Only a local host here → Local is checked and Cloud is not offered at all.
     expect(
       q<HTMLButtonElement>(
@@ -1020,6 +1050,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("local");
     // ⌘↵ creates from the first step once the draft is complete.
     q('[data-testid="chat-create-bot-step"]')!.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -1060,7 +1091,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     });
     await settle();
     await openModal();
-    await toHomeStep();
+    await toHomeStep("local");
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
     expect(
       q<HTMLButtonElement>(
@@ -1244,11 +1275,12 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
   });
   const STATUS = async () => ({ ok: true, value: { setupState: { phase: "creating" } } });
 
-  /** Press "+" then "New bot". */
+  /** Press "+" then "New bot", then answer "Cloud or Local?" with Cloud. */
   async function pressNewBot(): Promise<void> {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await chooseKind("cloud");
   }
 
   async function nameTakeoverBot(name: string): Promise<void> {
@@ -1287,9 +1319,9 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
     // No bot was made in Indigo, the company the person was not looking at.
     expect((oncreatenewbot.mock.calls as unknown[][]).map((call) => call[0])).toEqual([]);
 
-    // What opened is the "+" window's own flow, as on main.
+    // What opened is the "+" window's own flow, in the takeover shell.
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 
     // And its Cloud create carries the company the person picks there.

@@ -31,6 +31,10 @@ const PAGES = [
  */
 const MESSAGES_SECTION_LABEL: Record<string, string> = {
   "shell/CompanySidepane.svelte": ".roster-label",
+  // Owner rule (2026-10-04, "Atlas: muted uppercase section titles"): the
+  // Atlas inspector's section titles are small, muted caps, like the
+  // Messages section label. Only that one rule is exempt.
+  "atlas/AtlasInspector.svelte": ".section",
 };
 
 function styleOf(file: string): string {

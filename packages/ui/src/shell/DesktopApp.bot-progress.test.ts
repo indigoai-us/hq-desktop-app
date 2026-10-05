@@ -179,6 +179,9 @@ async function createBot(): Promise<void> {
   await settle();
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
+  // "New bot" asks "Cloud or Local?" first.
+  click('[data-testid="new-bot-choice-local"]');
+  await settle();
   click('[data-testid="create-bot-next"]');
   await settle();
   click('[data-testid="create-bot-next"]');

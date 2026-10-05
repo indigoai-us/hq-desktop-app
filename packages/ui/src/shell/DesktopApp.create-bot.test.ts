@@ -141,6 +141,10 @@ async function openBotFlow(): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="chat-create-menu-agent"]')).toBeTruthy());
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
+  // "New bot" asks "Cloud or Local?" first; these are local bots.
+  expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  click('[data-testid="new-bot-choice-local"]');
+  await settle();
   expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 }
 

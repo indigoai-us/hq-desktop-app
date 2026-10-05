@@ -54,7 +54,11 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
   {
     name: 'New bot steps',
     root: '[data-testid="chat-create-bot-step"]',
-    open: (page) => createMenu(page, 'agent'),
+    open: async (page) => {
+      await createMenu(page, 'agent');
+      // New bot asks "Cloud or Local?" first; Local opens the step flow.
+      await page.getByTestId('new-bot-choice-local').click();
+    },
     next: [
       (page) => page.getByTestId('create-bot-next').click(),
       async (page) => {

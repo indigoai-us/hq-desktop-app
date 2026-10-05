@@ -1,9 +1,7 @@
 <script lang="ts">
   import RailIcon from "../../common/button/RailIcon.svelte";
-  import aurora from "./assets/new-bot-wallpapers/aurora.jpg";
-  import glassWhiteboard from "./assets/new-bot-wallpapers/glass-whiteboard.jpg";
-  import nodeConstellation from "./assets/new-bot-wallpapers/node-constellation.jpg";
-  import roadSunrise from "./assets/new-bot-wallpapers/road-sunrise.jpg";
+  import { newBotWallpaper } from "./new-bot-wallpapers.js";
+  import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
   import { onDestroy, onMount } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
@@ -25,6 +23,22 @@
 
   interface Props {
     canCreateLocalBot?: boolean;
+    /**
+     * Open on the "Cloud or Local?" question. "New bot" opens with it; the
+     * takeover opened on a starting bot's row goes straight to that bot.
+     */
+    choose?: boolean;
+    /** Why Cloud cannot be picked on the choice screen. Null when it can. */
+    cloudReason?: string | null;
+    /** Why Local cannot be picked on the choice screen. Null when it can. */
+    localReason?: string | null;
+    /**
+     * Cloud was picked but this takeover lists no company for it: the host
+     * opens the "+" window's cloud flow (companies without the takeover).
+     */
+    onchoosecloud?: (() => void) | null;
+    /** Local was picked: the host opens the local flow in the same shell. */
+    onchooselocal?: (() => void) | null;
     oncancel: () => void;
     onopenlocal?: (() => void) | null;
     /** What the button for `onopenlocal` says on the create screen (see NewBotCreateScreen). */
@@ -89,6 +103,11 @@
 
   let {
     canCreateLocalBot = false,
+    choose = false,
+    cloudReason = null,
+    localReason = null,
+    onchoosecloud = null,
+    onchooselocal = null,
     oncancel,
     onopenlocal = null,
     otherWayLabel = "",
@@ -135,8 +154,28 @@
     wallpaperIndex = 0,
   }: Props = $props();
 
-  const wallpapers = [glassWhiteboard, roadSunrise, nodeConstellation, aurora];
-  const wallpaper = $derived(wallpapers[Math.abs(wallpaperIndex) % wallpapers.length] ?? glassWhiteboard);
+  const wallpaper = $derived(newBotWallpaper(wallpaperIndex));
+
+  /** The takeover has its own cloud create screen to show. */
+  const hasCloudScreen = $derived(!!(oncreate && loadProvisionOptions && companies.length));
+  /** True while the "Cloud or Local?" question is on screen. */
+  // Read once, at open: the question is asked when the takeover opens on it.
+  function opensOnChoice(): boolean {
+    return choose;
+  }
+  let choosing = $state(opensOnChoice());
+
+  function pickKind(kind: NewBotKind): void {
+    if (kind === "local") {
+      onchooselocal?.();
+      return;
+    }
+    if (hasCloudScreen || !onchoosecloud) {
+      choosing = false;
+      return;
+    }
+    onchoosecloud();
+  }
 
   let dialogEl = $state<HTMLDivElement | null>(null);
 
@@ -483,6 +522,8 @@
           {retryMessage}
         />
         {/key}
+      {:else if choosing}
+        <NewBotKindChoice {cloudReason} {localReason} onpick={pickKind} />
       {:else if oncreate && loadProvisionOptions && companies.length}
         {#key createScreenKey}
         <NewBotCreateScreen
@@ -498,6 +539,7 @@
           {otherWayLabel}
           {nameCompany}
           checking={checkingCreate}
+          onback={choose && !creating ? () => (choosing = true) : null}
         />
         {/key}
       {:else}
@@ -511,7 +553,7 @@
         <p class="new-bot-takeover-next">Name and brain are next.</p>
       {/if}
 
-      {#if !oncreate && canCreateLocalBot && onopenlocal}
+      {#if !choosing && !oncreate && canCreateLocalBot && onopenlocal}
         <button
           type="button"
           class="new-bot-takeover-local"

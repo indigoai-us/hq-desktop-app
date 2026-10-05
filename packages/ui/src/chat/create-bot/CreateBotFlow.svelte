@@ -159,6 +159,16 @@
     initialCompanyUid?: string | null;
     /** Slug of that company; a Local bot starts as its company bot (QA-043). */
     initialCompanySlug?: string | null;
+    /**
+     * The home picked on the New bot choice screen ("Cloud or Local?"). The
+     * flow opens with it selected; the Home step still lets the person change it.
+     */
+    initialHome?: "local" | "cloud" | null;
+    /**
+     * What the first step's back button says. "Cancel" by default; "Back"
+     * when `onback` returns to an earlier screen (the Cloud or Local choice).
+     */
+    firstBackLabel?: string;
   }
 
   let {
@@ -187,6 +197,8 @@
     previewPlacement = null,
     initialCompanyUid = null,
     initialCompanySlug = null,
+    initialHome = null,
+    firstBackLabel = "Cancel",
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -275,7 +287,7 @@
 
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
-  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug)));
+  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome)));
   let step = $state<CreateBotStep>("kind");
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
@@ -664,8 +676,8 @@
     {/if}
 
     <div class="flow-footer">
-      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}><RailIcon name="x" />
-        {prevStep(step, draft) ? "Back" : "Cancel"}
+      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}><RailIcon name={!prevStep(step, draft) && firstBackLabel === "Back" ? "arrow-left" : "x"} />
+        {prevStep(step, draft) ? "Back" : firstBackLabel}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
       <span class="flow-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="chord">{primaryEnterHint}</kbd> to create</span>
