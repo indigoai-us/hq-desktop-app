@@ -32,7 +32,7 @@ export type FoldableMessage = {
 
 /** Append a reply's author to a distinct, first-appearance-ordered list.
  *  Keyed by personUid, falling back to the display name for uid-less rows. */
-export function appendReplyAuthor(
+function appendReplyAuthor(
   authors: ReplyAuthorRef[],
   reply: { fromPersonUid?: string | null; fromDisplayName?: string | null },
 ): ReplyAuthorRef[] {
