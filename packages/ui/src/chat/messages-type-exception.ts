@@ -24,6 +24,5 @@ export const MESSAGES_TYPE_EXCEPTIONS: readonly MessagesTypeException[] = [
   { file: "chat/messaging/ReplyPanel.svelte", selector: ".reply-sub", fontSize: "12px" },
   { file: "chat/messaging/ReplyPanel.svelte", selector: ".reply-author", fontSize: "14px", fontWeight: "600" },
   { file: "chat/SetupChannelIntro.svelte", selector: ".hero-title", fontSize: "20px", fontWeight: "600" },
-  { file: "chat/SetupChannelIntro.svelte", selector: ".setup-elsewhere-title", fontSize: "15px", fontWeight: "600" },
   { file: "chat/SetupChannelIntro.svelte", selector: ".resource-title", fontSize: "13px", fontWeight: "600" },
 ];

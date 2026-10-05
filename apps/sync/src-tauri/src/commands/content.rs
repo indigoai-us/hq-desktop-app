@@ -583,6 +583,7 @@ fn read_staging_source_from(path: &Path) -> bool {
 }
 
 fn write_staging_source_to(path: &Path, enabled: bool) -> Result<(), String> {
+    let _lock = hq_desktop_core::first_run::lock_menubar_writes();
     let mut obj: Map<String, Value> =
         hq_desktop_core::first_run::prepare_menubar_write(path)?.unwrap_or_default();
     obj.insert(STAGING_SOURCE_KEY.to_string(), Value::Bool(enabled));

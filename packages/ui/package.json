@@ -38,6 +38,7 @@
   "dependencies": {
     "@hq/agents": "workspace:*",
     "@hq/core": "workspace:*",
-    "@hq/platform": "workspace:*"
+    "@hq/platform": "workspace:*",
+    "simple-icons": "^16.33.0"
   }
 }

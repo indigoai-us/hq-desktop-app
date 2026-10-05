@@ -65,6 +65,18 @@ export const CARD_ACTION_FAILED_MESSAGE = "That didn't work. Try again.";
 export const CARD_ACTION_OFFLINE_MESSAGE = "Couldn't reach HQ. Check your connection and try again.";
 
 /**
+ * The failure's own words with the adapter's leading `[code] ` tag removed.
+ * For a caller that decides for itself what is fit to show: the New Bot
+ * create keeps a short refusal the server wrote for a person and replaces
+ * anything that reads like a backend error (`shownFailure`). Everything else
+ * uses `cardActionFailureMessage`.
+ */
+export function cardActionFailureText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^\[[^\]]+]\s*/, "").trim() || "This action isn't allowed";
+}
+
+/**
  * Plain copy for a failed card/lifecycle action. The raw adapter/server text
  * is logged, never shown.
  */

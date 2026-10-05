@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Dropdown from "../../common/LazyDropdown.svelte";
   /**
    * BoardTab — the project channel's Board view, ported faithfully from the
    * hq-sync desktop `desktop-alt/chat/BoardTab.svelte` MARKUP + CSS.
@@ -9,7 +10,9 @@
    * from the injected `stories` lookup. Empty stage columns stay visible;
    * the column filter defaults to To do / Doing / Done.
    */
+  import { untrack } from "svelte";
   import { focusOnMount } from "../portal.js";
+  import type { ChatSidebarApi, ProjectMemberAddResult } from "../chat-api.js";
   import {
     BOARD_STAGE_ORDER,
     BOARD_STAGE_TITLES,
@@ -23,13 +26,16 @@
 
   interface Props {
     onCreateTask?: (task: {id: string; title: string; description: string; status: BoardStageId}) => Promise<void>;
+    onAddMember?: (personUid: string) => Promise<ProjectMemberAddResult>;
+    companyUid?: string | null;
+    listCompanyMembers?: ChatSidebarApi["listCompanyMembers"];
     columns: BoardColumnModel[];
     stories: Record<string, BoardStoryPanelModel>;
     /** Bubbled "Open in channel" — the host flips back to the Chat tab. */
     onOpenInChannel?: () => void;
   }
 
-  let { columns, stories, onOpenInChannel, onCreateTask }: Props = $props();
+  let { columns, stories, onOpenInChannel, onCreateTask, onAddMember, companyUid, listCompanyMembers }: Props = $props();
 
   let createStage = $state<BoardStageId | null>(null);
   let taskTitle = $state("");
@@ -37,6 +43,86 @@
   let createPending = $state(false);
   let createError = $state("");
   let createId = "";
+  let memberUid = $state("");
+  let memberPending = $state(false);
+  let memberError = $state("");
+  let memberNotice = $state("");
+  let memberNotEnabled = $state(false);
+  let memberOptions = $state<Array<{ personUid: string; label: string }>>([]);
+  let memberRosterLoading = $state(false);
+  let memberRosterError = $state(false);
+  let memberRosterRequest = 0;
+
+  async function loadCompanyMemberOptions(): Promise<void> {
+    const uid = companyUid?.trim();
+    const load = listCompanyMembers;
+    if (!uid || !load) return;
+    const requestId = ++memberRosterRequest;
+    memberRosterLoading = true;
+    memberRosterError = false;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await load(uid);
+        if (requestId !== memberRosterRequest) return;
+        memberOptions = response.contacts
+          .map((contact) => {
+            const personUid = contact.personUid.trim();
+            return {
+              personUid,
+              label: contact.displayName?.trim() || contact.email?.trim() || personUid,
+            };
+          })
+          .filter((contact) => /^(prs|agt)_[A-Za-z0-9][A-Za-z0-9_-]*$/.test(contact.personUid));
+        memberRosterLoading = false;
+        return;
+      } catch {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+          continue;
+        }
+        console.warn("Could not load company members for the project board");
+        if (requestId === memberRosterRequest) {
+          memberRosterLoading = false;
+          memberRosterError = true;
+        }
+      }
+    }
+  }
+
+  $effect(() => {
+    const uid = companyUid;
+    const load = listCompanyMembers;
+    if (!uid || !load) {
+      memberOptions = [];
+      memberRosterLoading = false;
+      memberRosterError = false;
+      return;
+    }
+    untrack(() => { void loadCompanyMemberOptions(); });
+    return () => { memberRosterRequest += 1; };
+  });
+
+  async function addMember(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const uid = memberUid.trim();
+    if (!uid || !onAddMember || memberPending) return;
+    memberPending = true;
+    memberError = "";
+    memberNotice = "";
+    try {
+      const result = await onAddMember(uid);
+      if (result === "not-enabled") {
+        memberNotEnabled = true;
+        return;
+      }
+      memberUid = "";
+      memberNotice = "Member added to the project.";
+    } catch {
+      memberError = "Could not add this member. Check the UID and company membership, then try again.";
+    } finally {
+      memberPending = false;
+    }
+  }
 
   function beginCreate(stage: string): void {
     const valid = BOARD_STAGE_ORDER.find(value => value === stage);
@@ -137,6 +223,31 @@
       {/each}
     </div>
   </div>
+
+  {#if memberNotEnabled}
+    <p class="board-member-not-enabled" role="status">Adding project members is not turned on for this company yet.</p>
+  {:else if onAddMember}
+    <form class="board-member-add" aria-label="Add project member" onsubmit={addMember}>
+      <span class="board-member-label">Company member</span>
+      <div class="board-member-pick">
+      <Dropdown
+        testid="board-member-uid"
+        label="Company member"
+        block
+        bind:value={memberUid}
+        options={[
+          { value: "", label: memberRosterLoading ? "Loading members…" : "Select a member" },
+          ...memberOptions.map((member) => ({ value: member.personUid, label: member.label })),
+        ]}
+        disabled={memberPending || memberRosterLoading || memberRosterError}
+      />
+      </div>
+      <button type="submit" disabled={memberPending || memberRosterLoading || memberRosterError || !memberUid.trim()}>{memberPending ? "Adding…" : "Add member"}</button>
+      {#if memberError}<p role="status">{memberError}</p>{/if}
+      {#if memberNotice}<p role="status">{memberNotice}</p>{/if}
+      {#if memberRosterError}<p role="status">Could not load company members.</p><button type="button" onclick={loadCompanyMemberOptions}>Retry loading members</button>{/if}
+    </form>
+  {/if}
 
   {#if createStage}
     <form class="board-create" onsubmit={createTask} aria-label="Create task">
@@ -331,6 +442,12 @@
   .board-create { padding: 12px 16px; border-bottom: 1px solid var(--pop-border); }
   .board-create label { display: block; margin: 8px 0; }
   .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
+  .board-member-add { display: flex; align-items: center; gap: 8px; padding: 10px 20px; color: var(--t3); font-size: 12px; }
+  .board-member-pick { width: min(280px, 40vw); }
+  .board-member-add button { padding: 6px 10px; color: var(--t1); background: var(--btn-bg); border: 1px solid var(--line); cursor: pointer; }
+  .board-member-add button:disabled { opacity: 0.55; cursor: default; }
+  .board-member-add p { margin: 0; }
+  .board-member-not-enabled { margin: 10px 20px; color: var(--t3); font-size: 12px; }
 
   .board-tab {
     display: flex;

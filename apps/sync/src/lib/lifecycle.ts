@@ -16,19 +16,3 @@ export function isOnboardingState(
     state === 'InstalledFirstRun'
   );
 }
-
-export function onboardingHeadline(
-  state: LifecycleState | string | null | undefined,
-): string {
-  switch (state) {
-    case 'InstallResume':
-      return 'Resume setup';
-    case 'NeedsAuthForInstall':
-      return 'Sign in to finish setup';
-    case 'InstalledFirstRun':
-      return 'Welcome to HQ';
-    case 'NeedsInstall':
-    default:
-      return "Welcome to HQ - let's get you set up";
-  }
-}

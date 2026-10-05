@@ -10,9 +10,7 @@ import { filesErrorReason } from "./project-files.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const FILES = [
   "CompanyProjectsPage.svelte",
-  "BoardCard.svelte",
   "StoryKanban.svelte",
-  "ProjectListView.svelte",
   "ProjectRow.svelte",
   "ProjectsHome.svelte",
   "ProjectDetailView.svelte",

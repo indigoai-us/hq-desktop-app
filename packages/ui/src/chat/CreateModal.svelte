@@ -145,6 +145,8 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /** Opens Desktop's cloud-only New Bot takeover. */
+    onnewcloudbot?: (() => void) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** `agents.desktop-agent-creation` seam for the New bot flow. */
@@ -229,6 +231,7 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    onnewcloudbot = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     directCloud = null,
@@ -584,6 +587,10 @@
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────
   function newBot(): void {
     if (!canCreateLocalBot && !canCreateCloudBot) return;
+    if (canCreateCloudBot && onnewcloudbot) {
+      onnewcloudbot();
+      return;
+    }
     entryError = null;
     step = "bot";
   }
@@ -675,8 +682,14 @@
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
     else if (initialStep === "bot") {
+      // Opened straight on the bot step: the rail's "New bot" item when no
+      // company has the takeover, or the takeover's own "local bot instead".
+      // Show the step itself; `newBot()` would hand back to the takeover.
       botOpenedDirect = true;
-      newBot();
+      if (canCreateLocalBot || canCreateCloudBot) {
+        entryError = null;
+        step = "bot";
+      }
     }
   });
   let query = $state("");

@@ -7,8 +7,86 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+
+- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
+- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
+- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
+- The file sync status of a cloud bot moved into the header of its direct message. The full-width "Syncing your company's files" strip and its progress bar under the header are gone. In their place a small sync icon and one short grey line sit to the right of "Direct message", next to the bot's name, for example "Syncing your company's files, 10 files so far", or with a percent when there is a real one. Nothing in it moves. In a narrow window the line is cut with "..." before anything else in the header gives way, and hovering it shows the full text. It goes away when the files are up to date, as the strip did.
 - Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
+
+## [0.10.392] — 2026-10-05
+
+- The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.
+- Setup no longer says "Claude Code is installed. Sign in to finish." on a Mac that has only the Claude desktop app. Setup needs Claude Code itself, so it now shows "Install Claude", which installs Claude Code and opens its sign-in in one step. Codex works the same way with the ChatGPT app. HQ now also finds the Codex that comes inside current versions of the ChatGPT app, so people with the ChatGPT app can sign in to Codex without installing it separately. If a sign-in check still fails, the message names Claude Code or Codex and says to make sure it is installed. The coding-tool step on the welcome channel now only installs and signs in to Claude Code or Codex: the "Set up with Claude" and "Set up with ChatGPT" buttons and the "Already use Claude Code or Codex?" card are gone from it. The setup assistant offers to continue in Claude or Codex itself, and the Launch menu in the top right still opens your HQ folder in either one.
+- When the Claude app or the Codex app is installed on your Mac and you have used it a lot lately, your setup bot's welcome asks whether you want to continue setup there, with two buttons under it: "Continue in Claude" (or "Continue in Codex") opens your HQ folder in that app with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. The button opens the desktop app, never a terminal. Needs the hq-cli release that sends the offer.
+- Opening your HQ folder in the Codex app works again with the current ChatGPT app, which moved its built-in Codex command inside the app.
+- Connection cards under a cloud bot's message now appear with the message. They used to appear several seconds later, because the app only asked the server what was connected after the message was already on screen. It now asks when you open the bot's direct message, and a bot you just created reuses what the app already read while setting it up. If that check fails, the app tries again by itself instead of waiting for you to leave the conversation and come back. A card for an app the app still has to look up no longer holds back the other cards in its row: they show at once and that card joins the row a moment later, after the ones already there.
+- In a cloud bot's direct message, a Slack card is always about the bot's own Slack. When a bot offered Slack by naming slack.com, the card showed a teammate's company Slack connection as "Connected" even though the bot had never been connected. It now shows the Connect Slack card, which opens the Connect Slack window, and reads "in Slack" only when the bot itself is in Slack. A person who is not allowed to set the bot up sees "Ask a company admin to connect Nova to Slack." (for a bot named Nova). The cards the app chooses no longer show a second Slack card for your own Slack connection. A new bot is told whether it is in Slack yet, and the company's Slack connection is no longer in the list of apps it is given.
+- Connection cards in a cloud bot's direct message no longer say "Connected" twice. Under the green Connected mark, an app a teammate connected now reads "A teammate connected this. Ask them to share it with Nova." (for a bot named Nova), your own app reads "Let Nova use it?", and an app the bot can already use reads "Nova can use it." The sentence on a card can take two rows, so the instruction is no longer cut off after the first few words. Every card in a row keeps the same height.
+- The messages the app sends a cloud bot (the first request after it is created, and the notes that say an app or Slack was connected) now only state facts and say what to do next. They no longer list things the bot must not do. A company whose only connection is Slack sends the bot no apps list.
+
+## [0.10.391] — 2026-10-04
+
+- Desktop update checks now record bounded check, download, and install outcomes that can be joined to first launch.
+
+- Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
+- First-launch join-key rollout assignments now use the public flag resolver.
+- CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
+- Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
+
+- Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
+- Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
+- The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
+
+## [0.10.390] — 2026-10-04
+
+- Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
+
+- HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
+
+- Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
+
+- HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
+
+
+## [0.10.389] — 2026-10-04
+
+- When the auto-sync watcher stops because another sync runner already owns the HQ root (exit 20), the report now says so instead of "exited unexpectedly", even when the runner printed nothing. It names the owning runner's owner, pid, process and start time when the runner reports them, and reads `unknown` for any it does not.
+
+- Setup telemetry now records a bounded reason when the invite step is hidden after company creation.
+- New bot: for companies that have the new bot screen turned on, choosing New bot from the + menu now opens a full-window screen for creating a cloud bot. You pick the company, give the bot a name, choose its brain and machine size, and wait on a "Waking up" screen until the bot can chat. Cancel works at every step and removes a bot that was already being made. "Create a local bot instead" is on the same screen. If your plan cannot host another bot, the screen says so and links to the upgrade options. Companies without it keep the New bot steps in the + menu, which work as before.
+- A cloud bot made on the new screen opens in a direct message with you instead of its own channel. A direct message with any bot now reads as one conversation: the bot's answers show in line instead of under "1 reply", and the setup request the app sends to the bot for you is not shown.
+- A cloud bot's direct message shows connection cards under its messages for Slack and the other apps your company uses. Connect Slack opens in a window over the chat. Writing "Connect more tools" brings the cards back. Suggested replies appear under the bot's newest message.
+- While a cloud bot's copy of your company files is syncing, a slim strip under the header of its direct message shows how far along it is, and goes away once the files are up to date.
+- While a bot works on an answer in its direct message, the "working" row shows what the bot is doing, and it goes away when the answer arrives.
+- App logos on connection cards are the app's own brand mark, shipped inside HQ. An app HQ has no mark for shows a plain app icon. No logo is loaded from another site.
+
+## [0.10.388] — 2026-10-04
+
+- Free companies in their first week can see a once-daily sync reminder in the existing Core status popover.
+- First-launch telemetry can record whether sign-in was reached or which setup, update, or app-exit path diverted it; the measurement is off by default.
+- Updater restarts now carry a short-lived, version-checked marker through the GUI restart fallback when start-at-login is disabled.
+- Add an Add member action to project boards for active company members.
+- Sync retries once when the cloud service returns a gateway timeout from a Lambda invoke, and keeps error bodies available for diagnosis.
+
+- Held sign-in receipts now read the sign-in token from the same home directory they were held in, so a session in another home directory can no longer send or drop them.
+- First-launch sync start failures are now captured in Sentry with bounded categories and no error details.
+- Desktop setup failure records now show whether a dependency timeout retry ran and how it ended, using a bounded dependency label.
+
+- An updater restart with a previously completed install and temporarily unresolved local tools now resumes setup repair instead of reopening first-run onboarding.
+
+## [0.10.387] — 2026-10-04
+
+- Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping. (This fix was listed under 0.10.386 by mistake; it ships in this release.)
+- First-run setup: "Name your company" now comes right after the setup explainers, before the "Open HQ Desktop" screen, while the install keeps running. It no longer asks for a company handle: HQ makes it from the company name and, if it is taken, picks a free one by itself; a name it cannot use gets a plain message under the name field. The company and plan screens stay centred in the welcome window: the form, the line under the heading, the plan cards and the buttons share one column under the heading, the screen re-centres when the form or plan cards replace "Getting things ready…", and the window no longer scrolls off-centre when a field gets focus. The plan screen now matches the website's plan cards: "Choose how your HQ runs.", Starter and Workforce side by side with the website's prices, rows and buttons ("Get started free" finishes setup, "Get started" opens checkout), and a "Book a call" link for a custom setup. It is skipped when hq-pro reports a plan already picked on the website; hq-pro does not send that yet, so the screen still shows until it does.
+- A sign-in step saved for your next session, and other app settings, are no longer lost when the app saves two settings at the same moment. Changes to the settings file are now made one at a time.
+- Unexpected watcher-exit reports now include the runner phase and elapsed-time bucket as searchable Sentry tags.
+- Held sign-in receipts keep the home directory captured before token resolution, preventing a profile switch from redirecting the pending event.
+- Desktop setup invite telemetry now includes the company for each step outcome and the number of invitations sent. It does not include invitee details.
+- Background first-launch and sign-in telemetry flushes stay bound to the home
+  directory that scheduled them, so delayed sends cannot consume another
+  install's held rows.
 - Startup diagnostics now classify reason-suffixed refresh-rejection markers as desktop-origin markers.
 - Sign-in telemetry from a first sign-in is no longer dropped. Progress and failure rows sent before the app has a session are kept on this Mac (closed labels only, at most 20 rows, for 3 days) and sent once the user signs in, each with a stable key so a resend is stored once.
 - The welcome sign-in window now advances when you are already signed in, keeps
@@ -19,7 +97,6 @@ The release moves it under the version it ships in.
 ## [0.10.386] — 2026-10-03
 
 - "Restart to update" now works while a sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and the update card says which one. (This fix was listed under 0.10.379 by mistake; it ships in this release.)
-- Checking whether a desktop command is still registered, cancelled, or finished, and registering or removing one, still works after an internal error interrupts that bookkeeping.
 - Internal tests: two more desktop UI tests (message link color, touch quick-react) now render the conversation and reply panel and read the applied styles instead of searching their source text. Nothing changes in the app.
 - When company-name suggestions are enabled, new-company setup can prefill the name from a business email domain. The name remains editable.
 - Desktop setup still cancels an install and still records its failure after an internal error interrupts that bookkeeping.

@@ -111,26 +111,6 @@ export const SHELL_READY_SELECTORS = [
   ".desktop-shell",
 ];
 
-/**
- * Collect N frame deltas while `driver` runs. Returns raw deltas in ms so the
- * Node side owns all statistics (and can re-derive different thresholds later
- * from a stored run file).
- */
-export const FRAME_CAPTURE = String(function captureFrames(durationMs) {
-  return new Promise(function (resolve) {
-    var deltas = [];
-    var last = performance.now();
-    var stopAt = last + durationMs;
-    function tick(now) {
-      deltas.push(now - last);
-      last = now;
-      if (now < stopAt) requestAnimationFrame(tick);
-      else resolve(deltas);
-    }
-    requestAnimationFrame(tick);
-  });
-});
-
 /** A frame budget of 60Hz. Anything longer than this is a dropped frame. */
 export const FRAME_BUDGET_MS = 1000 / 60;
 

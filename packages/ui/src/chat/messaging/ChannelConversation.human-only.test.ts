@@ -71,6 +71,25 @@ describe("ChannelConversation human-only mode", () => {
     expect(root.textContent).not.toContain("an automated ping");
   });
 
+  it("flag on: hides an agent-lane channel row but keeps an untagged agt_ row", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        humanOnly: true,
+        messages: [
+          { eventId: "evt_agent_lane", direction: "in", fromPersonUid: "agt_deacon", fromDisplayName: "Deacon", audience: "agent", body: "agent-lane-channel-xyz", createdAt: "2026-10-04T16:30:00.000Z" },
+          { eventId: "evt_untagged", direction: "in", fromPersonUid: "agt_deacon", fromDisplayName: "Deacon", body: "untagged-agent-channel-xyz", createdAt: "2026-10-04T16:31:00.000Z" },
+        ],
+      },
+    });
+    await tick();
+    const text = host.textContent ?? "";
+    expect(text).not.toContain("agent-lane-channel-xyz");
+    expect(text).toContain("untagged-agent-channel-xyz");
+  });
+
   it("default-on: hides noted, started and completed rows and bot audience, keeps human and bot replies with audience both", async () => {
     const event = (kind: string, summary: string) =>
       JSON.stringify({

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { fetch as tauriHttpFetch } from '@tauri-apps/plugin-http';
   import {
     createSyncPlatformAdapter,
     POST_READY_ACTION_TELEMETRY_FLAG,
@@ -68,7 +69,15 @@
   } from './lib/brand';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
-  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
+  import {
+    emitDesktopTelemetry,
+  } from './lib/desktop-telemetry';
+  import {
+    createFirstLaunchSignInReachReporter,
+    setFirstLaunchSignInReachReporter,
+    startupOutcomeForLifecycle,
+    resolveFirstLaunchSignInReachFlag,
+  } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
     replayRetainedDetections,
@@ -91,12 +100,33 @@
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
+  import { registerSetupToolOfferTelemetry } from './lib/setup-tool-offer-telemetry';
+  import { registerMainReturnNudgeListener } from './lib/return-nudge-event-bridge';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
   });
+  const firstLaunchSignInReachReporter = createFirstLaunchSignInReachReporter({
+    isFirstRun: () => invoke<boolean>('is_first_run'),
+    isSuppressed: async () => {
+      const context = await invoke<unknown>('desktop_continuation_context');
+      return typeof context === 'object' && context !== null &&
+        'suppressFirstLaunchTelemetry' in context &&
+        context.suppressFirstLaunchTelemetry === true;
+    },
+    isEnabled: async (visitorId) => {
+      return resolveFirstLaunchSignInReachFlag(visitorId, tauriHttpFetch);
+    },
+    getInstallAttemptId: async () => {
+      const value = await invoke<unknown>('desktop_install_attempt_id');
+      return typeof value === 'string' ? value : null;
+    },
+    warn: (message, error) => console.warn(message, error),
+  });
+  setFirstLaunchSignInReachReporter(firstLaunchSignInReachReporter);
+  void firstLaunchSignInReachReporter.prepare();
   const postReadyTelemetry = getVersion()
     .then((appVersion) => createPostReadyActionTelemetry({
       appVersion,
@@ -125,6 +155,7 @@
         action?: unknown;
         companyUid?: unknown;
         companySlug?: unknown;
+        returnNudge?: unknown;
       }>
     ).detail;
     if (!detail || !isPostReadyAction(detail.action)) return;
@@ -132,6 +163,15 @@
       ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
       ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
     };
+    if (detail.returnNudge === 'shown' || detail.returnNudge === 'clicked' || detail.returnNudge === 'dismissed') {
+      if (typeof detail.companyUid !== 'string') return;
+      void postReadyTelemetry.then((telemetry) =>
+        telemetry.recordReturnNudge(detail.returnNudge as 'shown' | 'clicked' | 'dismissed', {
+          companyUid: detail.companyUid as string,
+        }),
+      );
+      return;
+    }
     void postReadyTelemetry.then((telemetry) =>
       telemetry.record(
         detail.action as Parameters<typeof telemetry.record>[0],
@@ -140,9 +180,20 @@
     );
   }
   window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const unlistenReturnNudge = registerMainReturnNudgeListener(
+    (handler) => listen(POST_READY_ACTION_EVENT, (event) => handler(event.payload)),
+    (detail) => handlePostReadyAction(new CustomEvent(POST_READY_ACTION_EVENT, { detail })),
+  ).catch((error: unknown) => {
+    console.warn('post-ready action cross-window listener failed:', error);
+    return () => {};
+  });
   const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
+  // The setup bot's "continue setup in your coding tool" card (packages/ui).
+  const stopSetupToolOfferTelemetry = registerSetupToolOfferTelemetry();
   onDestroy(() => {
+    stopSetupToolOfferTelemetry();
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void unlistenReturnNudge.then((unlisten) => unlisten());
     void postReadyCloseListener.then((unlisten) => unlisten());
   });
 
@@ -1842,6 +1893,19 @@
     loadConfig();
     loadWorkspaces();
     const listenerRegistry = new ListenerRegistry();
+    void listen('version-gate:update-required', () => {
+      firstLaunchSignInReachReporter.record('update-gate');
+    })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('version-gate listener unavailable', error));
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        firstLaunchSignInReachReporter.record('window-closed');
+      })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('window-close reach listener unavailable', error));
+    const recordAppQuitBeforeSignIn = () => firstLaunchSignInReachReporter.record('quit');
+    window.addEventListener('pagehide', recordAppQuitBeforeSignIn);
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
       console.error('setup tray listeners failed:', err);
@@ -1882,6 +1946,8 @@
       clearChannelUnreadRetry();
       recordingActionAcks.dispose();
       listenerRegistry.dispose();
+      window.removeEventListener('pagehide', recordAppQuitBeforeSignIn);
+      setFirstLaunchSignInReachReporter(null);
     };
   });
 
@@ -1997,6 +2063,7 @@
         outcome.error,
       );
       scheduleStartupReprobe();
+      firstLaunchSignInReachReporter.record('startup-error');
       return;
     }
 
@@ -2015,6 +2082,12 @@
     lifecycleState = probedLifecycle;
     startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
+    const startupReachOutcome = startupOutcomeForLifecycle(
+      lifecycleState,
+      setupEvidence ?? null,
+      authenticated,
+    );
+    if (startupReachOutcome) firstLaunchSignInReachReporter.record(startupReachOutcome);
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
       syncState = 'auth-error';

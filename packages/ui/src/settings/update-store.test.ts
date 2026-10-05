@@ -496,7 +496,11 @@ describe("shared store keeps pane and popover in lockstep", () => {
     expect(updates.checkForUpdates.mock.calls.length).toBeGreaterThan(0);
   });
 
-  it("while an upload holds a ready update, Settings disables Restart with the toast's wording", async () => {
+  it("an upload does not hold Restart; a recording does, with the toast's wording", async () => {
+    // The rule from main (#1237): sync is nearly always uploading, so an
+    // upload only delays the automatic install. Restart, which the person
+    // asks for, waits for a recording, a transcript or an HQ folder update.
+    // (This test used to assert that an upload disabled Restart.)
     const adapter = updatesAdapter();
     const { paneHost } = mountBoth(adapter);
     await vi.waitFor(() => {
@@ -504,19 +508,32 @@ describe("shared store keeps pane and popover in lockstep", () => {
       expect(paneHost.textContent).toContain("UPDATE AVAILABLE");
     });
     markDownloaded(updateStore.availableVersion);
+    const toastFor = () =>
+      updateToastCopy({
+        version: updateStore.availableVersion ?? "",
+        reasons: [...updateStore.holdReasons],
+        installing: false,
+        installError: null,
+      });
     setUpdateHoldReasons(["uploadInFlight"]);
     flushSync();
     const restart = paneHost.querySelector<HTMLButtonElement>('[data-testid="settings-app-restart"]')!;
-    const toast = updateToastCopy({
-      version: updateStore.availableVersion ?? "",
-      reasons: [...updateStore.holdReasons],
-      installing: false,
-      installError: null,
-    });
+    expect(restart.disabled).toBe(false);
+    expect(toastFor().installDisabled).toBe(false);
+    expect(toastFor().installTitle).toBeNull();
+    // Still named as what the automatic install waits for.
+    expect(paneHost.querySelector('[data-testid="settings-app-deferred-reason"]')?.textContent?.trim()).toBe(
+      "Waiting for an upload to finish",
+    );
+
+    setUpdateHoldReasons(["uploadInFlight", "meetingRecording"]);
+    flushSync();
     expect(restart.disabled).toBe(true);
-    expect(toast.installDisabled).toBe(true);
-    expect(restart.getAttribute("title")).toBe(toast.installTitle);
-    expect(restart.getAttribute("title")).toBe("Waiting for an upload to finish. Restart becomes available when it finishes.");
+    expect(toastFor().installDisabled).toBe(true);
+    expect(restart.getAttribute("title")).toBe(toastFor().installTitle);
+    expect(restart.getAttribute("title")).toBe(
+      "Waiting for your recording to finish. Restart becomes available when it finishes.",
+    );
     setUpdateHoldReasons([]);
     flushSync();
     expect(restart.disabled).toBe(false);

@@ -1463,16 +1463,44 @@ async fn resolve_npm_global_prefix_for_lease(npm: &str, path: &str) -> Result<St
     Ok(prefix)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HqCliUpdateFailure {
+    PackageUseLeaseTimeout { display_message: Option<String> },
+    Other(String),
+}
+
+impl std::fmt::Display for HqCliUpdateFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PackageUseLeaseTimeout {
+                display_message: Some(message),
+            } => formatter.write_str(message),
+            Self::PackageUseLeaseTimeout {
+                display_message: None,
+            } => formatter
+                .write_str(hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for HqCliUpdateFailure {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
 async fn acquire_cli_package_update_lease(
     npm: &str,
     path: &str,
     prefix: Option<&str>,
+    retry_attempt: u8,
 ) -> Result<
     (
         hq_desktop_core::package_use_lease::PackageUseUpdateGuard,
         crate::commands::process::UpdateQuiescenceGuard,
     ),
-    String,
+    HqCliUpdateFailure,
 > {
     let started = tokio::time::Instant::now();
     let resolved_prefix = match prefix {
@@ -1495,14 +1523,17 @@ async fn acquire_cli_package_update_lease(
     let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
 
     let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
-    let package_guard = match request.wait(remaining).await {
-        Err(error)
-            if error == hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR =>
-        {
-            report_package_use_lease_timeout();
-            return Err(error);
+    let package_guard = match request.wait_with_summary(remaining).await {
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)) => {
+            report_package_use_lease_timeout(&summary, retry_attempt);
+            return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+                display_message: None,
+            });
         }
-        result => result?,
+        Ok(guard) => guard,
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Other(error)) => {
+            return Err(error.into());
+        }
     };
     Ok((package_guard, process_guard))
 }
@@ -1514,8 +1545,21 @@ async fn run_npm_install_with_retries(
     prefix: Option<&str>,
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
+    run_npm_install_with_retry_attempt(npm, path, npm_cache, prefix, base_args, 0)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn run_npm_install_with_retry_attempt(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    base_args: Vec<String>,
+    retry_attempt: u8,
+) -> Result<NpmInstallRun, HqCliUpdateFailure> {
     let (_package_use_lease, _process_admission) =
-        acquire_cli_package_update_lease(npm, path, prefix).await?;
+        acquire_cli_package_update_lease(npm, path, prefix, retry_attempt).await?;
     let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
@@ -2670,17 +2714,29 @@ pub(crate) fn acquire_cli_install_lock_waiting(
     }
 }
 
-static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
+type HqCliUpdateResult = Result<HqCliUpdateInfo, HqCliUpdateFailure>;
 
-fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
+static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateResult>> = OnceLock::new();
+
+fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateResult> {
     HQ_CLI_INSTALL_FLIGHT.get_or_init(AsyncSingleFlight::new)
 }
 
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
-    hq_cli_install_flight()
-        .run(move || install_hq_cli_update_once(app))
+    install_hq_cli_update_with_retry_attempt(app, 0)
         .await
+        .map_err(|error| error.to_string())
+}
+
+async fn install_hq_cli_update_with_retry_attempt(
+    app: AppHandle,
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
+    hq_cli_install_flight()
+        .run(move || async move { Ok(install_hq_cli_update_once(app, retry_attempt).await) })
+        .await
+        .map_err(HqCliUpdateFailure::Other)?
 }
 
 /// Resolve the executable again at the point an npm failure is reported. The
@@ -2701,7 +2757,10 @@ fn running_cli_version_after_failure() -> Option<String> {
     )
 }
 
-async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+async fn install_hq_cli_update_once(
+    app: AppHandle,
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     // Held for the WHOLE install — every executor path below (npm, pnpm, bun,
     // and the managed-toolchain retry) mutates the same global CLI layout, so
     // the guard must outlive them all. Drop (including panic unwind) releases.
@@ -2799,10 +2858,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         }
         return match executor {
             InstallExecutor::Pnpm => {
-                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Bun => {
-                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Npm => unreachable!("npm handled below"),
         };
@@ -2932,8 +2995,15 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         )
         .await?;
     }
-    let install_run =
-        run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+    let install_run = run_npm_install_with_retry_attempt(
+        &npm,
+        &path,
+        &npm_cache,
+        prefix.as_deref(),
+        base_args,
+        retry_attempt,
+    )
+    .await?;
 
     if install_run.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
         record_deferred_user_cli_breadcrumb(
@@ -3078,6 +3148,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // disk-space/network lifecycle cause is refused); every other kind/cause keeps
         // today's behaviour. HQ blames the user's toolchain (the copy below) only AFTER
         // its own repair was attempted and could not converge.
+        let mut managed_retry_lease_timed_out = false;
         if install_failure_earns_managed_retry(
             failure_kind,
             install_env.toolchain_source,
@@ -3094,6 +3165,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 already_blocked,
                 ordinary_user_aim.as_ref(),
                 failing_node_abi,
+                retry_attempt,
             )
             .await
             {
@@ -3107,13 +3179,16 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 // reported exactly once — with managed provenance for a failure,
                 // or as non-convergence for a shadowed exit-0 — so surface its
                 // detail without a second capture.
-                ManagedRetryAttempt::RanAndReported(detail) => return Err(detail),
+                ManagedRetryAttempt::RanAndReported(detail) => return Err(detail.into()),
+                ManagedRetryAttempt::PackageUseLeaseTimeout => {
+                    managed_retry_lease_timed_out = true;
+                }
                 // HQ can identify the user's hq copy but cannot safely build into
                 // it with the managed runtime. Do not install a shadow copy and
                 // quietly take over PATH; the returned message gives the one-time
                 // action that updates the command the user actually runs.
                 ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy => {
-                    return Err(managed_retry_user_copy_detail());
+                    return Err(managed_retry_user_copy_detail().into());
                 }
                 // The retry did not run. Record WHICH branch declined on the
                 // user-path event so the next occurrence is self-diagnosing (the
@@ -3167,7 +3242,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             &latest,
             &reported_episode_keys,
         ));
-        return Err(detail);
+        if managed_retry_lease_timed_out {
+            return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+                display_message: Some(detail),
+            });
+        }
+        return Err(HqCliUpdateFailure::Other(detail));
     }
 
     // npm exit 0 only proves npm wrote a package somewhere; the shared finalize
@@ -3182,6 +3262,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         &latest,
         prefix.as_deref(),
         already_blocked,
+        retry_attempt,
     )
     .await
 }
@@ -3399,7 +3480,8 @@ async fn finalize_convergence(
     latest: &str,
     prefix: Option<&str>,
     already_blocked: bool,
-) -> Result<HqCliUpdateInfo, String> {
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
         let hq = post_install_hq.clone();
@@ -3488,7 +3570,8 @@ async fn finalize_convergence(
                 &managed_roots,
                 &post_install_hq,
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3519,7 +3602,8 @@ async fn finalize_convergence(
                 delivered_version.as_deref(),
                 resolved.as_deref(),
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3550,6 +3634,7 @@ async fn finalize_convergence(
                     already_blocked,
                     aim,
                     outcome,
+                    retry_attempt,
                 )
                 .await;
             }
@@ -3568,7 +3653,7 @@ async fn finalize_convergence(
     }
 
     log("hq-cli-update", &outcome.log_line);
-    let result = apply_post_install_with_app(app, &outcome);
+    let result = apply_post_install_with_app(app, &outcome).map_err(Into::into);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
     // never the durable blocking marker), so a persistent installer-unaimed or
     // resolution-shortfall shape reports once per `latest` instead of on every
@@ -3612,7 +3697,8 @@ async fn executed_copy_reaim_and_refinalize(
     already_blocked: bool,
     aim: UserPrefixAim,
     mut base_outcome: PostInstallOutcome,
-) -> Result<HqCliUpdateInfo, String> {
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     let base_path = paths::child_path();
     let (args, path) = executed_copy_reaim_plan(&aim, latest, &base_path);
     log(
@@ -3623,6 +3709,7 @@ async fn executed_copy_reaim_and_refinalize(
         ),
     );
 
+    let mut lease_timed_out = false;
     let reaim = match app_npm_cache(app) {
         Err((category, error)) => {
             report_npm_cache_setup_failure(category);
@@ -3636,10 +3723,21 @@ async fn executed_copy_reaim_and_refinalize(
             ExecutedCopyReaim::PreparationFailed
         }
         Ok(npm_cache) => {
-            match run_npm_install_with_retries(&aim.npm, &path, &npm_cache, Some(&aim.prefix), args)
-                .await
+            match run_npm_install_with_retry_attempt(
+                &aim.npm,
+                &path,
+                &npm_cache,
+                Some(&aim.prefix),
+                args,
+                retry_attempt,
+            )
+            .await
             {
-                Err(error) => {
+                Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+                    lease_timed_out = true;
+                    ExecutedCopyReaim::SpawnFailed
+                }
+                Err(HqCliUpdateFailure::Other(error)) => {
                     log(
                         "hq-cli-update",
                         &format!("re-aim npm install could not run: {}", redact_home(&error)),
@@ -3673,6 +3771,7 @@ async fn executed_copy_reaim_and_refinalize(
                             latest,
                             Some(&aim.prefix),
                             already_blocked,
+                            retry_attempt,
                         ))
                         .await;
                     }
@@ -3715,7 +3814,13 @@ async fn executed_copy_reaim_and_refinalize(
             );
         }
     }
-    result
+    match result {
+        Ok(info) => Ok(info),
+        Err(message) if lease_timed_out => Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+            display_message: Some(message),
+        }),
+        Err(message) => Err(message.into()),
+    }
 }
 
 /// Map the removal action plus the post-removal convergence into the decision's
@@ -4442,6 +4547,8 @@ enum ManagedRetryAttempt {
     /// provenance-aware wording that never re-blames the user's runtime. The caller
     /// surfaces this detail without a second capture.
     RanAndReported(String),
+    /// The managed retry could not acquire the package lease.
+    PackageUseLeaseTimeout,
     /// The resolved user-owned CLI has a different or unreadable Node ABI, so
     /// HQ refuses to install a managed-runtime build into it or silently route
     /// around it with a second copy. The caller shows a precise one-time action.
@@ -4486,6 +4593,7 @@ async fn managed_toolchain_retry(
     already_blocked: bool,
     executed_user_aim: Option<&UserPrefixAim>,
     executed_node_abi: Option<u32>,
+    lease_retry_attempt: u8,
 ) -> ManagedRetryAttempt {
     // A known user-owned target with an unknown or different Node ABI cannot be
     // fixed by installing HQ's managed-runtime build elsewhere: that leaves the
@@ -4569,17 +4677,21 @@ async fn managed_toolchain_retry(
     // targets. `retry_prefix` is either HQ's managed prefix or the pre-validated,
     // matching-ABI user prefix above; no raw path is invented here.
     let retry_args = install_argv(Some(retry_prefix.as_str()), Some(latest));
-    let retry_run = match run_npm_install_with_retries(
+    let retry_run = match run_npm_install_with_retry_attempt(
         &managed_npm,
         &retry_path,
         npm_cache,
         Some(retry_prefix.as_str()),
         retry_args,
+        lease_retry_attempt,
     )
     .await
     {
         Ok(run) => run,
-        Err(e) => {
+        Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+            return ManagedRetryAttempt::PackageUseLeaseTimeout;
+        }
+        Err(HqCliUpdateFailure::Other(e)) => {
             log(
                 "hq-cli-update",
                 &format!("managed-toolchain retry could not spawn npm: {e}"),
@@ -4846,6 +4958,9 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             );
             LaunchCliCheck::Scheduled
         });
+        let mut lease_retries_scheduled = 0;
+        let mut first_scheduled_delay = INITIAL_DELAY;
+        let mut retry_floor_repair = false;
         if let LaunchCliCheck::RepairNow { local } = launch {
             log(
                 "hq-cli-update",
@@ -4856,15 +4971,37 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                     INITIAL_DELAY.as_secs()
                 ),
             );
-            run_check_cycle(&handle, /* floor_repair */ true).await;
+            if run_check_cycle(&handle, /* floor_repair */ true, 0).await {
+                if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
+                    hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
+                    lease_retries_scheduled,
+                ) {
+                    lease_retries_scheduled += 1;
+                    first_scheduled_delay = delay;
+                    retry_floor_repair = true;
+                }
+            }
         }
-        tokio::time::sleep(INITIAL_DELAY).await;
+        tokio::time::sleep(first_scheduled_delay).await;
         loop {
             // hq daemon's updater keeps the CLI current when it hosts
             // background services; two installers would race on one prefix.
             // The floor repair above still runs.
             if !crate::commands::hq_daemon_host::daemon_mode_active() {
-                run_check_cycle(&handle, /* floor_repair */ false).await;
+                let lease_timed_out =
+                    run_check_cycle(&handle, retry_floor_repair, lease_retries_scheduled).await;
+                if lease_timed_out {
+                    if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
+                        hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
+                        lease_retries_scheduled,
+                    ) {
+                        lease_retries_scheduled += 1;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                }
+                lease_retries_scheduled = 0;
+                retry_floor_repair = false;
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
@@ -4875,7 +5012,8 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
 /// the launch-time pass taken because the installed CLI read below
 /// [`HQ_CLI_MIN_VERSION`]; it is the only pass allowed to install past the
 /// user's `autoUpdate` opt-out (see [`auto_install_allowed`]).
-async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
+async fn run_check_cycle(handle: &AppHandle, floor_repair: bool, lease_retry_attempt: u8) -> bool {
+    let mut lease_timed_out = false;
     match check_once(handle).await {
         Ok(Some(info)) => {
             // Gate on the master `autoUpdate` switch (default ON). The
@@ -4897,7 +5035,12 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
                 }
                 if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {
                     log("hq-cli-update", "auto-update enabled — installing");
-                    match install_hq_cli_update(handle.clone()).await {
+                    match install_hq_cli_update_with_retry_attempt(
+                        handle.clone(),
+                        lease_retry_attempt,
+                    )
+                    .await
+                    {
                         Ok(info) if info.local.as_deref() == Some(info.latest.as_str()) => {
                             log("hq-cli-update", "auto-update succeeded")
                         }
@@ -4905,7 +5048,19 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
                             "hq-cli-update",
                             "auto-update did not converge; the scheduled check will retry",
                         ),
-                        Err(e) => log(
+                        Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+                            lease_timed_out = true;
+                            log(
+                                "hq-cli-update",
+                                &format!(
+                                    "auto-update failed, banner remains: {}",
+                                    HqCliUpdateFailure::PackageUseLeaseTimeout {
+                                        display_message: None,
+                                    }
+                                ),
+                            )
+                        }
+                        Err(HqCliUpdateFailure::Other(e)) => log(
                             "hq-cli-update",
                             &format!("auto-update failed, banner remains: {e}"),
                         ),
@@ -4955,6 +5110,7 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
         Ok(None) => {}
         Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
     }
+    lease_timed_out
 }
 
 #[cfg(test)]
@@ -4992,6 +5148,12 @@ mod tests {
     // while it holds the CLI package lease. Two of them running at once would
     // see the gate already closed and fail with "another desktop update is
     // already quiescing HQ processes", so they take this lock first.
+    // Those tests also hold ENV_MUTEX across the install. begin publishes the
+    // HQ CLI update lease under the process home (dirs::home_dir when
+    // XDG_STATE_HOME is unset). A parallel test that points HOME at a
+    // temporary directory and deletes it makes that rename return os-error-2.
+    // Home-swapping tests already take ENV_MUTEX. The mutex is not
+    // re-entrant, so a test that already holds it must not lock it again.
     #[cfg(unix)]
     static CLI_PROCESS_ADMISSION_TEST_LOCK: tokio::sync::Mutex<()> =
         tokio::sync::Mutex::const_new(());
@@ -5750,6 +5912,9 @@ console.log('ready'); setInterval(() => {}, 1000);
     #[tokio::test]
     async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -5942,6 +6107,9 @@ exit 1
     #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6028,6 +6196,9 @@ exit 0
     #[tokio::test]
     async fn etarget_retries_once_with_prefer_online() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6090,6 +6261,9 @@ exit 0
     #[tokio::test]
     async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6162,6 +6336,9 @@ exit 0
     #[tokio::test]
     async fn prefer_online_output_uses_existing_bin_collision_recovery() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6237,6 +6414,9 @@ exit 2
     #[tokio::test]
     async fn public_registry_output_uses_existing_bin_collision_recovery() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6318,6 +6498,9 @@ exit 2
     #[tokio::test]
     async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6366,6 +6549,9 @@ exit 1
     #[tokio::test]
     async fn prefix_less_enotempty_cleans_the_npm_reported_scope_and_recovers() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-5B: on a machine whose `hq` is bare or non-npm-shaped the
         // updater resolves NO prefix (npm_prefix_known=false in 61/61 events), so
         // the pre-fix ENOTEMPTY rung took its else arm and left the wedge in place
@@ -6472,6 +6658,9 @@ exit 0
     #[tokio::test]
     async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -6544,6 +6733,9 @@ exit 0
     #[tokio::test]
     async fn second_shim_eexist_arms_one_force_retry_and_stays_a_warning() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-4Y: the collision npm reported was on the package's SECOND
         // declared shim, `hq-auth-refresh`. It must arm the SAME single `--force`
         // rung the `hq` collision uses — one retry, still within the hard cap,
@@ -6628,6 +6820,9 @@ exit 0
     #[tokio::test]
     async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 

@@ -45,7 +45,15 @@
 
   position: fixed;
   inset: 0;
+  /* The grain layer is 1.5x the window (inset: -50%), so with plain
+     `overflow: hidden` the root is still a scroll container that is wider
+     and taller than the window. Anything that scrolls an element into view
+     (keyboard focus, the text caret, automation clicks) then scrolls the
+     root, and the whole screen sits off-centre in the window. `clip` cuts
+     the overflow without making the root scrollable; `hidden` stays as the
+     fallback for WebKit without `clip`. */
   overflow: hidden;
+  overflow: clip;
   color: var(--w-text);
   font-family: var(--w-font-sans);
   font-size: 16px;

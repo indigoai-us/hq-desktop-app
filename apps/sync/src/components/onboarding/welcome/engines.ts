@@ -1085,10 +1085,26 @@ export function createReadyEngine(refs: ReadyRefs, options: { reveal: () => void
 export function createPanelEngine(block: HTMLElement, options: { reveal: () => void }): SceneEngine {
   let t0 = 0;
   let revealed = false;
+  let active = false;
+  let placedHeight = -1;
+  let observer: ResizeObserver | null = null;
   function size() {
     const H = vh();
     const bh = rect(block).height;
+    placedHeight = bh;
     block.style.top = `${Math.max(56, Math.round((H - bh) / 2))}px`;
+  }
+  // A panel's content can change height after it is shown (the company step
+  // goes from "Getting things ready…" to its form, then to the plan cards).
+  // Centre it again whenever that happens, not only on enter and window
+  // resize; otherwise it keeps the short block's position and runs off the
+  // bottom of the window.
+  function watch() {
+    if (observer || typeof ResizeObserver === 'undefined') return;
+    observer = new ResizeObserver(() => {
+      if (active && rect(block).height !== placedHeight) size();
+    });
+    observer.observe(block);
   }
   return {
     size,
@@ -1098,13 +1114,22 @@ export function createPanelEngine(block: HTMLElement, options: { reveal: () => v
     enter(now) {
       t0 = now;
       revealed = false;
+      active = true;
+      watch();
       size();
+    },
+    exit() {
+      active = false;
     },
     frame(now) {
       if (!revealed && (now - t0) / 1000 > 0.6) {
         revealed = true;
         options.reveal();
       }
+    },
+    destroy() {
+      observer?.disconnect();
+      observer = null;
     },
   };
 }
