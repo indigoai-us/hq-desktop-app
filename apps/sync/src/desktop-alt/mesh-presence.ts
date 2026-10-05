@@ -70,7 +70,10 @@ export function startDesktopMeshPresence(
       if (!res.ok) {
         throw new Error(`reconcile ${route.path} failed (${res.status})`);
       }
-      const state = await res.json().catch(() => null);
+      const state = await res.json().catch((error) => {
+        console.warn('mesh presence reconcile body was not JSON', error);
+        return null;
+      });
       const rec =
         state && typeof state === 'object'
           ? (state as { cursor?: unknown })

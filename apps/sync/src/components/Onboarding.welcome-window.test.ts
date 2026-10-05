@@ -273,4 +273,80 @@ describe('Onboarding: the welcome flow window', () => {
     expect(commands()).not.toContain('mark_first_run_complete');
     expect(onfinish).toHaveBeenCalledTimes(1);
   });
+
+  it('logs a failed vibrancy change and still opens the welcome window', async () => {
+    const error = new Error('vibrancy unavailable');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'set_main_window_vibrancy') throw error;
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    expect(logged).toHaveBeenCalledWith('onboarding: window vibrancy failed', error);
+    expect(tauri.invoke).toHaveBeenCalledWith('set_welcome_window', { enabled: true });
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+    logged.mockRestore();
+  });
+
+  it('logs a failed welcome-window resize and still reads the wallpaper', async () => {
+    const error = new Error('welcome window failed');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'set_welcome_window') throw error;
+      if (command === 'get_desktop_wallpaper') return WALLPAPER;
+      return undefined;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    expect(logged).toHaveBeenCalledWith('onboarding: welcome window failed', error);
+    expect(tauri.invoke).toHaveBeenCalledWith('get_desktop_wallpaper');
+    logged.mockRestore();
+  });
+
+  it('logs a failed native blur and still shows the wizard', async () => {
+    const error = new Error('backdrop failed');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    tauri.invoke.mockImplementation(async (command: unknown) => {
+      if (command === 'set_welcome_backdrop') throw error;
+      return null;
+    });
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+
+    expect(logged).toHaveBeenCalledWith('onboarding: welcome backdrop failed', error);
+    expect(host.querySelector('[data-testid="wizard-stub"]')).not.toBeNull();
+    logged.mockRestore();
+  });
+
+  it('logs a failed window shadow and still restores the compact size', async () => {
+    const error = new Error('shadow failed');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    win.setShadow.mockRejectedValue(error);
+    component = mount(Onboarding, {
+      target: host,
+      props: { state: 'NeedsInstall', mode: 'onboarding' },
+    });
+    await settle();
+    logged.mockClear();
+
+    unmount(component);
+    component = null;
+    await settle();
+
+    expect(logged).toHaveBeenCalledWith('onboarding: window shadow failed', error);
+    expect(win.setSize).toHaveBeenCalled();
+    logged.mockRestore();
+  });
 });
