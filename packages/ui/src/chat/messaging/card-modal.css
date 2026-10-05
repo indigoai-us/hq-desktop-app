@@ -170,7 +170,7 @@
 .card-modal--surface .card-modal-hero {
   min-height: 0;
   align-items: flex-start;
-  padding: 188px 28px 20px;
+  padding: 184px 28px 20px;
 }
 
 .card-modal--surface .card-modal-plate {
@@ -187,7 +187,7 @@
 
 .card-modal--surface .card-modal-hero-mark {
   position: absolute;
-  top: 116px;
+  top: 104px;
   left: 28px;
   z-index: 1;
   width: 56px;
@@ -214,23 +214,25 @@
   margin-top: 4px;
 }
 
+/* The close button sits on the art, so it carries its own small disc of
+   the dialog surface to stay legible over any wallpaper, in either theme. */
 .card-modal--surface .card-modal-close {
   position: absolute;
-  top: 12px;
-  right: 12px;
+  top: 14px;
+  right: 14px;
   margin: 0;
   width: 28px;
   height: 28px;
-  border-color: transparent;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--v4-text-2);
-  box-shadow: none;
+  border: 1px solid color-mix(in srgb, var(--v4-hairline) 70%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--v4-surface-solid) 78%, transparent);
+  color: var(--v4-text-1);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16);
 }
 
 .card-modal--surface .card-modal-close:hover:not(:disabled) {
-  border-color: transparent;
-  background: var(--v4-active-row, var(--v4-control-bg));
+  border-color: var(--v4-hairline);
+  background: var(--v4-surface-solid);
   color: var(--v4-text-1);
 }
 
@@ -285,6 +287,24 @@
   border-color: var(--v4-error);
   background: var(--v4-error);
   color: #fff;
+}
+
+/* Hover deepens the same red; it never falls back to the art treatment's
+   muted danger fill, which reads as half-disabled on the surface. */
+.card-modal--surface .card-modal-btn.is-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--v4-error) 86%, #000);
+  background: color-mix(in srgb, var(--v4-error) 86%, #000);
+  color: #fff;
+}
+
+/* A problem on the surface reads as quiet secondary text with a small red
+   mark, so it pairs with the red action instead of competing with it. */
+.card-modal--surface .card-modal-status[data-kind="problem"] {
+  color: var(--cm-muted);
+}
+
+.card-modal--surface .card-modal-status[data-kind="problem"] .card-modal-status-mark {
+  color: var(--v4-error);
 }
 
 .card-modal--surface .card-modal-btn.is-quiet {

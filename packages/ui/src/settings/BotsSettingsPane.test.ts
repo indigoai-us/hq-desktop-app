@@ -364,9 +364,16 @@ describe("Settings → Bots (Work shell)", () => {
       expect(removeConfirm().disabled).toBe(true);
     });
     pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
-    await vi.waitFor(() => expect(removeDialog().textContent).toContain("Could not remove Izzy. Try again."));
+    await vi.waitFor(() =>
+      expect(removeDialog().querySelector('[data-testid="card-modal-status"]')?.textContent?.trim()).toBe(
+        "Couldn't remove Izzy. Check your connection and try again.",
+      ),
+    );
+    // The line names the cause; only the button says "Try again".
+    expect(removeDialog().textContent).not.toContain("Try again");
     expect(removeDialog().textContent).not.toContain("raw transport failure");
     expect(removeConfirm().textContent).toBe("Try again");
+    expect(removeConfirm().classList.contains("is-danger")).toBe(true);
     expect(removeConfirm().disabled).toBe(false);
     expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(false);
     removeConfirm().click();
@@ -391,7 +398,15 @@ describe("Settings → Bots (Work shell)", () => {
     await tick();
     expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe(`Say goodbye to ${longName}?`);
     expect(removeConfirm().getAttribute("aria-label")).toBe(`Remove ${longName}`);
-    expect(removeConfirm().querySelector(".remove-dialog-button-name")?.textContent).toBe(longName);
+    // One truncating label per button, so the words keep a single space and
+    // the ellipsis comes from the label's own overflow.
+    expect(removeConfirm().querySelectorAll(".remove-dialog-button-label")).toHaveLength(1);
+    expect(removeConfirm().querySelector(".remove-dialog-button-label")?.textContent).toBe(`Remove ${longName}`);
+    const keep = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')!;
+    expect(keep.querySelector(".remove-dialog-button-label")?.textContent).toBe(`Keep ${longName}`);
+    // Both actions share one row container.
+    expect(keep.parentElement).toBe(removeConfirm().parentElement);
+    expect(keep.parentElement?.classList.contains("remove-dialog-actions")).toBe(true);
   });
 
   it("uses the same roster avatar in the row and removal dialog", async () => {

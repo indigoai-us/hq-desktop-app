@@ -356,6 +356,14 @@
     };
   }
 
+  /**
+   * The line in the remove dialog after a failed attempt. The red button
+   * already reads "Try again", so the line names the cause, not the action.
+   */
+  function removeFailedLine(name: string): string {
+    return `Couldn't remove ${name}. Check your connection and try again.`;
+  }
+
   function closeRemoveDialog(): void {
     if (busy || cloudBusy) return;
     removeDialog = null;
@@ -368,7 +376,7 @@
     const result = await api.remove(dialog.bot.name);
     if (!result.ok) {
       if (result.message) console.warn("[hq-desktop] local bot remove failed:", result.message);
-      removeDialog = { ...dialog, error: `Could not remove ${dialog.displayName}. Try again.` };
+      removeDialog = { ...dialog, error: removeFailedLine(dialog.displayName) };
     } else {
       removedLocal = new Set(removedLocal).add(dialog.bot.name);
       await load(true);
@@ -615,7 +623,7 @@
         removeDialog = { ...dialog, instanceId: protectedInstanceId, error: null };
       } else {
         if (result.message) console.warn("[hq-desktop] cloud bot remove failed:", result.message);
-        removeDialog = { ...dialog, error: `Could not remove ${bot.displayName}. Try again.` };
+        removeDialog = { ...dialog, error: removeFailedLine(bot.displayName) };
       }
     } else {
       removedCloud = new Set(removedCloud).add(bot.uid);
@@ -998,6 +1006,7 @@
     art={SETUP_HERO_ART.dark}
     artLight={SETUP_HERO_ART.light}
     artPosition="center 42%"
+    artLightPosition="center top"
     appearance="surface"
     busy={dialogBusy}
     returnFocus={dialog.returnFocus}
@@ -1027,32 +1036,34 @@
       </div>
     {/snippet}
     {#snippet footer()}
-      <button
-        type="button"
-        class="card-modal-btn is-quiet remove-dialog-button"
-        data-testid="settings-bot-remove-dialog-keep"
-        aria-label={`Keep ${dialogName}`}
-        disabled={dialogBusy}
-        onclick={closeRemoveDialog}
-      >
-        Keep <span class="remove-dialog-button-name">{dialogName}</span>
-      </button>
-      <button
-        type="button"
-        class="card-modal-btn is-danger remove-dialog-button"
-        data-testid="settings-bot-remove-dialog-confirm"
-        aria-label={dialog.error ? "Try again" : `Remove ${dialogName}`}
-        disabled={dialogBusy}
-        onclick={confirmRemoveDialog}
-      >
-        {#if dialogBusy}
-          Removing <span class="remove-dialog-button-name">{dialogName}</span>…
-        {:else if dialog.error}
-          Try again
-        {:else}
-          Remove <span class="remove-dialog-button-name">{dialogName}</span>
-        {/if}
-      </button>
+      <div class="remove-dialog-actions">
+        <button
+          type="button"
+          class="card-modal-btn is-quiet remove-dialog-button"
+          data-testid="settings-bot-remove-dialog-keep"
+          aria-label={`Keep ${dialogName}`}
+          disabled={dialogBusy}
+          onclick={closeRemoveDialog}
+        >
+          <span class="remove-dialog-button-label">Keep {dialogName}</span>
+        </button>
+        <button
+          type="button"
+          class="card-modal-btn is-danger remove-dialog-button"
+          data-testid="settings-bot-remove-dialog-confirm"
+          aria-label={dialogBusy ? `Removing ${dialogName}` : dialog.error ? "Try again" : `Remove ${dialogName}`}
+          disabled={dialogBusy}
+          onclick={confirmRemoveDialog}
+        >
+          {#if dialogBusy}
+            <span class="remove-dialog-button-label">Removing {dialogName}…</span>
+          {:else if dialog.error}
+            <span class="remove-dialog-button-label">Try again</span>
+          {:else}
+            <span class="remove-dialog-button-label">Remove {dialogName}</span>
+          {/if}
+        </button>
+      </div>
     {/snippet}
   </CardModal>
 {/if}
@@ -1221,8 +1232,26 @@
     font-weight: 600;
   }
   .remove-dialog-body { display: grid; gap: 12px; }
-  .remove-dialog-button { max-width: min(208px, 100%); }
-  .remove-dialog-button-name {
+  /* One row, right-aligned. Each button caps at half the row so a long
+     name truncates inside its button instead of wrapping the pair. */
+  .remove-dialog-actions {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .remove-dialog-actions > .remove-dialog-button {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: calc((100% - 10px) / 2);
+  }
+  .remove-dialog-actions > .remove-dialog-button:disabled { opacity: 0.55; }
+  /* The action under way keeps its full red while Keep steps back. */
+  .remove-dialog-actions > .remove-dialog-button.is-danger:disabled { opacity: 1; cursor: progress; }
+  .remove-dialog-button-label {
+    display: block;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

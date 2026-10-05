@@ -62,6 +62,11 @@
     /** Which part of the wallpaper the hero shows (a CSS background-position). */
     artPosition?: string;
     /**
+     * Where the light wallpaper sits, when its subject is framed differently
+     * from the dark one. Default: `artPosition`.
+     */
+    artLightPosition?: string | null;
+    /**
      * `art` keeps the connection-card treatment. `surface` reserves artwork
      * for a cropped header and puts the dialog content on the app surface.
      */
@@ -96,6 +101,7 @@
     art,
     artLight = null,
     artPosition = "center",
+    artLightPosition = null,
     appearance = "art",
     onclose,
     busy = false,
@@ -240,7 +246,7 @@
           class="card-modal-art card-modal-art--light"
           aria-hidden="true"
           style:background-image={`url("${artLight}")`}
-          style:background-position={artPosition}
+          style:background-position={artLightPosition ?? artPosition}
         ></span>
       {/if}
       <header class="card-modal-hero">

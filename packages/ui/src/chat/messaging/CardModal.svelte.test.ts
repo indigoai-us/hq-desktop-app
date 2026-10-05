@@ -26,6 +26,8 @@ interface ModalProps {
   icon: "slack" | "tools";
   art: string;
   artPosition?: string;
+  artLight?: string | null;
+  artLightPosition?: string | null;
   appearance?: "art" | "surface";
   onclose: () => void;
   busy?: boolean;
@@ -204,6 +206,20 @@ describe("the card modal: opening and closing", () => {
     expect(art.style.backgroundImage).toContain("/art/aurora.jpg");
     expect(art.style.backgroundPosition).toBe("center 14%");
     expect(art.children).toHaveLength(0);
+  });
+
+  it("frames the light wallpaper on its own position, falling back to the dark one", () => {
+    render({ art: "/art/aurora.jpg", artLight: "/art/monoliths.jpg", artPosition: "center 42%", artLightPosition: "center top" });
+    const dark = dialog()!.querySelector<HTMLElement>(".card-modal-art--dark")!;
+    const light = dialog()!.querySelector<HTMLElement>(".card-modal-art--light")!;
+    expect(dark.style.backgroundPosition).toBe("center 42%");
+    expect(light.style.backgroundPosition).toBe("center top");
+  });
+
+  it("uses the dark wallpaper position for the light one when none is given", () => {
+    render({ art: "/art/aurora.jpg", artLight: "/art/monoliths.jpg", artPosition: "center 42%" });
+    const light = dialog()!.querySelector<HTMLElement>(".card-modal-art--light")!;
+    expect(light.style.backgroundPosition).toBe("center 42%");
   });
 
   it("can use the shared modal with an art header and a token-driven surface", () => {
