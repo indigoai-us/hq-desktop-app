@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Usage uploads now stop retrying after a bounded number of attempts, preventing persistent server errors from resending the same batch indefinitely.
+
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
