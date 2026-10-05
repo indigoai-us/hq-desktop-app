@@ -72,7 +72,7 @@
           <div class="li"><span class="fi">FILE</span><div><div>{file.name}</div><div class="mm">{file.meta}</div></div></div>
         {/each}
       {/if}
-      <div class="manage"><span>Access follows company membership.</span>{#if onmanage}<button type="button" class="link" data-testid="user-profile-manage" onclick={() => onmanage?.()}><RailIcon name="settings" />Manage access</button>{/if}</div>
+      <div class="manage"><span>Access follows company membership.</span>{#if onmanage}<button type="button" class="link" data-testid="user-profile-manage" onclick={() => onmanage?.()}><RailIcon name="sliders" />Manage access</button>{/if}</div>
     </div>
   {/if}
 </aside>

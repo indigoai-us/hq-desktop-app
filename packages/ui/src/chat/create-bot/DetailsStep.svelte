@@ -235,7 +235,7 @@
           data-testid="chat-bot-avatar-toggle"
           disabled={disabled}
           onclick={() => (avatarOpen = !avatarOpen)}
-        >
+        ><RailIcon name="pencil" />
           {avatarOpen ? "Done" : previewAvatar ? "Change" : "Choose an avatar"}
         </button>
         <span class="cb-help">{previewAvatar ? "Saved once the bot exists." : "A generated mark until you pick one."}</span>

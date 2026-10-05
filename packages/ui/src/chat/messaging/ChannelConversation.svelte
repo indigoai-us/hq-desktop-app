@@ -2257,7 +2257,7 @@
                       aria-label="Reply in thread"
                       title="Reply in thread"
                       onclick={() => openReply(msg.eventId)}
-                    >
+                    ><RailIcon name="send" />
                       Reply
                     </button>
                   {/if}
@@ -2269,7 +2269,7 @@
                       aria-label="Copy message text"
                       title="Copy message"
                       onclick={() => copyMessage(msg)}
-                    >
+                    ><RailIcon name="copy" />
                       {copiedEventId === msg.eventId ? "Copied" : "Copy"}
                     </button>
                   {/if}
@@ -2281,7 +2281,7 @@
                       aria-label="Start a session from this message"
                       title="Start session"
                       onclick={() => onstartsession(msg.eventId)}
-                    >
+                    ><RailIcon name="play" />
                       Session
                     </button>
                   {/if}

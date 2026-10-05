@@ -148,7 +148,7 @@
   </div>
   <footer class="bp-f">
     <span class="hint">Packs install into core and survive an HQ update.</span>
-    <button type="button" class="btn" data-testid="browse-packs-library" onclick={() => { onopenLibrary?.(); onclose?.(); }}>Marketplace</button>
+    <button type="button" class="btn" data-testid="browse-packs-library" onclick={() => { onopenLibrary?.(); onclose?.(); }}><RailIcon name="arrow-right" />Marketplace</button>
     <button type="button" class="btn" onclick={onclose}><RailIcon name="check" />Done</button>
   </footer>
 </div>

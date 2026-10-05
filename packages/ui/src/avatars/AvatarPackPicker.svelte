@@ -188,7 +188,7 @@
     data-testid="avatar-use-generated"
     aria-pressed={selection.kind === "generated"}
     onclick={selectGenerated}
-  >
+  ><RailIcon name="check-circle" />
     Use generated mark
   </button>
 

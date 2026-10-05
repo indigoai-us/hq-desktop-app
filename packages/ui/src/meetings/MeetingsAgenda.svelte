@@ -275,7 +275,7 @@
                 >
                   {#if openingEventIds.has(event.id)}
                     <span class="row-icon-spinner" aria-hidden="true"></span>
-                  {:else}
+                  {:else}<RailIcon name="arrow-right" />
                     Join
                   {/if}
                 </button>

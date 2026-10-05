@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import { type AdapterResult } from "./update-orchestration";
   import {
@@ -1328,7 +1329,7 @@
     {:else if notifyPrefsState.kind === "error"}
       <div class="set-row">
         <div><div class="sn">Notification settings</div><div class="sd" role="alert" data-testid="notify-prefs-error">{notifyPrefsState.message}</div></div>
-        <button type="button" class="chip quiet" onclick={() => void loadNotifyPrefs()}>Try again</button>
+        <button type="button" class="chip quiet" onclick={() => void loadNotifyPrefs()}><RailIcon name="refresh" />Try again</button>
       </div>
     {:else}
       {@const current = notifyPrefsState.prefs}
@@ -1353,7 +1354,7 @@
     {#if canTray && notifPermission && notifPermission !== "unknown" && notifPermission !== "unsupported"}
       <div class="set-row">
         <div><div class="sn">System permission</div><div class="sd">{notifPermission === "granted" ? "Your system is allowing notifications from HQ" : notifPermission === "denied" ? "Blocked by system settings — open Notification Settings to allow" : "Not enabled yet — allow to see message alerts"}{#if notifPermissionError}<div class="sd" role="alert" data-testid="settings-notification-permission-error">{notifPermissionError}</div>{/if}</div></div>
-        {#if notifPermission === "granted"}<span class="val ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
+        {#if notifPermission === "granted"}<span class="val ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}><RailIcon name="bell" />{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
       </div>
     {/if}
   {:else if section === "sync" && canSync}
@@ -1362,7 +1363,7 @@
         <div class="sn">HQ folder</div>
         <div class="sd" class:mono-path={!!formatHqFolderMeta(hqFolder)}>{formatHqFolderMeta(hqFolder) || "Not located"}</div>
       </div>
-      <button type="button" class="chip quiet" onclick={() => void chooseHqFolder()} disabled={pending("hq-folder")}>{pending("hq-folder") ? "Choosing…" : "Choose…"}</button>
+      <button type="button" class="chip quiet" onclick={() => void chooseHqFolder()} disabled={pending("hq-folder")}><RailIcon name="folder" />{pending("hq-folder") ? "Choosing…" : "Choose…"}</button>
     </div>
     <div class="set-row">
       <div>
@@ -1510,7 +1511,7 @@
             onclick={() => void openMeetingPermissionsSetup()}
             disabled={meetingPermsOpening}
             aria-busy={meetingPermsOpening}
-          >
+          ><RailIcon name="arrow-right" />
             {meetingPermsOpening ? "Opening…" : "Set up"}
           </button>
         {/if}
@@ -1619,7 +1620,7 @@
               onclick={() => void disconnectCalendar(row.accountId)}
               disabled={disconnecting}
               aria-busy={disconnecting}
-            >
+            ><RailIcon name="x" />
               {disconnecting ? "Disconnecting…" : "Disconnect"}
             </button>
           </div>
@@ -1647,7 +1648,7 @@
           onclick={() => void connectCalendars()}
           disabled={calendarConnectStarting || calendarConnectPending}
           aria-busy={calendarConnectStarting || calendarConnectPending}
-        >
+        ><RailIcon name="plug" />
           {calendarConnectPending
             ? "Waiting…"
             : calendarConnectStarting
@@ -1659,7 +1660,7 @@
           class="chip quiet"
           data-testid="settings-manage-console"
           onclick={() => void openIntegrationsConsole()}
-        >
+        ><RailIcon name="sliders" />
           Manage in console
         </button>
       </div>
@@ -1717,7 +1718,7 @@
             data-testid="settings-app-download"
             title={updateStore.installError ?? undefined}
             onclick={() => void queueDesktopUpdate()}
-          >Download &amp; install</button>
+          ><RailIcon name="download" />Download &amp; install</button>
         {:else if appRowAction.showRestart}
           <button
             type="button"
@@ -1726,7 +1727,7 @@
             disabled={!!appRestartHold}
             title={appRestartHold ? heldRestartTitle(appRestartHold) : (updateStore.installError ?? undefined)}
             onclick={() => void restartDesktopUpdate()}
-          >Restart to update</button>
+          ><RailIcon name="refresh" />Restart to update</button>
         {/if}
         <span class="val" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
       </span>
@@ -1813,7 +1814,7 @@
         onclick={() => void refreshVersions()}
         disabled={versionsRefreshing}
         aria-busy={versionsRefreshing}
-      >{versionsRefreshing ? "Checking…" : "Check for updates"}</button>
+      ><RailIcon name="refresh" />{versionsRefreshing ? "Checking…" : "Check for updates"}</button>
     </div>
   {/if}
 </div>

@@ -46,7 +46,7 @@
   <div class="fp-f">
     <span class="fp-note">{current || "Choose a folder"}</span>
     <button type="button" onclick={onclose}><RailIcon name="x" />Cancel</button>
-    <button type="button" data-testid="folder-picker-choose" disabled={!current} onclick={() => onchoose(current)}>Choose</button>
+    <button type="button" data-testid="folder-picker-choose" disabled={!current} onclick={() => onchoose(current)}><RailIcon name="check-circle" />Choose</button>
   </div>
 </div>
 

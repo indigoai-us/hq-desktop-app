@@ -2037,7 +2037,7 @@
                       onclick={handleEnableNotifications}
                       disabled={notifRequesting}
                       aria-busy={notifRequesting}
-                    >
+                    ><RailIcon name="bell" />
                       {#if notifRequesting}
                         {notifPermission === "denied"
                           ? "Opening…"
@@ -2296,7 +2296,7 @@
                           coreStateLoading ||
                           coreRefreshing ||
                           coreChannelPending}
-                      >
+                      ><RailIcon name="download" />
                         {coreChannelPending
                           ? "Saving channel…"
                           : coreStateLoading || coreRefreshing
@@ -2353,7 +2353,7 @@
                         onclick={handleInstallHqCliUpdate}
                         disabled={hqCliInstalling || hqCliChecking}
                         aria-busy={hqCliInstalling}
-                      >
+                      ><RailIcon name="download" />
                         {hqCliInstalling
                           ? "Installing…"
                           : `Update to v${hqCliUpdate.latest}`}
@@ -2612,7 +2612,7 @@
                       onclick={handleQuit}
                       disabled={quitting || signingOut}
                       aria-busy={quitting}
-                    >
+                    ><RailIcon name="logout" />
                       {quitting
                         ? "Quitting…"
                         : accountRetryAction === "quit"
@@ -2866,7 +2866,7 @@
                     onclick={handleOpenMeetingPermissionsWizard}
                     disabled={meetingPermissionsOpening}
                     aria-busy={meetingPermissionsOpening}
-                  >
+                  ><RailIcon name="sliders" />
                     {meetingPermissionsOpening ? "Opening…" : "Manage"}
                   </button>
                 </div>

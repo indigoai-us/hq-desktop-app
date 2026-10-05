@@ -13998,7 +13998,7 @@
                             data-testid="bot-message-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}
@@ -14101,7 +14101,7 @@
                         data-testid="bot-not-runnable-recheck"
                         disabled={botRecheckBusy}
                         onclick={() => void recheckSelectedBot()}
-                      >
+                      ><RailIcon name="refresh" />
                         {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                       </button>
                       {#if botAdoptError}
@@ -14136,7 +14136,7 @@
                             data-testid="local-bot-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}

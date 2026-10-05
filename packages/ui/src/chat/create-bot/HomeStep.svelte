@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Step B — Where does it run? Local (this Mac, free, the user's own
    * runtime login) or Cloud (company-hosted, always on). Local shows runtime
@@ -337,9 +338,9 @@
         >
           {footer.text}
           {#if footer.action === "signin"}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>{footer.actionLabel}</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}><RailIcon name="key" />{footer.actionLabel}</button>
           {:else if footer.action === "retry" && onrecheck}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-recheck" disabled={disabled || rechecking} onclick={() => void recheck()}>{rechecking ? "Checking…" : footer.actionLabel}</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-recheck" disabled={disabled || rechecking} onclick={() => void recheck()}><RailIcon name="refresh" />{rechecking ? "Checking…" : footer.actionLabel}</button>
           {/if}
         </p>
         {#if draftStatus.state === "notInstalled" && draftStatus.searched && draftStatus.searched.length > 0}
@@ -365,7 +366,7 @@
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
           {draftLabel} is not signed in on this {hostNoun}.
           {#if signInApi || onsignin}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}><RailIcon name="key" />Sign in</button>
           {:else}
             Sign in under Settings → AI tools, or pick another.
           {/if}

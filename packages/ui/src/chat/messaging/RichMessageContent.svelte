@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Trusted renderer for structured agent message content (stat / table /
    * chart / markdown blocks). See richMessageContent.ts for the security model:
@@ -518,7 +519,7 @@
               disabled={answered}
               data-testid="rich-decision-other"
               onclick={() => pickDecision(block, blockIndex, null)}
-            >
+            ><RailIcon name="pencil" />
               Other…
             </button>
           {/if}

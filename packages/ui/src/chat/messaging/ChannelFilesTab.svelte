@@ -453,7 +453,7 @@
                   disabled={actionPending !== null}
                   aria-busy={actionPending === "reveal"}
                   onclick={() => void runAction("reveal", onreveal)}
-                >{actionPending === "reveal" ? "Revealing…" : platformStrings().revealInFileManager}</button>
+                ><RailIcon name="folder" />{actionPending === "reveal" ? "Revealing…" : platformStrings().revealInFileManager}</button>
               {/if}
               {#if onopen}
                 <button

@@ -285,7 +285,7 @@
           data-assistant={choice.assistant}
           data-deep-link={choice.deepLink}
           onclick={() => void openAssistant(choice.assistant, choice.deepLink)}
-        >{busy ? "Opening…" : choice.buttonLabel}</button>
+        ><RailIcon name="external" />{busy ? "Opening…" : choice.buttonLabel}</button>
       {:else}
         <button
           type="button"
@@ -295,7 +295,7 @@
           data-testid={choice.tool === "claude" ? "install-choice-install-claude" : "install-choice-install-codex"}
           data-tool={choice.tool}
           onclick={() => void runInstall(choice.tool)}
-        >{
+        ><RailIcon name="download" />{
           busy && installPhase === "installing"
             ? "Installing…"
             : busy && installPhase === "installed"

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * More companies (console-rail US-005). 320 px popover on the More tile.
@@ -116,7 +117,7 @@
       {/each}
     </div>
     <div class="foot">
-      <button type="button" class="row" onclick={() => (replacing = null)}>Cancel</button>
+      <button type="button" class="row" onclick={() => (replacing = null)}><RailIcon name="x" />Cancel</button>
     </div>
   {:else}
     <div class="list" data-testid="more-companies-list">
@@ -142,7 +143,7 @@
     </div>
     <div class="foot">
       <button type="button" class="row" data-testid="more-new-company" onclick={() => onnewcompany?.()}>
-        <span class="mark" aria-hidden="true">+</span>
+        <span class="mark" aria-hidden="true"><RailIcon name="plus" /></span>
         <span class="name">New company</span>
       </button>
     </div>

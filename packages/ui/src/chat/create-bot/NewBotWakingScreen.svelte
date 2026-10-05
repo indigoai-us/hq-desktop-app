@@ -416,7 +416,7 @@
             disabled={actionBusy}
             use:focusOnMount
             onclick={() => void openApproval()}
-          >{actionBusy
+          ><RailIcon name="external" />{actionBusy
             ? "Opening..."
             : approvalOpened
               ? `Open ${brainApprovalLabel(approval.provider)} again`
@@ -478,7 +478,7 @@
 
   <!-- One way out. There is no chat to open until the bot is live; the screen
        opens it by itself at that point. -->
-  <button type="button" class="new-bot-waking-close" data-testid="new-bot-waking-close" onclick={onclose}>
+  <button type="button" class="new-bot-waking-close" data-testid="new-bot-waking-close" onclick={onclose}><RailIcon name="x" />
     {session.phase === "failed" || session.phase === "stopped" ? "Close" : approval ? "Do this later" : "Close and keep working"}
   </button>
 </section>

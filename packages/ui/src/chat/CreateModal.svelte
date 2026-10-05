@@ -2310,7 +2310,7 @@
                 onmouseenter={() => (activeIndex = item.index)}
                 onclick={() => enterCreate(query)}
               >
-                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                 <span class="create-row-name"
                   >Create channel #{findResults.createSlug}</span
                 >
@@ -2328,7 +2328,7 @@
                 onmouseenter={() => (activeIndex = item.index)}
                 onclick={() => newCompany(item.name)}
               >
-                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                 <span class="create-row-name">Create company {item.name}</span>
               </button>
             {/if}
@@ -3034,7 +3034,7 @@
                     onclick={() => pickCandidate(candidate)}
                   >
                     {#if candidate.type === "email"}
-                      <span class="create-glyph" aria-hidden="true">+</span>
+                      <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                       <span class="create-row-name">Invite {candidate.label}</span>
                     {:else}
                       <span

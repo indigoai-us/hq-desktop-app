@@ -183,7 +183,7 @@
         data-testid={`knock-accept-${knock.knockId}`}
         disabled={busy}
         onclick={() => void onaccept?.(knock)}
-      ><RailIcon name="arrow-right" />
+      ><RailIcon name="door" />
         Open the door
       </button>
       <button
@@ -243,7 +243,7 @@
             onclick={() => {
               replying = false;
             }}
-          ><RailIcon name="check" />
+          ><RailIcon name="bell" />
             Keep the knock open
           </button>
         </div>

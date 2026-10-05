@@ -437,7 +437,7 @@
               data-testid="moderation-back"
               onclick={backToList}
             >
-              ← Back to queue
+              <RailIcon name="arrow-left" />Back to queue
             </button>
 
             <h4 class="review-title">
@@ -606,7 +606,7 @@
               disabled={deciding || rejectNote.trim().length === 0}
               onclick={() => decide("reject")}
               aria-busy={deciding}
-            ><RailIcon name="x" />
+            ><RailIcon name="ban" />
               {deciding ? "Working…" : "Reject"}
             </button>
           </div>
