@@ -1241,9 +1241,12 @@ fn build_desktop_telemetry_event(
             })
             .unwrap_or(false);
     let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let is_desktop_quit = event_name == "desktop_app_quit";
     let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
     let mut properties = if is_post_ready_action {
         sanitize_post_ready_action_properties(properties)
+    } else if is_desktop_quit {
+        sanitize_desktop_quit_properties(properties)
     } else {
         sanitize_desktop_properties(properties)
     };
@@ -1808,6 +1811,23 @@ fn build_daily_active_event_with_liveness(
         }
     }
     event
+}
+
+fn sanitize_desktop_quit_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return json!({ "reason": "unknown", "days_since_setup": "unknown" });
+    };
+    let reason = match input.get("reason").and_then(Value::as_str) {
+        Some("tray_quit" | "app_menu_quit" | "os_shutdown" | "update_restart") => {
+            input["reason"].as_str().unwrap_or("unknown")
+        }
+        _ => "unknown",
+    };
+    let days_since_setup = match input.get("days_since_setup").and_then(Value::as_str) {
+        Some("0" | "1-7" | "8+") => input["days_since_setup"].as_str().unwrap_or("unknown"),
+        _ => "unknown",
+    };
+    json!({ "reason": reason, "days_since_setup": days_since_setup })
 }
 
 fn build_desktop_quit_event(
@@ -8512,6 +8532,12 @@ mod desktop_liveness_telemetry_regression_tests {
             assert_eq!(event.event_name, "desktop_app_quit");
             assert_eq!(event.properties["reason"], expected);
         }
+        let sanitized = sanitize_desktop_quit_properties(Some(json!({
+            "reason": "arbitrary-text",
+            "days_since_setup": "900",
+            "unexpected": "discard-me",
+        })));
+        assert_eq!(sanitized, json!({ "reason": "unknown", "days_since_setup": "unknown" }));
         let ages = [
             (Some(now()), "0"),
             (Some(now() - chrono::Duration::days(1)), "1-7"),
