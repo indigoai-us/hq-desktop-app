@@ -109,7 +109,8 @@
     const out: Array<{ key: string; view: ConnectionCardView }> = [];
     for (const item of items) {
       if (item.app) {
-        const view = cards.views[item.app];
+        // A built-in item that carries the bot's own state draws from it when the host says how.
+        const view = (cards.builtin ? cards.builtin(item) : null) ?? cards.views[item.app];
         if (view) out.push({ key: item.app, view });
       } else if (item.domain && cards.integration) {
         const view = cards.integration({
@@ -117,6 +118,9 @@
           ...(item.why ? { why: item.why } : {}),
           // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
           ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+          // The bot's state for the app, when its runtime sent one.
+          ...(item.state ? { state: item.state } : {}),
+          ...(item.asOf ? { asOf: item.asOf } : {}),
         });
         if (view) out.push({ key: `domain:${item.domain}`, view });
       }

@@ -20,7 +20,7 @@
  */
 
 import type { BrandMark } from "./app-brand-marks.js";
-import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
+import type { ConnectItem, ConnectItemState, ConnectTarget } from "./richMessageContent.js";
 import {
   slackCapabilityFromStatus,
   slackRowFromStatus,
@@ -646,6 +646,11 @@ export interface ConnectionCardView {
   waiting: ConnectionCardRow[];
   /** Tools: "+N more in HQ Integrations", only when the person has more than the cap. */
   moreWaiting: string | null;
+  /**
+   * The card is drawn from the state the bot sent with the item, not from a
+   * live read. A press on it reads the live state first (DesktopApp.svelte).
+   */
+  fromState?: boolean;
 }
 
 export interface ConnectionCardInput {
@@ -900,6 +905,8 @@ export interface ConnectionCardActionDetail {
   connectionId?: string;
   /** The app of an integration card's press. */
   domain?: string;
+  /** The card was drawn from the bot's state ({@link ConnectionCardView.fromState}). */
+  fromState?: boolean;
 }
 
 export type ConnectionCardActionHandler = (detail: ConnectionCardActionDetail) => void | Promise<void>;
@@ -915,7 +922,15 @@ export interface ConnectionCards {
    * The card of an app named by domain, or null when it draws none. Absent:
    * no integration cards. `connectionId` is the app's own (see `ConnectItem`).
    */
-  integration?: ((item: { domain: string; why?: string; connectionId?: string }) => ConnectionCardView | null) | null;
+  integration?:
+    | ((item: { domain: string; why?: string; connectionId?: string; state?: ConnectItemState; asOf?: string }) => ConnectionCardView | null)
+    | null;
+  /**
+   * The card of a built-in item that carries the bot's own state for it (a
+   * Slack item with `slack`), or null to use {@link views}. Absent: every
+   * built-in card comes from {@link views}.
+   */
+  builtin?: ((item: ConnectItem) => ConnectionCardView | null) | null;
   /**
    * Whether a block's row may draw yet: null means draw it. A row with apps
    * in it waits while the company's list is unknown, so no card appears and
@@ -923,7 +938,7 @@ export interface ConnectionCards {
    * the row: `integration` gives no view for it until the lookup answers,
    * and its card then joins the row. Absent: draw at once.
    */
-  rowReady?: ((items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>) => boolean) | null;
+  rowReady?: ((items: ReadonlyArray<ConnectItem>) => boolean) | null;
   /**
    * The host's order for a block's items, applied before anything is drawn
    * (a cloud bot's DM puts the bot's own Slack card first). It may add a
