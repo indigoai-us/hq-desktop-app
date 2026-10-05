@@ -17,4 +17,45 @@ describe('startDesktopMeshPresence', () => {
     requestLiveRefresh('cmp_after_stop');
     expect(refreshLive).toHaveBeenCalledTimes(1);
   });
+
+  it('logs a non-JSON reconcile body and stores no live read', async () => {
+    const error = new SyntaxError('Unexpected token < in "<html>secret-body"');
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const wakes = createChatWakeBus();
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw error;
+      },
+    }));
+    const handle = startDesktopMeshPresence({
+      wakes,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    handle.client.refreshLive('cmp_indigo');
+    await vi.waitFor(() => {
+      const meshCalls = logged.mock.calls.filter(
+        (call) => call[0] === 'mesh presence reconcile body was not JSON',
+      );
+      expect(meshCalls.length).toBeGreaterThan(0);
+      const rendered = meshCalls
+        .flat()
+        .map((value) =>
+          value instanceof Error ? `${value.name} ${value.message}` : String(value),
+        )
+        .join('\n');
+      expect(rendered).not.toContain('secret-body');
+      expect(logged).toHaveBeenCalledWith(
+        'mesh presence reconcile body was not JSON',
+        'SyntaxError',
+      );
+    });
+    // A null JSON body is not a live-read snapshot, so nothing is stored.
+    // That is the same fallback as returning null without a log.
+    expect(handle.client.getLiveReadStore().get('cmp_indigo')).toBeUndefined();
+    handle.stop();
+    logged.mockRestore();
+  });
 });

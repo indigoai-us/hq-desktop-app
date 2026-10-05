@@ -342,7 +342,10 @@ async function installActiveMeetingListeners(handleNotificationActions: boolean)
         if (!handleNotificationActions) return;
         if (action === 'record' && windowId) {
           await startRecording(windowId);
-          invoke('meetings_clear_prompt_badge').catch(() => undefined);
+          invoke('meetings_clear_prompt_badge').catch((error) => {
+            console.warn('meetings_clear_prompt_badge failed:', error);
+            return undefined;
+          });
           return;
         }
         if (action === 'open') {
@@ -354,9 +357,15 @@ async function installActiveMeetingListeners(handleNotificationActions: boolean)
           // banners are handled entirely by the Rust delegate (un_notify.rs),
           // which opens the same window directly (idempotent — no double open).
           invoke('open_desktop_alt_window', { route: 'meetings' }).catch(() => {
-            invoke('show_main_window').catch(() => undefined);
+            invoke('show_main_window').catch((error) => {
+              console.warn('show_main_window failed:', error);
+              return undefined;
+            });
           });
-          invoke('meetings_clear_prompt_badge').catch(() => undefined);
+          invoke('meetings_clear_prompt_badge').catch((error) => {
+            console.warn('meetings_clear_prompt_badge failed:', error);
+            return undefined;
+          });
         }
       },
     ),
@@ -374,7 +383,10 @@ async function installActiveMeetingListeners(handleNotificationActions: boolean)
     return () => {};
   }
   unlisteners = offs;
-  emit('meetings-window:request-snapshot').catch(() => undefined);
+  emit('meetings-window:request-snapshot').catch((error) => {
+    console.warn('meetings-window:request-snapshot failed:', error);
+    return undefined;
+  });
   return () => { if (epoch === sessionEpoch) stopActiveMeetingListeners(); };
 }
 
