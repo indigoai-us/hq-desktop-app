@@ -366,7 +366,7 @@ describe("Settings → Bots (Work shell)", () => {
     pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
     await vi.waitFor(() =>
       expect(removeDialog().querySelector('[data-testid="card-modal-status"]')?.textContent?.trim()).toBe(
-        "Couldn't remove Izzy. Check your connection and try again.",
+        "Couldn't remove Izzy. Check your connection.",
       ),
     );
     // The line names the cause; only the button says "Try again".

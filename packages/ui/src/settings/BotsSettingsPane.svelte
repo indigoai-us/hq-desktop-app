@@ -361,7 +361,7 @@
    * already reads "Try again", so the line names the cause, not the action.
    */
   function removeFailedLine(name: string): string {
-    return `Couldn't remove ${name}. Check your connection and try again.`;
+    return `Couldn't remove ${name}. Check your connection.`;
   }
 
   function closeRemoveDialog(): void {
@@ -687,7 +687,7 @@
       <div class="settings-card" data-testid="settings-bots-list">
         {#if !loading && bots.length === 0 && !loadError}
           <p class="muted empty" data-testid="settings-bots-empty">
-            No local bots yet — create one below. It takes about half a minute.
+            No local bots yet. Create one below. It takes about half a minute.
           </p>
         {/if}
         {#each visibleBots as bot (bot.name)}
@@ -929,7 +929,7 @@
               {#if bot.companyLabel}<CompanyLabel
                   name={bot.companyLabel}
                   companyUid={bot.companyUid}
-                /> · {/if}{pausedCloud.has(bot.uid)
+                />{" · "}{/if}{pausedCloud.has(bot.uid)
                 ? "Paused"
                 : cloudBotStatusLabel(bot.status, bot.phase)}
             </small>
