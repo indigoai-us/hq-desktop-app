@@ -101,6 +101,7 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - The signed-out page has one heading, Sign in to HQ, with the reason as a short line under it.
 - Restart to update works while sync is running. Only a meeting recording, a transcript that is still saving, or an HQ Core update holds a restart you asked for, and Settings › Updates and the update notice say which one. While an upload is holding the update, Restart is unavailable in both places.
 - Office Hours and the Settings profile show a plain message with Try again when they can't load or save.
+- Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.
 
 ### Other changes
 
