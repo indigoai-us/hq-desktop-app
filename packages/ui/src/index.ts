@@ -288,9 +288,11 @@ export { bindLiveRefresh, requestLiveRefresh } from "./mesh/live-refresh.js";
 export {
   buildCompanyDisplayMap,
   companyDisplayName,
+  localOnlyCompaniesFromRows,
   looksLikeCompanyUid,
   membershipRowsFrom,
   workspacesFromMembershipRows,
+  type LocalOnlyCompany,
 } from "./company/company-display-map.js";
 export * as agency from "./agency/index.js";
 export * as files from "./files/index.js";

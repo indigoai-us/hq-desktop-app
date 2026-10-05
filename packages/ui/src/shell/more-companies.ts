@@ -14,6 +14,17 @@ export interface MoreCompany {
   slug: string;
   iconUrl?: string | null;
   liveCount: number;
+  /**
+   * On this Mac only, with no cloud id. Listed so it can be found, but the
+   * shell cannot open a company without a cloud id, so the row does not
+   * switch and cannot be pinned.
+   */
+  localOnly?: boolean;
+}
+
+/** List key for a local-only company. Never used as a tenant id. */
+export function localCompanyKey(slug: string): string {
+  return `local:${slug.trim().toLowerCase()}`;
 }
 
 export interface MoreCompaniesSections {
@@ -85,6 +96,12 @@ export function moreCompaniesSections(
     if (!matches(company, query)) continue;
     matchCount += 1;
     if (!shown.has(company.uid)) all.push(company);
+  }
+  // Local-only companies sit in name order among the rest of All.
+  if (all.some((company) => company.localOnly)) {
+    all.sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+    );
   }
   return {
     pinned,
