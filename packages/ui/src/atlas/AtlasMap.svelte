@@ -5,10 +5,6 @@
    * parent view so it also works while focus sits in the inspector.
    */
   import {
-    atlasFooterLine,
-    atlasRelatedCountsLine,
-    districtLabel,
-    type AtlasDistrictType,
     type AtlasPresence,
     type AtlasRefEdge,
   } from "./atlas-model.js";
@@ -17,6 +13,7 @@
   import { ATLAS_RING_GAP, ATLAS_RING_MIN_PX, atlasStoryFraction } from "./atlas-activity.js";
   import { ATLAS_DOCK_CAP, atlasDockedChips, atlasUnplacedActors } from "./atlas-presence.js";
   import AtlasFace from "./AtlasFace.svelte";
+  import { atlasHoverContent, type AtlasHoverContent } from "./atlas-hover.js";
   import {
     ATLAS_LABEL_PX,
     atlasRelatedIds,
@@ -291,7 +288,7 @@
     chips.map((c) => ({ left: c.sx - half, top: c.sy - half, right: c.sx + half, bottom: c.sy + half })),
   );
 
-  const CARD_WIDTH = 260;
+  const CARD_WIDTH = 280;
   type HoverCard = {
     left: number;
     top: number;
@@ -304,13 +301,15 @@
     /** The hovered person or bot, drawn beside the title. */
     face?: { name: string; bot: boolean; avatarUrl?: string };
     lines: string[];
+    /** Rows for a hovered object; person and bot cards use `lines`. */
+    content?: AtlasHoverContent;
   };
   function cardAt(cx: number, cy: number, reach: number): Pick<HoverCard, "left" | "top" | "above"> {
     const width = mapWidth || 800;
     const height = mapHeight || 560;
     const left = Math.max(8, Math.min(cx - 18, width - CARD_WIDTH - 8));
     // Below the object by default; above when the lower half has no room.
-    const above = cy + reach + 150 > height;
+    const above = cy + reach + 220 > height;
     return { left, top: above ? cy - reach - 10 : cy + reach + 10, above };
   }
   const card = $derived.by((): HoverCard | null => {
@@ -339,25 +338,24 @@
       };
     }
     const node = hovered ? byId.get(hovered) : undefined;
-    if (!node) return null;
-    const counts = new Map<AtlasDistrictType, number>();
-    for (const id of related) {
-      const other = byId.get(id);
-      if (other) counts.set(other.type, (counts.get(other.type) ?? 0) + 1);
-    }
-    const here = presence.filter((p) => p.nodeId === node.id);
+    const content = hoverContent;
+    if (!node || !content || content.id !== node.id) return null;
     return {
-      ...cardAt(node.x * view.k + view.x, node.y * view.k + view.y, node.r * view.k + (here.length ? 22 : 0)),
-      kind: districtLabel(node.type).replace(/s$/, ""),
+      ...cardAt(node.x * view.k + view.x, node.y * view.k + view.y, node.r * view.k + (content.rows.people ? 22 : 0)),
+      kind: content.rows.kind,
       tint: ATLAS_TYPE_TINT[node.type],
-      title: node.label,
-      people: here.map((p) => ({ key: p.actorUid ?? p.name, name: p.name, bot: p.bot, signal: p.signal, avatarUrl: p.avatarUrl })),
-      lines: [
-        node.stories ? `${node.stories.done} of ${node.stories.total} stories done` : "",
-        atlasRelatedCountsLine([...counts].map(([type, count]) => ({ type, count }))),
-        atlasFooterLine(node, nowMs),
-      ].filter(Boolean),
+      title: content.rows.title,
+      people: [],
+      lines: [],
+      content: content.rows,
     };
+  });
+  // Object card rows, worked out once per hovered object (pan and pointer
+  // moves only reposition the card).
+  const hoverContent = $derived.by((): { id: string; rows: AtlasHoverContent } | null => {
+    const node = hovered ? byId.get(hovered) : undefined;
+    if (!node || dragging) return null;
+    return { id: node.id, rows: atlasHoverContent(node, { byId, edges, presence, nowMs }) };
   });
 
   function dimmed(id: string): boolean {
@@ -690,7 +688,35 @@
       <div class="hc-title">
         {#if card.face}<span class="hc-avatar" class:bot={card.face.bot} data-testid="atlas-hover-face"><AtlasFace name={card.face.name} bot={card.face.bot} avatarUrl={card.face.avatarUrl} size={20} /></span>{/if}{card.title}
       </div>
-      {#if card.people.length}
+      {#if card.content}
+        {@const c = card.content}
+        {#if c.people}
+          <div class="hc-row" data-testid="atlas-hover-people">
+            <span class="hc-label">{c.people.label}</span>
+            <span class="hc-faces">
+              {#each c.people.shown as who (who.key)}
+                <span class="hc-face" class:bot={who.bot} title={who.name}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={14} /></span>
+              {/each}
+              {#if c.people.more}<span class="hc-more">+{c.people.more}</span>{/if}
+            </span>
+          </div>
+        {/if}
+        {#if c.stories}
+          <div class="hc-row hc-stories" data-testid="atlas-hover-stories">
+            <span class="hc-bar" aria-hidden="true"><i style:width={`${Math.round(c.stories.fraction * 100)}%`}></i></span>
+            <span class="hc-text">{c.stories.text}</span>
+          </div>
+        {/if}
+        {#each c.links as link (link.label)}
+          <div class="hc-row" data-testid="atlas-hover-links">
+            <span class="hc-label">{link.label}</span><span class="hc-text">{link.text}</span>
+          </div>
+        {/each}
+        {#if c.counts}<div class="hc-row hc-text" data-testid="atlas-hover-counts">{c.counts}</div>{/if}
+        {#if c.folder}<div class="hc-row hc-text" data-testid="atlas-hover-folder">{c.folder}</div>{/if}
+        {#if c.activity}<div class="hc-row hc-text" data-testid="atlas-hover-activity">{c.activity}</div>{/if}
+        {#if c.hint}<div class="hc-hint">{c.hint}</div>{/if}
+      {:else if card.people.length}
         <div class="hc-people">
           {#each card.people as who (who.key)}
             <div class="hc-who">
@@ -1078,7 +1104,53 @@
   }
   .hc-title {
     font-weight: 500;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Object rows: spacing only, one line each, long text cut with an ellipsis. */
+  .hc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin-top: 6px;
+  }
+  .hc-label {
+    flex: none;
+    color: var(--v4-text-3);
+  }
+  .hc-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--v4-text-2, var(--v4-text-3));
+  }
+  .hc-faces {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-width: 0;
+  }
+  .hc-more {
+    color: var(--v4-text-3);
+    margin-left: 2px;
+  }
+  .hc-bar {
+    flex: 0 0 72px;
+    height: 3px;
+    background: var(--v4-rowline);
+  }
+  .hc-bar i {
+    display: block;
+    height: 100%;
+    background: var(--v4-text-2, var(--v4-text-1));
+  }
+  .hc-hint {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--v4-text-3);
   }
   .hc-people {
     margin-top: 8px;
