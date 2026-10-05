@@ -156,6 +156,15 @@ pub fn classify_launch(app: &AppHandle) -> LaunchKind {
         // first-run write against an unknown settings location.
         Err(_) => LaunchKind::Normal,
     };
+    // Mint and persist the stable join key before onboarding can emit setup or
+    // sign-in telemetry. Receipt builders still read the same store, so this
+    // does not change the event contract or create another identity source.
+    if install_attempt_id().is_none() {
+        log(
+            "first-run",
+            "install attempt ID unavailable before onboarding telemetry",
+        );
+    }
     app.manage(LaunchKindState(kind));
     kind
 }

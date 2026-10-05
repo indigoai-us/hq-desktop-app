@@ -4025,6 +4025,81 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn first_run_attempt_id_is_persisted_before_setup_telemetry_and_reused() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        let app = tauri::test::mock_app();
+        assert_eq!(
+            crate::commands::first_run::classify_launch(&app.handle().clone()),
+            crate::commands::first_run::LaunchKind::FirstRun
+        );
+
+        let menubar_path = home.path().join(".hq/menubar.json");
+        let stored: Value = serde_json::from_slice(
+            &fs::read(&menubar_path).expect("launch classification persists first-run settings"),
+        )
+        .expect("persisted menubar settings are JSON");
+        let attempt_id = stored["installAttemptId"]
+            .as_str()
+            .expect("first-run initialization persists an attempt ID")
+            .to_string();
+        uuid::Uuid::parse_str(&attempt_id).expect("attempt ID is a UUID");
+
+        let step = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(step).unwrap()["installAttemptId"],
+            attempt_id
+        );
+
+        let event = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 6})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(event).unwrap()["installAttemptId"],
+            attempt_id
+        );
+        assert_eq!(
+            crate::commands::first_run::install_attempt_id().as_deref(),
+            Some(attempt_id.as_str()),
+            "later setup events reuse the ID persisted during first-run classification"
+        );
+
+        drop(_home);
+        let existing_home = setup_home();
+        write_menubar(
+            existing_home.path(),
+            r#"{"installAttemptId":"11111111-1111-4111-8111-111111111111"}"#,
+        );
+        let _existing_home_scope = scoped_home(existing_home.path());
+        let existing_app = tauri::test::mock_app();
+        crate::commands::first_run::classify_launch(&existing_app.handle().clone());
+        let existing_event = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 6})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(existing_event).unwrap()["installAttemptId"],
+            "11111111-1111-4111-8111-111111111111",
+            "an existing attempt ID is reused rather than replaced"
+        );
+    }
+
+    #[test]
     fn connector_import_outcome_and_source_set_are_closed_at_the_native_boundary() {
         let event = build_desktop_telemetry_event(
             "desktop_onboarding_step".to_string(),
