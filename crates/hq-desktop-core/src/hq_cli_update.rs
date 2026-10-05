@@ -5924,6 +5924,10 @@ pub enum InstallFailureKind {
     ExpectedDiskFull,
     UnexpectedLifecycle,
     Unexpected,
+    /// A known native Node crash from HQ's managed runtime while the Node ABI
+    /// and npm version probes both failed. HQ can repair that managed toolchain
+    /// and retry once, so this remains an actionable install failure.
+    NativeCrash,
     /// The user's PATH Node is older than [`MIN_NODE_MAJOR`], so the published
     /// CLI (whose own `engines.node` rules it out) can never install and npm dies
     /// before emitting its structured error block. A permanent per-machine
@@ -6146,6 +6150,19 @@ pub fn classify_install_failure_with_environment(
         final_attempt_forced,
     );
     if base == InstallFailureKind::Unexpected
+        && env.toolchain_source == NpmToolchainSource::Managed
+        && env.node_abi.is_none()
+        && env.npm_version.is_none()
+        && is_windows_native_crash_status(exit_code)
+        && node_crash_kind(exit_code, detail).kind != NodeCrashKind::None
+    {
+        // HQ-DESKTOP-56: a managed Node access violation with failed runtime
+        // probes is evidence that HQ's own extracted toolchain is broken. Keep
+        // the event reportable under a closed crash tag and let the app use its
+        // existing bounded managed repair and one-shot retry path.
+        return InstallFailureKind::NativeCrash;
+    }
+    if base == InstallFailureKind::Unexpected
         && !env.registry_serving_lag_recurred
         && is_npmjs_pinned_tarball_not_yet_served(detail, env)
     {
@@ -6183,6 +6200,7 @@ impl InstallFailureKind {
             Self::ExpectedDiskFull => "expected-disk-full",
             Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
+            Self::NativeCrash => "native_crash",
             Self::UnsupportedNode => "unsupported-node",
             Self::MissingGlobalInstallTarget => "missing-global-install-target",
             Self::ForeignRegistryPackageMissing => "foreign-registry-404",
@@ -6342,6 +6360,16 @@ fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassificat
         NodeCrashKind::Abort
     };
     NodeCrashClassification { kind, evidence }
+}
+
+/// Windows NTSTATUS crash exits that the existing Node crash classifier knows
+/// how to attribute. POSIX signal exits stay on their existing classification
+/// path and do not trigger a Windows-only forced replacement.
+fn is_windows_native_crash_status(exit_code: Option<i32>) -> bool {
+    matches!(
+        exit_code,
+        Some(-2_147_483_645 | -1_073_741_819 | -1_073_740_791)
+    )
 }
 
 /// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
@@ -6561,6 +6589,9 @@ fn install_failure_signature_with_environment(
             .unwrap_or_else(|| "unknown".to_string());
         return format!("unsupported-node:{major}");
     }
+    if kind == InstallFailureKind::NativeCrash {
+        return "native-crash".to_string();
+    }
     // A NON-EMPTY markerless `Unexpected` failure (HQ-DESKTOP-56 reopen): npm
     // structured nothing, so the env-blind signature would collapse to the empty
     // `none:unknown:none` bucket where unrelated causes merged into one permanently
@@ -6588,7 +6619,9 @@ fn install_failure_signature_with_exit_code(
     env: &InstallEnvironment,
 ) -> String {
     let crash = node_crash_kind(exit_code, detail);
-    if kind == InstallFailureKind::Unexpected && crash.kind != NodeCrashKind::None {
+    if matches!(kind, InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash)
+        && crash.kind != NodeCrashKind::None
+    {
         return format!("node-crash:{}", crash.kind.tag_value());
     }
     install_failure_signature_with_environment(kind, detail, prefix, env)
@@ -6689,6 +6722,9 @@ pub fn install_failure_detail_with_environment(
         // keeps the "copied command" escape hatch every other arm keeps.
         return "hq could not update because this computer's npm is set to use a package registry that does not carry hq. Point npm at the public npm registry for the @indigoai-us scope (or reconnect to your company VPN if it uses an internal mirror), then run the copied command in a terminal.".to_string();
     }
+    if kind == InstallFailureKind::NativeCrash && detail.trim().is_empty() {
+        return "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails.".to_string();
+    }
     if npm_lifecycle_failure(detail).failed {
         // Cause-specific, actionable wording. Every branch keeps the copyable
         // command escape hatch ("copied command") so the UI fallback is intact
@@ -6728,6 +6764,7 @@ pub fn install_failure_detail_with_environment(
         // Unreachable in practice — `ExpectedDiskFull` returns early above,
         // before the empty-stderr fallback — but the match must stay exhaustive.
         InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
+        InstallFailureKind::NativeCrash => "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails.".to_string(),
         // `UnsupportedNode`, `MissingGlobalInstallTarget`, and
         // `ForeignRegistryPackageMissing` return their actionable copy early above;
         // these arms keep the match exhaustive without ever being reached for them.
@@ -6812,6 +6849,7 @@ pub fn install_failure_report_with_environment(
             return Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
         }
         InstallFailureKind::Unexpected
+        | InstallFailureKind::NativeCrash
         | InstallFailureKind::UnexpectedLifecycle
         | InstallFailureKind::UnsupportedNode
         | InstallFailureKind::WindowsLockedInstallTarget
@@ -6897,15 +6935,18 @@ pub enum ManagedRetryOutcome {
     /// still could not be resolved on disk — so no retry ran.
     NoManagedNpm,
     /// Armed, but the shared Node repair slot was claimed too recently
-    /// (cooldown deferral) AND no already-present managed npm was available to fall
-    /// back on. A deferral is NOT evidence a managed toolchain is absent, so this is
-    /// only reached when the managed npm is genuinely missing.
+    /// (cooldown deferral), so no repair-dependent retry ran. Ordinary user-path
+    /// recovery may still use an existing managed npm; a managed-crash retry does
+    /// not reuse the runtime that just crashed.
     ProvisionDeferred,
-    /// Armed, but a fresh managed-Node provision failed AND no already-present
-    /// managed npm was available to fall back on.
+    /// Armed, but a fresh managed-Node provision failed, so no repair-dependent
+    /// retry ran. Ordinary user-path recovery may still use an existing managed npm.
     ProvisionFailed,
     /// Armed and a managed npm resolved, but npm itself could not be spawned.
     SpawnFailed,
+    /// The managed runtime was repaired, but the retry could not safely write
+    /// into a user-owned CLI prefix because its Node ABI was unknown or different.
+    UnsafeUserTarget,
 }
 
 impl ManagedRetryOutcome {
@@ -6917,6 +6958,7 @@ impl ManagedRetryOutcome {
             Self::ProvisionDeferred => "provision-deferred",
             Self::ProvisionFailed => "provision-failed",
             Self::SpawnFailed => "spawn-failed",
+            Self::UnsafeUserTarget => "unsafe-user-target",
         }
     }
 }
@@ -7697,6 +7739,26 @@ pub fn managed_retry_start_decision(
     }
 }
 
+/// START decision for repairing a managed toolchain that just suffered a known
+/// native crash. Unlike a retry from the user's PATH, a deferred or failed repair
+/// must not fall back to the same managed runtime that crashed.
+pub fn managed_crash_retry_start_decision(
+    disposition: ManagedRepairDisposition,
+    resolved_managed: Option<(String, String, String)>,
+) -> ManagedRetryStart {
+    match disposition {
+        ManagedRepairDisposition::Repaired => {
+            managed_retry_start_decision(disposition, resolved_managed)
+        }
+        ManagedRepairDisposition::Deferred => {
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionDeferred)
+        }
+        ManagedRepairDisposition::Failed => {
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionFailed)
+        }
+    }
+}
+
 /// Toolchain provenance for a failed hq-CLI install — the evidence the reported
 /// HQ-DESKTOP-4R / HQ-DESKTOP-4S events lacked. Every version field is optional
 /// because the updater probes them best-effort; a missing or malformed value is
@@ -7991,7 +8053,10 @@ pub fn report_install_failure_with_environment(
     // `Some` only for the attributed subclass, so every other event's tags and the
     // diagnostics extra stay byte-identical to today.
     let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
-    let crash_kind = if kind == InstallFailureKind::Unexpected {
+    let crash_kind = if matches!(
+        kind,
+        InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash
+    ) {
         node_crash_kind(exit_code, detail)
     } else {
         NodeCrashClassification::NONE
@@ -8371,7 +8436,10 @@ pub fn install_failure_episode_key_with_environment(
             key
         });
     }
-    if kind == InstallFailureKind::Unexpected {
+    if matches!(
+        kind,
+        InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash
+    ) {
         // A genuinely unexpected install failure with a DISCRIMINATING shape recurs
         // identically on every 6-hourly check — the HQ-DESKTOP-5B ENOTEMPTY wedge is
         // the archetype: its debris survives (root-owned or locked) so the same
@@ -17813,6 +17881,33 @@ mod tests {
     }
 
     #[test]
+    fn managed_crash_retry_requires_a_successful_fresh_repair() {
+        let triple = Some((
+            "/managed/bin/npm".to_string(),
+            "/managed/bin:/usr/bin".to_string(),
+            "/managed/npm-global".to_string(),
+        ));
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Repaired, triple.clone()),
+            ManagedRetryStart::Proceed {
+                npm: "/managed/bin/npm".to_string(),
+                path: "/managed/bin:/usr/bin".to_string(),
+                prefix: "/managed/npm-global".to_string(),
+            }
+        );
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Deferred, triple.clone()),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionDeferred),
+            "do not retry the same managed runtime while its repair is deferred"
+        );
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Failed, triple),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionFailed),
+            "do not retry the same managed runtime after repair fails"
+        );
+    }
+
+    #[test]
     fn managed_retry_declines_only_when_no_managed_npm_resolves_naming_the_disposition() {
         // With no managed npm on disk, the retry declines — and names WHICH
         // disposition left it absent, so the next occurrence is self-diagnosing
@@ -17840,6 +17935,7 @@ mod tests {
             (ManagedRetryOutcome::ProvisionDeferred, "provision-deferred"),
             (ManagedRetryOutcome::ProvisionFailed, "provision-failed"),
             (ManagedRetryOutcome::SpawnFailed, "spawn-failed"),
+            (ManagedRetryOutcome::UnsafeUserTarget, "unsafe-user-target"),
         ] {
             assert_eq!(outcome.tag_value(), expected);
         }
@@ -19338,6 +19434,118 @@ mod tests {
         assert_eq!(
             node_crash_kind(None, "FATAL ERROR: failure").kind.tag_value(),
             "none"
+        );
+    }
+
+    #[test]
+    fn managed_access_violation_with_failed_version_probes_is_attributed_and_reported() {
+        let env = InstallEnvironment {
+            node_version: Some("v22.12.0".to_string()),
+            node_abi: None,
+            npm_version: None,
+            toolchain_source: NpmToolchainSource::Managed,
+            ..InstallEnvironment::default()
+        };
+        let kind = classify_install_failure_with_environment(
+            Some(-1_073_741_819),
+            "",
+            None,
+            false,
+            &env,
+        );
+        assert_eq!(kind, InstallFailureKind::NativeCrash);
+        assert_eq!(kind.fingerprint_component(), "native_crash");
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            ),
+            Some("[hq-cli-update] install failed (node-crash:access_violation)".to_string())
+        );
+        assert_eq!(
+            install_failure_detail_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            ),
+            "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails."
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                "5.343.0",
+                &env,
+            ),
+            Some("5.343.0|node-crash|access_violation".to_string())
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            report_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            );
+        });
+        assert_eq!(events.len(), 1, "the native crash remains reportable");
+        assert_eq!(events[0].tags["install_failure_kind"], "native_crash");
+        assert_eq!(events[0].tags["node_crash_kind"], "access_violation");
+
+        let user_path = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..env.clone()
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &user_path,
+            ),
+            InstallFailureKind::Unexpected,
+            "only a crash of HQ's managed toolchain uses this refinement"
+        );
+        let healthy_probes = InstallEnvironment {
+            node_abi: Some("127".to_string()),
+            npm_version: Some("10.9.2".to_string()),
+            ..env
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &healthy_probes,
+            ),
+            InstallFailureKind::Unexpected,
+            "successful ABI and npm probes do not imply a corrupt managed toolchain"
+        );
+        let posix_abort = InstallEnvironment {
+            node_abi: None,
+            npm_version: None,
+            ..healthy_probes
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(134),
+                "",
+                None,
+                false,
+                &posix_abort,
+            ),
+            InstallFailureKind::Unexpected,
+            "POSIX signal-style exits do not use the Windows forced-repair classification"
         );
     }
 

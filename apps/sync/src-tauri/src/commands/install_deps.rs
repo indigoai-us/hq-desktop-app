@@ -1746,6 +1746,18 @@ where
     node_exe.is_file() && version_ok(node_exe)
 }
 
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn managed_node_should_be_reused<F>(
+    replace_existing: bool,
+    node_exe: &Path,
+    version_ok: F,
+) -> bool
+where
+    F: FnOnce(&Path) -> bool,
+{
+    !replace_existing && managed_node_already_usable(node_exe, version_ok)
+}
+
 /// Name+age predicate for the stale-sibling sweep, split out so it is tested
 /// without depending on filesystem mtime timing. A `.node.bak.*` or
 /// `.node-install-*` entry is swept only when it is at least `min_age` old, so a
@@ -4182,7 +4194,25 @@ pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String
     }
     #[cfg(windows)]
     {
-        install_node_windows(app).await
+        install_node_windows(app, false).await
+    }
+}
+
+/// Provision managed Node as part of the bounded repair flow. Native crashes
+/// request replacement of the existing Windows runtime because `--version`
+/// alone does not prove that the ABI and npm probes can run.
+pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = replace_existing;
+        install_node_macos(app).await
+    }
+    #[cfg(windows)]
+    {
+        install_node_windows(app, replace_existing).await
     }
 }
 
@@ -5546,7 +5576,10 @@ async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+async fn install_node_windows<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     // Node is a hard prerequisite for qmd and hq-cli, so its installer must be
     // deterministic. Package-manager exit codes do not prove that node/npm/npx
     // landed or are runnable in this process (and managed enterprise machines
@@ -5555,7 +5588,7 @@ async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<St
     // all three executables, runs `node --version`, then atomically activates
     // the toolchain directory.
     emit_progress(&app, "Installing HQ's verified Node.js runtime...");
-    install_managed_node(&app).await
+    install_managed_node(&app, replace_existing).await
 }
 
 #[cfg(windows)]
@@ -5701,7 +5734,10 @@ fn ensure_node_version(node_exe: &Path, expected_version: &str) -> Result<(), St
 }
 
 #[cfg(windows)]
-async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+async fn install_managed_node<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     let arch = managed_node_arch().ok_or_else(|| {
         format!(
             "Unsupported architecture for managed Node fallback: {}",
@@ -5747,7 +5783,9 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     // two processes). Accept it rather than fight an open-handle swap, but only
     // if it passes the SAME version check the staged tree did.
     let node_exe = node_dir.join("node.exe");
-    if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+    if managed_node_should_be_reused(replace_existing, &node_exe, |exe| {
+        ensure_node_version(exe, version).is_ok()
+    }) {
         let _ = std::fs::remove_dir_all(&staged_node_dir);
         append_user_path(&node_dir)?;
         append_user_path(&managed_npm_bin())?;
@@ -5760,7 +5798,9 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
         // rename collided with a now-present destination. Re-check with the SAME
         // version validation before reporting failure and paging — a correctly
         // versioned live Node is success, not a repair failure (Codex review).
-        if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+        if managed_node_should_be_reused(replace_existing, &node_exe, |exe| {
+            ensure_node_version(exe, version).is_ok()
+        }) {
             append_user_path(&node_dir)?;
             append_user_path(&managed_npm_bin())?;
             return Ok(format!("Managed Node already present at {node_dir:?}"));
@@ -10494,6 +10534,20 @@ mod atomic_swap_tests {
         assert!(managed_node_already_usable(&node_exe, |_| true));
         // Present but wrong/corrupt version -> do NOT wave it through.
         assert!(!managed_node_already_usable(&node_exe, |_| false));
+    }
+
+    #[test]
+    fn native_crash_repair_replaces_an_existing_versioned_node() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        std::fs::write(&node_exe, b"binary").unwrap();
+
+        assert!(managed_node_should_be_reused(false, &node_exe, |_| true));
+        assert!(!managed_node_should_be_reused(false, &node_exe, |_| false));
+        assert!(
+            !managed_node_should_be_reused(true, &node_exe, |_| true),
+            "native-crash repair must not trust --version alone on the old runtime"
+        );
     }
 
     #[test]

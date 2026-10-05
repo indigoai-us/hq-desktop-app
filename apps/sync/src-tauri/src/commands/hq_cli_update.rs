@@ -98,7 +98,8 @@ pub use hq_desktop_core::hq_cli_update::{
     is_cli_update_dismissed, is_missing_global_install_target, is_npm_bin_collision,
     is_pnpm_global_shim, is_prefix_permission_failure, is_windows_locked_binary_failure,
     is_windows_locked_install_target_failure, launch_cli_check, launch_cli_check_with_floor,
-    legacy_marker_needs_recovery, managed_retry_start_decision, managed_retry_user_copy_detail,
+    legacy_marker_needs_recovery, managed_crash_retry_start_decision,
+    managed_retry_start_decision, managed_retry_user_copy_detail,
     managed_retry_user_prefix_aim, non_convergent_cli_contract, non_convergent_cli_version,
     non_convergent_detail, non_convergent_episode_blocked, non_convergent_episode_key,
     non_convergent_episode_record, non_convergent_episode_reported, npm_install_attempt_summary,
@@ -3134,20 +3135,14 @@ async fn install_hq_cli_update_once(
             &install_env,
         );
 
-        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). Three shapes
-        // under the user's OWN Node are ones HQ can repair itself by provisioning
-        // its checksum-verified managed Node 22: (1) a third-party native-build
-        // lifecycle failure (better-sqlite3 / node-llama-cpp) whose ABI has no
-        // prebuild and no Xcode CLT to build from source, (2) a Node older than
-        // the CLI's floor, on which no install can ever converge, and (3) the
-        // HQ-DESKTOP-56 reopen — a markerless failure whose stderr carried NO npm
-        // line at all (`non-npm` origin), so the user's npm/shim never really ran and
-        // HQ's managed npm bypasses it. Only user-path runs whose failing ABI differs
-        // from HQ's managed one arm the bounded, one-shot managed-toolchain retry (so
-        // a run already on the managed toolchain never retries into itself, and a
-        // disk-space/network lifecycle cause is refused); every other kind/cause keeps
-        // today's behaviour. HQ blames the user's toolchain (the copy below) only AFTER
-        // its own repair was attempted and could not converge.
+        // Self-heal (HQ-DESKTOP-4V / HQ-DESKTOP-4W and HQ-DESKTOP-56). User-path
+        // failures arm the bounded, one-shot managed-runtime retry only when the
+        // managed runtime can repair them: a third-party native-build lifecycle
+        // failure, a Node version below the CLI floor, a markerless non-npm failure,
+        // or a missing global install target. Disk-space and network lifecycle
+        // failures remain excluded. A known native crash of HQ's managed Node is the
+        // separate case: repair that runtime, then retry only if the fresh repair
+        // succeeds. Every other kind/cause keeps today's behaviour.
         let mut managed_retry_lease_timed_out = false;
         if install_failure_earns_managed_retry(
             failure_kind,
@@ -3166,6 +3161,7 @@ async fn install_hq_cli_update_once(
                 ordinary_user_aim.as_ref(),
                 failing_node_abi,
                 retry_attempt,
+                failure_kind == InstallFailureKind::NativeCrash,
             )
             .await
             {
@@ -3279,7 +3275,7 @@ async fn install_hq_cli_update_once(
 ///     probe could not read it) is treated as "not the managed ABI", so the
 ///     reported Node-20 (ABI 115) and Node-6 (ABI 48) clusters still arm.
 ///
-/// ...plus ONE of four repairable failure shapes:
+/// ...plus ONE of five repairable failure shapes:
 ///   * Shape 1 (HQ-DESKTOP-4V/4W) — a third-party native-build lifecycle failure
 ///     (`UnexpectedLifecycle`) whose `cause` a new runtime can fix. A full disk
 ///     (`disk-space`) or a dead network (`network`) would only waste a ~50MB Node
@@ -3306,6 +3302,10 @@ async fn install_hq_cli_update_once(
 ///     `None` otherwise; an `npm-logger` origin (npm ran and reported) and an empty
 ///     stderr both decline — a new runtime is unlikely to help and would spend the
 ///     ~50MB download.
+///   * Shape 5 (HQ-DESKTOP-56 Windows native crash) — the managed Node process
+///     terminated with a known crash status while both ABI and npm version probes
+///     failed. This arms repair only for `Managed`; retry proceeds only after a
+///     fresh managed-runtime repair succeeds.
 fn install_failure_earns_managed_retry(
     kind: InstallFailureKind,
     source: NpmToolchainSource,
@@ -3313,9 +3313,11 @@ fn install_failure_earns_managed_retry(
     failing_node_abi: Option<u32>,
     unattributed_origin: Option<&str>,
 ) -> bool {
-    // Only the user's OWN toolchain is ever worth replacing with HQ's managed one;
-    // a run already under the managed toolchain cannot be improved by installing it
-    // again. Shared by all four repairable shapes.
+    let broken_managed_toolchain =
+        kind == InstallFailureKind::NativeCrash && source == NpmToolchainSource::Managed;
+    // User-path failures may move to HQ's managed toolchain. The separate
+    // `broken_managed_toolchain` case repairs HQ's own managed install, but its
+    // retry is allowed only after a fresh repair succeeds.
     let is_user_path = source == NpmToolchainSource::UserPath;
     // Shapes 1, 2 & 4 ADDITIONALLY require a runtime whose ABI differs from HQ's
     // managed one: a lifecycle/prebuild fault, a too-old runtime, or a markerless
@@ -3353,6 +3355,7 @@ fn install_failure_earns_managed_retry(
     // repairable shapes, so it correctly earns no retry; a unit test locks it.
     (repairable_runtime && (repairable_lifecycle || unsupported_node || unattributed_non_npm))
         || (is_user_path && missing_global_install_target)
+        || broken_managed_toolchain
 }
 
 /// Pure selection of the ordinary install prefix from the RUNTIME of the resolved
@@ -4260,8 +4263,12 @@ async fn recover_unreadable_version_once(
 /// meet in one invocation: a first install that provisions and then still fails
 /// finds the retry's own request Skipped, so at most one provision actually
 /// happens per run.
-async fn request_managed_node_repair(app: &AppHandle) -> ToolchainRepair {
-    crate::commands::sync::repair_managed_node(app).await
+async fn request_managed_node_repair(app: &AppHandle, replace_existing: bool) -> ToolchainRepair {
+    if replace_existing {
+        crate::commands::sync::repair_managed_node_after_native_crash(app).await
+    } else {
+        crate::commands::sync::repair_managed_node(app).await
+    }
 }
 
 /// Provision HQ's managed Node so a first install has an npm to run — and one
@@ -4573,17 +4580,9 @@ enum ManagedRetryAttempt {
 /// user installation. Exactly one provision attempt and one re-run: there is no
 /// loop.
 ///
-/// The HQ-DESKTOP-5E fix lives in the START decision. `repair_managed_node` reports
-/// whether a FRESH provision happened, NOT whether a managed toolchain EXISTS: its
-/// slot is a process-global single-flight shared with the sync/daemon/Connect lanes,
-/// so a cooldown `Skipped` or a `Failed` disposition can occur on a machine that
-/// already has HQ's managed Node installed and usable. The old code returned "no
-/// retry" on `Skipped`/`Failed` before ever consulting the managed npm — abandoning
-/// the one-shot retry, then blaming the user's toolchain in the UI for a repair it
-/// never attempted. [`managed_retry_start_decision`] (pure, in hq-desktop-core,
-/// tested on every platform) now PROCEEDS whenever a managed npm resolves, regardless
-/// of the disposition, and declines only when none is resolvable — naming which
-/// disposition left it absent.
+/// Ordinary user-path recovery can use an already-present managed Node after a
+/// deferred or failed fresh provision. A classified crash of HQ's own managed Node
+/// uses the stricter core decision and retries only after a fresh repair succeeds.
 async fn managed_toolchain_retry(
     app: &AppHandle,
     hq: &str,
@@ -4594,13 +4593,17 @@ async fn managed_toolchain_retry(
     executed_user_aim: Option<&UserPrefixAim>,
     executed_node_abi: Option<u32>,
     lease_retry_attempt: u8,
+    require_fresh_repair: bool,
 ) -> ManagedRetryAttempt {
     // A known user-owned target with an unknown or different Node ABI cannot be
     // fixed by installing HQ's managed-runtime build elsewhere: that leaves the
     // user's command stale, and making the managed copy win would silently take
     // over their deliberate install. The ordinary attempt already used this copy's
     // own npm; if it failed, only the user can repair that distinct runtime.
-    if executed_user_aim.is_some() && executed_node_abi != Some(MANAGED_NODE_ABI) {
+    if !require_fresh_repair
+        && executed_user_aim.is_some()
+        && executed_node_abi != Some(MANAGED_NODE_ABI)
+    {
         log(
             "hq-cli-update",
             "managed retry declined: the executed user CLI has an incompatible or unreadable Node ABI",
@@ -4611,7 +4614,7 @@ async fn managed_toolchain_retry(
     // Provision through the shared seam, then reduce its outcome to the disposition
     // the START decision turns on. A Failed provision still logs its reason (used
     // nowhere else) before being collapsed.
-    let disposition = match request_managed_node_repair(app).await {
+    let disposition = match request_managed_node_repair(app, require_fresh_repair).await {
         ToolchainRepair::Repaired => ManagedRepairDisposition::Repaired,
         ToolchainRepair::Skipped => ManagedRepairDisposition::Deferred,
         ToolchainRepair::Failed(reason) => {
@@ -4623,25 +4626,42 @@ async fn managed_toolchain_retry(
         }
     };
 
-    // Consult the managed npm REGARDLESS of the disposition — a cooldown deferral or
-    // a failed fresh provision is not evidence the managed toolchain is absent
-    // (`install_node_macos` is idempotent and returns Ok when it already exists). The
-    // pure decision proceeds whenever a managed npm resolves, and names which
-    // disposition left it absent otherwise.
+    // For ordinary user-path recovery, a managed npm can still be usable when a
+    // fresh provision was deferred or failed. For a known crash of HQ's managed
+    // Node, the stricter decision declines unless this call completed a fresh repair.
+    let retry_start = if require_fresh_repair {
+        managed_crash_retry_start_decision(disposition, managed_toolchain_npm_and_path())
+    } else {
+        managed_retry_start_decision(disposition, managed_toolchain_npm_and_path())
+    };
     let (managed_npm, managed_path, managed_prefix) =
-        match managed_retry_start_decision(disposition, managed_toolchain_npm_and_path()) {
+        match retry_start {
             ManagedRetryStart::Proceed { npm, path, prefix } => (npm, path, prefix),
             ManagedRetryStart::Decline(outcome) => {
                 log(
                     "hq-cli-update",
                     &format!(
-                        "managed-toolchain retry declined ({}) — reporting the user-path failure",
+                        "managed-toolchain retry declined ({}) — reporting the original install failure",
                         outcome.tag_value()
                     ),
                 );
                 return ManagedRetryAttempt::Declined(outcome);
             }
         };
+
+    // A managed crash can repair HQ's own runtime even when the install target is
+    // a user-owned hq copy. After repair, do not install into that copy unless its
+    // Node ABI is known to match the managed runtime.
+    if require_fresh_repair
+        && executed_user_aim.is_some()
+        && executed_node_abi != Some(MANAGED_NODE_ABI)
+    {
+        log(
+            "hq-cli-update",
+            "managed runtime repaired, but retry declined because the executed user CLI has an incompatible or unreadable Node ABI",
+        );
+        return ManagedRetryAttempt::Declined(ManagedRetryOutcome::UnsafeUserTarget);
+    }
 
     // The ordinary path can already aim directly at a verified nvm-owned hq. If
     // that first attempt failed, retrying HQ's managed npm into its OWN prefix can
@@ -5255,6 +5275,31 @@ console.log('ready'); setInterval(() => {}, 1000);
             },
         );
         assert_eq!(version.as_deref(), Some("5.335.0"));
+    }
+
+    #[test]
+    fn managed_native_crash_arms_a_repair_only_for_the_managed_toolchain() {
+        assert!(install_failure_earns_managed_retry(
+            InstallFailureKind::NativeCrash,
+            NpmToolchainSource::Managed,
+            "unknown",
+            None,
+            None,
+        ));
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::NativeCrash,
+            NpmToolchainSource::UserPath,
+            "unknown",
+            None,
+            None,
+        ));
+        assert!(!install_failure_earns_managed_retry(
+            InstallFailureKind::Unexpected,
+            NpmToolchainSource::Managed,
+            "unknown",
+            None,
+            None,
+        ));
     }
 
     #[test]

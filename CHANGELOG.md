@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+- Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 
 ## [0.10.393] — 2026-10-05
 
