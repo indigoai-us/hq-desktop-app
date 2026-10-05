@@ -1719,6 +1719,12 @@ impl DesktopQuitReason {
 
 static DESKTOP_QUIT_REASON: AtomicU8 = AtomicU8::new(0);
 
+const LIVENESS_FLAG_UNKNOWN: u8 = 0;
+const LIVENESS_FLAG_RESOLVING: u8 = 1;
+const LIVENESS_FLAG_OFF: u8 = 2;
+const LIVENESS_FLAG_ON: u8 = 3;
+static LIVENESS_FLAG_CACHE: AtomicU8 = AtomicU8::new(LIVENESS_FLAG_UNKNOWN);
+
 pub fn note_desktop_quit_reason(reason: DesktopQuitReason) {
     let value = match reason {
         DesktopQuitReason::Unknown => 0,
@@ -1861,11 +1867,57 @@ fn liveness_flag_is_enabled(read: Result<Option<bool>, ()>) -> bool {
     matches!(read, Ok(Some(true)))
 }
 
+fn liveness_flag_cache_value(read: Result<Option<bool>, ()>) -> u8 {
+    if liveness_flag_is_enabled(read) {
+        LIVENESS_FLAG_ON
+    } else {
+        LIVENESS_FLAG_OFF
+    }
+}
+
+async fn resolve_liveness_flag_once_with<F, Fut>(cache: &AtomicU8, read: F) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<bool>, ()>>,
+{
+    match cache.compare_exchange(
+        LIVENESS_FLAG_UNKNOWN,
+        LIVENESS_FLAG_RESOLVING,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            let value = liveness_flag_cache_value(read().await);
+            cache.store(value, Ordering::Release);
+            value == LIVENESS_FLAG_ON
+        }
+        Err(state) => state == LIVENESS_FLAG_ON,
+    }
+}
+
 fn daily_active_liveness_context(
-    read: Result<Option<bool>, ()>,
+    enabled: bool,
     context: DesktopLivenessContext,
 ) -> Option<DesktopLivenessContext> {
-    liveness_flag_is_enabled(read).then_some(context)
+    enabled.then_some(context)
+}
+
+fn with_cached_liveness_on(cache: &AtomicU8, attempt: impl FnOnce()) -> bool {
+    if cache.load(Ordering::Acquire) != LIVENESS_FLAG_ON {
+        return false;
+    }
+    attempt();
+    true
+}
+
+fn quit_event_for_cached_liveness(
+    cache: &AtomicU8,
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<RawTelemetryEvent> {
+    (cache.load(Ordering::Acquire) == LIVENESS_FLAG_ON)
+        .then(|| build_desktop_quit_event(now, reason, setup_at))
 }
 
 fn wait_for_quit_telemetry_attempt(receiver: Receiver<Result<(), String>>) {
@@ -1876,35 +1928,38 @@ fn report_quit_telemetry_attempt(sender: SyncSender<Result<(), String>>, result:
     let _ = sender.send(result);
 }
 
-/// Resolve the new telemetry flag and give its send at most 480ms before exit.
-/// Missing, malformed, or unreadable flag state fails off.
+/// Cached-off/unknown exits immediately. Cached-on telemetry gets at most 480ms.
 pub fn emit_desktop_quit_before_exit(reason: DesktopQuitReason) {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    tauri::async_runtime::spawn(async move {
-        let result = tokio::time::timeout(Duration::from_millis(450), async move {
-            let enabled = liveness_flag_is_enabled(
-                crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG).await,
-            );
-            let now = chrono::Utc::now();
-            let setup_at = enabled.then(read_setup_completed_at).flatten();
-            if let Some(event) = quit_event_when_enabled(enabled, now, reason, setup_at) {
-                emit_desktop_operational_telemetry(
-                    event.event_name,
-                    Some(event.properties),
-                    None,
-                    Some(event.occurred_at),
-                )
-                .await
-            } else {
-                Ok(())
-            }
-        })
-        .await
-        .map_err(|_| "desktop quit telemetry exceeded its send budget".to_string())
-        .and_then(|result| result);
-        report_quit_telemetry_attempt(sender, result);
+    with_cached_liveness_on(&LIVENESS_FLAG_CACHE, || {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        tauri::async_runtime::spawn(async move {
+            let result = tokio::time::timeout(Duration::from_millis(450), async move {
+                let now = chrono::Utc::now();
+                let setup_at = read_setup_completed_at();
+                if let Some(event) = quit_event_for_cached_liveness(
+                    &LIVENESS_FLAG_CACHE,
+                    now,
+                    reason,
+                    setup_at,
+                ) {
+                    emit_desktop_operational_telemetry(
+                        event.event_name,
+                        Some(event.properties),
+                        None,
+                        Some(event.occurred_at),
+                    )
+                    .await
+                } else {
+                    Ok(())
+                }
+            })
+            .await
+            .map_err(|_| "desktop quit telemetry exceeded its send budget".to_string())
+            .and_then(|result| result);
+            report_quit_telemetry_attempt(sender, result);
+        });
+        wait_for_quit_telemetry_attempt(receiver);
     });
-    wait_for_quit_telemetry_attempt(receiver);
 }
 
 pub fn emit_noted_desktop_quit_before_exit() {
@@ -1952,10 +2007,11 @@ async fn emit_daily_active_at(
     liveness: DesktopLivenessContext,
 ) {
     let result = async {
-        let liveness = daily_active_liveness_context(
-            crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG).await,
-            liveness,
-        );
+        let enabled = resolve_liveness_flag_once_with(&LIVENESS_FLAG_CACHE, || {
+            crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG)
+        })
+        .await;
+        let liveness = daily_active_liveness_context(enabled, liveness);
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
@@ -8560,9 +8616,8 @@ mod desktop_liveness_telemetry_regression_tests {
         assert!(!liveness_flag_is_enabled(Ok(None)));
         assert!(!liveness_flag_is_enabled(Err(())));
         assert!(liveness_flag_is_enabled(Ok(Some(true))));
-        assert_eq!(daily_active_liveness_context(Ok(None), context), None);
-        assert_eq!(daily_active_liveness_context(Err(()), context), None);
-        assert_eq!(daily_active_liveness_context(Ok(Some(true)), context), Some(context));
+        assert_eq!(daily_active_liveness_context(false, context), None);
+        assert_eq!(daily_active_liveness_context(true, context), Some(context));
         assert!(quit_event_when_enabled(false, now(), DesktopQuitReason::TrayQuit, None).is_none());
         let unchanged = build_daily_active_event_with_liveness(now(), None);
         assert!(!unchanged.properties.as_object().unwrap().contains_key("launch_source"));
@@ -8616,6 +8671,25 @@ mod desktop_liveness_telemetry_regression_tests {
             assert_eq!(flag_fetches.load(Ordering::SeqCst), 0);
             assert_eq!(waits.load(Ordering::SeqCst), 0);
         }
+    }
+
+    #[test]
+    fn quit_path_uses_only_cached_gate_before_any_wait() {
+        let source = include_str!("telemetry.rs");
+        let quit = source
+            .split("pub fn emit_desktop_quit_before_exit(")
+            .nth(1)
+            .expect("quit telemetry function");
+        let body = quit
+            .split("\npub fn emit_noted_desktop_quit_before_exit")
+            .next()
+            .expect("quit telemetry function body");
+
+        assert!(!body.contains("feature_flag_read"));
+        assert!(body.find("with_cached_liveness_on(").unwrap()
+            < body.find("sync_channel(1)").unwrap());
+        assert!(body.find("sync_channel(1)").unwrap()
+            < body.find("wait_for_quit_telemetry_attempt(").unwrap());
     }
 
     #[test]
