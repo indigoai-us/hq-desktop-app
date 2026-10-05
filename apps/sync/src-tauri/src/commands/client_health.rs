@@ -42,10 +42,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use hq_desktop_core::client_health::{
-    parse_client_health_heartbeat, ClientHealthArch, ClientHealthFailureReason,
-    ClientHealthHeartbeat, ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState,
-    ClientHealthUpdaterState, ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION,
-    CLIENT_HEALTH_MAX_CONFLICT_COUNT, CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
+    parse_client_health_heartbeat, updater_state_with_runner_pin, ClientHealthArch,
+    ClientHealthFailureReason, ClientHealthHeartbeat, ClientHealthPlatform, ClientHealthSource,
+    ClientHealthSyncState, ClientHealthUpdaterState, ClientHealthVersions,
+    CLIENT_HEALTH_CONTRACT_VERSION, CLIENT_HEALTH_MAX_CONFLICT_COUNT,
+    CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
 };
 use hq_desktop_core::sync_outcome::RunTotals;
 
@@ -505,12 +506,20 @@ fn updater_state_from_wire(value: &str) -> Option<ClientHealthUpdaterState> {
 /// The desktop always ships an updater, so a never-observed ledger reports
 /// the closed value `unchecked` — never field absence (absence means "a
 /// client too old to report it", which this client is not).
-fn reported_updater_state(state: &ClientHealthState) -> ClientHealthUpdaterState {
-    state
+fn reported_updater_state(
+    state: &ClientHealthState,
+    sync_runner_version: Option<&str>,
+) -> ClientHealthUpdaterState {
+    let persisted = state
         .updater_state
         .as_deref()
         .and_then(updater_state_from_wire)
-        .unwrap_or(ClientHealthUpdaterState::Unchecked)
+        .unwrap_or(ClientHealthUpdaterState::Unchecked);
+    updater_state_with_runner_pin(
+        persisted,
+        sync_runner_version,
+        hq_desktop_core::hq_cloud::HQ_CLOUD_VERSION,
+    )
 }
 
 fn derive_failure_reason(
@@ -599,6 +608,7 @@ fn build_heartbeat_payload(
     sent_at: String,
 ) -> ClientHealthHeartbeat {
     let sync_state = derive_sync_state(paused, syncing, state);
+    let updater_state = reported_updater_state(state, versions.sync_runner.as_deref());
     ClientHealthHeartbeat {
         contract_version: CLIENT_HEALTH_CONTRACT_VERSION,
         installation_id: state.installation_id.clone(),
@@ -621,7 +631,7 @@ fn build_heartbeat_payload(
             .consecutive_failures
             .min(CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES),
         conflict_count: Some(state.conflict_count.min(CLIENT_HEALTH_MAX_CONFLICT_COUNT)),
-        updater_state: Some(reported_updater_state(state)),
+        updater_state: Some(updater_state),
         failure_reason: derive_failure_reason(sync_state, state),
     }
 }
@@ -855,7 +865,7 @@ mod tests {
             desktop: Some("1.42.3".to_string()),
             cli: Some("5.106.2".to_string()),
             core: Some("3.18.0".to_string()),
-            sync_runner: Some("5.106.2".to_string()),
+            sync_runner: Some("6.18.48".to_string()),
         }
     }
 
@@ -1142,13 +1152,35 @@ mod tests {
         assert_eq!(wire["versions"]["desktop"], "1.42.3");
         assert_eq!(wire["versions"]["cli"], "5.106.2");
         assert_eq!(wire["versions"]["core"], "3.18.0");
-        assert_eq!(wire["versions"]["syncRunner"], "5.106.2");
+        assert_eq!(wire["versions"]["syncRunner"], "6.18.48");
         assert!(wire.get("platform").is_some());
         assert!(wire.get("arch").is_some());
         assert_eq!(wire["source"], "desktop");
         assert_eq!(wire["sequence"], 412);
         assert_eq!(wire["syncState"], "idle");
         assert_eq!(wire["updaterState"], "up_to_date");
+    }
+
+    #[test]
+    fn updater_state_does_not_report_up_to_date_when_sync_runner_is_below_pin() {
+        let mut state = state_with_id(413);
+        state.updater_state = Some("up_to_date".to_string());
+        let mut versions = full_versions();
+        versions.sync_runner = Some("6.18.34".to_string());
+
+        let heartbeat = build_heartbeat_payload(
+            &state,
+            versions,
+            false,
+            false,
+            "2026-10-05T00:00:00.000Z".to_string(),
+        );
+
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateAvailable),
+            "the npx cache can keep a runner below the desktop's requested floor"
+        );
     }
 
     #[test]

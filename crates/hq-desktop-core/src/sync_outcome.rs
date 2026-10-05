@@ -1374,6 +1374,8 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::PresignPreconditionMissing
         | RunnerErrorCause::OutpostHttp
         | RunnerErrorCause::TombstoneFetch
+        | RunnerErrorCause::TombstoneFullReconcileRequired
+        | RunnerErrorCause::UnsafeSymlinkTarget
         | RunnerErrorCause::UnregisteredCompanySkill
         | RunnerErrorCause::RefreshLockTimeout
         | RunnerErrorCause::DanglingSymlinkParent

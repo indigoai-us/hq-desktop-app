@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Existing desktop installs now report an available update when their cached sync runner is below the runner version requested by the app.
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.

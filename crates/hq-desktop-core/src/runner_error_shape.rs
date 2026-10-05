@@ -290,7 +290,13 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `complete` event's new optional `filesPlanLimited` counter instead of
 /// per-file `error` events. The source-version marker moves with the runner
 /// pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.31";
+///
+/// The `~6.18.31` -> `~6.18.48` bump was re-derived from the published source
+/// trees. It adds `TombstoneFullReconcileRequiredError`, which can escape a
+/// failed full tombstone reconciliation, and `UnsafeSymlinkTargetError`, which
+/// is emitted by the per-file download error path. Both are now named causes;
+/// the event types remain unchanged.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.48";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1402,6 +1408,8 @@ pub enum RunnerErrorCause {
     PresignPreconditionMissing,
     OutpostHttp,
     TombstoneFetch,
+    TombstoneFullReconcileRequired,
+    UnsafeSymlinkTarget,
     UnregisteredCompanySkill,
     RefreshLockTimeout,
     // Cognito identity classes, spelled `cognito_identity[_refresh]` so the
@@ -1520,7 +1528,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 104] = [
+    pub const ALL: [RunnerErrorCause; 106] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1562,6 +1570,8 @@ impl RunnerErrorCause {
         Self::PresignPreconditionMissing,
         Self::OutpostHttp,
         Self::TombstoneFetch,
+        Self::TombstoneFullReconcileRequired,
+        Self::UnsafeSymlinkTarget,
         Self::UnregisteredCompanySkill,
         Self::RefreshLockTimeout,
         Self::CognitoIdentity,
@@ -1674,6 +1684,8 @@ impl RunnerErrorCause {
             Self::PresignPreconditionMissing => "presign_precondition_missing",
             Self::OutpostHttp => "outpost_http",
             Self::TombstoneFetch => "tombstone_fetch",
+            Self::TombstoneFullReconcileRequired => "tombstone_full_reconcile_required",
+            Self::UnsafeSymlinkTarget => "unsafe_symlink_target",
             Self::UnregisteredCompanySkill => "unregistered_company_skill",
             Self::RefreshLockTimeout => "refresh_lock_timeout",
             Self::CognitoIdentity => "cognito_identity",
@@ -1805,6 +1817,8 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "PresignPreconditionMissing" => RunnerErrorCause::PresignPreconditionMissing,
         "OutpostHttpError" => RunnerErrorCause::OutpostHttp,
         "TombstoneFetchError" => RunnerErrorCause::TombstoneFetch,
+        "TombstoneFullReconcileRequiredError" => RunnerErrorCause::TombstoneFullReconcileRequired,
+        "UnsafeSymlinkTargetError" => RunnerErrorCause::UnsafeSymlinkTarget,
         "UnregisteredCompanySkillError" => RunnerErrorCause::UnregisteredCompanySkill,
         "RefreshLockTimeoutError" => RunnerErrorCause::RefreshLockTimeout,
         // Cognito identity classes, emitted as the safe `cognito_identity` spelling.
@@ -3373,8 +3387,10 @@ mod tests {
         "SyncMutationNotEnrolledError",
         "TerminalSessionTimeoutError",
         "TombstoneFetchError",
+        "TombstoneFullReconcileRequiredError",
         "UnreachablePushPathsError",
         "UnregisteredCompanySkillError",
+        "UnsafeSymlinkTargetError",
         "VaultAuthError",
         "VaultClientError",
         "VaultConflictError",
@@ -3390,8 +3406,8 @@ mod tests {
     fn every_hq_cloud_identity_maps_to_a_distinct_named_cause() {
         // Completeness over the FULL event-surface identity set (not a sample):
         // every hq-cloud this.name that can reach the runner error event must
-        // classify as a specific, non-residual cause, and the 52 identities
-        // must map to 52 DISTINCT tokens — the exact property the prior 16-name
+        // classify as a specific, non-residual cause, and all identities
+        // must map to DISTINCT tokens — the exact property the prior 16-name
         // sample violated, collapsing every out-of-sample company fault to the
         // flat residual and reopening this lane. The set
         // grew from 45 to 46 when the runner pin moved to ~6.15.79 (added
@@ -3404,7 +3420,7 @@ mod tests {
         // from 52 to 57 at ~6.18.5 (added RealtimeAdmissionTimeout,
         // RealtimeDrainBurst, ObjectLockChecksumRequired,
         // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError).
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 57);
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 59);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -3430,7 +3446,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 57, "expected 57 distinct cause tokens");
+        assert_eq!(tokens.len(), 59, "expected 59 distinct cause tokens");
     }
 
     /// hq-cloud identities deliberately left out of the vocabulary because the
