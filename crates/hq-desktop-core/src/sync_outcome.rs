@@ -2832,6 +2832,16 @@ pub fn termination_fingerprint_token_for_host(
 /// the `termination_status_raw` extra, so nothing is lost.
 pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str = "runner:memory-exhausted";
 
+/// Bounded meaning for a runner exit code. This is diagnostic metadata only;
+/// it must not affect the exit disposition or retry policy.
+pub fn runner_exit_meaning(code: Option<i32>) -> &'static str {
+    match code {
+        Some(18) => "auth_required_pass",
+        Some(_) => "other",
+        None => "no_exit_code",
+    }
+}
+
 /// Evidence that a watcher exit was caused by runner memory exhaustion. Any ONE
 /// is sufficient. Attribution is EVIDENCE-GATED on purpose: a bare SIGKILL, a
 /// force-quit, an app teardown, or a cancellation with none of these keeps its
@@ -4150,6 +4160,13 @@ pub fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEven
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_exit_meaning_uses_closed_values() {
+        assert_eq!(runner_exit_meaning(Some(18)), "auth_required_pass");
+        assert_eq!(runner_exit_meaning(Some(2)), "other");
+        assert_eq!(runner_exit_meaning(None), "no_exit_code");
+    }
 
     // ── grouping / suppression invariance (attribution must only ADD info) ───────
     //

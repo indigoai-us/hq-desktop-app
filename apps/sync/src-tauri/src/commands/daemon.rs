@@ -2154,6 +2154,8 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// Snapshot of the existing auth-error signal for watcher-exit diagnostics.
+    saw_auth_error: bool,
     /// The content half of the shared disk-exhaustion recognizer (gates a/b/c,
     /// signal-independent) computed at the exit boundary from the SAME `RunTotals`
     /// the manual route reads. Combined with the exit signal by
@@ -2342,6 +2344,7 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            saw_auth_error: false,
             runner_disk_exhaustion_content: false,
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
@@ -2597,6 +2600,7 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        saw_auth_error: totals.saw_auth_error,
         // Content half of the shared disk-exhaustion recognizer, from the SAME
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
@@ -5051,7 +5055,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         }
     }
 
-    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen, code);
     if !context.runner_fatal_lines.is_empty() {
         let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
         if !lines.is_empty() {
@@ -5263,6 +5267,7 @@ fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static
 fn watcher_exit_context_extras(
     context: &WatcherExitCaptureContext,
     runner_fatal_class_seen: bool,
+    code: Option<i32>,
 ) -> Vec<(&'static str, sentry::protocol::Value)> {
     let mut extras = vec![
         (
@@ -5294,6 +5299,16 @@ fn watcher_exit_context_extras(
         (
             "runner_fatal_class_seen",
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
+        ),
+        (
+            "saw_auth_error",
+            sentry::protocol::Value::Bool(context.saw_auth_error),
+        ),
+        (
+            "runner_exit_meaning",
+            sentry::protocol::Value::String(
+                hq_desktop_core::sync_outcome::runner_exit_meaning(code).to_string(),
+            ),
         ),
         (
             "runner_error_companies",
