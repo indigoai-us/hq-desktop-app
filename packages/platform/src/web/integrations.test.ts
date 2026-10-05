@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { INTEGRATION_PATHS, REDACTED_SECRET, connectionGrantBody, integrationAppRefBody } from "../adapter.js";
+import { COMPANY_INTEGRATION_PATHS, INTEGRATION_PATHS, REDACTED_SECRET, connectionGrantBody, integrationAppRefBody } from "../adapter.js";
 import { WebPlatformAdapter } from "./index.js";
 
 interface RecordedCall {
@@ -59,12 +59,16 @@ const LIST = {
 
 describe("integration paths", () => {
   it("names the routes and encodes the company", () => {
-    expect(INTEGRATION_PATHS.connections("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme");
-    expect(INTEGRATION_PATHS.connections("a b&c")).toBe("/v1/integrations/admin?companyUid=a%20b%26c");
+    expect(INTEGRATION_PATHS.connections("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme&view=summary");
+    expect(INTEGRATION_PATHS.connections("a b&c")).toBe("/v1/integrations/admin?companyUid=a%20b%26c&view=summary");
     expect(INTEGRATION_PATHS.grantAccess).toBe("/v1/integrations/factory/access/grant");
     expect(INTEGRATION_PATHS.oauthStart).toBe("/v1/integrations/factory/oauth/start");
     expect(INTEGRATION_PATHS.install).toBe("/v1/integrations/factory/install");
     expect(INTEGRATION_PATHS.blueprint).toBe("/v1/integrations/factory/blueprint");
+  });
+
+  it("keeps the console's Integrations page on the full view, which it reads creator names from", () => {
+    expect(COMPANY_INTEGRATION_PATHS.list("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme");
   });
 
   it("names the catalog with the query encoded and the limit only when given", () => {
@@ -107,7 +111,7 @@ describe("WebPlatformAdapter integrations", () => {
     const { adapter, calls } = makeAdapter(() => ({ status: 200, body: LIST }));
     const result = await adapter.integrations.listConnections("cmp_acme");
     expect(calls).toEqual([
-      { method: "GET", path: "/v1/integrations/admin?companyUid=cmp_acme", body: undefined },
+      { method: "GET", path: "/v1/integrations/admin?companyUid=cmp_acme&view=summary", body: undefined },
     ]);
     expect(result).toEqual({ ok: true, value: LIST });
   });

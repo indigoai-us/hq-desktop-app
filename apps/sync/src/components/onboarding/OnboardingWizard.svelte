@@ -67,6 +67,7 @@
   import {
     classifyContinuationError,
     flushReceipts,
+    FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
     launchReceipt,
     recordReceipt,
     shouldSendFirstLaunchReceipt,
@@ -195,6 +196,7 @@
     resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
+  import { resolveFirstLaunchPublicFlag } from '../../lib/first-launch-public-flag';
   import {
     classifyInviteError,
     hqProErrorCode,
@@ -310,6 +312,7 @@
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
   let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
+  let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
     action: OnboardingAction;
@@ -1067,6 +1070,9 @@
       );
       authStep = 'callback_received';
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'callback_received', {
+        provider: telemetryProvider,
+      });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
@@ -1132,32 +1138,36 @@
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
     if (firstLaunchReceiptRecorded) {
+      if (await resolveFirstLaunchDownloadJoinEnabled(context.installAttemptId)) {
+        try {
+          const downloadAnonId = await invokeCommand<string | null>('web_visitor_anon_id');
+          if (downloadAnonId) {
+            deps.downloadJoinEnabled = true;
+            deps.downloadAnonId = downloadAnonId;
+          }
+        } catch {
+          console.warn('onboarding: installer visitor key unavailable; launch receipt unchanged');
+        }
+      }
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
   }
 
-  function resolveFirstLaunchJoinKeyEnabled(): Promise<boolean> {
-    if (!firstLaunchJoinKeyFlagPromise) {
-      const flag = onboardingFeatureFlags.identity.hasFeature(FIRST_LAUNCH_JOIN_KEY_FLAG).then(
-        (result) => {
-          if (!result.ok) {
-            console.warn(
-              'onboarding: first-launch join-key flag unavailable; leaving fallback off',
-              result.reason,
-              result.code,
-            );
-            return false;
-          }
-          return result.value === true;
-        },
-        (error) => {
-          console.warn(
-            'onboarding: first-launch join-key flag failed; leaving fallback off',
-            error,
-          );
-          return false;
-        },
+  function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
+    if (!firstLaunchDownloadJoinFlagPromise) {
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
+        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
+        2_000,
       );
+    }
+    return firstLaunchDownloadJoinFlagPromise;
+  }
+
+  function resolveFirstLaunchJoinKeyEnabled(visitorId: string | null): Promise<boolean> {
+    if (!firstLaunchJoinKeyFlagPromise) {
+      const flag = visitorId
+        ? resolveFirstLaunchPublicFlag(FIRST_LAUNCH_JOIN_KEY_FLAG, visitorId)
+        : Promise.resolve(false);
       firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
         (enabled) => {
           firstLaunchJoinKeyEnabled = enabled;
@@ -1206,11 +1216,14 @@
             return firstLaunch;
           });
         const contextPromise = loadContinuationContext();
-        const firstLaunchJoinKeyEnabledPromise = firstLaunchPromise.then((firstLaunch) =>
-          firstLaunch ? resolveFirstLaunchJoinKeyEnabled() : false,
-        );
         const reachVisitorIdPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? loadInstallAttemptId() : null,
+        );
+        const firstLaunchJoinKeyEnabledPromise = Promise.all([
+          firstLaunchPromise,
+          reachVisitorIdPromise,
+        ]).then(([firstLaunch, visitorId]) =>
+          firstLaunch ? resolveFirstLaunchJoinKeyEnabled(visitorId) : false,
         );
         const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
           visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,
@@ -3801,7 +3814,10 @@
 
   /** One row per run: what the company step found and which way it went. */
   function recordCompanyRoute(route: FirstRunCompanyPath, summary: CompanyRouteSummary): void {
-    if (route.kind === 'skip') companyStepCompanyUid = route.company.companyUid;
+    if (route.kind === 'skip') {
+      companyStepCompanyUid = route.company.companyUid;
+      recordWorkspaceSelected(route.company.companyUid);
+    }
     recordStep(COMPANY_STEP_INDEX, route.kind === 'skip' ? 'skipped' : 'started', {
       outcome: `route_${route.decision}`,
       decision: route.decision,
@@ -3817,6 +3833,14 @@
     recordStep(COMPANY_STEP_INDEX, 'started', {
       outcome: 'route_lookup_failed',
       decision: 'lookup_failed',
+    });
+  }
+
+  /** Record the company action without delaying or changing the visible flow. */
+  function recordWorkspaceSelected(companyUid: string | null | undefined): void {
+    if (!companyUid) return;
+    void invokeCommand('record_onboarding_workspace_selected', { companyUid }).catch((error) => {
+      console.warn('onboarding: workspace-selected receipt could not be queued', error);
     });
   }
 
@@ -3841,13 +3865,24 @@
           ? 'joined_invite'
           : result.outcome;
     const details: StepTelemetryDetails = { outcome };
-    if (result.outcome === 'joined') {
+    if (result.outcome === 'created') {
+      recordWorkspaceSelected(result.companyUid);
+    } else if (result.outcome === 'joined') {
       details.decision = 'joined_invite';
-      if (result.companyUid) companyStepCompanyUid = result.companyUid;
+      const joinedInvite =
+        companyPath?.kind === 'join'
+          ? companyPath.invites.find((invite) => invite.slug !== null && result.slugs.includes(invite.slug))
+          : undefined;
+      const companyUid = result.companyUid ?? joinedInvite?.companyUid;
+      if (companyUid) {
+        companyStepCompanyUid = companyUid;
+        recordWorkspaceSelected(companyUid);
+      }
       void selectCompany(result.slugs[0] ?? null);
     } else if (result.outcome === 'used_existing') {
       details.decision = 'used_existing';
       companyStepCompanyUid = result.companyUid;
+      recordWorkspaceSelected(result.companyUid);
       void selectCompany(result.slug);
     }
     advanceTo(

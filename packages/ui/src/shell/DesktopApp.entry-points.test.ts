@@ -980,6 +980,90 @@ describe("DesktopApp New bot takeover", () => {
     expect(asked).toBeLessThanOrEqual(Date.now());
   }, 30_000);
 
+  it("the hello's two reads are kept as the bot's facts: its first message draws its cards with no second list read", async () => {
+    // Live, 2026-10-04: the cards under a new bot's first message came 7.5 to
+    // 10.4 s after it, behind a second status read and a second list read.
+    // The hello request had made the same two reads and kept only its text.
+    const runCompanyTabAction = vi.fn(async () => ok(OPENED));
+    const runCardAction = vi.fn(async () =>
+      ok({ cardId: "create_agent", actionId: "create", state: "done", agentUid: "agt_nova" }),
+    );
+    let thread: Array<Record<string, unknown>> = [];
+    const sendDm = vi.fn(async (uid: string, body: string, _extras?: Record<string, unknown>) => {
+      const now = Date.now();
+      const block = `\n\`\`\`hq-block\n${JSON.stringify({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "linear.app" }, { app: "slack" }] }] })}\n\`\`\``;
+      // Newest first: the bot's answer, then the request the person never sees.
+      thread = [
+        { eventId: "e2", fromPersonUid: uid, fromDisplayName: "Nova", body: `Hi Stefan, I am Nova.${block}`, createdAt: new Date(now + 1_000).toISOString(), rootEventId: "e1" },
+        { eventId: "e1", fromPersonUid: "prs_test", fromDisplayName: "Stefan", body, createdAt: new Date(now).toISOString(), audience: "agent", replyCount: 1 },
+      ];
+      return ok({ eventId: "e1" });
+    });
+    const fetchDmThread = vi.fn(async () => ok({ messages: thread, nextCursor: null }));
+    const value = adapter(
+      { runCompanyTabAction, runCardAction, sendDm, fetchDmThread },
+      { hasCompanyFeature: async () => true },
+    );
+    const getStatus = vi.fn(async () =>
+      ok({
+        setupState: { phase: "ready" },
+        agent: { companyUid: "cmp_acme", runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" }, channels: null },
+      }),
+    );
+    (value.agents as unknown as Record<string, unknown>).getStatus = getStatus;
+    // The list answers once, for the hello. Any later read never answers:
+    // what the cards show can only have come from the hello's own read.
+    let listReads = 0;
+    const listConnections = vi.fn((_companyUid: string) => {
+      listReads += 1;
+      if (listReads > 1) return new Promise<never>(() => {});
+      return Promise.resolve(
+        ok({
+          companyUid: "cmp_acme",
+          viewer: { personUid: "prs_test", role: "owner", canManageIntegrations: true },
+          connections: [
+            {
+              id: "acct_linear",
+              provider: "factory:linear",
+              status: "connected",
+              createdBy: "prs_test",
+              createdAt: "2026-10-02T14:10:00.000Z",
+              access: { mode: "private", grantCount: 0 },
+              installation: { displayName: "Linear", domain: "linear.app" },
+            },
+          ],
+          audit: [],
+        }),
+      );
+    });
+    (value as unknown as Record<string, unknown>).integrations = { listConnections };
+    mountApp(value, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await openNewBot();
+    await createInTakeover("Nova");
+
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalled(), { timeout: 10_000, interval: 50 });
+    // The hello read the list once, with the request's text written from it.
+    expect(listConnections).toHaveBeenCalledTimes(1);
+    expect(listConnections).toHaveBeenCalledWith("cmp_acme");
+    expect(sendDm.mock.calls[0]![1]).toContain("- Linear (linear.app): connected, not shared with you");
+
+    // The person lands in the conversation, and the bot's first message has
+    // its cards: the connected app from the hello's list, and the bot's own
+    // Slack from the hello's status.
+    const helloCards = (): HTMLElement[] => [
+      ...(host.querySelector('[data-testid="conversation-message"][data-event-id="e2"]')?.querySelectorAll<HTMLElement>(
+        '[data-testid="connection-card"]',
+      ) ?? []),
+    ];
+    await vi.waitFor(() => expect(helloCards().length).toBe(2), { timeout: 15_000, interval: 50 });
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
+    expect(helloCards().map((el) => [el.dataset.domain ?? el.dataset.target, el.dataset.state])).toEqual([
+      ["slack", "offered"],
+      ["linear.app", "connected"],
+    ]);
+    expect(helloCards()[1]!.textContent).toContain("Let Nova use it?");
+  }, 45_000);
+
   it("a bot found after a create with no answer is registered like one that answered: connection record and first message (round 4, item 2)", async () => {
     // The create's answer is lost, but the request made the bot. The sidebar
     // finds it on the company's list and takes it up. The shell never saw an

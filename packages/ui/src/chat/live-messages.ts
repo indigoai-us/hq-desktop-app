@@ -382,6 +382,9 @@ export function normalizeConversationMessages(
       direction: asString(row.direction) || undefined,
       messageKind: asString(row.messageKind) || null,
       systemEvent: row.systemEvent,
+      // Structured blocks (cards, tables): kept as sent, validated where drawn
+      // (richMessageContent.ts). The body stays the plain-text fallback.
+      ...(row.richContent != null ? { richContent: row.richContent } : {}),
       reactions: parseWireReactions(row.reactions),
       mentions: parseWireMentions(row.mentions),
       attachments: parseWireAttachments(row.attachments ?? row.attachment),
@@ -491,9 +494,10 @@ export function messagesForDisplay(
   raw: unknown,
   options: TimelineDisplayOptions = {},
 ): ConversationMessageWire[] {
-  // Only the flat exchange with a bot reads a row's audience. Everywhere
-  // else rows carry none, exactly as before that exchange existed.
-  const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: options.inlineReplies === true })].reverse();
+  // Every conversation reader needs the server's audience now. An absent tag
+  // remains absent, so older and untagged rows retain their human-visible
+  // behavior while an explicit agent lane can be filtered correctly.
+  const oldestFirst = [...normalizeConversationMessages(raw, { keepAudience: true })].reverse();
   if (options.inlineReplies) return inlineReplyRows(oldestFirst, options);
   // Fold FIRST: the reply rows carry the author + time the root affordance
   // needs, and are discarded on the next line.

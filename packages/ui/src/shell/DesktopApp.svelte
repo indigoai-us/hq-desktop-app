@@ -28,6 +28,7 @@
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
+    dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -156,7 +157,7 @@
   import { presenceSnapshot, presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
-  import BotSyncWidget from "../chat/BotSyncWidget.svelte";
+  import BotSyncStatus from "../chat/BotSyncStatus.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../chat/tasks/agent-tasks";
   import {
@@ -168,7 +169,10 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import {
+    connectItemCarriesState,
+    continueInToolForMessage,
     HOST_PLACED_BLOCK_KINDS,
     messageHasConnectBlock,
     messageHasVisibleContent,
@@ -211,15 +215,25 @@
   import {
     ROW_SETTLE_MS,
     appChosenItems,
+    slackFirst,
     botCanUse,
     catalogMatchFor,
     connectFailureSentence,
     connectRowReady,
+    connectionsRetryMs,
+    rowAwaitsList,
     connectionAnswersPress,
     connectionForDomain,
     domainsToLookUp,
     integrationCardView,
+    integrationCardViewFromState,
     readCompanyConnections,
+    slackFactsFromItem,
+    connectItemStateAt,
+    stateIsCurrent,
+    connectionForStateItem,
+    APP_NOT_CONNECTABLE_NOTE,
+    defaultAppName,
     type CatalogLookup,
     type CompanyConnection,
     type CompanyConnections,
@@ -259,6 +273,11 @@
     setupBotIntro,
     setupBotKickoff,
     setupBotNoRuntime,
+    setupToolOfferDue,
+    SETUP_CONTINUE_IN_TOOL_PROMPT,
+    SETUP_KEEP_GOING_HERE,
+    SETUP_TOOL_OFFER_COPY,
+    type SetupOfferTool,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_MODE,
@@ -308,6 +327,7 @@
     agentHelloArrived,
     agentHelloEventId,
     agentHelloEventIdByAskTime,
+    connectionNoticeAfter,
     dmPageHoldsStart,
     isCloudBotDm,
     buildAgentHelloRequest,
@@ -322,6 +342,7 @@
     type AgentChatReadiness,
   } from "../chat/agent-channel.js";
   import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
+  import { roleIsAdminOrOwner } from "../chat/channel-admin.js";
   import {
     noteNoticeFailure,
     noteNoticeSent,
@@ -960,13 +981,6 @@
     self?: SelfIdentity | null;
     /** Native account partition for renderer persistence and async guards. */
     tenantAccountId?: string | null;
-    /**
-     * Agents the user has a real conversation with. Creating an agent
-     * announces it to the whole company, so an `agt_*` rail row stays hidden
-     * until it messages the user; a host with its own record of past agent
-     * conversations seeds it here.
-     */
-    engagedAgentUids?: readonly string[] | null;
     /** Monotonic native auth-session generation. A new value remounts the host. */
     tenantGeneration?: number;
     /**
@@ -1215,7 +1229,6 @@
     onsignin,
     self = null,
     tenantAccountId = null,
-    engagedAgentUids = null,
     tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
@@ -3102,6 +3115,18 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
+   * The setup bot's first message offered to continue setup in a coding tool
+   * the person already uses a lot (hq-cli sends a `continueInTool` block):
+   * the tool to show the card for, until the person writes again.
+   */
+  const setupToolOffer = $derived.by((): SetupOfferTool | null => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupToolOfferDue(timeline, bot.agentUid, messageHasVisibleContent, continueInToolForMessage);
+  });
+  /**
    * The bot whose suggested replies the conversation draws, under its newest
    * message: the setup bot (recommended answers to what it just asked, or
    * next questions) or the open cloud bot. The conversation itself finds the
@@ -3110,9 +3135,66 @@
    */
   const suggestionsFromUid = $derived.by((): string | null => {
     const bot = selectedLocalBot;
-    if (bot && bot.name.trim().toLowerCase() === SETUP_BOT_NAME) return bot.agentUid;
+    if (bot && bot.name.trim().toLowerCase() === SETUP_BOT_NAME) {
+      // The offer card carries its own "Keep going here" button.
+      if (setupToolOffer) return null;
+      return bot.agentUid;
+    }
     return dmCloudBotUid;
   });
+  /** "Shown" is recorded once per bot, however often the card re-renders. */
+  $effect(() => {
+    const tool = setupToolOffer;
+    const bot = selectedLocalBot;
+    if (!tool || !bot) return;
+    const key = `setup-tool-offer-shown:${bot.agentUid}`;
+    if (tenantStorage.getItem(key) === "1") return;
+    tenantStorage.setItem(key, "1");
+    dispatchSetupToolOffer("shown", tool);
+  });
+  let setupToolOfferBusy = $state(false);
+  let setupToolOfferError = $state<string | null>(null);
+  /** "Continue in …": open the HQ folder in that tool with setup ready to go. */
+  async function continueSetupInTool(tool: SetupOfferTool): Promise<void> {
+    if (setupToolOfferBusy) return;
+    setupToolOfferBusy = true;
+    setupToolOfferError = null;
+    let launched = false;
+    try {
+      const res = await adapter.settings.getSetupStatus();
+      const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+      if (!folder) {
+        setupToolOfferError = SETUP_TOOL_OFFER_COPY.folderNotReady;
+        return;
+      }
+      // A plain-language setup request in place of a command, prefilled in
+      // the app's composer (Claude: the link's `q`; Codex: its prompt link).
+      const actions = createLaunchActions({
+        shell: adapter.shell,
+        hqFolderPath: folder,
+        prompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+        deepLinkPrompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+      });
+      // The desktop app the offer named, never a terminal.
+      const error = tool === "claude" ? await actions.launchClaudeApp() : await actions.launchCodexApp();
+      launched = !error;
+      if (error) setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } catch (err) {
+      console.warn("[hq-desktop] could not open the coding tool for setup:", err);
+      setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } finally {
+      setupToolOfferBusy = false;
+      dispatchSetupToolOffer("continued", tool, { launched });
+    }
+  }
+  /** "Keep going here": the reply the bot waits for before it starts setup. */
+  function keepSetupHere(tool: SetupOfferTool): void {
+    setupToolOfferError = null;
+    dispatchSetupToolOffer("keptHere", tool);
+    void persistSend(SETUP_KEEP_GOING_HERE, []).catch((err) =>
+      console.warn("[hq-desktop] could not tell the setup bot to keep going here:", err),
+    );
+  }
   /**
    * The finish card, once put away, stays away.
    *
@@ -4402,8 +4484,8 @@
   /**
    * Cloud bots made in the new bot flow on this device whose company files
    * may still be downloading. Their conversation is a direct message; the
-   * sync widget at the bottom of it says the bot can chat while the files
-   * arrive. A bot leaves the list once its files are there.
+   * sync status in its header says the files are still arriving while the
+   * bot can already chat. A bot leaves the list once its files are there.
    */
   const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
   function loadNewCloudBots(): string[] {
@@ -4458,16 +4540,17 @@
   );
   const dmNewCloudBotUid = $derived(dmAgentUid && isNewCloudBotHere(dmAgentUid) ? dmAgentUid : null);
 
-  // ── Sync widget in a cloud bot's direct message ─────────────────────────
+  // ── Sync status in a cloud bot's direct message ─────────────────────────
   //
-  // A slim strip under the conversation header while the bot's copy of the
-  // company's files is being brought up to date. It is drawn from plain facts
-  // per bot (bot-sync-model.ts). Today the facts come from the bot's status:
-  // the first download after the bot was made, and any later full download
-  // the server reports. Anything else that knows about a sync can set them
-  // with `setBotSyncFacts`.
+  // A still sync glyph and one short line in the conversation header, to the
+  // right of "Direct message", while the bot's copy of the company's files is
+  // being brought up to date (BotSyncStatus.svelte). It is drawn from plain
+  // facts per bot (bot-sync-model.ts). Today the facts come from the bot's
+  // status: the first download after the bot was made, and any later full
+  // download the server reports. Anything else that knows about a sync can
+  // set them with `setBotSyncFacts`.
 
-  /** What is known about each cloud bot's file sync. No entry: no widget. */
+  /** What is known about each cloud bot's file sync. No entry: no status. */
   let botSyncByUid = $state.raw<Record<string, BotSyncFacts>>({});
   function setBotSyncFacts(agentUid: string, facts: BotSyncFacts | null): void {
     const current = botSyncByUid[agentUid] ?? null;
@@ -4499,7 +4582,7 @@
    * outside have one too. It takes a positive sign (`isCloudBotDm`): the bot
    * was made in the New Bot flow on this device, or the server answered this
    * person's read of its status. Everything a cloud bot's conversation adds
-   * (cards, suggestions, the sync strip, notices to the bot) hangs off this.
+   * (cards, suggestions, the sync status, notices to the bot) hangs off this.
    */
   const dmCloudBotUid = $derived(
     dmAgentUid &&
@@ -4529,11 +4612,37 @@
     const code = typeof rec.code === "string" ? rec.code.trim().toLowerCase() : "";
     return rec.status === 403 || rec.status === 404 || code === "http-403" || code === "http-404";
   }
+  /**
+   * The status read the open conversation's poll made last, per bot: the read
+   * itself and when it answered. The connection cards need the same answer
+   * when the conversation opens, so they take this one instead of asking the
+   * server a second time (`refreshBotConnectionFacts`). Held outside the
+   * reactive state on purpose: nothing redraws from it.
+   */
+  type BotStatusRead = ReturnType<PlatformAdapter["agents"]["getStatus"]>;
+  const botStatusPolls = new Map<string, { read: BotStatusRead; answeredAt: number | null }>();
+  /** How long a poll's answer still counts as the status "now" for the cards (ms). */
+  const BOT_STATUS_REUSE_MS = 3_000;
+  function pollBotStatus(agentUid: string): BotStatusRead {
+    let read: BotStatusRead;
+    try {
+      read = Promise.resolve(adapter.agents.getStatus(agentUid));
+    } catch (error) {
+      read = Promise.reject(error);
+    }
+    const poll = { read, answeredAt: null as number | null };
+    botStatusPolls.set(agentUid, poll);
+    const answered = (): void => {
+      poll.answeredAt = Date.now();
+    };
+    read.then(answered, answered);
+    return read;
+  }
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // server refuses the read, which means no widget and never an error in the
-  // chat. The first answer is also what says the bot is a cloud bot.
+  // server refuses the read, which means no sync status and never an error
+  // in the chat. The first answer is also what says the bot is a cloud bot.
   //
   // Only a refusal ends the asking. A read that fails any other way is tried
   // again, sooner at first and less often each time, and at once when the
@@ -4556,7 +4665,7 @@
       let next: AgentChatReadiness | null = null;
       let readable = false;
       try {
-        const result = await adapter.agents.getStatus(uid);
+        const result = await pollBotStatus(uid);
         if (stopped) return;
         if (result.ok) {
           readable = true;
@@ -4613,6 +4722,7 @@
     return () => {
       stopped = true;
       if (timer) clearTimeout(timer);
+      botStatusPolls.delete(uid);
       window.removeEventListener("focus", retryNow);
       window.removeEventListener("online", retryNow);
       document.removeEventListener("visibilitychange", retryNow);
@@ -4682,6 +4792,10 @@
       record: connectionRecords[uid] ?? null,
       companyUidHint: selectedRow?.kind === "dm" && selectedRow.personUid === uid ? selectedRow.companyUid : null,
     });
+    // The same two answers are what the cards under the bot's first message
+    // are drawn from. Kept now, that message draws its cards in the frame it
+    // arrives in, instead of after a second status read and a second list read.
+    seedBotConnectionFacts(uid, hello);
     const askedAt = Date.now();
     const result = await adapter.messaging.sendDm(uid, hello.body, {
       audience: "agent",
@@ -4880,7 +4994,11 @@
     const row = selectedRow;
     const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
     if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
-    const decision = kickoffThinkingState(liveTimeline, uid);
+    // The setup bot's app offer holds the kickoff until the person answers:
+    // no turn is running, so no row (their "Keep going here" send starts one).
+    const decision = kickoffThinkingState(liveTimeline, uid, {
+      holdsKickoff: (message) => continueInToolForMessage(message) !== null,
+    });
     if (decision.state === "waiting") return;
     const name = kickoffPendingByUid[uid]!;
     const { [uid]: _started, ...rest } = kickoffPendingByUid;
@@ -5241,7 +5359,12 @@
         // the timeline built from any page: for those the first message is
         // found by the time the request was sent (the effect under
         // `helloAskedAtByUid`).
-        if (res.ok) rememberCloudBotHello(row.personUid, normalizeConversationMessages(res.value));
+        if (res.ok) {
+          const fetched = normalizeConversationMessages(res.value);
+          rememberCloudBotHello(row.personUid, fetched);
+          // The timeline leaves the app's notices to the bot out; the page does not.
+          noteConnectionNotice(row.personUid, fetched);
+        }
         return res.ok ? res.value : null;
       }
       if (row.channelId) {
@@ -5664,9 +5787,10 @@
   );
   /**
    * The cards the app attaches when the bot's message carries no connect
-   * block of its own: Slack unless the bot is in Slack, then the person's
-   * own connected apps the bot cannot use yet, newest first, three cards in
-   * all (integration-cards-model.ts, `appChosenItems`).
+   * block of its own: the bot's own Slack card first (in its connected state
+   * once the bot is in Slack), then the person's own connected apps the bot
+   * cannot use yet, newest first, three cards in all
+   * (integration-cards-model.ts, `appChosenItems`).
    *
    * The chosen set, per bot, for this session. It is worked out again until
    * the company's list is known, then kept: a card the person just acted on
@@ -5683,7 +5807,7 @@
     let items: ConnectItem[];
     if (kept && (kept.withFacts || !input.company)) items = kept.items;
     else {
-      items = appChosenItems(input.company, input.record, input.slack?.state === "connected");
+      items = appChosenItems(input.company, input.record);
       chosenItemsByBot.set(input.uid, { withFacts: input.company !== null, items });
     }
     if (items.length === 0) return null;
@@ -5704,6 +5828,26 @@
   }
   let botConnectionFacts = $state.raw<Record<string, BotConnectionFacts>>({});
   /**
+   * When the app last read a bot's live state because the person pressed a
+   * card drawn from the bot's state, or a connection-changed notice for the
+   * bot arrived (ms), per kind: `slack` for the bot's status, `apps` for the
+   * company's list. A card drawn from the bot's state draws from the live
+   * read instead only when that read is newer than the state
+   * (integration-cards-model.ts, `stateIsCurrent`). No other read counts: a
+   * list read for an old message's cards does not replace a bot's state.
+   */
+  let liveCheckedAt = $state.raw<Record<string, { slack?: number; apps?: number }>>({});
+  /**
+   * Whether the signed-in person may add apps to a company, from their role
+   * in it (owner or admin), else the host's admin flag. Null when neither says.
+   */
+  function viewerMayManageIntegrations(companyUid: string | null): boolean | null {
+    const uid = (companyUid ?? "").trim();
+    const workspace = uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid) : undefined;
+    if (workspace?.role) return roleIsAdminOrOwner(workspace.role);
+    return typeof isAdmin === "boolean" ? isAdmin : null;
+  }
+  /**
    * A sentence under a card after a press that did not work, per bot and
    * card: "slack", "tools", or `app:{domain}` for an integration card.
    */
@@ -5720,8 +5864,14 @@
    */
   let catalogLookups = $state.raw<Record<string, Record<string, CatalogLookup>>>({});
   const catalogLookupsInFlight = new Set<string>();
-  /** When each row of cards first waited for a lookup (ms), for the settle timeout. */
+  /** When each row of cards first waited for the company's list (ms), for the settle timeout. */
   const connectRowSince = new Map<string, number>();
+  /** The timers that end those waits: each moves the cards' clock once, so its row is worked out again. */
+  const connectRowTimers = new Set<ReturnType<typeof setTimeout>>();
+  onDestroy(() => {
+    for (const timer of connectRowTimers) clearTimeout(timer);
+    connectRowTimers.clear();
+  });
 
   function setConnectionNote(agentUid: string, key: string, note: string | null): void {
     const current = connectionNotes[agentUid] ?? {};
@@ -5756,39 +5906,132 @@
   }
 
   /**
+   * Keep what the hello request's two reads answered (`composeCloudBotHello`)
+   * as this bot's facts. Only what was read is kept: a read that failed
+   * leaves what was known, and its flag, as they were.
+   */
+  function seedBotConnectionFacts(
+    agentUid: string,
+    read: { status: unknown | null; connections: unknown | null; companyUid: string | null },
+  ): void {
+    if (read.status == null && read.connections == null) return;
+    const known = botConnectionFacts[agentUid] ?? null;
+    botConnectionFacts = {
+      ...botConnectionFacts,
+      [agentUid]: {
+        status: read.status ?? known?.status ?? null,
+        connections: read.connections ?? known?.connections ?? null,
+        companyUid: read.companyUid ?? known?.companyUid ?? null,
+        slackFailed: read.status != null ? false : (known?.slackFailed ?? false),
+        slackDenied: read.status != null ? false : (known?.slackDenied ?? false),
+        toolsFailed: read.connections != null ? false : (known?.toolsFailed ?? false),
+      },
+    };
+  }
+
+  /**
+   * Where a refresh takes the bot's status from:
+   * - "read": its own read (a recheck, a press, a modal). The default.
+   * - "poll": the open conversation's status poll, when that read is on its
+   *   way or answered a moment ago; else its own read. For the refresh made
+   *   when the conversation opens, which used to ask a second time for what
+   *   the poll had just been told.
+   * - "keep": the status already known, with no read. For trying a failed
+   *   list read again. With no status known yet, the poll's last answer,
+   *   whatever its age: the poll is what keeps asking, and a second asker
+   *   beside it would double the requests while the server is failing.
+   */
+  type BotStatusSource = "read" | "poll" | "keep";
+  /** What a refresh says about the company's list: read, worth another try, or not. */
+  type BotConnectionsOutcome = "ok" | "retry" | "stop";
+
+  /**
    * Ask the server about a bot's Slack and its company's connections. A
    * failure keeps what was known and never reaches the conversation: the
    * card says it could not check and stays usable.
+   *
+   * The list is read at the same time as the status, for the company known
+   * from before (or the one the conversation's row names). The two used to
+   * go one after the other, and the cards waited for both. When the status
+   * then names another company, or no company was known, the list is read
+   * for the status's company after it.
+   *
+   * `list: false` reads the status alone: every card on screen draws from
+   * the bot's own state, so the list is not needed. What is known of the
+   * list, and its failure flag, stay as they were.
    */
-  async function refreshBotConnectionFacts(agentUid: string, rowCompanyUid: string | null): Promise<void> {
+  async function refreshBotConnectionFacts(
+    agentUid: string,
+    rowCompanyUid: string | null,
+    options: { status?: BotStatusSource; list?: boolean } = {},
+  ): Promise<BotConnectionsOutcome> {
     const before = botConnectionFacts[agentUid] ?? null;
-    let status = before?.status ?? null;
-    let slackFailed = false;
-    let slackDenied = false;
-    try {
-      const result = await adapter.agents.getStatus(agentUid);
-      if (result.ok) status = result.value;
-      else {
-        slackFailed = true;
-        slackDenied = slackStatusDenied(result);
+    const wantList = options.list !== false;
+    const wanted: BotStatusSource = options.status ?? "read";
+    const source: BotStatusSource = wanted === "keep" && before?.status == null ? "poll" : wanted;
+    const readStatus = async (): Promise<{ value: unknown | null; failed: boolean; denied: boolean; refused: boolean }> => {
+      if (source === "keep") {
+        return { value: null, failed: before?.slackFailed ?? false, denied: before?.slackDenied ?? false, refused: false };
       }
-    } catch {
-      slackFailed = true;
-    }
-    const companyUid = companyUidFromStatus(status) ?? (rowCompanyUid?.trim() || before?.companyUid || null);
-    let connections = before?.connections ?? null;
-    let toolsFailed = false;
-    try {
-      const list = companyUid ? await adapter.integrations?.listConnections?.(companyUid) : null;
-      if (list?.ok) connections = list.value;
-      else toolsFailed = true;
-    } catch {
-      toolsFailed = true;
-    }
+      try {
+        const poll = source === "poll" ? botStatusPolls.get(agentUid) : undefined;
+        const usePoll =
+          poll !== undefined &&
+          (wanted === "keep" || poll.answeredAt === null || Date.now() - poll.answeredAt <= BOT_STATUS_REUSE_MS);
+        const result = await (usePoll ? poll.read : adapter.agents.getStatus(agentUid));
+        if (result.ok) return { value: result.value, failed: false, denied: false, refused: false };
+        return { value: null, failed: true, denied: slackStatusDenied(result), refused: botStatusReadRefused(result) };
+      } catch {
+        return { value: null, failed: true, denied: false, refused: false };
+      }
+    };
+    const readList = async (companyUid: string): Promise<{ value: unknown | null; refused: boolean }> => {
+      try {
+        const integrations = adapter.integrations;
+        // A host with no list to read has nothing to try again.
+        if (!integrations?.listConnections) return { value: null, refused: true };
+        // Called on its own object, as before: an adapter's method may use `this`.
+        const list = await integrations.listConnections(companyUid);
+        if (list.ok) return { value: list.value, refused: false };
+        return { value: null, refused: botStatusReadRefused(list) };
+      } catch {
+        return { value: null, refused: false };
+      }
+    };
+    // The company learned from an earlier answer first: it is the status's
+    // own, so a later refresh reads the right list once, whatever the row says.
+    const earlyCompanyUid = before?.companyUid || rowCompanyUid?.trim() || null;
+    const earlyList = wantList && earlyCompanyUid ? readList(earlyCompanyUid) : null;
+    const status = await readStatus();
+    const companyUid = companyUidFromStatus(status.value ?? before?.status ?? null) ?? earlyCompanyUid;
+    const list = !wantList
+      ? null
+      : earlyList && companyUid === earlyCompanyUid
+        ? await earlyList
+        : companyUid
+          ? await readList(companyUid)
+          : null;
+    // What is known may have moved while the reads were out (the hello's own
+    // reads, another refresh): a read that failed keeps the newest, not the
+    // copy from before it started.
+    const latest = botConnectionFacts[agentUid] ?? null;
     botConnectionFacts = {
       ...botConnectionFacts,
-      [agentUid]: { status, connections, companyUid, slackFailed, slackDenied, toolsFailed },
+      [agentUid]: {
+        status: status.value ?? latest?.status ?? null,
+        connections: list?.value ?? latest?.connections ?? null,
+        companyUid,
+        slackFailed: status.failed,
+        slackDenied: status.denied,
+        toolsFailed: wantList ? list?.value == null : (latest?.toolsFailed ?? false),
+      },
     };
+    if (!wantList) return status.failed && !status.refused ? "retry" : "ok";
+    if (list?.value != null) return "ok";
+    // The list was asked for and refused, or there is no company to ask
+    // about and the status will not name one: asking again changes nothing.
+    if (list) return list.refused ? "stop" : "retry";
+    return status.failed && !status.refused ? "retry" : "stop";
   }
 
   // ── The modal a connection card opens ───────────────────────────────
@@ -5842,17 +6085,24 @@
     const company = facts?.connections != null ? readCompanyConnections(facts.connections) : null;
     const rowCompanyUid = selectedRow?.kind === "dm" && selectedRow.personUid === uid ? (selectedRow.companyUid?.trim() ?? "") : "";
     const lookups = catalogLookups[uid] ?? {};
+    const companyUid = facts?.companyUid ?? (rowCompanyUid || null);
     return {
       uid,
       botName,
       record,
+      /** The signed-in person, for a card drawn from the bot's state. */
+      viewerUid: self?.uid?.trim() || company?.viewerUid || null,
+      /** Whether the person may add apps: the list says, else their role in the bot's company. */
+      canManage: company ? company.canManage : viewerMayManageIntegrations(companyUid),
+      /** When the app last read the live state for a press or a notice (ms), per kind. */
+      liveAt: liveCheckedAt[uid] ?? {},
       slack: facts?.status != null ? slackFactsFromStatus(facts.status) : null,
       /** The server refused this person the bot's status: only an admin may connect it to Slack. */
       slackDenied: facts?.slackDenied === true,
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
       /** The company's connections as the integration cards read them. */
       company,
-      companyUid: facts?.companyUid ?? (rowCompanyUid || null),
+      companyUid,
       /** What the catalog said about a domain. A member cannot ask it: an unknown domain is not found. */
       lookupFor: (domain: string): CatalogLookup => lookups[domain] ?? (company && !company.canManage ? "not-found" : "unknown"),
       appNotes: pressed,
@@ -5890,30 +6140,89 @@
           slack: connectionCardView("slack", { ...input, messageAt }),
           tools: connectionCardView("tools", { ...input, messageAt }),
         };
+        /** The live card of an app, from the company's list (the path of a message with no state). */
+        const liveIntegration = (item: { domain: string; why?: string; connectionId?: string }): ConnectionCardView | null =>
+          integrationCardView(item, {
+            botName: input.botName,
+            record: input.record,
+            facts: input.company,
+            lookup: input.lookupFor(item.domain),
+            now: input.now,
+            messageAt,
+            inFlight: input.inFlight,
+            note: input.appNotes[appNoteKey(item.domain)] ?? null,
+          });
+        /**
+         * An app item whose state the bot sent draws from that state, unless
+         * a live read made for a press or a notice is newer and the list it
+         * read is known.
+         */
+        const drawsFromState = (item: ConnectItem): boolean =>
+          !input.company || stateIsCurrent(connectItemStateAt(item, messageAt), input.liveAt.apps);
         return {
           views,
-          integration: (item) =>
-            integrationCardView(item, {
-              botName: input.botName,
-              record: input.record,
-              facts: input.company,
-              lookup: input.lookupFor(item.domain),
-              now: input.now,
-              messageAt,
-              inFlight: input.inFlight,
-              note: input.appNotes[appNoteKey(item.domain)] ?? null,
-            }),
-          // A row with apps still being looked up waits, up to the settle time
-          // counted from when this row first waited.
-          rowReady: (items) => {
+          // The bot's own Slack card from the Slack state the bot sent, unless
+          // the bot's status was read for a press or a notice since.
+          builtin: (item) => {
+            if (item.app !== "slack" || !item.slack) return null;
+            if (input.slack && !stateIsCurrent(connectItemStateAt(item, messageAt), input.liveAt.slack)) return null;
+            return { ...connectionCardView("slack", { ...input, messageAt, slack: slackFactsFromItem(item.slack) }), fromState: true };
+          },
+          integration: (item) => {
+            if (!item.state) return liveIntegration(item);
+            if (!drawsFromState(item)) {
+              // The live read is newer. The bot's connection id is used only
+              // when the list says it is this app's (`connectionForStateItem`).
+              const connection = connectionForStateItem(input.company, { domain: item.domain, connectionId: item.state.connectionId });
+              const view = liveIntegration({
+                domain: item.domain,
+                ...(item.why ? { why: item.why } : {}),
+                ...(connection ? { connectionId: connection.id } : {}),
+              });
+              if (view) return view;
+            }
+            return integrationCardViewFromState(
+              { domain: item.domain, ...(item.why ? { why: item.why } : {}), state: item.state },
+              {
+                botName: input.botName,
+                viewerUid: input.viewerUid,
+                canManage: input.canManage,
+                record: input.record,
+                lookup: input.lookupFor(item.domain),
+                now: input.now,
+                messageAt,
+                inFlight: input.inFlight,
+                note: input.appNotes[appNoteKey(item.domain)] ?? null,
+              },
+            );
+          },
+          // A row draws as one unit (owner, 2026-10-05): it waits for the
+          // company's list and for the catalog's answer on each app it names,
+          // up to the settle time counted from when this row first waited.
+          // After that it draws what it can; a late card joins at the end.
+          // An app drawn from the bot's state waits for nothing.
+          rowReady: (rowItems) => {
+            const items = rowItems.filter((item) => !(item.domain && item.state && drawsFromState(item)));
+            if (!rowAwaitsList(items, input.company, input.lookupFor)) return true;
             const key = `${input.uid}|${items.map((item) => item.domain ?? "").filter(Boolean).sort().join(",")}`;
             let since = connectRowSince.get(key);
             if (since === undefined) {
-              since = input.now;
+              // The first wait. Nothing else may move the clock before the
+              // settle time is over (the list read can fail, or be refused),
+              // so the row sets its own timer for that moment.
+              since = Date.now();
               connectRowSince.set(key, since);
+              const timer = setTimeout(() => {
+                connectRowTimers.delete(timer);
+                connectionClock = Date.now();
+              }, ROW_SETTLE_MS + 50);
+              connectRowTimers.add(timer);
             }
-            return connectRowReady(items, { facts: input.company, lookupFor: input.lookupFor, since, now: input.now });
+            return connectRowReady(items, { facts: input.company, since, now: input.now, lookupFor: input.lookupFor });
           },
+          // Every row of a cloud bot's cards starts with the bot's own Slack
+          // card, whether or not the bot named Slack (integration-cards-model.ts).
+          arrange: slackFirst,
           browseAll: browseUrl ? { url: browseUrl, open: () => openConnectionUrl(browseUrl) } : null,
           onaction: (detail) => handleConnectionAction(input.uid, detail),
         };
@@ -5977,7 +6286,9 @@
         checkedAt: input.now,
         adapter,
         openUrl: openConnectionUrl,
-        refresh: () => refreshBotConnectionFacts(agentUid, rowCompanyUid),
+        refresh: async () => {
+          await refreshBotConnectionFacts(agentUid, rowCompanyUid);
+        },
         started: () => markConnectionStarted(agentUid, target),
       },
     };
@@ -6018,10 +6329,119 @@
     }
     return items;
   });
+  /**
+   * Whether the open bot's cards need the company's list and the bot's
+   * status read when its conversation opens: yes when a card on screen
+   * carries no state of the bot's (an old message, an old runtime, the app's
+   * own picks), or when no card is on screen yet (as before, so a card that
+   * comes later is known with its message). No when every card carries the
+   * bot's state. Null while the conversation is still loading, so a
+   * conversation of state cards is not read for at open.
+   */
+  const cloudBotListWanted = $derived.by((): boolean | null => {
+    const row = selectedRow;
+    if (!dmCloudBotUid || !row) return null;
+    const items = cloudBotConnectItems;
+    if (items.some((item) => !connectItemCarriesState(item))) return true;
+    if (items.length > 0) return false;
+    const loaded = (liveTimelineId === row.id && !timelineHydrating) || (messagesByRow?.(row)?.length ?? 0) > 0;
+    return loaded ? true : null;
+  });
+  /** When the newest state the open bot sent with a card was looked up (ms), or null. */
+  const cloudBotNewestStateAt = $derived.by((): number | null => {
+    const uid = dmCloudBotUid;
+    if (!uid) return null;
+    let newest: number | null = null;
+    for (const message of timeline) {
+      if (message.fromPersonUid !== uid) continue;
+      const at = Date.parse(message.createdAt ?? "");
+      for (const block of richContentForMessage(message).rich?.blocks ?? []) {
+        if (block.kind !== "connect") continue;
+        for (const item of block.items) {
+          if (!connectItemCarriesState(item)) continue;
+          const stateAt = connectItemStateAt(item, Number.isFinite(at) ? at : null);
+          if (stateAt !== null && (newest === null || stateAt > newest)) newest = stateAt;
+        }
+      }
+    }
+    return newest;
+  });
+  /**
+   * Read a bot's live state for a card drawn from the bot's state: its status
+   * (`slack`), the company's list (`apps`). Each read that answered is noted
+   * in {@link liveCheckedAt}, so the cards it covers draw from it.
+   */
+  async function recheckLive(agentUid: string, kinds: { slack?: boolean; apps?: boolean }): Promise<void> {
+    const outcome = await refreshBotConnectionFacts(agentUid, cardCompanyUid(agentUid), {
+      status: kinds.slack ? "read" : "poll",
+      list: kinds.apps === true,
+    });
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const at = Date.now();
+    const next = { ...(liveCheckedAt[agentUid] ?? {}) };
+    // The status answered, or was refused (the card then says who can connect Slack).
+    if (kinds.slack && facts && (!facts.slackFailed || facts.slackDenied)) next.slack = at;
+    if (kinds.apps && outcome === "ok" && facts?.connections != null) next.apps = at;
+    liveCheckedAt = { ...liveCheckedAt, [agentUid]: next };
+    connectionClock = at;
+  }
+  /**
+   * The newest connection-changed notice to each bot the app has seen on a
+   * page of its conversation (agent-channel.ts, `connectionNoticeAfter`). The
+   * timeline leaves these rows out, so they are noted as pages come in. A
+   * page filtered for people has none; a catch-up page after a new message
+   * has them.
+   */
+  let connectionNoticeByBot = $state.raw<Record<string, { eventId: string; at: number }>>({});
+  function noteConnectionNotice(agentUid: string, rows: ReadonlyArray<ConversationMessageWire>): void {
+    const uid = agentUid.trim();
+    if (!uid.startsWith("agt_")) return;
+    const known = connectionNoticeByBot[uid];
+    const notice = connectionNoticeAfter(rows, { agentUid: uid, afterMs: known?.at ?? Number.NEGATIVE_INFINITY });
+    if (notice) connectionNoticeByBot = { ...connectionNoticeByBot, [uid]: notice };
+  }
+  // The host's stored thread can carry notices too.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const row = selectedRow;
+    if (!uid || !row) return;
+    const injected = messagesByRow?.(row) ?? [];
+    if (injected.length > 0) untrack(() => noteConnectionNotice(uid, injected));
+  });
+  /** Connection-changed notices already read for, by bot and event id. */
+  const noticeRechecks = new Set<string>();
+  // A connection-changed notice to the bot newer than the newest state it
+  // sent with a card: that state may be out of date, so the live state is
+  // read once for it.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const newest = cloudBotNewestStateAt;
+    if (!uid || newest === null) return;
+    const notice = connectionNoticeByBot[uid];
+    if (!notice || notice.at <= newest) return;
+    const key = `${uid}:${notice.eventId}`;
+    if (noticeRechecks.has(key)) return;
+    noticeRechecks.add(key);
+    untrack(() => void recheckLive(uid, { slack: true, apps: true }));
+  });
+  /**
+   * Whether the wait-poll below reads the list too. Not when every card
+   * draws from the bot's state and nothing waits on the list: a Slack setup
+   * is followed through the status alone.
+   */
+  function cloudBotPollWantsList(): boolean {
+    if (cloudBotListWanted !== false) return true;
+    if (openCardModal?.target === "integration") return true;
+    const record = cloudBotCardInput?.record ?? null;
+    const now = Date.now();
+    if (record?.tools?.state === "connecting") return true;
+    return Object.values(record?.apps ?? {}).some((entry) => entry.state === "connecting" && now - entry.since <= CONNECTING_TIMEOUT_MS);
+  }
+
   // Look up, once per bot and domain, every app on screen that is not a
   // connection. Only an owner or admin may ask the catalog: for anyone else
-  // an unknown app simply draws no card. After the settle time the rows stop
-  // waiting for answers that have not come.
+  // an unknown app simply draws no card. The row waits for these, up to the
+  // settle time, so its cards appear together (integration-cards-model.ts).
   $effect(() => {
     const input = cloudBotCardInput;
     const items = cloudBotConnectItems;
@@ -6034,11 +6454,7 @@
       const wanted = domainsToLookUp(items, company).filter(
         (domain) => !catalogLookups[uid]?.[domain] && !catalogLookupsInFlight.has(`${uid}:${domain}`),
       );
-      if (wanted.length === 0) return;
       for (const domain of wanted) void lookUpCatalog(uid, companyUid, domain);
-      setTimeout(() => {
-        connectionClock = Date.now();
-      }, ROW_SETTLE_MS + 50);
     });
   });
   // A connect started from an integration card: when the list shows the
@@ -6066,13 +6482,48 @@
     }
   });
 
-  // Ask the server once when a bot's cards come on screen.
+  // Ask the server when a cloud bot's conversation opens, not when a message
+  // with cards comes on screen. The cards under a message are drawn from the
+  // bot's status and the company's list; read only once a card was already
+  // on screen, the cards came seconds after their message. Read here, they
+  // are known before the message is, and it draws them in its own frame.
+  //
+  // A list read that fails is tried again, further apart each time, and at
+  // once when the network returns. It used to stay failed until the person
+  // left the conversation and came back.
+  //
+  // When every card on screen carries the bot's own state, nothing is read:
+  // those cards draw from what the bot sent (`cloudBotListWanted`).
   $effect(() => {
     const uid = dmCloudBotUid;
-    if (!uid || !cloudBotCardsShown) return;
-    untrack(() => {
-      void refreshBotConnectionFacts(uid, selectedRow?.companyUid ?? null);
-    });
+    if (!uid || cloudBotListWanted !== true) return;
+    const rowCompanyUid = untrack(() => selectedRow?.companyUid ?? null);
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
+    const read = async (status: BotStatusSource): Promise<void> => {
+      const outcome = await refreshBotConnectionFacts(uid, rowCompanyUid, { status });
+      if (stopped || outcome !== "retry") return;
+      failures += 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void read("keep");
+      }, connectionsRetryMs(failures));
+    };
+    // The network is back: a try that was waiting its turn is made now.
+    const retryNow = (): void => {
+      if (stopped || !retryTimer) return;
+      clearTimeout(retryTimer);
+      retryTimer = null;
+      void read("keep");
+    };
+    untrack(() => void read("poll"));
+    window.addEventListener("online", retryNow);
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      window.removeEventListener("online", retryNow);
+    };
   });
   // While a card waits (for the browser, or for a Slack setup the server has
   // and that is not finished), or while a card's modal is open, ask again
@@ -6086,7 +6537,7 @@
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const recheck = async (): Promise<void> => {
-      await refreshBotConnectionFacts(uid, rowCompanyUid);
+      await refreshBotConnectionFacts(uid, rowCompanyUid, { list: cloudBotPollWantsList() });
       // A card that has waited too long goes back to offered on this tick.
       if (!stopped) connectionClock = Date.now();
     };
@@ -6439,11 +6890,13 @@
     }
   }
   /** A button on a card was pressed. A press already under way is ignored. */
-  async function handleConnectionAction(agentUid: string, detail: ConnectionCardActionDetail): Promise<void> {
-    const key = connectionActionKey(detail.target, detail.action, detail.connectionId, detail.domain);
+  async function handleConnectionAction(agentUid: string, pressed: ConnectionCardActionDetail): Promise<void> {
+    const key = connectionActionKey(pressed.target, pressed.action, pressed.connectionId, pressed.domain);
     if (connectionInFlight[agentUid]?.has(key)) return;
     setConnectionInFlight(agentUid, key, true);
     try {
+      const detail = pressed.fromState && pressed.action !== "decline" ? await liveStatePress(agentUid, pressed) : pressed;
+      if (!detail) return;
       if (detail.target === "integration") {
         const domain = detail.domain;
         if (!domain) return;
@@ -6472,6 +6925,58 @@
     } finally {
       setConnectionInFlight(agentUid, key, false);
     }
+  }
+
+  /**
+   * A press on a card drawn from the bot's state. The live state is read
+   * first: the bot's status for Slack, the company's list for an app (there
+   * is no read of one connection). Hands back what to do then, or null when
+   * there is nothing to do: the card now draws from the live read and says
+   * what is true (connected, shared, ask an admin), or a note says why not.
+   * The server checks the press itself whatever the card said.
+   */
+  async function liveStatePress(agentUid: string, detail: ConnectionCardActionDetail): Promise<ConnectionCardActionDetail | null> {
+    if (detail.target === "slack") {
+      await recheckLive(agentUid, { slack: true });
+      const facts = botConnectionFacts[agentUid] ?? null;
+      if (facts?.slackDenied) return null;
+      // A failed recheck retains the previous status for the card, but that
+      // stale value must not prevent the person opening the Slack flow.
+      if (!facts?.slackFailed && facts?.status != null && slackFactsFromStatus(facts.status).state === "connected") return null;
+      return detail;
+    }
+    if (detail.target !== "integration" || !detail.domain) return detail;
+    const domain = detail.domain;
+    const noteKey = appNoteKey(domain);
+    await recheckLive(agentUid, { apps: true });
+    const input = cloudBotCardInput;
+    const company = input && input.uid === agentUid ? input.company : null;
+    if (!input || !company || liveCheckedAt[agentUid]?.apps === undefined) {
+      setConnectionNote(agentUid, noteKey, "Could not check this app right now. Try again.");
+      return null;
+    }
+    setConnectionNote(agentUid, noteKey, null);
+    const connection = connectionForStateItem(company, { domain, connectionId: detail.connectionId ?? null });
+    if (detail.action === "allow") {
+      if (!connection) return null;
+      // The live card with the old path's checks: act only if it still offers
+      // "Let {bot} use it" (the person looking made it, the bot cannot use it yet).
+      const live = integrationCardView(
+        { domain, connectionId: connection.id },
+        { botName: input.botName, record: input.record, facts: company, lookup: input.lookupFor(domain), now: Date.now() },
+      );
+      const offersAllow = live?.primaryAction === "allow" && live.primaryLabel !== null && live.connectionId === connection.id;
+      return offersAllow ? { target: "integration", action: "allow", domain, connectionId: connection.id } : null;
+    }
+    // Connect (or its modal): not when it is connected now, or the person may not add apps.
+    if (connection || !company.canManage) return null;
+    if (input.lookupFor(domain) === "unknown" && input.companyUid) await lookUpCatalog(agentUid, input.companyUid, domain);
+    const lookup = cloudBotCardInput?.lookupFor(domain) ?? "not-found";
+    if (typeof lookup !== "object") {
+      setConnectionNote(agentUid, noteKey, APP_NOT_CONNECTABLE_NOTE(defaultAppName(domain)));
+      return null;
+    }
+    return { target: "integration", action: lookup.authClass === "key" ? "open" : "connect", domain };
   }
 
   /**
@@ -7686,7 +8191,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -7704,7 +8209,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchDmThread(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -8376,7 +8881,7 @@
    *
    * The takeover owns what happens next (the waking screen, the hand-off to
    * the direct message), so nothing is navigated here. The bot is remembered
-   * as made in the new flow on this device: that is what its sync strip's
+   * as made in the new flow on this device: that is what its sync status's
    * first-download reading, its connection cards and its first message key
    * on.
    */
@@ -12426,7 +12931,6 @@
           selectedId={selectedRow?.id ?? null}
           scopeUid={tenantCompanyId}
           {tenantAccountId}
-          {engagedAgentUids}
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
@@ -12979,6 +13483,14 @@
                   </span>
                 {/if}
               </div>
+              {#if dmCloudBotUid}
+                <!-- The bot's file sync, to the right of "Direct message": a
+                     still glyph and one muted line. It is the title block's
+                     one item that may shrink to nothing, so in a narrow
+                     window it is cut first, and the name, the label and
+                     "Edit profile" keep their places. -->
+                <BotSyncStatus facts={dmCloudBotSync} />
+              {/if}
             </div>
 
             <div class="channel-header-trailing">
@@ -13309,6 +13821,16 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupToolOffer}
+                    {@const offerTool = setupToolOffer}
+                    <SetupToolOffer
+                      tool={offerTool}
+                      busy={setupToolOfferBusy}
+                      launchError={setupToolOfferError}
+                      oncontinue={() => void continueSetupInTool(offerTool)}
+                      onkeep={() => keepSetupHere(offerTool)}
+                    />
+                  {/if}
                   {#if agentChannelFallbackVisible}
                     <div class="agent-channel-fallback" data-testid="agent-channel-live-fallback" role="status">
                       {headerTitle} is live. Say hello.
@@ -13492,14 +14014,6 @@
                     </div>
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
-                {/snippet}
-                {#snippet botSyncStrip()}
-                  <!-- A strip directly under the header, above the message
-                       scroller: the bot's file sync. It stays in view while
-                       the person scrolls. -->
-                  {#if dmCloudBotUid}
-                    <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
-                  {/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -13706,7 +14220,6 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
-                  aboveMessages={botSyncStrip}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraCards}

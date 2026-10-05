@@ -68,7 +68,7 @@ pub fn detect_ai_tools_blocking() -> AiTools {
         CLI_PROBE_TIMEOUT,
     );
     // The Codex CLI ships INSIDE the ChatGPT app bundle
-    // (Contents/Resources/codex), so a machine with the desktop app has a
+    // (Contents/Resources/codex or codex-cli/bin/codex), so a machine with the desktop app has a
     // full CLI even when nothing is on PATH. Count it: workspace launches
     // resolve the bundled binary directly.
     if !tools.codex_cli && crate::commands::launch::bundled_codex_bin().is_some() {

@@ -62,7 +62,22 @@ export interface LaunchActions {
   launchClaude(): Promise<string | null>;
   launchCodex(): Promise<string | null>;
   launchGrok(): Promise<string | null>;
+  /**
+   * The DESKTOP APP only, never a terminal: the Claude app's Code tab through
+   * its `claude://code/new` link (folder and prompt), or the Codex app through
+   * its bundled `codex app <folder>` plus the prompt link. Used where the
+   * person was told "Continue in Claude" / "Continue in Codex" because that
+   * app is installed. Returns the failure (or "not installed") message.
+   */
+  launchClaudeApp(): Promise<string | null>;
+  launchCodexApp(): Promise<string | null>;
 }
+
+/** What the desktop-app-only launches say when the app is not there. */
+export const DESKTOP_APP_MISSING = {
+  claude: "The Claude app was not found on this computer.",
+  codex: "The Codex app was not found on this computer.",
+} as const;
 
 type FailedLaunch = { ok: false; reason: string; message?: string };
 
@@ -184,5 +199,21 @@ export function createLaunchActions({
     return res.ok ? null : failureMessage(res, "Grok Build");
   }
 
-  return { launchClaude, launchCodex, launchGrok };
+  async function launchClaudeApp(): Promise<string | null> {
+    if (!folder) return null;
+    const tools = await ensureAiTools();
+    if (!tools?.claude_desktop) return DESKTOP_APP_MISSING.claude;
+    const res = await shell.openClaudeCodeLink(buildClaudeCodeUrl({ folder, prompt: deepLinkPrefill }));
+    return res.ok ? null : failureMessage(res, "the Claude app");
+  }
+
+  async function launchCodexApp(): Promise<string | null> {
+    if (!folder) return null;
+    const tools = await ensureAiTools();
+    if (!tools?.codex_desktop) return DESKTOP_APP_MISSING.codex;
+    const res = prefill ? await shell.launchCodexWorkspace(folder, prefill) : await shell.launchCodexWorkspace(folder);
+    return res.ok ? null : failureMessage(res, "the Codex app");
+  }
+
+  return { launchClaude, launchCodex, launchGrok, launchClaudeApp, launchCodexApp };
 }

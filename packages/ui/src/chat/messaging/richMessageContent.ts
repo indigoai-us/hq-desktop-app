@@ -204,6 +204,21 @@ export interface SuggestionsBlock {
   items: string[];
 }
 
+/** The coding tools a `continueInTool` block can name. */
+export type ContinueInTool = "claude" | "codex";
+
+/**
+ * The setup bot's offer to continue setup in a coding tool the person already
+ * uses a lot (hq-cli sends it as the bot's first message). Carries only the
+ * tool's id. Like `setupDone` it renders nothing inline: the host draws its
+ * own two-button card under the message (open that tool in the HQ folder, or
+ * keep going here), and every action is the host's, never the bot's.
+ */
+export interface ContinueInToolBlock {
+  kind: "continueInTool";
+  tool: ContinueInTool;
+}
+
 /**
  * The built-in cards a {@link ConnectItem} can name. A closed list. `tools`
  * is legacy: old messages still draw the generic tools card, but it is no
@@ -213,9 +228,9 @@ export type ConnectTarget = "slack" | "tools";
 
 /** One card a bot asks for in a {@link ConnectBlock}. Exactly one of `app` or `domain` is set. */
 export interface ConnectItem {
-  /** A built-in card: "slack" (or "tools", legacy only). */
+  /** A built-in card: "slack" (or "tools", legacy only). A bot that names `slack.com` gets this item too. */
   app?: ConnectTarget;
-  /** An integration named by its website domain, e.g. "linear.app". Normalized. */
+  /** An integration named by its website domain, e.g. "linear.app". Normalized. Never Slack's ({@link isSlackConnectDomain}). */
   domain?: string;
   /** The bot's short reason, sanitized text, at most 80 characters. */
   why?: string;
@@ -223,10 +238,45 @@ export interface ConnectItem {
    * The connection this card is for. Set by the app alone, on the cards it
    * chooses itself from the company's list (`appChosenItems`), so such a card
    * is tied to that one connection and not to whichever one shares its
-   * domain. Never read from a bot's block: the parser takes `app`, `domain`
-   * and `why` and nothing else.
+   * domain. Never read from a bot's block: a bot's connection id travels in
+   * {@link ConnectItem.state} and is checked against the domain before use.
    */
   connectionId?: string;
+  /**
+   * The app's state as the bot looked it up when it wrote the message (a
+   * runtime with `show_connection_cards` state). Domain items only. Absent on
+   * old messages and old runtimes: the app then works the state out itself.
+   */
+  state?: ConnectItemState;
+  /** The bot's own Slack as the bot looked it up. Slack items only. */
+  slack?: ConnectItemSlack;
+  /** When the bot looked the state up: an ISO time, as sent. */
+  asOf?: string;
+}
+
+/** How a connection is shared, as the server names it. Any other value is dropped. */
+export type ConnectAccessMode = "everyone" | "legacy-open" | "private" | "shared";
+
+/** An integration item's state, as the bot sent it. Only checked fields are kept. */
+export interface ConnectItemState {
+  /** The company has this app connected. */
+  connected: boolean;
+  /** The bot may use the connection now. Never true when `connected` is false. */
+  usableByBot: boolean;
+  connectionId?: string;
+  /** The person who connected it (`prs_...`). */
+  createdByPersonUid?: string;
+  accessMode?: ConnectAccessMode;
+}
+
+/** Where the bot's own Slack stands, from the bot's view. */
+export type ConnectSlackInstalled = "installed" | "pending" | "absent";
+
+/** The Slack item's state, as the bot sent it. */
+export interface ConnectItemSlack {
+  installed: ConnectSlackInstalled;
+  /** The Slack workspace's name. Kept, not drawn: every word on a card is the app's. */
+  workspaceName?: string;
 }
 
 /**
@@ -250,6 +300,7 @@ export interface ConnectBlock {
 export type RichBlock =
   | SetupDoneBlock
   | SuggestionsBlock
+  | ContinueInToolBlock
   | ConnectBlock
   | StatBlock
   | TableBlock
@@ -269,6 +320,7 @@ export interface RichContentModel {
 export const KNOWN_BLOCK_KINDS = new Set<string>([
   "setupDone",
   "suggestions",
+  "continueInTool",
   "connect",
   "stat",
   "table",
@@ -305,6 +357,7 @@ const MAX_SUGGESTION_LEN = 80;
 export const HOST_PLACED_BLOCK_KINDS: ReadonlySet<RichBlock["kind"]> = new Set([
   "setupDone",
   "suggestions",
+  "continueInTool",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -656,6 +709,80 @@ export function normalizeConnectDomain(value: unknown): string | null {
   return domain;
 }
 
+/** Slack's own website. A bot that names it means its own Slack (see {@link isSlackConnectDomain}). */
+const SLACK_DOMAIN = "slack.com";
+
+/**
+ * Whether a domain is Slack's: `slack.com` or a name under it
+ * (`acme.slack.com`, `app.slack.com`), in any form
+ * {@link normalizeConnectDomain} reads (a scheme, a path, `www.`).
+ *
+ * In a bot's conversation "Slack" always means the bot's own Slack: the
+ * built-in card that shows whether the bot is in Slack and opens the Connect
+ * Slack window. A company can also hold a Slack integration connection (one a
+ * teammate made, say). That is a different thing, and its state is never what
+ * a card titled Slack shows. So a connect item that names this domain is the
+ * built-in Slack item, and nothing that draws an integration card accepts it.
+ */
+export function isSlackConnectDomain(value: unknown): boolean {
+  const domain = normalizeConnectDomain(value);
+  return domain !== null && (domain === SLACK_DOMAIN || domain.endsWith(`.${SLACK_DOMAIN}`));
+}
+
+const CONNECT_ACCESS_MODES: readonly ConnectAccessMode[] = ["everyone", "legacy-open", "private", "shared"];
+const CONNECT_SLACK_STATES: readonly ConnectSlackInstalled[] = ["installed", "pending", "absent"];
+/** A connection id as the server writes it. */
+const CONNECTION_ID = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,119}$/;
+/** A person uid as the server writes it. */
+const PERSON_UID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
+const MAX_AS_OF_LEN = 40;
+const MAX_WORKSPACE_NAME_LEN = 80;
+
+/**
+ * An integration item's `state`. Null unless `connected` and `usableByBot`
+ * are both booleans and agree (a bot cannot use what is not connected): the
+ * item is then read as one without state. The optional fields are kept only
+ * when they have the server's shape.
+ */
+function parseConnectItemState(raw: unknown): ConnectItemState | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.connected !== "boolean" || typeof raw.usableByBot !== "boolean") return null;
+  if (raw.usableByBot && !raw.connected) return null;
+  const out: ConnectItemState = { connected: raw.connected, usableByBot: raw.usableByBot };
+  const connectionId = typeof raw.connectionId === "string" ? raw.connectionId.trim() : "";
+  if (CONNECTION_ID.test(connectionId)) out.connectionId = connectionId;
+  const creator = typeof raw.createdByPersonUid === "string" ? raw.createdByPersonUid.trim() : "";
+  if (PERSON_UID.test(creator)) out.createdByPersonUid = creator;
+  const mode = CONNECT_ACCESS_MODES.find((known) => known === raw.accessMode);
+  if (mode) out.accessMode = mode;
+  return out;
+}
+
+/**
+ * The Slack item's `slack`. The plan writes it two ways: `installed` as a
+ * boolean, and as "installed" | "pending" | "absent" (the bot's own Slack
+ * read). Both are read; a boolean has no pending. `state` with the same
+ * three words is read too, as the server's agent route names it. Null for
+ * anything else.
+ */
+function parseConnectItemSlack(raw: unknown): ConnectItemSlack | null {
+  if (!isRecord(raw)) return null;
+  const value = raw.installed !== undefined ? raw.installed : raw.state;
+  const installed: ConnectSlackInstalled | null =
+    value === true ? "installed" : value === false ? "absent" : (CONNECT_SLACK_STATES.find((known) => known === value) ?? null);
+  if (!installed) return null;
+  const workspaceName = toSafeLabel(raw.workspaceName, MAX_WORKSPACE_NAME_LEN);
+  return workspaceName ? { installed, workspaceName } : { installed };
+}
+
+/** An `asOf` the app can read as a time, as sent; else null. */
+function parseAsOf(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value || value.length > MAX_AS_OF_LEN || !Number.isFinite(Date.parse(value))) return null;
+  return value;
+}
+
 function parseConnectItem(entry: unknown): ConnectItem | null {
   if (typeof entry === "string") {
     // The old form: a bare target name.
@@ -663,16 +790,37 @@ function parseConnectItem(entry: unknown): ConnectItem | null {
     return target ? { app: target } : null;
   }
   if (!isRecord(entry)) return null;
-  // Only `app`, `domain` and `why` are read. A url, label, logo or style the
+  // Only `app`, `domain`, `why` and the bot's state fields (`state` on an
+  // app, `slack` on Slack, `asOf`) are read. A url, label, logo or style the
   // agent adds is ignored: the app builds every link and writes every word.
   const why = toSafeLabel(entry.why, MAX_CONNECT_WHY_LEN);
+  const asOf = parseAsOf(entry.asOf);
   const withWhy = (item: ConnectItem): ConnectItem => (why ? { ...item, why } : item);
+  const slackItem = (): ConnectItem => {
+    const slack = parseConnectItemSlack(entry.slack);
+    return withWhy(slack ? { app: "slack", slack, ...(asOf ? { asOf } : {}) } : { app: "slack" });
+  };
   if (entry.app !== undefined) {
     // Only Slack is a built-in a bot may name in the new form.
-    return entry.app === "slack" ? withWhy({ app: "slack" }) : null;
+    return entry.app === "slack" ? slackItem() : null;
   }
   const domain = normalizeConnectDomain(entry.domain);
-  return domain ? withWhy({ domain }) : null;
+  if (!domain) return null;
+  // Slack by its domain is the bot's own Slack card, the same item as
+  // `app: "slack"`. A block that names both forms then dedupes to one card.
+  if (isSlackConnectDomain(domain)) return slackItem();
+  const state = parseConnectItemState(entry.state);
+  return withWhy(state ? { domain, state, ...(asOf ? { asOf } : {}) } : { domain });
+}
+
+/**
+ * Whether a `connect` item carries the bot's state for its card: Slack with
+ * `slack`, an app with `state`. The legacy tools card never does.
+ */
+export function connectItemCarriesState(item: ConnectItem): boolean {
+  if (item.app === "slack") return item.slack !== undefined;
+  if (item.app) return false;
+  return item.state !== undefined;
 }
 
 function parseConnectBlock(raw: Record<string, unknown>): ConnectBlock | null {
@@ -766,6 +914,9 @@ function parseBlock(raw: unknown): RichBlock | null {
       return raw.slackAgent === true ? { kind: "setupDone", slackAgent: true } : { kind: "setupDone" };
     case "suggestions":
       return parseSuggestionsBlock(raw);
+    case "continueInTool":
+      // A closed list: any other tool id drops the block.
+      return raw.tool === "claude" || raw.tool === "codex" ? { kind: "continueInTool", tool: raw.tool } : null;
     case "connect":
       return parseConnectBlock(raw);
     case "stat":
@@ -1316,6 +1467,7 @@ function blockToPlainText(block: RichBlock): string {
   switch (block.kind) {
     case "setupDone":
     case "suggestions":
+    case "continueInTool":
       return "";
     case "markdown":
       return block.text;
@@ -1412,6 +1564,14 @@ export function suggestionsForMessage(message: { body?: string | null; richConte
     (b): b is SuggestionsBlock => b.kind === "suggestions",
   );
   return block ? [...block.items] : [];
+}
+
+/** The coding tool a message offers to continue setup in, or null. */
+export function continueInToolForMessage(message: { body?: string | null; richContent?: unknown }): ContinueInTool | null {
+  const block = richContentForMessage(message).rich?.blocks.find(
+    (b): b is ContinueInToolBlock => b.kind === "continueInTool",
+  );
+  return block ? block.tool : null;
 }
 
 /**

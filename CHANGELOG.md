@@ -9,6 +9,74 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.
+- Connection cards in a cloud bot's direct message can now come from the bot itself. A bot on the new runtime sends each card with the state it looked up (whether the app is connected, whether the bot can use it, who connected it, and whether the bot is in Slack), in the message's structured content instead of inside its text. The app draws those cards straight from what the bot sent, without reading the company's connection list: "Nova can use it." when the bot can use the app (for a bot named Nova), "Let Nova use it?" with the button when you connected it, "A teammate connected this. Ask them to share it with Nova." when someone else did, Connect when you can add apps, and "Ask a company admin" when you cannot. When you press one of these cards, the app first checks the live state and then acts on that, and it checks again when a note that a connection changed reaches the bot. Slack is still the first card and a row still shows three cards at most. Messages from older bots, and cards without state, work as before. The app now also keeps a direct message's structured content when it loads the conversation; it used to drop it.
+
+- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
+- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
+- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
+- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
+- The file sync status of a cloud bot moved into the header of its direct message. The full-width "Syncing your company's files" strip and its progress bar under the header are gone. In their place a small sync icon and one short grey line sit to the right of "Direct message", next to the bot's name, for example "Syncing your company's files, 10 files so far", or with a percent when there is a real one. Nothing in it moves. In a narrow window the line is cut with "..." before anything else in the header gives way, and hovering it shows the full text. It goes away when the files are up to date, as the strip did.
+- Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
+- Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
+
+## [0.10.395] — 2026-10-05
+
+- Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
+- With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
+
+- Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
+- First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
+- The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
+
+- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
+
+## [0.10.394] — 2026-10-05
+
+- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
+- Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+
+## [0.10.393] — 2026-10-05
+
+- Rsync failure reports now include fixed categories for the exit status and sync phase.
+- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
+- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
+- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
+
+## [0.10.392] — 2026-10-05
+
+- The macOS Rust CI job now also runs for PRs that change the shared packages or the work app, because the sync app bundle it builds includes them.
+- Setup no longer says "Claude Code is installed. Sign in to finish." on a Mac that has only the Claude desktop app. Setup needs Claude Code itself, so it now shows "Install Claude", which installs Claude Code and opens its sign-in in one step. Codex works the same way with the ChatGPT app. HQ now also finds the Codex that comes inside current versions of the ChatGPT app, so people with the ChatGPT app can sign in to Codex without installing it separately. If a sign-in check still fails, the message names Claude Code or Codex and says to make sure it is installed. The coding-tool step on the welcome channel now only installs and signs in to Claude Code or Codex: the "Set up with Claude" and "Set up with ChatGPT" buttons and the "Already use Claude Code or Codex?" card are gone from it. The setup assistant offers to continue in Claude or Codex itself, and the Launch menu in the top right still opens your HQ folder in either one.
+- When the Claude app or the Codex app is installed on your Mac and you have used it a lot lately, your setup bot's welcome asks whether you want to continue setup there, with two buttons under it: "Continue in Claude" (or "Continue in Codex") opens your HQ folder in that app with a plain request to set up HQ already typed in, and "Keep going here" carries on with setup in the conversation as before. The button opens the desktop app, never a terminal. Needs the hq-cli release that sends the offer.
+- Opening your HQ folder in the Codex app works again with the current ChatGPT app, which moved its built-in Codex command inside the app.
+- Connection cards under a cloud bot's message now appear with the message. They used to appear several seconds later, because the app only asked the server what was connected after the message was already on screen. It now asks when you open the bot's direct message, and a bot you just created reuses what the app already read while setting it up. If that check fails, the app tries again by itself instead of waiting for you to leave the conversation and come back. A card for an app the app still has to look up no longer holds back the other cards in its row: they show at once and that card joins the row a moment later, after the ones already there.
+- In a cloud bot's direct message, a Slack card is always about the bot's own Slack. When a bot offered Slack by naming slack.com, the card showed a teammate's company Slack connection as "Connected" even though the bot had never been connected. It now shows the Connect Slack card, which opens the Connect Slack window, and reads "in Slack" only when the bot itself is in Slack. A person who is not allowed to set the bot up sees "Ask a company admin to connect Nova to Slack." (for a bot named Nova). The cards the app chooses no longer show a second Slack card for your own Slack connection. A new bot is told whether it is in Slack yet, and the company's Slack connection is no longer in the list of apps it is given.
+- Connection cards in a cloud bot's direct message no longer say "Connected" twice. Under the green Connected mark, an app a teammate connected now reads "A teammate connected this. Ask them to share it with Nova." (for a bot named Nova), your own app reads "Let Nova use it?", and an app the bot can already use reads "Nova can use it." The sentence on a card can take two rows, so the instruction is no longer cut off after the first few words. Every card in a row keeps the same height.
+- The messages the app sends a cloud bot (the first request after it is created, and the notes that say an app or Slack was connected) now only state facts and say what to do next. They no longer list things the bot must not do. A company whose only connection is Slack sends the bot no apps list.
+
+## [0.10.391] — 2026-10-04
+
+- Desktop update checks now record bounded check, download, and install outcomes that can be joined to first launch.
+
+- Desktop mirror Git commands no longer pause while holding the Git index lock, so later mirror passes are not held behind a stopped Git process.
+- First-launch join-key rollout assignments now use the public flag resolver.
+- CLI update failure reports now identify known Node crash signatures with fixed, path-free categories.
+- Channel and direct-message conversations now retain a message's intended audience. Human-only views hide messages explicitly sent to agents while keeping untagged messages visible.
+
+- Rust cache warmers now skip setup and compile work when the exact cache key already exists; cache misses still populate the keys used by release and Windows checks.
+- Core update failure prompts now say how much free space the safety snapshot needs and ask the user to retry after freeing it.
+- The required macOS Rust CI job now skips PR changes outside its app, Rust, and CI inputs while still running for every main push.
+
+## [0.10.390] — 2026-10-04
+
+- Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
+
+- HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
+
+- Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
+
+- HQ CLI updates that time out while a command is using the package now retry up to three times, ten minutes apart, before returning to the regular six-hour check.
+
 
 ## [0.10.389] — 2026-10-04
 

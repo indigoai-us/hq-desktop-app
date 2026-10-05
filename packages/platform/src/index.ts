@@ -4,6 +4,7 @@ export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
 export * from "./post-ready-actions.js";
+export * from "./setup-tool-offer-telemetry.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";

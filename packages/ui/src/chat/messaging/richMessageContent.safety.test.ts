@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   clearRichContentMemo,
   extractRichContentFromBody,
+  isSlackConnectDomain,
   MAX_CONNECT_ITEMS,
   MAX_ENVELOPE_SCAN_CHARS,
   normalizeConnectDomain,
@@ -138,6 +139,53 @@ describe("normalizeConnectDomain: only a public website", () => {
     });
     expect((model!.blocks[0] as ConnectBlock).items).toEqual([{ domain: "linear.app" }]);
     expect(parseRichContent({ v: 1, blocks: [{ kind: "connect", items: [{ domain: "vault.internal" }] }] })).toBeNull();
+  });
+});
+
+describe("Slack by its domain is the bot's own Slack item", () => {
+  const items = (...entries: unknown[]) =>
+    (parseRichContent({ v: 1, blocks: [{ kind: "connect", items: entries }] })!.blocks[0] as ConnectBlock).items;
+
+  it("reads slack.com, with or without www, a scheme or a path, and any name under it, as the Slack app item", () => {
+    for (const domain of [
+      "slack.com",
+      "Slack.com",
+      "www.slack.com",
+      "https://slack.com/",
+      "https://www.slack.com/intl/en-gb/?ref=x",
+      "acme.slack.com",
+      "https://app.slack.com/client/T1",
+      "mcp.slack.com",
+    ]) {
+      expect(items({ domain }), domain).toEqual([{ app: "slack" }]);
+      expect(isSlackConnectDomain(domain), domain).toBe(true);
+    }
+  });
+
+  it("keeps the bot's reason on it", () => {
+    expect(items({ domain: "slack.com", why: "Where your team talks" })).toEqual([{ app: "slack", why: "Where your team talks" }]);
+  });
+
+  it("collapses a block that names Slack both ways into one item, the first one's", () => {
+    expect(items({ app: "slack", why: "First" }, { domain: "slack.com", why: "Second" }, { domain: "notion.so" })).toEqual([
+      { app: "slack", why: "First" },
+      { domain: "notion.so" },
+    ]);
+    expect(items({ domain: "https://www.slack.com/" }, { app: "slack" }, { domain: "acme.slack.com" })).toEqual([{ app: "slack" }]);
+    // And across the blocks and envelopes of one message.
+    const body = `Hi.\n\n${fenced(envelope({ kind: "connect", items: [{ domain: "slack.com" }] }))}\n${fenced(envelope({ kind: "connect", items: [{ app: "slack" }, { domain: "linear.app" }] }))}`;
+    const blocks = extractRichContentFromBody(body).rich!.blocks.filter((block): block is ConnectBlock => block.kind === "connect");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.items).toEqual([{ app: "slack" }, { domain: "linear.app" }]);
+  });
+
+  it("leaves a domain that only resembles Slack's as that other site", () => {
+    for (const domain of ["slack.dev", "notslack.com", "slack.com.example.org", "myslack.co", "slack-tools.com"]) {
+      expect(items({ domain }), domain).toEqual([{ domain }]);
+      expect(isSlackConnectDomain(domain), domain).toBe(false);
+    }
+    expect(isSlackConnectDomain(null)).toBe(false);
+    expect(isSlackConnectDomain("not a domain")).toBe(false);
   });
 });
 

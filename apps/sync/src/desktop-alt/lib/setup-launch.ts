@@ -7,20 +7,6 @@
  */
 import type { AiTools } from '../../lib/onboarding-summary';
 
-/**
- * The deep-link prompt is NOT `/setup`: Claude Desktop scans skills before a
- * link-opened folder is trusted, so HQ's project `/setup` skill is suppressed
- * and the pre-typed slash command lands as an unknown command. Re-exported
- * from the shared @hq/ui constant so there is exactly one copy of that text.
- */
-export {
-  SETUP_DEEP_LINK_PROMPT,
-  SETUP_SKILL_PATH,
-  SETUP_CORE_MARKER,
-  SETUP_REPAIR_COMMAND,
-  SETUP_BOOTSTRAP_COMMAND,
-} from '@hq/ui';
-
 export type ClaudeLaunchPath = 'deep-link' | 'cli' | 'none';
 
 /**

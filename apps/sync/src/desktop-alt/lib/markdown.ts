@@ -25,7 +25,7 @@
  */
 
 /** HTML-escape a raw string so it can never inject markup. */
-export function escapeHtml(input: string): string {
+function escapeHtml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

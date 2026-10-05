@@ -1,12 +1,6 @@
 // @vitest-environment happy-dom
 
-/**
- * Bots must not clutter the rail. Creating an agent announces it to every
- * member of the company, so a day of fleet work put 31 never-used agent rows
- * — each with a "1" badge from the announcement alone — at the top of a
- * teammate's sidebar. An agent row appears only once there is a real
- * conversation, or the user pinned it.
- */
+/** Regression: bot conversations use the same activity rule as human DMs. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 
@@ -19,8 +13,8 @@ let component: ReturnType<typeof mount> | null = null;
 
 const now = () => new Date().toISOString();
 
-const HUMAN_UID = "prs_marcus";
-const TALKATIVE_AGENT = "agt_izzy";
+const BOT_UID = "agt_izzy";
+const DIRECTORY_ONLY_AGENT_UID = "agt_directory_only";
 
 const seedRow: ChannelDirectoryRow = {
   channelId: "chn_proj",
@@ -30,15 +24,6 @@ const seedRow: ChannelDirectoryRow = {
   name: "launch",
   lastActivityAt: now(),
 };
-
-/** 31 agent stubs, exactly as the directory serves them after a fleet run. */
-const stubs = Array.from({ length: 31 }, (_, i) => ({
-  personUid: `agt_stub${i}`,
-  displayName: `noticefixture-${i}`,
-  lastActivityAt: now(),
-  lastDmAt: now(),
-  unreadCount: 1,
-}));
 
 function stubApi(): ChatSidebarApi {
   return {
@@ -50,19 +35,15 @@ function stubApi(): ChatSidebarApi {
     }),
     listContacts: async () => ({
       contacts: [
-        ...stubs,
         {
-          personUid: HUMAN_UID,
-          displayName: "Marcus Chen",
-          email: "m@x.y",
+          personUid: BOT_UID,
+          displayName: "Izzy",
           lastActivityAt: now(),
           lastDmAt: now(),
         },
         {
-          personUid: TALKATIVE_AGENT,
-          displayName: "Izzy",
-          lastActivityAt: now(),
-          lastDmAt: now(),
+          personUid: DIRECTORY_ONLY_AGENT_UID,
+          displayName: "Directory only",
         },
       ],
     }),
@@ -98,53 +79,46 @@ afterEach(async () => {
   window.localStorage?.clear?.();
 });
 
-describe("ChatSidebar — agent stubs stay off the rail", () => {
-  it("renders 2 rows from 31 agent stubs plus 2 real conversations", async () => {
+describe("ChatSidebar — bot conversations survive a fresh-install remount", () => {
+  it("shows a bot DM with activity with empty local storage and after remount", async () => {
     component = mount(ChatSidebar, {
       target: host,
       props: {
         api: stubApi(),
         seedDirectory: [seedRow],
         self: { uid: "prs_me" },
-        engagedAgentUids: [TALKATIVE_AGENT],
       },
     });
 
     await vi.waitFor(() => {
       expect(
-        host.querySelector(`[data-conversation-id="dm:${HUMAN_UID}"]`),
+        host.querySelector(`[data-conversation-id="dm:${BOT_UID}"]`),
       ).not.toBeNull();
     });
-    await vi.waitFor(() => {
-      expect(
-        host.querySelector(`[data-conversation-id="dm:${TALKATIVE_AGENT}"]`),
-      ).not.toBeNull();
-    });
-    expect(dmRows()).toHaveLength(2);
     expect(
-      host.querySelector('[data-conversation-id="dm:agt_stub0"]'),
+      host.querySelector(`[data-conversation-id="dm:${DIRECTORY_ONLY_AGENT_UID}"]`),
     ).toBeNull();
-  });
+    expect(window.localStorage?.getItem("hq.chat.agent-engaged")).toBeNull();
 
-  it("emits a rail model with no stub rows in it", async () => {
-    const seen: string[] = [];
+    await unmount(component);
+    component = null;
+    host.remove();
+    host = document.createElement("div");
+    host.className = "desktop-shell chat-shell";
+    document.body.appendChild(host);
     component = mount(ChatSidebar, {
       target: host,
       props: {
         api: stubApi(),
         seedDirectory: [seedRow],
         self: { uid: "prs_me" },
-        engagedAgentUids: [TALKATIVE_AGENT],
-        onrows: (rows) => seen.push(...rows.map((row) => row.id)),
       },
     });
     await vi.waitFor(() => {
-      expect(seen).toContain(`dm:${HUMAN_UID}`);
+      expect(
+        host.querySelector(`[data-conversation-id="dm:${BOT_UID}"]`),
+      ).not.toBeNull();
     });
-    // The rail model never carries the stubs. Directory reachability (the
-    // "+" / typeahead path, which passes includeContactsWithoutConversation)
-    // is covered in agent-stubs.test.ts.
-    expect(seen).not.toContain("dm:agt_stub0");
-    expect(seen).toContain(`dm:${TALKATIVE_AGENT}`);
+    expect(dmRows()).toHaveLength(1);
   });
 });

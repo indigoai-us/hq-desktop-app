@@ -610,7 +610,7 @@ export function createHqWorkSidebarApi(adapter: PlatformAdapter): ChatSidebarApi
  * empty: MessagesShell resolves the peer from the directory by uid, and the
  * empty-email path is the same one the sidebar uses for an unresolved peer.
  */
-export function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
+function requestDeepLinkOpen(target: HqWorkOpenTarget): void {
   if (target.channelId) {
     requestChannelOpen(target.channelId, {
       replyRootEventId: target.replyRootEventId,

@@ -289,7 +289,7 @@ Options:
 `);
 }
 
-export async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   if (args.help) {
     printHelp();

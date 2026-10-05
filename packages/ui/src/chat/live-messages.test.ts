@@ -31,6 +31,16 @@ describe("normalizeConversationMessages", () => {
     expect(normalizeConversationMessages([wire])[0]?.eventId).toBe("e1");
   });
 
+  it("keeps a row's richContent as sent, and adds none to a row without it", () => {
+    const richContent = { v: 1, blocks: [{ kind: "connect", items: [{ app: "slack", slack: { installed: "absent" } }] }] };
+    const [withCards, plain] = normalizeConversationMessages([
+      { eventId: "e1", body: "Apps: Slack (not added yet)", createdAt: "2026-10-05T00:00:00.000Z", richContent },
+      { eventId: "e2", body: "hello", createdAt: "2026-10-05T00:00:01.000Z", richContent: null },
+    ]);
+    expect(withCards?.richContent).toEqual(richContent);
+    expect(plain && "richContent" in plain).toBe(false);
+  });
+
   it("keeps structured mentions on the wire message", () => {
     const [row] = normalizeConversationMessages([
       {
@@ -688,7 +698,7 @@ describe("the app's own requests to a bot: which rows are left out", () => {
   });
 });
 
-describe("audience on rows: only the flat exchange with a bot reads it", () => {
+describe("audience on conversation rows", () => {
   // A conversation between two people, as the server returns it: every row
   // carries an audience, and one is tagged for a bot.
   const PEOPLE = {
@@ -699,18 +709,16 @@ describe("audience on rows: only the flat exchange with a bot reads it", () => {
     ],
   };
 
-  it("keeps a conversation between people exactly as it was: no audience on any row", () => {
-    // Before the bot exchange, rows were normalized without the field. The
-    // human-only view reads it, so carrying it would hide m1 and m2 there.
-    for (const rows of [normalizeConversationMessages(PEOPLE), messagesForDisplay(PEOPLE), mergeFetchedTimeline([], PEOPLE)]) {
+  it("keeps real lane metadata for ordinary conversation timelines", () => {
+    // Conversation views classify from the server's lane, whether the rows
+    // came from a channel or an ordinary direct message.
+    for (const rows of [messagesForDisplay(PEOPLE), mergeFetchedTimeline([], PEOPLE)]) {
       expect(rows.map((row) => row.eventId).sort()).toEqual(["m1", "m2", "m3"]);
-      for (const row of rows) {
-        expect("audience" in row, row.eventId).toBe(false);
-        // What the human-only view asks of each row (ChannelConversation, `hiddenInHumanOnly`).
-        expect(isHumanMessage(row, { inferFromUid: false }), row.eventId).toBe(true);
-      }
+      expect(rows.map((row) => row.audience).sort()).toEqual(["agent", "bot", "both"]);
+      expect(isHumanMessage(rows.find((row) => row.eventId === "m1")!, { inferFromUid: false })).toBe(false);
+      expect(isHumanMessage(rows.find((row) => row.eventId === "m2")!, { inferFromUid: false })).toBe(false);
+      expect(isHumanMessage(rows.find((row) => row.eventId === "m3")!, { inferFromUid: false })).toBe(true);
     }
-    expect(messagesForDisplay(PEOPLE, { inlineReplies: false }).some((row) => "audience" in row)).toBe(false);
   });
 
   it("carries the audience in a one-to-one conversation with a bot, where the app's requests are left out by it", () => {

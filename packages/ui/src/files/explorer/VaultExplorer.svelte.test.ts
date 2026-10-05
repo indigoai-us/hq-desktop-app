@@ -68,7 +68,7 @@ const BACKLINKS: Record<string, string[]> = {
 
 const BIG_NOTE = "companies/acme/knowledge/big.md";
 
-function makeAdapter(calls: string[], failReveal = false) {
+function makeAdapter(calls: string[], failReveal = false, scopeError: Error | null = null) {
   return {
     kind: "tauri",
     capabilities: {},
@@ -76,6 +76,7 @@ function makeAdapter(calls: string[], failReveal = false) {
     appShell: {
       setActiveCompany: vi.fn(async (slug: string) => {
         calls.push(`scope:${slug}`);
+        if (scopeError) throw scopeError;
         return ok(undefined);
       }),
     },
@@ -157,9 +158,13 @@ async function settle(times = 6) {
   }
 }
 
-async function render(props: Record<string, unknown> = {}, failReveal = false) {
+async function render(
+  props: Record<string, unknown> = {},
+  failReveal = false,
+  scopeError: Error | null = null,
+) {
   const calls: string[] = [];
-  const adapter = makeAdapter(calls, failReveal);
+  const adapter = makeAdapter(calls, failReveal, scopeError);
   const onlocationchange = vi.fn();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -175,6 +180,40 @@ const rowNames = (el: HTMLElement) =>
   [...el.querySelectorAll('[data-testid="vault-tree-row"]')].map((r) => r.textContent?.trim());
 
 describe("VaultExplorer", () => {
+  it("shows this vault's last summary while its refreshed summary is pending", async () => {
+    let releaseRefresh!: () => void;
+    const refresh = new Promise<void>((resolve) => (releaseRefresh = resolve));
+    const { host, adapter } = await render({ companies: [...companies] });
+    const summary = adapter.files!.vault!.summary as ReturnType<typeof vi.fn>;
+    summary.mockImplementation(async (root: string) => {
+      if (root === "companies/acme") await refresh;
+      return ok({
+        root,
+        notes: root === "companies/acme" ? 4 : 1,
+        files: root === "companies/acme" ? 4 : 1,
+        links: 2,
+        truncated: false,
+        hubs: [],
+        folders: [],
+      });
+    });
+
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-switcher"]')!.click();
+    await settle();
+    [...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((button) => button.textContent?.includes("Personal"))!.click();
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="vault-switcher"]')!.click();
+    await settle();
+    [...host.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find((button) => button.textContent?.includes("Acme"))!.click();
+    await settle(2);
+
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("3notes");
+    expect(host.querySelector('[data-testid="vault-home-loader"]')).toBeNull();
+    releaseRefresh();
+    await settle();
+    expect(host.querySelector('[data-testid="vault-home"]')!.textContent).toContain("4notes");
+  });
+
   it("uses Windows file-manager labels in the explorer and preview", async () => {
     Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
     const { host } = await render({ path: "companies/acme/knowledge/pricing.md" }, true);
@@ -198,6 +237,18 @@ describe("VaultExplorer", () => {
     expect(scopeAt).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("list:companies/acme")).toBeGreaterThan(scopeAt);
     expect(calls.indexOf("summary:companies/acme")).toBeGreaterThan(scopeAt);
+  });
+
+  it("logs a failed company scope and still lists the vault", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { calls, host } = await render({}, false, new Error("scope down"));
+      expect(calls).toContain("list:companies/acme");
+      expect(rowNames(host)).toEqual(["knowledge", "README"]);
+      expect(warn).toHaveBeenCalledWith("vault-explorer: company scope failed", "scope down");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("never shows settings folders or credential files", async () => {

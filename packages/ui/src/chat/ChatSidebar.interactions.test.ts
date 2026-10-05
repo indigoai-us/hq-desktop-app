@@ -495,9 +495,6 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
         selectedId: "ch:chn_proj",
         wakes,
         self: { uid: "prs_stefan" },
-        // Deacon is on the rail because it already talks to this user — a
-        // newly created agent never gets a row (agent-stub rule).
-        engagedAgentUids: ["agt_deacon"],
       },
     });
     await vi.waitFor(() => {
@@ -537,7 +534,6 @@ describe("ChatSidebar unread badge on off-screen channel wake (US-019)", () => {
         selectedId: "ch:chn_proj",
         wakes,
         self: { uid: "prs_stefan" },
-        engagedAgentUids: ["agt_deacon"],
       },
     });
     await vi.waitFor(() => {

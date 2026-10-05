@@ -167,7 +167,6 @@ Owner decision, 2026-10-03: "Keep Messages as is. No change. Messages keeps its 
 | Reply pane subtitle | `.reply-sub` (ReplyPanel.svelte) | 12px | 400 |
 | Reply author name | `.reply-author` (ReplyPanel.svelte) | 14px | 600 |
 | Welcome channel heading ("Your company is ready.") | `.hero-title` (chat/SetupChannelIntro.svelte) | 20px | 600 |
-| "Already use Claude Code or Codex" heading | `.setup-elsewhere-title` (SetupChannelIntro.svelte) | 15px | 600 |
 | Welcome resource titles | `.resource-title` (SetupChannelIntro.svelte) | 13px | 600 |
 
 ## Indigo-only gates (RELEASE-001)

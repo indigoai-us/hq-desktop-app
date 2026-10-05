@@ -42,11 +42,14 @@ describe("isHumanMessage", () => {
     expect(isHumanMessage({ audience: "mesh" })).toBe(false);
   });
 
-  it("hides a bot-uid sender when audience is absent", () => {
+  it("hides legacy bot senders when audience is absent", () => {
     expect(isHumanMessage({ fromPersonUid: "bot_izzy" })).toBe(false);
     expect(isHumanMessage({ fromPersonUid: "agent_neo" })).toBe(false);
-    expect(isHumanMessage({ fromPersonUid: "agt_042" })).toBe(false);
     expect(isHumanMessage({ fromPersonUid: "sys_notify" })).toBe(false);
+  });
+
+  it("keeps an untagged agt_ reply for people to read", () => {
+    expect(isHumanMessage({ fromPersonUid: "agt_042" })).toBe(true);
   });
 
   it("keeps a bot-uid sender when audience is explicitly human", () => {
@@ -67,8 +70,8 @@ describe("isHumanMessage", () => {
 });
 
 describe("isHumanMessage inferFromUid option", () => {
-  it("default infers non-human from an agent uid with no audience", () => {
-    expect(isHumanMessage({ fromPersonUid: "agt_izzy" })).toBe(false);
+  it("default keeps an agt_ reply with no audience", () => {
+    expect(isHumanMessage({ fromPersonUid: "agt_izzy" })).toBe(true);
   });
   it("inferFromUid false keeps an untagged agent message", () => {
     expect(

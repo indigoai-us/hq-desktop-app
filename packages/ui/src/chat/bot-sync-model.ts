@@ -1,13 +1,16 @@
 /**
- * The sync strip in a cloud bot's direct message: the pure model.
+ * The file sync status in a cloud bot's direct message: the pure model.
  *
  * A cloud bot keeps a copy of the company's files on its own computer. While
- * that copy is being brought up to date the conversation shows a slim strip
- * under its header. This module decides what the strip says. It has two
- * halves:
+ * that copy is being brought up to date the conversation's header says so:
+ * a still sync glyph and one short line to the right of "Direct message"
+ * (BotSyncStatus.svelte). It used to be a strip with a progress bar under the
+ * header; "the strip" below is that status, wherever it is drawn. This module
+ * decides what it says. It has two halves:
  *
  *   1. {@link botSyncView} turns a plain "sync facts" object into what the
- *      strip draws. Any source can build those facts: the first download after
+ *      status draws, and {@link botSyncHeaderLine} makes the header's one line
+ *      from it. Any source can build those facts: the first download after
  *      a bot is created, a later sync the server reports, or a sync the app
  *      itself asked for.
  *   2. {@link observeBotSync} and {@link advanceBotSync} build the facts from
@@ -54,10 +57,11 @@
  * filled bar, appear only while `filesDone < filesTotal`, and they hold below
  * 100 until the server says the sync is done.
  *
- * THE BAR is always determinate: its fill is the real fraction done, or
- * nothing. It never sweeps, shimmers or guesses from elapsed time. When no
- * honest total is known the track shows with no fill and the words carry the
- * state.
+ * THE BAR is not drawn any more (the header shows words only), but the view
+ * still carries its numbers for any surface that wants one. It is always
+ * determinate: its fill is the real fraction done, or nothing. It never
+ * sweeps, shimmers or guesses from elapsed time. When no honest total is
+ * known there is no fill and the words carry the state.
  *
  * THE COPY is the same for every sync, first or later: the title names the
  * scope, the status line names the phase and the counts, and nothing says
@@ -360,6 +364,39 @@ export function botSyncView(
     amount: null,
     counts: null,
   };
+}
+
+/** What the conversation header shows for a sync. Built by {@link botSyncHeaderLine}. */
+export interface BotSyncHeaderLine {
+  /** The one short line beside "Direct message". */
+  text: string;
+  /** Everything the view says, for the `title` attribute of a line that was cut short. */
+  full: string;
+}
+
+/** A sentence with its full stop, whether or not the words came with one. */
+function sentence(words: string): string {
+  return /[.!?]$/.test(words) ? words : `${words}.`;
+}
+
+/**
+ * The header's line for a view: the title, then the one number that says how
+ * far along it is, after a comma. A real percent when there is one ("31%"),
+ * else the files so far ("10 files so far"), else the title alone. The
+ * outcomes (stale, up to date, failed) are their title as it is.
+ *
+ * `full` is the whole status in sentences: the title, the status line, and
+ * the percent in brackets. The header cuts `text` with an ellipsis when the
+ * window is narrow, and `full` is what its `title` attribute holds.
+ *
+ * Null for a view that is not visible: the header shows nothing then.
+ */
+export function botSyncHeaderLine(view: BotSyncView): BotSyncHeaderLine | null {
+  if (!view.visible) return null;
+  const amount = view.state === "syncing" ? (view.amount ?? view.counts) : null;
+  const text = amount ? `${view.title}, ${amount}` : view.title;
+  const full = line(sentence(view.title), view.detail || null, view.amount ? `(${view.amount})` : null);
+  return { text, full };
 }
 
 /**

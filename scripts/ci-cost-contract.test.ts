@@ -522,7 +522,9 @@ describe("the installer gate splits its two release builds", () => {
     expect(e2e).not.toContain("dtolnay/rust-toolchain");
     expect(e2e).not.toContain("Swatinem/rust-cache");
     expect(e2e).not.toContain("cargo ");
-    expect(e2e).toContain("uses: actions/download-artifact@v4");
+    expect(e2e).toContain(
+      "uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4",
+    );
   });
 
   it("fails the required check when a build job did not succeed", () => {
@@ -543,7 +545,9 @@ describe("the installer gate splits its two release builds", () => {
     const steps = e2e.slice(e2e.indexOf("\n    steps:"));
     expect(
       steps.indexOf("Fail when an installer build job did not succeed"),
-    ).toBeLessThan(steps.indexOf("uses: actions/checkout@v4"));
+    ).toBeLessThan(
+      steps.indexOf("uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4"),
+    );
   });
 
   it("writes the fixture cargo profile only after rust-cache has keyed", () => {
@@ -718,6 +722,31 @@ describe("only macOS-specific work runs on a macOS runner", () => {
     expect(linux).toContain(
       "if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}",
     );
+  });
+});
+
+describe("Rust macOS path scope preserves the required check", () => {
+  it("fails open and keeps full coverage on main and edited PR events", () => {
+    const scope = jobBody(ciWorkflow, "rust-macos-scope");
+    const macos = jobConfig(ciWorkflow, "rust-macos");
+
+    expect(scope).toContain(
+      "if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}",
+    );
+    expect(scope).toContain("fetch-depth: 0");
+    expect(scope).toContain("EVENT_ACTION: ${{ github.event.action }}");
+    expect(scope).toContain('if [ "$EVENT_ACTION" = "edited" ]; then');
+    expect(scope).toContain('echo "relevant=true" >>"$GITHUB_OUTPUT"');
+    expect(scope).toContain("git diff --name-only");
+    expect(scope).toContain("scripts/macos-check-relevant.mjs");
+    expect(scope).toContain("could not diff pull request — running the Rust macOS gate");
+
+    expect(macos).toContain("needs: [rust-macos-scope]");
+    expect(macos).toContain("always()");
+    expect(macos).toContain("needs.rust-macos-scope.result != 'success'");
+    expect(macos).toContain("needs.rust-macos-scope.outputs.relevant != 'false'");
+    expect(macos).toContain("github.event_name != 'pull_request'");
+    expect(macos).toContain("name: Rust tests (macOS)");
   });
 });
 
