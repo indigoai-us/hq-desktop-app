@@ -5266,7 +5266,14 @@ mod codex_telemetry_tests {
 
             std::env::set_var("HQ_TEST_HOME", home.path());
             std::env::set_var("HQ_VAULT_API_URL", server.uri());
-            emit_daily_active_at(now).await;
+            emit_daily_active_at(
+                now,
+                DesktopLivenessContext {
+                    launch_source: "unknown",
+                    start_at_login: "unknown",
+                },
+            )
+            .await;
             std::env::remove_var("HQ_TEST_HOME");
             std::env::remove_var("HQ_VAULT_API_URL");
         }
@@ -5295,7 +5302,14 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
         let now = chrono::Utc::now();
-        emit_daily_active_at(now).await;
+        emit_daily_active_at(
+            now,
+            DesktopLivenessContext {
+                launch_source: "unknown",
+                start_at_login: "unknown",
+            },
+        )
+        .await;
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
