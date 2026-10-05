@@ -324,7 +324,9 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     await mountResolved(w);
     // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
     // The second message's row (deepwiki.com, example.com, unknown-app.io) gets it too.
-    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "slack", "deepwiki.com", "example.com"]));
+    // Updated 2026-10-05 again: a row draws as one unit once its lookups have
+    // answered, so the cards are in the bot's order (Linear before Notion).
+    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "linear.app", "notion.so", "slack", "deepwiki.com", "example.com"]));
     // The catalog was asked once per app that is not connected, never for the connected one.
     const asked = w.catalogSearch.mock.calls.map(([, query]) => query).sort();
     expect(asked).toEqual(["deepwiki.com", "example.com", "linear.app", "unknown-app.io"]);
@@ -524,7 +526,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(appLine("linear.app")).toBe("Not connected. Ask Nova any time.");
     expect(appCard("linear.app")!.querySelectorAll("button")).toHaveLength(0);
     // The same places as before the press (see the first test for the order).
-    expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "slack", "deepwiki.com", "example.com"]);
+    expect(cardIds()).toEqual(["slack", "linear.app", "notion.so", "slack", "deepwiki.com", "example.com"]);
   });
 
   it("the old targets form still draws the built-in cards", async () => {
@@ -720,7 +722,7 @@ describe("DesktopApp: the bot's own Slack card is the first card of every row", 
     expect(rows()).toEqual([["slack", "notion.so"]]);
   });
 
-  it("draws Slack first from the first frame: no card is ever put in front of another", async () => {
+  it("draws the row whole, Slack first, in one frame: no card is ever put in front of another", async () => {
     const seen: string[][] = [];
     const observer = new MutationObserver(() => {
       const now = rows()[0] ?? [];
@@ -733,9 +735,10 @@ describe("DesktopApp: the bot's own Slack card is the first card of every row", 
     await vi.waitFor(() => expect(host).toBeDefined());
     observer.observe(host, { childList: true, subtree: true, attributes: true });
     await mounted;
-    await vi.waitFor(() => expect(rows()[0]).toEqual(["slack", "notion.so", "linear.app"]));
+    await vi.waitFor(() => expect(rows()[0]).toEqual(["slack", "linear.app", "notion.so"]));
     observer.disconnect();
-    expect(seen.length).toBeGreaterThan(0);
+    // The row is drawn once, whole (Linear's catalog lookup is waited for).
+    expect(seen).toEqual([["slack", "linear.app", "notion.so"]]);
     for (const [i, frame] of seen.entries()) {
       expect(frame[0], `frame ${i}: ${frame.join(",")}`).toBe("slack");
       // A later frame only adds cards at the end.

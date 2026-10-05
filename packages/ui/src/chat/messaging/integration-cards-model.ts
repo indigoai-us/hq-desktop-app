@@ -24,10 +24,10 @@
  *   one another's subdomain): a connection card (connected, or "Let {bot} use
  *   it" for the person's own). A provider name alone never matches a domain;
  * - else a catalog match for the domain: a connectable card with its auth class;
- * - else no card. While the lookup is unknown that app has no card yet: it
- *   comes in when its lookup answers. It never keeps the row's other cards
- *   from drawing. Only the company's list being unknown holds a whole row,
- *   for up to {@link ROW_SETTLE_MS}.
+ * - else no card. While the lookup is unknown that app has no card yet.
+ *   A row draws as one unit: it waits for the company's list and for the
+ *   catalog's answer on each app it names, for up to {@link ROW_SETTLE_MS};
+ *   after that it draws what it can and a late card joins at the end.
  *
  * The person's own presses (Connect, Not now) live in the per-bot record
  * (connection-card-model.ts, `apps`). "Connected" is never stored: it is
@@ -495,36 +495,44 @@ export function botReason(botName: string, why: string): string {
 }
 
 /**
- * Whether a block's row has to wait for the company's list: the list is not
- * known yet and the row names a domain. Nothing can be said about any domain
- * without the list. A row of built-in cards alone never waits.
+ * Whether a block's row has to wait: a row draws as one unit (owner,
+ * 2026-10-05: the Slack card showed at once and the others seconds later).
+ * It waits while the company's list is not known and the row names a domain,
+ * and, once the list is known, while an app it names that is not a
+ * connection still waits for its catalog lookup (`lookupFor` gives
+ * "unknown"). A row of built-in cards alone never waits.
+ *
+ * Without `lookupFor` only the list is waited for.
  */
 export function rowAwaitsList(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   facts: CompanyConnections | null | undefined,
+  lookupFor?: ((domain: string) => CatalogLookup) | null,
 ): boolean {
-  if (facts) return false;
-  return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
+  if (!facts) return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
+  if (!lookupFor) return false;
+  return items.some((item) => {
+    const domain = item.app ? null : normalizeConnectDomain(item.domain);
+    if (!domain || connectionForItem(facts, { domain, connectionId: item.connectionId })) return false;
+    return lookupFor(domain) === "unknown";
+  });
 }
 
 /**
  * Whether a block's row may draw.
  *
- * A row draws as soon as the company's list is known. From then every item is
- * decided on its own: a built-in card and a connection draw at once, and an
- * app that still waits for its catalog lookup simply has no card until the
- * lookup answers ({@link integrationCardView} gives null for it). One app
- * being looked up never holds the other cards back.
- *
- * Only the list itself being unknown holds a whole row ({@link rowAwaitsList}).
- * That hold ends when the list arrives, or after {@link ROW_SETTLE_MS} since
- * `since`, when the row draws what it can without it.
+ * A row draws once, whole, when everything it names is known: the company's
+ * list, and the catalog's answer for each app that is not a connection
+ * ({@link rowAwaitsList}). The wait is bounded: after {@link ROW_SETTLE_MS}
+ * since `since` (a failed or slow read) the row draws what it can, its
+ * built-in cards first among them, and a card whose facts come later takes
+ * the next free place (RichMessageContent.svelte), so no card on screen moves.
  */
 export function connectRowReady(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
-  input: { facts: CompanyConnections | null | undefined; since: number; now: number },
+  input: { facts: CompanyConnections | null | undefined; since: number; now: number; lookupFor?: ((domain: string) => CatalogLookup) | null },
 ): boolean {
-  if (!rowAwaitsList(items, input.facts)) return true;
+  if (!rowAwaitsList(items, input.facts, input.lookupFor)) return true;
   return input.now - input.since >= ROW_SETTLE_MS;
 }
 

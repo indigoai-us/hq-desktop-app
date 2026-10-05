@@ -188,22 +188,6 @@ const message = (eventId: string): HTMLElement | null =>
 const cardsIn = (el: ParentNode | null): HTMLElement[] => (el ? [...el.querySelectorAll<HTMLElement>('[data-testid="connection-card"]')] : []);
 const idsIn = (el: ParentNode | null): string[] => cardsIn(el).map((card) => card.dataset.domain ?? card.dataset.target ?? "");
 
-/**
- * Watch the page for the moment a message first appears, and note which cards
- * it has at that moment: the first frame the person could see it in.
- */
-function atFirstSight(eventId: string): { cards: () => string[] | null; stop: () => void } {
-  let seen: string[] | null = null;
-  const look = (): void => {
-    if (seen !== null) return;
-    const el = message(eventId);
-    if (el) seen = idsIn(el);
-  };
-  const observer = new MutationObserver(look);
-  observer.observe(host, { childList: true, subtree: true });
-  return { cards: () => seen, stop: () => observer.disconnect() };
-}
-
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => {
@@ -223,8 +207,13 @@ describe("DesktopApp: the cards of a bot's message show with the message", () =>
     expect(w.getStatus).toHaveBeenCalledTimes(1);
   });
 
-  it("a message that arrives with a connect block shows its cards in the frame it arrives in, and asks for no list again", async () => {
-    // The catalog is slow, so only what is known without it can be on the first frame.
+  // Rewritten 2026-10-05. It asserted that a row drew the cards it knew at
+  // once (Slack, the connected Linear) and that an app waiting for its
+  // catalog lookup joined later. The owner, of that: "it showed immediately
+  // but the other cards took a while to show up". A row now draws as one
+  // unit: nothing until every card it names is known, then all of them, in
+  // the row's order, Slack first.
+  it("a message that arrives with a connect block draws its row whole, once every card is known, and asks for no list again", async () => {
     const catalog = deferred<unknown>();
     const w = world({ catalogSearch: vi.fn(() => catalog.promise) });
     const wakes = createChatWakeBus();
@@ -233,30 +222,50 @@ describe("DesktopApp: the cards of a bot's message show with the message", () =>
     await settle();
     expect(cardsIn(host)).toHaveLength(0);
 
-    const sight = atFirstSight("b2");
+    const frames: string[][] = [];
+    const observer = new MutationObserver(() => {
+      const el = message("b2");
+      const ids = el ? idsIn(el) : [];
+      if (ids.length > 0 && ids.join() !== frames[frames.length - 1]?.join()) frames.push(ids);
+    });
+    observer.observe(host, { childList: true, subtree: true });
     w.thread = [OFFER, ...QUIET];
     wakes.emit("dm:new-message", { fromPersonUid: NOVA, eventId: "b2", createdAt: String(OFFER.createdAt), direction: "in" });
     await vi.waitFor(() => expect(message("b2")).not.toBeNull());
-    sight.stop();
-    // On the frame the message first appeared in: Slack and the connected app.
-    expect(sight.cards()).toEqual(["slack", "linear.app"]);
-    expect(idsIn(message("b2"))).toEqual(["slack", "linear.app"]);
     await settle();
+    // Notion still waits for the catalog: the row shows nothing yet.
+    expect(idsIn(message("b2"))).toEqual([]);
+    expect(w.catalogSearch).toHaveBeenCalledTimes(1);
+    expect(w.catalogSearch.mock.calls[0]![1]).toBe("notion.so");
+    catalog.resolve(ok({ ok: true, companyUid: COMPANY, entries: [NOTION_MATCH] }));
+    await vi.waitFor(() => expect(idsIn(message("b2"))).toEqual(["slack", "notion.so", "linear.app"]));
+    observer.disconnect();
+    // One frame with cards: all of them at once.
+    expect(frames).toEqual([["slack", "notion.so", "linear.app"]]);
     // Nothing was read again for it: not the list, not the status.
     expect(w.listConnections).toHaveBeenCalledTimes(1);
     expect(w.getStatus).toHaveBeenCalledTimes(1);
+  });
 
-    // The app that needed the catalog joins when its lookup answers, after
-    // the cards already there, and those are the same elements as before.
+  it("a row whose catalog lookup is slow draws what is known after the settle time, and the late card joins at the end", async () => {
+    const catalog = deferred<unknown>();
+    const w = world({ catalogSearch: vi.fn(() => catalog.promise) });
+    const wakes = createChatWakeBus();
+    await mountDm(w, wakes);
+    await vi.waitFor(() => expect(w.listConnections).toHaveBeenCalledTimes(1));
+    w.thread = [OFFER, ...QUIET];
+    wakes.emit("dm:new-message", { fromPersonUid: NOVA, eventId: "b2", createdAt: String(OFFER.createdAt), direction: "in" });
+    await vi.waitFor(() => expect(message("b2")).not.toBeNull());
+    await settle();
+    expect(idsIn(message("b2"))).toEqual([]);
+    // The wait is bounded: after it, Slack and the connected Linear draw.
+    await vi.waitFor(() => expect(idsIn(message("b2"))).toEqual(["slack", "linear.app"]), { timeout: ROW_SETTLE_MS + 2_000, interval: 50 });
     const [slackEl, linearEl] = cardsIn(message("b2"));
-    expect(w.catalogSearch).toHaveBeenCalledTimes(1);
-    expect(w.catalogSearch.mock.calls[0]![1]).toBe("notion.so");
     catalog.resolve(ok({ ok: true, companyUid: COMPANY, entries: [NOTION_MATCH] }));
     await vi.waitFor(() => expect(idsIn(message("b2"))).toEqual(["slack", "linear.app", "notion.so"]));
     expect(cardsIn(message("b2"))[0]).toBe(slackEl);
     expect(cardsIn(message("b2"))[1]).toBe(linearEl);
-    expect(w.listConnections).toHaveBeenCalledTimes(1);
-  });
+  }, 10_000);
 
   it("reads the list at the same time as the status when the row names the company", async () => {
     // A bot made here is a cloud bot before its status answers.

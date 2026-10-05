@@ -487,6 +487,31 @@ describe("integrationCardView", () => {
   });
 });
 
+describe("a row draws as one unit when the host passes its catalog answers", () => {
+  // Owner, 2026-10-05: "it showed immediately but the other cards took a while to show up".
+  const f = () => facts([connection()]);
+  const items = [{ app: "slack" as const }, { domain: "linear.app" }, { domain: "notion.so" }];
+
+  it("waits while an app that is not a connection has no catalog answer yet", () => {
+    const lookupFor = (domain: string) => (domain === "notion.so" ? ("unknown" as const) : ("not-found" as const));
+    expect(rowAwaitsList(items, f(), lookupFor)).toBe(true);
+    expect(connectRowReady(items, { facts: f(), since: NOW, now: NOW, lookupFor })).toBe(false);
+  });
+
+  it("is ready once every app is a connection or answered, a match or not found", () => {
+    expect(rowAwaitsList(items, f(), () => "not-found")).toBe(false);
+    expect(rowAwaitsList(items, f(), () => LINEAR)).toBe(false);
+    // The connected Linear needs no answer of its own.
+    expect(rowAwaitsList([{ domain: "linear.app" }], f(), () => "unknown")).toBe(false);
+  });
+
+  it("stops waiting after the settle time, and draws what is known", () => {
+    const lookupFor = () => "unknown" as const;
+    expect(connectRowReady(items, { facts: f(), since: NOW, now: NOW + ROW_SETTLE_MS - 1, lookupFor })).toBe(false);
+    expect(connectRowReady(items, { facts: f(), since: NOW, now: NOW + ROW_SETTLE_MS, lookupFor })).toBe(true);
+  });
+});
+
 describe("the row waits for the company's list, never for one app's lookup", () => {
   it("is ready as soon as the list is known, whatever is still being looked up", () => {
     const f = facts([connection()]);
