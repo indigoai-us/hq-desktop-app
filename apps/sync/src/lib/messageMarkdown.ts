@@ -266,7 +266,7 @@ export function wrapMessageMentions(html: string): string {
  * already escaped; this only wraps it — it never decodes entities or
  * interpolates raw input.
  */
-export function autolinkMessageUrls(html: string): string {
+function autolinkMessageUrls(html: string): string {
   if (!/https?:\/\//i.test(html)) return html;
 
   let out = '';

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSettingsUpdater, type SettingsWriteIo } from "./settings-write";
 
 function fakeIo() {
@@ -45,7 +45,13 @@ describe("settings mutation queue (desktop settings-mutations port)", () => {
       },
     };
     const update = createSettingsUpdater(flaky);
-    await expect(update({ a: 1 })).rejects.toThrow("disk full");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(update({ a: 1 })).rejects.toThrow("disk full");
+      expect(warn).toHaveBeenCalledWith("settings-write: mutation failed", "disk full");
+    } finally {
+      warn.mockRestore();
+    }
     fail = false;
     await expect(update({ b: 2 })).resolves.toBeUndefined();
   });

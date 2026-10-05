@@ -13,7 +13,7 @@ import {
   TEST_PRIVATE_JWK,
 } from "./fixtures/test-jwks";
 
-export async function mintIdToken(
+async function mintIdToken(
   claims: { sub?: string; email?: string; name?: string } = {},
 ): Promise<string> {
   const key = await importJWK({ ...TEST_PRIVATE_JWK }, "RS256");

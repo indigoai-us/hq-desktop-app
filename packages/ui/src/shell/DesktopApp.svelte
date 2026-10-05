@@ -6940,7 +6940,9 @@
       await recheckLive(agentUid, { slack: true });
       const facts = botConnectionFacts[agentUid] ?? null;
       if (facts?.slackDenied) return null;
-      if (facts?.status != null && slackFactsFromStatus(facts.status).state === "connected") return null;
+      // A failed recheck retains the previous status for the card, but that
+      // stale value must not prevent the person opening the Slack flow.
+      if (!facts?.slackFailed && facts?.status != null && slackFactsFromStatus(facts.status).state === "connected") return null;
       return detail;
     }
     if (detail.target !== "integration" || !detail.domain) return detail;

@@ -69,7 +69,7 @@ export function connectionsRetryMs(failures: number): number {
 }
 
 /** How many connections the apps brief for the bot lists. */
-export const MAX_BRIEF_CONNECTIONS = 25;
+const MAX_BRIEF_CONNECTIONS = 25;
 /** The apps brief's cap, in characters. */
 export const MAX_BRIEF_CHARS = 1_400;
 /** How many cards the app chooses in all, Slack included. Owner: never four cards, three at most. */
@@ -84,12 +84,12 @@ function text(value: unknown): string {
 }
 
 /** `factory:linear` → `linear`. */
-export function providerSlug(provider: string): string {
+function providerSlug(provider: string): string {
   return provider.replace(/^factory:/i, "").trim().toLowerCase();
 }
 
 /** `linear.app` → `linear`. */
-export function firstLabel(domain: string): string {
+function firstLabel(domain: string): string {
   return domain.split(".")[0] ?? "";
 }
 

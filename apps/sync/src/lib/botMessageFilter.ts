@@ -6,7 +6,7 @@
 export const SHOW_BOT_MESSAGES_KEY = 'hq:messages:show-bot-messages';
 
 /** True when a message with the given audience should show in the human view. */
-export function isHumanVisible(audience: string | null | undefined): boolean {
+function isHumanVisible(audience: string | null | undefined): boolean {
   // Absent = human (server default). "human" and "both" always show.
   return !audience || audience === 'human' || audience === 'both';
 }

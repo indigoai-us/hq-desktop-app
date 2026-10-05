@@ -6,7 +6,7 @@
  * `attachments` / extra keys still deserialize.
  */
 
-export const ATTACHMENT_STACK_VISIBLE = 4;
+const ATTACHMENT_STACK_VISIBLE = 4;
 
 export interface MessageAttachment {
   /** Client-generated id. Absent on older rows. */
