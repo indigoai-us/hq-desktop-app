@@ -1046,11 +1046,12 @@ describe("DesktopApp New bot takeover", () => {
       ) ?? []),
     ];
     await vi.waitFor(() => expect(helloCards().length).toBe(2), { timeout: 15_000, interval: 50 });
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
     expect(helloCards().map((el) => [el.dataset.domain ?? el.dataset.target, el.dataset.state])).toEqual([
-      ["linear.app", "connected"],
       ["slack", "offered"],
+      ["linear.app", "connected"],
     ]);
-    expect(helloCards()[0]!.textContent).toContain("Let Nova use it?");
+    expect(helloCards()[1]!.textContent).toContain("Let Nova use it?");
   }, 45_000);
 
   it("a bot found after a create with no answer is registered like one that answered: connection record and first message (round 4, item 2)", async () => {
