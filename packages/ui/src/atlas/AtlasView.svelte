@@ -70,6 +70,8 @@
      * resolving to the raw body. Runs only after the map has painted.
      */
     loadPeople?: (() => Promise<unknown>) | null;
+    /** Animate camera moves (frame all, jump to an item). Off snaps. */
+    motion?: boolean;
   }
 
   let {
@@ -89,6 +91,7 @@
     onopenpage,
     projectsInProgress: boardInProgress = null,
     loadPeople = null,
+    motion = true,
   }: Props = $props();
 
   let people = $state<AtlasPeopleState>({ status: "idle" });
@@ -204,11 +207,100 @@
     if (box && box.width > 0 && box.height > 0) size = { width: box.width, height: box.height };
   }
 
-  function frame(): void {
+  // Camera moves ease instead of snapping, and stop the moment the person
+  // pans or zooms. Zoom is interpolated geometrically around the map centre so
+  // the path reads as one move, not a slide plus a scale.
+  let flight = 0;
+  function stopFlight(): void {
+    if (flight) cancelAnimationFrame(flight);
+    flight = 0;
+  }
+  function flyTo(target: AtlasViewBox, ms = 320): void {
+    stopFlight();
+    const calm =
+      !motion ||
+      typeof requestAnimationFrame !== "function" ||
+      (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    // A view that is not a finite number yet (nothing measured) cannot be eased from.
+    const finite = [view.x, view.y, view.k, target.x, target.y, target.k].every(Number.isFinite) && view.k > 0 && target.k > 0;
+    if (calm || ms <= 0 || !finite) {
+      view = target;
+      return;
+    }
+    measure();
+    const from = view;
+    const cx = size.width / 2;
+    const cy = size.height / 2;
+    const fromC = { x: (cx - from.x) / from.k, y: (cy - from.y) / from.k };
+    const toC = { x: (cx - target.x) / target.k, y: (cy - target.y) / target.k };
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / ms);
+      const e = 1 - (1 - t) ** 3;
+      const k = from.k * (target.k / from.k) ** e;
+      const wx = fromC.x + (toC.x - fromC.x) * e;
+      const wy = fromC.y + (toC.y - fromC.y) * e;
+      view = t >= 1 ? target : { k, x: cx - wx * k, y: cy - wy * k };
+      flight = t < 1 ? requestAnimationFrame(step) : 0;
+    };
+    flight = requestAnimationFrame(step);
+  }
+
+  function frame(animate = false): void {
     measure();
     userMoved = false;
-    // OWNER-R4: frame the shaded sections, not just the dots, so no section is cut off.
-    view = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
+    // OWNER-R4: frame the sections' full reach, not just the dots, so no section is cut off.
+    const target = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
+    if (animate) flyTo(target);
+    else {
+      stopFlight();
+      view = target;
+    }
+  }
+
+  /** Bring one object to the middle of the map, zooming in if it is small on screen. */
+  function flyToNode(id: string): void {
+    const node = layout.placed.find((n) => n.id === id);
+    if (!node) return;
+    measure();
+    const k = Math.max(view.k, 1.6);
+    flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    userMoved = true;
+  }
+
+  // Find: type a name, jump to the object.
+  let query = $state("");
+  let findOpen = $state(false);
+  let findEl = $state<HTMLInputElement | null>(null);
+  const found = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return (graph?.nodes ?? [])
+      .filter((n) => n.label.toLowerCase().includes(q))
+      .sort(
+        (a, b) =>
+          Number(b.label.toLowerCase().startsWith(q)) - Number(a.label.toLowerCase().startsWith(q)) ||
+          (b.touched ?? 0) - (a.touched ?? 0) ||
+          a.label.localeCompare(b.label),
+      )
+      .slice(0, 8);
+  });
+  function pickFound(id: string): void {
+    query = "";
+    findOpen = false;
+    findEl?.blur();
+    selected = id;
+    flyToNode(id);
+  }
+  function onfindkey(event: KeyboardEvent): void {
+    if (event.key === "Enter" && found[0]) {
+      pickFound(found[0].id);
+      event.preventDefault();
+    } else if (event.key === "Escape") {
+      query = "";
+      findEl?.blur();
+      event.stopPropagation();
+    }
   }
 
   // Company switch: show that company's cache immediately, refresh behind it.
@@ -309,7 +401,11 @@
 
   function selectId(id: string): void {
     if (id.startsWith("person:")) onopenperson?.(id.slice("person:".length));
-    else selected = id;
+    else {
+      // From a list (Working now, Related): go to it on the map as well.
+      selected = id;
+      flyToNode(id);
+    }
   }
 
   function onkeydown(event: KeyboardEvent): void {
@@ -319,14 +415,20 @@
       selected = null;
       event.preventDefault();
     } else if (event.key === "0" && !event.metaKey && !event.ctrlKey) {
-      frame();
+      frame(true);
+      event.preventDefault();
+    } else if (event.key === "/" && !event.metaKey && !event.ctrlKey && findEl) {
+      findEl.focus();
       event.preventDefault();
     }
   }
 
   onMount(() => {
     window.addEventListener("keydown", onkeydown);
-    return () => window.removeEventListener("keydown", onkeydown);
+    return () => {
+      window.removeEventListener("keydown", onkeydown);
+      stopFlight();
+    };
   });
 </script>
 
@@ -352,10 +454,39 @@
       </span>
     {/if}
     <div class="grow"></div>
+    {#if graph && !empty}
+      <div class="find">
+        <input
+          bind:this={findEl}
+          bind:value={query}
+          type="search"
+          placeholder="Find on the map"
+          aria-label="Find on the map"
+          data-testid="atlas-find"
+          autocomplete="off"
+          spellcheck="false"
+          onfocus={() => (findOpen = true)}
+          onblur={() => setTimeout(() => (findOpen = false), 120)}
+          onkeydown={onfindkey}
+        />
+        {#if findOpen && query.trim()}
+          <div class="find-list" data-testid="atlas-find-results" role="listbox" aria-label="Matches">
+            {#each found as hit (hit.id)}
+              <button type="button" class="find-row" role="option" aria-selected="false" onmousedown={(e) => e.preventDefault()} onclick={() => pickFound(hit.id)}>
+                <span class="find-name">{hit.label}</span>
+                <span class="find-kind">{districtLabel(hit.type).replace(/s$/, "")}</span>
+              </button>
+            {:else}
+              <div class="find-none">Nothing on the map by that name.</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
     <RailButton icon="eye"
       data-testid="atlas-frame-all"
       disabled={!graph || empty}
-      onclick={frame}
+      onclick={() => frame(true)}
     >Frame all</RailButton>
   </div>
   <div class="atlas">
@@ -404,7 +535,12 @@
           {view}
           onselect={(id) => (selected = id)}
           onview={(next) => {
+            stopFlight();
             view = next;
+            userMoved = true;
+          }}
+          onfly={(next) => {
+            flyTo(next);
             userMoved = true;
           }}
         />
@@ -445,7 +581,7 @@
       personMatches={personIds?.size ?? 0}
       company={companyName ?? graph?.company ?? ""}
       objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
-      projectsInProgress={loadFailed && boardInProgress == null ? null : projectsInProgress}
+      projectsInProgress={(loadFailed && boardInProgress == null) || projectsInProgress === 0 ? null : projectsInProgress}
       mapFailed={loadFailed}
       {nowMs}
       onselect={selectId}
@@ -485,6 +621,75 @@
   }
   .grow {
     flex: 1;
+  }
+  .find {
+    position: relative;
+  }
+  .find input {
+    width: 200px;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button, 6px);
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  .find input::placeholder {
+    color: var(--v4-text-3);
+  }
+  .find input:focus {
+    border-color: var(--v4-text-3);
+  }
+  .find-list {
+    position: absolute;
+    right: 0;
+    top: 34px;
+    z-index: 5;
+    width: 300px;
+    padding: 4px;
+    border: 1px solid var(--v4-control-border);
+    background: var(--v4-ground);
+    background:
+      linear-gradient(var(--v4-control-bg), var(--v4-control-bg)),
+      rgb(from var(--v4-ground) r g b);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  }
+  .find-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    background: none;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .find-row:first-child,
+  .find-row:hover {
+    background: var(--v4-active-row);
+  }
+  .find-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .find-kind {
+    color: var(--v4-text-3);
+    flex: none;
+  }
+  .find-none {
+    padding: 6px 8px;
+    color: var(--v4-text-3);
   }
   .chip {
     display: inline-flex;

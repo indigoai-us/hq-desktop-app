@@ -214,7 +214,7 @@
               onclick={() => onperson?.(person.id)}
             >
               <div class="pmain" style:--share={`${Math.round((person.tokens / Math.max(1, people.people[0]?.tokens ?? 1)) * 100)}%`}>
-                <div class="tt"><PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
+                <div class="tt">{#if person.bot}<i class="boticon" aria-hidden="true"></i>{/if}<PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
                 <div class="mm prow">
                   {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
                   <span>{person.sessions} sess · {person.stories} stories</span>
@@ -249,6 +249,8 @@
   .prow span { flex: none; }
   .prow .sk { flex: 1 1 0; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tok { font-variant-numeric: tabular-nums; }
+  /* Bots carry the same square mark as on the map. */
+  .boticon { width: 8px; height: 8px; flex: none; align-self: center; border: 1.25px solid var(--v4-text-3); border-radius: 2px; box-sizing: border-box; }
   /* Share of the top person's tokens: one quiet rule under the row. */
   .pmain::after { content: ""; display: block; height: 2px; margin-top: 6px; width: var(--share, 0%); min-width: 2px; background: var(--v4-text-3); opacity: 0.35; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }

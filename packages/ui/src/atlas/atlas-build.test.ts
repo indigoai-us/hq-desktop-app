@@ -162,3 +162,14 @@ describe("Atlas web session path", () => {
     ).rejects.toMatchObject({ reason: "signed-out" });
   });
 });
+
+describe("Open files target (owner, 2026-10-04)", () => {
+  it("records each folder's main file: README first, then the defining file", async () => {
+    const graph = (await buildAtlasGraph(mockSource(), UID, { links: false })) as { nodes: { id: string; file?: string }[] };
+    const file = (id: string) => graph.nodes.find((n) => n.id === id)?.file;
+    expect(file("project:projects/alpha/")).toBe("projects/alpha/prd.json");
+    expect(file("project:projects/beta/")).toBe("projects/beta/README.md");
+    expect(file("worker:workers/reviewer/")).toBe("workers/reviewer/worker.yaml");
+    expect(file("skill:skills/search/")).toBe("skills/search/SKILL.md");
+  });
+});

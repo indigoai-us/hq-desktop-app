@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceEntry } from "@hq/core";
 
-import { atlasLiveActors, atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
+import { atlasLiveActors, atlasRoster, atlasWorkingNow, rosterNamesFromRows,
+  atlasNodeDestination,
+} from "./atlas-landing.js";
 
 function entry(status: "online" | "offline", actorType: "human" | "agent" = "human"): PresenceEntry {
   return { status, actorType, at: "2026-10-01T00:00:00.000Z" };
@@ -102,5 +104,45 @@ describe("atlasLiveActors (US-013)", () => {
 
   it("returns nothing without a live read", () => {
     expect(atlasLiveActors(undefined, snapshot, "co_a", new Map())).toEqual([]);
+  });
+});
+
+describe("atlasNodeDestination: Open files shows a file, not a tree", () => {
+  it("opens a folder on its main file in the Files explorer", () => {
+    const skill = { type: "skill", path: "skills/deploy/", folder: true, file: "skills/deploy/SKILL.md" };
+    expect(atlasNodeDestination(skill, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: "companies/indigo/skills/deploy/SKILL.md",
+    });
+  });
+
+  it("opens a project on its main file, and keeps Open board on the Tasks tab", () => {
+    const project = { type: "project", path: "projects/billing-v2/", folder: true, file: "projects/billing-v2/README.md" };
+    expect(atlasNodeDestination(project, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: "companies/indigo/projects/billing-v2/README.md",
+    });
+    expect(atlasNodeDestination(project, "indigo", "board")).toEqual({
+      kind: "projects",
+      company: "indigo",
+      project: "billing-v2",
+      tab: "tasks",
+    });
+  });
+
+  it("falls back when a folder has no file to show", () => {
+    expect(atlasNodeDestination({ type: "project", path: "projects/empty/", folder: true }, "indigo", "files")).toEqual({
+      kind: "projects",
+      company: "indigo",
+      project: "empty",
+      tab: "files",
+    });
+    expect(atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: null,
+    });
   });
 });
