@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.395] — 2026-10-05
+
 - Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
 - With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
 
