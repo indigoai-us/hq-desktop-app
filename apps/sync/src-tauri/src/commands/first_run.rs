@@ -28,7 +28,7 @@
 
 use serde_json::Value;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::util::{logfile::log, paths};
 
@@ -144,7 +144,7 @@ pub fn early_launch_hint() -> LaunchKind {
 /// Classify this launch and stash the verdict in managed state. MUST be called
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
-pub fn classify_launch(app: &AppHandle) -> LaunchKind {
+pub fn classify_launch<R: Runtime>(app: &AppHandle<R>) -> LaunchKind {
     let mut settings_prove_writable = false;
     let kind = match paths::menubar_json_path() {
         Ok(path) => {
