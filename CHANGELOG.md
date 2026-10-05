@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
+## [0.10.396] — 2026-10-05
+
 - People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
 
 ## [0.10.395] — 2026-10-05
