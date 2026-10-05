@@ -55,9 +55,16 @@
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
     actions?: boolean;
+    /**
+     * Embed the selected site as a live iframe preview. Off by default: in the
+     * desktop shell every non-app navigation, including an iframe's, is handed to
+     * the system browser by the webview navigation hook, so an embedded preview
+     * opens the site in the browser as soon as a row is selected.
+     */
+    livePreview?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true }: Props = $props();
+  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -227,7 +234,7 @@
 
   /** Desktop width the preview page lays out at before it is scaled into the card. */
   const PREVIEW_WIDTH = 1280;
-  const previewUrl = $derived(selected?.status === "active" && selected.url ? selected.url : null);
+  const previewUrl = $derived(livePreview && selected?.status === "active" && selected.url ? selected.url : null);
   let previewCardWidth = $state(0);
   let previewLoaded = $state(false);
   $effect(() => {
@@ -408,7 +415,7 @@
               </button>
             {/key}
             <p class="preview-note">Preview may be blank for protected pages</p>
-          {:else}
+          {:else if livePreview}
             <p class="preview-note" data-testid="deploy-no-preview">No preview</p>
           {/if}
           {#if progress}

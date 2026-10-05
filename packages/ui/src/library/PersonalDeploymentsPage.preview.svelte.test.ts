@@ -2,6 +2,11 @@
 
 // Owner ask: "can we render a preview card in sidepage?" The Deployments
 // inspector shows a scaled preview of the selected Live deployment.
+//
+// Owner report (2026-10-05): "when i open the deployments tab, the first site
+// opens in browser. this should not happen". The first row is selected on open,
+// and in the desktop shell an iframe navigation is handed to the system browser.
+// The live preview is therefore opt-in (`livePreview`), off by default.
 
 import { afterEach, describe, expect, it } from "vitest";
 import { flushSync, mount, tick, unmount } from "svelte";
@@ -32,6 +37,7 @@ async function settle(): Promise<void> {
 async function mountPage(
   apps: (scope: string) => unknown = deployAppsFixture,
   opened: string[] = [],
+  livePreview: boolean | "default" = true,
 ): Promise<HTMLDivElement> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -42,6 +48,7 @@ async function mountPage(
       companies: [{ slug: "indigo", displayName: "Indigo", kind: "company", state: "cloud" }] as never,
       listDeployApps: async (scope: string) => ({ ok: true, value: apps(scope) as never }),
       openExternal: (url: string) => opened.push(url),
+      ...(livePreview === "default" ? {} : { livePreview }),
     } as never,
   });
   await settle();
@@ -103,5 +110,22 @@ describe("PersonalDeploymentsPage preview card", () => {
     expect(root.querySelector("iframe")).toBeNull();
     expect(root.querySelector("[data-testid='deploy-preview']")).toBeNull();
     expect(root.querySelector("[data-testid='deploy-no-preview']")?.textContent).toBe("No preview");
+  });
+
+  it("loads no site and opens nothing when the page opens with the default props", async () => {
+    const opened: string[] = [];
+    const root = await mountPage(deployAppsFixture, opened, "default");
+
+    // The first row is selected on open; its inspector is showing.
+    expect(root.querySelector("[data-testid='deploy-inspector']")).not.toBeNull();
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(root.querySelector("[data-testid='deploy-preview']")).toBeNull();
+    expect(root.querySelector("[data-testid='deploy-no-preview']")).toBeNull();
+    expect(opened).toEqual([]);
+
+    // Selecting another row still loads nothing.
+    await choose(root, "hq-desktop-console-rail-storyboard");
+    expect(root.querySelector("iframe")).toBeNull();
+    expect(opened).toEqual([]);
   });
 });
