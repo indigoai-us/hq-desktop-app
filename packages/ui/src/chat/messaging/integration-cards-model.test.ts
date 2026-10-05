@@ -41,6 +41,7 @@ import {
   markAppConnecting,
   markAppDeclined,
   recordGrant,
+  toolFacts,
 } from "./connection-card-model.js";
 import { brandMarkFor } from "./app-brand-marks.js";
 import { parseRichContent, type ConnectItem } from "./richMessageContent.js";
@@ -124,6 +125,43 @@ describe("readCompanyConnections", () => {
     const member = readCompanyConnections(envelope([], { viewer: { personUid: "prs_m", role: "member" } }))!;
     expect(member.canManage).toBe(false);
     expect(member.viewerUid).toBe("prs_m");
+  });
+
+  it("reads the summary view (view=summary) the same as the full view", () => {
+    // The summary view leaves out write policy, Slack destinations, creator
+    // names and audit actor names. The cards and the hello never read them.
+    const rows = [
+      connection(),
+      connection({ id: "acct_gmail", provider: "gmail", createdBy: "prs_other", installation: { displayName: "Gmail", domain: "gmail.com" }, access: { mode: "everyone", grantCount: 0 } }),
+      connection({ id: "acct_shared", provider: "notion", installation: { displayName: "Notion", domain: "notion.so" }, access: { mode: "shared", grantCount: 2 } }),
+    ];
+    const audit = [
+      { provider: "factory:linear", connectionId: "acct_linear", toolName: "t" },
+      { provider: "gmail", connectionId: "acct_gmail", toolName: "t" },
+    ];
+    const full = envelope(
+      rows.map((row) => ({
+        ...row,
+        writePolicy: "ask",
+        writePolicyUpdatedAt: "2026-10-02T14:11:00.000Z",
+        writeAllowlist: ["create_issue"],
+        slackDestinations: [],
+        createdByName: "Stefan",
+        createdByEmail: "stefan@example.com",
+      })),
+      { audit: audit.map((row) => ({ ...row, memberOrAgentName: "Stefan", memberOrAgentEmail: "stefan@example.com" })) },
+    );
+    const summary = envelope(rows, { view: "summary", audit });
+    expect(readCompanyConnections(summary)).toEqual(readCompanyConnections(full));
+    expect(toolFacts(summary, null)).toEqual(toolFacts(full, null));
+    const read = readCompanyConnections(summary)!;
+    expect(read.connections.map((c) => [c.id, c.mode, c.createdBy])).toEqual([
+      ["acct_linear", "private", "prs_me"],
+      ["acct_gmail", "everyone", "prs_other"],
+      ["acct_shared", "shared", "prs_me"],
+    ]);
+    expect(read.recentCallsByConnection).toEqual({ acct_linear: 1, acct_gmail: 1 });
+    expect(toolFacts(summary, null).waiting.map((c) => c.id)).toEqual(["acct_linear", "acct_shared"]);
   });
 });
 
