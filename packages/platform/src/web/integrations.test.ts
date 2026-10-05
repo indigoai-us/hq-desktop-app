@@ -59,8 +59,8 @@ const LIST = {
 
 describe("integration paths", () => {
   it("names the routes and encodes the company", () => {
-    expect(INTEGRATION_PATHS.connections("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme");
-    expect(INTEGRATION_PATHS.connections("a b&c")).toBe("/v1/integrations/admin?companyUid=a%20b%26c");
+    expect(INTEGRATION_PATHS.connections("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme&view=summary");
+    expect(INTEGRATION_PATHS.connections("a b&c")).toBe("/v1/integrations/admin?companyUid=a%20b%26c&view=summary");
     expect(INTEGRATION_PATHS.grantAccess).toBe("/v1/integrations/factory/access/grant");
     expect(INTEGRATION_PATHS.oauthStart).toBe("/v1/integrations/factory/oauth/start");
     expect(INTEGRATION_PATHS.install).toBe("/v1/integrations/factory/install");
@@ -107,7 +107,7 @@ describe("WebPlatformAdapter integrations", () => {
     const { adapter, calls } = makeAdapter(() => ({ status: 200, body: LIST }));
     const result = await adapter.integrations.listConnections("cmp_acme");
     expect(calls).toEqual([
-      { method: "GET", path: "/v1/integrations/admin?companyUid=cmp_acme", body: undefined },
+      { method: "GET", path: "/v1/integrations/admin?companyUid=cmp_acme&view=summary", body: undefined },
     ]);
     expect(result).toEqual({ ok: true, value: LIST });
   });

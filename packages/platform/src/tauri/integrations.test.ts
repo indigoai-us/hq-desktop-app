@@ -218,7 +218,7 @@ describe("createDesktopAdapter integrations", () => {
     await callConnectFlow(adapter);
     expect(invoked).toEqual([]);
     expect(seen).toEqual([
-      { url: "https://api.test/v1/integrations/admin?companyUid=cmp_acme", method: "GET", body: undefined },
+      { url: "https://api.test/v1/integrations/admin?companyUid=cmp_acme&view=summary", method: "GET", body: undefined },
       {
         url: "https://api.test/v1/integrations/factory/access/grant",
         method: "POST",
