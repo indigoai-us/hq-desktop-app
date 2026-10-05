@@ -103,3 +103,28 @@ describe("CompanySettingsPage General", () => {
     expect(readSettingsCache("unicom-signin")?.general.openOnSignIn).toBe(false);
   });
 });
+
+describe("CompanySettingsPage Brand", () => {
+  it("has no logo file-name box and saving keeps the stored logo name (owner 2026-10-05)", async () => {
+    const { readSettingsCache, writeSettingsCache, emptySnapshot } = await import("./company-settings.js");
+    const seeded = emptySnapshot("Unicom", "unicom-brand");
+    seeded.brand.logoName = "mark.svg";
+    writeSettingsCache("unicom-brand", seeded);
+    const target = render({ slug: "unicom-brand", role: "Owner" });
+    current.section = "brand";
+    flushSync();
+    expect(target.querySelector(".sub")?.textContent).toBe("Accent color and voice");
+    expect(target.textContent).not.toContain("file name");
+    expect(target.querySelector("input[placeholder='wordmark.svg']")).toBeNull();
+    expect(target.textContent).not.toContain("rail tile");
+    expect(target.textContent).toContain("The accent color tints this company's buttons and highlights.");
+    const accent = target.querySelector<HTMLInputElement>("input.in.mono");
+    accent!.value = "#112233";
+    accent!.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    target.querySelector<HTMLButtonElement>("[data-testid='brand-save']")!.click();
+    flushSync();
+    expect(readSettingsCache("unicom-brand")?.brand.accent).toBe("#112233");
+    expect(readSettingsCache("unicom-brand")?.brand.logoName).toBe("mark.svg");
+  });
+});

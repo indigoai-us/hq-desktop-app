@@ -48,7 +48,7 @@ const PAGE_INFO: Record<string, { story: string; summary: string }> = {
   groups: { story: "OWNER-R24", summary: "Groups that share file and secret access." },
   grants: { story: "OWNER-R24", summary: "Folder grants and when they expire." },
   general: { story: "OWNER-R24", summary: "Company name, slug, and defaults for members." },
-  brand: { story: "OWNER-R24", summary: "Logo, accent color, and voice." },
+  brand: { story: "OWNER-R24", summary: "Accent color and voice." },
   billing: { story: "OWNER-R24", summary: "Plan, seats, and payment." },
 };
 
