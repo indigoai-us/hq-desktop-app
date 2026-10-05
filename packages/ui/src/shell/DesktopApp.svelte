@@ -121,6 +121,7 @@
   import {
     ROW_SETTLE_MS,
     appChosenItems,
+    slackFirst,
     botCanUse,
     catalogMatchFor,
     connectFailureSentence,
@@ -5325,9 +5326,10 @@
   );
   /**
    * The cards the app attaches when the bot's message carries no connect
-   * block of its own: Slack unless the bot is in Slack, then the person's
-   * own connected apps the bot cannot use yet, newest first, three cards in
-   * all (integration-cards-model.ts, `appChosenItems`).
+   * block of its own: the bot's own Slack card first (in its connected state
+   * once the bot is in Slack), then the person's own connected apps the bot
+   * cannot use yet, newest first, three cards in all
+   * (integration-cards-model.ts, `appChosenItems`).
    *
    * The chosen set, per bot, for this session. It is worked out again until
    * the company's list is known, then kept: a card the person just acted on
@@ -5344,7 +5346,7 @@
     let items: ConnectItem[];
     if (kept && (kept.withFacts || !input.company)) items = kept.items;
     else {
-      items = appChosenItems(input.company, input.record, input.slack?.state === "connected");
+      items = appChosenItems(input.company, input.record);
       chosenItemsByBot.set(input.uid, { withFacts: input.company !== null, items });
     }
     if (items.length === 0) return null;
@@ -5673,6 +5675,9 @@
             }
             return connectRowReady(items, { facts: input.company, since, now: input.now });
           },
+          // Every row of a cloud bot's cards starts with the bot's own Slack
+          // card, whether or not the bot named Slack (integration-cards-model.ts).
+          arrange: slackFirst,
           browseAll: browseUrl ? { url: browseUrl, open: () => openConnectionUrl(browseUrl) } : null,
           onaction: (detail) => handleConnectionAction(input.uid, detail),
         };

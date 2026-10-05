@@ -630,13 +630,14 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
 
 /**
  * The cards the app attaches when the bot's message carries no connect block:
- * Slack (unless the bot is in Slack), then the person's own connected apps
- * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
- * all (Slack counts as one).
+ * the bot's own Slack card first, then the person's own connected apps the
+ * bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in all
+ * (Slack counts as one).
  *
- * Slack is offered once, as the bot's own Slack card. The person's own Slack
- * integration connection is not offered beside it (that gave two cards
- * titled Slack), nor in its place once the bot is in Slack.
+ * Slack is always the first card (owner, 2026-10-05: "make sure that Slack is
+ * the first card every time"). Once the bot is in Slack the card stays, in
+ * its connected state. The person's own Slack integration connection is never
+ * offered beside it (that gave two cards titled Slack).
  *
  * Each app's item carries the connection's id, so its card is that one
  * connection and no other. The item's domain is the one the list gives; a
@@ -647,9 +648,8 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
 export function appChosenItems(
   facts: CompanyConnections | null | undefined,
   record: BotConnectionRecord | null | undefined,
-  slackConnected: boolean,
 ): ConnectItem[] {
-  const items: ConnectItem[] = slackConnected ? [] : [{ app: "slack" }];
+  const items: ConnectItem[] = [{ app: "slack" }];
   if (!facts || !facts.viewerUid) return items;
   const own = newestFirst(
     facts.connections.filter((c) => c.createdBy === facts.viewerUid && !isSlackConnection(c) && !botCanUse(c, record)),
@@ -663,6 +663,22 @@ export function appChosenItems(
     items.push({ domain, connectionId: connection.id });
   }
   return items;
+}
+
+/**
+ * A row of a cloud bot's cards as it is drawn: the bot's own Slack card first,
+ * then the other items in their order. The app adds the Slack card when the
+ * row has none; a row that names Slack (by `app: "slack"`, or by slack.com,
+ * which reads as the same item) has it moved to the front, once. Nothing the
+ * bot wrote is changed: this is only the order of the cards the app draws.
+ *
+ * The Slack card needs no lookup of its own (its state comes from the bot's
+ * status, and reads "Connect Slack" while that is unknown), so it is in the
+ * row from the first frame and nothing is ever put in front of it later.
+ */
+export function slackFirst<T extends { app?: ConnectTarget }>(items: ReadonlyArray<T>): Array<T | { app: "slack" }> {
+  const own = items.find((item) => item.app === "slack");
+  return [own ?? { app: "slack" as const }, ...items.filter((item) => item.app !== "slack")];
 }
 
 // ── The brief for the bot ────────────────────────────────────────────────

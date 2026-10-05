@@ -398,9 +398,11 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
   it("shows Slack as connected when the bot can receive messages there", async () => {
     const w = world({ slackCapability: "ok", connections: [connection()] });
     await mountNewBotDm(w);
-    // With the bot in Slack, the Slack card is not offered: the person's app is.
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
     await vi.waitFor(() => expect(appCard("linear.app")).not.toBeNull());
-    expect(host.querySelector('[data-target="slack"]')).toBeNull();
+    expect(cards().map((el) => el.dataset.domain ?? el.dataset.target)).toEqual(["slack", "linear.app"]);
+    expect(host.querySelector<HTMLElement>('[data-target="slack"]')!.dataset.state).toBe("connected");
+    expect(host.querySelector('[data-target="slack"]')!.textContent).toContain("Nova is in Slack.");
     expect(hiddenNotices(w)).toHaveLength(0);
     await unmountShell();
 
@@ -409,9 +411,11 @@ describe("DesktopApp connection cards in a cloud bot's direct message", () => {
     await mountRow(slackOnly, DM_ROW(NOVA), "Hi Corey, I am Nova.");
     await vi.waitFor(() => expect(slackOnly.listConnections).toHaveBeenCalled());
     await settle(20);
-    // Nothing to offer: no cards at all, and no empty row.
-    expect(cards()).toHaveLength(0);
-    expect(host.querySelector('[data-testid="rich-connect"]')).toBeNull();
+    // Updated 2026-10-05: Slack is the first card every time (owner), shown connected once the bot is in Slack; it used to be left out then.
+    // No apps of the person's own: the row is the Slack card alone, connected.
+    await vi.waitFor(() => expect(cards()).toHaveLength(1));
+    expect(cards()[0]!.dataset.target).toBe("slack");
+    expect(cards()[0]!.dataset.state).toBe("connected");
   });
 
   // Connecting Slack happens in the card's modal, never on a page in the
