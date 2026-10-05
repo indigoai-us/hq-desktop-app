@@ -10,12 +10,12 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::package_root::LEGACY_ROOT_ID;
 use sha2::{Digest, Sha256};
 
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
-const LEGACY_ROOT_ID: &str = "legacy";
 // The Node writer and macOS kernel reader derive process-start timestamps from
 // separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
@@ -626,6 +626,25 @@ impl Drop for PackageUseCliGuard {
 impl PackageUseUpdateRequest {
     pub fn begin(prefix: &Path) -> Result<Self, String> {
         let paths = package_use_lease_paths(prefix)?;
+        Self::begin_at_with_root_id(paths, None)
+    }
+
+    /// Create an updater request for a root the desktop is about to mutate.
+    /// Invalid target IDs retain the legacy prefix-wide behavior.
+    pub fn begin_for_root(prefix: &Path, target_root_id: &str) -> Result<Self, String> {
+        let paths = package_use_lease_paths(prefix)?;
+        let target_root_id = if is_valid_root_id(target_root_id) {
+            target_root_id
+        } else {
+            LEGACY_ROOT_ID
+        };
+        Self::begin_at_with_root_id(paths, Some(target_root_id))
+    }
+
+    fn begin_at_with_root_id(
+        paths: PackageUseLeasePaths,
+        root_id: Option<&str>,
+    ) -> Result<Self, String> {
         match fs::read(&paths.update_request_path) {
             Ok(bytes) => {
                 let previous = serde_json::from_slice::<LeaseRecord>(&bytes).map_err(|error| {
@@ -660,7 +679,7 @@ impl PackageUseUpdateRequest {
             start_time_ms: current_process_start_time_ms(),
             hq_version: env!("CARGO_PKG_VERSION").to_string(),
             purpose: None,
-            root_id: None,
+            root_id: root_id.map(str::to_owned),
         };
         atomic_write(
             &paths.update_request_path,
@@ -1472,6 +1491,67 @@ mod tests {
         assert!(request.try_acquire_for_root("root-a").unwrap().is_some());
         assert!(!dead_other_root.exists(), "dead leases of any root are pruned");
         assert!(live_other_root.exists(), "live leases of another root survive");
+    }
+
+    #[test]
+    fn update_request_keeps_pid_and_records_legacy_root_id() {
+        let (_temp, paths) = fixture();
+        let request = PackageUseUpdateRequest::begin_at_with_root_id(
+            paths.clone(),
+            Some(LEGACY_ROOT_ID),
+        )
+        .unwrap();
+        let request_record: serde_json::Value =
+            serde_json::from_slice(&fs::read(&paths.update_request_path).unwrap()).unwrap();
+        assert_eq!(request_record["pid"].as_u64(), Some(std::process::id() as u64));
+        assert!(request_record["start_time_ms"].as_u64().is_some());
+        assert_eq!(request_record["hq_version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(request_record["root_id"].as_str(), Some("legacy"));
+        drop(request);
+    }
+
+    #[tokio::test]
+    async fn other_root_live_holder_does_not_block_legacy_update_wait() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let other_root = paths.lease_directory.join(format!("{pid}-{start}-other.json"));
+        record_with_root(&other_root, pid, start, Some("versioned-a1"));
+        let request = PackageUseUpdateRequest::begin_at_with_root_id(
+            paths.clone(),
+            Some(LEGACY_ROOT_ID),
+        )
+        .unwrap();
+
+        let guard = request
+            .wait_for_root_with_summary(LEGACY_ROOT_ID, Duration::ZERO)
+            .await
+            .expect("a live holder of another root must not block the legacy update");
+        assert!(other_root.exists(), "the live other-root lease must remain");
+        drop(guard);
+    }
+
+    #[tokio::test]
+    async fn legacy_and_rootless_holders_still_block_legacy_update_wait() {
+        for root_id in [Some(LEGACY_ROOT_ID), None] {
+            let (_temp, paths) = fixture();
+            let pid = std::process::id();
+            let start = process_start_time_ms(pid).unwrap();
+            let holder_path = paths.lease_directory.join(format!("{pid}-{start}.json"));
+            record_with_root(&holder_path, pid, start, root_id);
+            let request = PackageUseUpdateRequest::begin_at_with_root_id(
+                paths,
+                Some(LEGACY_ROOT_ID),
+            )
+            .unwrap();
+
+            assert!(matches!(
+                request
+                    .wait_for_root_with_summary(LEGACY_ROOT_ID, Duration::ZERO)
+                    .await,
+                Err(PackageUseLeaseWaitError::Timeout(_))
+            ));
+        }
     }
 
     #[tokio::test]

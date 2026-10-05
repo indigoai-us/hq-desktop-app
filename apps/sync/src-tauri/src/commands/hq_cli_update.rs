@@ -1507,9 +1507,11 @@ async fn acquire_cli_package_update_lease(
         Some(prefix) => prefix.to_string(),
         None => resolve_npm_global_prefix_for_lease(npm, path).await?,
     };
-    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin(Path::new(
-        &resolved_prefix,
-    ))?;
+    let target_root_id = hq_desktop_core::package_root::LEGACY_ROOT_ID;
+    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin_for_root(
+        Path::new(&resolved_prefix),
+        target_root_id,
+    )?;
 
     // The pending lock prevents fresh CLI entry and asks resident daemons to
     // hand off. Close this app's child admission as well, so no controlled CLI
@@ -1523,7 +1525,10 @@ async fn acquire_cli_package_update_lease(
     let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
 
     let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
-    let package_guard = match request.wait_with_summary(remaining).await {
+    let package_guard = match request
+        .wait_for_root_with_summary(target_root_id, remaining)
+        .await
+    {
         Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)) => {
             report_package_use_lease_timeout(&summary, retry_attempt);
             return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {

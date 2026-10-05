@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 pub const PACKAGE_VERSION_STORE_POINTER_MAX_BYTES: usize = 512;
 pub const PACKAGE_ROOT_MANIFEST_MAX_BYTES: usize = 1024;
 
-const LEGACY_ROOT_ID: &str = "legacy";
+pub const LEGACY_ROOT_ID: &str = "legacy";
 const STORE_DIR: &str = "hq-cli";
 const VERSIONS_DIR: &str = "versions";
 const POINTER_FILE: &str = "active-root.json";
@@ -78,8 +78,11 @@ fn is_real_directory(path: &Path) -> bool {
 }
 
 fn read_bounded_json(path: &Path, max_bytes: usize) -> Option<Value> {
-    let path_metadata = fs::metadata(path).ok()?;
-    if !path_metadata.is_file() || path_metadata.len() > max_bytes as u64 {
+    let path_metadata = fs::symlink_metadata(path).ok()?;
+    if !path_metadata.file_type().is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.len() > max_bytes as u64
+    {
         return None;
     }
     let file = File::open(path).ok()?;
@@ -303,6 +306,33 @@ mod tests {
         fs::create_dir_all(&external_root).unwrap();
         fs::write(prefix.join("hq-cli/active-root.json"), pointer(VERSION, ROOT_ID)).unwrap();
         symlink(external_root, root).unwrap();
+        assert_legacy(resolve_active_package_root(&prefix, &legacy), &legacy);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_pointer_and_manifest_files_fall_back_to_legacy() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, prefix, legacy) = fixture();
+        let (store, versions, _root) = store_paths(&prefix);
+        fs::create_dir_all(&versions).unwrap();
+        let external_pointer = prefix.join("external-pointer.json");
+        fs::write(&external_pointer, pointer(VERSION, ROOT_ID)).unwrap();
+        symlink(&external_pointer, store.join("active-root.json")).unwrap();
+        assert_legacy(resolve_active_package_root(&prefix, &legacy), &legacy);
+
+        let (_temp, prefix, legacy) = fixture();
+        let (store, _versions, root) = store_paths(&prefix);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(store.join("active-root.json"), pointer(VERSION, ROOT_ID)).unwrap();
+        let external_manifest = prefix.join("external-manifest.json");
+        fs::write(
+            &external_manifest,
+            format!(r#"{{"schema":1,"root_id":"{ROOT_ID}","version":"{VERSION}"}}"#),
+        )
+        .unwrap();
+        symlink(external_manifest, root.join("hq-root.json")).unwrap();
         assert_legacy(resolve_active_package_root(&prefix, &legacy), &legacy);
     }
 

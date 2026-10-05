@@ -8808,6 +8808,25 @@ pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderRootRelation {
+    Same,
+    Older,
+    Legacy,
+    Unknown,
+}
+
+impl HolderRootRelation {
+    pub const fn as_tag(self) -> &'static str {
+        match self {
+            Self::Same => "same",
+            Self::Older => "older",
+            Self::Legacy => "legacy",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Report a bounded timeout while waiting for active HQ CLI processes to
 /// release the package-use lease. The fixed message, tag, and fingerprint
 /// intentionally exclude local paths and process details.
@@ -8836,6 +8855,11 @@ pub fn report_package_use_lease_timeout(
             scope.set_tag(
                 "oldest_holder_purpose",
                 summary.oldest_holder_purpose.as_tag(),
+            );
+            // This updater currently mutates only the legacy npm-installed root.
+            scope.set_tag(
+                "holder_root_relation",
+                HolderRootRelation::Legacy.as_tag(),
             );
             scope.set_fingerprint(Some(&[
                 "hq-cli-update",
@@ -9830,6 +9854,7 @@ mod tests {
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
         assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
+        assert_eq!(event.tags["holder_root_relation"], "legacy");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
         assert_eq!(
             fingerprint,
@@ -9842,6 +9867,14 @@ mod tests {
         let message = event.message.as_deref().expect("static event message");
         assert!(!message.contains('/') && !message.contains('\\'));
         assert!(event.extra.is_empty());
+    }
+
+    #[test]
+    fn holder_root_relation_tags_are_closed() {
+        assert_eq!(HolderRootRelation::Same.as_tag(), "same");
+        assert_eq!(HolderRootRelation::Older.as_tag(), "older");
+        assert_eq!(HolderRootRelation::Legacy.as_tag(), "legacy");
+        assert_eq!(HolderRootRelation::Unknown.as_tag(), "unknown");
     }
 
     #[test]
