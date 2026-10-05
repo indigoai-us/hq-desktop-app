@@ -439,10 +439,8 @@ async fn run_login(
     let Ok(mut child) = login.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         *status
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state(
-            "error",
-            Some("Could not start sign-in. Check that the provider is installed and retry."),
-        );
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            state("error", Some(start_failed_message(tool)));
         return;
     };
     let result = tokio::select! {
@@ -457,6 +455,35 @@ async fn run_login(
     *status
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
+}
+/// Plain copy for a sign-in that could not even be checked. Names the tool:
+/// "the provider" meant nothing to the person reading it.
+fn check_failed_message(tool: SessionTool) -> &'static str {
+    match tool {
+        SessionTool::Claude => {
+            "HQ couldn't reach Claude Code to sign you in. Make sure Claude Code is installed, then try again."
+        }
+        SessionTool::Codex => {
+            "HQ couldn't reach Codex to sign you in. Make sure Codex is installed, then try again."
+        }
+        SessionTool::Grok => {
+            "HQ couldn't reach Grok to sign you in. Make sure Grok is installed, then try again."
+        }
+    }
+}
+/// Plain copy for a sign-in window that could not be opened.
+fn start_failed_message(tool: SessionTool) -> &'static str {
+    match tool {
+        SessionTool::Claude => {
+            "HQ couldn't open the Claude Code sign-in. Make sure Claude Code is installed, then try again."
+        }
+        SessionTool::Codex => {
+            "HQ couldn't open the Codex sign-in. Make sure Codex is installed, then try again."
+        }
+        SessionTool::Grok => {
+            "HQ couldn't open the Grok sign-in. Make sure Grok is installed, then try again."
+        }
+    }
 }
 async fn start_with(
     attempts: &Attempts,
@@ -481,12 +508,7 @@ async fn start_with(
             attempts.remove(key(tool));
             return state("connected", None);
         }
-        Err(()) => {
-            return state(
-                "error",
-                Some("Could not check sign-in. Check that the provider is installed and retry."),
-            )
-        }
+        Err(()) => return state("error", Some(check_failed_message(tool))),
         Ok(_) => {}
     }
     let status = Arc::new(SyncMutex::new(state(
@@ -1089,6 +1111,24 @@ mod tests {
         )
         .await;
         assert_eq!(result.state, "error");
+        assert_eq!(
+            result.message,
+            Some(check_failed_message(SessionTool::Codex))
+        );
         assert!(!dir.path().join("calls").exists());
+    }
+
+    #[test]
+    fn sign_in_failure_copy_names_the_tool_not_the_provider() {
+        for (tool, name) in [
+            (SessionTool::Claude, "Claude Code"),
+            (SessionTool::Codex, "Codex"),
+            (SessionTool::Grok, "Grok"),
+        ] {
+            for message in [check_failed_message(tool), start_failed_message(tool)] {
+                assert!(message.contains(name), "{message}");
+                assert!(!message.contains("provider"), "{message}");
+            }
+        }
     }
 }

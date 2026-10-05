@@ -65,7 +65,6 @@
     setupBotCopy,
     SETUP_BOT_GENERIC_FAILURE,
     isSetupBotNoRuntimeMessage,
-    SETUP_ELSEWHERE_COPY,
     setupBotActionLabel,
     type SetupBotLauncher,
   } from "./setup-bot";
@@ -167,17 +166,6 @@
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
-      /**
-       * Optional: open one of the assistant desktop apps with a fixed
-       * install prompt pre-filled — the operator-directed shortcut that
-       * lets a person set up their coding tool without opening a terminal.
-       * Wired via the install-guide adapter to `open_claude_code_link` /
-       * `open_codex_deep_link`.
-       */
-      onopenassistant?(
-        assistant: "claude-desktop" | "chatgpt-desktop",
-        url: string,
-      ): Promise<InstallOutcome>;
     } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
@@ -448,22 +436,6 @@
     { key: "grok", label: "Open setup in Grok Build", primary: false },
   ];
 
-  /** Coding tools found on this Mac; the "set up there instead" panel lists only these. */
-  let installedTools = $state<AiTools | null>(null);
-  onMount(() => {
-    void shell?.detectAiTools?.().then((res) => {
-      if (res.ok) installedTools = res.value as unknown as AiTools;
-    });
-  });
-  const installedLaunches = $derived(
-    LAUNCHES.filter((launch) =>
-      launch.key === "claude"
-        ? Boolean(installedTools?.claude_cli || installedTools?.claude_desktop)
-        : launch.key === "codex"
-          ? Boolean(installedTools?.codex_cli || installedTools?.codex_desktop)
-          : Boolean(installedTools?.grok_cli),
-    ),
-  );
 
 
   function openResourceLink(event: MouseEvent, href: string): void {
@@ -609,7 +581,6 @@
                 }}
                 downloadUrlFor={installGuide.downloadUrlFor}
                 onopen={installGuide.onopen}
-                onopenassistant={installGuide.onopenassistant}
               />
             {/await}
           {/if}
@@ -630,32 +601,6 @@
           </div>
         </div>
       {/if}
-      {/if}
-      {#if setupBot && !scriptedFallback && installedLaunches.length > 0}
-        <!-- The other way through: set up in the coding tool they already use. -->
-        <div class="setup-elsewhere" data-testid="setup-elsewhere" role="group" aria-label={SETUP_ELSEWHERE_COPY.title}>
-          <h3 class="setup-elsewhere-title">{SETUP_ELSEWHERE_COPY.title}</h3>
-          <p class="setup-elsewhere-body">
-            {SETUP_ELSEWHERE_COPY.body.split("/setup")[0]}<code>/setup</code>{SETUP_ELSEWHERE_COPY.body.split("/setup").slice(1).join("/setup")}
-          </p>
-          <div class="hero-actions" role="group" aria-label="Open setup in a coding tool">
-            {#each installedLaunches as launch (launch.key)}
-              <SetupButton
-                data-testid={`setup-elsewhere-${launch.key}`}
-                disabled={!canLaunch || launching !== null}
-                aria-busy={launching === launch.key}
-                onclick={() => void runLaunch(launch.key)}
-              >
-                {launching === launch.key ? "Opening…" : launch.label}
-              </SetupButton>
-            {/each}
-          </div>
-          {#each installedLaunches as launch (launch.key)}
-            {#if launchErrors[launch.key]}
-              <p class="launch-error" role="alert">{launchErrors[launch.key]}</p>
-            {/if}
-          {/each}
-        </div>
       {/if}
       {#if !onopensessions && launchErrors.claude && !(setupBot && !scriptedFallback)}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
@@ -1154,30 +1099,5 @@
     .resource-arrow {
       transition: none;
     }
-  }
-  .setup-elsewhere {
-    margin-top: 20px;
-    padding: 16px 18px;
-    border: 1px solid var(--setup-btn-line, rgba(127, 127, 127, 0.35));
-    border-radius: 10px;
-    background: rgba(127, 127, 127, 0.08);
-    max-width: 560px;
-  }
-  .setup-elsewhere-title {
-    margin: 0 0 6px;
-    font-size: 15px;
-    font-weight: 600;
-  }
-  .setup-elsewhere-body {
-    margin: 0 0 12px;
-    font-size: 13px;
-    line-height: 1.5;
-    opacity: 0.9;
-  }
-  .setup-elsewhere-body code {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: rgba(127, 127, 127, 0.18);
   }
 </style>
