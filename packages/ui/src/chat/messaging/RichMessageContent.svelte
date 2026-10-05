@@ -18,7 +18,7 @@
   import ConnectionCard from "./ConnectionCard.svelte";
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import type { ConnectionCards, ConnectionCardView } from "./connection-card-model.js";
-  import { HOST_PLACED_BLOCK_KINDS } from "./richMessageContent.js";
+  import { HOST_PLACED_BLOCK_KINDS, MAX_CONNECT_ITEMS } from "./richMessageContent.js";
   import type {
     BadgeTone,
     CalloutTone,
@@ -95,13 +95,19 @@
    *
    * While the host says the row is not ready (the company's list is not
    * known yet) nothing is drawn, so no card appears and then goes away.
+   *
+   * The host may set the row's order first (`arrange`): a cloud bot's DM puts
+   * the bot's own Slack card at the front. The row draws at most
+   * {@link MAX_CONNECT_ITEMS} cards; one that arrives when the row is full
+   * is not drawn, and no drawn card is ever taken away for it.
    */
   function connectCards(block: ConnectBlock, blockIndex: number): Array<{ key: string; view: ConnectionCardView }> {
     const cards = connections;
     if (!cards) return [];
-    if (cards.rowReady && !cards.rowReady(block.items)) return [];
+    const items = cards.arrange ? cards.arrange(block.items) : block.items;
+    if (cards.rowReady && !cards.rowReady(items)) return [];
     const out: Array<{ key: string; view: ConnectionCardView }> = [];
-    for (const item of block.items) {
+    for (const item of items) {
       if (item.app) {
         const view = cards.views[item.app];
         if (view) out.push({ key: item.app, view });
@@ -118,7 +124,10 @@
     // Cards already drawn keep their places; new ones follow, in the block's order.
     const before = drawnOrder.get(blockIndex) ?? [];
     const kept = before.filter((key) => out.some((card) => card.key === key));
-    const order = [...kept, ...out.map((card) => card.key).filter((key) => !kept.includes(key))];
+    const order = [...kept, ...out.map((card) => card.key).filter((key) => !kept.includes(key))].slice(
+      0,
+      Math.max(kept.length, MAX_CONNECT_ITEMS),
+    );
     drawnOrder.set(blockIndex, order);
     return order.map((key) => out.find((card) => card.key === key)!);
   }

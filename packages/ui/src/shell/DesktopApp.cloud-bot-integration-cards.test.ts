@@ -322,7 +322,9 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     // lookup answers, so no card on screen moves aside.
     const w = world();
     await mountResolved(w);
-    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "deepwiki.com", "example.com"]));
+    // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
+    // The second message's row (deepwiki.com, example.com, unknown-app.io) gets it too.
+    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "slack", "deepwiki.com", "example.com"]));
     // The catalog was asked once per app that is not connected, never for the connected one.
     const asked = w.catalogSearch.mock.calls.map(([, query]) => query).sort();
     expect(asked).toEqual(["deepwiki.com", "example.com", "linear.app", "unknown-app.io"]);
@@ -352,7 +354,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
 
   it("shows a connected app as usable, as allow-able, or as a teammate's, per the rules", async () => {
     const w = world({
-      thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "gmail.com" }, { domain: "asana.com" }] }]),
+      thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "gmail.com" }] }], [{ kind: "connect", items: [{ domain: "asana.com" }] }]),
       connections: [
         connection(),
         connection({ id: "acct_gmail", provider: "gmail", createdBy: "prs_teammate", installation: { displayName: "Gmail (Hassaan)", domain: "gmail.com" } }),
@@ -360,14 +362,16 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
       ],
     });
     await mountResolved(w);
-    expect(cardIds()).toEqual(["notion.so", "gmail.com", "asana.com"]);
+    // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
+    // Three cards at most per row, so Asana is in a second message here.
+    expect(cardIds()).toEqual(["slack", "notion.so", "gmail.com", "slack", "asana.com"]);
     expect(appLine("notion.so")).toBe("Let Nova use it?");
     expect(appPrimary("notion.so")!.textContent?.trim()).toBe("Let Nova use it");
     expect(appLine("gmail.com")).toBe("A teammate connected this. Ask them to share it with Nova.");
     expect(appPrimary("gmail.com")).toBeNull();
     expect(appLine("asana.com")).toBe("Nova can use it.");
     expect(appPrimary("asana.com")).toBeNull();
-    expect(cards().every((el) => el.dataset.state === "connected")).toBe(true);
+    expect(cards().filter((el) => el.dataset.target !== "slack").every((el) => el.dataset.state === "connected")).toBe(true);
     expect(w.catalogSearch).not.toHaveBeenCalled();
     expect(hidden(w)).toHaveLength(0);
   });
@@ -501,12 +505,14 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
   it("a non-admin sees no Connect button: connected apps only, with no catalog call", async () => {
     const w = world({ canManage: false });
     await mountDm(w);
-    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so"]));
+    // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
+    // The second message's row has only Slack: its apps are never looked up for a non-admin.
+    await vi.waitFor(() => expect(cardIds()).toEqual(["slack", "notion.so", "slack"]));
     await settle(20);
     expect(w.catalogSearch).not.toHaveBeenCalled();
     // Their own connection they may still share.
     expect(appPrimary("notion.so")!.textContent?.trim()).toBe("Let Nova use it");
-    expect(host.querySelectorAll('[data-testid="connection-card-primary"]')).toHaveLength(2);
+    expect(host.querySelectorAll('[data-testid="connection-card-primary"]')).toHaveLength(3);
   });
 
   it("Not now dims the card, and the row keeps its other cards", async () => {
@@ -518,7 +524,7 @@ describe("DesktopApp integration cards named by a cloud bot", () => {
     expect(appLine("linear.app")).toBe("Not connected. Ask Nova any time.");
     expect(appCard("linear.app")!.querySelectorAll("button")).toHaveLength(0);
     // The same places as before the press (see the first test for the order).
-    expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "deepwiki.com", "example.com"]);
+    expect(cardIds()).toEqual(["slack", "notion.so", "linear.app", "slack", "deepwiki.com", "example.com"]);
   });
 
   it("the old targets form still draws the built-in cards", async () => {
@@ -557,7 +563,8 @@ describe("DesktopApp: a bot that names slack.com gets its own Slack card", () =>
   it("shows Connect Slack, not the teammate's company connection, and the button opens the Slack window", async () => {
     const w = world({ thread: thread(NAMES_SLACK), connections: [connection(), TEAMMATE_SLACK] });
     await mountResolved(w);
-    expect(cardIds()).toEqual(["notion.so", "slack"]);
+    // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
+    expect(cardIds()).toEqual(["slack", "notion.so"]);
     // No integration card is drawn for Slack, and nothing says a teammate connected it.
     expect(appCard("slack.com")).toBeNull();
     expect(slackCard()!.dataset.state).toBe("offered");
@@ -610,7 +617,8 @@ describe("DesktopApp: a bot that names slack.com gets its own Slack card", () =>
     // The row names the company, so the list is still read with the status refused.
     await mountDm(w, { ...DM_ROW, companyUid: COMPANY } as ConversationRow);
     await vi.waitFor(() => expect(slackLine()).toBe("Ask a company admin to connect Nova to Slack."));
-    expect(cardIds()).toEqual(["notion.so", "slack"]);
+    // Updated 2026-10-05: every row now starts with the bot's own Slack card (owner: "Slack is the first card every time").
+    expect(cardIds()).toEqual(["slack", "notion.so"]);
     expect(slackPrimary()).toBeNull();
     expect(slackCard()!.querySelector('[data-testid="connection-card-mark"]')).toBeNull();
     expect(slackCard()!.textContent).not.toMatch(/teammate|Connected/);
@@ -628,6 +636,146 @@ describe("DesktopApp: a bot that names slack.com gets its own Slack card", () =>
     expect(cardIds()).toEqual(["slack", "notion.so"]);
     expect([...host.querySelectorAll('[data-testid="connection-card"]')].filter((el) => el.getAttribute("aria-label") === "Slack")).toHaveLength(1);
     expect(appCard("slack.com")).toBeNull();
+  });
+});
+
+/**
+ * Owner, 2026-10-05, after testing a bot whose first message named Notion,
+ * Sentry and Mixpanel and no Slack: "can we make sure that Slack is the first
+ * card every time? It's important." Every row of a cloud bot's cards starts
+ * with the bot's own Slack card. The app adds it; the bot's text is not
+ * changed. Three cards at most per row, Slack counting as one.
+ */
+describe("DesktopApp: the bot's own Slack card is the first card of every row", () => {
+  const slackCards = (): HTMLElement[] => [...host.querySelectorAll<HTMLElement>('[data-testid="connection-card"][data-target="slack"]')];
+  const slackLine = (): string => slackCards()[0]?.querySelector('[data-testid="connection-card-line"]')?.textContent ?? "";
+  const rows = (): string[][] =>
+    [...host.querySelectorAll<HTMLElement>('[data-testid="rich-connect"]')].map((row) =>
+      [...row.querySelectorAll<HTMLElement>('[data-testid="connection-card"]')].map((el) => el.dataset.domain ?? el.dataset.target ?? ""),
+    );
+  const statusWith = (agent: Row) =>
+    vi.fn(async () =>
+      ok({ setupState: { phase: "ready" }, agent: { companyUid: COMPANY, runtime: { syncOkAt: "2026-10-02T14:20:00.000Z" }, ...agent } }),
+    );
+
+  it("puts Slack first in a row whose block does not name Slack, three cards at most", async () => {
+    const w = world({ thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "linear.app" }, { domain: "deepwiki.com" }] }]) });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(rows()).toEqual([["slack", "notion.so", "linear.app"]]));
+    expect(slackCards()).toHaveLength(1);
+    expect(slackLine()).toBe("Talk to Nova in Slack and let it post there.");
+    // The bot's text is not changed: nothing about Slack is added to it.
+    expect(threadText()).not.toContain("hq-block");
+  });
+
+  it("moves Slack named third to the front, once", async () => {
+    const w = world({ thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "linear.app" }, { app: "slack" }] }]) });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(rows()).toEqual([["slack", "notion.so", "linear.app"]]));
+    expect(slackCards()).toHaveLength(1);
+  });
+
+  it("moves Slack named by slack.com to the front, once", async () => {
+    const w = world({ thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "https://slack.com/" }] }]) });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(rows()).toEqual([["slack", "notion.so"]]));
+    expect(slackCards()).toHaveLength(1);
+    expect(appCard("slack.com")).toBeNull();
+  });
+
+  it("starts the row of each of the bot's messages with Slack", async () => {
+    const w = world({ thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }] }], [{ kind: "connect", items: [{ domain: "deepwiki.com" }] }]) });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(rows()).toEqual([["slack", "notion.so"], ["slack", "deepwiki.com"]]));
+  });
+
+  it("keeps Slack first, connected, in the app's picks once the bot is in Slack", async () => {
+    const w = world({
+      thread: thread([]),
+      getStatus: statusWith({ channels: { slack: { appId: "A1" } }, channelDiagnostics: { slack: { inboundCapability: "ok" } } }),
+    });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(slackCards()[0]?.dataset.state).toBe("connected"));
+    expect(rows()).toEqual([["slack", "notion.so"]]);
+    expect(slackLine()).toBe("Nova is in Slack.");
+  });
+
+  it("keeps Slack first, connected, in the bot's own row once the bot is in Slack", async () => {
+    const w = world({
+      thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }, { domain: "linear.app" }] }]),
+      getStatus: statusWith({ channels: { slack: { appId: "A1" } }, channelDiagnostics: { slack: { inboundCapability: "ok" } } }),
+    });
+    await mountResolved(w);
+    await vi.waitFor(() => expect(slackCards()[0]?.dataset.state).toBe("connected"));
+    expect(rows()).toEqual([["slack", "notion.so", "linear.app"]]);
+  });
+
+  it("gives a person who may not set the bot up the ask-an-admin Slack card, first", async () => {
+    const w = world({
+      thread: thread([{ kind: "connect", items: [{ domain: "notion.so" }] }]),
+      getStatus: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-403", message: "no" })),
+    });
+    await mountDm(w, { ...DM_ROW, companyUid: COMPANY } as ConversationRow);
+    await vi.waitFor(() => expect(slackLine()).toBe("Ask a company admin to connect Nova to Slack."));
+    expect(rows()).toEqual([["slack", "notion.so"]]);
+  });
+
+  it("draws Slack first from the first frame: no card is ever put in front of another", async () => {
+    const seen: string[][] = [];
+    const observer = new MutationObserver(() => {
+      const now = rows()[0] ?? [];
+      const last = seen[seen.length - 1];
+      if (now.length > 0 && (!last || now.join() !== last.join())) seen.push(now);
+    });
+    const w = world({ thread: thread([{ kind: "connect", items: [{ domain: "linear.app" }, { domain: "notion.so" }] }]) });
+    const mounted = mountDm(w);
+    // The host element exists once mountDm has started; observe from then.
+    await vi.waitFor(() => expect(host).toBeDefined());
+    observer.observe(host, { childList: true, subtree: true, attributes: true });
+    await mounted;
+    await vi.waitFor(() => expect(rows()[0]).toEqual(["slack", "notion.so", "linear.app"]));
+    observer.disconnect();
+    expect(seen.length).toBeGreaterThan(0);
+    for (const [i, frame] of seen.entries()) {
+      expect(frame[0], `frame ${i}: ${frame.join(",")}`).toBe("slack");
+      // A later frame only adds cards at the end.
+      if (i > 0) expect(frame.slice(0, seen[i - 1]!.length)).toEqual(seen[i - 1]);
+    }
+  });
+
+  it("adds no Slack card to a person's direct message", async () => {
+    const ANA = "prs_ana";
+    const w = world({
+      thread: [
+        {
+          eventId: "p1",
+          fromPersonUid: ANA,
+          fromDisplayName: "Ana",
+          body: `Hi Corey, I am Nova.${fence([{ kind: "connect", items: [{ domain: "notion.so" }] }])}`,
+          createdAt: "2026-10-02T13:54:20.000Z",
+        },
+      ],
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: adapter(w),
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_me", displayName: "Corey Epstein", email: "me@example.com" },
+        initialRow: { id: `dm:${ANA}`, kind: "dm", title: "Ana", personUid: ANA, companyUid: null } as ConversationRow,
+        companies: w.companies,
+        onopenurl: w.openUrl,
+        wakes: createChatWakeBus(),
+        coreFixtures: false,
+      },
+    });
+    await vi.waitFor(() => expect(threadText()).toContain("Hi Corey, I am Nova."));
+    await settle(20);
+    expect(cards()).toHaveLength(0);
+    expect(slackCards()).toHaveLength(0);
   });
 });
 
