@@ -184,6 +184,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
                 install_in_progress: false,
                 consent_answered: false,
                 evidence_unreadable: true,
+                hq_root_recorded_by_prior_setup: false,
             },
             from_updater_restart,
             manifest_incomplete: false,
@@ -266,6 +267,24 @@ pub fn setup_lifecycle(app: &AppHandle) {
 
     let (install_in_progress, manifest_incomplete) =
         crate::commands::install_manifest::startup_manifest_evidence_from_disk();
+    // Did a prior setup on this machine record where the HQ folder lives?
+    // hq-installer v0.1.28+ writes `menubar.json.hqPath` at the end of the
+    // install wizard, and older flows wrote `config.json.hq_folder_path`.
+    // When either is set to a non-empty value AND the HQ root at that path is
+    // currently a valid install, this app installation ran its folder-choice
+    // step before — even if the completion markers were later lost (the
+    // concurrent-writer race fixed in #1307). This defends long-time users
+    // from being swept into #1226's reinstall-still-owes-full-setup gate
+    // after an auto-update that found their menubar.json missing those keys.
+    let hqpath_set = menubar
+        .get("hqPath")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    let config_path_set = config
+        .as_ref()
+        .and_then(|c| c.hq_folder_path.as_deref())
+        .is_some_and(|s| !s.is_empty());
+    let hq_root_recorded_by_prior_setup = hq_root_valid && (hqpath_set || config_path_set);
     let inputs = LifecycleInputs {
         install_completed,
         first_run_completed,
@@ -276,6 +295,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         install_in_progress,
         consent_answered,
         evidence_unreadable,
+        hq_root_recorded_by_prior_setup,
     };
     // macOS only: HQ is installed only when hq and node are on this computer.
     // A bundled CLI version mismatch is not "missing tools": auto-update

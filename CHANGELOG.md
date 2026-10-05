@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
+
 ## [0.10.395] — 2026-10-05
 
 - Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
