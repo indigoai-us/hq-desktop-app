@@ -41,6 +41,7 @@ The release moves it under the version it ships in.
 - Pressing play under the Atlas map now plays the last 30 days forward in about 25 seconds. Items appear as of each day, the day shows in large quiet type on the map, and a short line names that day's biggest changes. Playback stops at today, and when you scrub or use the arrow keys.
 - With nothing selected, the Atlas inspector now opens with a Today at <company> section listing what changed on the map today, projects first, each one clickable to fly to it on the map, with Show more for long days. Working now follows it as before. On a quiet day it says so in one line.
 - People and bots on the Atlas map, in the Not on the map group, in Working now and in the hover card now show their profile picture or bot picture, the same one Messages uses. Anyone without a picture, or whose picture does not load, keeps their initials or the bot mark.
+- Hovering an object on the Atlas map now shows more: who is on it now with their pictures, a story progress bar, the repos it links to and counts of linked knowledge and policies, the folder for a file, and recent times such as "Touched 2 h ago". Each row appears only when there is data for it.
 
 ## [0.10.392] — 2026-10-05
 

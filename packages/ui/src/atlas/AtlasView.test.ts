@@ -418,6 +418,46 @@ describe("Atlas chunk boundary", () => {
   });
 });
 
+describe("Atlas: richer hover cards", () => {
+  function hoverNode(id: string): Element {
+    const el = host.querySelector(sel(`atlas-node-${id}`))!;
+    flushSync(() => el.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false })));
+    return host.querySelector(sel("atlas-hover-card"))!;
+  }
+  const rows = (card: Element) =>
+    [...card.querySelectorAll('[data-testid^="atlas-hover-"]')].map((r) => r.getAttribute("data-testid"));
+
+  it("shows who is on a project, its stories, linked repos and counts, activity and the hint", async () => {
+    mountView();
+    await settle();
+    const card = hoverNode(RAIL);
+    expect(card.querySelector(".hc-kind")!.textContent).toBe("Project");
+    expect(card.querySelector(".hc-title")!.textContent!.trim()).toBe("hq desktop console rail");
+    const people = card.querySelector(sel("atlas-hover-people"))!;
+    expect(people.textContent).toContain("On it now");
+    expect(people.querySelectorAll(".hc-face")).toHaveLength(1);
+    expect(card.querySelector(sel("atlas-hover-stories"))!.textContent).toContain("0 of 9 stories done");
+    expect(card.querySelector(sel("atlas-hover-links"))!.textContent).toContain("hq desktop app");
+    expect(card.querySelector(sel("atlas-hover-counts"))!.textContent).toBe("1 knowledge doc · 1 worker");
+    expect(card.querySelector(sel("atlas-hover-activity"))!.textContent).toBe("Born Jul 16 · Touched 12 h ago · 14 inside");
+    expect(card.textContent).toContain("Click to focus");
+    // Plain text only: the card follows the pointer, so nothing in it is clickable.
+    expect(card.querySelector("a, button")).toBeNull();
+    // No row renders empty.
+    for (const row of card.querySelectorAll('[data-testid^="atlas-hover-"]')) {
+      expect(row.textContent!.trim() || row.querySelector("img, .hc-face"), row.getAttribute("data-testid")!).toBeTruthy();
+    }
+  });
+
+  it("shows only the header and activity for a bare project", async () => {
+    mountView();
+    await settle();
+    const card = hoverNode("project:projects/launch-landing/");
+    expect(rows(card)).toEqual(["atlas-hover-activity"]);
+    expect(card.textContent).toContain("launch landing");
+  });
+});
+
 describe("Atlas: live actors not on the map", () => {
   function mountActors(
     actors: { actorUid: string; name: string; bot: boolean; repo?: string; projectId?: string; avatarUrl?: string }[],

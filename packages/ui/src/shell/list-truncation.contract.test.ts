@@ -35,6 +35,8 @@ const ALLOWED: Record<string, string> = {
   "meetings/meeting-details.ts": "agenda and attendee caps on one meeting's detail card",
   "meetings/meetings-view-model.ts": "agenda windows; the full list opens from Meetings",
   "meetings/meeting-link.ts": "upcoming-meeting chip shows the next few only",
+  "atlas/atlas-hover.ts":
+    "hover card avatars: 5 faces then a +N count; the card cannot be clicked into, and the full list is in the inspector's Working now",
   "atlas/atlas-build.ts":
     "map node budget: the 80 most recent loose files per continent and 16 PRD knowledge links are a recency-ranked node budget for the map, not a paged list",
   "atlas/atlas-motion.ts":
