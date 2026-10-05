@@ -406,6 +406,61 @@ fn scan_live_lease_records(paths: &PackageUseLeasePaths) -> Result<Vec<LeaseReco
     Ok(live_records)
 }
 
+/// Prune only dead leases and return every live lease, regardless of root.
+/// The root-scoped acquire uses this while holding the updater's writer lock.
+fn scan_live_lease_records_pruning_dead(
+    paths: &PackageUseLeasePaths,
+) -> Result<Vec<LeaseRecord>, String> {
+    let entries = fs::read_dir(&paths.lease_directory).map_err(|error| {
+        format!(
+            "Could not inspect HQ CLI package-use leases ({})",
+            error_label(&error)
+        )
+    })?;
+    let mut live_records = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "Could not inspect an HQ CLI package-use lease ({})",
+                error_label(&error)
+            )
+        })?;
+        let path = entry.path();
+        if path == paths.update_request_path
+            || path.extension().and_then(|value| value.to_str()) != Some("json")
+        {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not read an HQ CLI package-use lease ({})",
+                    error_label(&error)
+                ))
+            }
+        };
+        let record = serde_json::from_slice::<LeaseRecord>(&bytes)
+            .map_err(|error| format!("Could not decode an HQ CLI package-use lease ({error})"))?;
+        if lease_record_is_live(&record) {
+            live_records.push(record);
+        } else {
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not remove a stale HQ CLI package-use lease ({})",
+                        error_label(&error)
+                    ))
+                }
+            }
+        }
+    }
+    Ok(live_records)
+}
+
 fn lease_paths(prefix: &Path, state_directory: &Path) -> Result<PackageUseLeasePaths, String> {
     let digest = format!(
         "{:x}",
@@ -695,6 +750,56 @@ impl PackageUseUpdateRequest {
             }),
             live_records,
         ))
+    }
+
+    /// Acquire the update request once no live holder of `target_root_id` remains.
+    ///
+    /// The request file is still prefix-wide because current hq-cli readers do not
+    /// inspect root IDs yet. Keep this additive API unused for mutations until those
+    /// readers also understand root-scoped admission.
+    pub fn try_acquire_for_root(
+        &mut self,
+        target_root_id: &str,
+    ) -> Result<Option<PackageUseUpdateGuard>, String> {
+        let live_records = scan_live_lease_records_pruning_dead(&self.paths)?;
+        let (same_root, _other_root) = split_live_records_by_root(&live_records, target_root_id);
+        if !same_root.is_empty() {
+            return Ok(None);
+        }
+        self.owns_request = false;
+        Ok(Some(PackageUseUpdateGuard {
+            request_path: self.paths.update_request_path.clone(),
+        }))
+    }
+
+    /// Wait under the caller-provided existing lease timeout until this root has
+    /// no live holders. Timeout summaries contain only holders of this root.
+    pub async fn wait_for_root_with_summary(
+        mut self,
+        target_root_id: &str,
+        timeout: Duration,
+    ) -> Result<PackageUseUpdateGuard, PackageUseLeaseWaitError> {
+        let started = tokio::time::Instant::now();
+        loop {
+            let live_records = scan_live_lease_records_pruning_dead(&self.paths)
+                .map_err(PackageUseLeaseWaitError::Other)?;
+            let (same_root, _other_root) =
+                split_live_records_by_root(&live_records, target_root_id);
+            if same_root.is_empty() {
+                self.owns_request = false;
+                return Ok(PackageUseUpdateGuard {
+                    request_path: self.paths.update_request_path.clone(),
+                });
+            }
+            if started.elapsed() >= timeout {
+                let same_root: Vec<_> = same_root.into_iter().cloned().collect();
+                return Err(PackageUseLeaseWaitError::Timeout(timeout_summary(
+                    &same_root,
+                    now_epoch_ms(),
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Clear stale leases and report whether any live holder still blocks the update.
@@ -1279,6 +1384,94 @@ mod tests {
             live_holder_count_bucket(100),
             LiveHolderCountBucket::FourPlus
         );
+    }
+
+    #[test]
+    fn other_root_live_holder_does_not_block_scoped_acquire() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let other_root = paths.lease_directory.join(format!("{pid}-{start}-other.json"));
+        record_with_root(&other_root, pid, start, Some("root-b"));
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let guard = request.try_acquire_for_root("root-a").unwrap();
+
+        assert!(guard.is_some());
+        assert!(other_root.exists(), "a live other-root lease must survive");
+    }
+
+    #[tokio::test]
+    async fn same_root_live_holder_times_out_with_same_root_summary() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_details(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            "5.342.3",
+            None,
+            Some("root-a"),
+        );
+        record_with_details(
+            &paths.lease_directory.join(format!("{pid}-{start}-other.json")),
+            pid,
+            start,
+            "5.342.4",
+            None,
+            Some("root-b"),
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let error = match request
+            .wait_for_root_with_summary("root-a", Duration::ZERO)
+            .await
+        {
+            Err(error) => error,
+            Ok(_guard) => panic!("expected a timeout while a same-root holder remains"),
+        };
+
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("expected a timeout summary for a same-root lease");
+        };
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+        assert_eq!(summary.holder_version, HolderVersionBucket::Pre53424);
+    }
+
+    #[test]
+    fn legacy_scoped_acquire_matches_prefix_wide_for_legacy_holders() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+        );
+        let mut scoped = PackageUseUpdateRequest::begin_at(paths.clone()).unwrap();
+        assert!(scoped.try_acquire_for_root("legacy").unwrap().is_none());
+        assert!(scoped.try_acquire_for_root("INVALID/ROOT").unwrap().is_none());
+        drop(scoped);
+
+        let mut prefix_wide = PackageUseUpdateRequest::begin_at(paths).unwrap();
+        assert!(prefix_wide.try_acquire().unwrap().is_none());
+    }
+
+    #[test]
+    fn scoped_acquire_prunes_dead_other_root_and_preserves_live_other_root() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let dead_other_root = paths.lease_directory.join("4294967295-1-dead.json");
+        record_with_root(&dead_other_root, u32::MAX, 1, Some("root-b"));
+        let live_other_root = paths.lease_directory.join(format!("{pid}-{start}-live.json"));
+        record_with_root(&live_other_root, pid, start, Some("root-b"));
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        assert!(request.try_acquire_for_root("root-a").unwrap().is_some());
+        assert!(!dead_other_root.exists(), "dead leases of any root are pruned");
+        assert!(live_other_root.exists(), "live leases of another root survive");
     }
 
     #[tokio::test]
