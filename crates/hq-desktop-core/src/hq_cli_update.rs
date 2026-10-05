@@ -9927,8 +9927,18 @@ mod tests {
         );
         // The lease-timeout report uses a separate fixed failure tag, asserted
         // together with its capture and fingerprint above.
+        let summary = crate::package_use_lease::PackageUseLeaseTimeoutSummary {
+            live_holder_count: crate::package_use_lease::LiveHolderCountBucket::One,
+            holder_version: crate::package_use_lease::HolderVersionBucket::Current,
+            oldest_holder_age: crate::package_use_lease::HolderAgeBucket::Under10m,
+            oldest_holder_purpose: crate::package_use_lease::HolderPurposeBucket::Command,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            report_package_use_lease_timeout(&summary, 0)
+        });
+        assert_eq!(events.len(), 1);
         assert_eq!(
-            "package_use_lease_timeout",
+            events[0].tags["install_failure_kind"],
             "package_use_lease_timeout"
         );
     }
