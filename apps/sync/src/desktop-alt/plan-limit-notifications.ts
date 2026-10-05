@@ -14,7 +14,7 @@
  * because the rows (and which episodes are still open) persist per account.
  */
 
-export const PLAN_LIMIT_NOTIFICATION_TYPE = 'plan_limit';
+const PLAN_LIMIT_NOTIFICATION_TYPE = 'plan_limit';
 const PLAN_LIMIT_ID_PREFIX = 'local:plan-limit:';
 /** Rows kept in history. Old ended episodes fall off first. */
 export const PLAN_LIMIT_HISTORY_CAP = 100;
