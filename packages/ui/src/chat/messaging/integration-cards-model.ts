@@ -24,10 +24,10 @@
  *   one another's subdomain): a connection card (connected, or "Let {bot} use
  *   it" for the person's own). A provider name alone never matches a domain;
  * - else a catalog match for the domain: a connectable card with its auth class;
- * - else no card. While the lookup is unknown that app has no card yet: it
- *   comes in when its lookup answers. It never keeps the row's other cards
- *   from drawing. Only the company's list being unknown holds a whole row,
- *   for up to {@link ROW_SETTLE_MS}.
+ * - else no card. While the lookup is unknown that app has no card yet.
+ *   A row draws as one unit: it waits for the company's list and for the
+ *   catalog's answer on each app it names, for up to {@link ROW_SETTLE_MS};
+ *   after that it draws what it can and a late card joins at the end.
  *
  * The person's own presses (Connect, Not now) live in the per-bot record
  * (connection-card-model.ts, `apps`). "Connected" is never stored: it is
@@ -495,36 +495,44 @@ export function botReason(botName: string, why: string): string {
 }
 
 /**
- * Whether a block's row has to wait for the company's list: the list is not
- * known yet and the row names a domain. Nothing can be said about any domain
- * without the list. A row of built-in cards alone never waits.
+ * Whether a block's row has to wait: a row draws as one unit (owner,
+ * 2026-10-05: the Slack card showed at once and the others seconds later).
+ * It waits while the company's list is not known and the row names a domain,
+ * and, once the list is known, while an app it names that is not a
+ * connection still waits for its catalog lookup (`lookupFor` gives
+ * "unknown"). A row of built-in cards alone never waits.
+ *
+ * Without `lookupFor` only the list is waited for.
  */
 export function rowAwaitsList(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
   facts: CompanyConnections | null | undefined,
+  lookupFor?: ((domain: string) => CatalogLookup) | null,
 ): boolean {
-  if (facts) return false;
-  return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
+  if (!facts) return items.some((item) => !item.app && normalizeConnectDomain(item.domain) !== null);
+  if (!lookupFor) return false;
+  return items.some((item) => {
+    const domain = item.app ? null : normalizeConnectDomain(item.domain);
+    if (!domain || connectionForItem(facts, { domain, connectionId: item.connectionId })) return false;
+    return lookupFor(domain) === "unknown";
+  });
 }
 
 /**
  * Whether a block's row may draw.
  *
- * A row draws as soon as the company's list is known. From then every item is
- * decided on its own: a built-in card and a connection draw at once, and an
- * app that still waits for its catalog lookup simply has no card until the
- * lookup answers ({@link integrationCardView} gives null for it). One app
- * being looked up never holds the other cards back.
- *
- * Only the list itself being unknown holds a whole row ({@link rowAwaitsList}).
- * That hold ends when the list arrives, or after {@link ROW_SETTLE_MS} since
- * `since`, when the row draws what it can without it.
+ * A row draws once, whole, when everything it names is known: the company's
+ * list, and the catalog's answer for each app that is not a connection
+ * ({@link rowAwaitsList}). The wait is bounded: after {@link ROW_SETTLE_MS}
+ * since `since` (a failed or slow read) the row draws what it can, its
+ * built-in cards first among them, and a card whose facts come later takes
+ * the next free place (RichMessageContent.svelte), so no card on screen moves.
  */
 export function connectRowReady(
   items: ReadonlyArray<{ app?: ConnectTarget; domain?: string; connectionId?: string }>,
-  input: { facts: CompanyConnections | null | undefined; since: number; now: number },
+  input: { facts: CompanyConnections | null | undefined; since: number; now: number; lookupFor?: ((domain: string) => CatalogLookup) | null },
 ): boolean {
-  if (!rowAwaitsList(items, input.facts)) return true;
+  if (!rowAwaitsList(items, input.facts, input.lookupFor)) return true;
   return input.now - input.since >= ROW_SETTLE_MS;
 }
 
@@ -630,13 +638,14 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
 
 /**
  * The cards the app attaches when the bot's message carries no connect block:
- * Slack (unless the bot is in Slack), then the person's own connected apps
- * the bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in
- * all (Slack counts as one).
+ * the bot's own Slack card first, then the person's own connected apps the
+ * bot cannot use yet, newest first, {@link MAX_FALLBACK_APPS} cards in all
+ * (Slack counts as one).
  *
- * Slack is offered once, as the bot's own Slack card. The person's own Slack
- * integration connection is not offered beside it (that gave two cards
- * titled Slack), nor in its place once the bot is in Slack.
+ * Slack is always the first card (owner, 2026-10-05: "make sure that Slack is
+ * the first card every time"). Once the bot is in Slack the card stays, in
+ * its connected state. The person's own Slack integration connection is never
+ * offered beside it (that gave two cards titled Slack).
  *
  * Each app's item carries the connection's id, so its card is that one
  * connection and no other. The item's domain is the one the list gives; a
@@ -647,9 +656,8 @@ export function readKeyBlueprint(json: unknown): KeyBlueprint {
 export function appChosenItems(
   facts: CompanyConnections | null | undefined,
   record: BotConnectionRecord | null | undefined,
-  slackConnected: boolean,
 ): ConnectItem[] {
-  const items: ConnectItem[] = slackConnected ? [] : [{ app: "slack" }];
+  const items: ConnectItem[] = [{ app: "slack" }];
   if (!facts || !facts.viewerUid) return items;
   const own = newestFirst(
     facts.connections.filter((c) => c.createdBy === facts.viewerUid && !isSlackConnection(c) && !botCanUse(c, record)),
@@ -663,6 +671,22 @@ export function appChosenItems(
     items.push({ domain, connectionId: connection.id });
   }
   return items;
+}
+
+/**
+ * A row of a cloud bot's cards as it is drawn: the bot's own Slack card first,
+ * then the other items in their order. The app adds the Slack card when the
+ * row has none; a row that names Slack (by `app: "slack"`, or by slack.com,
+ * which reads as the same item) has it moved to the front, once. Nothing the
+ * bot wrote is changed: this is only the order of the cards the app draws.
+ *
+ * The Slack card needs no lookup of its own (its state comes from the bot's
+ * status, and reads "Connect Slack" while that is unknown), so it is in the
+ * row from the first frame and nothing is ever put in front of it later.
+ */
+export function slackFirst<T extends { app?: ConnectTarget }>(items: ReadonlyArray<T>): Array<T | { app: "slack" }> {
+  const own = items.find((item) => item.app === "slack");
+  return [own ?? { app: "slack" as const }, ...items.filter((item) => item.app !== "slack")];
 }
 
 // ── The brief for the bot ────────────────────────────────────────────────

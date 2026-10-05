@@ -355,11 +355,10 @@
   .connection-card[data-state="connecting"] .connection-card-glass {
     border-color: color-mix(in srgb, var(--cc-accent) 34%, transparent);
   }
-  .connection-card[data-state="connected"] {
-    border-color: color-mix(in srgb, var(--cc-ok) 70%, transparent);
-  }
+  /* A connected card keeps the neutral edge every other card has (owner,
+     2026-10-05: no green borders). Its green is the "Connected" mark and
+     the icon alone. */
   .connection-card[data-state="connected"] .connection-card-glass {
-    border-color: color-mix(in srgb, var(--cc-ok) 30%, transparent);
     background: color-mix(in srgb, #16a34a 10%, rgba(17, 17, 19, 0.82));
   }
   /* Declined recedes: the art goes grey and dark, the border dashed, the
