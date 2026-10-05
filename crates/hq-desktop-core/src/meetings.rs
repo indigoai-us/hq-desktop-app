@@ -1473,6 +1473,8 @@ struct LiveTranscriptWire {
     #[serde(default)]
     provisional: bool,
     #[serde(default)]
+    full: bool,
+    #[serde(default)]
     segments: Vec<serde_json::Value>,
     #[serde(default)]
     partial: Option<serde_json::Value>,
@@ -1498,6 +1500,7 @@ pub enum LiveTranscriptFetch {
         etag: Option<String>,
         updated_at: Option<String>,
         provisional: bool,
+        full: bool,
         truncated: bool,
         segments: Vec<LiveTranscriptSegment>,
         partial: Option<LiveTranscriptPartial>,
@@ -1561,6 +1564,7 @@ pub fn interpret_live_transcript_response(
                 etag,
                 updated_at: wire.updated_at,
                 provisional: wire.provisional,
+                full: wire.full,
                 truncated: wire.truncated,
                 segments: live_segments_from_values(wire.segments),
                 partial: wire.partial.and_then(live_partial_from_value),
@@ -1615,6 +1619,7 @@ mod live_transcript_tests {
       "revision": 42,
       "updatedAt": "2026-10-02T16:10:00.000Z",
       "provisional": true,
+      "full": true,
       "segments": [
         {"segmentId":"s1","participantId":"100","speaker":"Corey","startSeconds":812.4,"endSeconds":818.9,"text":"Hello","utteranceFinalized":true,"futureField":1},
         {"segmentId":"s2","speaker":"Stefan","startSeconds":"bad","text":"broken"},
@@ -1651,6 +1656,7 @@ mod live_transcript_tests {
                 revision,
                 etag,
                 provisional,
+                full,
                 segments,
                 partial,
                 ..
@@ -1658,6 +1664,7 @@ mod live_transcript_tests {
                 assert_eq!(revision, 42);
                 assert_eq!(etag.as_deref(), Some("\"e1\""));
                 assert!(provisional);
+                assert!(full);
                 assert_eq!(
                     segments
                         .iter()
@@ -1680,6 +1687,7 @@ mod live_transcript_tests {
         assert_eq!(json["kind"], "ok");
         assert_eq!(json["revision"], 42);
         assert_eq!(json["updatedAt"], "2026-10-02T16:10:00.000Z");
+        assert_eq!(json["full"], true);
         assert_eq!(json["segments"][0]["segmentId"], "s1");
         assert_eq!(json["segments"][0]["startSeconds"], 812.4);
         assert_eq!(json["partial"]["speaker"], "Corey");

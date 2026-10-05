@@ -5,7 +5,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterResult, LiveTranscriptRequest, LiveTranscriptResult } from "@hq/platform";
 import {
-  LIVE_POLL_HIDDEN_MS,
   LIVE_POLL_VISIBLE_MS,
   LiveTranscriptState,
   startLiveTranscriptPoll,
@@ -102,19 +101,15 @@ describe("live transcript poller", () => {
     h.stop();
   });
 
-  it("backs off to 10 s while hidden and polls at once on return", async () => {
+  it("does not poll while hidden and polls at once on return", async () => {
     const h = harness([], { hidden: true });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(h.fetch).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS * 3);
-    expect(h.fetch).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(LIVE_POLL_HIDDEN_MS - LIVE_POLL_VISIBLE_MS * 3);
-    expect(h.fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS * 4);
+    expect(h.fetch).not.toHaveBeenCalled();
     h.setHidden(false);
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.fetch).toHaveBeenCalledTimes(3);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS);
-    expect(h.fetch).toHaveBeenCalledTimes(4);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
     h.stop();
   });
 
@@ -133,7 +128,7 @@ describe("live transcript poller", () => {
 
   it("never polls when the meeting is not live", async () => {
     const h = harness([], { live: () => false });
-    await vi.advanceTimersByTimeAsync(LIVE_POLL_HIDDEN_MS);
+    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS * 4);
     expect(h.fetch).not.toHaveBeenCalled();
   });
 
@@ -164,8 +159,22 @@ describe("live transcript poller", () => {
     const h = harness([{ ok: true, value: { kind: "disabled" } }]);
     await vi.advanceTimersByTimeAsync(0);
     expect(h.state.status).toBe("off");
-    await vi.advanceTimersByTimeAsync(LIVE_POLL_HIDDEN_MS * 2);
+    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS * 4);
     expect(h.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces retained lines when the server sends a full snapshot", async () => {
+    const h = harness([
+      ok(4, ["a", "b"]),
+      { ok: true, value: { kind: "ok", revision: 2, etag: '"rebuilt"', full: true, segments: [{ segmentId: "c", speaker: "Corey", startSeconds: 1, text: "rebuilt" }], partial: null } },
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS);
+    expect(h.state.segments.map((s) => s.segmentId)).toEqual(["c"]);
+    expect(h.state.revision).toBe(2);
+    await vi.advanceTimersByTimeAsync(LIVE_POLL_VISIBLE_MS);
+    expect(h.calls[2]).toMatchObject({ sinceRevision: 2, etag: '"rebuilt"' });
+    h.stop();
   });
 
   it("does not overlap polls while one is in flight", async () => {

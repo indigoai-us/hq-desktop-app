@@ -157,7 +157,7 @@ describe("LiveTranscriptBody", () => {
   });
 });
 
-describe("MeetingCanvas Transcript tab", () => {
+describe("MeetingCanvas Live tab", () => {
   const now = new Date(2026, 9, 1, 10, 14);
   const event: MeetingEvent = {
     id: "standup",
@@ -168,16 +168,15 @@ describe("MeetingCanvas Transcript tab", () => {
     meetingUrl: "https://zoom.us/j/1",
   };
 
-  function openTranscript(el: HTMLElement): void {
-    const tab = [...el.querySelectorAll("button.tab")].find((b) => b.textContent === "Transcript") as HTMLButtonElement;
+  function openLive(el: HTMLElement): void {
+    const tab = [...el.querySelectorAll("button.tab")].find((b) => b.textContent === "Live") as HTMLButtonElement;
     tab.click();
     flushSync();
   }
 
-  it("says there is no notetaker when no bot is in the meeting", () => {
+  it("hides the Live tab when the meeting has no notetaker", () => {
     const el = render(MeetingCanvas, { event, now }, document.body.appendChild(document.createElement("div")));
-    openTranscript(el);
-    expect(el.querySelector("[data-testid=live-transcript-no-bot]")?.textContent).toBe("No notetaker in this meeting.");
+    expect([...el.querySelectorAll("button.tab")].map((b) => b.textContent)).not.toContain("Live");
   });
 
   it("opens the live transcript door when a notetaker is in the meeting", () => {
@@ -190,8 +189,7 @@ describe("MeetingCanvas Transcript tab", () => {
       companyId: "cmp_A",
     };
     const el = render(MeetingCanvas, { event, bot, now }, document.body.appendChild(document.createElement("div")));
-    openTranscript(el);
-    expect(el.querySelector("[data-testid=live-transcript-no-bot]")).toBeNull();
+    openLive(el);
     expect(el.querySelector("[data-testid=live-transcript-skeleton]")?.textContent).toBe("Connecting to the notetaker…");
   });
 });
