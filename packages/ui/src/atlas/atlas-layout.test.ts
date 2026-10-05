@@ -117,7 +117,11 @@ describe("atlas layout", () => {
   it("reveals more labels as the map zooms in (OWNER-D 4)", () => {
     const { placed } = layoutAtlas(smokeAtlasGraph().nodes);
     const base = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, measure: (t: string) => t.length * 8 };
-    const fit = frameAll(placed, 1000, 700);
+    // Start below the label-all zoom: the ring is sized to its contents, so a
+    // small map can already frame at or above that zoom.
+    const fitK = Math.min(frameAll(placed, 1000, 700).k, ATLAS_LABEL_ALL_ZOOM * 0.5);
+    const centre = placed[0]!;
+    const fit = { x: 500 - centre.x * fitK, y: 350 - centre.y * fitK, k: fitK };
     const atFit = atlasScreenLabels({ ...base, placed, view: fit, width: 1000, height: 700 });
     // Zoomed in on the first object, with a viewport large enough to hold its district.
     const target = placed[0]!;
