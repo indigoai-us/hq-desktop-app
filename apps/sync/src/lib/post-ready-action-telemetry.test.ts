@@ -108,6 +108,52 @@ describe('post-ready action telemetry', () => {
     expect(setup.emit).not.toHaveBeenCalled();
   });
 
+  it('allows close telemetry after an earlier close happened with the action flag off', async () => {
+    const setup = makeTracker(new MemoryStorage(), false, true);
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('close_window')).toBe(false);
+    setup.gate.flagEnabled = true;
+    expect(await setup.tracker.record('close_window')).toBe(true);
+
+    const actionEvents = setup.emit.mock.calls
+      .map(([event]) => event)
+      .filter((event): event is PostReadyActionEvent =>
+        event.eventName === 'desktop_post_ready_action');
+    expect(actionEvents).toHaveLength(1);
+    expect(actionEvents[0].properties.action).toBe('close_window');
+  });
+
+  it('reports session_ended when a different action is tried after close telemetry', async () => {
+    const setup = makeTracker(new MemoryStorage(), true, true);
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('close_window')).toBe(true);
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+
+    const dropped = setup.emit.mock.calls
+      .map(([event]) => event)
+      .filter((event): event is PostReadyActionDroppedEvent =>
+        event.eventName === 'desktop_post_ready_action_dropped');
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].properties).toEqual({ reason: 'session_ended', action: 'open_folder' });
+  });
+
+  it('reports already_sent when an action is repeated in an open session', async () => {
+    const setup = makeTracker(new MemoryStorage(), true, true);
+    markPostReadyActionReady(setup.storage);
+
+    expect(await setup.tracker.record('open_folder')).toBe(true);
+    expect(await setup.tracker.record('open_folder')).toBe(false);
+
+    const dropped = setup.emit.mock.calls
+      .map(([event]) => event)
+      .filter((event): event is PostReadyActionDroppedEvent =>
+        event.eventName === 'desktop_post_ready_action_dropped');
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0].properties).toEqual({ reason: 'already_sent', action: 'open_folder' });
+  });
+
   it('records a return nudge after the first setup session was closed', async () => {
     const setup = makeTracker();
     markPostReadyActionReady(setup.storage);

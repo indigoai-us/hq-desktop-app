@@ -38,6 +38,7 @@ export interface PostReadyActionEvent {
 export const POST_READY_ACTION_DROP_REASONS = [
   'not_ready',
   'already_sent',
+  'session_ended',
   'flag_off',
   'flag_error',
   'identity_error',
@@ -193,8 +194,12 @@ export function createPostReadyActionTelemetry(
       await reportDropReason(action, 'not_ready');
       return false;
     }
-    if (state.ended || state.sent.includes(action)) {
+    if (state.sent.includes(action)) {
       await reportDropReason(action, 'already_sent');
+      return false;
+    }
+    if (state.ended && action !== 'close_window') {
+      await reportDropReason(action, 'session_ended');
       return false;
     }
     beginFirstSessionIfReady(action === 'close_window');
@@ -205,10 +210,12 @@ export function createPostReadyActionTelemetry(
     }
 
     const pending = operation.then(async () => {
-      if (
-        state.sent.includes(action) || (state.ended && action !== 'close_window')
-      ) {
+      if (state.sent.includes(action)) {
         await reportDropReason(action, 'already_sent');
+        return false;
+      }
+      if (state.ended && action !== 'close_window') {
+        await reportDropReason(action, 'session_ended');
         return false;
       }
       let enabled = false;

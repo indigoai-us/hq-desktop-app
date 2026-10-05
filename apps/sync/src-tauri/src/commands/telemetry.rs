@@ -1184,6 +1184,7 @@ const POST_READY_ACTION_VALUES: &[&str] = &[
 const POST_READY_ACTION_DROP_REASON_VALUES: &[&str] = &[
     "not_ready",
     "already_sent",
+    "session_ended",
     "flag_off",
     "flag_error",
     "identity_error",
@@ -3457,6 +3458,15 @@ mod codex_telemetry_tests {
         assert_eq!(accepted, json!({
             "reason": "identity_missing",
             "action": "ready_first_action_clicked",
+        }));
+
+        let session_ended = sanitize_post_ready_action_dropped_properties(Some(json!({
+            "reason": "session_ended",
+            "action": "open_folder",
+        })));
+        assert_eq!(session_ended, json!({
+            "reason": "session_ended",
+            "action": "open_folder",
         }));
 
         for (properties, expected) in [
