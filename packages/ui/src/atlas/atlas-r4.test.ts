@@ -1,7 +1,8 @@
 // @vitest-environment happy-dom
-// OWNER-R4: sections are tinted with the web type colours and drawn without an
-// outline; projects are small dots sized by the web scale; no two sections
-// overlap and no two dots in a section overlap.
+// OWNER-R4: each section's dots carry its type colour; projects are small dots
+// sized by the web scale; no two sections overlap and no two dots in a section
+// overlap. Owner, 2026-10-04: no shaded shape behind a section (the colour on
+// the dots and the section name group it), and sections pack close together.
 import { flushSync, mount, unmount } from "svelte";
 import { describe, expect, it } from "vitest";
 import AtlasMap from "./AtlasMap.svelte";
@@ -10,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const mapSource = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AtlasMap.svelte"), "utf8");
-import { ATLAS_TYPE_TINT, atlasDistrictShapes, atlasRadius, frameAll, layoutAtlas } from "./atlas-layout.js";
+import { ATLAS_DOT_SOFT_CAP, ATLAS_TYPE_TINT, atlasDistrictShapes, atlasRadius, frameAll, layoutAtlas } from "./atlas-layout.js";
 import { ATLAS_RING_ORDER, type AtlasNode } from "./atlas-model.js";
 
 function crowd(perType: number): AtlasNode[] {
@@ -57,6 +58,26 @@ describe("OWNER-R4 Atlas layout", () => {
     }
   });
 
+  it("packs sections close: the map is far smaller than the old fixed ring", () => {
+    for (const perType of [3, 40]) {
+      const { placed, regions } = layoutAtlas(crowd(perType));
+      const shapes = atlasDistrictShapes(placed, regions);
+      // Every section touches the cluster: its nearest neighbour is one gap away.
+      for (const a of shapes) {
+        const nearest = Math.min(
+          ...shapes.filter((b) => b !== a).map((b) => Math.hypot(a.x - b.x, a.y - b.y) - a.r - b.r),
+        );
+        expect(nearest, `${a.type} at ${perType}`).toBeLessThan(12);
+      }
+    }
+  });
+
+  it("caps dot size so one huge folder cannot hide its section", () => {
+    const huge = atlasRadius({ type: "knowledge", count: 50_000 });
+    expect(huge).toBeLessThan(ATLAS_DOT_SOFT_CAP);
+    expect(huge).toBeGreaterThan(atlasRadius({ type: "knowledge", count: 50 }));
+  });
+
   it("never overlaps two dots in one section", () => {
     const { placed } = layoutAtlas(crowd(60));
     for (const type of ATLAS_RING_ORDER) {
@@ -71,7 +92,7 @@ describe("OWNER-R4 Atlas layout", () => {
     }
   });
 
-  it("tints each section with its web type colour, with no outline", () => {
+  it("colours each section's dots with its type colour and draws no shape behind the section", () => {
     const { placed, regions } = layoutAtlas(crowd(4));
     const target = document.createElement("div");
     document.body.appendChild(target);
@@ -97,17 +118,14 @@ describe("OWNER-R4 Atlas layout", () => {
     flushSync();
     const colours = new Set<string>();
     for (const type of ATLAS_RING_ORDER) {
-      const district = target.querySelector<SVGCircleElement>(`[data-testid='atlas-district-${type}']`)!;
-      expect(district.getAttribute("vector-effect")).toBeNull();
-      expect(district.style.getPropertyValue("--c")).toBe(ATLAS_TYPE_TINT[type]);
+      expect(target.querySelector(`[data-testid='atlas-district-${type}']`)).toBeNull();
+      expect(target.querySelector(`[data-testid='atlas-district-label-${type}']`)?.textContent).toBeTruthy();
       colours.add(ATLAS_TYPE_TINT[type]);
       const node = target.querySelector<SVGGElement>(`[data-kind='${type}'][data-atlas-node]`)!;
       expect(node.style.getPropertyValue("--c")).toBe(ATLAS_TYPE_TINT[type]);
     }
     expect(colours.size).toBe(ATLAS_RING_ORDER.length);
-    const districtRule = /\.district\s*\{([^}]*)\}/.exec(mapSource)?.[1] ?? "";
-    expect(districtRule).toMatch(/stroke:\s*none/);
-    expect(districtRule).toMatch(/fill:[^;]*var\(--c\)/);
+    expect(mapSource).not.toMatch(/\.district\s*\{/);
     // Six clearly different hues, none of them purple (hue 260-330).
     const hue = (hex: string) => {
       const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];

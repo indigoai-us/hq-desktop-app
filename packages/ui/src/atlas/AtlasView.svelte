@@ -102,6 +102,8 @@
   let selected = $state<string | null>(null);
   let view = $state<AtlasViewBox>({ x: 400, y: 280, k: 0.5 });
   let framedFor = "";
+  // True once the person pans or zooms; the map then stops re-framing itself.
+  let userMoved = false;
   let size = { width: 800, height: 560 };
   let mapHost = $state<HTMLDivElement | null>(null);
   let detail = $state<AtlasDetail | undefined>(undefined);
@@ -187,6 +189,7 @@
 
   function frame(): void {
     measure();
+    userMoved = false;
     // OWNER-R4: frame the shaded sections, not just the dots, so no section is cut off.
     view = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
   }
@@ -248,11 +251,15 @@
     loadGraph(companyUid);
   }
 
-  // Frame once per company when nodes first arrive.
+  // Frame when a company's nodes first arrive, and again when the map grows
+  // (the first page, then the full load), so nothing sits cut off at an edge.
+  // Once the person has moved the map it is left where they put it.
   $effect(() => {
     const key = `${companyUid}:${layout.placed.length}`;
-    if (!layout.placed.length || framedFor.startsWith(`${companyUid}:`)) return;
+    if (!layout.placed.length || framedFor === key) return;
+    const sameCompany = framedFor.startsWith(`${companyUid}:`);
     framedFor = key;
+    if (sameCompany && userMoved) return;
     untrack(frame);
   });
 
@@ -379,7 +386,10 @@
           {nowMs}
           {view}
           onselect={(id) => (selected = id)}
-          onview={(next) => (view = next)}
+          onview={(next) => {
+            view = next;
+            userMoved = true;
+          }}
         />
       {:else if loadFailed}
         <div class="empty" data-testid="atlas-error" role="alert">
