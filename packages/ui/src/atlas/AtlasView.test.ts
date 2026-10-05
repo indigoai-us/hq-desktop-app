@@ -529,3 +529,14 @@ describe("Atlas focus mode", () => {
     expect(host.querySelectorAll('[data-testid^="atlas-node-"][style*="translate"]').length).toBe(0);
   });
 });
+
+describe("Atlas work motion", () => {
+  it("draws faint trails from a live project to the items it touched recently, and no pulse on first paint", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    const trails = host.querySelectorAll('[data-testid="atlas-trail"]');
+    expect(trails.length).toBe(2);
+    expect(host.querySelectorAll('[data-testid^="atlas-pulse-"]').length).toBe(0);
+  });
+});

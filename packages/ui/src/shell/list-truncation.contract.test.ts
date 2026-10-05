@@ -37,6 +37,8 @@ const ALLOWED: Record<string, string> = {
   "meetings/meeting-link.ts": "upcoming-meeting chip shows the next few only",
   "atlas/atlas-build.ts":
     "map node budget: the 80 most recent loose files per continent and 16 PRD knowledge links are a recency-ranked node budget for the map, not a paged list",
+  "atlas/atlas-motion.ts":
+    "motion budget: at most 5 trails per active project and 12 pulses on the map are a drawing cap, not a list",
   "projects/board-faces.ts": "avatar stack with a +N overflow face",
   "projects/new-project.ts": "slug length",
   "library/library-overlay-model.ts": "slug length",
