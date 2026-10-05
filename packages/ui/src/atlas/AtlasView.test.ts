@@ -540,3 +540,49 @@ describe("Atlas work motion", () => {
     expect(host.querySelectorAll('[data-testid^="atlas-pulse-"]').length).toBe(0);
   });
 });
+
+describe("Atlas playback", () => {
+  it("shows the scrubbed day on the map, no caption while paused, and nothing at the live edge", async () => {
+    mountView();
+    await settle();
+    flushSync();
+    expect(host.querySelector(sel("atlas-playback"))).toBeNull();
+    const hist = host.querySelector(sel("atlas-scrub-hist")) as HTMLElement;
+    flushSync(() => {
+      hist.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    });
+    expect(host.querySelector(sel("atlas-playback-date"))?.textContent).toBe("Sep 29");
+    expect(host.querySelector(sel("atlas-playback-caption"))).toBeNull();
+    flushSync(() => {
+      hist.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    });
+    expect(host.querySelector(sel("atlas-playback"))).toBeNull();
+  });
+
+  it("plays from the first day with a caption of that day's changes, and a manual scrub stops it", async () => {
+    let frame: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => ((frame = cb), 1));
+    vi.stubGlobal("cancelAnimationFrame", () => (frame = null));
+    try {
+      mountView();
+      await settle();
+      flushSync();
+      flushSync(() => (host.querySelector(sel("atlas-scrub-play")) as HTMLButtonElement).click());
+      expect(host.querySelector(sel("atlas-scrubber"))!.getAttribute("data-playing")).toBe("true");
+      expect(host.querySelector(sel("atlas-playback-date"))?.textContent).toBe("Sep 1");
+      // Sep 21: most smoke-graph objects were last touched nine days before Sep 30.
+      const start = performance.now();
+      flushSync(() => frame?.(start + 20 * 833 + 10));
+      expect(host.querySelector(sel("atlas-playback-date"))?.textContent).toBe("Sep 21");
+      expect(host.querySelector(sel("atlas-playback-caption"))?.textContent).toBe("Changed: hq explorer, paper designer and billing v2");
+      const hist = host.querySelector(sel("atlas-scrub-hist")) as HTMLElement;
+      flushSync(() => {
+        hist.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+      });
+      expect(host.querySelector(sel("atlas-scrubber"))!.getAttribute("data-playing")).toBeNull();
+      expect(host.querySelector(sel("atlas-playback-caption"))).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

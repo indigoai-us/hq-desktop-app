@@ -62,11 +62,53 @@
     return { ...base, nodes, edges };
   }
 
+  /**
+   * A few weeks of history on the small map: projects and documents born and
+   * touched across the last four weeks, some with stories, so playback, the
+   * Today panel and activity sizing all have something real to show.
+   */
+  function historyGraph<G extends { nodes: unknown[]; edges?: unknown[] }>(base: G): G {
+    const now = Date.UTC(2026, 8, 30, 12);
+    const day = 86_400_000;
+    const nodes = [...base.nodes];
+    const edges = [...(base.edges ?? [])];
+    const names = ["onboarding flow", "pricing page", "agent runtime", "search index", "mobile shell", "billing alerts", "atlas polish", "invite links"];
+    names.forEach((name, i) => {
+      const slug = name.replace(/ /g, "-");
+      const born = now - (28 - i * 3) * day;
+      const touched = i % 3 === 0 ? now - (i % 2) * 3_600_000 : born + (i + 2) * day;
+      nodes.push({
+        id: `project:projects/${slug}/`,
+        type: "project",
+        label: name,
+        path: `projects/${slug}/`,
+        folder: true,
+        count: 3 + i * 2,
+        created: born,
+        touched,
+        stories: { done: i % 4, total: 3 + i },
+      });
+      nodes.push({
+        id: `knowledge:knowledge/${slug}.md`,
+        type: "knowledge",
+        label: `${name} notes`,
+        path: `knowledge/${slug}.md`,
+        folder: false,
+        count: 1,
+        created: born + day,
+        touched: Math.min(now, touched + 3_600_000),
+      });
+      edges.push({ source: `project:projects/${slug}/`, target: `knowledge:knowledge/${slug}.md`, kind: "cites" });
+    });
+    return { ...base, nodes, edges };
+  }
+
   onMount(() => {
     theme = new URLSearchParams(location.search).get("theme") ?? "dark";
     void loadAtlas().then((m) => {
       const crowd = new URLSearchParams(location.search).get("crowd");
-      const graph = crowd ? crowdGraph(m.smokeAtlasGraph("Indigo"), Number(crowd) || 1) : m.smokeAtlasGraph("Indigo");
+      const base = historyGraph(m.smokeAtlasGraph("Indigo"));
+      const graph = crowd ? crowdGraph(base, Number(crowd) || 1) : base;
       cache = m.createAtlasCache({ fetcher: async () => graph });
       mod = m;
     });
