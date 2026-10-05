@@ -15,6 +15,15 @@
   import AtlasScrubber from "./AtlasScrubber.svelte";
   import { atlasFocusOrbit } from "./atlas-focus.js";
   import {
+    ATLAS_PULSE_MS,
+    atlasMotionAllowed,
+    atlasPulseIds,
+    atlasTouchedIndex,
+    atlasTrails,
+    atlasWorkState,
+    type AtlasWorkState,
+  } from "./atlas-motion.js";
+  import {
     atlasDailyCounts,
     atlasDayStart,
     atlasTimeOpacity,
@@ -193,6 +202,51 @@
         });
     });
   });
+  // Work motion: one pulse where work advanced since the last read, trails
+  // from projects active now. The previous read is kept outside reactivity.
+  let prevTouched: Map<string, number> | null = null;
+  let prevWork: AtlasWorkState | null = null;
+  let motionFor = "";
+  let pulseSeq = 0;
+  let pulses = $state<Map<string, number>>(new Map());
+  const pulseTimers = new Set<ReturnType<typeof setTimeout>>();
+  $effect(() => {
+    const nodes = graph?.nodes;
+    const now = presence;
+    const uid = companyUid;
+    untrack(() => {
+      if (!nodes) return;
+      if (motionFor !== uid) {
+        motionFor = uid;
+        prevTouched = null;
+        prevWork = null;
+      }
+      const ids = atlasMotionAllowed(motion) ? atlasPulseIds({ nodes, prevTouched, presence: now, prevWork }) : [];
+      prevTouched = atlasTouchedIndex(nodes);
+      prevWork = atlasWorkState(now);
+      if (!ids.length) return;
+      const seq = ++pulseSeq;
+      const next = new Map(pulses);
+      for (const id of ids) next.set(id, seq);
+      pulses = next;
+      const timer = setTimeout(() => {
+        pulseTimers.delete(timer);
+        const left = new Map(pulses);
+        for (const [id, s] of left) if (s === seq) left.delete(id);
+        pulses = left;
+      }, ATLAS_PULSE_MS + 100);
+      pulseTimers.add(timer);
+    });
+  });
+  const trails = $derived(
+    atlasTrails({
+      nodes: graph?.nodes ?? [],
+      edges: graph?.edges,
+      live,
+      nowMs,
+      drawn: placedById,
+    }),
+  );
   const filterName = $derived(
     filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
   );
@@ -463,6 +517,8 @@
     return () => {
       window.removeEventListener("keydown", onkeydown);
       stopFlight();
+      for (const timer of pulseTimers) clearTimeout(timer);
+      pulseTimers.clear();
     };
   });
 </script>
@@ -575,6 +631,8 @@
           {view}
           {focus}
           {motion}
+          {pulses}
+          {trails}
           onselect={selectFromMap}
           onview={(next) => {
             stopFlight();

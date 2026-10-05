@@ -14,6 +14,9 @@
   let mod = $state<AtlasModule | null>(null);
   let cache = $state<ReturnType<AtlasModule["createAtlasCache"]> | null>(null);
   let theme = $state("dark");
+  // deacon moves from US-014 to US-015 a few seconds in, so the rail project
+  // shows one work pulse (a live task moving on is a real Atlas pulse signal).
+  let deaconTask = $state("US-014 · desktop-alt e2e running · 14m");
 
   /**
    * `?crowd=1` adds a company-sized map (about 1,900 objects with a few huge
@@ -67,6 +70,8 @@
       cache = m.createAtlasCache({ fetcher: async () => graph });
       mod = m;
     });
+    const timer = setTimeout(() => (deaconTask = "US-015 · starting · 0m"), 5000);
+    return () => clearTimeout(timer);
   });
 </script>
 
@@ -80,7 +85,7 @@
         nowMs={Date.UTC(2026, 8, 30, 12)}
         presence={[
           { nodeId: "project:projects/hq-desktop-console-rail/", name: "Corey", bot: false, signal: "editing design/design.md · 12 s" },
-          { nodeId: "project:projects/hq-desktop-console-rail/", name: "deacon", bot: true, signal: "US-014 · desktop-alt e2e running · 14m" },
+          { nodeId: "project:projects/hq-desktop-console-rail/", name: "deacon", bot: true, signal: deaconTask },
           { nodeId: "repo:repos/private/hq-desktop-app/", name: "Eric B.", bot: false, signal: "41m" },
           { nodeId: "person:b_lumen", actorUid: "b_lumen", name: "lumen", bot: true, unplaced: "In a session with no project" },
           { nodeId: "person:b_ferry", actorUid: "b_ferry", name: "ferry", bot: true, unplaced: "Working in billing-v3, which is not on this map" },

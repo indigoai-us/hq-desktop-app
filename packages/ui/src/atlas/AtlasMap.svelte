@@ -12,6 +12,7 @@
     type AtlasPresence,
     type AtlasRefEdge,
   } from "./atlas-model.js";
+  import { ATLAS_PULSE_MS, type AtlasTrail } from "./atlas-motion.js";
   import { atlasFocusPlaced, type AtlasFocusOffset } from "./atlas-focus.js";
   import { ATLAS_RING_GAP, ATLAS_RING_MIN_PX, atlasStoryFraction } from "./atlas-activity.js";
   import { ATLAS_DOCK_CAP, atlasDockedChips, atlasInitials, atlasUnplacedActors } from "./atlas-presence.js";
@@ -53,6 +54,10 @@
     focus?: Map<string, AtlasFocusOffset> | null;
     /** Animate focus moves and other transitions. Off (or reduced motion) shows the end state. */
     motion?: boolean;
+    /** Projects pulsing once now (id → pulse sequence, so a repeat restarts it). */
+    pulses?: ReadonlyMap<string, number>;
+    /** Faint trails from projects active now to what they just touched. */
+    trails?: readonly AtlasTrail[];
     view: AtlasView;
     onselect: (id: string | null) => void;
     onview: (view: AtlasView) => void;
@@ -74,6 +79,8 @@
     nowMs,
     focus = null,
     motion = true,
+    pulses = new Map(),
+    trails = [],
     view,
     onselect,
     onview,
@@ -100,6 +107,15 @@
       console.debug("[atlas] hint flag not saved", err);
     }
   }
+
+  // No animation work while the window is hidden: CSS animations pause.
+  let pageHidden = $state(typeof document !== "undefined" && document.hidden);
+  $effect(() => {
+    if (typeof document === "undefined") return;
+    const sync = () => (pageHidden = document.hidden);
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  });
 
   let hovered = $state<string | null>(null);
   /** Key of the actor chip under the pointer; its card replaces the object card. */
@@ -424,7 +440,7 @@
   }
 </script>
 
-<div class="atlas-map" class:calm={!motion} data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
+<div class="atlas-map" class:calm={!motion} class:paused={pageHidden} style:--pulse-ms={`${ATLAS_PULSE_MS}ms`} data-testid="atlas-map" bind:clientWidth={mapWidth} bind:clientHeight={mapHeight}>
   <svg
     bind:this={svgEl}
     role="application"
@@ -447,6 +463,13 @@
             y2={b.y}
             vector-effect="non-scaling-stroke"
           />
+        {/if}
+      {/each}
+      {#each trails as trail (`${trail.from}>${trail.to}`)}
+        {@const a = byId.get(trail.from)}
+        {@const b = byId.get(trail.to)}
+        {#if a && b}
+          <line class="trail" data-testid="atlas-trail" x1={a.x} y1={a.y} x2={b.x} y2={b.y} vector-effect="non-scaling-stroke" />
         {/if}
       {/each}
       {#each placed as node (node.id)}
@@ -506,6 +529,12 @@
             {/if}
           {/if}
         </g>
+      {/each}
+      {#each [...pulses] as [id, seq] (`${id}:${seq}`)}
+        {@const p = byId.get(id)}
+        {#if p}
+          <circle class="work-pulse" data-testid={`atlas-pulse-${id}`} cx={p.x} cy={p.y} r={p.r + 4} vector-effect="non-scaling-stroke" />
+        {/if}
       {/each}
     </g>
     <g class="labels" data-testid="atlas-labels">
@@ -775,6 +804,56 @@
   @keyframes atlas-halo {
     50% {
       opacity: 0.35;
+    }
+  }
+  /* Work happened: one ring that expands and fades, then is removed. */
+  .work-pulse {
+    fill: none;
+    stroke: var(--v4-text-1);
+    stroke-width: 1.25;
+    opacity: 0;
+    pointer-events: none;
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: atlas-work-pulse var(--pulse-ms, 1200ms) cubic-bezier(0.23, 1, 0.32, 1) 1 forwards;
+  }
+  @keyframes atlas-work-pulse {
+    0% {
+      opacity: 0.55;
+      transform: scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(2.4);
+    }
+  }
+  /* Active now: thin, faint lines to what the project just touched, drifting slowly. */
+  .trail {
+    stroke: var(--v4-text-1);
+    stroke-opacity: 0.22;
+    stroke-width: 1;
+    stroke-dasharray: 2 5;
+    pointer-events: none;
+    animation: atlas-trail-drift 4s linear infinite;
+  }
+  @keyframes atlas-trail-drift {
+    to {
+      stroke-dashoffset: -14;
+    }
+  }
+  .paused .trail,
+  .paused .work-pulse,
+  .paused .halo,
+  .paused .pulse {
+    animation-play-state: paused;
+  }
+  .calm .trail {
+    animation: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .trail,
+    .work-pulse {
+      animation: none;
     }
   }
   .dock {
