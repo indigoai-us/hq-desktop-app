@@ -20,6 +20,7 @@ The release moves it under the version it ships in.
 - Settings: the "Open this company on sign-in for members" switch is gone from General. It did not change anything.
 - Billing: the page shows the seat and hosted agent counts without the long list of names under them.
 - Connections: Connected sources in the Google detail panel now show each product's own icon (Gmail, Drive, Calendar and others) in a compact two-column list.
+- Company switcher: companies that are only on this Mac and not synced yet now appear in the list, marked "Local, not synced".
 
 ## [0.10.392] — 2026-10-05
 

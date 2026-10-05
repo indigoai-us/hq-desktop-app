@@ -48,9 +48,11 @@ export * from "./company-tabs";
 export {
   buildCompanyDisplayMap,
   companyDisplayName,
+  localOnlyCompaniesFromRows,
   looksLikeCompanyUid,
   membershipRowsFrom,
   workspacesFromMembershipRows,
+  type LocalOnlyCompany,
 } from "./company-display-map";
 export { default as CompanyLabel } from "./CompanyLabel.svelte";
 export { default as CompanyIcon } from "./CompanyIcon.svelte";

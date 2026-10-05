@@ -150,6 +150,16 @@
 </div>
 
 {#snippet companyRow(company: MoreCompany, pinned: boolean)}
+  {#if company.localOnly}
+    <div class="row-wrap local" data-testid="more-local-company">
+      <div class="row">
+        <span class="name"
+          ><CompanyLabel name={company.name} iconUrl={null} size={16} /></span
+        >
+        <span class="local-tag">Local, not synced</span>
+      </div>
+    </div>
+  {:else}
   <div class="row-wrap">
     <button type="button" class="row" onclick={() => open(company)}>
       <span class="name"
@@ -166,6 +176,7 @@
       onclick={() => togglePin(company, pinned)}
     >{pinned ? "unpin" : "pin"}</button>
   </div>
+  {/if}
 {/snippet}
 
 <style>
@@ -315,6 +326,12 @@
   .row-wrap:focus-within .pin,
   .pin:focus-visible {
     opacity: 1;
+  }
+
+  .local-tag {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font: 13px/1 var(--font-ui);
   }
 
   .foot {
