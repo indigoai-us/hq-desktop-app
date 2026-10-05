@@ -4,8 +4,15 @@
    * zooms, double-click frames all. Keyboard (`0`, `Esc`) is owned by the
    * parent view so it also works while focus sits in the inspector.
    */
-  import type { AtlasPresence, AtlasRefEdge } from "./atlas-model.js";
-  import { ATLAS_CHIP_SIZE, atlasDockedChips } from "./atlas-presence.js";
+  import {
+    atlasFooterLine,
+    atlasRelatedCountsLine,
+    districtLabel,
+    type AtlasDistrictType,
+    type AtlasPresence,
+    type AtlasRefEdge,
+  } from "./atlas-model.js";
+  import { atlasDockedChips } from "./atlas-presence.js";
   import {
     ATLAS_LABEL_PX,
     atlasRelatedIds,
@@ -63,6 +70,10 @@
   }: Props = $props();
 
   let hovered = $state<string | null>(null);
+  /** Key of the actor chip under the pointer; its card replaces the object card. */
+  let hoveredChip = $state<string | null>(null);
+  /** True while the map is being dragged; hover cards stay hidden. */
+  let dragging = $state(false);
   let svgEl = $state<SVGSVGElement | null>(null);
   let drag: {
     id: number;
@@ -137,7 +148,7 @@
   );
   const labels = $derived(
     atlasScreenLabels({
-      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box)],
+      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box), ...chipBoxes],
       placed,
       selected,
       hovered,
@@ -150,8 +161,75 @@
     }),
   );
   const focusIds = $derived(selected || hovered ? new Set([selected, hovered, ...related]) : null);
-  const chips = $derived(atlasDockedChips(placed, presence));
-  const half = ATLAS_CHIP_SIZE / 2;
+  // Actor chips are drawn in screen space, like labels, so they stay one
+  // readable size at every zoom. Each stack starts just off the node rim and
+  // overlaps to the right.
+  const CHIP_PX = 20;
+  const CHIP_STEP = 15;
+  const half = CHIP_PX / 2;
+  const chips = $derived(
+    atlasDockedChips(placed, presence).map((chip) => {
+      const rimX = chip.x1 * view.k + view.x;
+      const rimY = chip.y1 * view.k + view.y;
+      return { ...chip, rimX, rimY, sx: rimX + 13 + chip.index * CHIP_STEP, sy: rimY - 13 };
+    }),
+  );
+
+  const chipBoxes = $derived(
+    chips.map((c) => ({ left: c.sx - half, top: c.sy - half, right: c.sx + half, bottom: c.sy + half })),
+  );
+
+  const CARD_WIDTH = 260;
+  type HoverCard = {
+    left: number;
+    top: number;
+    above: boolean;
+    kind: string;
+    title: string;
+    people: { key: string; name: string; bot: boolean; signal?: string }[];
+    lines: string[];
+  };
+  function cardAt(cx: number, cy: number, reach: number): Pick<HoverCard, "left" | "top" | "above"> {
+    const width = mapWidth || 800;
+    const height = mapHeight || 560;
+    const left = Math.max(8, Math.min(cx - 18, width - CARD_WIDTH - 8));
+    // Below the object by default; above when the lower half has no room.
+    const above = cy + reach + 150 > height;
+    return { left, top: above ? cy - reach - 10 : cy + reach + 10, above };
+  }
+  const card = $derived.by((): HoverCard | null => {
+    if (dragging) return null;
+    const chip = hoveredChip ? chips.find((c) => c.key === hoveredChip) : undefined;
+    if (chip) {
+      const on = byId.get(chip.nodeId);
+      return {
+        ...cardAt(chip.sx, chip.sy, half + 2),
+        kind: chip.bot ? "Bot" : "Person",
+        title: chip.name,
+        people: [],
+        lines: [on ? `Working on ${on.label}` : "", chip.signal ?? ""].filter(Boolean),
+      };
+    }
+    const node = hovered ? byId.get(hovered) : undefined;
+    if (!node) return null;
+    const counts = new Map<AtlasDistrictType, number>();
+    for (const id of related) {
+      const other = byId.get(id);
+      if (other) counts.set(other.type, (counts.get(other.type) ?? 0) + 1);
+    }
+    const here = presence.filter((p) => p.nodeId === node.id);
+    return {
+      ...cardAt(node.x * view.k + view.x, node.y * view.k + view.y, node.r * view.k + (here.length ? 22 : 0)),
+      kind: districtLabel(node.type).replace(/s$/, ""),
+      title: node.label,
+      people: here.map((p) => ({ key: p.actorUid ?? p.name, name: p.name, bot: p.bot, signal: p.signal })),
+      lines: [
+        node.stories ? `${node.stories.done} of ${node.stories.total} stories done` : "",
+        atlasRelatedCountsLine([...counts].map(([type, count]) => ({ type, count }))),
+        atlasFooterLine(node, nowMs),
+      ].filter(Boolean),
+    };
+  });
 
   function dimmed(id: string): boolean {
     if (filterIds && !filterIds.has(id)) return true;
@@ -199,11 +277,13 @@
     const dy = event.clientY - drag.sy;
     if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     drag.moved = true;
+    dragging = true;
     onview({ ...view, x: drag.vx + dx, y: drag.vy + dy });
   }
 
   function endDrag(): void {
     drag = null;
+    dragging = false;
     window.removeEventListener("pointermove", onpointermove);
     window.removeEventListener("pointerup", onpointerup);
     window.removeEventListener("pointercancel", onpointercancel);
@@ -303,32 +383,6 @@
           <circle class="dot" cx={node.x} cy={node.y} r={node.r} />
         </g>
       {/each}
-      {#each chips as chip (chip.key)}
-        <g
-          class="dock"
-          class:dim={filterActor ? chip.actorUid !== filterActor : dimmed(chip.nodeId)}
-          data-testid={`atlas-chip-${chip.actorUid ?? chip.name}`}
-          data-node={chip.nodeId}
-          data-kind={chip.bot ? "bot" : "human"}
-          aria-label={`${chip.name} on ${byId.get(chip.nodeId)?.label ?? chip.nodeId}`}
-        >
-          <line
-            class="connector"
-            x1={chip.x1}
-            y1={chip.y1}
-            x2={chip.x - half}
-            y2={chip.y + half}
-            vector-effect="non-scaling-stroke"
-          />
-          {#if chip.bot}
-            <rect class="mark" x={chip.x - half} y={chip.y - half} width={ATLAS_CHIP_SIZE} height={ATLAS_CHIP_SIZE} rx="5" />
-          {:else}
-            <circle class="mark" cx={chip.x} cy={chip.y} r={half} />
-          {/if}
-          <text class="initials" x={chip.x} y={chip.y + 3} text-anchor="middle">{chip.initials}</text>
-          <title>{chip.name}</title>
-        </g>
-      {/each}
     </g>
     <g class="labels" data-testid="atlas-labels">
       {#each districtLabels as label (label.id)}
@@ -344,7 +398,66 @@
         >{label.text}</text>
       {/each}
     </g>
+    <g class="docks" data-testid="atlas-chips">
+      {#each chips as chip (chip.key)}
+        <g
+          class="dock"
+          class:dim={filterActor ? chip.actorUid !== filterActor : dimmed(chip.nodeId)}
+          data-testid={`atlas-chip-${chip.actorUid ?? chip.name}`}
+          data-node={chip.nodeId}
+          data-atlas-node={chip.nodeId}
+          data-kind={chip.bot ? "bot" : "human"}
+          role="img"
+          aria-label={`${chip.name} on ${byId.get(chip.nodeId)?.label ?? chip.nodeId}`}
+          onpointerenter={() => {
+            hoveredChip = chip.key;
+            hovered = chip.nodeId;
+          }}
+          onpointerleave={() => {
+            if (hoveredChip === chip.key) hoveredChip = null;
+            if (hovered === chip.nodeId) hovered = null;
+          }}
+        >
+          {#if chip.index === 0}
+            <line class="connector" x1={chip.rimX} y1={chip.rimY} x2={chip.sx - half * 0.7} y2={chip.sy + half * 0.7} />
+          {/if}
+          {#if chip.bot}
+            <rect class="mark" x={chip.sx - half} y={chip.sy - half} width={CHIP_PX} height={CHIP_PX} rx="3" />
+          {:else}
+            <circle class="mark" cx={chip.sx} cy={chip.sy} r={half} />
+          {/if}
+          <text class="initials" x={chip.sx} y={chip.sy + 3.5} text-anchor="middle">{chip.initials}</text>
+        </g>
+      {/each}
+    </g>
   </svg>
+  {#if card}
+    <div
+      class="hover-card"
+      class:above={card.above}
+      data-testid="atlas-hover-card"
+      style:left={`${card.left}px`}
+      style:top={`${card.top}px`}
+      style:width={`${CARD_WIDTH}px`}
+    >
+      <div class="hc-kind">{card.kind}</div>
+      <div class="hc-title">{card.title}</div>
+      {#if card.people.length}
+        <div class="hc-people">
+          {#each card.people as who (who.key)}
+            <div class="hc-who">
+              <i class="hc-live" class:bot={who.bot}></i>
+              <span class="hc-name">{who.name}</span>
+              {#if who.signal}<span class="hc-signal">{who.signal}</span>{/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+      {#each card.lines as line (line)}
+        <div class="hc-line">{line}</div>
+      {/each}
+    </div>
+  {/if}
   <div class="legend" bind:this={legendEl}>
     <span><i class="ldot"></i>live</span>
     <span><i class="halo-key"></i>someone here now</span>
@@ -381,17 +494,16 @@
     font-family: var(--font-ui, var(--font-sans, "Geist", sans-serif));
     font-size: 13px;
     font-weight: 500;
-    fill: var(--v4-text-1);
-    paint-order: stroke;
-    stroke: var(--v4-ground);
-    stroke-width: 3px;
+    /* Section names sit back from item labels by tone; no outline. */
+    fill: var(--v4-text-3);
     pointer-events: none;
   }
   /* OWNER-R4: each section is tinted with the web type colour; no outline. */
   .district {
     /* Pulled toward the ink so the pale web colours still read on a light ground. */
     fill: var(--c);
-    fill-opacity: 0.2;
+    /* A faint wash that groups a section without reading as a shape. */
+    fill-opacity: 0.045;
     stroke: none;
     pointer-events: none;
   }
@@ -438,7 +550,7 @@
     }
   }
   .dock {
-    pointer-events: none;
+    cursor: pointer;
   }
   .dock.dim {
     opacity: 0.35;
@@ -446,18 +558,20 @@
   .connector {
     stroke: var(--v4-ok);
     stroke-width: 1;
-    stroke-dasharray: 3 3;
+    stroke-opacity: 0.55;
   }
   .mark {
-    fill: var(--v4-control-bg);
+    fill: var(--v4-ground);
+    fill: rgb(from var(--v4-ground) r g b);
     stroke: var(--v4-ok);
     stroke-width: 1.5;
   }
   .initials {
-    font-family: var(--font-mono, "Geist Mono", monospace);
-    font-size: 7px;
-    font-weight: 600;
+    font-family: var(--font-sans, "Geist", sans-serif);
+    font-size: 9px;
+    font-weight: 500;
     fill: var(--v4-text-1);
+    pointer-events: none;
   }
   @media (prefers-reduced-motion: reduce) {
     .halo {
@@ -468,10 +582,87 @@
     font-family: var(--font-sans, "Geist", sans-serif);
     font-size: 13px;
     fill: var(--v4-text-1);
-    paint-order: stroke;
-    stroke: var(--v4-ground);
-    stroke-width: 3px;
+    fill-opacity: 0.92;
     pointer-events: none;
+  }
+  .hover-card {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--v4-control-border);
+    /* Opaque: the control tint over the map's own ground, so nothing on the
+       map reads through the card. */
+    background: var(--v4-ground);
+    background:
+      linear-gradient(var(--v4-control-bg), var(--v4-control-bg)),
+      rgb(from var(--v4-ground) r g b);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--v4-text-1);
+    pointer-events: none;
+    transform-origin: top left;
+    transition:
+      opacity 140ms ease,
+      transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
+    @starting-style {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+  .hover-card.above {
+    translate: 0 -100%;
+    transform-origin: bottom left;
+  }
+  .hc-kind {
+    color: var(--v4-text-3);
+  }
+  .hc-title {
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  .hc-people {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--v4-rowline);
+    display: grid;
+    gap: 4px;
+  }
+  .hc-who {
+    display: grid;
+    grid-template-columns: 8px auto 1fr;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+  }
+  .hc-live {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+    align-self: center;
+  }
+  .hc-live.bot {
+    border-radius: 1px;
+  }
+  .hc-signal {
+    color: var(--v4-text-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .hc-line {
+    margin-top: 6px;
+    color: var(--v4-text-2, var(--v4-text-3));
+  }
+  .hc-line + .hc-line {
+    margin-top: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hover-card {
+      transition: none;
+    }
   }
   .legend {
     position: absolute;

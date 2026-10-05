@@ -43,7 +43,7 @@ const PRD_FETCH_CONCURRENCY = 32;
  * PRDs, so stop starting new reads after this long and paint what we have;
  * the refresh timeout must never be spent on links (QA-016).
  */
-export const ATLAS_PRD_BUDGET_MS = 8_000;
+export const ATLAS_PRD_BUDGET_MS = 30_000;
 const RECENT_FILES = 80;
 const SKIP_ROOT_FILES = new Set(["INDEX.md", "README.md", "board.json", "company.yaml"]);
 

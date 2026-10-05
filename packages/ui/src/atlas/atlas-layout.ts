@@ -153,28 +153,21 @@ export function layoutAtlas(nodes: AtlasNode[]): {
       reach.set(type, Math.max(40, Math.max(...members.map((o) => Math.hypot(o.x, o.y) + o.r)) + DISTRICT_PAD));
     }
   }
-  // OWNER-R4: sections never overlap. Widen the ring until every pair of
-  // shaded sections keeps a gap; small maps keep the web orbit.
-  let scale = 1;
-  const centre = (region: AtlasRegion) => ({ x: region.x * scale, y: region.y * scale });
-  for (let tries = 0; tries < 60; tries++) {
-    let clash = false;
-    for (let i = 0; i < regions.length && !clash; i++) {
-      for (let j = i + 1; j < regions.length; j++) {
-        const ra = reach.get(regions[i]!.type);
-        const rb = reach.get(regions[j]!.type);
-        if (ra === undefined || rb === undefined) continue;
-        const a = centre(regions[i]!);
-        const b = centre(regions[j]!);
-        if (Math.hypot(a.x - b.x, a.y - b.y) < ra + rb + SECTION_GAP) {
-          clash = true;
-          break;
-        }
-      }
+  // OWNER-R4: sections never overlap. Size the ring to its contents: the
+  // smallest ring on which every pair of shaded sections keeps SECTION_GAP.
+  // Small maps pull in toward the centre instead of floating far apart on
+  // the full web orbit; crowded maps still widen.
+  let scale = RING_MIN_SCALE;
+  for (let i = 0; i < regions.length; i++) {
+    for (let j = i + 1; j < regions.length; j++) {
+      const ra = reach.get(regions[i]!.type);
+      const rb = reach.get(regions[j]!.type);
+      if (ra === undefined || rb === undefined) continue;
+      const apart = Math.hypot(regions[i]!.x - regions[j]!.x, regions[i]!.y - regions[j]!.y);
+      scale = Math.max(scale, (ra + rb + SECTION_GAP) / apart);
     }
-    if (!clash) break;
-    scale *= 1.08;
   }
+  const centre = (region: AtlasRegion) => ({ x: region.x * scale, y: region.y * scale });
   const scaled = regions.map((region) => ({ ...region, ...centre(region) }));
   const placed = offsets.map(({ n, x, y, r }) => {
     const region = scaled.find((g) => g.type === n.type) as AtlasRegion;
@@ -222,9 +215,11 @@ export function atlasVisibleEdges(
 /** One shaded section: a circle around every object in the section. */
 export type AtlasDistrictShape = AtlasRegion & { r: number };
 
-const DISTRICT_PAD = 18;
+const DISTRICT_PAD = 14;
 /** Space kept between two shaded sections. */
-const SECTION_GAP = 24;
+const SECTION_GAP = 10;
+/** The ring never shrinks below this share of ATLAS_ORBIT. */
+const RING_MIN_SCALE = 0.2;
 
 /**
  * OWNER-D 7: the shaded area behind each section that has objects. Like the
@@ -270,8 +265,10 @@ export const ATLAS_LABEL_PX = 13;
 /** From this zoom up, every object may carry a label when there is room. */
 export const ATLAS_LABEL_ALL_ZOOM = 1;
 /** Below that zoom, at most this many labels for objects nobody is looking at. */
-export const ATLAS_FIT_LABEL_CAP = 8;
+export const ATLAS_FIT_LABEL_CAP = 16;
 const LABEL_GAP = 4;
+/** Dots smaller than this on screen do not block a label. */
+const DOT_OBSTACLE_PX = 2.5;
 const LABEL_HEIGHT = 16;
 
 export interface AtlasScreenLabel {
@@ -286,11 +283,12 @@ export interface AtlasScreenLabel {
  * OWNER-D 4 (AUDIT-3-19): which labels to draw, in screen space, at a fixed
  * readable size. Ranked hovered, selected, related, then by significance:
  * touched in the last two days first, then most recently touched, then larger
- * objects (size comes from the object's item count). With an object selected
- * or hovered, only it, its relations and recent objects are labelled. Below
+ * objects (size comes from the object's item count). With an object
+ * selected, only it, its relations and recent objects are labelled; the same
+ * holds while hovering below ATLAS_LABEL_ALL_ZOOM. Below
  * ATLAS_LABEL_ALL_ZOOM, at most ATLAS_FIT_LABEL_CAP labels go to objects
  * nobody is looking at. A label is kept only when it fits inside the map and
- * does not overlap a label already kept, so crowded maps show the most
+ * does not overlap a label already kept or another object's dot, so crowded maps show the most
  * significant names and the rest appear on hover or as the map zooms in.
  */
 export function atlasScreenLabels(input: {
@@ -315,7 +313,10 @@ export function atlasScreenLabels(input: {
     if (n.id === input.selected) return 1;
     if (input.related.has(n.id)) return 2;
     if (recent(n)) return 3;
-    return all || (!input.hovered && !input.selected) ? 4 : -1;
+    // A selection is a deliberate focus: only it, its relations and recent
+    // objects keep a name. Hovering alone never blanks a zoomed-in map.
+    if (input.selected) return -1;
+    return all || !input.hovered ? 4 : -1;
   };
   const candidates = input.placed
     .map((n) => ({ n, r: rank(n) }))
@@ -328,6 +329,17 @@ export function atlasScreenLabels(input: {
         a.n.id.localeCompare(b.n.id),
     );
   const kept: AtlasScreenLabel[] = [];
+  // Labels carry no outline, so one drawn across another object's dot would
+  // be unreadable. Dots on screen that are big enough to matter are obstacles.
+  const dots: (AtlasScreenLabel["box"] & { id: string })[] = [];
+  for (const n of input.placed) {
+    const rr = n.r * view.k;
+    if (rr < DOT_OBSTACLE_PX) continue;
+    const cx = n.x * view.k + view.x;
+    const cy = n.y * view.k + view.y;
+    if (cx + rr < 0 || cy + rr < 0 || cx - rr > width || cy - rr > height) continue;
+    dots.push({ id: n.id, left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr });
+  }
   let ambient = 0;
   for (const { n, r } of candidates) {
     if (r >= 3 && !all && ambient >= ATLAS_FIT_LABEL_CAP) break;
@@ -354,6 +366,15 @@ export function atlasScreenLabels(input: {
           k.top < box.bottom + LABEL_GAP,
       );
       if (hit) continue;
+      // A dot stacked on this object's own dot cannot be avoided, so it does not block.
+      const own = { left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr };
+      const onDot = dots.some(
+        (d) =>
+          d.id !== n.id &&
+          box.left < d.right && d.left < box.right && box.top < d.bottom && d.top < box.bottom &&
+          !(own.left < d.right && d.left < own.right && own.top < d.bottom && d.top < own.bottom),
+      );
+      if (onDot) continue;
       if (r >= 3) ambient += 1;
       kept.push({ id: n.id, text: n.label, x: spot.x, y: spot.y, box });
       break;

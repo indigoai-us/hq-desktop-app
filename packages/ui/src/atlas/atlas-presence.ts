@@ -80,6 +80,10 @@ export type AtlasDockedChip = {
   name: string;
   bot: boolean;
   initials: string;
+  /** Position in this node's stack, 0 first. */
+  index: number;
+  /** What the actor is doing, when the live read says. */
+  signal?: string;
   /** Chip centre and the connector start on the node rim (world units). */
   x: number;
   y: number;
@@ -123,6 +127,8 @@ export function atlasDockedChips(
       name: who.name,
       bot: who.bot,
       initials: who.bot ? "⌁" : atlasInitials(who.name),
+      index: i,
+      signal: who.signal,
       x: x1 + 18 + i * CHIP_GAP,
       y: y1 - 18,
       x1,
