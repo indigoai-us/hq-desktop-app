@@ -100,6 +100,7 @@
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
   } from './lib/post-ready-action-telemetry';
+  import { registerSetupToolOfferTelemetry } from './lib/setup-tool-offer-telemetry';
   import { registerMainReturnNudgeListener } from './lib/return-nudge-event-bridge';
   import './styles/popover.css';
 
@@ -187,7 +188,10 @@
     return () => {};
   });
   const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
+  // The setup bot's "continue setup in your coding tool" card (packages/ui).
+  const stopSetupToolOfferTelemetry = registerSetupToolOfferTelemetry();
   onDestroy(() => {
+    stopSetupToolOfferTelemetry();
     window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
     void unlistenReturnNudge.then((unlisten) => unlisten());
     void postReadyCloseListener.then((unlisten) => unlisten());

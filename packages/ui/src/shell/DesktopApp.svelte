@@ -28,6 +28,7 @@
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
+    dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
     startJitteredPoll,
@@ -168,7 +169,9 @@
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
+  import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import {
+    continueInToolForMessage,
     HOST_PLACED_BLOCK_KINDS,
     messageHasConnectBlock,
     messageHasVisibleContent,
@@ -261,6 +264,11 @@
     setupBotIntro,
     setupBotKickoff,
     setupBotNoRuntime,
+    setupToolOfferDue,
+    SETUP_CONTINUE_IN_TOOL_PROMPT,
+    SETUP_KEEP_GOING_HERE,
+    SETUP_TOOL_OFFER_COPY,
+    type SetupOfferTool,
     SETUP_BOT_ALREADY_ELSEWHERE,
     SETUP_BOT_GENERIC_FAILURE,
     SETUP_BOT_MODE,
@@ -962,13 +970,6 @@
     self?: SelfIdentity | null;
     /** Native account partition for renderer persistence and async guards. */
     tenantAccountId?: string | null;
-    /**
-     * Agents the user has a real conversation with. Creating an agent
-     * announces it to the whole company, so an `agt_*` rail row stays hidden
-     * until it messages the user; a host with its own record of past agent
-     * conversations seeds it here.
-     */
-    engagedAgentUids?: readonly string[] | null;
     /** Monotonic native auth-session generation. A new value remounts the host. */
     tenantGeneration?: number;
     /**
@@ -1217,7 +1218,6 @@
     onsignin,
     self = null,
     tenantAccountId = null,
-    engagedAgentUids = null,
     tenantGeneration = 0,
     isAdmin = null,
     accountLabel = null,
@@ -3104,6 +3104,18 @@
     if (setupBotDmDone) void loadLocalBotRuntimeReady();
   });
   /**
+   * The setup bot's first message offered to continue setup in a coding tool
+   * the person already uses a lot (hq-cli sends a `continueInTool` block):
+   * the tool to show the card for, until the person writes again.
+   */
+  const setupToolOffer = $derived.by((): SetupOfferTool | null => {
+    const bot = selectedLocalBot;
+    const row = selectedRow;
+    if (!bot || !row || bot.name.trim().toLowerCase() !== SETUP_BOT_NAME) return null;
+    const timeline = liveTimelineId === row.id ? liveTimeline : (messagesByRow?.(row) ?? []);
+    return setupToolOfferDue(timeline, bot.agentUid, messageHasVisibleContent, continueInToolForMessage);
+  });
+  /**
    * The bot whose suggested replies the conversation draws, under its newest
    * message: the setup bot (recommended answers to what it just asked, or
    * next questions) or the open cloud bot. The conversation itself finds the
@@ -3112,9 +3124,66 @@
    */
   const suggestionsFromUid = $derived.by((): string | null => {
     const bot = selectedLocalBot;
-    if (bot && bot.name.trim().toLowerCase() === SETUP_BOT_NAME) return bot.agentUid;
+    if (bot && bot.name.trim().toLowerCase() === SETUP_BOT_NAME) {
+      // The offer card carries its own "Keep going here" button.
+      if (setupToolOffer) return null;
+      return bot.agentUid;
+    }
     return dmCloudBotUid;
   });
+  /** "Shown" is recorded once per bot, however often the card re-renders. */
+  $effect(() => {
+    const tool = setupToolOffer;
+    const bot = selectedLocalBot;
+    if (!tool || !bot) return;
+    const key = `setup-tool-offer-shown:${bot.agentUid}`;
+    if (tenantStorage.getItem(key) === "1") return;
+    tenantStorage.setItem(key, "1");
+    dispatchSetupToolOffer("shown", tool);
+  });
+  let setupToolOfferBusy = $state(false);
+  let setupToolOfferError = $state<string | null>(null);
+  /** "Continue in …": open the HQ folder in that tool with setup ready to go. */
+  async function continueSetupInTool(tool: SetupOfferTool): Promise<void> {
+    if (setupToolOfferBusy) return;
+    setupToolOfferBusy = true;
+    setupToolOfferError = null;
+    let launched = false;
+    try {
+      const res = await adapter.settings.getSetupStatus();
+      const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+      if (!folder) {
+        setupToolOfferError = SETUP_TOOL_OFFER_COPY.folderNotReady;
+        return;
+      }
+      // A plain-language setup request in place of a command, prefilled in
+      // the app's composer (Claude: the link's `q`; Codex: its prompt link).
+      const actions = createLaunchActions({
+        shell: adapter.shell,
+        hqFolderPath: folder,
+        prompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+        deepLinkPrompt: SETUP_CONTINUE_IN_TOOL_PROMPT,
+      });
+      // The desktop app the offer named, never a terminal.
+      const error = tool === "claude" ? await actions.launchClaudeApp() : await actions.launchCodexApp();
+      launched = !error;
+      if (error) setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } catch (err) {
+      console.warn("[hq-desktop] could not open the coding tool for setup:", err);
+      setupToolOfferError = SETUP_TOOL_OFFER_COPY.launchFailed.replaceAll("{name}", SETUP_TOOL_OFFER_COPY[tool].name);
+    } finally {
+      setupToolOfferBusy = false;
+      dispatchSetupToolOffer("continued", tool, { launched });
+    }
+  }
+  /** "Keep going here": the reply the bot waits for before it starts setup. */
+  function keepSetupHere(tool: SetupOfferTool): void {
+    setupToolOfferError = null;
+    dispatchSetupToolOffer("keptHere", tool);
+    void persistSend(SETUP_KEEP_GOING_HERE, []).catch((err) =>
+      console.warn("[hq-desktop] could not tell the setup bot to keep going here:", err),
+    );
+  }
   /**
    * The finish card, once put away, stays away.
    *
@@ -4914,7 +4983,11 @@
     const row = selectedRow;
     const uid = row?.kind === "dm" ? (row.personUid?.trim() ?? "") : "";
     if (!row || !uid || !kickoffPendingByUid[uid] || liveTimelineId !== row.id) return;
-    const decision = kickoffThinkingState(liveTimeline, uid);
+    // The setup bot's app offer holds the kickoff until the person answers:
+    // no turn is running, so no row (their "Keep going here" send starts one).
+    const decision = kickoffThinkingState(liveTimeline, uid, {
+      holdsKickoff: (message) => continueInToolForMessage(message) !== null,
+    });
     if (decision.state === "waiting") return;
     const name = kickoffPendingByUid[uid]!;
     const { [uid]: _started, ...rest } = kickoffPendingByUid;
@@ -7848,7 +7921,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchChannel(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -7866,7 +7939,7 @@
       const raw = unwrapAdapter(await adapter.messaging.fetchDmThread(args));
       const page = timelinePageFromPayload(raw);
       return {
-        messages: normalizeConversationMessages(page.messages),
+        messages: normalizeConversationMessages(page.messages, { keepAudience: true }),
         nextCursor: page.nextCursor ?? null,
         ...(page.view ? { view: page.view } : {}),
         ...(page.viewScanTruncated ? { viewScanTruncated: true } : {}),
@@ -12588,7 +12661,6 @@
           selectedId={selectedRow?.id ?? null}
           scopeUid={tenantCompanyId}
           {tenantAccountId}
-          {engagedAgentUids}
           {tenantCompanyId}
           {seedDirectory}
           {avatarByUid}
@@ -13479,6 +13551,16 @@
                   <!-- Inside the conversation scroller (typing-indicator
                        position) — a chat-stage sibling would become a second
                        flex-row column floating top-right. -->
+                  {#if setupToolOffer}
+                    {@const offerTool = setupToolOffer}
+                    <SetupToolOffer
+                      tool={offerTool}
+                      busy={setupToolOfferBusy}
+                      launchError={setupToolOfferError}
+                      oncontinue={() => void continueSetupInTool(offerTool)}
+                      onkeep={() => keepSetupHere(offerTool)}
+                    />
+                  {/if}
                   {#if agentChannelFallbackVisible}
                     <div class="agent-channel-fallback" data-testid="agent-channel-live-fallback" role="status">
                       {headerTitle} is live. Say hello.

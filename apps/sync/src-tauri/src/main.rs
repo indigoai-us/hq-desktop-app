@@ -59,6 +59,7 @@ mod ui_hot_update;
 mod ui_protocol;
 mod tray_helper;
 mod updater;
+mod updater_outcome;
 mod util;
 #[cfg(target_os = "macos")]
 mod webview_asset_cache;
@@ -714,6 +715,7 @@ fn main() {
             commands::desktop_auth::desktop_continuation_await_identity,
             commands::desktop_auth::desktop_continuation_confirm,
             commands::desktop_auth::desktop_continuation_cancel,
+            commands::desktop_auth::record_onboarding_workspace_selected,
             commands::auth::get_auth_state,
             commands::auth::whoami,
             commands::auth::get_auth_session,

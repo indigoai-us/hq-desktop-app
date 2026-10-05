@@ -226,7 +226,7 @@ async function invokeReleasePolicy(testCase: ReleasePolicyCase): Promise<Command
 
 function uploadArtifactStepBodies(job: string): string[] {
   return [...job.matchAll(
-    /\n      - name: [^\n]+\n        uses: actions\/upload-artifact@v4\n([\s\S]*?)(?=\n      - (?:name|uses): |$)/g,
+    /\n      - name: [^\n]+\n        uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n([\s\S]*?)(?=\n      - (?:name|uses): |$)/g,
   )].map((match) => match[1]);
 }
 
@@ -665,7 +665,9 @@ describe("release workflow channel contract", () => {
 
     for (const job of ["macos", "windows"]) {
       const body = jobBody(job);
-      expect(body).toContain("actions/download-artifact@v4");
+      expect(body).toContain(
+        "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4",
+      );
       expect(body).toContain("name: release-version-stamp");
       expect(body).toContain("Verify stamped version");
     }
@@ -686,7 +688,9 @@ describe("release workflow channel contract", () => {
     // main is protected with no role bypass, and GitHub will not accept the
     // Actions identity as a ruleset bypass actor — the push must go through the
     // hq-audit-bot App, which is the bypass actor on the `main` ruleset.
-    expect(sync).toContain("actions/create-github-app-token@v1");
+    expect(sync).toContain(
+      "actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1",
+    );
     expect(sync).toContain("HQ_AUDIT_BOT_APP_ID");
     expect(sync).toContain("token: ${{ steps.app-token.outputs.token }}");
     expect(sync).toContain("scripts/release-version-order.mjs");
@@ -1185,10 +1189,14 @@ exec "$REAL_NODE" "$@"
       expect(verify).toContain(`--check ${label}`);
     }
     const shell = jobBody("shell-macos");
-    expect(shell).toContain("actions/cache/restore@v4");
+    expect(shell).toContain(
+      "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4",
+    );
     expect(shell).toContain("gh release create shell-cache");
     expect(shell).toContain("--prerelease --latest=false");
-    expect(shell).toContain("actions/cache/save@v4");
+    expect(shell).toContain(
+      "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4",
+    );
   });
 
   it("smokes the signed macOS app as a non-Indigo identity before publish", () => {

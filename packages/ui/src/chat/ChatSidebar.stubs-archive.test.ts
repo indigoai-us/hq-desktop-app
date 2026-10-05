@@ -1,13 +1,11 @@
 // @vitest-environment happy-dom
 
 /**
- * Composition of two rail rules that landed independently:
- *   - agent stubs (a bot that has never messaged you) never get a rail row;
- *   - archive hides rows until "Show archived" brings them back.
+ * Archive hides rows until "Show archived" brings them back, including bot
+ * conversations that carry normal activity.
  *
- * Together they must not cancel each other out: turning "Show archived" on
- * must not resurrect stubs, "Select all" must not reach them, and the
- * archived count/pill must only ever describe rows the rail actually shows.
+ * Selecting or archiving a bot conversation must work exactly like a human
+ * conversation.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
@@ -23,7 +21,7 @@ const NOW = new Date().toISOString();
 
 const HUMAN_UID = "prs_marcus";
 const TALKATIVE_AGENT = "agt_izzy";
-const STUB_UIDS = ["agt_stub0", "agt_stub1", "agt_stub2"];
+const BOT_UIDS = ["agt_stub0", "agt_stub1", "agt_stub2"];
 
 const seedRow: ChannelDirectoryRow = {
   channelId: "chn_alpha",
@@ -44,7 +42,7 @@ function stubApi(): ChatSidebarApi {
     }),
     listContacts: async () => ({
       contacts: [
-        ...STUB_UIDS.map((personUid, i) => ({
+        ...BOT_UIDS.map((personUid, i) => ({
           personUid,
           displayName: `noticefixture-${i}`,
           lastActivityAt: NOW,
@@ -117,7 +115,6 @@ async function mountRail(): Promise<void> {
       api: stubApi(),
       seedDirectory: [seedRow],
       self: { uid: "prs_me" },
-      engagedAgentUids: [TALKATIVE_AGENT],
       tenantAccountId: TENANT.accountId,
       tenantCompanyId: TENANT.companyId,
       selectedId: "ch:chn_alpha",
@@ -146,24 +143,23 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-describe("ChatSidebar — archive and agent stubs compose", () => {
-  it('keeps stubs off the rail with "Show archived" on', async () => {
+describe("ChatSidebar — archive and bot conversations compose", () => {
+  it('keeps active bot conversations on the rail with "Show archived" on', async () => {
     await mountRail();
-    for (const uid of STUB_UIDS) expect(rowFor(`dm:${uid}`)).toBeNull();
+    for (const uid of BOT_UIDS) expect(rowFor(`dm:${uid}`)).toBeTruthy();
 
     await toggleShowArchived();
 
     expect(
       portalQuery("chat-filter-archived")!.getAttribute("aria-pressed"),
     ).toBe("true");
-    for (const uid of STUB_UIDS) expect(rowFor(`dm:${uid}`)).toBeNull();
-    // The rows that survive the stub rule are still all there.
+    for (const uid of BOT_UIDS) expect(rowFor(`dm:${uid}`)).toBeTruthy();
     expect(rowFor(`dm:${HUMAN_UID}`)).toBeTruthy();
     expect(rowFor(`dm:${TALKATIVE_AGENT}`)).toBeTruthy();
-    expect(renderedIds().some((id) => id.startsWith("dm:agt_stub"))).toBe(false);
+    expect(renderedIds().some((id) => id.startsWith("dm:agt_stub"))).toBe(true);
   });
 
-  it('"Select all" never reaches a hidden stub, archived on or off', async () => {
+  it('"Select all" reaches bot conversations, archived on or off', async () => {
     await mountRail();
     rowFor(`dm:${HUMAN_UID}`)!.dispatchEvent(
       new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }),
@@ -177,7 +173,7 @@ describe("ChatSidebar — archive and agent stubs compose", () => {
         ...host.querySelectorAll<HTMLElement>('.chat-row[aria-selected="true"]'),
       ].map((el) => el.dataset.conversationId!);
     expect(selected()).toContain(`dm:${HUMAN_UID}`);
-    expect(selected().some((id) => id.startsWith("dm:agt_stub"))).toBe(false);
+    expect(selected().some((id) => id.startsWith("dm:agt_stub"))).toBe(true);
     expect(portalQuery("chat-selection-count")!.textContent).toContain(
       `${renderedIds().length} selected`,
     );
@@ -185,10 +181,10 @@ describe("ChatSidebar — archive and agent stubs compose", () => {
     await toggleShowArchived();
     portalQuery<HTMLButtonElement>("chat-selection-all")!.click();
     await tick();
-    expect(selected().some((id) => id.startsWith("dm:agt_stub"))).toBe(false);
+    expect(selected().some((id) => id.startsWith("dm:agt_stub"))).toBe(true);
   });
 
-  it("archives a real row, counts it, and shows its pill — stubs untouched", async () => {
+  it("archives a bot row, counts it, and shows its pill", async () => {
     await mountRail();
     const visibleBefore = renderedIds().length;
 
@@ -218,6 +214,6 @@ describe("ChatSidebar — archive and agent stubs compose", () => {
         '[data-testid="chat-row-archived-pill"]',
       ),
     ).toBeTruthy();
-    for (const uid of STUB_UIDS) expect(rowFor(`dm:${uid}`)).toBeNull();
+    for (const uid of BOT_UIDS) expect(rowFor(`dm:${uid}`)).toBeTruthy();
   });
 });

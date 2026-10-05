@@ -19,10 +19,6 @@ const SRC = join(__dirname, "..");
 
 /** `file::expression` → why the bare text is fine there. */
 const ALLOWLIST: Record<string, string> = {
-  "agency/AgencyQuestionsPanel.svelte::q.company":
-    "`company/team` path identifier, not a company label.",
-  "agency/AgencyTeamsPanel.svelte::pendingFor(t.company, t.team)":
-    "Renders a waiting count; the company is only an argument.",
   "atlas/AtlasView.svelte::companyTitle":
     "Sentence: \"{name} is empty\".",
   "chat/AgencyChatPanel.svelte::selected.company":

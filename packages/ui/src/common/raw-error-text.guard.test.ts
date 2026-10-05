@@ -23,7 +23,6 @@ const UNMOUNTED = new Set([
   "company/CompanyLibraryPanel.svelte",
   "company/CompanyOperationsPanel.svelte",
   "company/CompanyBoardPanel.svelte",
-  "library/LibraryPage.svelte",
   "library/PersonalLibraryPage.svelte",
   "projects/CompanyGoalsPage.svelte",
   "settings/CompaniesSettingsPane.svelte",
