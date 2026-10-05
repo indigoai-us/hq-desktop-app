@@ -9865,6 +9865,10 @@ mod tests {
             ]
         );
         let message = event.message.as_deref().expect("static event message");
+        assert_eq!(
+            message,
+            "[hq-cli-update] timed out waiting for active HQ CLI package use"
+        );
         assert!(!message.contains('/') && !message.contains('\\'));
         assert!(event.extra.is_empty());
     }
