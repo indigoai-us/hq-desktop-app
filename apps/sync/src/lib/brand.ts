@@ -10,7 +10,6 @@ export {
   readBrandCache,
   syncBrandFromWorkspaces,
   cacheLogoAssets,
-  isSafeLogoUrl,
 } from '@hq/ui/brand';
 export type {
   BrandSource,
