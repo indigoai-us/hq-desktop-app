@@ -1529,7 +1529,7 @@
     color: var(--v4-text-1);
     font-family: var(--font-sans);
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1;
     cursor: pointer;
     transition:

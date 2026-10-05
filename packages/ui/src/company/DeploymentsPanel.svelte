@@ -409,7 +409,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
   }
 

@@ -370,7 +370,7 @@
     color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition:
       border-color 140ms ease,
@@ -501,7 +501,7 @@
     color: var(--v4-text-2);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

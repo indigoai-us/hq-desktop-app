@@ -382,7 +382,7 @@
     color: var(--muted-2, currentColor);
     font: inherit;
     font-size: var(--text-base, 14px);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }

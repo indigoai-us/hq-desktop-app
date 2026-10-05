@@ -605,7 +605,7 @@
     padding: 0.4375rem 0.875rem;
     border-radius: 7px;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     border: none;
     font-family: inherit;

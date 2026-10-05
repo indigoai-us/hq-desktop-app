@@ -415,7 +415,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -513,7 +513,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 

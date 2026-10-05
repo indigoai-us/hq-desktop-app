@@ -431,7 +431,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
   .send-error button:disabled {

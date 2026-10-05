@@ -120,7 +120,7 @@
   }
   .bot-signin-btn {
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     padding: 4px 12px;
     border: 1px solid var(--line);
     border-radius: 8px;
