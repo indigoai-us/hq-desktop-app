@@ -13,7 +13,7 @@ The release moves it under the version it ships in.
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
 
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
-- The sync runner now gets up to nine seconds to shut down before desktop escalates to SIGKILL.
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
 
 ## [0.10.394] — 2026-10-05
 

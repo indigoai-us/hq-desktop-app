@@ -97,6 +97,7 @@ pub mod package_use_lease;
 pub mod paths;
 pub mod plan_limit;
 pub mod prewarm;
+pub mod process_exit_wait;
 pub mod process_stdio;
 pub mod process_types;
 pub mod projects_local;
