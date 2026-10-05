@@ -181,6 +181,8 @@
 
 <style>
   .scrub {
+    user-select: none;
+    -webkit-user-select: none;
     display: grid;
     grid-template-columns: 44px 1fr 170px;
     align-items: center;

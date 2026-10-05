@@ -175,7 +175,10 @@
         {#each presence as who (`${who.name}:${who.nodeId}`)}
           <button type="button" class="li rowbtn" onclick={() => onselect(who.nodeId)}>
             <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
-            <div><div class="tt">{who.name}</div>{#if who.signal}<div class="mm">{who.signal}</div>{/if}</div>
+            <div>
+              <div class="tt">{who.name}</div>
+              {#if who.place || who.signal}<div class="mm">{[who.place, who.signal].filter(Boolean).join(" · ")}</div>{/if}
+            </div>
           </button>
         {/each}
       </div>
@@ -210,7 +213,7 @@
               aria-pressed={selectedPersonId === person.id}
               onclick={() => onperson?.(person.id)}
             >
-              <div class="pmain">
+              <div class="pmain" style:--share={`${Math.round((person.tokens / Math.max(1, people.people[0]?.tokens ?? 1)) * 100)}%`}>
                 <div class="tt"><PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
                 <div class="mm prow">
                   {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
@@ -241,8 +244,13 @@
   .pmain { width: 100%; min-width: 0; }
   .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
   .pmain .grow { flex: 1; }
-  .prow { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .prow .sk { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+  .prow .spark { flex: none; }
+  .prow span { flex: none; }
+  .prow .sk { flex: 1 1 0; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tok { font-variant-numeric: tabular-nums; }
+  /* Share of the top person's tokens: one quiet rule under the row. */
+  .pmain::after { content: ""; display: block; height: 2px; margin-top: 6px; width: var(--share, 0%); min-width: 2px; background: var(--v4-text-3); opacity: 0.35; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }
   .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
   .inspector {

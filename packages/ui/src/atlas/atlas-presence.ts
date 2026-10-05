@@ -86,6 +86,8 @@ export type AtlasDockedChip = {
   index: number;
   /** What the actor is doing, when the live read says. */
   signal?: string;
+  /** Online with no session in progress: drawn quieter, without the pulse. */
+  idle?: boolean;
   /** Chip centre and the connector start on the node rim (world units). */
   x: number;
   y: number;
@@ -131,6 +133,7 @@ export function atlasDockedChips(
       initials: who.bot ? "⌁" : atlasInitials(who.name),
       index: i,
       signal: who.signal,
+      ...(who.idle ? { idle: true } : {}),
       x: x1 + 18 + i * CHIP_GAP,
       y: y1 - 18,
       x1,

@@ -73,10 +73,12 @@ function inspectorPath(): string | null | undefined {
   return host.querySelector(sel("atlas-inspector-path"))?.textContent;
 }
 
+import { ATLAS_AGE_FLOOR, ATLAS_TOUCH_FADED } from "./atlas-timeline.js";
+
 // A faded object sits between the age floor and the faded baseline (oldest lowest).
 const faded = (el: SVGGElement): boolean => {
   const t = Number.parseFloat(el.style.getPropertyValue("--t"));
-  return t >= 0.06 && t <= 0.25;
+  return t >= ATLAS_AGE_FLOOR && t <= ATLAS_TOUCH_FADED;
 };
 
 describe("AtlasView", () => {

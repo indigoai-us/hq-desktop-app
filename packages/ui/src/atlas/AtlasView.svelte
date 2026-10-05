@@ -125,11 +125,13 @@
   const presence = $derived.by(() => {
     const raw = actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp;
     const names = people.status === "ok" ? people.names : undefined;
-    return raw.map((p) =>
-      isRawPersonId(p.name)
-        ? { ...p, name: (p.actorUid && names?.get(p.actorUid)) || (p.bot ? "Unnamed bot" : "Unnamed member") }
-        : p,
-    );
+    return raw.map((p) => {
+      const place = byId.get(p.nodeId)?.label;
+      const name = isRawPersonId(p.name)
+        ? (p.actorUid && names?.get(p.actorUid)) || (p.bot ? "Unnamed bot" : "Unnamed member")
+        : p.name;
+      return { ...p, name, ...(place ? { place } : {}) };
+    });
   });
   // People first, then bots; "working" means a session in progress. Actors
   // who are only online are counted apart so they do not bury the list.
