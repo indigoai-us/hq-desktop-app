@@ -50,6 +50,8 @@
     view: AtlasView;
     onselect: (id: string | null) => void;
     onview: (view: AtlasView) => void;
+    /** Programmatic camera moves (zoom buttons, frame, zoom to a section); may animate. */
+    onfly?: (view: AtlasView) => void;
   }
 
   let {
@@ -67,7 +69,29 @@
     view,
     onselect,
     onview,
+    onfly,
   }: Props = $props();
+
+  // The pan and zoom tip shows until the person has moved the map once, ever.
+  const HINT_KEY = "hq.atlas.hint-seen.v1";
+  function readHintSeen(): boolean {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(HINT_KEY) === "1";
+    } catch (err) {
+      console.debug("[atlas] hint flag unreadable", err);
+      return false;
+    }
+  }
+  let hintSeen = $state(readHintSeen());
+  function markHintSeen(): void {
+    if (hintSeen) return;
+    hintSeen = true;
+    try {
+      localStorage.setItem(HINT_KEY, "1");
+    } catch (err) {
+      console.debug("[atlas] hint flag not saved", err);
+    }
+  }
 
   let hovered = $state<string | null>(null);
   /** Key of the actor chip under the pointer; its card replaces the object card. */
@@ -83,6 +107,7 @@
     vy: number;
     moved: boolean;
     node: string | null;
+    section: string | null;
   } | null = null;
 
   const byId = $derived(new Map(placed.map((p) => [p.id, p])));
@@ -258,7 +283,15 @@
 
   export function frame(): void {
     const box = svgEl?.getBoundingClientRect();
-    onview(frameAll([...placed, ...districts], box?.width ?? 800, box?.height ?? 560));
+    (onfly ?? onview)(frameAll([...placed, ...districts], box?.width ?? 800, box?.height ?? 560));
+  }
+
+  /** Fill the map with one section (click on its title). */
+  function frameSection(type: string): void {
+    const shape = districts.find((d) => d.type === type);
+    if (!shape) return;
+    const box = svgEl?.getBoundingClientRect();
+    (onfly ?? onview)(frameAll([shape], box?.width ?? 800, box?.height ?? 560, 56));
   }
 
   /**
@@ -285,6 +318,10 @@
       vy: view.y,
       moved: false,
       node: nodeIdAt(event.target),
+      section:
+        (event.target instanceof Element ? event.target.closest("[data-atlas-section]") : null)?.getAttribute(
+          "data-atlas-section",
+        ) ?? null,
     };
     window.addEventListener("pointermove", onpointermove);
     window.addEventListener("pointerup", onpointerup);
@@ -298,6 +335,7 @@
     if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     drag.moved = true;
     dragging = true;
+    markHintSeen();
     onview({ ...view, x: drag.vx + dx, y: drag.vy + dy });
   }
 
@@ -314,8 +352,11 @@
     const moved =
       drag.moved || Math.hypot(event.clientX - drag.sx, event.clientY - drag.sy) >= DRAG_THRESHOLD;
     const node = drag.node;
+    const section = drag.section;
     endDrag();
-    if (!moved) onselect(node);
+    if (moved) return;
+    if (section) frameSection(section);
+    else onselect(node);
   }
 
   function onpointercancel(event: PointerEvent): void {
@@ -329,12 +370,13 @@
     const box = svgEl?.getBoundingClientRect();
     const sx = event.clientX - (box?.left ?? 0);
     const sy = event.clientY - (box?.top ?? 0);
+    markHintSeen();
     onview(zoomAt(view, sx, sy, Math.exp(-event.deltaY * 0.0015)));
   }
 
   function zoomBy(factor: number): void {
     const box = svgEl?.getBoundingClientRect();
-    onview(zoomAt(view, (box?.width ?? 800) / 2, (box?.height ?? 560) / 2, factor));
+    (onfly ?? onview)(zoomAt(view, (box?.width ?? 800) / 2, (box?.height ?? 560) / 2, factor));
   }
 </script>
 
@@ -369,6 +411,7 @@
           class:dim={dimmed(node.id)}
           class:selected={node.id === selected}
           class:lit={filterIds?.has(node.id) ?? false}
+          class:active={timeOpacity ? !timeOpacity.has(node.id) : false}
           style:--t={timeOpacity?.get(node.id) ?? null}
           data-testid={`atlas-node-${node.id}`}
           data-kind={node.type}
@@ -400,7 +443,7 @@
     </g>
     <g class="labels" data-testid="atlas-labels">
       {#each districtLabels as label (label.id)}
-        <text class="region" data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}<tspan class="count" dx="7">{sectionCounts.get(label.id.slice("district:".length)) ?? ""}</tspan></text>
+        <text class="region" data-atlas-section={label.id.slice("district:".length)} data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}<tspan class="count" dx="7">{sectionCounts.get(label.id.slice("district:".length)) ?? ""}</tspan></text>
       {/each}
       {#each labels as label (label.id)}
         <text
@@ -483,7 +526,7 @@
     <span><i class="ldot"></i>live</span>
     <span><i class="halo-key"></i>someone here now</span>
     {#if nothingActive}<span data-testid="atlas-nothing-active">Nothing active right now</span>{/if}
-    <span class="hint">Drag to pan · Scroll to zoom · Press 0 to frame all</span>
+    {#if !hintSeen}<span class="hint">Drag to pan · Scroll to zoom · Press 0 to frame all</span>{/if}
   </div>
   <div class="map-tools" bind:this={toolsEl}>
     <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
@@ -519,7 +562,11 @@
     letter-spacing: 0.08em;
     fill: var(--v4-text-3);
     fill-opacity: 0.7;
-    pointer-events: none;
+    cursor: pointer;
+    transition: fill-opacity 120ms ease;
+  }
+  .region:hover {
+    fill-opacity: 1;
   }
   .region .count {
     letter-spacing: 0;
@@ -547,6 +594,13 @@
     fill: var(--c);
     fill-opacity: 0.2;
     pointer-events: none;
+  }
+  /* Active now: lifted toward white so it reads from a framed-out map. */
+  .node.active .dot {
+    fill: color-mix(in srgb, var(--c) 62%, white);
+  }
+  .node.active .glow {
+    fill-opacity: 0.28;
   }
   .node:hover .dot,
   .node.selected .dot {

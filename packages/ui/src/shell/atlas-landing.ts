@@ -177,13 +177,17 @@ export interface AtlasActionNode {
   type: string;
   path: string;
   folder: boolean;
+  /** For a folder: the file inside it to open (company-relative). */
+  file?: string;
 }
 
 /**
  * Where the Atlas inspector's Open files / Open board buttons go (QA-066).
- * A project opens on the Projects page, on its Files or Tasks tab, the same
- * place Projects > project > Files reaches. Any other file opens in the Files
- * explorer; a folder opens the company vault. Null when there is no company.
+ * Open files shows a file, not a tree (owner, 2026-10-04): a file opens in
+ * the Files explorer, and a folder opens on its main file (README, PRD, SKILL
+ * and so on) there. A project with no such file falls back to the Projects
+ * page Files tab, and any other folder to the company vault. Open board goes
+ * to the project's Tasks tab. Null when there is no company.
  */
 export function atlasNodeDestination(
   node: AtlasActionNode,
@@ -194,11 +198,15 @@ export function atlasNodeDestination(
   if (!slug) return null;
   const path = node.path.replace(/^\/+|\/+$/g, "");
   const project = node.type === "project" ? /^projects\/([^/]+)/.exec(path)?.[1] : undefined;
+  const vault = `company:${slug}`;
+  const file = node.file?.replace(/^\/+/, "");
+  if (action === "files" && node.folder && file) {
+    return { kind: "explorer", vault, path: `companies/${slug}/${file}` };
+  }
   if (project) {
     return { kind: "projects", company: slug, project, tab: action === "files" ? "files" : "tasks" };
   }
   if (action === "board") return { kind: "projects", company: slug };
-  const vault = `company:${slug}`;
   if (node.folder || !path) return { kind: "explorer", vault, path: null };
   return { kind: "explorer", vault, path: `companies/${slug}/${path}` };
 }

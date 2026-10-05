@@ -43,6 +43,8 @@ export type AtlasNode = {
   parentId?: string;
   depth?: number;
   stories?: AtlasStories;
+  /** For a folder: the file inside it that Open files shows (README, PRD, SKILL...). */
+  file?: string;
 };
 
 export type AtlasRefEdge = {
@@ -125,6 +127,7 @@ export function parseAtlasGraph(raw: unknown): AtlasGraph | null {
       count: num(n.count) ?? 1,
       parentId: typeof n.parentId === "string" ? n.parentId : undefined,
       depth: num(n.depth),
+      ...(typeof n.file === "string" && n.file ? { file: n.file } : {}),
       stories:
         stories && num(stories.total) != null
           ? { done: num(stories.done) ?? 0, total: num(stories.total) as number }

@@ -47,6 +47,20 @@ export const ATLAS_PRD_BUDGET_MS = 30_000;
 const RECENT_FILES = 80;
 const SKIP_ROOT_FILES = new Set(["INDEX.md", "README.md", "board.json", "company.yaml"]);
 
+/**
+ * How well a file stands for its folder when Open files is pressed: the
+ * README first, then the file that defines the object, then an index, then
+ * any note, then anything else. Ties go to the most recently changed.
+ */
+function primaryFileRank(name: string): number {
+  const lower = name.toLowerCase();
+  if (lower === "readme.md") return 0;
+  if (lower === "prd.json" || lower === "skill.md" || lower === "worker.yaml" || lower === "worker.yml") return 1;
+  if (lower === "index.md") return 2;
+  if (lower.endsWith(".md")) return 3;
+  return 4;
+}
+
 async function listAll(
   source: AtlasVaultSource,
   companyUid: string,
@@ -96,6 +110,7 @@ export function districtNodes(
   const touchedByFolder = new Map<string, number>();
   const createdByFolder = new Map<string, number>();
   const countByFolder = new Map<string, number>();
+  const primaryByFolder = new Map<string, { key: string; rank: number; when: number }>();
   for (const obj of objects) {
     const rest = obj.key.slice(prefix.length);
     const slash = rest.indexOf("/");
@@ -105,6 +120,16 @@ export function districtNodes(
     }
     const folder = prefix + rest.slice(0, slash + 1);
     prefixes.add(folder);
+    // A file directly inside the folder may be the one Open files shows.
+    const inner = rest.slice(slash + 1);
+    if (inner && !inner.includes("/")) {
+      const rank = primaryFileRank(inner);
+      const when = ms(obj.lastModified) ?? 0;
+      const best = primaryByFolder.get(folder);
+      if (!best || rank < best.rank || (rank === best.rank && when > best.when)) {
+        primaryByFolder.set(folder, { key: obj.key, rank, when });
+      }
+    }
     countByFolder.set(folder, (countByFolder.get(folder) ?? 0) + 1);
     const t = ms(obj.lastModified);
     if (!t) continue;
@@ -125,6 +150,7 @@ export function districtNodes(
       touched: touchedByFolder.get(path),
       created: createdByFolder.get(path),
       count: Math.max(1, countByFolder.get(path) ?? 1),
+      ...(primaryByFolder.has(path) ? { file: primaryByFolder.get(path)!.key } : {}),
     }));
 
   const continent = type === "policy" || type === "knowledge";

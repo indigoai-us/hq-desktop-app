@@ -34,6 +34,20 @@
   const hot = $derived(atlasHotDays(counts));
   const at = $derived(index ?? last);
   const label = $derived(atlasScrubLabel(index, nowMs));
+  // The busiest day gets a caption, so the tall bar says what it is.
+  const peak = $derived.by(() => {
+    let at = -1;
+    let max = 0;
+    counts.forEach((c, i) => {
+      if (c > max) {
+        max = c;
+        at = i;
+      }
+    });
+    if (at < 0) return null;
+    const day = at >= last ? "Today" : atlasScrubLabel(at, nowMs);
+    return { at, text: `${day} · ${max}` };
+  });
 
   let playing = $state(false);
   let raf = 0;
@@ -154,6 +168,14 @@
     {#each heights as h, i (i)}
       <i class:hot={hot[i]} class:past={i > at} style:height={`${h}%`}></i>
     {/each}
+    {#if peak}
+      <span
+        class="peak"
+        class:flip={peak.at > ATLAS_TIMELINE_DAYS * 0.8}
+        data-testid="atlas-scrub-peak"
+        style:left={`${((peak.at + 0.5) / ATLAS_TIMELINE_DAYS) * 100}%`}
+      >{peak.text}</span>
+    {/if}
     <span
       class="ph"
       data-testid="atlas-scrub-playhead"
@@ -187,7 +209,7 @@
     grid-template-columns: 44px 1fr 170px;
     align-items: center;
     gap: 12px;
-    height: 48px;
+    height: 64px;
     padding: 0 12px 0 8px;
     margin-bottom: 6px;
     border-top: 1px solid var(--v4-rowline);
@@ -214,7 +236,7 @@
   }
   .hist {
     position: relative;
-    height: 30px;
+    height: 40px;
     display: flex;
     align-items: flex-end;
     gap: 2px;
@@ -236,6 +258,19 @@
   }
   .hist i.past {
     opacity: 0.4;
+  }
+  .peak {
+    position: absolute;
+    top: -13px;
+    transform: translateX(-50%);
+    font-size: 11px;
+    line-height: 1;
+    color: var(--v4-text-3);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .peak.flip {
+    transform: translateX(-100%);
   }
   .ph {
     position: absolute;
