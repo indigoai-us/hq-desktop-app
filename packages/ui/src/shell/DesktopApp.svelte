@@ -11663,11 +11663,6 @@
 
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
-    if (rowId.startsWith("person:")) {
-      const uid = rowId.slice("person:".length);
-      atlasFilterActor = atlasFilterActor === uid ? null : uid;
-      return;
-    }
     atlasFilterActor = null;
     if (rowId === "invite-teammate") {
       // Land on Team with its invite sheet open.
@@ -12890,7 +12885,6 @@
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
             roster={atlasCompanyRoster}
-            rosterSelected={atlasFilterActor}
             rosterLoading={!directorySettled}
           />
         {:else if view === "meetings"}

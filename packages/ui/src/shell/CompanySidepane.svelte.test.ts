@@ -44,7 +44,8 @@ describe("CompanySidepane (console-rail US-007)", () => {
     expect(onselect.mock.calls).toEqual([["team"], ["general"]]);
   });
 
-  it("adds Live now and Idle rosters on Atlas, with skeleton rows while names load (US-009)", () => {
+  it("lists no Live now or Idle roster on Atlas, with no roster loader (US-009 removed)", () => {
+    const onselect = vi.fn();
     const target = document.createElement("div");
     document.body.appendChild(target);
     const props = $state({
@@ -53,53 +54,53 @@ describe("CompanySidepane (console-rail US-007)", () => {
       rosterLoading: true,
       roster: [
         { uid: "u_zed", name: "Zed", kind: "human" as const, live: true },
+        { uid: "u_amy", name: "Amy", kind: "human" as const, live: false },
         { uid: "b_scout", name: "Scout", kind: "bot" as const, live: false },
       ],
+      onselect,
     });
     mounted.push(mount(CompanySidepane, { target, props }));
     flushSync();
-    // Loading: real nav rows plus the roster loader.
-    expect(target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']")).toHaveLength(17);
-    expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).not.toBeNull();
-    expect(target.textContent).not.toContain("Live now");
+    const rowCount = () =>
+      target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']").length;
+    expect(rowCount()).toBe(17);
+    expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).toBeNull();
 
     props.rosterLoading = false;
     flushSync();
-    expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).toBeNull();
-    expect(target.textContent).toContain("Live now");
-    expect(target.textContent).toContain("Idle");
-    expect(target.querySelector("[data-row-id='person:u_zed']")).not.toBeNull();
-    expect(target.querySelector("[data-row-id='person:b_scout']")).not.toBeNull();
-    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBe("page");
-
-    // Other company pages keep the plain sections.
-    props.selectedId = "projects";
-    flushSync();
+    expect(rowCount()).toBe(17);
     expect(target.textContent).not.toContain("Live now");
+    expect(target.textContent).not.toContain("Idle");
+    expect(target.querySelector("[data-row-id^='person:']")).toBeNull();
+    expect(target.querySelector("[data-row-id='invite-teammate']")).toBeNull();
+    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBe("page");
   });
 
-  it("highlights the roster person filtering the map, and Atlas again when cleared (US-013)", () => {
+  it("keeps the Invite a teammate row on Atlas once the roster settles with one human (US-014)", () => {
     const onselect = vi.fn();
     const target = document.createElement("div");
     document.body.appendChild(target);
     const props = $state({
       company: { uid: "co_indigo", label: "Indigo", slug: null },
       selectedId: "atlas" as string | null,
-      roster: [{ uid: "u_zed", name: "Zed", kind: "human" as const, live: true }],
-      rosterSelected: "u_zed" as string | null,
+      rosterLoading: true,
+      roster: [{ uid: "u_me", name: "Me", kind: "human" as const, live: true }],
       onselect,
     });
     mounted.push(mount(CompanySidepane, { target, props }));
     flushSync();
-    const zed = target.querySelector("[data-row-id='person:u_zed']") as HTMLElement;
-    expect(zed.getAttribute("aria-current")).toBe("page");
-    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBeNull();
-    zed.click();
-    expect(onselect).toHaveBeenCalledWith("person:u_zed");
+    expect(target.querySelector("[data-row-id='invite-teammate']")).toBeNull();
 
-    props.rosterSelected = null;
+    props.rosterLoading = false;
     flushSync();
-    expect(target.querySelector("[data-row-id='atlas']")?.getAttribute("aria-current")).toBe("page");
-    expect(target.querySelector("[data-row-id='person:u_zed']")?.getAttribute("aria-current")).toBeNull();
+    const invite = target.querySelector("[data-row-id='invite-teammate']") as HTMLButtonElement;
+    expect(invite).not.toBeNull();
+    invite.click();
+    expect(onselect).toHaveBeenCalledWith("invite-teammate");
+
+    // Other company pages keep the plain sections.
+    props.selectedId = "projects";
+    flushSync();
+    expect(target.querySelector("[data-row-id='invite-teammate']")).toBeNull();
   });
 });

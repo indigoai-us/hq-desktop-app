@@ -8,7 +8,6 @@
 -->
 <script lang="ts">
   import Sidepane from "./Sidepane.svelte";
-  import ReadLoader from "../common/ReadLoader.svelte";
   import SidepaneList from "./SidepaneList.svelte";
   import {
     atlasSidepaneModel,
@@ -32,12 +31,10 @@
     memory?: SidepaneScrollMemory;
     /** Host company backend; without one the rows render without counts. */
     companyApi?: CompanyApi | null;
-    /** Atlas (US-009): Live now and Idle rosters follow the sections. */
+    /** Atlas: company roster; decides the US-014 invite row. Not listed here. */
     roster?: readonly SidepaneRosterEntry[];
-    /** Atlas (US-009): names still loading; show the loader under the roster label. */
+    /** Atlas: names still loading; hold the invite row until the roster settles. */
     rosterLoading?: boolean;
-    /** Atlas (US-013): roster person filtering the map; highlighted instead of Atlas. */
-    rosterSelected?: string | null;
     /** OWNER-R24: owner or admin; false hides Grants and Billing. */
     canManage?: boolean;
   }
@@ -50,7 +47,6 @@
     companyApi = null,
     roster = [],
     rosterLoading = false,
-    rosterSelected = null,
     canManage = false,
   }: Props = $props();
 
@@ -94,16 +90,10 @@
     );
     if (!atlasActive || rosterLoading) return base;
     // Same pane key either way, so landing on Atlas keeps scroll memory.
-    const rosterSections = atlasSidepaneModel(company, roster).sections.filter(
-      (s) => s.id === "live-now" || s.id === "idle" || s.id === "invite",
+    const inviteSections = atlasSidepaneModel(company, roster).sections.filter(
+      (s) => s.id === "invite",
     );
-    const filtered = rosterSelected ? `person:${rosterSelected}` : null;
-    const hasRow = filtered && rosterSections.some((s) => s.rows.some((r) => r.id === filtered));
-    return {
-      ...base,
-      sections: [...base.sections, ...rosterSections],
-      selectedId: hasRow ? filtered : base.selectedId,
-    };
+    return { ...base, sections: [...base.sections, ...inviteSections] };
   });
   const iconSrc = $derived(companyIconSrc(company.iconUrl ?? null));
   const initial = $derived((model.title.trim()[0] ?? "?").toUpperCase());
@@ -131,12 +121,6 @@
     selectedId={model.selectedId}
     onselect={(row) => onselect?.(row.id)}
   />
-  {#if atlasActive && rosterLoading}
-    <div class="roster-loading">
-      <div class="roster-label">People</div>
-      <ReadLoader testid="company-sidepane-roster-loading" />
-    </div>
-  {/if}
 </Sidepane>
 
 <style>
@@ -198,16 +182,6 @@
     background: var(--ok);
   }
 
-  .roster-label {
-    height: 30px;
-    box-sizing: border-box;
-    padding: 12px 8px 4px;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
 
 
 
