@@ -28,10 +28,12 @@
     EMPTY_ACTIVITY,
     formatEfficiency,
     activityFromCompanyTelemetry,
+    activityReadFailure,
     rangeDays,
     readActivityCache,
     saveCsvViaDialog,
     writeActivityCache,
+    type ActivityFailure,
     type ActivityRange,
     type ActivitySnapshot,
     type ActivityTab,
@@ -42,9 +44,11 @@
     slug: string;
     companyLabel: string;
     adapter?: Pick<PlatformAdapter, "company"> | null;
+    /** Starts the app's sign-in flow; offered when the read failed on an expired sign-in. */
+    onsignin?: () => void | Promise<void>;
   }
 
-  let { slug, companyLabel, adapter = null }: Props = $props();
+  let { slug, companyLabel, adapter = null, onsignin }: Props = $props();
 
   const storage = typeof localStorage === "undefined" ? null : localStorage;
 
@@ -52,7 +56,21 @@
   let range = $state<ActivityRange>("30d");
   let snapshot = $state<ActivitySnapshot | null>(null);
   let refreshing = $state(false);
-  let readError = $state<string | null>(null);
+  let readError = $state<ActivityFailure | null>(null);
+  let signingIn = $state(false);
+
+  async function signInAgain(): Promise<void> {
+    if (!onsignin || signingIn) return;
+    signingIn = true;
+    try {
+      await onsignin();
+    } catch (err) {
+      console.error("activity sign-in failed:", err);
+    } finally {
+      signingIn = false;
+      readNonce += 1;
+    }
+  }
   let readNonce = $state(0);
   let selectedId = $state<string | null>(null);
   const selected = $derived(snapshot?.members.find((m) => m.id === selectedId) ?? null);
@@ -111,7 +129,7 @@
     try {
       const now = Date.now();
       const res = await read(activeSlug, { from: isoDay(now - (rangeDays(activeRange) - 1) * 86_400_000), to: isoDay(now) });
-      if (!res.ok) throw new Error(res.message ?? res.reason);
+      if (!res.ok) throw Object.assign(new Error(res.message ?? res.reason), { code: res.code });
       const next = activityFromCompanyTelemetry(res.value);
       if (!alive()) return;
       snapshot = next;
@@ -120,7 +138,7 @@
     } catch (err) {
       console.error("activity read failed:", err);
       if (!alive()) return;
-      readError = "Could not load activity.";
+      readError = activityReadFailure(err, typeof navigator === "undefined" ? true : navigator.onLine !== false);
     } finally {
       if (alive()) refreshing = false;
     }
@@ -190,8 +208,11 @@
   </header>
 
   {#if !snapshot && readError}
-    <div class="canvas" role="alert" data-testid="activity-failed">
-      <p class="empty">{readError}</p>
+    <div class="canvas" role="alert" data-testid="activity-failed" data-reason={readError.kind}>
+      <p class="empty">{readError.message}</p>
+      {#if readError.kind === "signed-out" && onsignin}
+        <RailButton icon="refresh" data-testid="activity-sign-in" disabled={signingIn} onclick={() => void signInAgain()}>Sign in again</RailButton>
+      {/if}
       <RailButton icon="refresh" data-testid="activity-retry" onclick={() => (readNonce += 1)}>Try again</RailButton>
     </div>
   {:else if !snapshot}

@@ -402,3 +402,30 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
     updatedLabel: "Company telemetry",
   };
 }
+
+export type ActivityFailureKind = "offline" | "signed-out" | "server";
+
+export interface ActivityFailure {
+  kind: ActivityFailureKind;
+  /** Plain reason and next step. Never the server's own text. */
+  message: string;
+}
+
+const FAILURE_COPY: Record<ActivityFailureKind, string> = {
+  offline: "You're offline, so activity can't load. Check your connection, then try again.",
+  "signed-out": "Your sign-in has expired. Sign in again to load activity.",
+  server: "HQ couldn't load activity right now. Try again in a moment.",
+};
+
+/**
+ * Sort a failed Activity read into a reason the page can explain. The raw
+ * error goes to the log only; this picks the copy and the next step.
+ */
+export function activityReadFailure(err: unknown, online = true): ActivityFailure {
+  const e = err as { code?: unknown; message?: unknown } | null;
+  const text = `${typeof e?.code === "string" ? e.code : ""} ${typeof e?.message === "string" ? e.message : String(err)}`;
+  let kind: ActivityFailureKind = "server";
+  if (!online || /offline|network|fetch failed|failed to fetch|timed? ?out|ECONN|ENOTFOUND|EAI_AGAIN|\bdns\b/i.test(text)) kind = "offline";
+  else if (/\b401\b|unauthori[sz]ed|unauthenticated|not signed in|signed out|sign in|expired|invalid.?token|not.?authori[sz]ed/i.test(text)) kind = "signed-out";
+  return { kind, message: FAILURE_COPY[kind] };
+}

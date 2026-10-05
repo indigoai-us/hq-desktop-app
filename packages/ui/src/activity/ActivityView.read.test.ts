@@ -60,12 +60,12 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
     flushSync();
   };
 
-  function mountWith(getTeamTelemetry: (...args: unknown[]) => Promise<unknown>) {
+  function mountWith(getTeamTelemetry: (...args: unknown[]) => Promise<unknown>, onsignin?: () => Promise<void>) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(ActivityView, {
       target,
-      props: { slug: "acme", companyLabel: "Acme", adapter: { company: { getTeamTelemetry } } as never },
+      props: { slug: "acme", companyLabel: "Acme", adapter: { company: { getTeamTelemetry } } as never, onsignin },
     });
     return target;
   }
@@ -112,15 +112,46 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
   });
 
   it("shows the failed line with Try again, never the empty copy, and retries", async () => {
-    const read = vi.fn(async (): Promise<unknown> => failure("network", "HTTP 502 Bad Gateway"));
+    const read = vi.fn(async (): Promise<unknown> => failure("http", "HTTP 502 Bad Gateway {\"error\":\"upstream\"}"));
     const target = mountWith(read);
     await settle();
-    expect(target.querySelector("[data-testid='activity-failed']")?.textContent).toContain("Could not load activity.");
+    const failed = target.querySelector("[data-testid='activity-failed']");
+    expect(failed?.getAttribute("data-reason")).toBe("server");
+    expect(failed?.textContent).toContain("HQ couldn't load activity right now. Try again in a moment.");
     expect(target.textContent).not.toContain("502");
+    expect(target.textContent).not.toContain("upstream");
+    expect(target.querySelector("[data-testid='activity-sign-in']")).toBeNull();
     expect(target.querySelector("[data-testid='activity-empty']")).toBeNull();
     read.mockImplementation(async () => ok(COMPANY_TELEMETRY));
     target.querySelector<HTMLButtonElement>("[data-testid='activity-retry']")!.click();
     await settle();
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(target.querySelector("[data-testid='activity-failed']")).toBeNull();
+  });
+
+  it("says the user is offline when the read could not reach HQ", async () => {
+    const target = mountWith(vi.fn(async (): Promise<unknown> => failure("network", "fetch failed: ECONNREFUSED 10.0.0.1:443")));
+    await settle();
+    const failed = target.querySelector("[data-testid='activity-failed']");
+    expect(failed?.getAttribute("data-reason")).toBe("offline");
+    expect(failed?.textContent).toContain("You're offline");
+    expect(target.textContent).not.toContain("ECONNREFUSED");
+    expect(target.querySelector("[data-testid='activity-retry']")).toBeTruthy();
+  });
+
+  it("offers Sign in again on an expired sign-in, then reads again", async () => {
+    const read = vi.fn(async (): Promise<unknown> => failure("unauthorized", "HTTP 401 Unauthorized"));
+    const onsignin = vi.fn(async () => {});
+    const target = mountWith(read, onsignin);
+    await settle();
+    const failed = target.querySelector("[data-testid='activity-failed']");
+    expect(failed?.getAttribute("data-reason")).toBe("signed-out");
+    expect(failed?.textContent).toContain("Your sign-in has expired. Sign in again to load activity.");
+    expect(target.textContent).not.toContain("401");
+    read.mockImplementation(async () => ok(COMPANY_TELEMETRY));
+    target.querySelector<HTMLButtonElement>("[data-testid='activity-sign-in']")!.click();
+    await settle();
+    expect(onsignin).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(2);
     expect(target.querySelector("[data-testid='activity-failed']")).toBeNull();
   });
