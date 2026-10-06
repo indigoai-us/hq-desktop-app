@@ -2,8 +2,9 @@
  * Live transcript state and poller for one meeting (Recall real-time).
  *
  * Polls `GET /v1/meetings/{recallBotId}?view=live` through the platform
- * adapter every 3 s while the meeting is live and the window is visible,
- * every 10 s while the window is hidden, and stops when the meeting ends.
+ * adapter every 3 s while the meeting is live and the window is visible.
+ * It makes no requests while the window is hidden and stops when the meeting
+ * ends. Returning to the window resumes with an immediate fresh read.
  * Each poll sends the last revision and ETag, so an unchanged transcript
  * costs a 304. A failed poll keeps the last good lines and tries again on
  * the next tick; errors go to the console, never to the screen.
@@ -20,7 +21,8 @@ import type {
 import { mergeSegments } from "./live-transcript-model";
 
 export const LIVE_POLL_VISIBLE_MS = 3_000;
-export const LIVE_POLL_HIDDEN_MS = 10_000;
+export const LIVE_POLL_HIDDEN_MS = 30_000;
+export const LIVE_POLL_RETRY_LIMIT = 3;
 
 export type LiveTranscriptFetch = (
   req: LiveTranscriptRequest,
@@ -33,7 +35,7 @@ export type LiveTranscriptFetch = (
  * - `off`: the server has live transcripts turned off for this meeting.
  * - `unavailable`: this host cannot fetch a live transcript.
  */
-export type LiveTranscriptStatus = "connecting" | "listening" | "live" | "off" | "unavailable";
+export type LiveTranscriptStatus = "connecting" | "listening" | "live" | "off" | "unavailable" | "retry";
 
 export class LiveTranscriptState {
   segments = $state<LiveTranscriptSegmentWire[]>([]);
@@ -49,9 +51,14 @@ export class LiveTranscriptState {
     switch (result.kind) {
       case "ok": {
         const segments = Array.isArray(result.segments) ? result.segments : [];
-        this.segments = mergeSegments(this.segments, segments);
+        this.segments = result.full ? mergeSegments([], segments) : mergeSegments(this.segments, segments);
         this.partial = result.partial ?? null;
-        this.revision = Math.max(this.revision ?? 0, Number(result.revision) || 0);
+        // A rebuilt server snapshot can have a lower revision. Its `full`
+        // marker means the client must adopt that cursor with the replacement
+        // body or every later request keeps forcing another full snapshot.
+        this.revision = result.full
+          ? Number(result.revision) || 0
+          : Math.max(this.revision ?? 0, Number(result.revision) || 0);
         this.etag = result.etag ?? null;
         this.status = this.segments.length || this.partial ? "live" : "listening";
         return;
@@ -71,6 +78,7 @@ export class LiveTranscriptState {
 
   fail(): void {
     this.failures += 1;
+    if (this.failures >= LIVE_POLL_RETRY_LIMIT) this.status = "retry";
   }
 }
 
@@ -134,6 +142,9 @@ export function startLiveTranscriptPoll(opts: LivePollOptions): () => void {
       stop();
       return;
     }
+    // Background windows do not poll. The visibility listener below starts an
+    // immediate read once the user returns.
+    if (isHidden()) return;
     inFlight = true;
     try {
       const res = await opts.fetch({
@@ -155,15 +166,14 @@ export function startLiveTranscriptPoll(opts: LivePollOptions): () => void {
     } finally {
       inFlight = false;
     }
-    if (opts.state.status === "off") {
+    if (opts.state.status === "off" || opts.state.status === "retry") {
       stop();
       return;
     }
-    schedule();
+    if (!isHidden()) schedule();
   }
 
-  // Coming back to the window polls at once instead of waiting out the
-  // 10 s hidden delay.
+  // Coming back to the window polls at once instead of waiting for a timer.
   const unwatch = watchVisibility(() => {
     if (stopped || inFlight || isHidden()) return;
     clear();

@@ -1075,6 +1075,8 @@ export type LiveTranscriptResult =
       etag?: string | null;
       updatedAt?: string | null;
       provisional?: boolean;
+      /** `true` means segments replace the retained snapshot, not a delta. */
+      full?: boolean;
       truncated?: boolean;
       segments: LiveTranscriptSegmentWire[];
       partial?: LiveTranscriptPartialWire | null;

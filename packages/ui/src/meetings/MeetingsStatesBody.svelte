@@ -26,6 +26,7 @@
   import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import NotetakerControl from "./NotetakerControl.svelte";
+  import LiveTranscriptDoor from "./LiveTranscriptDoor.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { PROVIDER_LABEL, detectMeetingProvider } from "./meeting-link";
@@ -73,7 +74,7 @@
     onretrynotes,
   }: Props = $props();
 
-  let tab = $state<"recap" | "transcript" | "notes" | "agenda">("recap");
+  let tab = $state<"recap" | "transcript" | "notes" | "agenda" | "live">("recap");
   const agenda = $derived(event ? agendaItems(event) : []);
   const attendees = $derived(event ? attendeeViews(event) : []);
   const organizer = $derived(event ? organizerLabel(event) : "");
@@ -276,11 +277,13 @@
             <button type="button" class="tab" aria-pressed={tab === "recap"} onclick={() => (tab = "recap")}>Recap</button>
             <button type="button" class="tab" aria-pressed={tab === "transcript"} onclick={() => (tab = "transcript")}>Transcript</button>
             <button type="button" class="tab" aria-pressed={tab === "notes"} onclick={() => (tab = "notes")}>Notes</button>
+            {#if bot}<button type="button" class="tab" aria-pressed={tab === "live"} onclick={() => (tab = "live")}>Live</button>{/if}
             <span class="meta">{recap?.meta}</span>
           {:else}
             <button type="button" class="tab" aria-pressed={tab === "agenda"} onclick={() => (tab = "agenda")}>Agenda</button>
             <button type="button" class="tab" aria-pressed={tab === "notes"} onclick={() => (tab = "notes")}>Notes</button>
             <button type="button" class="tab" aria-pressed={tab === "transcript"} onclick={() => (tab = "transcript")}>Transcript</button>
+            {#if bot}<button type="button" class="tab" aria-pressed={tab === "live"} onclick={() => (tab = "live")}>Live</button>{/if}
             <span class="meta">{eventStart(event) ? `Starts ${relativeUntil(eventStart(event)!, now)}` : "Upcoming"}</span>
           {/if}
         </div>
@@ -338,6 +341,17 @@
               </div>
             {/if}
           </div>
+        {:else if tab === "live" && bot}
+          {#if bot.sourceLanded}
+            <p class="muted" data-testid="live-transcript-final">The saved transcript is ready in the Transcript tab.</p>
+          {:else}
+            <LiveTranscriptDoor
+              recallBotId={bot.botId}
+              companyId={bot.companyId ?? event.sourceCompanyUid ?? null}
+              live={bot.status !== "completed" || !bot.sourceLanded}
+              botStatus={bot.status}
+            />
+          {/if}
         {:else if tab === "transcript"}
           <div data-testid="meeting-transcript">
             <input class="search" placeholder="Search transcript" aria-label="Search transcript" bind:value={query} />
