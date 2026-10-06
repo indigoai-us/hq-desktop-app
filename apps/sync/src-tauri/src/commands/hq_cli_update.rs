@@ -1509,9 +1509,11 @@ async fn acquire_cli_package_update_lease(
         Some(prefix) => prefix.to_string(),
         None => resolve_npm_global_prefix_for_lease(npm, path).await?,
     };
-    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin(Path::new(
-        &resolved_prefix,
-    ))?;
+    let target_root_id = hq_desktop_core::package_root::LEGACY_ROOT_ID;
+    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin_for_root(
+        Path::new(&resolved_prefix),
+        target_root_id,
+    )?;
 
     // The pending lock prevents fresh CLI entry and asks resident daemons to
     // hand off. Close this app's child admission as well, so no controlled CLI
@@ -5234,7 +5236,7 @@ const state = process.platform === 'win32'
   ? path.join(process.env.LOCALAPPDATA, 'hq-cli', 'state', 'package-use')
   : path.join((process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state')).trim(), 'hq-cli', 'package-use');
 const dir = path.join(state, digest); fs.mkdirSync(dir, { recursive: true });
-const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: 'test' };
+const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: 'test', root_id: 'versioned-a1' };
 const target = path.join(dir, `${record.pid}-${record.start_time_ms}.json`);
 const temp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
 fs.writeFileSync(temp, JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, target);
@@ -6067,7 +6069,7 @@ exit 1
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn cli_package_update_waits_for_shared_cli_lease_before_starting_npm() {
+    async fn cli_package_update_waits_for_nonlegacy_root_lease_before_starting_npm() {
         let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
@@ -6113,7 +6115,7 @@ exit 1
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(
             !attempts.exists(),
-            "npm must not start while a CLI process holds the shared package lease"
+            "npm must not start while any live CLI process holds the shared package prefix lease"
         );
         cli_lease.kill().expect("release child lease holder");
         cli_lease.wait().expect("lease holder exits");

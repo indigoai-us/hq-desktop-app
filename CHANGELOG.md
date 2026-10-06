@@ -8,12 +8,16 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 - Setup now explains how to free disk space when an install cannot continue.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 - A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
 - A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
+- The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
 
 ## [0.10.397] — 2026-10-06
 
