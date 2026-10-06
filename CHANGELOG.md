@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Page titles now start on the same left edge as the items in the page's side list. On Marketplace and Settings the title used to sit about 76 pixels to the right of Browse, Installed and Submit. The Deployments title moved over 4 pixels to match the other pages.
 - Every button in the app now has the same height and padding as the Launch and Core buttons in the top bar. The white primary buttons, such as Open console, are no longer taller than the rest.
 - The "Host unreachable" notice on the Outpost page now has even padding around its text and its Retry now button.
 - The secret detail panel is cleaner: a quiet label above the name, the path on its own line, one row of buttons that never wraps (extra buttons move into a More menu when space runs out), facts in a two-column list where empty values are left out instead of showing a dash, and a Who can read section that lists each reader. The personal connection and app panels use the same layout.
