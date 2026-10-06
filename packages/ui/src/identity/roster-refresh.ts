@@ -198,7 +198,10 @@ export function subscribeRosterRefreshEvents(
   const unlistens = ROSTER_REFRESH_EVENTS.map((eventName) =>
     listen(eventName, () => {
       if (!cancelled) onRefresh(eventName);
-    }).catch(() => () => {}),
+    }).catch((error) => {
+      console.warn("[hq-ui-roster-refresh] event listener registration failed", error);
+      return () => {};
+    }),
   );
   return () => {
     cancelled = true;

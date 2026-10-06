@@ -126,7 +126,8 @@ export function saveMeetingsCache<
       snapshot,
     };
     safeSetItem(storage, STORAGE_KEY, JSON.stringify(envelope));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:129", error);
     // No-op — see function-level comment.
   }
 }
@@ -138,7 +139,8 @@ export function clearMeetingsCache(
 ): void {
   try {
     safeRemoveItem(storage, STORAGE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:141", error);
     // No-op.
   }
 }

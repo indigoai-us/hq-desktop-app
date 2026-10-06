@@ -439,7 +439,8 @@ export function readTourSeenLocally(storage: TourSeenStorage | null | undefined)
 export function writeTourSeenLocally(storage: TourSeenStorage | null | undefined): void {
   try {
     storage?.setItem(TOUR_SEEN_STORAGE_KEY, "1");
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/tour/guided-tour.ts:442", error);
     // Storage unavailable (private mode, quota): the host flag still holds.
   }
 }
