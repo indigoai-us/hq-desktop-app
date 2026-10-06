@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Live tab now opens Claude Code or Codex in your HQ folder with the meeting reader ready to run. It remembers your last choice on this computer and copies the same meeting prompt when a terminal fallback cannot prefill it.
+
 - Meetings with a notetaker now have a Live tab beside Recap, Transcript, and Notes. It shows the notetaker's live transcript while the call is in progress. When the saved transcript is ready, the Live tab points you to Transcript.
 
 - Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.

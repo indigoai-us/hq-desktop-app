@@ -3,6 +3,7 @@ import type {
   FeedbackApi,
   Json,
   MeetingsApi,
+  ShellApi,
   SettingsApi,
 } from "@hq/platform";
 import {
@@ -77,6 +78,9 @@ export interface MeetingsStoreApi {
   feedback: FeedbackApi;
   /** Native settings are authoritative for recording attribution. */
   settings?: Pick<SettingsApi, "getSettings">;
+  /** Desktop launch services, used only by the live-meeting agent action. */
+  shell?: ShellApi;
+  launchSettings?: Pick<SettingsApi, "getSetupStatus">;
   /** Account-partitioned renderer persistence supplied by the desktop host. */
   storage?: MeetingsStorage | null;
   /** Monotonic native auth generation; owns all in-flight meeting work. */
@@ -118,6 +122,15 @@ export function liveTranscriptFetcher(): import("./live-transcript.svelte").Live
   const meetings = api?.meetings;
   const fetch = meetings?.fetchLiveTranscript;
   return fetch ? (req) => fetch.call(meetings, req) : null;
+}
+
+/** Services shared by the lazy live tab without widening its host props. */
+export function meetingAgentLaunchServices(): {
+  shell: ShellApi;
+  getSetupStatus: () => ReturnType<SettingsApi["getSetupStatus"]>;
+} | null {
+  if (!api?.shell || !api.launchSettings?.getSetupStatus) return null;
+  return { shell: api.shell, getSetupStatus: () => api.launchSettings!.getSetupStatus() };
 }
 
 function unwrap<T>(res: AdapterResult<T>): T {

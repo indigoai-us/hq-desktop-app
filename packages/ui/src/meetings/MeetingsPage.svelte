@@ -723,6 +723,8 @@
       meetings: adapter.meetings,
       feedback: adapter.feedback,
       settings: adapter.settings,
+      shell: adapter.shell,
+      launchSettings: adapter.settings,
       storage,
       sessionGeneration,
     });

@@ -41,3 +41,15 @@ describe("launch actions raw errors (AUDIT-3c)", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[launch\] open .* failed$/), RAW);
   });
 });
+
+describe("launch actions prompt recovery", () => {
+  it("copies the prefilled prompt when Claude falls back to a terminal", async () => {
+    const shell = shellStub({ claude_cli: true, any: true });
+    (shell.launchClaudeCode as ReturnType<typeof vi.fn>).mockResolvedValue(ok(undefined));
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const message = await createLaunchActions({ shell, hqFolderPath: "/hq", prompt: "meeting prompt" }).launchClaude();
+    expect(writeText).toHaveBeenCalledWith("meeting prompt");
+    expect(message).toContain("prompt was copied");
+  });
+});
