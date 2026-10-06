@@ -9,6 +9,7 @@
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
+  import MeetingCanvas from '../../../packages/ui/src/meetings/MeetingCanvas.svelte';
   import LiveTranscriptBody from '../../../packages/ui/src/meetings/LiveTranscriptBody.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -145,6 +146,21 @@
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
   const livePreviewState = params.get('liveState') ?? 'streaming';
+  const liveMeetingPreview = {
+    id: 'preview-live-meeting',
+    summary: 'Live product review',
+    start: { dateTime: new Date(Date.now() - 12 * 60_000).toISOString() },
+    end: { dateTime: new Date(Date.now() + 48 * 60_000).toISOString() },
+    status: 'confirmed',
+    meetingUrl: 'https://meet.google.com/preview-live',
+    sourceCompanyUid: 'cmp_preview',
+  };
+  const liveMeetingBotPreview = {
+    botId: 'preview-notetaker',
+    companyId: 'cmp_preview',
+    status: 'recording',
+    sourceLanded: false,
+  };
   let livePreviewReads = 0;
   const previewLiveTranscript = async () => {
     livePreviewReads += 1;
@@ -215,7 +231,7 @@
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
-          : view === 'live-transcript'
+          : view === 'live-transcript' || view === 'live-meeting'
             ? 'meetings-window'
           : view === 'drift'
             ? 'drift-detail'
@@ -282,6 +298,11 @@
       botStatus={livePreviewState === 'ended' ? 'completed' : 'recording'}
       fetch={previewLiveTranscript}
     />
+  </main>
+{:else if view === 'live-meeting'}
+  <!-- A live bot fixture for the actual MeetingCanvas Live tab. -->
+  <main class="live-meeting-preview">
+    <MeetingCanvas event={liveMeetingPreview} bot={liveMeetingBotPreview} companyName="Preview company" />
   </main>
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->

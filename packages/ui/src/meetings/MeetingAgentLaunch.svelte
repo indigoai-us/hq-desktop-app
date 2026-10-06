@@ -34,13 +34,13 @@
       const folder = status.ok && status.value && typeof status.value === "object"
         ? String((status.value as { hqFolderPath?: unknown }).hqFolderPath ?? "").trim() : "";
       if (!folder) { message = "HQ folder not configured yet. Finish setup first."; return; }
-      const actions = createLaunchActions({ shell: services.shell, hqFolderPath: folder, prompt: meetingAgentPrompt({ title, companySlug: "indigo", companyUid, recallBotId, startTime }) });
+      const actions = createLaunchActions({ shell: services.shell, hqFolderPath: folder, prompt: meetingAgentPrompt({ title, companyUid, recallBotId, startTime }) });
       message = next === "claude" ? await actions.launchClaude() : await actions.launchCodex();
     } finally { pending = null; }
   }
 
   async function copyPrompt(): Promise<void> {
-    try { await navigator.clipboard.writeText(meetingAgentPrompt({ title, companySlug: "indigo", companyUid, recallBotId, startTime })); message = "Meeting prompt copied."; }
+    try { await navigator.clipboard.writeText(meetingAgentPrompt({ title, companyUid, recallBotId, startTime })); message = "Meeting prompt copied."; }
     catch { message = "Could not copy the meeting prompt."; }
   }
 </script>
