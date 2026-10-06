@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop company first push can retry through the existing presigned vault transport when its STS grant policy exceeds AWS limits. It discards partial STS credentials and reports failure if any path is refused.
+
 ## [0.10.397] — 2026-10-06
 
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.

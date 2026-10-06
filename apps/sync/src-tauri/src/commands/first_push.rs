@@ -12,11 +12,11 @@
 //! After C3, the canonical upload path is `hq sync push` (which uses
 //! `share()` under the hood). AppBar still owns:
 //!
-//! * **STS-vending via `/sts/vend-child`** — preserves task-scoped audit
-//!   traceability (`task_id` + `task_description` + `task_scope`) that the
-//!   simpler `/sts/vend` used by `share()`'s default Cognito path doesn't
-//!   carry. Two STS endpoints in production by design — the upload path is
-//!   consolidated, the credential-vending path stays differentiated.
+//! * **STS-vending via `/sts/vend-child`** — normally preserves task-scoped
+//!   audit traceability (`task_id` + `task_description` + `task_scope`) that
+//!   `/sts/vend` doesn't carry. If the grant policy exceeds STS limits and the
+//!   existing fallback flag is enabled, first push discards the credentials and
+//!   uses the regular company presign transport instead.
 //! * **Tauri event emission** — the menubar UI subscribes to per-file
 //!   progress and a terminal complete event. We translate from the CLI's
 //!   stderr JSONL stream (`--json`) into these Tauri events 1:1.
@@ -65,16 +65,15 @@
 //! * `1` — terminal failure; `fatal` event sent to stderr first, OR an
 //!   `aborted` complete event was emitted (conflict-strategy abort)
 //!
-//! ## Why we still vend ourselves vs. letting share() vend
+//! ## Why we normally vend ourselves vs. letting share() vend
 //!
 //! AppBar already has the STS infrastructure (`vend_child`, task scoping).
-//! Switching to share()'s internal `/sts/vend` would silently drop the
-//! task-scoped audit metadata. The `/sts/vend-child` endpoint exists
-//! specifically for callers that want explicit task tracing, and AppBar
-//! is exactly that caller.
+//! The regular path preserves the task-scoped audit metadata. The overflow
+//! fallback uses share()'s normal presigned company transport because no STS
+//! credential can safely cover the complete grant set.
 
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use hq_desktop_core::first_push::{CliEvent, EntityContextPayload, EntityCredentials};
 use hq_desktop_core::runner_error_shape::PreRunnerCause;
@@ -82,7 +81,9 @@ use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use crate::commands::provision::ProvisionedCompany;
-use crate::commands::vault_client::{TaskScope, VaultClient, VaultClientError, VendChildInput};
+use crate::commands::vault_client::{
+    TaskScope, VaultClient, VaultClientError, VendChildInput, VendChildResult,
+};
 use crate::events::{
     SyncCompanyFirstPushCompleteEvent, SyncCompanyFirstPushProgressEvent,
     EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE, EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
@@ -164,6 +165,71 @@ fn classify_vend_child_error(err: &VaultClientError) -> (Option<u16>, PreRunnerC
     }
 }
 
+enum FirstPushTransport {
+    Sts(VendChildResult),
+    Presigned,
+}
+
+/// Select the complete first-push transport. Partial credentials are never
+/// used: the server's fallback code is emitted only for a policy overflow when
+/// `vault.write-presign-fallback` is enabled. An unexpected truncated success
+/// payload is refused rather than transferred through either transport.
+fn select_first_push_transport(
+    result: Result<VendChildResult, VaultClientError>,
+) -> Result<FirstPushTransport, VaultClientError> {
+    match result {
+        Ok(vend) if vend.policy_truncated || !vend.dropped_write_grant_prefixes.is_empty() => {
+            Err(VaultClientError::Json(
+                "vend-child returned partial credentials; refusing first push".to_string(),
+            ))
+        }
+        Ok(vend) => Ok(FirstPushTransport::Sts(vend)),
+        Err(err) if is_presign_fallback_signal(&err) => Ok(FirstPushTransport::Presigned),
+        Err(err) => Err(err),
+    }
+}
+
+fn is_presign_fallback_signal(err: &VaultClientError) -> bool {
+    match err {
+        VaultClientError::Http { status: 409, body } => {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("code")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some("POLICY_PRESIGN_FALLBACK_REQUIRED")
+        }
+        _ => false,
+    }
+}
+
+fn presigned_fallback_event_is_incomplete(event_type: &str) -> bool {
+    matches!(event_type, "error" | "scope-excluded" | "not-shipped")
+}
+
+fn configure_sync_push_command(
+    cmd: &mut Command,
+    company_slug: &str,
+    hq_root: &Path,
+    company_dir: &Path,
+    use_presigned_transport: bool,
+) {
+    cmd.arg("sync").arg("push");
+    if !use_presigned_transport {
+        cmd.arg("--creds-from-stdin");
+    }
+    cmd.arg("--json")
+        .arg("--company")
+        .arg(company_slug)
+        .arg("--hq-root")
+        .arg(hq_root.as_os_str())
+        .arg(company_dir.as_os_str());
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Run an initial push for `company`: vend STS creds → spawn `hq sync push` →
@@ -182,13 +248,10 @@ pub async fn first_push_company(
     hq_root: &Path,
     company: &ProvisionedCompany,
 ) -> Result<(), FirstPushFailure> {
-    // Step 1: Vend STS creds via /sts/vend-child. UNCHANGED from the pre-C3
-    // implementation — preserves task-scoped audit (task_id + description +
-    // scope) that share()'s simpler /sts/vend doesn't carry. 15-min TTL is
-    // well above typical first-push runtime so the subprocess never has to
-    // worry about refresh; share() with a pre-vended context does NOT
-    // attempt to refresh (no Cognito token to re-vend with).
-    let vend_result = match vault
+    // Step 1: Try the task-scoped STS path first. When the existing server-side
+    // flag reports a policy overflow, discard any partial credential payload
+    // and let hq-cloud select its normal company presign transport instead.
+    let vend_result = vault
         .vend_child(&VendChildInput {
             company_uid: company.uid.clone(),
             task_id: ulid::Ulid::new().to_string(),
@@ -199,9 +262,9 @@ pub async fn first_push_company(
             },
             duration_seconds: Some(900),
         })
-        .await
-    {
-        Ok(vend_result) => vend_result,
+        .await;
+    let transport = match select_first_push_transport(vend_result) {
+        Ok(transport) => transport,
         Err(e) => {
             // Derive the typed status + cause from the vault error BEFORE it is
             // collapsed to prose — this is the only seam that carries the status
@@ -215,28 +278,39 @@ pub async fn first_push_company(
         }
     };
 
-    // Step 2: Build the EntityContext payload that share() consumes via
-    // --creds-from-stdin. Region is hard-coded to us-east-1 for the same
-    // reason the pre-C3 build_s3_client did: the vault Lambda always
-    // provisions buckets there today. Multi-region would need a region
-    // field on ProvisionedCompany (or a vend_child response field) and
-    // careful wiring through both AppBar and share().
-    let payload = EntityContextPayload {
-        uid: company.uid.clone(),
-        slug: company.slug.clone(),
-        bucket_name: company.bucket_name.clone(),
-        region: "us-east-1".to_string(),
-        credentials: EntityCredentials {
-            access_key_id: vend_result.credentials.access_key_id,
-            secret_access_key: vend_result.credentials.secret_access_key,
-            session_token: vend_result.credentials.session_token,
-        },
-        expires_at: vend_result.expires_at,
+    // Step 2: Build the optional pre-vended EntityContext. The presigned
+    // transport runs the standard hq CLI auth path and receives no STS creds.
+    let payload_json = match transport {
+        FirstPushTransport::Sts(vend_result) => {
+            let payload = EntityContextPayload {
+                uid: company.uid.clone(),
+                slug: company.slug.clone(),
+                bucket_name: company.bucket_name.clone(),
+                region: "us-east-1".to_string(),
+                credentials: EntityCredentials {
+                    access_key_id: vend_result.credentials.access_key_id,
+                    secret_access_key: vend_result.credentials.secret_access_key,
+                    session_token: vend_result.credentials.session_token,
+                },
+                expires_at: vend_result.expires_at,
+            };
+            Some(serde_json::to_string(&payload).map_err(|e| {
+                FirstPushFailure::push_failed(format!("serialize EntityContext: {e}"))
+            })?)
+        }
+        FirstPushTransport::Presigned => {
+            log(
+                "first-push-cli",
+                "STS policy overflow; discarded STS credentials and selected company presigned I/O",
+            );
+            None
+        }
     };
-    let payload_json = serde_json::to_string(&payload)
-        .map_err(|e| FirstPushFailure::push_failed(format!("serialize EntityContext: {e}")))?;
+    let use_presigned_transport = payload_json.is_none();
 
-    // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`.
+    // Step 3: Spawn `hq sync push`; only the task-scoped STS path consumes a
+    // pre-vended EntityContext. Without it, hq-cloud's company transport
+    // selector installs the existing presigned ObjectIO implementation.
     //
     // `hq_resolver::resolve_hq()` decides whether to invoke a local `hq`
     // binary or fall back to `npx -y --package=@indigoai-us/hq-cli@<range>
@@ -252,8 +326,13 @@ pub async fn first_push_company(
     log(
         "first-push-cli",
         &format!(
-            "spawn ({}): hq sync push --creds-from-stdin --json --company {} --hq-root {} {}",
+            "spawn ({}): hq sync push{} --json --company {} --hq-root {} {}",
             invocation.label(),
+            if use_presigned_transport {
+                ""
+            } else {
+                " --creds-from-stdin"
+            },
             company.slug,
             hq_root.display(),
             company_dir.display(),
@@ -266,17 +345,19 @@ pub async fn first_push_company(
     let _npx_guard = invocation.npx_serial_guard().await;
 
     let mut cmd = invocation.command();
-    cmd.arg("sync")
-        .arg("push")
-        .arg("--creds-from-stdin")
-        .arg("--json")
-        .arg("--company")
-        .arg(&company.slug)
-        .arg("--hq-root")
-        .arg(hq_root.as_os_str())
-        .arg(company_dir.as_os_str())
-        .env("PATH", &path_env)
-        .stdin(Stdio::piped())
+    configure_sync_push_command(
+        &mut cmd,
+        &company.slug,
+        hq_root,
+        &company_dir,
+        use_presigned_transport,
+    );
+    cmd.env("PATH", &path_env)
+        .stdin(if use_presigned_transport {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         // share()'s default human output goes to stdout — in --json mode all
         // events go to stderr, and stdout carries nothing useful. Discarding
         // it avoids burning a kernel buffer on output we'd ignore anyway.
@@ -307,10 +388,8 @@ pub async fn first_push_company(
         .id()
         .map(|pid| hq_desktop_core::cpu_throttle::CpuThrottle::attach(pid as i32));
 
-    // Step 4: Pipe payload JSON to the child's stdin, then close stdin so
-    // the CLI's `for await (chunk of process.stdin)` loop terminates and
-    // the credentials are parsed.
-    {
+    // Step 4: Pipe the pre-vended context only for the task-scoped STS path.
+    if let Some(payload_json) = payload_json {
         let mut stdin = child
             .stdin
             .take()
@@ -320,7 +399,6 @@ pub async fn first_push_company(
             .await
             .map_err(|e| FirstPushFailure::push_failed(format!("write child stdin: {e}")))?;
         stdin.flush().await.ok();
-        // dropped here → close
     }
 
     // Step 5: Stream stderr line-by-line. Each line is either:
@@ -343,6 +421,7 @@ pub async fn first_push_company(
     let mut last_fatal: Option<String> = None;
     let mut saw_complete = false;
     let mut aborted = false;
+    let mut presigned_fallback_incomplete = false;
 
     while let Ok(Some(line)) = reader.next_line().await {
         let trimmed = line.trim();
@@ -424,6 +503,13 @@ pub async fn first_push_company(
                 log("first-push-cli", &format!("fatal: {msg}"));
                 last_fatal = Some(msg);
             }
+            other if use_presigned_transport && presigned_fallback_event_is_incomplete(other) => {
+                presigned_fallback_incomplete = true;
+                log(
+                    "first-push-cli",
+                    "presigned first push reported a path refusal; final success will be withheld",
+                );
+            }
             // `error` is per-file (already-retried, then skipped); `conflict`
             // is per-file (already resolved). Neither kills the run — log
             // for forensics and let the loop continue.
@@ -478,6 +564,13 @@ pub async fn first_push_company(
         )));
     }
 
+    if presigned_fallback_incomplete {
+        return Err(FirstPushFailure::push_failed(
+            "presigned company first push was incomplete: one or more paths were refused"
+                .to_string(),
+        ));
+    }
+
     // Emit the terminal Tauri event the menubar listens for.
     let _ = app.emit(
         EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE,
@@ -497,6 +590,110 @@ pub async fn first_push_company(
 mod tests {
     use super::*;
     use hq_desktop_core::sync_outcome::is_expected_acl_scope_skip;
+
+    fn complete_child_vend() -> VendChildResult {
+        VendChildResult {
+            credentials: crate::commands::vault_client::VendChildCredentials {
+                access_key_id: "ASIAFAKE".into(),
+                secret_access_key: "fake-secret".into(),
+                session_token: "fake-session".into(),
+            },
+            session_name: "prs_fake--task--fake".into(),
+            expires_at: "2026-10-06T02:00:00Z".into(),
+            policy_truncated: false,
+            dropped_write_grant_prefixes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn explicit_overflow_fallback_signal_selects_presigned_transport() {
+        let err = VaultClientError::Http {
+            status: 409,
+            body: "{\"code\":\"POLICY_PRESIGN_FALLBACK_REQUIRED\"}".into(),
+        };
+
+        assert!(matches!(
+            select_first_push_transport(Err(err)),
+            Ok(FirstPushTransport::Presigned)
+        ));
+    }
+
+    #[test]
+    fn dropped_prefix_response_discards_child_credentials_and_refuses_first_push() {
+        let mut vend = complete_child_vend();
+        vend.policy_truncated = true;
+        vend.dropped_write_grant_prefixes = vec!["private/overflow/".into()];
+
+        assert!(matches!(
+            select_first_push_transport(Ok(vend)),
+            Err(VaultClientError::Json(message))
+                if message == "vend-child returned partial credentials; refusing first push"
+        ));
+    }
+
+    #[test]
+    fn ordinary_child_vend_keeps_the_existing_sts_transport() {
+        assert!(matches!(
+            select_first_push_transport(Ok(complete_child_vend())),
+            Ok(FirstPushTransport::Sts(_))
+        ));
+    }
+
+    #[test]
+    fn flag_off_overflow_refusal_does_not_select_presigned_transport() {
+        let err = VaultClientError::Http {
+            status: 422,
+            body: "{\"code\":\"POLICY_WRITE_SCOPE_TRUNCATED\"}".into(),
+        };
+
+        assert!(matches!(
+            select_first_push_transport(Err(err)),
+            Err(VaultClientError::Http { status: 422, .. })
+        ));
+    }
+
+    #[test]
+    fn presigned_fallback_never_reports_success_after_a_path_refusal() {
+        for event_type in ["error", "scope-excluded", "not-shipped"] {
+            assert!(
+                presigned_fallback_event_is_incomplete(event_type),
+                "{event_type}"
+            );
+        }
+        assert!(!presigned_fallback_event_is_incomplete("progress"));
+        assert!(!presigned_fallback_event_is_incomplete("complete"));
+    }
+
+    #[test]
+    fn presigned_fallback_runs_standard_company_sync_without_sts_stdin() {
+        let mut command = Command::new("hq");
+        configure_sync_push_command(
+            &mut command,
+            "acme",
+            Path::new("/tmp/hq"),
+            Path::new("/tmp/hq/companies/acme"),
+            true,
+        );
+
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "sync",
+                "push",
+                "--json",
+                "--company",
+                "acme",
+                "--hq-root",
+                "/tmp/hq",
+                "/tmp/hq/companies/acme",
+            ]
+        );
+        assert!(!args.iter().any(|arg| arg == "--creds-from-stdin"));
+    }
 
     // The verbatim shape of the observed HQ-DESKTOP-63 vend-child 403 body: prose plus
     // the machine-readable code the server returns. Only its scope-marker substring is
@@ -525,7 +722,10 @@ mod tests {
             status: 403,
             body: "{\"error\":\"Forbidden\"}".to_string(),
         };
-        assert_eq!(classify_vend_child_error(&err), (Some(403), PreRunnerCause::VendHttp));
+        assert_eq!(
+            classify_vend_child_error(&err),
+            (Some(403), PreRunnerCause::VendHttp)
+        );
         let message = format!("vend_child for cmp_01ABC: {err}");
         assert!(!is_expected_acl_scope_skip(&message));
         // A plain-403 capture carries none of the observed scope body's substrings.
@@ -539,7 +739,10 @@ mod tests {
             status: 500,
             body: "internal".to_string(),
         };
-        assert_eq!(classify_vend_child_error(&err), (Some(500), PreRunnerCause::VendHttp));
+        assert_eq!(
+            classify_vend_child_error(&err),
+            (Some(500), PreRunnerCause::VendHttp)
+        );
     }
 
     #[test]
