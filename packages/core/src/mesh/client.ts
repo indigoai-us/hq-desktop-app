@@ -26,6 +26,7 @@ import mqtt, { type IClientOptions } from "mqtt";
 
 import {
   channelWakeFromPayload,
+  isDirectoryChangedWake,
   mqttPayloadToText,
   parseDmDeliveredWake,
   parseReplyThreadWake,
@@ -237,7 +238,10 @@ export class LiveReadCoalescer {
       companyUid: string,
       result: { participants: LiveParticipantPresence[]; raw?: unknown },
     ) => void,
-    private readonly onError: (companyUid: string, err: unknown) => void = () => {},
+    private readonly onError: (
+      companyUid: string,
+      err: unknown,
+    ) => void = () => {},
   ) {}
 
   refresh(companyUid: string): void {
@@ -426,7 +430,8 @@ export class MeshClient {
     this.presenceStore = options.presenceStore ?? new PresenceStore();
     this.liveReadStore = options.liveReadStore ?? new LiveReadStore();
     this.liveFetcher =
-      options.liveFetcher ?? createLiveReadFetcherFromReconcile(options.fetcher);
+      options.liveFetcher ??
+      createLiveReadFetcherFromReconcile(options.fetcher);
     this.liveCoalescer = new LiveReadCoalescer(
       this.liveFetcher,
       (companyUid, result) => {
@@ -717,8 +722,13 @@ export class MeshClient {
     // is ids-only: the host emits reply:new from the wake and the open
     // panel re-fetches GET /v1/notify/threads. Reconciling here would
     // emit reply:new a second time and bump closed-panel "N replies"
-    // twice. Untyped dm-topic wakes GET inbox.
+    // twice. Untyped dm-topic wakes GET inbox. The directory doorbell on the
+    // work topic refreshes the directory only (no GET /v1/work-mesh/work).
     if (
+      !(
+        isDirectoryChangedWake(payloadText) &&
+        routeForTopic(topic)?.path === "/v1/work-mesh/work"
+      ) &&
       !channelWakeFromPayload(payloadText) &&
       !parseDmDeliveredWake(payloadText) &&
       !parseReplyThreadWake(payloadText)
