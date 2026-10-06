@@ -75,14 +75,18 @@
 //! fallback uses share()'s normal presigned company transport because no STS
 //! credential can safely cover the complete grant set.
 
-use std::path::Path;
-use std::process::{Command, Stdio};
-use std::{fs, io::Write, path::PathBuf};
+use std::process::Stdio;
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use hq_desktop_core::first_push::{CliEvent, EntityContextPayload, EntityCredentials};
 use hq_desktop_core::runner_error_shape::PreRunnerCause;
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 use crate::commands::provision::ProvisionedCompany;
 use crate::commands::vault_client::{
@@ -787,6 +791,7 @@ mod tests {
         );
 
         let args: Vec<String> = command
+            .as_std()
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -838,7 +843,7 @@ mod tests {
         let mut command = Command::new("hq");
         configure_presigned_auth_state(&mut command, Path::new("/tmp/hq-auth-snapshot"));
 
-        let envs: Vec<_> = command.get_envs().collect();
+        let envs: Vec<_> = command.as_std().get_envs().collect();
         assert!(envs.iter().any(|(key, value)| {
             *key == "HQ_STATE_DIR"
                 && value.map(|path| path == "/tmp/hq-auth-snapshot") == Some(true)
