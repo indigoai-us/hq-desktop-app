@@ -722,13 +722,10 @@ export class MeshClient {
     // is ids-only: the host emits reply:new from the wake and the open
     // panel re-fetches GET /v1/notify/threads. Reconciling here would
     // emit reply:new a second time and bump closed-panel "N replies"
-    // twice. Untyped dm-topic wakes GET inbox. The directory doorbell on the
-    // work topic refreshes the directory only (no GET /v1/work-mesh/work).
+    // twice. Untyped dm-topic wakes GET inbox. The directory doorbell, on the
+    // work or dm topic, refreshes the directory only (no topic REST fetch).
     if (
-      !(
-        isDirectoryChangedWake(payloadText) &&
-        routeForTopic(topic)?.path === "/v1/work-mesh/work"
-      ) &&
+      !isDirectoryChangedWake(payloadText) &&
       !channelWakeFromPayload(payloadText) &&
       !parseDmDeliveredWake(payloadText) &&
       !parseReplyThreadWake(payloadText)

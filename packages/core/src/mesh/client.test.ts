@@ -1195,6 +1195,33 @@ describe("MeshClient", () => {
     expect(h.events.wake.map((w) => w[0])).toEqual(["hq/prs_alice/work"]);
   });
 
+  it("directory doorbell on the dm topic emits a wake but never GETs the inbox", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.events.wake.length = 0;
+    const payload = JSON.stringify({
+      contractVersion: 2,
+      eventId: "evt_1",
+      eventType: "channel.directory.changed",
+      scope: "channel",
+      resourceId: "chn_x",
+      recipientUid: "prs_alice",
+      createdAt: "2026-10-06T12:00:00.000Z",
+    });
+    h.mqttClients[0].fire(
+      "message",
+      "hq/prs_alice/dm",
+      new TextEncoder().encode(payload),
+    );
+    await settle();
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.events.wake).toEqual([["hq/prs_alice/dm", payload]]);
+  });
+
   it("generic work wake on the work topic still GETs work", async () => {
     const h = makeHarness();
     await h.client.start();
