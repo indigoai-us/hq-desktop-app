@@ -4,7 +4,7 @@
 # (the per-target Recall sidecar binary and the MSVC toolchain are absent), so
 # this is the authoritative feedback loop for the `cfg(target_os = "windows")`
 # platform graft. It is EXPECTED TO BE RED until the platform-seam port in
-# PHASE3.md is complete; it becomes a required check once green.
+# docs/archive/PHASE3.md is complete; it becomes a required check once green.
 #
 # Triggers on PRs (not push to main) so main is not shown red while the fold is
 # in progress; also manually dispatchable. There is deliberately no `branches:`

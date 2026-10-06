@@ -8,7 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Desktop updates identify the CLI root being replaced, so commands using other versioned installs can keep running.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
+- Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
 ## [0.10.397] — 2026-10-06
 
