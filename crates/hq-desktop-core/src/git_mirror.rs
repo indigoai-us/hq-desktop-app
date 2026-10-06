@@ -2586,6 +2586,35 @@ pub fn drive_bulk_delete_decision_for_test(
     prefix_records: &[u8],
     drain_failed: bool,
 ) -> &'static str {
+    drive_bulk_delete_decision_with_failure_for_test(
+        deletions,
+        tracked,
+        wedge_age_secs,
+        tree_present,
+        occurrences,
+        episode_age_secs,
+        reports_so_far,
+        prefix_records,
+        drain_failed.then_some(DRAIN_FAILURE_SAMPLE),
+    )
+}
+
+/// Test-support variant that supplies the exact formatted error returned by a
+/// failed `git commit`. The envelope integration test uses a real failed commit
+/// here so status and stderr capture stay attached to production reporting.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(clippy::too_many_arguments)]
+pub fn drive_bulk_delete_decision_with_failure_for_test(
+    deletions: usize,
+    tracked: usize,
+    wedge_age_secs: Option<u64>,
+    tree_present: bool,
+    occurrences: usize,
+    episode_age_secs: u64,
+    reports_so_far: usize,
+    prefix_records: &[u8],
+    drain_failure: Option<&str>,
+) -> &'static str {
     let (prefixes, prefix_groups) = deletion_prefixes(prefix_records);
     let set = StagedDeletions {
         count: deletions,
@@ -2596,7 +2625,7 @@ pub fn drive_bulk_delete_decision_for_test(
     let override_on = is_bulk_override_set();
     let wedge_age = wedge_age_secs.map(Duration::from_secs);
     match decide_bulk_delete_action(deletions, tracked, override_on, wedge_age, tree_present) {
-        BulkDeleteAction::AcceptSettled if drain_failed => {
+        BulkDeleteAction::AcceptSettled if drain_failure.is_some() => {
             // The drain was judged committable but its `git commit` failed:
             // production keeps the wedge and reports the aged, unheld refusal with
             // `drain_failure` set. Route through the SAME gate and reporter that
@@ -2610,7 +2639,7 @@ pub fn drive_bulk_delete_decision_for_test(
                 episode_age_secs,
                 wedge_age,
                 reports_so_far,
-                Some(DRAIN_FAILURE_SAMPLE),
+                drain_failure,
             )
         }
         BulkDeleteAction::AcceptSettled => {
@@ -3968,6 +3997,110 @@ fn drain_failure_class(error: &str) -> &'static str {
     }
 }
 
+/// Extract and sanitize the exact nonzero-exit details returned by
+/// `run_git_in_git_dir`. Paths and branch/ref names are local machine data; the
+/// diagnostic keeps the useful Git reason while removing those identifiers.
+fn drain_failure_details(error: &str) -> Option<(String, String)> {
+    let (_, after_exit) = error.split_once(" failed (exit ")?;
+    let (status, stderr) = after_exit.split_once("): ")?;
+    if status.is_empty() || !status.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((status.to_string(), redact_git_diagnostic(stderr)))
+}
+
+fn redact_git_diagnostic(stderr: &str) -> String {
+    let mut text = stderr.to_string();
+    for prefix in ["refs/heads/", "refs/remotes/"] {
+        while let Some(start) = text.find(prefix) {
+            let end = text[start..]
+                .find(|character: char| {
+                    character.is_whitespace() || character == '\'' || character == '"'
+                })
+                .map(|offset| start + offset)
+                .unwrap_or(text.len());
+            text.replace_range(start..end, "<branch-ref>");
+        }
+    }
+    text = redact_branch_markers(&text);
+    // Replace absolute path tokens before they are attached to the event. Keep
+    // punctuation and surrounding Git wording to preserve the failure reason.
+    let mut output = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let drive_path = index + 2 < chars.len()
+            && chars[index].is_ascii_alphabetic()
+            && chars[index + 1] == ':'
+            && matches!(chars[index + 2], '/' | '\\');
+        let unix_path = chars[index] == '/'
+            && (index == 0 || matches!(chars[index - 1], ' ' | '\t' | '\'' | '"' | '(' | ':'));
+        if drive_path || unix_path {
+            output.push_str("<path>");
+            index += if drive_path { 3 } else { 1 };
+            while index < chars.len()
+                && !matches!(
+                    chars[index],
+                    ' ' | '\t' | '\n' | '\r' | '\'' | '"' | ',' | ';' | ')'
+                )
+            {
+                index += 1;
+            }
+        } else {
+            output.push(chars[index]);
+            index += 1;
+        }
+    }
+    const LIMIT: usize = 2 * 1024;
+    if output.len() > LIMIT {
+        let mut start = output.len() - LIMIT;
+        while !output.is_char_boundary(start) {
+            start += 1;
+        }
+        output[start..].to_string()
+    } else {
+        output
+    }
+}
+
+fn redact_branch_markers(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some((before, after_marker)) = remaining.split_once("branch ") {
+        output.push_str(before);
+        output.push_str("branch ");
+        let quote = after_marker
+            .chars()
+            .next()
+            .filter(|character| matches!(character, '\'' | '"'));
+        if let Some(quote) = quote {
+            output.push(quote);
+            let content = &after_marker[quote.len_utf8()..];
+            if let Some((_, after_name)) = content.split_once(quote) {
+                output.push_str("<branch>");
+                output.push(quote);
+                remaining = after_name;
+            } else {
+                output.push_str("<branch>");
+                return output;
+            }
+        } else {
+            let name_end = after_marker
+                .find(char::is_whitespace)
+                .unwrap_or(after_marker.len());
+            if name_end == 0 {
+                output.push_str("branch");
+                remaining = after_marker;
+            } else {
+                output.push_str("<branch>");
+                remaining = &after_marker[name_end..];
+            }
+        }
+    }
+    output.push_str(remaining);
+    output
+}
+
 /// Capture the one warning-grade Sentry event for a confirmed bulk-delete
 /// refusal. Extracted so the exact production emission — tags, extras, message
 /// and `Warning` level — has a single definition the test-support seam can drive
@@ -4061,6 +4194,10 @@ fn emit_bulk_refusal(
             scope.set_tag("drain_failed", report.drain_failure.is_some().to_string());
             if let Some(error) = report.drain_failure {
                 scope.set_tag("drain_failure_class", drain_failure_class(error));
+                if let Some((status, stderr)) = drain_failure_details(error) {
+                    scope.set_tag("drain_failure_exit_status", status);
+                    scope.set_extra("drain_failure_stderr", serde_json::Value::String(stderr));
+                }
             }
             scope.set_extra("deletion_prefixes", serde_json::Value::Object(prefixes));
             scope.set_extra(
@@ -5272,12 +5409,7 @@ fn git_output_for_git_dir(
         fs::symlink_metadata(&lock_path),
         Err(ref error) if error.kind() == ErrorKind::NotFound
     );
-    git_output_with_lock_tracking(
-        cwd,
-        args,
-        timeout,
-        Some((&lock_path, lock_was_absent)),
-    )
+    git_output_with_lock_tracking(cwd, args, timeout, Some((&lock_path, lock_was_absent)))
 }
 
 /// Run git with a hard ceiling. The mirror runs on a detached thread with no
@@ -12114,6 +12246,29 @@ mod tests {
             assert!(
                 !class.contains('/'),
                 "a class word never carries a path: {class:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn drain_failure_details_keep_status_and_redact_paths_and_branch_names() {
+        let details = drain_failure_details(
+            "git commit failed (exit 128): fatal: cannot lock ref 'refs/heads/private-branch': Unable to create '/Users/alice/hq/.git/HEAD.lock'; C:\\Users\\Alice\\HQ\\repo; branch other-private-name",
+        )
+        .expect("formatted nonzero Git error should provide details");
+        assert_eq!(details.0, "128");
+        assert!(details.1.contains("cannot lock ref '<branch-ref>'"));
+        assert!(details.1.contains("<path>"));
+        assert!(details.1.contains("branch <branch>"));
+        for private in [
+            "/Users/alice",
+            "C:\\Users\\Alice",
+            "private-branch",
+            "other-private-name",
+        ] {
+            assert!(
+                !details.1.contains(private),
+                "private value survived: {private}"
             );
         }
     }
