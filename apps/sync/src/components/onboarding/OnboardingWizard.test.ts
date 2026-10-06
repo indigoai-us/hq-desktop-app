@@ -49,7 +49,6 @@ vi.mock('@hq/platform', () => ({
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG: 'desktop.first-launch-signin-reach-telemetry-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
@@ -74,7 +73,6 @@ vi.mock('@hq/platform', () => ({
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
-          flag === 'desktop.first-launch-signin-reach-telemetry-v1' ||
           flag === 'desktop.company-route-lookup-retry-v1' ||
           flag === 'desktop.company-name-prefill-v1'
         ) {
@@ -2453,23 +2451,15 @@ describe('anonymous installer step pings', () => {
     expect(welcomeEntries).toHaveLength(1);
     expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
       .toBe('reached-signin');
-    const publicFlagRequest = httpFetch.mock.calls.find((call) =>
-      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
-    );
-    expect(publicFlagRequest).toBeDefined();
-    const publicFlagUrl = new URL(
-      String((publicFlagRequest as unknown as [string, RequestInit])[0]),
-    );
-    expect(publicFlagUrl.searchParams.get('key')).toBe(
-      'desktop.first-launch-signin-reach-telemetry-v1',
-    );
-    expect(publicFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
     const joinKeyFlagRequest = httpFetch.mock.calls.find((call) => {
       const [url] = call as unknown as [string, RequestInit];
       return String(url).includes('/v1/flags/resolve-public') &&
         new URL(String(url)).searchParams.get('key') === 'desktop.first-launch-join-key-v1';
     });
     expect(joinKeyFlagRequest).toBeDefined();
+    expect(httpFetch.mock.calls.filter((call) =>
+      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
+    )).toHaveLength(1);
     const joinKeyFlagUrl = new URL(
       String((joinKeyFlagRequest as unknown as [string, RequestInit])[0]),
     );
@@ -5368,10 +5358,12 @@ describe('first-launch sign-in reach stays independent from the join-key rollout
   it('does not seed shared onboarding telemetry identity from the reach-only flag', () => {
     const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
     const reachBlock = source.slice(
-      source.indexOf('if (signInReachEnabled)'),
+      source.indexOf('reachInstallAttemptId = installAttemptId ?? reachVisitorId;'),
       source.indexOf('const firstLaunchReceiptRecorded'),
     );
 
+    expect(source).not.toContain('signInReachEnabled');
+    expect(source).not.toContain('resolveFirstLaunchSignInReachEnabled');
     expect(reachBlock).not.toContain('onboardingTelemetry.setInstallAttemptId(');
     expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined');
   });

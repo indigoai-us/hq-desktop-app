@@ -195,7 +195,6 @@
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
   import {
-    resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
   import { resolveFirstLaunchPublicFlag } from '../../lib/first-launch-public-flag';
@@ -316,7 +315,6 @@
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyArm: 'on' | 'off' | 'unknown' = 'unknown';
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
-  let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
@@ -1253,19 +1251,6 @@
     return firstLaunchJoinKeyFlagPromise;
   }
 
-  function resolveFirstLaunchSignInReachEnabled(visitorId: string): Promise<boolean> {
-    if (!firstLaunchSignInReachFlagPromise) {
-      const flag = resolveFirstLaunchSignInReachFlag(visitorId);
-      firstLaunchSignInReachFlagPromise = resolveFlagWithTimeout(flag, 2_000)
-        .then((enabled) => enabled)
-        .catch((error) => {
-          console.warn('onboarding: sign-in reach flag resolution failed; leaving telemetry off', error);
-          return false;
-        });
-    }
-    return firstLaunchSignInReachFlagPromise;
-  }
-
   function prepareOnboardingTelemetryIdentity(): Promise<{
     context: ContinuationContext | null;
     firstLaunchReceiptRecorded: boolean;
@@ -1290,14 +1275,10 @@
         ]).then(([firstLaunch, visitorId]) =>
           firstLaunch ? resolveFirstLaunchJoinKeyEnabled(visitorId) : false,
         );
-        const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
-          visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,
-        );
-        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled, reachVisitorId] = await Promise.all([
+        const [firstLaunch, context, joinKeyEnabled, reachVisitorId] = await Promise.all([
           firstLaunchPromise,
           contextPromise,
           firstLaunchJoinKeyEnabledPromise,
-          firstLaunchSignInReachEnabledPromise,
           reachVisitorIdPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
@@ -1315,19 +1296,17 @@
           | 'missing-root-recovery-skip'
           | 'consent-only-skip'
           | undefined;
-        if (signInReachEnabled) {
-          reachInstallAttemptId = installAttemptId ?? reachVisitorId;
-          if (reachInstallAttemptId) {
-            signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
-              ? 'reached-signin'
-              : mode === 'consent'
-                ? 'consent-only-skip'
-                : recoveringMissingRoot
-                  ? 'missing-root-recovery-skip'
-                  : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
-                    ? 'setup-resume-skip'
-                    : 'existing-session-skip';
-          }
+        reachInstallAttemptId = installAttemptId ?? reachVisitorId;
+        if (reachInstallAttemptId) {
+          signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
+            ? 'reached-signin'
+            : mode === 'consent'
+              ? 'consent-only-skip'
+              : recoveringMissingRoot
+                ? 'missing-root-recovery-skip'
+                : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
+                  ? 'setup-resume-skip'
+                  : 'existing-session-skip';
         }
         const receiptReachOutcome = signInReachOutcome;
         const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined;
