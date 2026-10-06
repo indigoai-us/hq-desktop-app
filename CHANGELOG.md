@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
@@ -26,7 +27,6 @@ The release moves it under the version it ships in.
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
 
 - Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
-- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
 
 ## [0.10.394] — 2026-10-05
 
