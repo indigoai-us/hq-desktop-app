@@ -59,6 +59,16 @@ async function mountPage(
   return host;
 }
 
+/** Waits for an element instead of a fixed delay, so slow CI runners don't race the debounce. */
+async function waitFor<T extends Element>(root: ParentNode, selector: string): Promise<T> {
+  let found: T | null = null;
+  await vi.waitFor(() => {
+    found = root.querySelector<T>(selector);
+    if (!found) throw new Error(`waiting for ${selector}`);
+  }, { timeout: 5000, interval: 20 });
+  return found!;
+}
+
 async function choose(root: HTMLElement, name: string): Promise<void> {
   [...root.querySelectorAll<HTMLElement>(".table .drow:not(.hd)")].find((el) => el.textContent?.includes(name))!.click();
   await settle();
@@ -70,12 +80,12 @@ describe("Deployments side-panel og:image preview", () => {
     const fetcher = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: "https://x/og.png", thumbnail: THUMB } as never }));
     const root = await mountPage(fetcher, opened);
     await choose(root, "indigo-standup-report");
+    const og = await waitFor<HTMLButtonElement>(root, "[data-testid='deploy-og']");
     // The first row (auto-selected) plus the clicked one; never the whole list.
     expect(fetcher.mock.calls.map((call) => call[1])).toEqual([
       "https://hq-desktop-console-rail-storyboard.indigo-hq.com",
       "https://indigo-standup-report.indigo-hq.com",
     ]);
-    const og = root.querySelector<HTMLButtonElement>("[data-testid='deploy-og']")!;
     expect(og.querySelector("img")?.getAttribute("src")).toBe(THUMB);
     expect(root.querySelector("iframe")).toBeNull();
     og.click();
@@ -111,14 +121,14 @@ describe("Deployments side-panel og:image preview", () => {
     expect(root.querySelector("[data-testid='deploy-og-loading']")).not.toBeNull();
     release();
     await settle();
-    const failed = root.querySelector("[data-testid='deploy-og-failed']")!;
+    const failed = await waitFor(root, "[data-testid='deploy-og-failed']");
     expect(failed.textContent).toContain("Preview unavailable");
     expect(failed.textContent).not.toContain("502");
     fail = false;
     root.querySelector<HTMLButtonElement>("[data-testid='deploy-og-retry']")!.click();
     await settle();
     expect(fetcher.mock.calls.at(-1)?.[3]).toBe(true);
-    expect(root.querySelector("[data-testid='deploy-og'] img")?.getAttribute("src")).toBe(THUMB);
+    expect((await waitFor(root, "[data-testid='deploy-og'] img")).getAttribute("src")).toBe(THUMB);
   });
 
   it("shows a failed company as a banner with a Retry that reloads", async () => {
@@ -156,19 +166,18 @@ describe("Deployments side-panel og:image preview", () => {
     const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: true, value: { snapshot: SNAP, width: 2560, height: 1600 } as never }));
     const root = await mountPage(og, opened, withPublicApp, snapshot);
     await choose(root, "launch-notes");
-    const snap = root.querySelector<HTMLButtonElement>("[data-testid='deploy-snapshot']")!;
+    const snap = await waitFor<HTMLButtonElement>(root, "[data-testid='deploy-snapshot']");
     expect(snap.querySelector("img")?.getAttribute("src")).toBe(SNAP);
     expect(snapshot.mock.calls.map((call) => call[1])).toEqual(["https://launch-notes.indigo-hq.com"]);
     snap.click();
     expect(opened).toEqual(["https://launch-notes.indigo-hq.com"]);
     root.querySelector<HTMLButtonElement>("[data-testid='deploy-preview-refresh']")!.click();
-    await settle();
-    expect(snapshot).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2), { timeout: 5000 });
     expect(snapshot.mock.calls[1]?.[3]).toBe(true);
     // Protected apps never get a hidden-window render; they use the share image.
     await choose(root, "indigo-standup-report");
+    expect((await waitFor(root, "[data-testid='deploy-og'] img")).getAttribute("src")).toBe(THUMB);
     expect(snapshot).toHaveBeenCalledTimes(2);
-    expect(root.querySelector("[data-testid='deploy-og'] img")?.getAttribute("src")).toBe(THUMB);
   });
 
   it("falls back to the share image when the snapshot fails, without raw errors", async () => {
@@ -176,7 +185,7 @@ describe("Deployments side-panel og:image preview", () => {
     const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: false, reason: "error", message: "snapshot: timed out" } as never));
     const root = await mountPage(og, [], withPublicApp, snapshot);
     await choose(root, "launch-notes");
-    expect(root.querySelector("[data-testid='deploy-og'] img")?.getAttribute("src")).toBe(THUMB);
+    expect((await waitFor(root, "[data-testid='deploy-og'] img")).getAttribute("src")).toBe(THUMB);
     expect(root.querySelector("[data-testid='deploy-inspector']")!.textContent).not.toContain("timed out");
   });
 
@@ -189,6 +198,7 @@ describe("Deployments side-panel og:image preview", () => {
       flushSync();
     }
     expect(root.querySelector("[data-testid='deploy-og-loading']")).not.toBeNull();
+    await vi.waitFor(() => expect(og.mock.calls.length).toBeGreaterThan(calls), { timeout: 5000 });
     await settle();
     expect(og.mock.calls.slice(calls).map((call) => call[1])).toEqual(["https://indigo-standup-report.indigo-hq.com"]);
   });
