@@ -74,3 +74,38 @@ test.describe('page headers align with the sidebar item edge', () => {
     expect(Math.abs(title - edge), `title ${title} vs page edge ${edge}`).toBeLessThanOrEqual(1);
   });
 });
+
+/**
+ * Every page title uses the one canvas title type (20px / 500). The shared
+ * PageHeader used to set 15px / 600, so Marketplace and Settings read smaller
+ * and heavier than Secrets or Deployments; the Meetings pane titled itself in
+ * 13px "Your meetings".
+ */
+type TitleType = { size: string; weight: string; line: string };
+
+async function titleType(page: Page, selector: string): Promise<TitleType> {
+  const el = page.locator(selector).first();
+  await expect(el).toBeVisible();
+  return el.evaluate((node) => {
+    const s = getComputedStyle(node);
+    return { size: s.fontSize, weight: s.fontWeight, line: s.lineHeight };
+  });
+}
+
+test('page titles share one size, weight and line height', async ({ page }) => {
+  await openShell(page);
+  const pages: [string, string[], string][] = [
+    ['Marketplace', ['[data-testid="rail-marketplace"]'], '[data-testid="library-overlay-title"]'],
+    ['Deployments', ['[data-testid="rail-deployments"]'], '[data-testid="personal-deployments"] h1'],
+    ['Settings', ['[data-testid="rail-you"]', '[data-testid="account-settings"]'], '[data-testid="settings-host"] [data-testid="page-header"] h1'],
+    ['Meetings', ['[data-testid="rail-meetings"]'], '[data-testid="meetings-sidepane-header"] .title'],
+    ['Secrets', ['[data-testid="rail-company"]', '[data-row-id="secrets"]'], '.toolbar h1'],
+  ];
+  const expected: TitleType = { size: '20px', weight: '500', line: '25px' };
+  for (const [name, clicks, selector] of pages) {
+    for (const c of clicks) await click(page, c);
+    expect(await titleType(page, selector), name).toEqual(expected);
+  }
+  await click(page, '[data-testid="rail-meetings"]');
+  await expect(page.locator('[data-testid="meetings-sidepane-header"] .title')).toHaveText('Meetings');
+});

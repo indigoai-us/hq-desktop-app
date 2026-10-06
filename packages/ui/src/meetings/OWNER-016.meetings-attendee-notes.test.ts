@@ -142,7 +142,7 @@ describe("day headers in the Meetings list", () => {
     // One line: the slot holds only "14:30", no date words that could wrap.
     expect(time.textContent).toBe("14:30");
     expect(longRow.textContent).not.toMatch(/Oct|Sep/);
-    expect(el.querySelector(".title")?.textContent).toBe("Your meetings");
+    expect(el.querySelector(".title")?.textContent).toBe("Meetings");
   });
 });
 
