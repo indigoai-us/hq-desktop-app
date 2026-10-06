@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mapSignInError } from './onboarding-signin';
+import { AUTHORIZE_BUTTON_LABEL, mapSignInError } from './onboarding-signin';
+
+describe('AUTHORIZE_BUTTON_LABEL', () => {
+  it('is the single Authorize label used by both sign-in screens', () => {
+    expect(AUTHORIZE_BUTTON_LABEL).toBe('Authorize');
+  });
+});
 
 describe('mapSignInError', () => {
   it('maps referral persistence failures to neutral retryable copy', () => {
@@ -43,6 +49,14 @@ describe('mapSignInError', () => {
         'Microsoft',
       ),
     ).toBe('We could not identify your Microsoft account. Check your connection and retry.');
+  });
+
+  it('maps a nonce mismatch to the web authorize fallback sentence', () => {
+    expect(
+      mapSignInError(
+        '{"code":"OAUTH_NONCE_MISMATCH","message":"id_token nonce did not match the pending attempt"}',
+      ),
+    ).toBe('That sign-in did not finish. Choose your provider and try once more.');
   });
 
   it('maps token exchange failures to retryable copy', () => {

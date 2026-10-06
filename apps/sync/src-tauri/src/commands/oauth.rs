@@ -44,8 +44,9 @@ use hq_desktop_core::microsoft_org::identity_provider_for_sign_in;
 use hq_desktop_core::oauth::{
     bind_loopback_listeners, build_authorize_url_from_redirect, cognito_client_id,
     cognito_token_url, compute_code_challenge, generate_code_verifier, parse_callback,
-    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI,
+    AuthorizeRequest, CallbackOutcome, CallbackRejection, REDIRECT_URI, REGISTERED_LOOPBACK_PORTS,
 };
+use hq_desktop_core::web_authorize;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -69,11 +70,10 @@ fn set_oauth_flow_active(active: bool) {
     OAUTH_FLOW_ACTIVE.store(active, Ordering::SeqCst);
 }
 
-// Keep these exact ports in sync with the callback URLs registered for the
-// static Cognito client. Never choose an unregistered ephemeral redirect URI.
-const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
+const LOGIN_METHOD_MANUAL_OAUTH: &str = "manual_oauth";
+const LOGIN_METHOD_WEB_AUTHORIZE: &str = "web_authorize";
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
 
@@ -84,6 +84,8 @@ struct PendingPkce {
     identity_provider: Option<String>,
     redirect_uri: String,
     referral_nonce: Option<String>,
+    oidc_nonce: Option<String>,
+    login_method: &'static str,
 }
 
 struct ReferralFailureCleanup(Option<String>);
@@ -222,7 +224,10 @@ fn receive_loopback_callback(
                                 write_response(
                                     &mut stream,
                                     "400 Bad Request",
-                                    &error_html("This sign-in response does not belong to the attempt this app started."),
+                                    &callback_error_html(
+                                        CallbackPageKind::StateMismatch,
+                                        "This sign-in response does not belong to the attempt this app started.",
+                                    ),
                                 );
                                 return Err(
                                     "OAuth state mismatch — possible CSRF, aborting.".into()
@@ -234,7 +239,10 @@ fn receive_loopback_callback(
                                     write_response(
                                         &mut stream,
                                         "400 Bad Request",
-                                        &error_html("Sign-in did not complete. You can close this tab and retry in HQ."),
+                                        &callback_error_html(
+                                            classify_provider_error(&error),
+                                            "Sign-in did not complete. You can close this tab and retry in HQ.",
+                                        ),
                                     );
                                     return Err(structured_error(
                                         "OAUTH_PROVIDER_ERROR",
@@ -243,7 +251,11 @@ fn receive_loopback_callback(
                                 }
                                 CallbackOutcome::Code(code) => {
                                     eprintln!("[oauth] callback accepted");
-                                    write_response(&mut stream, "200 OK", SUCCESS_HTML);
+                                    write_response(
+                                        &mut stream,
+                                        "200 OK",
+                                        success_html_for_pending_flow(),
+                                    );
                                     return Ok(OAuthResult { code });
                                 }
                             }
@@ -388,6 +400,208 @@ const SUCCESS_HTML: &str = r#"<!doctype html>
 </body>
 </html>"#;
 
+/// Compressed crop of marketing `hq-city-dusk-q0.jpg` so the loopback page can
+/// match `/authorize/desktop` with no network fetch.
+const WEB_AUTHORIZE_DUSK_JPEG: &[u8] = include_bytes!("web_authorize_dusk.jpg");
+
+#[derive(Clone, Copy)]
+enum CallbackPageKind {
+    StateMismatch,
+    Denied,
+    Expired,
+}
+
+#[derive(Clone, Copy)]
+enum WebAuthorizeTone {
+    Muted,
+    Danger,
+}
+
+struct WebAuthorizeCopy {
+    document_title: &'static str,
+    state: &'static str,
+    status: &'static str,
+    tone: WebAuthorizeTone,
+    heading: &'static str,
+    body: &'static str,
+    close_tab: bool,
+}
+
+fn is_web_authorize_pending() -> bool {
+    let guard = pkce_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    matches!(
+        guard.as_ref(),
+        Some(pending) if pending.login_method == LOGIN_METHOD_WEB_AUTHORIZE
+    )
+}
+
+fn classify_provider_error(error: &str) -> CallbackPageKind {
+    if error.to_ascii_lowercase().contains("expired") {
+        CallbackPageKind::Expired
+    } else {
+        CallbackPageKind::Denied
+    }
+}
+
+fn dusk_data_uri() -> &'static str {
+    static URI: OnceLock<String> = OnceLock::new();
+    URI.get_or_init(|| {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        format!(
+            "data:image/jpeg;base64,{}",
+            STANDARD.encode(WEB_AUTHORIZE_DUSK_JPEG)
+        )
+    })
+}
+
+fn web_authorize_page(copy: WebAuthorizeCopy) -> String {
+    let tone_class = match copy.tone {
+        WebAuthorizeTone::Muted => "ok",
+        WebAuthorizeTone::Danger => "bad",
+    };
+    let close_script = if copy.close_tab {
+        "  setTimeout(function () { try { window.close(); } catch (_) {} }, 300);\n"
+    } else {
+        ""
+    };
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{title}</title>
+<style>
+  html, body {{ margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; color: #fff;
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+  .bg {{ position: fixed; inset: 0; background: #000 url("{dusk}") center 60%/cover no-repeat; }}
+  .frame {{ position: relative; z-index: 1; min-height: 100%; display: flex; justify-content: center;
+    align-items: center; padding: 48px 16px; }}
+  .col {{ width: 100%; max-width: 420px; min-width: 0; }}
+  .mark {{ display: block; height: 26px; width: auto; margin: 0 0 24px; }}
+  .card {{ position: relative; padding: 32px; box-sizing: border-box;
+    border: 1px solid rgba(255,255,255,.10); background: rgba(9,9,11,.60);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }}
+  .tick {{ position: absolute; width: 10px; height: 10px; border-color: rgba(255,255,255,.30);
+    border-style: solid; pointer-events: none; }}
+  .tl {{ top: 0; left: 0; border-width: 1px 0 0 1px; }}
+  .tr {{ top: 0; right: 0; border-width: 1px 1px 0 0; }}
+  .bl {{ bottom: 0; left: 0; border-width: 0 0 1px 1px; }}
+  .br {{ bottom: 0; right: 0; border-width: 0 1px 1px 0; }}
+  .eyebrow {{ margin: 0 0 12px; font-size: 10px; letter-spacing: 1.6px; text-transform: uppercase;
+    color: rgba(255,255,255,.75); }}
+  .status {{ margin: 0 0 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }}
+  .ok {{ color: rgba(255,255,255,.75); }}
+  .bad {{ color: #ff6b6b; }}
+  h1 {{ margin: 0; font-size: 40px; font-weight: 400; line-height: 1.05; letter-spacing: -2.4px; }}
+  .lead {{ margin: 12px 0 0; font-size: 14px; line-height: 20px; color: rgba(255,255,255,.80); }}
+  @media (max-width: 639px) {{ h1 {{ font-size: 32px; letter-spacing: -1.6px; }}
+    .frame {{ padding: 32px 16px; }} .card {{ padding: 24px; }} }}
+</style>
+</head>
+<body>
+<div class="bg" aria-hidden="true"></div>
+<div class="frame">
+  <div class="col">
+    <svg class="mark" viewBox="0 0 280 161" width="46" height="26" role="img" aria-label="HQ">
+      <path fill="#fff" d="M85.7251 3.66162H118.034V154.434H85.7251V89.8176H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z"/>
+      <path fill="#fff" d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z"/>
+    </svg>
+    <section class="card" data-testid="authorize-desktop-card" data-shell="web-authorize-callback" data-state="{state}">
+      <span class="tick tl" aria-hidden="true"></span>
+      <span class="tick tr" aria-hidden="true"></span>
+      <span class="tick bl" aria-hidden="true"></span>
+      <span class="tick br" aria-hidden="true"></span>
+      <p class="eyebrow">HQ Desktop</p>
+      <p class="status {tone}" role="status">{status}</p>
+      <h1>{heading}</h1>
+      <p class="lead">{body}</p>
+    </section>
+  </div>
+</div>
+<script>
+  try {{ history.replaceState(null, "", "/"); }} catch (_) {{}}
+{close}</script>
+</body>
+</html>"##,
+        title = copy.document_title,
+        dusk = dusk_data_uri(),
+        state = copy.state,
+        tone = tone_class,
+        status = copy.status,
+        heading = copy.heading,
+        body = copy.body,
+        close = close_script,
+    )
+}
+
+fn web_authorize_success_html() -> &'static str {
+    static HTML: OnceLock<String> = OnceLock::new();
+    HTML.get_or_init(|| {
+        web_authorize_page(WebAuthorizeCopy {
+            document_title: "Signed in - HQ",
+            state: "signed-in",
+            status: "Signed in",
+            tone: WebAuthorizeTone::Muted,
+            heading: "You're signed in",
+            body: "You can close this tab and return to HQ Desktop.",
+            close_tab: true,
+        })
+    })
+}
+
+fn web_authorize_error_html(kind: CallbackPageKind) -> String {
+    let copy = match kind {
+        CallbackPageKind::StateMismatch => WebAuthorizeCopy {
+            document_title: "Sign-in error - HQ",
+            state: "invalid",
+            status: "Not valid",
+            tone: WebAuthorizeTone::Danger,
+            heading: "This sign-in request is not valid",
+            body: "Return to HQ Desktop and start again.",
+            close_tab: false,
+        },
+        CallbackPageKind::Denied => WebAuthorizeCopy {
+            document_title: "Sign-in error - HQ",
+            state: "error",
+            status: "Did not finish",
+            tone: WebAuthorizeTone::Danger,
+            heading: "Sign-in did not finish",
+            body: "You can close this tab and try again in HQ Desktop.",
+            close_tab: false,
+        },
+        CallbackPageKind::Expired => WebAuthorizeCopy {
+            document_title: "Sign-in error - HQ",
+            state: "expired",
+            status: "Expired",
+            tone: WebAuthorizeTone::Danger,
+            heading: "This sign-in request expired",
+            body: "Return to HQ Desktop and try again.",
+            close_tab: false,
+        },
+    };
+    web_authorize_page(copy)
+}
+
+fn success_html_for_pending_flow() -> &'static str {
+    if is_web_authorize_pending() {
+        web_authorize_success_html()
+    } else {
+        SUCCESS_HTML
+    }
+}
+
+fn callback_error_html(kind: CallbackPageKind, legacy_reason: &str) -> String {
+    if is_web_authorize_pending() {
+        web_authorize_error_html(kind)
+    } else {
+        error_html(legacy_reason)
+    }
+}
+
 fn error_html(reason: &str) -> String {
     format!(
         r#"<!doctype html>
@@ -477,6 +691,68 @@ pub async fn start_oauth_login(
     })
 }
 
+/// Public hq-flags gate for the web authorize page. Fail closed.
+#[tauri::command]
+pub async fn web_authorize_enabled() -> bool {
+    let install_id = tauri::async_runtime::spawn_blocking(super::first_run::install_attempt_id)
+        .await
+        .ok()
+        .flatten();
+    let client = hq_desktop_core::client_info::build_client();
+    web_authorize::resolve_enabled(install_id.as_deref(), |url| async move {
+        let response = client.get(url).send().await.map_err(|_| ())?;
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        Ok::<_, ()>((status, body))
+    })
+    .await
+}
+
+/// Arm loopback PKCE like today's provider flow, but open the website
+/// authorize page instead of Cognito Hosted UI. Tokens stay on the desktop.
+#[tauri::command]
+pub async fn start_web_authorize(app: AppHandle) -> Result<OAuthFlowInit, String> {
+    let nonce = hq_desktop_core::oauth::generate_nonce();
+    let armed = arm_oauth_flow(&app, None, Some(&nonce))?;
+    if let Err(_error) = set_pending_login_method(&armed.state, LOGIN_METHOD_WEB_AUTHORIZE) {
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "WEB_AUTHORIZE_URL_INVALID",
+            "Sign-in could not open the HQ authorize page. Try another way to sign in.",
+        ));
+    }
+    let Some(page_url) = web_authorize::build_authorize_page_url(&armed.authorize_url) else {
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "WEB_AUTHORIZE_URL_INVALID",
+            "Sign-in could not open the HQ authorize page. Try another way to sign in.",
+        ));
+    };
+    let (authorize_url, referral_nonce) =
+        match crate::commands::desktop_auth::prepare_desktop_referral_start_url(&page_url).await {
+            Ok(result) => result,
+            Err(()) => {
+                let _ = oauth_cancel_listen(Some(armed.state.clone()));
+                return Err(structured_error(
+                    "OAUTH_REFERRAL_PERSIST_FAILED",
+                    "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+                ));
+            }
+        };
+    if let Err(_error) = set_pending_referral_nonce(&armed.state, &referral_nonce) {
+        crate::commands::desktop_auth::discard_unbound_desktop_referral_nonce(referral_nonce);
+        let _ = oauth_cancel_listen(Some(armed.state.clone()));
+        return Err(structured_error(
+            "OAUTH_REFERRAL_PERSIST_FAILED",
+            "Sign-in could not prepare the secure browser handoff. Retry in a moment.",
+        ));
+    }
+    Ok(OAuthFlowInit {
+        authorize_url,
+        state: armed.state,
+    })
+}
+
 async fn resolve_identity_provider(provider: &str, email: Option<&str>) -> Result<String, String> {
     let client = hq_desktop_core::client_info::build_client();
     let api_base = hq_desktop_core::continuation_endpoints::api_base();
@@ -495,6 +771,7 @@ pub(crate) struct ExchangedOAuthCode {
     pub tokens: CognitoTokens,
     pub identity_provider: Option<String>,
     pub referral_nonce: Option<String>,
+    pub login_method: &'static str,
 }
 
 /// Bind the loopback listener, stash a fresh PKCE verifier, and build the
@@ -580,6 +857,8 @@ pub(crate) fn arm_oauth_flow(
             identity_provider: selected_identity_provider,
             redirect_uri: redirect_uri.clone(),
             referral_nonce: None,
+            oidc_nonce: nonce.map(str::to_owned),
+            login_method: LOGIN_METHOD_MANUAL_OAUTH,
         });
     }
 
@@ -610,6 +889,20 @@ pub(crate) fn set_pending_referral_nonce(state: &str, referral_nonce: &str) -> R
         return Err("PKCE state does not match the referral binding attempt.".to_string());
     }
     pending.referral_nonce = Some(referral_nonce.to_string());
+    Ok(())
+}
+
+fn set_pending_login_method(state: &str, login_method: &'static str) -> Result<(), String> {
+    let mut guard = pkce_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pending = guard
+        .as_mut()
+        .ok_or_else(|| "No PKCE verifier found for login method binding.".to_string())?;
+    if pending.state != state {
+        return Err("PKCE state does not match the login method binding attempt.".to_string());
+    }
+    pending.login_method = login_method;
     Ok(())
 }
 
@@ -664,6 +957,8 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         identity_provider,
         redirect_uri,
         referral_nonce,
+        oidc_nonce,
+        login_method,
     } = pending_pkce;
     let mut referral_cleanup = ReferralFailureCleanup::new(referral_nonce.clone());
 
@@ -720,11 +1015,19 @@ pub(crate) async fn exchange_code_for_tokens(code: &str) -> Result<ExchangedOAut
         expires_at,
     };
 
+    if let Err(error) = hq_desktop_core::cognito::verify_optional_oidc_nonce(
+        tokens.id_token.as_deref(),
+        oidc_nonce.as_deref(),
+    ) {
+        return Err(structured_error("OAUTH_NONCE_MISMATCH", &error));
+    }
+
     referral_cleanup.disarm();
     Ok(ExchangedOAuthCode {
         tokens,
         identity_provider,
         referral_nonce,
+        login_method,
     })
 }
 
@@ -739,6 +1042,7 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     let tokens = exchanged.tokens;
     let identity_provider = exchanged.identity_provider;
     let referral_nonce = exchanged.referral_nonce;
+    let login_method = exchanged.login_method;
 
     // The person just chose an account with a provider button. Any continuation
     // still waiting for confirmation is about a different account and a question
@@ -782,11 +1086,16 @@ pub async fn oauth_exchange_code(app: AppHandle, code: String) -> Result<AuthSta
     // continuation cohort. The flag-gated path waits for its local queue write
     // before returning to the wizard; network delivery remains asynchronous.
     if let Some(account_id) = state.account_id.as_deref() {
+        let (flow, variant) = if login_method == LOGIN_METHOD_WEB_AUTHORIZE {
+            ("web_authorize", "web_authorize")
+        } else {
+            ("manual_oauth", "control")
+        };
         crate::commands::desktop_auth::record_desktop_login_completed_gated(
             &app,
             account_id,
-            "manual_oauth",
-            "control",
+            flow,
+            variant,
             identity_provider.as_deref(),
         )
         .await;
@@ -919,6 +1228,7 @@ mod tests {
 
     #[test]
     fn pkce_store_roundtrip() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
         // Store a verifier, then take it out
         {
             let mut guard = pkce_store().lock().unwrap();
@@ -928,6 +1238,8 @@ mod tests {
                 identity_provider: Some("Google".to_string()),
                 redirect_uri: REDIRECT_URI.to_string(),
                 referral_nonce: None,
+                oidc_nonce: Some("oidc-nonce".to_string()),
+                login_method: LOGIN_METHOD_MANUAL_OAUTH,
             });
         }
         {
@@ -941,6 +1253,8 @@ mod tests {
                     identity_provider: Some("Google".to_string()),
                     redirect_uri: REDIRECT_URI.to_string(),
                     referral_nonce: None,
+                    oidc_nonce: Some("oidc-nonce".to_string()),
+                    login_method: LOGIN_METHOD_MANUAL_OAUTH,
                 })
             );
         }
@@ -1121,6 +1435,11 @@ mod tests {
         // Clean-room run 2026-09-27 (defect 6): after desktop sign-in the
         // browser tab stayed open on /callback?code=… with the authorization
         // code visible in the address bar and in session history.
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            *guard = None;
+        }
         let response = callback_response(
             b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
             "test-state",
@@ -1130,8 +1449,97 @@ mod tests {
         assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
         assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(response.contains("window.close()"));
-        assert!(response.contains("You can close this tab"));
+        assert!(response.contains("You can close this tab and return to HQ."));
+        assert!(!response.contains("HQ Desktop"));
         assert!(!response.contains("test-code"));
+    }
+
+    fn set_pending_web_authorize(state: &str) {
+        let mut guard = pkce_store().lock().unwrap();
+        *guard = Some(PendingPkce {
+            state: state.to_string(),
+            verifier: "test-verifier".to_string(),
+            identity_provider: None,
+            redirect_uri: REDIRECT_URI.to_string(),
+            referral_nonce: None,
+            oidc_nonce: Some("oidc-nonce".to_string()),
+            login_method: LOGIN_METHOD_WEB_AUTHORIZE,
+        });
+    }
+
+    fn clear_pending_pkce() {
+        *pkce_store().lock().unwrap() = None;
+    }
+
+    fn assert_self_contained_authorize_shell(html: &str) {
+        assert!(html.contains(r#"data-shell="web-authorize-callback""#));
+        assert!(html.contains(r#"data-testid="authorize-desktop-card""#));
+        assert!(html.contains("HQ Desktop"));
+        assert!(html.contains("data:image/jpeg;base64,"));
+        assert!(html.contains("rgba(9,9,11,.60)"));
+        assert!(html.contains("max-width: 420px"));
+        assert!(html.contains("min-width: 0"));
+        assert!(html.contains(r#"name="viewport""#));
+        assert!(html.contains("align-items: center"));
+        assert!(html.contains("padding: 32px"));
+        assert!(!html.contains("min-height: 420px"));
+        assert!(!html.contains("align-items: flex-start"));
+        assert!(html.contains(r#"history.replaceState(null, "", "/")"#));
+        assert!(!html.contains("https://"));
+        assert!(!html.contains("src=\"http"));
+        assert!(!html.contains("href=\"http"));
+        assert!(!html.contains("url(http"));
+        assert!(!html.contains("@import"));
+        assert!(!html.contains("fonts.googleapis"));
+        assert!(!html.contains("<code>"));
+    }
+
+    #[test]
+    fn web_authorize_success_page_uses_desktop_copy() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        set_pending_web_authorize("test-state");
+        let response = callback_response(
+            b"GET /callback?code=test-code&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        clear_pending_pkce();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Cache-Control: no-store\r\n"));
+        assert!(response.contains("Referrer-Policy: no-referrer\r\n"));
+        assert!(response.contains("You're signed in"));
+        assert!(response.contains("You can close this tab and return to HQ Desktop."));
+        assert!(response.contains("window.close()"));
+        assert!(!response.contains("You are signed in"));
+        assert!(!response.contains("&check;"));
+        assert!(!response.contains("test-code"));
+        assert_self_contained_authorize_shell(&response);
+    }
+
+    #[test]
+    fn oidc_nonce_is_verified_against_the_id_token() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        let token = |nonce: Option<&str>| {
+            let payload = match nonce {
+                Some(value) => format!(r#"{{"sub":"person-a","nonce":"{value}"}}"#),
+                None => r#"{"sub":"person-a"}"#.to_string(),
+            };
+            format!("header.{}.sig", URL_SAFE_NO_PAD.encode(payload.as_bytes()))
+        };
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(Some("nonce-1"))),
+            Some("nonce-1"),
+        )
+        .is_ok());
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(Some("nonce-2"))),
+            Some("nonce-1"),
+        )
+        .is_err());
+        assert!(hq_desktop_core::cognito::verify_optional_oidc_nonce(
+            Some(&token(None)),
+            Some("nonce-1"),
+        )
+        .is_err());
     }
 
     #[test]
@@ -1144,6 +1552,88 @@ mod tests {
         assert!(response.contains("Cache-Control: no-store\r\n"));
         assert!(response.contains(r#"history.replaceState(null, "", "/")"#));
         assert!(!response.contains("test-code"));
+    }
+
+    #[test]
+    fn legacy_success_page_stays_the_origin_main_shell() {
+        assert!(SUCCESS_HTML.contains("You are signed in"));
+        assert!(SUCCESS_HTML.contains("You can close this tab and return to HQ."));
+        assert!(SUCCESS_HTML.contains("&check;"));
+        assert!(SUCCESS_HTML.contains(r#"history.replaceState(null, "", "/")"#));
+        assert!(SUCCESS_HTML.contains("window.close()"));
+        assert!(!SUCCESS_HTML.contains("HQ Desktop"));
+        assert!(!SUCCESS_HTML.contains("data-shell"));
+        assert!(!SUCCESS_HTML.contains("data:image/jpeg"));
+        assert!(!SUCCESS_HTML.contains("You're signed in"));
+    }
+
+    #[test]
+    fn web_authorize_state_mismatch_page_is_styled_without_raw_error() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        set_pending_web_authorize("test-state");
+        let response = callback_response(
+            b"GET /callback?code=test-code&state=other-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        clear_pending_pkce();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("Cache-Control: no-store\r\n"));
+        assert!(response.contains("This sign-in request is not valid"));
+        assert!(response.contains(r#"data-state="invalid""#));
+        assert!(!response.contains("test-code"));
+        assert!(!response.contains("does not belong"));
+        assert!(!response.contains("window.close()"));
+        assert_self_contained_authorize_shell(&response);
+    }
+
+    #[test]
+    fn web_authorize_denied_page_is_styled_without_raw_error() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        set_pending_web_authorize("test-state");
+        let response = callback_response(
+            b"GET /callback?error=access_denied&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        clear_pending_pkce();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("Sign-in did not finish"));
+        assert!(response.contains(r#"data-state="error""#));
+        assert!(!response.contains("access_denied"));
+        assert!(!response.contains("window.close()"));
+        assert_self_contained_authorize_shell(&response);
+    }
+
+    #[test]
+    fn web_authorize_expired_page_is_styled_without_raw_error() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        set_pending_web_authorize("test-state");
+        let response = callback_response(
+            b"GET /callback?error=expired_token&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        clear_pending_pkce();
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains("This sign-in request expired"));
+        assert!(response.contains(r#"data-state="expired""#));
+        assert!(!response.contains("expired_token"));
+        assert!(!response.contains("window.close()"));
+        assert_self_contained_authorize_shell(&response);
+    }
+
+    #[test]
+    fn legacy_error_page_still_includes_the_reason() {
+        let _serialize = STORE_TEST_LOCK.lock().unwrap();
+        clear_pending_pkce();
+        let response = callback_response(
+            b"GET /callback?error=access_denied&state=test-state HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "test-state",
+        );
+        assert!(response.starts_with("HTTP/1.1 400 Bad Request"));
+        assert!(response.contains(
+            "<code>Sign-in did not complete. You can close this tab and retry in HQ.</code>"
+        ));
+        assert!(!response.contains("data-shell"));
+        assert!(!response.contains("You're signed in"));
     }
 
     #[test]

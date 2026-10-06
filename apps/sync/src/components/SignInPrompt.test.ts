@@ -85,6 +85,7 @@ describe('SignInPrompt browser continuation', () => {
     await flushUntil(() =>
       tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_config'),
     );
+    await flushUntil(() => providerButtons().length === 2);
     providerButtons()[0]?.click();
     flushSync();
 
@@ -107,7 +108,7 @@ describe('SignInPrompt browser continuation', () => {
       }
     });
     component = mount(SignInPrompt, { target: host });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[1]?.click();
     flushSync();
@@ -173,7 +174,7 @@ describe('SignInPrompt welcome handoff', () => {
     });
     tauri.open.mockResolvedValue(undefined);
     component = mount(SignInPrompt, { target: host });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[0]?.click();
     await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
@@ -214,7 +215,7 @@ describe('SignInPrompt welcome handoff', () => {
     });
     tauri.open.mockResolvedValue(undefined);
     component = mount(SignInPrompt, { target: host, props: { onsuccess } });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[0]?.click();
     await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
@@ -257,7 +258,7 @@ describe('SignInPrompt welcome handoff', () => {
     });
     tauri.open.mockResolvedValue(undefined);
     component = mount(SignInPrompt, { target: host, props: { onsuccess } });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[0]?.click();
     await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
@@ -301,7 +302,7 @@ describe('SignInPrompt welcome handoff', () => {
     });
     tauri.open.mockResolvedValue(undefined);
     component = mount(SignInPrompt, { target: host, props: { onsuccess } });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[0]?.click();
     await flushUntil(() => onsuccess.mock.calls.length === 1);
@@ -328,7 +329,7 @@ describe('SignInPrompt welcome handoff', () => {
     });
     tauri.open.mockResolvedValue(undefined);
     component = mount(SignInPrompt, { target: host });
-    await flush();
+    await flushUntil(() => providerButtons().length === 2);
 
     providerButtons()[0]?.click();
     await flushUntil(() => host.textContent?.includes('We couldn’t finish sign-in. Try again.') ?? false);
@@ -341,5 +342,310 @@ describe('SignInPrompt welcome handoff', () => {
         properties: expect.objectContaining({ step: 'provider_page_opened', errorCategory: 'auth' }),
       }),
     );
+  });
+});
+
+const CONTINUATION_CONTEXT = {
+  installAttemptId: '11111111-1111-4111-8111-111111111111',
+  appVersion: '0.10.229',
+  apiBase: 'https://api.placeholder.test',
+};
+
+const CONTINUATION_CONFIG = {
+  protocolVersion: 1,
+  minimumDesktopVersion: '0.10.229',
+  variant: 'continuation',
+  rolloutPercent: 100,
+} as const;
+
+function continuationArmedInvoke(flag: () => Promise<boolean>) {
+  tauri.invoke.mockImplementation((command: string) => {
+    switch (command) {
+      case 'web_authorize_enabled':
+        return flag();
+      case 'desktop_continuation_context':
+        return Promise.resolve(CONTINUATION_CONTEXT);
+      case 'desktop_continuation_config':
+        return Promise.resolve(CONTINUATION_CONFIG);
+      case 'desktop_continuation_may_start':
+        return Promise.resolve(null);
+      case 'desktop_continuation_start':
+        return Promise.resolve({ attemptId: 'continuation-attempt' });
+      case 'desktop_continuation_await_identity':
+        return new Promise(() => {});
+      case 'desktop_continuation_deliver':
+        return Promise.resolve(200);
+      default:
+        return Promise.resolve(undefined);
+    }
+  });
+}
+
+describe('SignInPrompt web authorize flag', () => {
+  it('keeps today\'s provider buttons when the flag is off', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(false);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'web_authorize_enabled'),
+    );
+    await flushUntil(() => providerButtons().length === 2);
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
+    expect(providerButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Continue with Google'),
+      expect.stringContaining('Continue with Microsoft'),
+    ]);
+  });
+
+  it('shows Authorize when the flag is on and opens the web authorize page', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop?client_id=7acei2c8v870enheptb1j5foln',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    flushSync();
+    await flush();
+    expect(tauri.invoke).toHaveBeenCalledWith('start_web_authorize');
+    expect(tauri.open).toHaveBeenCalledWith(
+      'https://hqforwork.com/authorize/desktop?client_id=7acei2c8v870enheptb1j5foln',
+    );
+  });
+
+  it('reserves the button area until the flag resolves and does not flash provider buttons', async () => {
+    vi.useFakeTimers();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return new Promise((resolve) => {
+            setTimeout(() => resolve(true), 1_500);
+          });
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+    expect(host.querySelector('[data-testid="sign-in-actions"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="other-ways-to-sign-in"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+  });
+
+  it('falls back to enabled provider buttons and plain copy when web authorize listen rejects', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          throw new Error('callback rejected: provider detail');
+        case 'oauth_cancel_listen':
+          return Promise.resolve(undefined);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(
+      () =>
+        (host.textContent?.includes(
+          'That sign-in did not finish. Choose your provider and try once more.',
+        ) ??
+          false) &&
+        host.querySelector('[data-testid="web-authorize-signin"]') === null &&
+        providerButtons().length === 2 &&
+        providerButtons().every((button) => !button.disabled),
+    );
+    expect(host.textContent).not.toContain('provider detail');
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
+    expect(providerButtons().map((button) => button.textContent)).toEqual([
+      expect.stringContaining('Continue with Google'),
+      expect.stringContaining('Continue with Microsoft'),
+    ]);
+    expect(providerButtons().every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('returns to the single Authorize button after a plain cancel', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return new Promise(() => {});
+        case 'oauth_cancel_listen':
+          return Promise.resolve(undefined);
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="signin-browser-handoff"]')));
+    const back = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      (button.textContent ?? '').includes('Back'),
+    );
+    expect(back).toBeTruthy();
+    back?.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).toContain(
+      'Authorize',
+    );
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(1);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+  });
+
+  it('holds the waiting state after web authorize succeeds so Authorize does not reappear', async () => {
+    let resolveRefocus!: () => void;
+    const refocus = new Promise<void>((resolve) => {
+      resolveRefocus = resolve;
+    });
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'web_authorize_enabled':
+          return Promise.resolve(true);
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_web_authorize':
+          return Promise.resolve({
+            authorizeUrl: 'https://hqforwork.com/authorize/desktop',
+            state: 'web-state',
+          });
+        case 'oauth_listen_for_code':
+          return Promise.resolve({ code: 'code' });
+        case 'oauth_exchange_code':
+          return Promise.resolve({ authenticated: true, expiresAt: 'later' });
+        case 'bring_main_window_to_front':
+          return refocus;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="web-authorize-signin"]')));
+    host.querySelector<HTMLButtonElement>('[data-testid="web-authorize-signin"]')?.click();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'bring_main_window_to_front'),
+    );
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).not.toBeNull();
+    expect(host.querySelector<HTMLElement>('[data-testid="sign-in-actions"]')?.hidden).toBe(true);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    resolveRefocus();
+    await flush();
+    expect(host.querySelector('[data-testid="signin-browser-handoff"]')).not.toBeNull();
+    expect(host.querySelector<HTMLElement>('[data-testid="sign-in-actions"]')?.hidden).toBe(true);
+    expect(host.textContent).not.toContain('Continue with Google');
+    expect(host.textContent).not.toContain('Continue with Microsoft');
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')?.textContent).not.toContain(
+      'Authorize',
+    );
+  });
+});
+
+describe('SignInPrompt continuation vs web authorize flag', () => {
+  it('starts continuation without waiting when the flag is off', async () => {
+    continuationArmedInvoke(() => Promise.resolve(false));
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_start'),
+    );
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_config')).toBe(
+      true,
+    );
+  });
+
+  it('starts continuation when web_authorize_enabled rejects', async () => {
+    continuationArmedInvoke(() => Promise.reject(new Error('flag unavailable')));
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_start'),
+    );
+    await flushUntil(() => providerButtons().length === 2);
+  });
+
+  it('starts continuation without waiting for a slow web_authorize_enabled flag', async () => {
+    vi.useFakeTimers();
+    continuationArmedInvoke(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(false), 1_500);
+        }),
+    );
+    component = mount(SignInPrompt, { target: host });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_config'),
+    );
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'web_authorize_enabled')).toBe(true);
+    expect(
+      tauri.invoke.mock.calls.findIndex(([command]) => command === 'desktop_continuation_config'),
+    ).toBeGreaterThan(-1);
+    expect(host.querySelector('[data-testid="web-authorize-signin"]')).toBeNull();
+    expect(providerButtons()).toHaveLength(0);
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'desktop_continuation_start'),
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flush();
   });
 });

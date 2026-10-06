@@ -1,5 +1,8 @@
 export type SignInProvider = 'Google' | 'Microsoft';
 
+/** Label for the flag-on web authorize button. One string so both screens stay in sync. */
+export const AUTHORIZE_BUTTON_LABEL = 'Authorize';
+
 function parseStructuredOAuthError(
   message: string,
 ): { code?: string; message?: string } | null {
@@ -21,6 +24,13 @@ export function mapSignInError(message: string, provider?: SignInProvider): stri
 
   if (structured?.code === 'OAUTH_REFERRAL_PERSIST_FAILED') {
     return 'We couldn’t finish preparing sign-in. Please try again.';
+  }
+
+  if (
+    structured?.code === 'WEB_AUTHORIZE_URL_INVALID' ||
+    structured?.code === 'OAUTH_NONCE_MISMATCH'
+  ) {
+    return 'That sign-in did not finish. Choose your provider and try once more.';
   }
 
   if (structured?.code === 'OAUTH_PORT_IN_USE') {

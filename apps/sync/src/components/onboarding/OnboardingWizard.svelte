@@ -56,7 +56,11 @@
     friendlyPath,
     homeDirFromDefaultHqPath,
   } from '../../lib/onboarding-path';
-  import { mapSignInError, type SignInProvider } from '../../lib/onboarding-signin';
+  import {
+    AUTHORIZE_BUTTON_LABEL,
+    mapSignInError,
+    type SignInProvider,
+  } from '../../lib/onboarding-signin';
   import {
     continuationDeps,
     loadContinuationContext,
@@ -71,6 +75,7 @@
     launchReceipt,
     recordReceipt,
     shouldSendFirstLaunchReceipt,
+    type ContinuationErrorKind,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -396,7 +401,16 @@
   type ConsentFailure = { kind: 'server' | 'offline'; message: string };
   let consentFailure = $state<ConsentFailure | null>(null);
   let loadingProvider = $state<SignInProvider | null>(null);
+  let webAuthorizeEnabled = $state(false);
+  let webAuthorizeResolved = $state(false);
+  let webAuthorizeBusy = $state(false);
+  let webAuthorizeCancelling = $state(false);
   let signInError = $state('');
+  const WEB_AUTHORIZE_FALLBACK =
+    'That sign-in did not finish. Choose your provider and try once more.';
+  const WEB_AUTHORIZE_CALLBACK_TIMEOUT_MS = 3 * 60 * 1_000;
+  let webAuthorizeState: string | null = null;
+  let webAuthorizeTimeout: number | null = null;
   let microsoftEmail = $state('');
   let microsoftEmailPrompt = $state(false);
   let currentSignInCall = 0;
@@ -906,6 +920,17 @@
         })
         .catch(() => {});
       if (currentStep === WELCOME_SIGNIN_STEP_INDEX) void checkExistingSession();
+      void invokeCommand<boolean>('web_authorize_enabled')
+        .then((enabled) => {
+          if (!mounted) return;
+          webAuthorizeEnabled = enabled === true;
+          webAuthorizeResolved = true;
+        })
+        .catch(() => {
+          if (!mounted) return;
+          webAuthorizeEnabled = false;
+          webAuthorizeResolved = true;
+        });
     }
 
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -979,6 +1004,10 @@
     recordOnboardingAbandonment();
     mounted = false;
     currentSignInCall += 1;
+    clearWebAuthorizeTimeout();
+    const state = webAuthorizeState;
+    webAuthorizeState = null;
+    if (state) void invokeCommand('oauth_cancel_listen', { state }).catch(() => {});
     cancelSetupRun();
   });
 
@@ -1027,6 +1056,140 @@
       privacyOpenError = true;
     } finally {
       privacyOpening = false;
+    }
+  }
+
+  function clearWebAuthorizeTimeout() {
+    if (webAuthorizeTimeout === null) return;
+    clearTimeout(webAuthorizeTimeout);
+    webAuthorizeTimeout = null;
+  }
+
+  function copyForWebAuthorizeFailure(cause: unknown): string {
+    const message = errorMessage(cause).trim();
+    if (message.startsWith('{')) {
+      const mapped = mapSignInError(message);
+      if (mapped !== message && mapped !== 'Sign-in failed') return mapped;
+    }
+    return WEB_AUTHORIZE_FALLBACK;
+  }
+
+  function failWebAuthorize(
+    step: DesktopAuthProgressStep,
+    cause: unknown,
+    details: { outcome: string; errorKind?: ContinuationErrorKind },
+  ) {
+    void emitDesktopAuthFailure({ provider: 'web', step, error: cause });
+    webAuthorizeEnabled = false;
+    signInError = copyForWebAuthorizeFailure(cause);
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'failed', {
+      provider: 'web',
+      ...details,
+    });
+  }
+
+  async function cancelWebAuthorizeListen(state = webAuthorizeState) {
+    try {
+      await invokeCommand('oauth_cancel_listen', { state });
+    } catch (cancelError) {
+      console.warn('[onboarding-signin] failed to cancel OAuth listener:', cancelError);
+    }
+  }
+
+  async function cancelWebAuthorize() {
+    if (!webAuthorizeBusy || webAuthorizeCancelling) return;
+    const state = webAuthorizeState;
+    ++currentSignInCall;
+    webAuthorizeCancelling = true;
+    clearWebAuthorizeTimeout();
+    try {
+      await cancelWebAuthorizeListen(state);
+      webAuthorizeState = null;
+      signInError = '';
+    } finally {
+      webAuthorizeBusy = false;
+      webAuthorizeCancelling = false;
+    }
+  }
+
+  async function handleWebAuthorize() {
+    existingSessionEmail = null;
+    const call = ++currentSignInCall;
+    webAuthorizeBusy = true;
+    signInError = '';
+    webAuthorizeState = null;
+    let succeeded = false;
+    let authStep: DesktopAuthProgressStep = 'sign_in_started';
+    void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+    recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: 'web' });
+    try {
+      const { authorizeUrl, state } = await invokeCommand<{
+        authorizeUrl: string;
+        state: string;
+      }>('start_web_authorize');
+      if (!isCurrentSignInCall(call)) {
+        await cancelWebAuthorizeListen(state);
+        return;
+      }
+      webAuthorizeState = state;
+      if (typeof openExternal !== 'function') {
+        throw new Error('The desktop shell cannot open a browser in this environment.');
+      }
+      await openExternal(authorizeUrl);
+      authStep = 'provider_page_opened';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInCall(call)) return;
+      clearWebAuthorizeTimeout();
+      webAuthorizeTimeout = window.setTimeout(() => {
+        if (!isCurrentSignInCall(call)) return;
+        const pending = webAuthorizeState;
+        ++currentSignInCall;
+        webAuthorizeBusy = false;
+        webAuthorizeState = null;
+        clearWebAuthorizeTimeout();
+        if (pending) void cancelWebAuthorizeListen(pending);
+        failWebAuthorize('provider_page_opened', new Error('sign-in timed out'), {
+          outcome: 'oauth_failed',
+          errorKind: 'expired',
+        });
+      }, WEB_AUTHORIZE_CALLBACK_TIMEOUT_MS);
+      const { code } = await invokeCommand<{ code: string }>('oauth_listen_for_code', { state });
+      clearWebAuthorizeTimeout();
+      authStep = 'callback_received';
+      void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+      if (!isCurrentSignInCall(call)) return;
+      const result = await invokeCommand<{ authenticated: boolean; expiresAt: string }>(
+        'oauth_exchange_code',
+        { code },
+      );
+      authStep = 'token_exchange_ok';
+      if (!isCurrentSignInCall(call)) return;
+      if (result.authenticated) {
+        authStep = 'token_exchange_ok';
+        void emitDesktopAuthProgress({ provider: 'web', step: authStep });
+        succeeded = true;
+        await completeAuthenticatedSignIn(call, { provider: 'web' });
+      } else {
+        failWebAuthorize(authStep, 'authentication rejected', {
+          outcome: 'authentication_rejected',
+        });
+      }
+    } catch (err) {
+      if (!isCurrentSignInCall(call)) return;
+      clearWebAuthorizeTimeout();
+      failWebAuthorize(authStep, err, {
+        outcome: 'oauth_failed',
+        errorKind: classifyContinuationError(err),
+      });
+      await cancelWebAuthorizeListen();
+    } finally {
+      // Hold the waiting state on success so the welcome buttons cannot flash
+      // while the wizard refocuses and advances to the folder step.
+      if (isCurrentSignInCall(call) && !succeeded) {
+        webAuthorizeBusy = false;
+        webAuthorizeState = null;
+        clearWebAuthorizeTimeout();
+      }
     }
   }
 
@@ -3950,22 +4113,33 @@
         {#if !replay}
           <!-- The consent question is its own screen; nothing is asked here. -->
           <div class="btns-slot">
-            {#if signInActionsReady}
+            {#if signInActionsReady && webAuthorizeResolved}
               <div class="btns">
+                {#if webAuthorizeEnabled}
+                  <button
+                    class="btn btn-primary"
+                    type="button"
+                    data-testid="web-authorize-signin"
+                    disabled={loadingProvider !== null || webAuthorizeBusy}
+                    aria-busy={webAuthorizeBusy}
+                    onclick={() => void handleWebAuthorize()}
+                  >{webAuthorizeBusy ? 'Waiting for browser…' : AUTHORIZE_BUTTON_LABEL}</button>
+                {:else}
                 <button
                   class="btn btn-primary"
                   type="button"
-                  disabled={loadingProvider !== null}
+                  disabled={loadingProvider !== null || webAuthorizeBusy}
                   aria-busy={loadingProvider === 'Google'}
                   onclick={() => handleSignIn('Google')}
                 >{@render GoogleMark()}Continue with Google</button>
                 <button
                   class="btn btn-secondary"
                   type="button"
-                  disabled={loadingProvider !== null}
+                  disabled={loadingProvider !== null || webAuthorizeBusy}
                   aria-busy={loadingProvider === 'Microsoft'}
                   onclick={() => handleSignIn('Microsoft')}
                 >{@render MicrosoftMark()}Continue with Microsoft</button>
+                {/if}
               </div>
               {#if microsoftEmailPrompt}
                 <form
@@ -4011,8 +4185,19 @@
             <p class="status" role="status">
               {loadingProvider
                 ? `A browser window opened for ${loadingProvider} sign-in. Finish there and we’ll pick up right here.`
-                : ''}
+                : webAuthorizeBusy
+                  ? 'A browser window opened for HQ sign-in. Finish there and we’ll pick up right here.'
+                  : ''}
             </p>
+          {/if}
+          {#if webAuthorizeBusy}
+            <button
+              class="link-inline"
+              type="button"
+              data-testid="web-authorize-cancel"
+              disabled={webAuthorizeCancelling}
+              onclick={() => void cancelWebAuthorize()}
+            >{webAuthorizeCancelling ? 'Going back…' : 'Cancel'}</button>
           {/if}
         {/if}
       </div>

@@ -20,6 +20,9 @@ pub fn cognito_client_id() -> String {
 }
 pub const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 pub const REDIRECT_URI: &str = "http://localhost:53682/callback";
+/// Callback ports registered on the production Cognito desktop app client.
+/// Keep in sync with the Hosted UI redirect URIs.
+pub const REGISTERED_LOOPBACK_PORTS: [u16; 3] = [53682, 8765, 3000];
 const IPV4_LOOPBACK_HOST: &str = "127.0.0.1";
 const IPV6_LOOPBACK_HOST: &str = "::1";
 

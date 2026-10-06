@@ -71,7 +71,7 @@ The release moves it under the version it ships in.
 ## [0.10.390] — 2026-10-04
 
 - Bot conversations with messages, unread activity, or an activity dot now show in the desktop sidebar on every copy of the app, including after local storage is reset.
-
+- Sign-in can open an HQ web Authorize page (behind the `desktop.web-authorize` flag, off by default) so a browser that is already signed in to HQ can approve HQ Desktop. When that path is on, the welcome screen and Sign in prompt show one Authorize button. If it fails or times out, the existing Google and Microsoft buttons come back. Cancel returns to Authorize. After Authorize succeeds, the waiting state is held until the next setup step, and the browser tab on localhost uses the same dusk glass layout as Authorize (success, plus state-mismatch, denied, and expired errors) so the last page matches the one before it. The localhost card hugs its copy instead of a 420-pixel minimum height, and sits in the middle of the tab. Google, Microsoft, and continuation keep the existing signed-in page. Turn it on for one machine with `"webAuthorize": true` in `~/.hq/menubar.json` (the install id is `installAttemptId` in that file). Then a few people with `rolloutPercentage` on the public flag row (sticky by install UUID). Then everyone with `rolloutPercentage: 100` or `defaultValue: true`.
 - HQ CLI update timeout reports now include bounded counts and version and age buckets for live package-use holders.
 
 - Desktop onboarding records the selected company after someone creates one, joins an invite, or chooses an existing company.
