@@ -1528,8 +1528,11 @@ async fn acquire_cli_package_update_lease(
     let package_guard = match request.wait_with_summary(remaining).await {
         Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)) => {
             report_package_use_lease_timeout(&summary, retry_attempt);
+            let display_message =
+                hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)
+                    .to_string();
             return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
-                display_message: None,
+                display_message: Some(display_message),
             });
         }
         Ok(guard) => guard,
@@ -5224,7 +5227,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn spawn_cli_package_use_lease(prefix: &Path) -> std::process::Child {
+    fn spawn_cli_package_use_lease(prefix: &Path, version: &str) -> std::process::Child {
         let script = r#"
 const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
 const { createHash } = require('node:crypto'); const { performance } = require('node:perf_hooks');
@@ -5234,7 +5237,7 @@ const state = process.platform === 'win32'
   ? path.join(process.env.LOCALAPPDATA, 'hq-cli', 'state', 'package-use')
   : path.join((process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state')).trim(), 'hq-cli', 'package-use');
 const dir = path.join(state, digest); fs.mkdirSync(dir, { recursive: true });
-const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: 'test' };
+const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: process.argv[2] };
 const target = path.join(dir, `${record.pid}-${record.start_time_ms}.json`);
 const temp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
 fs.writeFileSync(temp, JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, target);
@@ -5244,6 +5247,7 @@ console.log('ready'); setInterval(() => {}, 1000);
             .arg("-e")
             .arg(script)
             .arg(prefix)
+            .arg(version)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -6078,7 +6082,7 @@ exit 1
         let temp = tempfile::tempdir().unwrap();
         let prefix = temp.path().join("npm-prefix");
         fs::create_dir_all(&prefix).unwrap();
-        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix, "5.342.4");
 
         let npm = temp.path().join("fake-npm");
         let attempts = temp.path().join("attempts");
@@ -6143,7 +6147,7 @@ exit 1
         let temp = tempfile::tempdir().unwrap();
         let prefix = temp.path().join("npm-prefix");
         fs::create_dir_all(&prefix).unwrap();
-        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix, "5.342.3");
         let npm = temp.path().join("fake-npm");
         let attempts = temp.path().join("attempts");
         fs::write(
@@ -6178,7 +6182,8 @@ exit 1
             .expect("the package lease wait must be bounded")
             .unwrap()
             .unwrap_err();
-        assert!(error.contains("The HQ CLI is still running"), "{error}");
+        assert!(error.contains("Older HQ CLI 5.342.3"), "{error}");
+        assert!(error.contains("Quit that CLI session or daemon"), "{error}");
         assert!(error.contains("npm was not started"), "{error}");
         assert!(
             !attempts.exists(),
