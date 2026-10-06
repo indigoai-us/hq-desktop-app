@@ -239,7 +239,7 @@ describe("ChatSidebar boot before setup has run on this machine", () => {
 });
 
 describe("ChatSidebar boot when the roster already has a company", () => {
-  it("keeps a hydrated company channel out of Home day buckets; All groups it by company and Activity shows it in that company", async () => {
+  it("lists a hydrated company channel once in All without auto-opening it; Activity shows it in that company", async () => {
     const onselect = vi.fn();
     const wakes = createChatWakeBus();
     component = mount(ChatSidebar, {
@@ -263,16 +263,11 @@ describe("ChatSidebar boot when the roster already has a company", () => {
       membership: "joined",
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    // All scope: the company channel paints only under its company group,
-    // never in the Home day buckets, and it does not auto-open.
+    // All scope: the company channel joins the date buckets, once, and the
+    // sidebar does not open it on its own.
     expect(
       host.querySelectorAll('[data-conversation-id="ch:chn_acme"]').length,
     ).toBe(1);
-    expect(
-      host.querySelector(
-        '[data-testid="company-channel-group-rows"] [data-conversation-id="ch:chn_acme"]',
-      ),
-    ).toBeTruthy();
     expect(onselect.mock.calls.some((call) => call[0]?.id === "ch:chn_acme")).toBe(false);
 
     await unmount(component);

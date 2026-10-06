@@ -201,15 +201,11 @@ async function waitForRows(): Promise<void> {
   await vi.waitFor(() => {
     rowButton("ch:chn_launch");
     rowButton("ch:chn_notes");
-    // All scope: a company channel paints only under its company group,
-    // never in the Home day buckets.
-    const general = [
-      ...host.querySelectorAll('[data-conversation-id="ch:chn_general"]'),
-    ];
+    // All scope: company channels sit in the date buckets, once each.
     expect(
-      general.every((el) => el.closest('[data-testid="company-channel-group-rows"]')),
-      "company channels stay out of the Home day buckets",
-    ).toBe(true);
+      host.querySelectorAll('[data-conversation-id="ch:chn_general"]').length,
+      "the company channel is listed once in All",
+    ).toBe(1);
   });
 }
 
