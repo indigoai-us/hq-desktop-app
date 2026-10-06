@@ -73,7 +73,7 @@ export const PLAN_CARDS: readonly PlanCardCopy[] = [
       { label: 'Company brain', value: 'Vault, sync, secrets & deploy', state: 'on' },
       {
         label: 'Limits',
-        value: '10 secrets · 10 GB · 1 integration, no MCP or Atlas',
+        value: '10 secrets · 10 GB · 3 integrations, no MCP or Atlas',
         detail: '500 lifetime deploys. Over a limit, new files and new secrets stop until you are back under',
         state: 'capped',
       },
