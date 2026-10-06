@@ -215,8 +215,8 @@
   .signin-btn {
     font: inherit;
     font-size: 13px;
-    height: 28px;
-    padding: 0 10px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
     border-radius: 6px;
     background: var(--v4-control-bg, transparent);

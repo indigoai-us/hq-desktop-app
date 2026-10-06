@@ -114,7 +114,7 @@
   .chip { padding: 1px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); }
   .acts { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-top: 16px; }
   .btn {
-    height: 32px; padding: 0 10px;
+    height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border, var(--line2));
     background: transparent;
     color: var(--v4-text-1); border-radius: 8px;

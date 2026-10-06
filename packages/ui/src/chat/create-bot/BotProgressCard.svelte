@@ -216,8 +216,8 @@
   .progress-retry {
     font: inherit;
     font-size: 13px;
-    height: 28px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 0;
     border-radius: 6px;
     background: var(--t1, #111);

@@ -363,8 +363,8 @@
      button fill, primary is a text-colour fill with overlay-surface ink. The
      layer is portaled outside .chat-shell, so each token has a v4 fallback. */
   .ts-act {
-    height: 28px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--line2, var(--v4-control-border));
     border-radius: 8px;
     background: var(--btn-bg, transparent);

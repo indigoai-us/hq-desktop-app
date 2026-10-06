@@ -1352,8 +1352,8 @@
     gap: 4px;
   }
   .zoom-btn {
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     display: inline-grid;
     place-items: center;
     padding: 0;

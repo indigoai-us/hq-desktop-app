@@ -566,8 +566,8 @@
 
   .team-action-button {
     flex: 0 0 auto;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -976,8 +976,8 @@
       width: 100%;
       min-width: 0;
       height: auto;
-      min-height: 30px;
-      padding: 6px 10px;
+      min-height: var(--hq-btn-h);
+      padding: 0 var(--hq-btn-pad-inline);
       line-height: 1.2;
       overflow-wrap: anywhere;
       white-space: normal;

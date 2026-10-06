@@ -258,8 +258,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 26px;
-    height: 26px;
+    min-width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0 9px;
     border: 0;
     border-radius: 6px;

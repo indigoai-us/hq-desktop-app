@@ -495,8 +495,8 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;

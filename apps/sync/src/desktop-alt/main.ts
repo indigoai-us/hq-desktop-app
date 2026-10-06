@@ -8,6 +8,7 @@ import { mount } from 'svelte';
 // for data — IDs, paths, counts, versions.
 import '@fontsource-variable/geist-mono/wght.css';
 import '../styles/design-system.css';
+import '@hq/ui/button-standard.css';
 import GlobalErrorBoundary from '../components/GlobalErrorBoundary.svelte';
 import { installDesktopZoom } from '../lib/desktopZoom';
 import { installAppearancePreferences } from '../lib/appearancePreferences';

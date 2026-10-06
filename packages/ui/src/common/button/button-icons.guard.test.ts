@@ -105,30 +105,30 @@ describe("labelled console-rail buttons carry an icon", () => {
   });
 });
 
-describe("RailButton size contract (pill proportions, owner tuning)", () => {
-  it("is 36px tall, 0 16px padding, 12px/500 label, 8px gap, 8px radius, 14px icon", () => {
+describe("RailButton size contract (titlebar pill standard)", () => {
+  // Height, padding, gap, radius and type come from button-standard.css and are
+  // asserted against the titlebar pill in button-height.guard.test.ts.
+  it("reads the one button standard and keeps a 14px icon at 1.5 stroke, 500 label", () => {
     mounted.push(mount(RailButton, { target: document.body, props: { icon: "download", children: label("Export") } }));
     const button = document.querySelector<HTMLButtonElement>("[data-rail-btn]")!;
     expect(button).not.toBeNull();
-    const style = getComputedStyle(button);
-    expect(style.height).toBe("36px");
-    expect(style.paddingLeft).toBe("16px");
-    expect(style.paddingRight).toBe("16px");
-    expect(style.fontSize).toBe("12px");
-    expect(style.fontWeight).toBe("500");
-    expect(style.gap).toBe("8px");
-    expect(style.borderRadius).toBe("8px");
+    expect(getComputedStyle(button).fontWeight).toBe("500");
+    const css = read("common/button/RailButton.svelte");
+    expect(css).toMatch(/height: var\(--hq-btn-h\);/u);
+    expect(css).toMatch(/padding: 0 var\(--hq-btn-pad-inline\);/u);
+    expect(css).toMatch(/gap: var\(--hq-btn-gap\);/u);
+    expect(css).toMatch(/border-radius: var\(--hq-btn-radius\);/u);
+    expect(css).toMatch(/font-size: var\(--hq-btn-font-size\);/u);
     const svg = button.querySelector("svg[data-rail-icon='download']")!;
     expect(svg.getAttribute("width")).toBe("14");
     expect(svg.querySelector("path")!.getAttribute("stroke-width")).toBe("1.5");
     expect(button.textContent?.trim()).toBe("Export");
   });
 
-  it("primary keeps the same proportions", () => {
+  it("primary has no size of its own", () => {
     mounted.push(mount(RailButton, { target: document.body, props: { icon: "plus", variant: "primary", children: label("New policy") } }));
-    const style = getComputedStyle(document.querySelector("[data-rail-btn]")!);
-    expect(style.height).toBe("36px");
-    expect(style.fontSize).toBe("12px");
+    expect(document.querySelector("[data-rail-btn]")!.classList.contains("primary")).toBe(true);
+    expect(read("common/button/RailButton.svelte")).not.toMatch(/\.rail-btn\.primary \{[^}]*(height|padding)/u);
   });
 });
 

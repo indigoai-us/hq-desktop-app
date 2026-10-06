@@ -269,8 +269,8 @@
   .btn {
     flex: 1 1 0;
     min-width: 0;
-    height: 28px;
-    padding: 0 8px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border, var(--line2));
     background: transparent;
     color: var(--v4-text-1);
@@ -285,7 +285,7 @@
   .btn.primary {
     flex: none;
     width: 100%;
-    height: 32px;
+    height: var(--hq-btn-h);
     border-radius: 8px;
     border-color: transparent;
     background: var(--v4-primary-bg, var(--t1));

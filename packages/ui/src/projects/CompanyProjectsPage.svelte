@@ -1499,8 +1499,8 @@
   }
 
   .primary-action {
-    height: 28px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -1541,7 +1541,7 @@
   .tool-select select,
   .tool-button {
     box-sizing: border-box;
-    height: 28px;
+    height: var(--hq-btn-h);
     margin: 0;
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);

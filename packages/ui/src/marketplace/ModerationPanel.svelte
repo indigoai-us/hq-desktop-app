@@ -1521,7 +1521,7 @@
     gap: var(--v4-space-2);
     margin-top: var(--v4-space-2);
     width: 100%;
-    min-height: 32px;
+    min-height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);

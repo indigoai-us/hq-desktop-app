@@ -15046,8 +15046,8 @@
   .channel-details-btn {
     display: grid;
     place-items: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
     border-radius: 6px;
