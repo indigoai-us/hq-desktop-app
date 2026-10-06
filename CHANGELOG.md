@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
+- Desktop Core baseline writes now accept an identical baseline left by a concurrent writer and separately report a lost write or invalid target.
+
 ## [0.10.397] — 2026-10-06
 
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
