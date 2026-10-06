@@ -85,6 +85,7 @@ use hq_desktop_core::toolchain::{classify_runtime, ManagedRuntime};
 pub use hq_desktop_core::hq_cli_update::{
     apply_post_install_effects, auto_install_allowed, auto_update_enabled, bun_home_from_hq_bin,
     bun_install_argv, classify_install_failure, classify_install_failure_with_environment,
+    classify_install_failure_with_environment_and_stderr,
     classify_install_failure_with_final_attempt, cli_auto_update_enabled, cli_below_floor,
     cli_below_floor_of, cli_install_needed, cmp_semver, colocated_npm_path, decide_post_install,
     delivered_prefix_shim_for, dismissed_cli_version, executed_copy_aim_for,
@@ -3112,9 +3113,10 @@ async fn install_hq_cli_update_once(
         // — is recognised here as `UnsupportedNode`, which arms the managed-Node
         // self-heal below and reports under its own bounded signature at Warning.
         // Every supported-Node input keeps its env-blind kind unchanged.
-        let failure_kind = classify_install_failure_with_environment(
+        let failure_kind = classify_install_failure_with_environment_and_stderr(
             install_run.output.status.code(),
             &raw_detail,
+            &raw_stderr,
             prefix.as_deref(),
             install_run.final_attempt_forced,
             &install_env,
@@ -4483,8 +4485,25 @@ async fn managed_retry_converged(
 fn managed_retry_failure_detail(
     exit_code: Option<i32>,
     raw_detail: &str,
+    raw_stderr: &str,
     prefix: Option<&str>,
 ) -> String {
+    let crash_env = InstallEnvironment {
+        toolchain_source: NpmToolchainSource::Managed,
+        ..InstallEnvironment::default()
+    };
+    if classify_install_failure_with_environment_and_stderr(
+        exit_code,
+        raw_detail,
+        raw_stderr,
+        prefix,
+        false,
+        &crash_env,
+    ) == InstallFailureKind::NativeCrash
+    {
+        return "The Node.js process used to install hq crashed before npm could report an error, even after HQ repaired its managed runtime and retried. Run the copied command in a terminal to finish the update, or contact HQ support with it.".to_string();
+    }
+
     // If the managed retry ALSO hit a missing install target (HQ-DESKTOP-5K) — npm
     // could not create even HQ's own managed install folder, e.g. a broken/offline
     // filesystem — the failure is NOT a dependency build, so never tell the user a
@@ -4769,9 +4788,13 @@ async fn managed_toolchain_retry(
     // provenance-aware user-facing wording that never re-blames the user's own
     // runtime.
     let raw_detail = npm_output_detail(&retry_run.output);
+    let raw_stderr = String::from_utf8_lossy(&retry_run.output.stderr)
+        .trim()
+        .to_string();
     let detail = managed_retry_failure_detail(
         retry_run.output.status.code(),
         &raw_detail,
+        &raw_stderr,
         Some(retry_prefix.as_str()),
     );
     log(
@@ -5879,8 +5902,12 @@ console.log('ready'); setInterval(() => {}, 1000);
 
     #[test]
     fn managed_retry_failure_detail_is_provenance_aware_and_never_reblames_node() {
-        let detail =
-            managed_retry_failure_detail(Some(1), "npm error code 1\ngyp ERR! build error", None);
+        let detail = managed_retry_failure_detail(
+            Some(1),
+            "npm error code 1\ngyp ERR! build error",
+            "npm error code 1\ngyp ERR! build error",
+            None,
+        );
         let lower = detail.to_lowercase();
         // Provenance-aware: says HQ already retried under its managed Node.
         assert!(lower.contains("managed node"));
@@ -5895,7 +5922,7 @@ console.log('ready'); setInterval(() => {}, 1000);
 
         // Empty raw output still yields provenance-aware, actionable copy with no
         // Node-version advice.
-        let empty = managed_retry_failure_detail(None, "   ", None);
+        let empty = managed_retry_failure_detail(None, "   ", "   ", None);
         let empty_lower = empty.to_lowercase();
         assert!(empty_lower.contains("managed node"));
         assert!(empty.contains("copied command"));
@@ -5907,12 +5934,24 @@ console.log('ready'); setInterval(() => {}, 1000);
         let missing = managed_retry_failure_detail(
             Some(-4058),
             "npm error code ENOENT\nnpm error syscall mkdir\nnpm error path /managed/npm-global/lib/node_modules/@indigoai-us/hq-cli",
+            "npm error code ENOENT\nnpm error syscall mkdir\nnpm error path /managed/npm-global/lib/node_modules/@indigoai-us/hq-cli",
             Some("/managed/npm-global"),
         );
         let missing_lower = missing.to_lowercase();
         assert!(missing_lower.contains("install folder"));
         assert!(!missing_lower.contains("dependency build"));
         assert!(missing.contains("copied command"));
+
+        let native_crash = managed_retry_failure_detail(
+            Some(-1_073_741_819),
+            "Node emitted stdout before the access violation",
+            "",
+            None,
+        );
+        let crash_lower = native_crash.to_lowercase();
+        assert!(crash_lower.contains("crashed before npm could report an error"));
+        assert!(crash_lower.contains("even after hq repaired"));
+        assert!(!crash_lower.contains("dependency build"));
     }
 
     #[test]

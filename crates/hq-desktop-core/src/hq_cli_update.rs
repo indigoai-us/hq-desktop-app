@@ -6143,25 +6143,47 @@ pub fn classify_install_failure_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> InstallFailureKind {
+    classify_install_failure_with_environment_and_stderr(
+        exit_code,
+        detail,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    )
+}
+
+/// Classify a failed install while keeping the actual stderr separate from the
+/// detail shown to the user. `detail` may include stdout as a fallback; native
+/// process-crash evidence must use stderr because Node can emit ordinary stdout
+/// before Windows terminates it with an access violation.
+pub fn classify_install_failure_with_environment_and_stderr(
+    exit_code: Option<i32>,
+    detail: &str,
+    raw_stderr: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> InstallFailureKind {
+    if env.toolchain_source == NpmToolchainSource::Managed
+        && env.node_abi.is_none()
+        && env.npm_version.is_none()
+        && is_windows_native_crash_status(exit_code)
+        && node_crash_kind(exit_code, raw_stderr).kind != NodeCrashKind::None
+    {
+        // HQ-DESKTOP-56: a managed Node access violation with failed runtime
+        // probes is evidence that HQ's own extracted toolchain is broken. Keep
+        // the event reportable under a closed crash tag and let the app use its
+        // existing bounded managed repair and one-shot retry.
+        return InstallFailureKind::NativeCrash;
+    }
+
     let base = classify_install_failure_with_final_attempt(
         exit_code,
         detail,
         prefix,
         final_attempt_forced,
     );
-    if base == InstallFailureKind::Unexpected
-        && env.toolchain_source == NpmToolchainSource::Managed
-        && env.node_abi.is_none()
-        && env.npm_version.is_none()
-        && is_windows_native_crash_status(exit_code)
-        && node_crash_kind(exit_code, detail).kind != NodeCrashKind::None
-    {
-        // HQ-DESKTOP-56: a managed Node access violation with failed runtime
-        // probes is evidence that HQ's own extracted toolchain is broken. Keep
-        // the event reportable under a closed crash tag and let the app use its
-        // existing bounded managed repair and one-shot retry path.
-        return InstallFailureKind::NativeCrash;
-    }
     if base == InstallFailureKind::Unexpected
         && !env.registry_serving_lag_recurred
         && is_npmjs_pinned_tarball_not_yet_served(detail, env)
@@ -19551,6 +19573,29 @@ mod tests {
             ),
             InstallFailureKind::Unexpected,
             "POSIX signal-style exits do not use the Windows forced-repair classification"
+        );
+    }
+
+    #[test]
+    fn managed_access_violation_uses_actual_stderr_when_stdout_has_output() {
+        let env = InstallEnvironment {
+            node_version: Some("v22.12.0".to_string()),
+            node_abi: None,
+            npm_version: None,
+            toolchain_source: NpmToolchainSource::Managed,
+            ..InstallEnvironment::default()
+        };
+        assert_eq!(
+            classify_install_failure_with_environment_and_stderr(
+                Some(-1_073_741_819),
+                "node stdout emitted before native exit",
+                "",
+                None,
+                false,
+                &env,
+            ),
+            InstallFailureKind::NativeCrash,
+            "stdout fallback must not hide an empty-stderr Windows access violation"
         );
     }
 
