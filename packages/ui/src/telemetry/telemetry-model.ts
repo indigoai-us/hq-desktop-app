@@ -1,4 +1,5 @@
 import { compactNumber } from "../common/compact-number.js";
+import { vizColor, vizOrder } from "./telemetry-colors.js";
 /**
  * Personal telemetry model (US-032).
  *
@@ -72,6 +73,8 @@ export interface ChartBand {
   label: string;
   tokens: number;
   opacity: number;
+  /** `var(--viz-…)` provider color for the band (telemetry-colors). */
+  color: string;
 }
 
 export interface TelemetrySession {
@@ -230,9 +233,12 @@ export function sharePercent(part: number, total: number): number {
 
 const BAND_OPACITY = [0.9, 0.62, 0.4, 0.26, 0.16, 0.1, 0.06];
 
-/** Legend and stack order for the chart: the By-model rows, then Other. */
+/**
+ * Legend and stack order for the chart: the table's rows in the fixed
+ * provider-then-shade order (telemetry-colors), Other last.
+ */
 export function chartBandLabels(snapshot: Pick<TelemetrySnapshot, "stackBands">): string[] {
-  return snapshot.stackBands ?? ["Opus", "Sonnet", "Haiku"];
+  return vizOrder(snapshot.stackBands ?? ["Opus", "Sonnet", "Haiku"], (label) => label);
 }
 
 export function bandOpacity(index: number): number {
@@ -243,9 +249,9 @@ export function bandOpacity(index: number): number {
 export function dayBands(day: DayStack, labels: readonly string[]): ChartBand[] {
   if (!day.bands) {
     const fixed = [day.opus, day.sonnet, day.haiku];
-    return ["Opus", "Sonnet", "Haiku"].map((label, i) => ({ label, tokens: fixed[i]!, opacity: bandOpacity(i) }));
+    return ["Opus", "Sonnet", "Haiku"].map((label, i) => ({ label, tokens: fixed[i]!, opacity: bandOpacity(i), color: vizColor(label) }));
   }
-  return labels.map((label, i) => ({ label, tokens: day.bands?.[label] ?? 0, opacity: bandOpacity(i) }));
+  return labels.map((label, i) => ({ label, tokens: day.bands?.[label] ?? 0, opacity: bandOpacity(i), color: vizColor(label) }));
 }
 
 /** Plain tooltip for one day: the total, then each non-empty band. */

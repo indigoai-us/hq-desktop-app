@@ -33,10 +33,10 @@ describe("OWNER-R29 exact models", () => {
     expect(named["claude-opus-5-5"]).toMatchObject({ name: "Opus 5.5", family: "Opus" });
     expect(named["claude-fable-5-1"]).toMatchObject({ name: "Fable 5.1", family: "Fable" });
     expect(named["claude-fable-5"]).toMatchObject({ name: "Fable 5" });
-    expect(named["gpt-5.5-codex"]).toMatchObject({ name: "GPT-5.5 Codex", family: "OpenAI Codex", provider: "OpenAI" });
-    expect(named["codex-mini-latest"]).toMatchObject({ name: "Codex Mini Latest", family: "OpenAI Codex" });
-    expect(named["gpt-5.6-sol"]).toMatchObject({ name: "GPT-5.6 Sol", family: "OpenAI GPT" });
-    expect(named["o3"]).toMatchObject({ family: "OpenAI GPT" });
+    expect(named["gpt-5.5-codex"]).toMatchObject({ name: "GPT-5.5 Codex", family: "OpenAI", provider: "OpenAI" });
+    expect(named["codex-mini-latest"]).toMatchObject({ name: "Codex Mini Latest", family: "OpenAI" });
+    expect(named["gpt-5.6-sol"]).toMatchObject({ name: "GPT-5.6 Sol", family: "OpenAI" });
+    expect(named["o3"]).toMatchObject({ family: "OpenAI" });
     expect(named["grok-4.7"]).toMatchObject({ name: "Grok 4.7", family: "Grok", provider: "xAI" });
     expect(named["<synthetic>"]).toMatchObject({ name: "System" });
     expect(named["mystery-model-x"]).toMatchObject({ name: "mystery-model-x", family: "Other" });

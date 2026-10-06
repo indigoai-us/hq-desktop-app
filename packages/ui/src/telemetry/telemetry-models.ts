@@ -8,6 +8,7 @@
  * id as the name under "Other". Nothing is dropped.
  */
 import { LIST_RATES, type ModelId } from "./telemetry-model.js";
+import { modelFamilyOf } from "./telemetry-colors.js";
 
 export interface ExactModelUsage {
   id: string;
@@ -78,7 +79,7 @@ const RULES: { test: RegExp; name: (m: RegExpMatchArray, id: string) => Naming }
       const parts = id.split("-");
       const gpt = parts[0] === "gpt" ? `GPT-${parts[1]}` : "";
       const rest = parts.slice(parts[0] === "gpt" ? 2 : 0);
-      return { name: [gpt, words(rest)].filter(Boolean).join(" "), provider: "OpenAI", family: "OpenAI Codex" };
+      return { name: [gpt, words(rest)].filter(Boolean).join(" "), provider: "OpenAI", family: "OpenAI" };
     },
   },
   {
@@ -88,7 +89,7 @@ const RULES: { test: RegExp; name: (m: RegExpMatchArray, id: string) => Naming }
       const parts = id.split("-");
       const head = parts[0] === "gpt" ? `GPT-${parts[1]}` : parts[0]!;
       const rest = parts.slice(parts[0] === "gpt" ? 2 : 1);
-      return { name: [head, words(rest)].filter(Boolean).join(" "), provider: "OpenAI", family: "OpenAI GPT" };
+      return { name: [head, words(rest)].filter(Boolean).join(" "), provider: "OpenAI", family: "OpenAI" };
     },
   },
   {
@@ -103,9 +104,9 @@ export function nameModel(rawId: string): Naming {
   const lower = id.toLowerCase();
   for (const rule of RULES) {
     const m = lower.match(rule.test);
-    if (m) return rule.name(m, lower);
+    if (m) return { ...rule.name(m, lower), family: modelFamilyOf(lower).label };
   }
-  return { name: id, provider: "", family: "Other" };
+  return { name: id, provider: "", family: modelFamilyOf(lower).label };
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
