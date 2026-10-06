@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import type { Component } from 'svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
@@ -9,7 +11,6 @@
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
-  import MeetingCanvas from '../../../packages/ui/src/meetings/MeetingCanvas.svelte';
   import LiveTranscriptBody from '../../../packages/ui/src/meetings/LiveTranscriptBody.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -161,6 +162,22 @@
     status: 'recording',
     sourceLanded: false,
   };
+  let LiveMeetingCanvas = $state<Component | null>(null);
+  let liveMeetingPreviewFailed = $state(false);
+
+  // Keep the live-meeting screenshot route out of the default shell bundle.
+  // Its transcript and agent-launch graph is only useful when that route is
+  // active, and the browser suite boots the shell for every spec.
+  onMount(() => {
+    if (view !== 'live-meeting') return;
+    void import('../../../packages/ui/src/meetings/MeetingCanvas.svelte')
+      .then((mod) => {
+        LiveMeetingCanvas = mod.default as Component;
+      })
+      .catch(() => {
+        liveMeetingPreviewFailed = true;
+      });
+  });
   let livePreviewReads = 0;
   const previewLiveTranscript = async () => {
     livePreviewReads += 1;
@@ -302,7 +319,13 @@
 {:else if view === 'live-meeting'}
   <!-- A live bot fixture for the actual MeetingCanvas Live tab. -->
   <main class="live-meeting-preview">
-    <MeetingCanvas event={liveMeetingPreview} bot={liveMeetingBotPreview} companyName="Preview company" />
+    {#if LiveMeetingCanvas}
+      <LiveMeetingCanvas event={liveMeetingPreview} bot={liveMeetingBotPreview} companyName="Preview company" />
+    {:else if liveMeetingPreviewFailed}
+      <p role="alert">The live meeting preview could not load.</p>
+    {:else}
+      <p aria-busy="true">Loading live meeting preview…</p>
+    {/if}
   </main>
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
