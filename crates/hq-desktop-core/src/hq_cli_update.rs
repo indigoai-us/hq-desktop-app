@@ -8847,6 +8847,14 @@ pub fn report_package_use_lease_timeout(
                 "holder_live_count_bucket",
                 summary.live_holder_count.as_tag(),
             );
+            scope.set_tag(
+                "holder_same_root_live_count_bucket",
+                summary.same_root_live_holder_count.as_tag(),
+            );
+            scope.set_tag(
+                "holder_other_root_live_count_bucket",
+                summary.other_root_live_holder_count.as_tag(),
+            );
             scope.set_tag("holder_version_bucket", summary.holder_version.as_tag());
             scope.set_tag(
                 "oldest_holder_age_bucket",
@@ -9831,6 +9839,8 @@ mod tests {
 
         let summary = PackageUseLeaseTimeoutSummary {
             live_holder_count: LiveHolderCountBucket::TwoToThree,
+            same_root_live_holder_count: LiveHolderCountBucket::One,
+            other_root_live_holder_count: LiveHolderCountBucket::TwoToThree,
             holder_version: HolderVersionBucket::Pre53424,
             oldest_holder_age: HolderAgeBucket::From1hTo24h,
             oldest_holder_purpose: HolderPurposeBucket::Daemon,
@@ -9851,6 +9861,8 @@ mod tests {
         );
         assert_eq!(event.tags["lease_retry_attempt"], "0");
         assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
+        assert_eq!(event.tags["holder_same_root_live_count_bucket"], "1");
+        assert_eq!(event.tags["holder_other_root_live_count_bucket"], "2-3");
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
         assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
@@ -9929,6 +9941,8 @@ mod tests {
         // together with its capture and fingerprint above.
         let summary = crate::package_use_lease::PackageUseLeaseTimeoutSummary {
             live_holder_count: crate::package_use_lease::LiveHolderCountBucket::One,
+            same_root_live_holder_count: crate::package_use_lease::LiveHolderCountBucket::One,
+            other_root_live_holder_count: crate::package_use_lease::LiveHolderCountBucket::Zero,
             holder_version: crate::package_use_lease::HolderVersionBucket::Current,
             oldest_holder_age: crate::package_use_lease::HolderAgeBucket::Under10m,
             oldest_holder_purpose: crate::package_use_lease::HolderPurposeBucket::Command,
