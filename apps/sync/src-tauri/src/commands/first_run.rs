@@ -119,12 +119,16 @@ fn report_settings_file_read_failure(read: &MenubarRead) {
 /// reason to invent an id: an unstable one would put every launch on its own
 /// partition and quietly inflate the counts. The caller treats absence as "do
 /// not report", which is honest.
-pub fn install_attempt_id() -> Option<String> {
+pub fn install_attempt_id_at(path: &std::path::Path) -> Option<String> {
     let _guard = INSTALL_ATTEMPT_ID_IO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ensure_install_attempt_id(path, || uuid::Uuid::new_v4().to_string()).ok()
+}
+
+pub fn install_attempt_id() -> Option<String> {
     let path = paths::menubar_json_path().ok()?;
-    ensure_install_attempt_id(&path, || uuid::Uuid::new_v4().to_string()).ok()
+    install_attempt_id_at(&path)
 }
 
 /// Managed-state wrapper so the launch verdict survives the rest of the

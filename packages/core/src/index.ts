@@ -33,6 +33,7 @@ export * from "./mesh/client.js";
 export {
   type ChannelWakeHint,
   type DmDeliveredWake,
+  isDirectoryChangedWake,
   isTargetedMeshWake,
   mqttPayloadToText,
   channelWakeFromPayload,

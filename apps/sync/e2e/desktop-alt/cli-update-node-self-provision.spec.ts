@@ -158,8 +158,9 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(retryHelper).not.toContain('base_args.to_vec()');
     // An unverified or mismatched user runtime must not receive a managed build
     // and HQ must not route around it with a second PATH-winning copy.
-    expect(retryHelper).toContain(
-      'executed_user_aim.is_some() && executed_node_abi != Some(MANAGED_NODE_ABI)',
+    const compactRetryHelper = retryHelper.replace(/\s+/g, ' ');
+    expect(compactRetryHelper).toContain(
+      'if !require_fresh_repair && executed_user_aim.is_some() && executed_node_abi != Some(MANAGED_NODE_ABI)',
     );
     expect(cli).toContain('ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy');
     expect(cli).toContain('managed_retry_user_copy_detail()');
@@ -270,7 +271,7 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
     // The failure path classifies WITH the probed environment (so the new kind is
     // reachable) and shows the environment-aware copy, never the raw parse error.
-    expect(cli).toContain('classify_install_failure_with_environment(');
+    expect(cli).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(cli).toContain('install_failure_detail_with_environment(');
     // The Sync-lane preflight and the CLI-updater classifier share ONE floor,
     // sourced from hq-desktop-core, so they can never drift apart.
@@ -355,6 +356,10 @@ describe('hq-CLI version probe recovers an unreadable CLI through the managed No
     cli.indexOf('async fn recover_unreadable_version_once('),
     cli.indexOf('/// The ONE call into the managed-Node provisioning seam'),
   );
+  const firstInstallHelper = cli.slice(
+    cli.indexOf('async fn provision_managed_npm_for_first_install('),
+    cli.indexOf('fn managed_toolchain_npm_and_path('),
+  );
 
   it('gives the core version probe a managed-Node interpreter fallback', () => {
     // A present managed Node is retried by prepending its bin dir to the child
@@ -374,16 +379,18 @@ describe('hq-CLI version probe recovers an unreadable CLI through the managed No
 
   it('reuses repair_managed_node once and re-probes once — never a second installer, never a loop', () => {
     // Exactly one provision (the shared seam) and one re-probe inside the helper.
-    expect(occurrences(recoverHelper, 'request_managed_node_repair(app).await')).toBe(1);
+    expect(occurrences(recoverHelper, 'request_managed_node_repair(app, replace_existing).await')).toBe(1);
     expect(occurrences(recoverHelper, 'get_local_version_diagnostics()')).toBe(1);
     // No second installer, no retry loop.
     expect(recoverHelper).not.toContain('repair_managed_node(');
     expect(recoverHelper).not.toContain('loop {');
     expect(recoverHelper).not.toContain('while ');
     // Only an HQ-owned gap (unprovisioned/incomplete) is provisioned here.
-    expect(recoverHelper).toContain(
-      'ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete',
-    );
+    expect(recoverHelper).toContain('ManagedRuntime::NotProvisioned => false');
+    expect(recoverHelper).toContain('ManagedRuntime::Incomplete { .. } => true');
+    // A first install reuses an already-verified managed runtime, while an
+    // incomplete runtime on the recovery path is replaced.
+    expect(firstInstallHelper).toContain('request_managed_node_repair(app, false).await');
     // And ONLY for an undiscoverable interpreter — a genuinely broken CLI
     // (nonzero exit / empty output) is never provisioned for.
     expect(recoverHelper).toContain(

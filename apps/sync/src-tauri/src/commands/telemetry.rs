@@ -1372,7 +1372,11 @@ fn build_desktop_telemetry_event(
     let schema_version = if event_name == "desktop_update_outcome" { 2 } else { 1 };
     let install_attempt_id = matches!(
         event_name.as_str(),
-        "desktop_setup_completed" | "desktop_onboarding_step" | "desktop_update_outcome" | "desktop_autostart_state"
+        "desktop_setup_completed"
+            | "desktop_onboarding_step"
+            | "desktop_update_outcome"
+            | "desktop_autostart_state"
+            | "desktop_auth_progress"
     )
     .then(crate::commands::first_run::install_attempt_id)
     .flatten();
@@ -1583,6 +1587,7 @@ pub async fn emit_desktop_operational_telemetry(
     let Some(access_token) = access_token_or_hold_auth_event(
         &event_name,
         properties.as_ref(),
+        session_id.as_deref(),
         menubar_path.clone(),
         access_token_for_optional_home(menubar_path.clone()),
     )
@@ -1611,6 +1616,7 @@ pub async fn emit_desktop_operational_telemetry(
 async fn access_token_or_hold_auth_event<F>(
     event_name: &str,
     properties: Option<&Value>,
+    session_id: Option<&str>,
     menubar_path: Option<std::path::PathBuf>,
     access_token: F,
 ) -> Result<Option<String>, String>
@@ -1638,6 +1644,7 @@ where
                         &path,
                         event_name,
                         properties,
+                        session_id,
                         std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|elapsed| elapsed.as_millis() as u64)
@@ -1668,7 +1675,9 @@ pub async fn post_held_auth_row(row: &Value, menubar_path: &Path) -> Result<(), 
     let mut event = build_desktop_telemetry_event(
         event_name.to_string(),
         row.get("properties").cloned(),
-        None,
+        row.get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         row.get("occurredAt")
             .and_then(Value::as_str)
             .map(str::to_string),
@@ -1678,6 +1687,13 @@ pub async fn post_held_auth_row(row: &Value, menubar_path: &Path) -> Result<(), 
         .get("idempotencyKey")
         .and_then(Value::as_str)
         .map(str::to_string);
+    if let Some(install_attempt_id) = row
+        .get("installAttemptId")
+        .and_then(Value::as_str)
+        .filter(|value| uuid::Uuid::parse_str(value).is_ok())
+    {
+        event.install_attempt_id = Some(install_attempt_id.to_string());
+    }
     vault
         .post_telemetry_events(&TelemetryEventsBatch {
             events: vec![event],
@@ -4085,6 +4101,18 @@ mod codex_telemetry_tests {
             install_attempt_id
         );
 
+        let progress_session_id = "22222222-2222-4222-8222-222222222222";
+        let progress = build_desktop_telemetry_event(
+            "desktop_auth_progress".to_string(),
+            Some(json!({"provider": "google", "step": "sign_in_started"})),
+            Some(progress_session_id.to_string()),
+            None,
+            "no-consent",
+        );
+        let progress_envelope = serde_json::to_value(&progress).unwrap();
+        assert_eq!(progress_envelope["installAttemptId"], install_attempt_id);
+        assert_eq!(progress_envelope["sessionId"], progress_session_id);
+
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
             Some(json!({"stageCount": 6})),
@@ -5248,6 +5276,7 @@ mod codex_telemetry_tests {
             "desktop_auth_failure",
             Some(&json!({ "provider": "google", "step": "callback_received" })),
             None,
+            None,
             async {
                 std::env::set_var("HOME", changed_home.path());
                 Err("Not signed in".to_string())
@@ -5414,32 +5443,48 @@ mod codex_telemetry_tests {
         use crate::commands::cdp_mirror::{
             held_auth_rows_at, hold_auth_row_at, AUTH_HELD_CAP, AUTH_HELD_TTL_MS,
         };
-        let home = setup_home();
-        write_menubar(home.path(), "{}");
-        let path = home.path().join(".hq/menubar.json");
+        let _home = setup_home();
+        write_menubar(_home.path(), "{}");
+        let other_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(other_home.path().join(".hq")).unwrap();
+        write_menubar(other_home.path(), "{}");
+        let other_path = other_home.path().join(".hq/menubar.json");
+        let expected_install_id = crate::commands::first_run::ensure_install_attempt_id(
+            &other_path,
+            || "33333333-3333-4333-8333-333333333333".to_string(),
+        )
+        .unwrap();
         let start = 1_800_000_000_000u64;
+        let session_id = "22222222-2222-4222-8222-222222222222";
         let props = |i: usize| json!({ "provider": format!("p{i}"), "step": "sign_in_started" });
         for i in 0..AUTH_HELD_CAP + 5 {
             hold_auth_row_at(
-                &path,
+                &other_path,
                 "desktop_auth_progress",
                 Some(&props(i)),
+                Some(session_id),
                 start + i as u64,
             )
             .unwrap();
         }
-        let rows = held_auth_rows_at(&path, start + 100);
+        let rows = held_auth_rows_at(&other_path, start + 100);
         assert_eq!(rows.len(), AUTH_HELD_CAP, "capped");
         assert_eq!(
             rows[0]["properties"]["provider"], "p5",
             "oldest dropped first"
         );
+        assert_eq!(
+            rows[0]["installAttemptId"],
+            expected_install_id,
+            "held rows use the install id from the supplied menubar path"
+        );
+        assert_eq!(rows[0]["sessionId"], session_id);
 
         // Past the TTL every row is gone, and the next hold prunes the file.
         let later = start + AUTH_HELD_TTL_MS + 100;
-        assert!(held_auth_rows_at(&path, later).is_empty(), "expired");
-        hold_auth_row_at(&path, "desktop_auth_failure", Some(&props(99)), later).unwrap();
-        let stored = hq_desktop_core::first_run::read_menubar_obj(&path);
+        assert!(held_auth_rows_at(&other_path, later).is_empty(), "expired");
+        hold_auth_row_at(&other_path, "desktop_auth_failure", Some(&props(99)), None, later).unwrap();
+        let stored = hq_desktop_core::first_run::read_menubar_obj(&other_path);
         assert_eq!(stored["cdpAuthHeld"].as_array().unwrap().len(), 1);
     }
 
