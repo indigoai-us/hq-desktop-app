@@ -116,7 +116,10 @@
         ondragover={(event) => onDragOver(item, event)}
         ondrop={(event) => onDrop(item, event)}
         ondragend={() => (dragUid = "")}
-        onclick={() => {
+        onclick={(event) => {
+          // WebKit (the macOS app's engine) does not focus a clicked button,
+          // so a popover would return focus to the page instead of here.
+          if (item.kind === "more-companies" || item.kind === "you") event.currentTarget.focus({ preventScroll: true });
           if (item.kind === "more-companies" && onmore) {
             onmore();
             return;

@@ -113,6 +113,27 @@ describe("pinned company tiles (US-004)", () => {
   });
 });
 
+// WebKit, the macOS app's engine, does not focus a clicked button. The More
+// companies and account popovers return focus to whatever held it on open,
+// so the rail button focuses itself before opening them.
+describe("AppRail popover openers", () => {
+  it("focuses More companies on click so its popover can return focus there", async () => {
+    let opened = 0;
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(AppRail, {
+      target: host,
+      props: { items, activeId: "company:co_quiet", onselect: () => {}, onmore: () => (opened += 1) },
+    });
+    await tick();
+    const more = host.querySelector<HTMLButtonElement>("[data-testid='rail-more-companies']")!;
+    (document.activeElement as HTMLElement | null)?.blur();
+    more.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(opened).toBe(1);
+    expect(document.activeElement).toBe(more);
+  });
+});
+
 // The rail must never yield width to a wide sibling (the Meetings canvas,
 // a long channel list): a flex item with a shrinkable basis collapses to a
 // sliver in a 1280 px window. Lock the fixed 56 px column.
