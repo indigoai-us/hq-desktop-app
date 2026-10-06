@@ -26,6 +26,8 @@ export interface RecapItem {
   bot: boolean;
   when: string;
   status: string;
+  /** Read from the summary's Next Steps list because no action signals were extracted. */
+  derived?: boolean;
 }
 
 export interface RecapModel {
@@ -84,7 +86,8 @@ export function venueLabel(event: MeetingEvent): string {
   const url = (event.meetingUrl || event.hangoutLink || "").toLowerCase();
   if (url.includes("zoom.us")) return "Zoom";
   if (url.includes("meet.google")) return "Meet";
-  if (!url) return "No link";
+  // No link: nothing to show, so no placeholder text.
+  if (!url) return "";
   return "Link";
 }
 
@@ -131,6 +134,47 @@ function itemFrom(row: Record<string, unknown>, kind: RecapItemKind, index: numb
   };
 }
 
+const NEXT_STEPS_HEAD = /^(?:#{1,6}\s*|\*\*)?\s*(?:next steps|action items|follow[- ]ups?)\s*:?\s*(?:\*\*)?\s*:?\s*$/i;
+
+/**
+ * List items under a "Next Steps" / "Action items" heading in a structured
+ * summary. Used only when the meeting has no extracted action signals, so the
+ * count still reflects the follow-ups the recap names.
+ */
+export function nextStepsFromSummary(summary: string): string[] {
+  const lines = summary.replace(/\r/g, "").split("\n");
+  const out: string[] = [];
+  let inside = false;
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (NEXT_STEPS_HEAD.test(line)) {
+      inside = true;
+      continue;
+    }
+    if (!inside) continue;
+    if (!line) {
+      if (out.length) inside = false;
+      continue;
+    }
+    const item = /^(?:[-*+]|\d+[.)])\s+(.+)$/.exec(line);
+    if (item) out.push(item[1].trim());
+    else if (/^#{1,6}\s/.test(line) || out.length) inside = false;
+  }
+  return out;
+}
+
+/** "6 actions · 1 decision"; empty when every count is zero. */
+export function recapDetailsLine(model: Pick<RecapModel, "decisions" | "actions" | "questions">): string {
+  const part = (n: number, one: string, many: string) => (n ? `${n} ${n === 1 ? one : many}` : "");
+  return [
+    part(model.decisions.length, "decision", "decisions"),
+    part(model.actions.length, "action", "actions"),
+    part(model.questions.length, "question", "questions"),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 export function recapModel(event: MeetingEvent, bot?: ScheduledBot): RecapModel {
   const raw = event.signals;
   const decisions = bucket(raw, "decisions").map((row, i) => itemFrom(row, "decision", i)).filter((x): x is RecapItem => !!x);
@@ -142,6 +186,12 @@ export function recapModel(event: MeetingEvent, bot?: ScheduledBot): RecapModel 
     event.notes?.map((n) => n.text?.trim()).filter(Boolean).slice(0, 2).join(" ") ||
     (decisions[0] ? decisions.map((d) => d.title).join(" ") : "");
   const by = bot?.sourceLanded ? "Recap saved to the company vault" : "Recap from this meeting";
+  if (!actions.length && summary) {
+    nextStepsFromSummary(summary).forEach((title, i) => {
+      const item = itemFrom({ title, id: `summary-action-${i}` }, "action", i);
+      if (item) actions.push({ ...item, derived: true });
+    });
+  }
   return { summary, decisions, actions, questions, meta: by };
 }
 

@@ -44,6 +44,8 @@ export interface MeetingsRailRow {
   companyLabel?: string | null;
   /** Meeting start in epoch ms, for local-day labels such as the recap heading. */
   startMs?: number | null;
+  /** A meeting from today that has already ended; drawn quieter in the Today section. */
+  past?: boolean;
 }
 
 export interface MeetingsRailSection {
@@ -163,8 +165,10 @@ export interface MeetingsRailInput {
 }
 
 /**
- * Live, Today · <date>, Tomorrow, Past. Empty sections are dropped; Past is
- * newest-first and capped so the pane stays short.
+ * Live, Today · <date>, Tomorrow, Past. Today holds every meeting of the
+ * local day, ended and upcoming, in start order. Tomorrow stays hidden until
+ * today is over: nothing upcoming or live remains today. Empty sections are
+ * dropped; Past is newest-first and capped so the pane stays short.
  */
 export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSection[] {
   const now = input.now ?? new Date();
@@ -249,14 +253,28 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
     )
     .map((p) => p.row);
 
+  // Ended meetings from today join the Today section; older days keep
+  // one header each below it.
+  const olderPast: MeetingsRailRow[] = [];
+  const todayPast: MeetingsRailRow[] = [];
+  for (const row of pastRows) {
+    if (dayKey(new Date(row.startMs ?? 0)) === today) todayPast.push({ ...row, past: true });
+    else olderPast.push(row);
+  }
+  const todayAll = [...todayPast, ...todayRows].sort(
+    (a, b) => (a.startMs ?? 0) - (b.startMs ?? 0),
+  );
+  const liveToday = live.some((r) => dayKey(new Date(r.startMs ?? 0)) === today);
+  const todayOver = todayRows.length === 0 && !liveToday;
+
   const sections: MeetingsRailSection[] = [];
   if (live.length) sections.push({ id: "live", key: "live", label: "Live", rows: live });
-  if (todayRows.length)
-    sections.push({ id: "today", key: "today", label: daySectionLabel(now.getTime(), now.getTime()), rows: todayRows });
-  if (tomorrowRows.length)
+  if (todayAll.length)
+    sections.push({ id: "today", key: "today", label: daySectionLabel(now.getTime(), now.getTime()), rows: todayAll });
+  if (todayOver && tomorrowRows.length)
     sections.push({ id: "tomorrow", key: "tomorrow", label: "Tomorrow", rows: tomorrowRows });
   // Past: one header per local day, the date shown only when it changes.
-  for (const row of pastRows) {
+  for (const row of olderPast) {
     const day = dayKey(new Date(row.startMs ?? 0));
     const key = `past-${day}`;
     const last = sections.at(-1);
@@ -264,10 +282,7 @@ export function meetingsRailSections(input: MeetingsRailInput): MeetingsRailSect
       last.rows.push(row);
       continue;
     }
-    let label = daySectionLabel(day, now.getTime());
-    // Today's upcoming header already reads TODAY; past rows from today follow it.
-    if (day === today && todayRows.length) label = label.replace(/^TODAY/, "EARLIER TODAY");
-    sections.push({ id: "past", key, label, rows: [row] });
+    sections.push({ id: "past", key, label: daySectionLabel(day, now.getTime()), rows: [row] });
   }
   return sections;
 }
