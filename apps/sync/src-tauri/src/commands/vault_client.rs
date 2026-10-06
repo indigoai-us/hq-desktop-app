@@ -332,6 +332,13 @@ pub struct TelemetryOptInResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PersonSettingResponse {
+    pub key: String,
+    pub value: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageBatch {
     pub machine_id: String,
     /// The DESKTOP APP version (runtime-resolved, see `app_version`) — legacy field name kept
@@ -736,6 +743,34 @@ impl VaultClient {
             .ok()
             .and_then(|c| c.sub)
             .filter(|s| !s.is_empty())
+    }
+
+    /// `GET /v1/me/settings/hq-anywhere` — read the caller's opt-in setting.
+    pub async fn get_hq_anywhere_person_setting(
+        &self,
+    ) -> Result<PersonSettingResponse, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/v1/me/settings/hq-anywhere", self.base_url))
+            .bearer_auth(&self.auth_token)
+            .send_retrying()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `PUT /v1/me/settings/hq-anywhere` — write only the authenticated caller's setting.
+    pub async fn put_hq_anywhere_person_setting(
+        &self,
+        value: bool,
+    ) -> Result<PersonSettingResponse, VaultClientError> {
+        let resp = self
+            .client
+            .put(format!("{}/v1/me/settings/hq-anywhere", self.base_url))
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::json!({ "value": value }))
+            .send_retrying()
+            .await?;
+        self.handle_response(resp).await
     }
 
     /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
@@ -1502,6 +1537,42 @@ mod tests {
         assert_eq!(cfg.sync_mode, "all");
         assert!(cfg.is_default);
         assert!(cfg.custom_paths.is_none());
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_person_setting_uses_the_caller_scoped_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/me/settings/hq-anywhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "key": "hq-anywhere",
+                "value": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/me/settings/hq-anywhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "key": "hq-anywhere",
+                "value": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        let initial = client.get_hq_anywhere_person_setting().await.unwrap();
+        assert_eq!(initial.key, "hq-anywhere");
+        assert!(!initial.value);
+
+        let saved = client.put_hq_anywhere_person_setting(true).await.unwrap();
+        assert_eq!(saved.key, "hq-anywhere");
+        assert!(saved.value);
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer test-token");
+        let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body, json!({ "value": true }));
     }
 
     #[tokio::test]

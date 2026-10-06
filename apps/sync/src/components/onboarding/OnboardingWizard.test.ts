@@ -1899,6 +1899,64 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().disabled).toBe(false);
   });
 
+  it('keeps HQ Anywhere off by default on the existing ready step', async () => {
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]');
+    expect(choice?.checked).toBe(false);
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'put_hq_anywhere_person_setting')).toBe(false);
+  });
+
+  it('writes the HQ Anywhere choice for the signed-in person when enabled', async () => {
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!;
+    choice.click();
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: true });
+    expect(choice.checked).toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
+
+    choice.click();
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith('put_hq_anywhere_person_setting', { value: false });
+    expect(choice.checked).toBe(false);
+  });
+
+  it('shows a plain retry path when the HQ Anywhere setting write fails', async () => {
+    let attempts = 0;
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'put_hq_anywhere_person_setting') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('403 upstream detail must stay private');
+        return args;
+      }
+      return undefined;
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="hq-anywhere-setting-error"]')));
+
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')?.textContent)
+      .toContain("Couldn't save this setting. Try again.");
+    expect(host.textContent).not.toContain('403 upstream detail must stay private');
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled)
+      .toBe(false);
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await flush();
+
+    expect(attempts).toBe(2);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
+      .toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
+  });
+
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,

@@ -382,6 +382,10 @@
   // answer was dropped. Consent is now its own step after setup.)
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
+  let hqAnywhereEnabled = $state(false);
+  let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingError = $state(false);
+  let hqAnywhereRetryValue = $state<boolean | null>(null);
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
   let readyConsentShown = false;
@@ -3040,6 +3044,27 @@
     }
   }
 
+  async function saveHqAnywhereSetting(value: boolean): Promise<void> {
+    if (hqAnywhereSaving) return;
+    const previous = hqAnywhereEnabled;
+    hqAnywhereEnabled = value;
+    hqAnywhereSaving = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    try {
+      await invokeCommand<void>('put_hq_anywhere_person_setting', { value });
+    } catch (error) {
+      // The raw transport detail stays in diagnostics; setup always shows the
+      // same plain message and leaves a retry path the person can use.
+      console.warn('[onboarding-hq-anywhere] setting write failed:', error);
+      hqAnywhereEnabled = previous;
+      hqAnywhereRetryValue = value;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSaving = false;
+    }
+  }
+
   /**
    * US-005: dismiss the re-prompt WITHOUT answering. This marks the prompt
    * "shown" for this person+version so it is not shown again this version — but
@@ -4763,10 +4788,40 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
+          <span class="rc-sep" aria-hidden="true">·</span>
+          <label class="rc-check">
+            <input
+              type="checkbox"
+              data-testid="ready-hq-anywhere"
+              checked={hqAnywhereEnabled}
+              disabled={hqAnywhereSaving || finishing}
+              aria-busy={hqAnywhereSaving}
+              onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+            />
+            <span>Enable HQ Anywhere</span>
+          </label>
+          {#if hqAnywhereSaving}
+            <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+          {/if}
           {#if privacyOpenError}
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
+        {#if hqAnywhereSettingError}
+          <div class="ready-setting-error" role="alert" data-testid="hq-anywhere-setting-error">
+            <span>Couldn't save this setting. Try again.</span>
+            <button
+              type="button"
+              class="consent-link"
+              data-testid="hq-anywhere-setting-retry"
+              disabled={hqAnywhereSaving || finishing}
+              aria-busy={hqAnywhereSaving}
+              onclick={() => {
+                if (hqAnywhereRetryValue !== null) void saveHqAnywhereSetting(hqAnywhereRetryValue);
+              }}
+            >{hqAnywhereSaving ? 'Saving…' : 'Retry'}</button>
+          </div>
+        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
