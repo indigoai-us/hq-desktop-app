@@ -11,6 +11,21 @@ The release moves it under the version it ships in.
 - Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
 - With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
 
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+
+## [0.10.397] — 2026-10-06
+
+- The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
+
+- Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
+
+## [0.10.396] — 2026-10-05
+
+- People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
+
+## [0.10.395] — 2026-10-05
+
 - Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
 - First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
 - The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.

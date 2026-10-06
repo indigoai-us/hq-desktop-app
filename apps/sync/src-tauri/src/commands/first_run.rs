@@ -28,7 +28,7 @@
 
 use serde_json::Value;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::util::{logfile::log, paths};
 
@@ -119,12 +119,16 @@ fn report_settings_file_read_failure(read: &MenubarRead) {
 /// reason to invent an id: an unstable one would put every launch on its own
 /// partition and quietly inflate the counts. The caller treats absence as "do
 /// not report", which is honest.
-pub fn install_attempt_id() -> Option<String> {
+pub fn install_attempt_id_at(path: &std::path::Path) -> Option<String> {
     let _guard = INSTALL_ATTEMPT_ID_IO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    ensure_install_attempt_id(path, || uuid::Uuid::new_v4().to_string()).ok()
+}
+
+pub fn install_attempt_id() -> Option<String> {
     let path = paths::menubar_json_path().ok()?;
-    ensure_install_attempt_id(&path, || uuid::Uuid::new_v4().to_string()).ok()
+    install_attempt_id_at(&path)
 }
 
 /// Managed-state wrapper so the launch verdict survives the rest of the
@@ -144,11 +148,16 @@ pub fn early_launch_hint() -> LaunchKind {
 /// Classify this launch and stash the verdict in managed state. MUST be called
 /// at the top of `.setup()`, before `config::ensure_machine_id` populates
 /// `machineId`.
-pub fn classify_launch(app: &AppHandle) -> LaunchKind {
+pub fn classify_launch<R: Runtime>(app: &AppHandle<R>) -> LaunchKind {
+    let mut settings_prove_writable = false;
     let kind = match paths::menubar_json_path() {
         Ok(path) => {
             let read = read_menubar(&path);
             report_settings_file_read_failure(&read);
+            settings_prove_writable = matches!(
+                &read,
+                MenubarRead::Absent | MenubarRead::Object(_)
+            );
             classify_from_menubar_read(&read)
         }
         // Without a resolvable home directory, we cannot prove this is a
@@ -156,6 +165,17 @@ pub fn classify_launch(app: &AppHandle) -> LaunchKind {
         // first-run write against an unknown settings location.
         Err(_) => LaunchKind::Normal,
     };
+    // Mint and persist the stable join key before onboarding can emit setup or
+    // sign-in telemetry, but only when the initial read proved that settings
+    // are absent or valid JSON. A damaged existing settings file must remain
+    // untouched. Receipt builders still read the same store, so this does not
+    // change the event contract or create another identity source.
+    if settings_prove_writable && install_attempt_id().is_none() {
+        log(
+            "first-run",
+            "install attempt ID unavailable before onboarding telemetry",
+        );
+    }
     app.manage(LaunchKindState(kind));
     kind
 }
