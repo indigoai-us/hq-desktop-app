@@ -1870,10 +1870,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                                 DaemonFailureCategory::None,
                                             );
                                         }
-                                        sentry::capture_message(
-                                            "auto-sync watcher exited with a live watch-owner lease",
-                                            sentry::Level::Warning,
-                                        );
+                                        if hq_desktop_core::watch_owner::should_emit_busy_watch_exit_warning(
+                                            plan,
+                                        ) {
+                                            sentry::capture_message(
+                                                "auto-sync watcher exited with a live watch-owner lease",
+                                                sentry::Level::Warning,
+                                            );
+                                        }
                                         RunnerReportDirDisposition::DeleteOnExitPath
                                     }
                                 },
