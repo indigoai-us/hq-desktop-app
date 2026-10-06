@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
+- Setup now explains how to free disk space when an install cannot continue.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 - A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
