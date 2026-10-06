@@ -120,10 +120,11 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
 /// installs or consent-only first runs still require setup.
 pub fn require_local_toolchain_for_startup(
     verdict: LifecycleVerdict,
-    tools_present: bool,
+    hq_resolved: bool,
+    node_resolved: bool,
     updater_restart: bool,
 ) -> LifecycleVerdict {
-    if tools_present {
+    if hq_resolved && node_resolved {
         return verdict;
     }
 
@@ -142,7 +143,7 @@ pub fn require_local_toolchain_for_startup(
         };
     }
 
-    if verdict.state == LifecycleState::SteadyState {
+    if verdict.state == LifecycleState::SteadyState && !hq_resolved && node_resolved {
         return verdict;
     }
 
@@ -1022,7 +1023,7 @@ mod tests {
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);
 
-        let startup = require_local_toolchain_for_startup(classified, false, false);
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
         assert_eq!(
             startup.state,
             LifecycleState::SteadyState,
@@ -1032,12 +1033,32 @@ mod tests {
     }
 
     #[test]
+    fn completed_install_still_routes_to_install_when_node_is_missing() {
+        let classified = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+        let startup = require_local_toolchain_for_startup(classified, true, false, false);
+
+        assert_eq!(startup.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(startup.state));
+    }
+
+    #[test]
     fn genuinely_uninstalled_authenticated_user_still_routes_to_install_when_hq_missing() {
         let classified = classify_lifecycle(LifecycleInputs {
             has_auth: true,
             ..input()
         });
-        let startup = require_local_toolchain_for_startup(classified, false, false);
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
 
         assert_eq!(startup.state, LifecycleState::NeedsInstall);
         assert!(installation_required(startup.state));
@@ -1668,7 +1689,7 @@ mod toolchain_readiness_tests {
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);
 
-        let verdict = require_local_toolchain_for_startup(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::InstallResume);
         assert!(!verdict.needs_install_backfill && !verdict.needs_first_run_backfill);
         assert!(installation_required(verdict.state));
@@ -1689,7 +1710,7 @@ mod toolchain_readiness_tests {
             hq_root_recorded_by_prior_setup: false,
         };
         let classified = classify_lifecycle(inputs);
-        let verdict = require_local_toolchain_for_startup(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
