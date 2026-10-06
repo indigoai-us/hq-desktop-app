@@ -11,6 +11,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
+import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
 import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { RuntimeStatus } from "./runtime-status.js";
@@ -66,10 +67,8 @@ function open(props: Record<string, unknown> = {}) {
       botWorkers: [],
       existingNames: [],
       botCompanies: [{ slug: "indigo", label: "Indigo" }],
-      previewPlacement: "top",
       oncreate: async () => undefined,
       initialHome: "local",
-      layout: "steps",
       ...props,
     },
   });
@@ -80,10 +79,10 @@ describe("Local bot on the cloud flow's step screens", () => {
     open({ onback: () => undefined });
     await settle();
     const root = q('[data-testid="chat-create-bot-step"]')!;
-    expect(root.getAttribute("data-layout")).toBe("steps");
     expect(root.classList.contains("new-bot-create")).toBe(true);
     // The old wizard's crumbs, footer and preview card are gone.
     expect(q(".flow-crumbs")).toBeNull();
+    expect(q('[data-testid^="create-bot-crumb-"]')).toBeNull();
     expect(q('[data-testid="bot-preview-card"]')).toBeNull();
 
     expect(step()).toBe("details");
@@ -293,10 +292,129 @@ describe("Local bot on the cloud flow's step screens", () => {
     expect(onback).toHaveBeenCalledOnce();
   });
 
-  it("keeps the old wizard for the + window and Settings", async () => {
-    open({ layout: "wizard" });
+  it("a Settings-like host (local create only) opens straight on the name step, with no Cloud or Local choice", async () => {
+    const onback = vi.fn();
+    open({ initialHome: null, onCloudCreate: null, onback });
     await settle();
-    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expect(step()).toBe("details");
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
+    expect(q('[data-testid="new-bot-choice-cloud"]')).toBeNull();
+    expect(q('[data-testid="create-bot-sunrise-details"] [data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 3");
+    // No cloud create to switch to.
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
+    // Back from the name is the host's (there is no choice to return to).
+    click('[data-testid="create-bot-back"]');
+    expect(onback).toHaveBeenCalledOnce();
+  });
+});
+
+const CLOUD_QUOTE: AgentProvisionOptionsView = {
+  defaultInstanceType: "t4g.medium",
+  catalogVersion: "test-catalog",
+  options: [
+    {
+      key: "basic",
+      productName: "Basic",
+      instanceType: "t4g.medium",
+      listCents: 5000,
+      default: true,
+      selectable: true,
+      netMonthlyCents: 4200,
+      deltaCents: 4200,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 1,
+      workers: 1,
+    },
+    {
+      key: "power",
+      productName: "Power",
+      instanceType: "m7i.large",
+      listCents: 12000,
+      default: false,
+      selectable: true,
+      netMonthlyCents: 10000,
+      deltaCents: 10000,
+      unavailableReason: null,
+      notBilled: false,
+      lanes: 4,
+      workers: 4,
+    },
+  ],
+};
+
+describe("The flow's own Cloud or Local question", () => {
+  function openBoth(props: Record<string, unknown> = {}) {
+    open({
+      initialHome: null,
+      agentTargets: [{ companyUid: "cmp_indigo", label: "Indigo" }],
+      onCloudCreate: vi.fn(async () => undefined),
+      loadCloudProvisionOptions: async () => ok(CLOUD_QUOTE),
+      ...props,
+    });
+  }
+
+  it("opens on Cloud or Local when the host did not ask; Local leads to the name step and Back returns to the choice", async () => {
+    openBoth();
+    await settle();
+    expect(step()).toBe("where");
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-details-step"]')).toBeNull();
+    expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(false);
+
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    expect(step()).toBe("details");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 3");
+    // The flow asked, and cloud is available: the name step offers the switch.
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeTruthy();
+
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(step()).toBe("where");
+    expect(q('[data-testid="new-bot-choice-local"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-choice-cloud"]')).toBeTruthy();
+  });
+
+  it("Cloud reaches the name and size step and creates through onCloudCreate with the quoted size", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    const oncreate = vi.fn(async () => undefined);
+    openBoth({ onCloudCreate, oncreate });
+    await settle();
+    click('[data-testid="new-bot-choice-cloud"]');
+    await settle(10);
+    expect(step()).toBe("details");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("cloud");
+    // One company: no company step, and no kind/template step for cloud.
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 1");
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="cloud-bot-size-choice"]')).toBeTruthy();
+
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "Polar";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    const power = q<HTMLInputElement>('[data-testid="cloud-bot-size-power"]')!;
+    power.click();
+    await settle();
+
+    const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!;
+    expect(create.textContent).toContain("Create in Indigo");
+    expect(create.disabled).toBe(false);
+    create.click();
+    await settle(10);
+    expect(oncreate).not.toHaveBeenCalled();
+    expect(onCloudCreate).toHaveBeenCalledOnce();
+    const [companyUid, draft] = onCloudCreate.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(companyUid).toBe("cmp_indigo");
+    expect(draft).toMatchObject({ name: "Polar", handle: "polar", size: "power" });
+
+    // Back from the only cloud step returns to the choice.
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(step()).toBe("where");
   });
 });

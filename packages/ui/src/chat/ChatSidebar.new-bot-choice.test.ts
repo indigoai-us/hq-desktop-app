@@ -177,12 +177,16 @@ describe("New bot asks Cloud or Local first", () => {
     const card = shell!.querySelector(".new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps");
     // Owner (2026-10-06): "use the same design as cloud bot creation". The
     // local flow is the cloud flow's step screens: name first.
-    expect(card?.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBe("steps");
+    const flow = card?.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("local");
+    expect(flow?.getAttribute("data-step")).toBe("details");
+    expect(card?.querySelector('[data-testid="new-bot-progress"]')).toBeTruthy();
     expect(card?.querySelector('[data-testid="create-bot-details-step"]')).toBeTruthy();
     expect(card?.querySelector("#new-bot-takeover-title")?.textContent).toContain("Enter a");
     // The plain window card, the old crumbs and the preview rail are not drawn.
     expect(shell!.querySelector(".create-card")).toBeNull();
     expect(shell!.querySelector(".flow-crumbs")).toBeNull();
+    expect(shell!.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
     expect(shell!.querySelector('[data-testid="bot-preview-card"]')).toBeNull();
 
     click('[data-testid="create-bot-next"]');
@@ -255,10 +259,14 @@ describe("New bot asks Cloud or Local first", () => {
 
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(sunriseFlow()).toBeTruthy();
+    // Home is Cloud; with two companies the first cloud step picks the company.
+    const flow = q('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("cloud");
+    expect(flow?.getAttribute("data-step")).toBe("home");
+    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="chat-bot-where-cloud"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("Cloud with a takeover company opens the takeover's own create screen", async () => {
@@ -290,7 +298,8 @@ describe("New bot asks Cloud or Local first", () => {
     await pressNewBot();
     click('[data-testid="new-bot-choice-local"]');
     await settle();
-    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBe("steps");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
     click('[data-testid="create-bot-switch-cloud"]');
     await settle();
     expect(sunriseFlow()).toBeNull();
@@ -315,11 +324,12 @@ describe("New bot asks Cloud or Local first", () => {
     click('[data-testid="create-bot-switch-cloud"]');
     await settle(12);
     expect(sunriseFlow()).toBeTruthy();
-    // Not the local steps any more: the cloud flow, with Home on Cloud.
-    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBeNull();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q('[data-testid="chat-bot-where-cloud"]')?.getAttribute("aria-checked")).toBe("true");
+    // Not the local steps any more: the cloud flow, with Home on Cloud, from
+    // its first step (the company picker, two companies here).
+    const flow = q('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("cloud");
+    expect(flow?.getAttribute("data-step")).toBe("home");
+    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
   });
 
   it("no Create a cloud bot instead when Cloud cannot be picked", async () => {
@@ -328,7 +338,8 @@ describe("New bot asks Cloud or Local first", () => {
     await pressNewBot();
     click('[data-testid="new-bot-choice-local"]');
     await settle();
-    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBe("steps");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
     expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
   });
 

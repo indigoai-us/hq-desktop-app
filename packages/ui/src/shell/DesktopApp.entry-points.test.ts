@@ -424,20 +424,16 @@ describe("DesktopApp New bot: the Cloud option", () => {
       // bots, so Cloud: the takeover's create for a flagged company, else the
       // "+" window's bot flow in the takeover shell.
       expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
-      clickAnywhere('[data-testid="new-bot-choice-cloud"]');
-      await settle(10);
-      clickAnywhere('[data-testid="create-bot-next"]');
-      await settle(10);
-
-      // A company can host a bot, so the Cloud home option is offered.
-      const cloud = document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
+      // A company can host a bot, so the Cloud choice is enabled.
+      const cloud = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]');
       expect(cloud, "the Cloud option renders").toBeTruthy();
+      expect(cloud!.disabled).toBe(false);
       cloud!.click();
       await settle(10);
       // The cloud bot is named HERE, in front of the person, because the card
-      // that used to ask for its name is no longer rendered anywhere.
-      clickAnywhere('[data-testid="create-bot-next"]');
-      await settle(10);
+      // that used to ask for its name is no longer rendered anywhere. One
+      // company, so no company picker: the flow opens on the details step.
+      expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
       const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]');
       expect(nameField, "the cloud details step asks for a name").toBeTruthy();
       nameField!.value = "Polar";
@@ -564,12 +560,7 @@ describe("DesktopApp New bot: the Cloud option", () => {
       expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
       clickAnywhere('[data-testid="new-bot-choice-cloud"]');
       await settle(10);
-      clickAnywhere('[data-testid="create-bot-next"]');
-      await settle(10);
-      document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.click();
-      await settle(10);
-      clickAnywhere('[data-testid="create-bot-next"]');
-      await settle(10);
+      expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
 
       const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
       nameField.value = "Polar";
@@ -785,14 +776,19 @@ describe("DesktopApp New bot takeover", () => {
     await settle(10);
   }
 
-  /** The "+" modal's Cloud path: kind → home (Cloud) → details → Create. */
+  /**
+   * The "+" modal's own bot flow (not the takeover): the shared step flow in
+   * the takeover shell inside the create modal.
+   */
+  function expectInModalFlow(): void {
+    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="chat-create-bot-step"]')).toBeTruthy();
+  }
+
+  /** The "+" modal's Cloud path: details (one company, no picker) → Create. */
   async function createInModal(name: string): Promise<void> {
-    clickAnywhere('[data-testid="create-bot-next"]');
-    await settle(10);
-    clickAnywhere('[data-testid="chat-bot-where-cloud"]');
-    await settle(10);
-    clickAnywhere('[data-testid="create-bot-next"]');
-    await settle(10);
+    expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
     const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     nameField.value = name;
     nameField.dispatchEvent(new Event("input", { bubbles: true }));
@@ -849,8 +845,7 @@ describe("DesktopApp New bot takeover", () => {
 
     expect(hasCompanyFeature).toHaveBeenCalledWith(NEW_BOT_FLAG, "cmp_acme");
     expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(document.querySelector('[data-testid="chat-create-modal"]')).toBeTruthy();
-    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expectInModalFlow();
   }, 30_000);
 
   it("a flag read that fails gets the in-modal flow: no takeover", async () => {
@@ -866,7 +861,7 @@ describe("DesktopApp New bot takeover", () => {
 
     expect(hasCompanyFeature).toHaveBeenCalled();
     expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expectInModalFlow();
   }, 30_000);
 
   it("a host that cannot read company flags gets the in-modal flow: no takeover", async () => {
@@ -876,7 +871,7 @@ describe("DesktopApp New bot takeover", () => {
     });
     await openNewBot();
     expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    expectInModalFlow();
   }, 30_000);
 
   it("reads each company's flag once, however often the '+' modal is opened", async () => {
@@ -1253,7 +1248,12 @@ describe("DesktopApp New bot takeover", () => {
       clickAnywhere('[data-testid="new-bot-takeover-local"]');
       await settle(10);
       expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
-      expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+      expectInModalFlow();
+      // The "+" modal's flow asks Cloud or Local itself; Cloud takes the
+      // modal's own cloud steps.
+      expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("where");
+      clickAnywhere('[data-testid="new-bot-choice-cloud"]');
+      await settle(10);
 
       await createInModal("Polar");
       await vi.waitFor(() => expect(opened).toContain("chn_polar"), {

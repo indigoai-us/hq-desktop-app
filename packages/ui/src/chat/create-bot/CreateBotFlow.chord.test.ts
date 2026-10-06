@@ -26,22 +26,35 @@ async function renderOn(platform: keyof typeof UA): Promise<HTMLElement> {
   Object.defineProperty(navigator, "userAgent", { configurable: true, value: UA[platform] });
   const host = document.createElement("div");
   document.body.appendChild(host);
-  component = mount(CreateBotFlow, { target: host, props: { oncancel: () => {} } as never });
+  component = mount(CreateBotFlow, {
+    target: host,
+    props: {
+      oncreate: async () => undefined,
+      botRuntimeReady: { claude: true, codex: false, grok: false },
+      initialHome: "local",
+    } as never,
+  });
   await tick();
+  // The hint sits beside Create, on the last step: walk name → kind → coding tool.
+  for (let i = 0; i < 2; i += 1) {
+    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await tick();
+  }
+  expect(host.querySelector('[data-testid="chat-bot-create"]')).toBeTruthy();
   return host;
 }
 
 describe("New bot create chord per platform", () => {
   it("shows ⌘↵ on macOS in the chord style", async () => {
     const host = await renderOn("mac");
-    const chord = host.querySelector('[data-testid="create-bot-hint"] kbd.chord');
+    const chord = host.querySelector('[data-testid="create-bot-hint"] kbd.new-bot-chord');
     expect(chord?.textContent).toBe("⌘↵");
     expect(host.querySelector('[data-testid="create-bot-hint"]')?.textContent).not.toContain("Ctrl");
   });
 
   it("keeps Ctrl+Enter on Windows and Linux", async () => {
     const host = await renderOn("windows");
-    expect(host.querySelector('[data-testid="create-bot-hint"] kbd.chord')?.textContent).toBe("Ctrl+↵");
+    expect(host.querySelector('[data-testid="create-bot-hint"] kbd.new-bot-chord')?.textContent).toBe("Ctrl+↵");
   });
 
   it("both entry points mount this flow", () => {

@@ -95,7 +95,9 @@ test.describe('console rail: full user path', () => {
     // a template, then the coding tool.
     const flow = page.getByTestId('chat-create-bot-step');
     await expect(flow).toBeVisible();
-    await expect(flow).toHaveAttribute('data-layout', 'steps');
+    // One layout: the takeover's step screens (step dots), no wizard crumbs.
+    await expect(flow.getByTestId('new-bot-progress')).toBeVisible();
+    await expect(page.locator('[data-testid^="create-bot-crumb-"]')).toHaveCount(0);
     await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);
     await expect(flow).toHaveAttribute('data-step', 'details');
     await page.getByTestId('chat-bot-name').fill('Scout');
