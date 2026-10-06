@@ -123,3 +123,24 @@ describe("OWNER-R4 Atlas People & agents", () => {
     );
   });
 });
+
+describe("Atlas people read of the production telemetry shape", () => {
+  it("reads the flat members list with model and skill maps and names from identities", () => {
+    const body = {
+      members: [
+        {
+          personUid: "prs_a",
+          tokensByModel: { "claude-opus": { inputTokens: 1_000, outputTokens: 200, cacheCreationTokens: 0, cacheReadTokens: 300 } },
+          skills: { [`/${skillNode.label}`]: 4, other: 1 },
+          distinctSessions: 3,
+          events: 9,
+        },
+        { personUid: "prs_idle", tokensByModel: {}, skills: {}, distinctSessions: 0, events: 0 },
+      ],
+      identities: { persons: { prs_a: { displayName: "Ada", email: "ada@example.com" } } },
+    };
+    expect(atlasPeopleFromTelemetry(body).map((p) => [p.name, p.tokens, p.sessions, p.topSkill])).toEqual([
+      ["Ada", 1_500, 3, `/${skillNode.label}`],
+    ]);
+  });
+});

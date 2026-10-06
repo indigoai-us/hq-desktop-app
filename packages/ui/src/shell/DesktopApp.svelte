@@ -13077,6 +13077,7 @@
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
+            onsignin={onsignin ? startReauth : undefined}
           />
         {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
           <!-- Props read companyPaneCompany through getters that can run once
@@ -13172,6 +13173,7 @@
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
+            onsignin={onsignin ? startReauth : undefined}
           />
         {:else if railPlaceholder?.id === "goals" && companyPaneCompany}
           <GoalsRailHost

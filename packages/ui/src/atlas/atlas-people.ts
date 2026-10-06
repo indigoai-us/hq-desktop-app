@@ -105,8 +105,10 @@ export function atlasPeopleFromTelemetry(body: unknown): AtlasPerson[] {
     const totals = m.totals ? rec(m.totals) : m;
     const identity = rec(named[id]);
     const bot = id.startsWith("agt_") || m.kind === "agent" || identity.type === "agent";
-    const label = [m.label, m.displayName, identity.name].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
-    const email = typeof m.email === "string" ? m.email.trim() : "";
+    const label = [m.label, m.displayName, identity.displayName, identity.name].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
+    const email =
+      (typeof m.email === "string" ? m.email.trim() : "") ||
+      (typeof identity.email === "string" ? identity.email.trim() : "");
     // Never an id on screen.
     const name = label && !/^(prs|agt)_/.test(label) ? label : email || (bot ? "Unknown bot" : "Unnamed member");
     const bySkill = skillCounts(totals.skills);
