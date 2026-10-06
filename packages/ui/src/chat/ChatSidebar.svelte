@@ -132,6 +132,9 @@
     duplicateHumanDmTitles,
     formatSearchHitTime,
     companyScopedChannels,
+    groupCompanyChannelsByCompany,
+    loadCollapsedCompanyChannels,
+    toggleCollapsedCompanyChannels,
     groupByDay,
     omitCompanyScopedChannels,
     groupByType,
@@ -1412,6 +1415,22 @@
     companyScoped ? companyScopedChannels(filteredRows, scope) : [],
   );
   const inboxRows = $derived(omitCompanyScopedChannels(filteredRows));
+  // All scope: every company's channels, grouped under a quiet company
+  // header. Without this, company channels only painted inside a single
+  // company pane and vanished from All (inboxRows omits them).
+  const allCompanyChannelGroups = $derived(
+    scope === "all" ? groupCompanyChannelsByCompany(filteredRows, scopeCompanies) : [],
+  );
+  let collapsedCompanyChannels = $state<string[]>(
+    loadCollapsedCompanyChannels(accountStorage),
+  );
+  function toggleCompanyChannelGroup(companyUid: string): void {
+    collapsedCompanyChannels = toggleCollapsedCompanyChannels(
+      collapsedCompanyChannels,
+      companyUid,
+      accountStorage,
+    );
+  }
   const railRows = $derived(
     sortMode === "type" || companyScoped
       ? inboxRows
@@ -1519,7 +1538,11 @@
   /** Rows in painted order — the selection model's range/keyboard order. */
   const renderedRows = $derived([
     ...activityChannelRows,
-    ...flattenGrouped(grouped, lastWeekExpanded),
+    ...grouped.pinned,
+    ...allCompanyChannelGroups.flatMap((group) =>
+      collapsedCompanyChannels.includes(group.companyUid) ? [] : group.rows,
+    ),
+    ...flattenGrouped({ ...grouped, pinned: [] }, lastWeekExpanded),
   ]);
   const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
@@ -4472,6 +4495,48 @@
       </div>
     {/if}
 
+    {#each allCompanyChannelGroups as group (group.companyUid)}
+      {@const open = !collapsedCompanyChannels.includes(group.companyUid)}
+      <button
+        type="button"
+        class="chat-collapse-row chat-company-group"
+        data-testid="company-channel-group"
+        data-company-uid={group.companyUid}
+        aria-expanded={open}
+        onclick={() => toggleCompanyChannelGroup(group.companyUid)}
+      >
+        <span class="chat-collapse-left">
+          <span class="chat-collapse-chevron" class:open aria-hidden="true">›</span>
+          {#if group.iconUrl}
+            <img class="chat-company-group-icon" src={group.iconUrl} alt="" />
+          {:else}
+            <span class="chat-company-group-icon" aria-hidden="true"
+              >{initialsFor(group.label)}</span
+            >
+          {/if}
+          <span class="chat-section-label inline">{group.label}</span>
+        </span>
+        {#if !open && group.unread > 0}
+          <span class="chat-collapse-meta" data-testid="company-channel-group-unread"
+            >{group.unread}</span
+          >
+        {/if}
+      </button>
+      {#if open}
+        <div
+          class="chat-list"
+          role={selectionMode ? "listbox" : "list"}
+          aria-multiselectable={selectionMode ? true : undefined}
+          aria-label={`${group.label} channels`}
+          data-testid="company-channel-group-rows"
+        >
+          {#each group.rows as row (row.id)}
+            {@render conversationRow(row)}
+          {/each}
+        </div>
+      {/if}
+    {/each}
+
     {#each grouped.sections as section (section.key)}
       <DayGroupHeader label={section.label} id={`chat-sec-${section.key}`} />
       <div
@@ -6280,6 +6345,19 @@
   .chat-collapse-row:hover {
     background: transparent;
     color: var(--t1);
+  }
+
+  .chat-company-group-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 0;
+    background: var(--hover);
+    color: var(--t2);
+    font-size: 8px;
+    font-weight: 500;
+    object-fit: cover;
   }
 
   .chat-collapse-meta {
