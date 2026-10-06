@@ -31,7 +31,6 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-#[cfg(not(windows))]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -11136,8 +11135,14 @@ mod disk_space_install_wiring_tests {
             .find("app_npm_cache(app)")
             .expect("app-owned npm cache creation");
         assert!(preflight < cache_creation, "space must be checked before preparing npm cache");
+        let production_source = source
+            .split("#[cfg(test)]\nmod disk_space_install_wiring_tests")
+            .next()
+            .expect("production source before wiring tests");
         assert_eq!(
-            source.matches("installer_disk_space::user_facing_install_error(").count(),
+            production_source
+                .matches("installer_disk_space::user_facing_install_error(")
+                .count(),
             2,
             "both platform command runners must translate npm disk-full failures"
         );
