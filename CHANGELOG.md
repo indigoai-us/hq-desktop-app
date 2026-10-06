@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.398] — 2026-10-06
+
 - First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
 
 - Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
