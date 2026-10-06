@@ -3,6 +3,7 @@
  * Models section groups exact models into families (OWNER-R29); the page
  * sections and the CSV export read from here.
  */
+import { vizOrder } from "./telemetry-colors.js";
 import { compactNumber } from "../common/compact-number.js";
 import { SYSTEM_MODEL_NOTE } from "./telemetry-me.js";
 import type { TelemetrySnapshot } from "./telemetry-model.js";
@@ -36,6 +37,11 @@ export const RECENT_SESSIONS = 10;
 
 /** Families with exact models, from the snapshot's per-model read. */
 export function familiesFor(snapshot: TelemetrySnapshot): ModelFamilyUsage[] {
+  // Same fixed provider-then-shade order as the chart's stacks and legend.
+  return vizOrder(familyRows(snapshot), (f) => f.family);
+}
+
+function familyRows(snapshot: TelemetrySnapshot): ModelFamilyUsage[] {
   if (snapshot.exactModels?.length) return modelFamilies(snapshot.exactModels);
   // Sources without exact ids (the offline fixture) list their family rows.
   return snapshot.models.map((m) => {

@@ -1130,6 +1130,26 @@ export interface CompanyApi {
    */
   listDeployApps?(scope: string): AdapterPromise<Json>;
   /**
+   * Side-panel preview for one deployed app: `{ ogImageUrl, thumbnail }`.
+   * Read lazily on selection and cached on disk by app id + deploy time.
+   * Desktop only.
+   */
+  deployAppPreview?(appId: string, url: string, deployedAt: string, refresh: boolean): AdapterPromise<Json>;
+  /**
+   * Rendered snapshot of one deployed app: `{ snapshot, width, height }`
+   * with `snapshot` a PNG data: URL. Captured in a hidden window on selection
+   * and cached on disk by app id + deploy time. For a protected app pass
+   * `gate`; the desktop then requests an hq-deploy preview pass for `scope`
+   * (and fails when the server does not offer one). Desktop only; macOS today.
+   */
+  deployAppSnapshot?(
+    appId: string,
+    url: string,
+    deployedAt: string,
+    refresh: boolean,
+    gate?: { scope: string; protected: boolean },
+  ): AdapterPromise<Json>;
+  /**
    * One hq-deploy access call (`access-policy`, `access-mode`,
    * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
    * host refuses any other route.
