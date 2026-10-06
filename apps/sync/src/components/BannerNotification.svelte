@@ -48,7 +48,9 @@
     requestAnimationFrame(() => {
       const ch = contentEl?.getBoundingClientRect().height ?? 0;
       const target = Math.round(Math.max(ch, AVATAR_H) + CARD_PAD);
-      void invoke('resize_banner', { height: target }).catch(() => {});
+      void invoke('resize_banner', { height: target }).catch((error) => {
+        console.error('banner: resize failed', error);
+      });
     });
   }
 
@@ -63,7 +65,9 @@
     leaveTimer = setTimeout(() => {
       leaveTimer = undefined;
       if (generation !== payloadGeneration || !leaving) return;
-      void invoke('dismiss_banner').catch(() => {});
+      void invoke('dismiss_banner').catch((error) => {
+        console.error('banner: dismiss failed', error);
+      });
     }, 180);
   }
 

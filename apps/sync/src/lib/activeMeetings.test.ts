@@ -385,3 +385,77 @@ describe('seedActiveMeetingsFromBackend — overlays live recording state (deskt
     expect(rowState('win-1')?.state).toBe('detected');
   });
 });
+
+describe('activeMeetings best-effort side effects log the error they swallow', () => {
+  beforeEach(async () => {
+    invokeMock.mockReset();
+    eventEmitMock.mockReset();
+    eventEmitMock.mockResolvedValue(undefined);
+    invokeMock.mockResolvedValue(undefined);
+    activeMeetings.set([]);
+    handlers.clear();
+    stopActiveMeetingListeners();
+  });
+
+  afterEach(() => {
+    stopActiveMeetingListeners();
+    activeMeetings.set([]);
+    vi.restoreAllMocks();
+  });
+
+  it('logs a failed meetings snapshot request and still installs listeners', async () => {
+    const error = new Error('snapshot failed');
+    eventEmitMock.mockRejectedValue(error);
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await ensureActiveMeetingListeners();
+
+    expect(logged).toHaveBeenCalledWith('meetings-window:request-snapshot failed:', error);
+    expect(handlers.has('recording:error')).toBe(true);
+  });
+
+  it('logs a failed prompt-badge clear after record and still starts recording', async () => {
+    const error = new Error('badge failed');
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'meetings_clear_prompt_badge') throw error;
+      return 'rec-1';
+    });
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    seedRow('win-1', 'detected');
+    await ensureActiveMeetingListeners();
+    const handler = handlers.get('notification:meeting-action');
+    if (!handler) throw new Error('notification listener missing');
+
+    await handler({
+      payload: { action: 'record', windowId: 'win-1', platform: 'meet' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(invokeMock).toHaveBeenCalledWith('start_recording', expect.anything());
+    expect(logged).toHaveBeenCalledWith('meetings_clear_prompt_badge failed:', error);
+  });
+
+  it('logs a failed main-window fallback and a failed badge clear when open fails', async () => {
+    const windowError = new Error('window failed');
+    const badgeError = new Error('badge failed');
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === 'open_desktop_alt_window') throw new Error('desktop alt unavailable');
+      if (cmd === 'show_main_window') throw windowError;
+      if (cmd === 'meetings_clear_prompt_badge') throw badgeError;
+      return undefined;
+    });
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await ensureActiveMeetingListeners();
+    const handler = handlers.get('notification:meeting-action');
+    if (!handler) throw new Error('notification listener missing');
+
+    await handler({
+      payload: { action: 'open', windowId: 'win-1', platform: 'meet' },
+    });
+    await Promise.resolve();
+
+    expect(logged).toHaveBeenCalledWith('show_main_window failed:', windowError);
+    expect(logged).toHaveBeenCalledWith('meetings_clear_prompt_badge failed:', badgeError);
+  });
+});

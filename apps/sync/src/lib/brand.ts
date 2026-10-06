@@ -6,20 +6,10 @@
  * `workspaces.ts` already use.
  */
 export {
-  BRAND_CACHE_KEY,
-  isEntitledBrand,
-  resolveBrandFromSources,
-  selectLogoUrl,
-  deriveAccentTokens,
   applyBrandToDocument,
-  clearBrandFromDocument,
   readBrandCache,
-  writeBrandCache,
-  clearBrandCache,
   syncBrandFromWorkspaces,
   cacheLogoAssets,
-  currentColorScheme,
-  isSafeLogoUrl,
 } from '@hq/ui/brand';
 export type {
   BrandSource,

@@ -32,7 +32,7 @@ export type FoldableMessage = {
 
 /** Append a reply's author to a distinct, first-appearance-ordered list.
  *  Keyed by personUid, falling back to the display name for uid-less rows. */
-export function appendReplyAuthor(
+function appendReplyAuthor(
   authors: ReplyAuthorRef[],
   reply: { fromPersonUid?: string | null; fromDisplayName?: string | null },
 ): ReplyAuthorRef[] {
@@ -56,7 +56,7 @@ export type InboundReply = {
 };
 
 /** A row is a reply iff `rootEventId` is set and is not the row's own eventId. */
-export function isThreadReply(row: ThreadReplyRef): boolean {
+function isThreadReply(row: ThreadReplyRef): boolean {
   const root = (row.rootEventId ?? '').trim();
   if (!root) return false;
   const id = (row.eventId ?? '').trim();

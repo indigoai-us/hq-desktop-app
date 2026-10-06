@@ -109,9 +109,9 @@ export function withPollTimeout<T>(
 // treated as one of the person's local bots.
 
 /** The CLI's reason for a row it will not run here. */
-export const BOT_REASON_COMPANY = "company-bot";
+const BOT_REASON_COMPANY = "company-bot";
 /** The reason adopt/restore refuse with. */
-export const BOT_REASON_NOT_RUNNABLE_HERE = "not-runnable-here";
+const BOT_REASON_NOT_RUNNABLE_HERE = "not-runnable-here";
 
 /**
  * Could THIS Mac run the bot behind this listing row?

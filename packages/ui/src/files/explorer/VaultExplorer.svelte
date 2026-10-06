@@ -103,7 +103,12 @@
     scopePromise = adapter.appShell
       .setActiveCompany(v.slug)
       .then(() => undefined)
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        console.warn(
+          "vault-explorer: company scope failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     return scopePromise;
   }
 

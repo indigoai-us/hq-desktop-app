@@ -413,7 +413,13 @@
     retryBusy = true;
     retryMessage = "";
     try {
-      const result = await retryAgent(target.agentUid).catch(() => null);
+      const result = await retryAgent(target.agentUid).catch((error: unknown) => {
+        console.warn(
+          "new-bot: retry failed",
+          error instanceof Error ? error.message : String(error),
+        );
+        return null;
+      });
       if (!(result as { ok?: unknown } | null)?.ok) {
         retryMessage = `We couldn't start ${target.name} again. Try again in a moment.`;
         return;
