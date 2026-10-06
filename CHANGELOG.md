@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+
 ## [0.10.398] — 2026-10-06
 
 - First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.

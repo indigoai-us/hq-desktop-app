@@ -1222,6 +1222,30 @@ pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String>
     Ok(resolve_or_provision(&app, &vault).await?.is_some())
 }
 
+/// Store the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn put_hq_anywhere_person_setting(value: bool) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not save the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    vault
+        .put_hq_anywhere_person_setting(value)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting write failed: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })
+}
+
 pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,
