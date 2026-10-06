@@ -630,6 +630,47 @@ export function activeRecordingsFromScheduledBots(
   );
 }
 
+/**
+ * Add Desktop SDK recordings to the same event collection that drives the
+ * console rail. A calendar event wins whenever the detector identified it by
+ * event id or normalized meeting URL, so a local capture never creates a
+ * second row beside a calendar/notetaker row. The synthetic event exists only
+ * while the SDK is recording; the normal recorded-meetings source takes over
+ * once upload processing has created its server record.
+ */
+export function withDetectedRecordingEvents(
+  events: MeetingEvent[],
+  activeMeetings: readonly ActiveMeeting[],
+): MeetingEvent[] {
+  const existingIds = new Set(events.map((event) => event.id));
+  const existingUrls = new Set(
+    events
+      .map((event) => normalizeMeetingUrl(eventMeetingUrl(event)))
+      .filter((url): url is string => url !== null),
+  );
+  const additions: MeetingEvent[] = [];
+
+  for (const meeting of activeMeetings) {
+    if (meeting.state !== "starting" && meeting.state !== "recording" && meeting.state !== "stopping") continue;
+    if (meeting.sourceEventId && existingIds.has(meeting.sourceEventId)) continue;
+    const normalizedUrl = normalizeMeetingUrl(meeting.meetingUrl);
+    if (normalizedUrl && existingUrls.has(normalizedUrl)) continue;
+    const at = meeting.detectedAt || new Date().toISOString();
+    const title = meeting.summary?.trim() || `${meeting.platform?.trim() || "Desktop"} meeting`;
+    additions.push({
+      id: `desktop-recording:${meeting.recordingId ?? meeting.windowId}`,
+      summary: title,
+      start: { dateTime: at },
+      end: { dateTime: at },
+      status: "confirmed",
+      meetingUrl: meeting.meetingUrl || null,
+      sourceCompanyUid: meeting.companyUid ?? undefined,
+      recorded: { meetingId: meeting.recordingId ?? meeting.windowId, durationLabel: null, hasSignals: false },
+    });
+  }
+  return additions.length ? [...events, ...additions] : events;
+}
+
 export function totalSignalCounts(events: MeetingEvent[]): SignalCounts {
   return events.reduce(
     (totals, event) => {

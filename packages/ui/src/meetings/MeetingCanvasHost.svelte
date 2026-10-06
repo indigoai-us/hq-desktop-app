@@ -20,7 +20,7 @@
   import { withRecordedDocument, withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
-  import { botForEvent, pickLiveMeeting } from "./meetings-model";
+  import { botForEvent, pickLiveMeeting, withDetectedRecordingEvents } from "./meetings-model";
   import { meetingPhase } from "./meeting-states-model";
   import MeetingsStatesDoor from "./MeetingsStatesDoor.svelte";
   import { pushToast } from "../shell/toast-stack.svelte.js";
@@ -48,12 +48,10 @@
     meetingsRailState.select(focusMeetingId);
   });
 
-  const events = $derived(
-    withRecordedEvents(
-      meetingsStore.events,
-      meetingsStore.recorded,
-    ),
-  );
+  const events = $derived(withDetectedRecordingEvents(
+    withRecordedEvents(meetingsStore.events, meetingsStore.recorded),
+    $activeMeetings,
+  ));
   const sections = $derived(
     meetingsRailSections({
       events,

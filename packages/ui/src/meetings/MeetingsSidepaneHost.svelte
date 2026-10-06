@@ -7,9 +7,11 @@
   import MeetingsSidepane from "./MeetingsSidepane.svelte";
   import InviteNotetakerSheet from "./InviteNotetakerSheet.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
+  import { activeMeetings } from "./active-meetings";
   import { withRecordedEvents } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
+  import { withDetectedRecordingEvents } from "./meetings-model";
   import type { SidepaneScrollMemory } from "../shell/sidepane-models.js";
 
   interface Props {
@@ -20,12 +22,10 @@
   let inviting = $state(false);
 
   // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
-  const events = $derived(
-    withRecordedEvents(
-      meetingsStore.events,
-      meetingsStore.recorded,
-    ),
-  );
+  const events = $derived(withDetectedRecordingEvents(
+    withRecordedEvents(meetingsStore.events, meetingsStore.recorded),
+    $activeMeetings,
+  ));
   const sections = $derived(
     meetingsRailSections({
       events,
