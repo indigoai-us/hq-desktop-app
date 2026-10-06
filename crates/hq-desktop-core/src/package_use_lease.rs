@@ -767,9 +767,23 @@ impl PackageUseUpdateRequest {
     /// Wait as before, retaining a bounded snapshot of live records only if the
     /// existing timeout expires.
     pub async fn wait_with_summary(
-        mut self,
+        self,
         timeout: Duration,
     ) -> Result<PackageUseUpdateGuard, PackageUseLeaseWaitError> {
+        self.wait_with_summary_using(timeout, |request, root_id| {
+            request.live_holder_summary_by_root(root_id)
+        })
+        .await
+    }
+
+    async fn wait_with_summary_using<F>(
+        mut self,
+        timeout: Duration,
+        mut summarize: F,
+    ) -> Result<PackageUseUpdateGuard, PackageUseLeaseWaitError>
+    where
+        F: FnMut(&Self, &str) -> Result<PackageUseLeaseRootSummary, String>,
+    {
         let started = tokio::time::Instant::now();
         loop {
             let (guard, live_records) = self
@@ -780,11 +794,15 @@ impl PackageUseUpdateRequest {
             }
             if started.elapsed() >= timeout {
                 let mut summary = timeout_summary(&live_records, now_epoch_ms());
-                let roots = self
-                    .live_holder_summary_by_root(&self.target_root_id)
-                    .map_err(PackageUseLeaseWaitError::Other)?;
-                summary.same_root_live_holder_count = roots.same_root.live_holder_count;
-                summary.other_root_live_holder_count = roots.other_root.live_holder_count;
+                match summarize(&self, &self.target_root_id) {
+                    Ok(roots) => {
+                        summary.same_root_live_holder_count = roots.same_root.live_holder_count;
+                        summary.other_root_live_holder_count = roots.other_root.live_holder_count;
+                    }
+                    Err(error) => {
+                        eprintln!("HQ CLI package-use timeout summary unavailable ({error})");
+                    }
+                }
                 return Err(PackageUseLeaseWaitError::Timeout(summary));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1526,6 +1544,32 @@ mod tests {
                 Err(PackageUseLeaseWaitError::Timeout(_))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn timeout_summary_read_failure_preserves_timeout_error_for_caller() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let error = match request
+            .wait_with_summary_using(Duration::ZERO, |request, root_id| {
+                fs::remove_dir_all(&request.paths.lease_directory).unwrap();
+                request.live_holder_summary_by_root(root_id)
+            })
+            .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("expected the live holder to time out"),
+        };
+
+        assert_eq!(error.to_string(), PACKAGE_USE_LEASE_TIMEOUT_ERROR);
     }
 
     #[tokio::test]

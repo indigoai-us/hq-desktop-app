@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- CLI update timeout messages stay actionable when lease-holder details cannot be read.
+
 ## [0.10.398] — 2026-10-06
 
 - First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
