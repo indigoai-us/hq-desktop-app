@@ -4,7 +4,7 @@ use std::path::Path;
 pub const SETUP_MIN_FREE_SPACE_BYTES: u64 = 1024 * 1024 * 1024;
 
 pub fn install_disk_space_message() -> String {
-    "HQ could not install this tool because the disk holding HQ's managed Node/npm files and cache is low on space. Keep at least 1 GiB free on that disk. Empty Trash or move/delete large downloads and other files on that disk, then retry setup.".to_string()
+    "HQ could not install this tool because the disk holding HQ's managed Node/npm files and cache has no space available. Keep at least 1 GiB free on that disk. Empty Trash or move/delete large downloads and other files on that disk, then retry setup.".to_string()
 }
 
 pub fn is_disk_full_output(output: &str) -> bool {
@@ -56,6 +56,7 @@ mod tests {
             "Process exited with code 1: npm error code ENOSPC",
         );
         assert!(user_error.contains("1 GiB"));
+        assert!(user_error.contains("no space"));
         assert!(user_error.contains("managed Node/npm files and cache"));
         assert!(user_error.contains("large downloads and other files"));
         assert!(!user_error.contains("ENOSPC"));

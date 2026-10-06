@@ -159,7 +159,12 @@ pub fn acquire_cli_update_lock_in(
     tool: &str,
     version: &str,
 ) -> Result<CliUpdateLockAttempt, String> {
-    fs::create_dir_all(dir).map_err(|error| lock_dir_creation_error(dir, &error))?;
+    fs::create_dir_all(dir).map_err(|error| {
+        lock_operation_error(
+            format!("could not create lock dir {}: {error}", dir.display()),
+            &error,
+        )
+    })?;
     let path = dir.join(CLI_UPDATE_LOCK_FILE);
     // At most two create attempts: the initial one, plus one retry after a
     // stale takeover. Losing the post-takeover race to another acquirer is a
@@ -184,7 +189,10 @@ pub fn acquire_cli_update_lock_in(
                 if let Err(e) = file.write_all(body.as_bytes()) {
                     drop(file);
                     let _ = fs::remove_file(&path);
-                    return Err(format!("could not write cli-update lock: {e}"));
+                    return Err(lock_operation_error(
+                        format!("could not write cli-update lock: {e}"),
+                        &e,
+                    ));
                 }
                 return Ok(CliUpdateLockAttempt::Acquired(CliUpdateLockGuard { path }));
             }
@@ -207,9 +215,9 @@ pub fn acquire_cli_update_lock_in(
                 return Ok(CliUpdateLockAttempt::Held { holder });
             }
             Err(e) => {
-                return Err(format!(
-                    "could not create cli-update lock {}: {e}",
-                    path.display()
+                return Err(lock_operation_error(
+                    format!("could not create cli-update lock {}: {e}", path.display()),
+                    &e,
                 ));
             }
         }
@@ -235,11 +243,11 @@ fn is_disk_full_error(error: &std::io::Error) -> bool {
     }
 }
 
-fn lock_dir_creation_error(dir: &Path, error: &std::io::Error) -> String {
+fn lock_operation_error(fallback: String, error: &std::io::Error) -> String {
     if is_disk_full_error(error) {
-        "HQ could not create its install lock because the disk that stores your home folder is full. Keep at least 1 GiB free on that disk. Empty Trash or move/delete large files, then retry setup.".to_string()
+        "HQ could not complete its install lock because the disk that stores your home folder has no space available. Keep at least 1 GiB free on that disk. Empty Trash or move/delete large files, then retry setup.".to_string()
     } else {
-        format!("could not create lock dir {}: {error}", dir.display())
+        fallback
     }
 }
 
@@ -435,17 +443,39 @@ mod tests {
     #[test]
     fn disk_full_lock_directory_error_has_actionable_guidance() {
         let error = std::io::Error::from_raw_os_error(28);
-        let message = lock_dir_creation_error(Path::new("/unused"), &error);
+        let message = lock_operation_error(
+            "could not create lock dir /unused: os error 28".to_string(),
+            &error,
+        );
         assert!(message.contains("1 GiB"));
         assert!(message.contains("home folder"));
         assert!(message.contains("Empty Trash"));
         assert!(!message.contains("os error 28"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn disk_full_lock_open_and_write_errors_have_actionable_guidance() {
+        let error = std::io::Error::from_raw_os_error(28);
+        for fallback in [
+            "could not create cli-update lock /unused/cli-update.lock: os error 28",
+            "could not write cli-update lock: os error 28",
+        ] {
+            let message = lock_operation_error(fallback.to_string(), &error);
+            assert!(message.contains("1 GiB"));
+            assert!(message.contains("home folder"));
+            assert!(message.contains("no space available"));
+            assert!(!message.contains("os error 28"));
+        }
+    }
+
     #[test]
     fn non_disk_full_lock_directory_error_keeps_its_diagnostic() {
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        let message = lock_dir_creation_error(Path::new("/unused"), &error);
+        let message = lock_operation_error(
+            "could not create lock dir /unused: permission denied".to_string(),
+            &error,
+        );
         assert!(message.contains("could not create lock dir /unused"));
         assert!(!message.contains("1 GiB"));
     }
