@@ -110,7 +110,8 @@
   // failed-read line and Try again instead.
   // Before the first cache paint or settled fetch nothing is known yet: the
   // pane must not claim "Nothing live" or "Nothing scheduled".
-  const pending = $derived(meetingsStore.initialLoadPending);
+  // Rows handed in by the host are known data, whatever the store says.
+  const pending = $derived(meetingsStore.initialLoadPending && sections.every((s) => s.rows.length === 0));
   const calendarFailed = $derived(
     !meetingsStore.initialLoadPending && meetingsStore.calendarReadFailed && meetingsStore.accounts.length === 0,
   );

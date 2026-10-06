@@ -19,6 +19,7 @@ import {
 } from "./meetings-store.svelte";
 import { meetingsRailState } from "./meetings-rail-state.svelte";
 import MeetingsStatesBody from "./MeetingsStatesBody.svelte";
+import MeetingsToolbarControls from "./MeetingsToolbarControls.svelte";
 
 type Answer = () => Promise<AdapterResult<unknown>>;
 let generation = 500;
@@ -162,6 +163,30 @@ describe("Meetings detail pane while loading", () => {
     expect(el.querySelector('[data-testid="meetings-next-pending"]')).toBeNull();
     expect(el.textContent).toContain("Nothing scheduled");
     expect(el.querySelector('[data-testid="meetings-live-chip"]')?.textContent).toBe("Nothing live");
+  });
+});
+
+describe("Meetings calendar chip while loading", () => {
+  function chipText(): string {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(mount(MeetingsToolbarControls, { target, props: {} }));
+    flushSync();
+    return target.querySelector('[data-testid="meetings-calendar-chip"]')?.textContent ?? "";
+  }
+
+  it("does not say No calendar before the accounts read answers", () => {
+    wire({ listAccounts: never });
+    startMeetingsStore();
+    void meetingsStore.refresh();
+    expect(chipText()).not.toContain("No calendar");
+  });
+
+  it("says No calendar after a resolved read with no accounts", async () => {
+    wire({});
+    startMeetingsStore();
+    await meetingsStore.refresh();
+    expect(chipText()).toContain("No calendar");
   });
 });
 
