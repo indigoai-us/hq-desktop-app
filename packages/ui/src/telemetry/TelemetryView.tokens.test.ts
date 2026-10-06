@@ -64,8 +64,9 @@ describe("Telemetry Models section (QA-081)", () => {
     );
     const target = await openTokens({ ...snapshot, endDate: undefined });
     const names = [...target.querySelectorAll(".trow .nm")].map((el) => el.textContent ?? "");
-    expect(names[0]).toContain("Fable");
-    expect(names[1]).toContain("Opus");
+    // Fixed provider-then-shade order (telemetry-colors): Opus before Fable.
+    expect(names[0]).toContain("Opus");
+    expect(names[1]).toContain("Fable");
     expect(names[2]).toContain("System");
     expect(names[2]).toContain("Tokens from HQ's own background tasks");
     expect(names[3]).toContain("Other");
@@ -114,8 +115,14 @@ describe("Telemetry daily chart stacks every By-model row (QA-086)", () => {
     flushSync();
 
     const legend = target.querySelector("[data-testid='telemetry-legend']")?.textContent;
-    expect(legend).toBe("FableOpusSystemmystery-9Other");
+    expect(legend).toBe("OpusFableSystemmystery-9Other");
     const bands = [...target.querySelectorAll("[data-testid='telemetry-bars'] [data-band]")];
+    // Every stack wears its provider token: Anthropic shades, neutral for the rest.
+    const color = (name: string) => (bands.find((el) => el.getAttribute("data-band") === name) as HTMLElement).style.background;
+    expect(color("Opus")).toBe("var(--viz-anthropic-1)");
+    expect(color("Fable")).toBe("var(--viz-anthropic-3)");
+    expect(color("System")).toBe("var(--viz-neutral)");
+    expect(color("Other")).toBe("var(--viz-neutral)");
     const sum = bands.reduce((n, el) => n + Number(el.getAttribute("data-tokens")), 0);
     expect(sum).toBe(4500);
     const byBand = (name: string) =>

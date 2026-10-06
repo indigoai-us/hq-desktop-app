@@ -20,12 +20,12 @@ export interface LocalSessionsApi {
 export interface LocalSessionRow {
   id: string;
   startedAt: string;
-  /** "Oct 3, 10:42" in local time. */
+  /** "Oct 3, 10:42" in local time (24-hour). */
   when: string;
   company: string;
   project: string;
   title: string;
-  /** "1h 20m" from start to the last thread record; "" when unknown. */
+  /** "1h 20m" from start to the last recorded activity; "" when unknown. */
   length: string;
   outcome: string;
   /** HQ-relative path of the handoff or checkpoint record, or "". */
@@ -67,10 +67,15 @@ export function formatLength(startIso: string, endIso: string): string {
   return rest ? `${hours}h ${rest}m` : `${hours}h`;
 }
 
-function formatWhen(iso: string): string {
+/** "Oct 5, 22:19" in local time: fits the When column without truncating. */
+export function formatWhen(iso: string): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
-  return new Date(t).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const d = new Date(t);
+  const month = d.toLocaleString("en-US", { month: "short" });
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${month} ${d.getDate()}, ${hh}:${mm}`;
 }
 
 /** Parse the native page. Throws on a foreign shape. */
@@ -88,7 +93,8 @@ export function localSessionsFromNative(body: unknown): LocalSessionsPage {
       when: formatWhen(startedAt),
       company,
       project,
-      title: str(r.title) || project || "",
+      // The session's own title only; the Project column already shows the project.
+      title: str(r.title),
       length: r.lastAt ? formatLength(startedAt, str(r.lastAt)) : "",
       outcome: str(r.outcome),
       threadPath: str(r.threadPath),
