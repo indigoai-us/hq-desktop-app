@@ -186,6 +186,11 @@ describe('Windows Recall SDK sidecar bundle parity', () => {
     expect(daemonCommandSource).toContain(
       'runner_exit_meaning(code, context.saw_auth_error)',
     );
+    expect(daemonCommandSource).toContain(
+      '"runner_identity_error_seen",',
+    );
+    expect(daemonCommandSource).toContain('Value::Bool(context.saw_auth_error)');
+    expect(syncOutcomeSource).toContain('"identity_required_pass"');
     expect(windowsCheckWorkflow).toMatch(
       /- name: Sync outcome tests[\s\S]*cargo test --manifest-path .*sync_outcome::tests/,
     );

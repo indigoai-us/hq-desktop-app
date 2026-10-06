@@ -5301,7 +5301,7 @@ fn watcher_exit_context_extras(
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
         ),
         (
-            "saw_auth_error",
+            "runner_identity_error_seen",
             sentry::protocol::Value::Bool(context.saw_auth_error),
         ),
         (
