@@ -35,30 +35,62 @@ const rec = (v: unknown): Record<string, unknown> =>
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
+/** Token total over a legacy `[{ model, ...counts }]` list or a production `{ [model]: counts }` map. */
 function tokenTotal(rows: unknown): number {
-  return arr(rows).reduce<number>((sum, row) => {
+  const list = Array.isArray(rows) ? rows : Object.values(rec(rows));
+  return list.reduce<number>((sum, row) => {
     const r = rec(row);
-    return sum + num(r.input) + num(r.output) + num(r.cacheCreation) + num(r.cacheRead);
+    return (
+      sum +
+      num(r.input ?? r.inputTokens) +
+      num(r.output ?? r.outputTokens) +
+      num(r.cacheCreation ?? r.cacheCreationTokens) +
+      num(r.cacheRead ?? r.cacheReadTokens)
+    );
   }, 0);
 }
 
-/** Parse the company telemetry body. Throws on a foreign shape. */
+/** Skill counts from a legacy `{ bySkill: [{ skill, count }] }` or a production `{ [skill]: count }` map. */
+function skillRows(skills: unknown): { skill: string; count: number }[] {
+  const s = rec(skills);
+  return Array.isArray(s.bySkill)
+    ? s.bySkill.map((k) => ({ skill: String(rec(k).skill ?? ""), count: num(rec(k).count) }))
+    : Object.entries(s).map(([skill, count]) => ({ skill, count: num(count) }));
+}
+
+function identityLabel(identities: unknown, id: string): { name: string; email: string } {
+  for (const group of ["persons", "agents"]) {
+    const row = rec(rec(rec(identities)[group])[id]);
+    const name = [row.displayName, row.name].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
+    const email = typeof row.email === "string" ? row.email.trim() : "";
+    if (name || email) return { name, email };
+  }
+  return { name: "", email: "" };
+}
+
+/**
+ * Parse the company telemetry body. Production sends a flat `members` list
+ * (counts on the row, names in `identities`); the legacy shape was
+ * `perMember` with counts under `totals`. Both are read. Throws when neither
+ * list is present.
+ */
 export function atlasPeopleFromTelemetry(body: unknown): AtlasPerson[] {
   const root = rec(body);
-  if (!Array.isArray(root.perMember)) throw new Error("company telemetry: perMember missing");
+  const rows = Array.isArray(root.perMember) ? root.perMember : root.members;
+  if (!Array.isArray(rows)) throw new Error("company telemetry: members missing");
   const out: AtlasPerson[] = [];
-  for (const raw of root.perMember) {
+  for (const raw of rows) {
     const m = rec(raw);
     const id = String(m.personUid ?? m.agentUid ?? "");
     if (!id) continue;
-    const totals = rec(m.totals);
+    const totals = m.totals && typeof m.totals === "object" ? rec(m.totals) : m;
     const bot = id.startsWith("agt_") || m.kind === "agent";
-    const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() ?? "";
-    const email = typeof m.email === "string" ? m.email.trim() : "";
+    const known = identityLabel(root.identities, id);
+    const label = [m.label, m.displayName].find((v): v is string => typeof v === "string" && !!v.trim())?.trim() || known.name;
+    const email = (typeof m.email === "string" ? m.email.trim() : "") || known.email;
     // Never an id on screen.
     const name = label && !/^(prs|agt)_/.test(label) ? label : email || (bot ? "Unknown bot" : "Unnamed member");
-    const bySkill = arr(rec(totals.skills).bySkill)
-      .map((s) => ({ skill: String(rec(s).skill ?? ""), count: num(rec(s).count) }))
+    const bySkill = skillRows(totals.skills)
       .filter((s) => s.skill && s.count > 0)
       .sort((a, b) => b.count - a.count);
     const tokens = tokenTotal(totals.tokensByModel);
