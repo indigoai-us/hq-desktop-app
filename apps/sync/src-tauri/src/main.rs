@@ -451,6 +451,16 @@ fn main() {
     }
 
     let builder = crate::recovery::register_protocol(tauri::Builder::default());
+    // Deployments snapshots of protected apps load through this scheme; it
+    // serves only hosts with a live preview session (deploy_snapshot.rs).
+    let builder = builder.register_asynchronous_uri_scheme_protocol(
+        commands::deploy_snapshot::PREVIEW_SCHEME,
+        |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(commands::deploy_snapshot::proxy_preview_request(request).await);
+            });
+        },
+    );
     let builder = ui_protocol::register_protocol(builder)
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
@@ -948,6 +958,8 @@ fn main() {
             commands::desktop_alt::list_channel_agent_tasks,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::list_deploy_apps,
+            commands::deploy_preview::deploy_app_preview,
+            commands::deploy_preview_pass::deploy_app_snapshot,
             commands::desktop_alt::deploy_access_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,

@@ -72,32 +72,63 @@ describe("Deployments company filter and sorting", () => {
     expect(rows(root)[0]?.textContent).toContain("Indigo");
   });
 
-  it("sorts each header in both directions, returns to default, and keeps missing values last", async () => {
+  it("opens newest deploy first, sorts each header both ways, and keeps missing values last", async () => {
     const root = await mountPage();
     expect(root.querySelector(".table")?.getAttribute("role")).toBe("table");
-    const initial = rows(root).map((row) => row.textContent);
+    // Owner: "please sort deploys by most recent". Default is the deploy time, newest first.
+    const deployedHeader = root.querySelector<HTMLButtonElement>("[data-testid='deploy-sort-deployed']")!;
+    expect(deployedHeader.closest("[role='columnheader']")?.getAttribute("aria-sort")).toBe("descending");
+    expect(rows(root)[0]?.textContent).toContain("hq-desktop-console-rail-storyboard");
+    expect(rows(root).at(-1)?.textContent).toContain("rail-idea-v1");
     for (const [key, first, second] of [
       ["app", "ascending", "descending"],
       ["scope", "ascending", "descending"],
       ["status", "ascending", "descending"],
       ["access", "ascending", "descending"],
-      ["views", "ascending", "descending"],
+      ["views", "descending", "ascending"],
       ["lastVisit", "descending", "ascending"],
+      ["deployed", "descending", "ascending"],
     ] as const) {
       const header = root.querySelector<HTMLButtonElement>(`[data-testid='deploy-sort-${key}']`)!;
+      const cell = () => header.closest("[role='columnheader']");
       header.click();
       flushSync();
-      expect(header.parentElement?.getAttribute("aria-sort")).toBe(first);
+      expect(cell()?.getAttribute("aria-sort")).toBe(first);
+      expect(header.querySelector(".sort-mark")).not.toBeNull();
       if (key === "views" || key === "lastVisit") expect(rows(root).at(-1)?.textContent).toContain("—");
       header.click();
       flushSync();
-      expect(header.parentElement?.getAttribute("aria-sort")).toBe(second);
+      expect(cell()?.getAttribute("aria-sort")).toBe(second);
       if (key === "views" || key === "lastVisit") expect(rows(root).at(-1)?.textContent).toContain("—");
       header.click();
       flushSync();
-      expect(header.parentElement?.getAttribute("aria-sort")).toBe("none");
-      expect(rows(root).map((row) => row.textContent)).toEqual(initial);
+      expect(cell()?.getAttribute("aria-sort")).toBe(first);
     }
+  });
+
+  it("headers are keyboard buttons with a readable sort label", async () => {
+    const root = await mountPage();
+    const app = root.querySelector<HTMLButtonElement>("[data-testid='deploy-sort-app']")!;
+    expect(app.tagName).toBe("BUTTON");
+    expect(app.getAttribute("aria-label")).toBe("Sort by App");
+    app.focus();
+    app.click();
+    flushSync();
+    expect(app.getAttribute("aria-label")).toBe("App, sorted ascending");
+    expect(document.activeElement).toBe(app);
+  });
+
+  it("remembers the chosen sort for this account in local settings", async () => {
+    let root = await mountPage();
+    root.querySelector<HTMLButtonElement>("[data-testid='deploy-sort-views']")!.click();
+    flushSync();
+    expect(JSON.parse(localStorage.getItem("hq.personal-deployments.sort.v1:company-sort")!)).toEqual({ key: "views", direction: "descending" });
+    if (component) await unmount(component);
+    component = null;
+    root.remove();
+    resetDeployPillsForTests();
+    root = await mountPage();
+    expect(root.querySelector("[data-testid='deploy-sort-views']")?.closest("[role='columnheader']")?.getAttribute("aria-sort")).toBe("descending");
   });
 
   it("keeps company and sort state through a remount, keeps a visible selection, and clears a hidden one", async () => {
