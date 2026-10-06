@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Meetings shows all of today's meetings in one Today section, earlier ones first and in a quieter color. Tomorrow stays hidden until today's last meeting has ended, or when today has no meetings. A meeting's recap now shows its headings, numbered topics and Next Steps list instead of one long paragraph. Details counts the Next Steps as actions and is hidden when there is nothing to count. "No link" no longer appears next to the meeting time.
 - Every button in the app now has the same height and padding as the Launch and Core buttons in the top bar. The white primary buttons, such as Open console, are no longer taller than the rest.
 - The "Host unreachable" notice on the Outpost page now has even padding around its text and its Retry now button.
 - The secret detail panel is cleaner: a quiet label above the name, the path on its own line, one row of buttons that never wraps (extra buttons move into a More menu when space runs out), facts in a two-column list where empty values are left out instead of showing a dash, and a Who can read section that lists each reader. The personal connection and app panels use the same layout.
