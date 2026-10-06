@@ -97,5 +97,6 @@
   .track { position: relative; flex: 1; height: 2px; background: color-mix(in srgb, var(--v4-text-1) 12%, transparent); overflow: hidden; }
   .fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--v4-text-1) 45%, transparent); }
   .card:hover .fill, .card.selected .fill { background: color-mix(in srgb, var(--v4-text-1) 80%, transparent); }
-  .count { flex: none; font-size: 13px; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  /* Fixed count width so every bar in the list ends at the same x. */
+  .count { flex: none; min-width: 14ch; text-align: right; font-size: 13px; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
 </style>
