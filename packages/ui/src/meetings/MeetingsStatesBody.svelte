@@ -194,10 +194,9 @@
           <div class="subline">Joining from a link sends the notetaker. The meeting appears under Today until it ends.</div>
         </div>
       {:else if pending}
-        <!-- No grey placeholder (OWNER-R26) and no empty claim: the list
-             loader on the left carries the wait. -->
+        <!-- The shared loader (OWNER-R26, BLANK-3), never an empty claim. -->
         <div class="next" aria-busy="true" data-testid="meetings-next-pending">
-          <span class="sr-only">Loading</span>
+          <ReadLoader testid="meetings-next-loader" surface="meetings" onretry={() => void meetingsStore.refresh()} />
         </div>
       {:else if nextRow}
         <div class="next">
@@ -500,5 +499,4 @@
   .next .actions { margin-top: 12px; }
   .first-run { max-width: 560px; }
   .first-run .subline { margin-top: 6px; line-height: 1.45; }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 </style>
