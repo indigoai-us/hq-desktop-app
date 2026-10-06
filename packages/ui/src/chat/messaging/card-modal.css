@@ -221,8 +221,8 @@
   top: 14px;
   right: 14px;
   margin: 0;
-  width: 28px;
-  height: 28px;
+  width: var(--hq-btn-h);
+  height: var(--hq-btn-h);
   border: 1px solid color-mix(in srgb, var(--v4-hairline) 70%, transparent);
   border-radius: 50%;
   background: color-mix(in srgb, var(--v4-surface-solid) 78%, transparent);

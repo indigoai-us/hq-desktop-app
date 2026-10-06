@@ -3338,8 +3338,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 28px;
-    height: 28px;
+    min-width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0 0.25rem;
     border: 0;
     border-radius: 6px;
@@ -3526,8 +3526,8 @@
   .dm-tool-btn {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
     border-radius: 6px;
@@ -3549,7 +3549,7 @@
     place-items: center;
     margin-left: auto;
     width: 28px;
-    height: 26px;
+    height: var(--hq-btn-h);
     padding: 0;
     border: none;
     border-radius: 6px;

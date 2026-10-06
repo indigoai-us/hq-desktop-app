@@ -203,10 +203,10 @@
   .dd-button {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--hq-btn-gap);
     min-width: 0;
     width: 100%;
-    min-height: 28px;
+    min-height: var(--hq-btn-h);
     padding: 0 8px 0 10px;
     border: 1px solid var(--v4-hairline, var(--overlay-border));
     border-radius: 6px;

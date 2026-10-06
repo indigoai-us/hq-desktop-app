@@ -400,9 +400,9 @@
   .toolbar-button,
   .deploy-search,
   .deployments-error button {
-    height: 30px;
+    height: var(--hq-btn-h);
     min-width: 0;
-    padding: 0 11px;
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
     background: transparent;

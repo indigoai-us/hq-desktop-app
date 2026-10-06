@@ -1,4 +1,7 @@
 <script lang="ts">
+  import "../common/detail/detail-panel.css";
+  import DetailActions from "../common/detail/DetailActions.svelte";
+  import DetailFacts from "../common/detail/DetailFacts.svelte";
   import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
@@ -351,22 +354,30 @@
         </div>
         <aside class="inspector" data-testid="secret-inspector">
           {#if secretCurrent && shareView}
-            <p class="kind">Standard secret · personal</p>
-            <h2>{shareView.name}</h2>
-            <p class="meta mono">secrets/personal/{shareView.name}</p>
-            <dl class="kv">
-              <dt>Mode</dt><dd>{secretCurrent.kind === "proxy" ? "Proxy-only" : "Standard · injected as env"}</dd>
-              <dt>Version</dt><dd class="mono">{secretCurrent.version}</dd>
-              <dt>Last rotated</dt><dd>{secretCurrent.rotated}</dd>
-              <dt>Created</dt><dd>{secretCurrent.created}</dd>
-              <dt>Used by</dt><dd>{secretCurrent.usedBy}</dd>
-            </dl>
-            <div class="act">
-              <RailButton icon="refresh" variant="primary" type="button" data-testid="rotate-secret" onclick={() => (sheet = "rotate")}>Rotate</RailButton>
-              <RailButton icon="link" type="button" data-testid="bind-secret" onclick={() => (sheet = "bind")}>Bind to app</RailButton>
-              <RailButton icon="user-plus" type="button" data-testid="share-secret" onclick={() => (sheet = "share-secret")}>Share read</RailButton>
-            </div>
-            <p class="meta">Who can read · {secretCurrent.readers}</p>
+            <p class="detail-eyebrow">{secretCurrent.kind === "proxy" ? "Proxy secret" : "Standard secret"} · personal</p>
+            <h2 class="detail-title">{shareView.name}</h2>
+            <p class="detail-path">secrets/personal/{shareView.name}</p>
+            <DetailActions
+              primary={{ label: "Rotate", icon: "refresh", testid: "rotate-secret", onselect: () => (sheet = "rotate") }}
+              secondary={[
+                { label: "Bind to app", icon: "link", testid: "bind-secret", onselect: () => (sheet = "bind") },
+                { label: "Share read", icon: "user-plus", testid: "share-secret", onselect: () => (sheet = "share-secret") },
+              ]}
+            />
+            <DetailFacts
+              testid="secret-facts"
+              facts={[
+                { label: "Mode", value: secretCurrent.kind === "proxy" ? "Proxy-only" : "Standard · injected as env" },
+                { label: "Version", value: secretCurrent.version, mono: true },
+                { label: "Last rotated", value: secretCurrent.rotated },
+                { label: "Created", value: secretCurrent.created },
+                { label: "Used by", value: secretCurrent.usedBy },
+              ]}
+            />
+            <p class="detail-section-label">Who can read</p>
+            <ul class="detail-list" data-testid="secret-readers">
+              {#each secretCurrent.readers.split(" · ").filter(Boolean) as reader (reader)}<li>{reader}</li>{/each}
+            </ul>
           {/if}
         </aside>
       </div>
@@ -421,13 +432,13 @@
         </div>
         <aside class="inspector" data-testid="integration-inspector">
           {#if integrationCurrent}
-            <p class="kind"><span class="dot" data-status={integrationCurrent.status === "active" ? "connected" : "reconnect"}></span>{integrationCurrent.status === "active" ? "Active" : "Reconnect needed"}</p>
-            <h2>{integrationCurrent.app}</h2>
+            <p class="detail-eyebrow"><span class="dot" data-status={integrationCurrent.status === "active" ? "connected" : "reconnect"}></span>{integrationCurrent.status === "active" ? "Active" : "Reconnect needed"}</p>
+            <h2 class="detail-title">{integrationCurrent.app}</h2>
             <p class="meta">{integrationCurrent.identity}</p>
             {#if connectedLabel(integrationCurrent.connectedAt)}<p class="meta">{connectedLabel(integrationCurrent.connectedAt)}</p>{/if}
             {@const sources = sourceNames(integrationCurrent.sources)}
             {#if sources.length > 0}
-              <p class="label">Connected sources</p>
+              <p class="detail-section-label">Connected sources</p>
               <ul class="sources" data-testid="integration-sources">
                 {#each sources as source (source)}
                   {@const icon = sourceIconUrl(source)}
@@ -523,24 +534,25 @@
         </div>
         <aside class="inspector" data-testid="connection-inspector">
           {#if connectionCurrent}
-            <p class="kind">{connectionTab === "agents" ? "Personal MCP server" : "Personal connection"} · <span class="dot" data-status={connectionCurrent.status}></span>{connectionCurrent.status === "connected" ? "Connected" : connectionCurrent.status === "reconnect" ? "Reconnect" : "Not connected"}</p>
-            <h2>{connectionCurrent.name}</h2>
+            <p class="detail-eyebrow">{connectionTab === "agents" ? "Personal MCP server" : "Personal connection"} · <span class="dot" data-status={connectionCurrent.status}></span>{connectionCurrent.status === "connected" ? "Connected" : connectionCurrent.status === "reconnect" ? "Reconnect" : "Not connected"}</p>
+            <h2 class="detail-title">{connectionCurrent.name}</h2>
             <p class="meta">{connectionCurrent.account}</p>
-            <div class="act">
-              <RailButton icon="plug" type="button" data-testid="reconnect" onclick={() => openConnect(connectionCurrent.name)}>
-                {connectionCurrent.status === "available" ? "Connect" : "Reconnect"}
-              </RailButton>
-              <RailButton icon="x" type="button" data-testid="disconnect" onclick={() => (sheet = "confirm-disconnect")}>Disconnect</RailButton>
-            </div>
-            <dl class="kv">
-              <dt>Scopes</dt><dd>{connectionCurrent.scopes}</dd>
-              <dt>Last used</dt><dd>{connectionCurrent.lastUsed || "—"}</dd>
-              {#if connectionCurrent.secretName}
-                <dt>Secret</dt><dd class="mono">{connectionCurrent.secretName}</dd>
-              {/if}
-              <dt>MCP</dt><dd class="mono">{connectionCurrent.mcpServer}</dd>
-            </dl>
-            <p class="label">When bots act</p>
+            <DetailActions
+              secondary={[
+                { label: connectionCurrent.status === "available" ? "Connect" : "Reconnect", icon: "plug", testid: "reconnect", onselect: () => openConnect(connectionCurrent.name) },
+                { label: "Disconnect", icon: "x", testid: "disconnect", onselect: () => (sheet = "confirm-disconnect") },
+              ]}
+            />
+            <DetailFacts
+              testid="connection-facts"
+              facts={[
+                { label: "Scopes", value: connectionCurrent.scopes },
+                { label: "Last used", value: connectionCurrent.lastUsed },
+                { label: "Secret", value: connectionCurrent.secretName, mono: true },
+                { label: "MCP", value: connectionCurrent.mcpServer, mono: true },
+              ]}
+            />
+            <p class="detail-section-label">When bots act</p>
             <div class="seg" data-testid="detail-policy">
               {#each BOT_POLICIES as policy (policy)}
                 <button class="tab" type="button" aria-pressed={connectionCurrent.policy === policy} onclick={() => setPolicy(connectionCurrent.id, policy)}>

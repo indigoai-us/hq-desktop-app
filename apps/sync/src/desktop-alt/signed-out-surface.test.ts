@@ -42,11 +42,11 @@ describe('signed-out page typography (OWNER-015)', () => {
     expect(block).not.toMatch(/<button[^>]*>Retry<\/button>/);
   });
 
-  it('builds labelled buttons to the 36px rail spec', () => {
+  it('builds labelled buttons to the one button standard (titlebar pill)', () => {
     const button = rule(promptStyle, '.sign-in-btn');
-    expect(button).toMatch(/height:\s*36px/);
-    expect(button).toMatch(/padding:\s*0 16px/);
-    expect(button).toMatch(/font-size:\s*12px/);
+    expect(button).toMatch(/height:\s*var\(--hq-btn-h\)/);
+    expect(button).toMatch(/padding:\s*0 var\(--hq-btn-pad-inline\)/);
+    expect(button).toMatch(/font-size:\s*13px/);
     expect(button).toMatch(/font-weight:\s*500/);
   });
 });

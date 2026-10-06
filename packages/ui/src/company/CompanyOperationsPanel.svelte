@@ -507,8 +507,8 @@
 
   .ops-settings-button {
     flex: 0 0 auto;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -564,8 +564,8 @@
   }
 
   .ops-settings-row-action {
-    height: 28px;
-    padding: 0 11px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);
     background: transparent;

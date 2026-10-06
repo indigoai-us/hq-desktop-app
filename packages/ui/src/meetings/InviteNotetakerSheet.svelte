@@ -70,7 +70,7 @@
   .field { width: 100%; height: 28px; padding: 0 8px; box-sizing: border-box; border: 1px solid var(--overlay-field-border); border-radius: 6px; background: var(--overlay-field-bg); color: var(--t1); font: inherit; font-size: 13px; }
   .line { margin: 8px 0 0; color: var(--t2); font-size: 13px; }
   .ft { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
-  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--overlay-hover); }
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--side-bg)); }
   .btn:disabled, .btn.primary:disabled { border-color: var(--line); background: transparent; color: var(--t3); cursor: default; }

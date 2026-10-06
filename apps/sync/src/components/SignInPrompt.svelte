@@ -845,12 +845,12 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: var(--hq-btn-gap);
     box-sizing: border-box;
     width: 100%;
-    height: 36px;
-    padding: 0 16px;
-    font-size: 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    font-size: 13px;
     font-weight: 500;
     line-height: 16px;
     font-family: inherit;

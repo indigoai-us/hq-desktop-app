@@ -1253,8 +1253,8 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -1375,7 +1375,7 @@
   .install-button {
     margin-top: var(--v4-space-3);
     width: 100%;
-    height: 34px;
+    height: var(--hq-btn-h);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -1387,7 +1387,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: var(--hq-btn-gap);
     transition:
       opacity 140ms ease,
       filter 140ms ease;

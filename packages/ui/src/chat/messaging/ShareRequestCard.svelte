@@ -223,8 +223,8 @@
 
   .share-btn,
   .share-seg-btn {
-    height: 26px;
-    padding: 0 10px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border);
     border-radius: 6px;
     background: var(--v4-control-faint);

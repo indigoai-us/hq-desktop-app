@@ -917,7 +917,7 @@
   .btn {
     display: inline-flex;
     align-items: center;
-    height: 32px;
+    height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border-radius: var(--v4-radius-button);
     border: 1px solid var(--v4-hairline);

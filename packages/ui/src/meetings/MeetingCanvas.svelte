@@ -326,14 +326,14 @@
   }
 
   .btn {
-    height: 26px;
-    padding: 0 10px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--line);
     border-radius: 6px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 

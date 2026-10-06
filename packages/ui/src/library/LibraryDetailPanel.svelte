@@ -368,8 +368,8 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;
@@ -418,7 +418,7 @@
 
   .retry-button {
     flex: 0 0 auto;
-    min-height: 28px;
+    min-height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border: 1px solid var(--v4-hairline);
     border-radius: var(--v4-radius-button);

@@ -75,10 +75,10 @@ describe("Meetings type and chrome contract", () => {
     expect(pill).toMatch(/border:\s*0/);
   });
 
-  it("sizes buttons like Messages (28px)", () => {
+  it("sizes buttons at the one button standard (titlebar pill)", () => {
     for (const f of ["MeetingsStatesBody.svelte", "PasteLinkBox.svelte", "CalendarPanel.svelte"]) {
       const btn = styleOf(resolve(here, f)).match(/\.btn \{([^}]*)\}/)?.[1] ?? "";
-      expect(btn, f).toMatch(/height:\s*28px/);
+      expect(btn, f).toMatch(/height:\s*var\(--hq-btn-h\)/);
     }
   });
 });
