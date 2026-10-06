@@ -98,7 +98,7 @@ describe("PageHeader window chrome", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("sizes and insets from the shared titlebar CSS variables", () => {
+  it("sizes from the titlebar height and insets to the shared page edge", () => {
     host = document.createElement("div");
     document.body.appendChild(host);
     component = mount(PageHeader, { target: host, props: { title: "Library" } });
@@ -106,7 +106,9 @@ describe("PageHeader window chrome", () => {
     expect(header).not.toBeNull();
     const css = scopedCss(header!);
     expect(css).toContain(`var(${TITLEBAR_HEIGHT_CSS_VAR}`);
-    expect(css).toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
+    // Pages sit right of the rail, under the top bar: no traffic-light gutter.
+    expect(css).not.toContain(`var(${TITLEBAR_LEADING_INSET_CSS_VAR}`);
+    expect(css).toContain("var(--page-edge-inset");
     expect(css).not.toMatch(/padding-left:\s*\d+px/);
     expect(css).not.toMatch(/height:\s*52px/);
   });
