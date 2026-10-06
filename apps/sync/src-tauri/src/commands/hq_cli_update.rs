@@ -4218,12 +4218,13 @@ async fn recover_unreadable_version_once(
     // is incomplete. (`ManagedNodeAbsent` also covers PresentMissingNpx and
     // Unknown, which are not cleanly provisionable, so gate on the two states
     // the provisioner can actually repair.)
-    match classify_runtime() {
-        ManagedRuntime::NotProvisioned | ManagedRuntime::Incomplete { .. } => {}
+    let replace_existing = match classify_runtime() {
+        ManagedRuntime::NotProvisioned => false,
+        ManagedRuntime::Incomplete { .. } => true,
         _ => return probed,
-    }
+    };
 
-    match request_managed_node_repair(app).await {
+    match request_managed_node_repair(app, replace_existing).await {
         ToolchainRepair::Repaired => {}
         ToolchainRepair::Skipped => {
             log(
@@ -4284,7 +4285,7 @@ async fn provision_managed_npm_for_first_install(app: &AppHandle) -> Option<(Str
         "hq-cli-update",
         "first install with no npm on PATH — provisioning HQ's managed Node first",
     );
-    match request_managed_node_repair(app).await {
+    match request_managed_node_repair(app, false).await {
         ToolchainRepair::Repaired => {}
         ToolchainRepair::Skipped => {
             log(
