@@ -314,6 +314,7 @@
   const manualOAuthReceiptTails = new Map<string, Promise<void>>();
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyArm: 'on' | 'off' | 'unknown' = 'unknown';
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
   let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
@@ -1201,16 +1202,17 @@
           console.warn('onboarding: installer visitor key unavailable; launch receipt unchanged');
         }
       }
-      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+      void recordReceipt(deps, launchReceipt(deps, firstLaunchJoinKeyArm)).catch(() => undefined);
     }
   }
 
   function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
     if (!firstLaunchDownloadJoinFlagPromise) {
-      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
-        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
-        2_000,
-      );
+      const downloadJoinFlag = resolveFirstLaunchPublicFlag(
+        FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
+        installAttemptId,
+      ).then((enabled) => enabled === true);
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(downloadJoinFlag, 2_000);
     }
     return firstLaunchDownloadJoinFlagPromise;
   }
@@ -1219,9 +1221,15 @@
     if (!firstLaunchJoinKeyFlagPromise) {
       const flag = visitorId
         ? resolveFirstLaunchPublicFlag(FIRST_LAUNCH_JOIN_KEY_FLAG, visitorId)
-        : Promise.resolve(false);
-      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
-        (enabled) => {
+        : Promise.resolve(null);
+      firstLaunchJoinKeyFlagPromise = resolveFlagStatusWithTimeout(flag, 2_000).then(
+        (status) => {
+          const enabled = status === 'enabled';
+          firstLaunchJoinKeyArm = status === 'enabled'
+            ? 'on'
+            : status === 'disabled'
+              ? 'off'
+              : 'unknown';
           firstLaunchJoinKeyEnabled = enabled;
           if (!enabled) flushQueuedOnboardingStepRecords();
           return enabled;
@@ -1232,6 +1240,7 @@
             error,
           );
           firstLaunchJoinKeyEnabled = false;
+          firstLaunchJoinKeyArm = 'unknown';
           flushQueuedOnboardingStepRecords();
           return false;
         },

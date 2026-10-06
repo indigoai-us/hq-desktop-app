@@ -796,6 +796,27 @@ describe('first-run sign-in screen', () => {
     expect(deliveredLaunches[0].anonId).toBe('download-key');
   });
 
+  it('omits the installer visitor key when its public flag is unavailable', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    httpFetch.mockImplementation(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => '',
+    }));
+    stubContinuationInvoke({
+      downloadAnonId: 'download-key',
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(false);
+  });
+
   it('omits the installer visitor key when the flag is off or the tag is missing', async () => {
     const deliveredLaunches: Array<Record<string, string | number>> = [];
     httpFetch.mockImplementation(async (input) => {
@@ -875,6 +896,63 @@ describe('first-run sign-in screen', () => {
     expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
     expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
   });
+
+  it.each([
+    ['enabled', 'on'],
+    ['disabled', 'off'],
+    ['error', 'unknown'],
+    ['timeout', 'unknown'],
+  ] as const)(
+    'records the first-launch join-key arm as %s',
+    async (resolution, expectedArm) => {
+      const deliveredLaunches: Array<Record<string, string | number>> = [];
+      httpFetch.mockImplementation(async (input) => {
+        const key = new URL(String(input)).searchParams.get('key');
+        if (key === 'desktop.first-launch-join-key-v1') {
+          if (resolution === 'error') throw new Error('public resolver unavailable');
+          if (resolution === 'timeout') return new Promise<never>(() => {});
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              key,
+              enabled: resolution === 'enabled',
+            }),
+            text: async () => '',
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ key, enabled: false }),
+          text: async () => '',
+        };
+      });
+      stubContinuationInvoke({
+        deliver: ({ path, body }) => {
+          if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+          return 200;
+        },
+      });
+      const continuationInvoke = tauri.invoke.getMockImplementation();
+      if (!continuationInvoke) throw new Error('Expected the continuation invoke stub.');
+      tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'desktop_install_attempt_id') {
+          return '22222222-2222-4222-8222-222222222222';
+        }
+        return continuationInvoke(command, args);
+      });
+
+      component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+      if (resolution === 'timeout') {
+        await flush();
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      await flushUntil(() => deliveredLaunches.length === 1);
+
+      expect(deliveredLaunches[0]?.joinKeyArm).toBe(expectedArm);
+    },
+  );
 
   it("says who is already signed in on this machine before anything is created, and can switch", async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
