@@ -171,10 +171,16 @@ async function openCommandPalette(): Promise<void> {
  * is what used to trip "no longer available".
  */
 async function clickNewCompanyRow(): Promise<void> {
+  // All scope groups company channels by company; they stay out of the
+  // Home day buckets.
   const homeTitle = Array.from(
     host!.querySelectorAll<HTMLElement>(".chat-row-title"),
-  ).find((el) => el.textContent?.trim().includes(NEW_CHANNEL));
-  expect(homeTitle, "the company channel stays off the Home list").toBeUndefined();
+  ).find(
+    (el) =>
+      el.textContent?.trim().includes(NEW_CHANNEL) &&
+      !el.closest('[data-testid="company-channel-group-rows"]'),
+  );
+  expect(homeTitle, "the company channel stays off the Home day buckets").toBeUndefined();
   await openCommandPalette();
   const palette = document.querySelector('[data-testid="command-palette"]');
   expect(palette, "command palette opens").toBeTruthy();
