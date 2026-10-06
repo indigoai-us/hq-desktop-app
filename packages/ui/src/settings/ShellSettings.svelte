@@ -801,7 +801,8 @@
     flex-direction: column;
     gap: 2px;
     flex: 0 0 200px;
-    padding: 14px 12px;
+    /* Row content lands on --page-edge-inset, under the page title. */
+    padding: 14px calc(var(--page-edge-inset, 20px) - 10px);
     border-right: 1px solid var(--line);
     overflow-y: auto;
   }
