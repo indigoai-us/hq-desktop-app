@@ -46,6 +46,12 @@
     avatarSrc?: string | null;
     disabled?: boolean;
     autofocus?: boolean;
+    /**
+     * The takeover's local name step (the cloud flow's look): the name field
+     * leads, the @handle and avatar sit quietly under it, and title, avatar
+     * pick, who it is for and Advanced open from "More options".
+     */
+    sunrise?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
     onavatar?: (selection: AvatarSelection | undefined, src: string | null) => void;
   }
@@ -60,6 +66,7 @@
     avatarSrc = null,
     disabled = false,
     autofocus = true,
+    sunrise = false,
     onpatch,
     onavatar,
   }: Props = $props();
@@ -97,6 +104,13 @@
   const hasPicker = $derived(Boolean(avatarPacks || loadAvatarPacks));
 
   let avatarOpen = $state(false);
+  /** Sunrise only: the fields under "More options" are open. */
+  let moreOpen = $state(false);
+  // A company bot with no company picked cannot be created: the field that
+  // says so must be on screen, not folded away.
+  $effect(() => {
+    if (sunrise && draft.scope === "company" && draft.companySlugs.length === 0) moreOpen = true;
+  });
   const previewAvatar = $derived(avatarSrc);
 
   function onAvatarChange(selection: AvatarSelection, src: string | null): void {
@@ -137,10 +151,10 @@
 
 <div class="cb-step" data-testid="create-bot-details-step">
   <div class="cb-field">
-    <label class="cb-label" for="create-bot-name">Name</label>
+    <label class={sunrise ? "new-bot-create-label" : "cb-label"} for="create-bot-name">Name</label>
     <input
       id="create-bot-name"
-      class="cb-input"
+      class={sunrise ? "new-bot-create-input" : "cb-input"}
       type="text"
       autocomplete="off"
       spellcheck="false"
@@ -166,6 +180,7 @@
       {:else if handleError}
         {handleError}
       {:else}
+        {#if sunrise}<span class="name-mark" aria-hidden="true"><IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${handle || "bot"}`} /></span>{/if}
         <span data-testid="chat-bot-derived-handle">@{handle}</span> — type that to mention it.
         {#if !showHandleField}
           <button type="button" class="cb-linkish" data-testid="chat-bot-handle-edit" disabled={disabled} onclick={() => (handleOpen = true)}><RailIcon name="pencil" />
@@ -199,6 +214,10 @@
     </div>
   {/if}
 
+  {#if sunrise}
+    <button type="button" class="new-bot-more" aria-expanded={moreOpen} data-testid="chat-bot-more-options" disabled={disabled} onclick={() => (moreOpen = !moreOpen)}><RailIcon name="sliders" />More options</button>
+  {/if}
+  {#if !sunrise || moreOpen}
   <div class="cb-field">
     <label class="cb-label" for="create-bot-title">Title</label>
     <input
@@ -371,9 +390,23 @@
       </div>
     </div>
   </details>
+  {/if}
 </div>
 
 <style>
+  .name-mark {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+    vertical-align: middle;
+    overflow: hidden;
+  }
+  .name-mark :global(.identity) {
+    width: 18px;
+    height: 18px;
+  }
   .avatar-row {
     display: flex;
     align-items: center;

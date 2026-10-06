@@ -1026,3 +1026,97 @@
   --v4-error: #ef4444;
   color-scheme: dark;
 }
+
+/* The local flow on the cloud flow's step screens: the card keeps the cloud
+   card's width, and the bot-step pieces (rows, pills, fields) take the
+   takeover's square rows and quiet ink. */
+.new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps {
+  width: min(560px, 100%);
+}
+
+.new-bot-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--new-bot-ink);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.new-bot-identity-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+}
+
+.new-bot-identity-mark .identity {
+  width: 20px;
+  height: 20px;
+}
+
+.new-bot-identity-name {
+  font-weight: 500;
+}
+
+.new-bot-identity-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--new-bot-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-bot-chord {
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.new-bot-chord-hint {
+  text-align: center;
+}
+
+.new-bot-takeover-card--steps .cb-step {
+  gap: 14px;
+}
+
+.new-bot-takeover-card--steps .cb-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.new-bot-takeover-card--steps .cb-card,
+.new-bot-takeover-card--steps .cb-pill,
+.new-bot-takeover-card--steps .cb-input,
+.new-bot-takeover-card--steps .cb-search,
+.new-bot-takeover-card--steps .cb-switch,
+.new-bot-takeover-card--steps .cb-advanced,
+.new-bot-takeover-card--steps .cb-library {
+  border-color: var(--new-bot-line);
+  border-radius: 0;
+}
+
+.new-bot-takeover-card--steps .cb-card {
+  background: rgba(9, 9, 11, 0.36);
+  box-shadow: none;
+}
+
+.new-bot-takeover-card--steps .cb-card[aria-checked="true"],
+.new-bot-takeover-card--steps .cb-card[aria-selected="true"],
+.new-bot-takeover-card--steps .cb-pill[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.new-bot-takeover-card--steps .cb-label {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.new-bot-takeover-card--steps .cb-linkish {
+  color: var(--new-bot-muted);
+}

@@ -140,7 +140,7 @@ async function chooseKind(kind: "cloud" | "local"): Promise<void> {
 }
 
 describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
-  it("stays on the in-modal flow until the host has an answer, then offers the takeover", async () => {
+  it("stays on the '+' window's flow until the host has an answer, then offers the takeover", async () => {
     const props = $state({
       ...BASE_PROPS,
       api: createFixtureChatSidebarApi(),
@@ -158,7 +158,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
 
     // The answer arrives: Indigo has the flag. Close the bot flow first.
     expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
@@ -177,7 +179,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
-  it("goes back to the in-modal flow when the flag is read as off", async () => {
+  it("goes back to the '+' window's flow when the flag is read as off", async () => {
     const props = $state({
       ...BASE_PROPS,
       api: createFixtureChatSidebarApi(),
@@ -197,7 +199,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("keeps an open takeover's create screen when a later read comes back off", async () => {
@@ -238,7 +242,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("keeps the list it started with when the takeover is opened from a bot's row (round 4, item 5)", async () => {

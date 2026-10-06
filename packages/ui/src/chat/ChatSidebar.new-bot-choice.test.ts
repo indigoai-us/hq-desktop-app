@@ -174,18 +174,28 @@ describe("New bot asks Cloud or Local first", () => {
     expect(shell!.style.getPropertyValue("--new-bot-wallpaper")).toContain("url(");
     expect(shell!.querySelector(".new-bot-takeover-shade")).toBeTruthy();
     expect(shell!.querySelector(".new-bot-takeover-wordmark")?.textContent).toBe("HQ");
-    const card = shell!.querySelector(".new-bot-takeover-card.new-bot-takeover-card--flow");
-    expect(card?.querySelector('[data-testid="create-bot-kind-step"]')).toBeTruthy();
-    // The plain window card is not drawn.
+    const card = shell!.querySelector(".new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps");
+    // Owner (2026-10-06): "use the same design as cloud bot creation". The
+    // local flow is the cloud flow's step screens: name first.
+    const flow = card?.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("local");
+    expect(flow?.getAttribute("data-step")).toBe("details");
+    expect(card?.querySelector('[data-testid="new-bot-progress"]')).toBeTruthy();
+    expect(card?.querySelector('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(card?.querySelector("#new-bot-takeover-title")?.textContent).toContain("Enter a");
+    // The plain window card, the old crumbs and the preview rail are not drawn.
     expect(shell!.querySelector(".create-card")).toBeNull();
+    expect(shell!.querySelector(".flow-crumbs")).toBeNull();
+    expect(shell!.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
+    expect(shell!.querySelector('[data-testid="bot-preview-card"]')).toBeNull();
 
-    // Owner (2026-10-05): "Skip it". Local was already picked, so the
-    // "Where does it run?" step is left out; its coding-tool picker moves
-    // onto Details.
     click('[data-testid="create-bot-next"]');
     await settle();
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    // "Where does it run?" is not asked again; the coding tool is its own step.
     expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
     expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
   });
 
@@ -198,7 +208,9 @@ describe("New bot asks Cloud or Local first", () => {
     await settle();
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
     click('[data-testid="chat-bot-create"]');
     await settle(12);
     expect(oncreatebot).toHaveBeenCalledOnce();
@@ -247,10 +259,14 @@ describe("New bot asks Cloud or Local first", () => {
 
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(sunriseFlow()).toBeTruthy();
+    // Home is Cloud; with two companies the first cloud step picks the company.
+    const flow = q('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("cloud");
+    expect(flow?.getAttribute("data-step")).toBe("home");
+    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="chat-bot-where-cloud"]')?.getAttribute("aria-checked")).toBe("true");
-    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("Cloud with a takeover company opens the takeover's own create screen", async () => {
@@ -268,6 +284,63 @@ describe("New bot asks Cloud or Local first", () => {
     await settle();
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     expect(sunriseFlow()).toBeNull();
+  });
+
+  it("Create a cloud bot instead on the local name step opens the takeover's cloud screen, the choice behind Back", async () => {
+    mountSidebar({
+      companies: [INDIGO],
+      oncreatebot: localBot(),
+      oncreateagent: vi.fn(async () => okTarget),
+      oncreatenewbot: vi.fn(async () => okTarget),
+      newBotCompanyUids: ["cmp_indigo"],
+    });
+    await settle();
+    await pressNewBot();
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
+    click('[data-testid="create-bot-switch-cloud"]');
+    await settle();
+    expect(sunriseFlow()).toBeNull();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    click('[data-testid="new-bot-back-to-choice"]');
+    await settle();
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  });
+
+  it("Create a cloud bot instead with no takeover company opens the window's cloud flow fresh", async () => {
+    mountSidebar({
+      companies: [INDIGO, ACME],
+      oncreatebot: localBot(),
+      oncreateagent: vi.fn(async () => okTarget),
+      oncreatenewbot: vi.fn(async () => okTarget),
+      newBotCompanyUids: [],
+    });
+    await settle();
+    await pressNewBot();
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    click('[data-testid="create-bot-switch-cloud"]');
+    await settle(12);
+    expect(sunriseFlow()).toBeTruthy();
+    // Not the local steps any more: the cloud flow, with Home on Cloud, from
+    // its first step (the company picker, two companies here).
+    const flow = q('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("cloud");
+    expect(flow?.getAttribute("data-step")).toBe("home");
+    expect(q('[data-testid="chat-create-agent-picker"]')).toBeTruthy();
+  });
+
+  it("no Create a cloud bot instead when Cloud cannot be picked", async () => {
+    mountSidebar({ companies: [INDIGO], oncreatebot: localBot(), newBotCompanyUids: [] });
+    await settle();
+    await pressNewBot();
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
   });
 
   it("the host's New bot entry (Team page, Settings, palette) asks the same question", async () => {

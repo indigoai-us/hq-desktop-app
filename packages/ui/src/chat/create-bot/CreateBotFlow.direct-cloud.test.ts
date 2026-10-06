@@ -97,7 +97,6 @@ function render(props: Record<string, unknown> = {}): void {
       botWorkers: [],
       existingNames: [],
       botCompanies: [],
-      previewPlacement: "top",
       loadClaudeProviderFlag: async () => ok(true),
       loadCloudProvisionOptions: async () => ok(QUOTE),
       oncreate: vi.fn(),
@@ -106,14 +105,28 @@ function render(props: Record<string, unknown> = {}): void {
   });
 }
 
-/** kind → home → Cloud → details → Create. */
+function typeName(value: string): void {
+  const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]');
+  if (!name) throw new Error("missing chat-bot-name");
+  name.value = value;
+  name.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** "Where should it run?" → Cloud → company (when more than one) → details. */
+async function openCloudDetails(): Promise<void> {
+  click('[data-testid="new-bot-choice-cloud"]');
+  await settle();
+  expect(q('[data-testid="create-bot-sunrise-home"]')).toBeTruthy();
+  click('[data-testid="create-bot-next"]');
+  await settle();
+  expect(q('[data-testid="create-bot-sunrise-details"]')).toBeTruthy();
+  typeName("Dr Love");
+  await settle();
+}
+
+/** Where → Cloud → company → details → Create. */
 async function createCloud(): Promise<void> {
-  click('[data-testid="create-bot-next"]');
-  await settle();
-  click('[data-testid="chat-bot-where-cloud"]');
-  await settle();
-  click('[data-testid="create-bot-next"]');
-  await settle();
+  await openCloudDetails();
   click('[data-testid="chat-bot-create"]');
   await settle();
 }
@@ -133,9 +146,14 @@ describe("New bot flow, agents.desktop-agent-creation off", () => {
   it("still hides Cloud when there is no company", async () => {
     render({ onCloudCreate: vi.fn(), agentTargets: [], directCloud: seam(false) });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
+    // Flag off and no company: no Cloud/Local question, Cloud nowhere, the
+    // flow opens on the local name step.
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
+    expect(q('[data-testid="new-bot-choice-cloud"]')).toBeNull();
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
+    expect(q('[data-testid="create-bot-sunrise-details"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
   });
 
   it("never probes availability", async () => {
@@ -171,12 +189,7 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       loadClaudeProviderFlag: async () => ok(false),
     });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    click('[data-testid="chat-bot-where-cloud"]');
-    await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
+    await openCloudDetails();
     expect(q<HTMLInputElement>('[data-testid="cloud-bot-runtime-claude"]')?.checked).toBe(true);
     expect(q('[data-testid="cloud-bot-runtime-codex"]')).not.toBeNull();
     expect(q('[data-testid="cloud-bot-runtime-grok"]')).not.toBeNull();
@@ -193,15 +206,14 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       directCloud: seam(true, { cmp_indigo: { state: "role", admins: ["Corey"] } }),
     });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    const card = q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]');
+    const card = q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]');
     expect(card).toBeTruthy();
     expect(card!.disabled).toBe(true);
-    expect(card!.dataset.unavailable).toBe("true");
-    expect(q('[data-testid="chat-bot-where-cloud-reason"]')?.textContent).toBe(
+    expect(q('#new-bot-choice-cloud-body')?.textContent?.trim()).toBe(
       "Only admins of Indigo can add cloud bots. Ask Corey.",
     );
+    // A role block has no checkout to offer.
+    expect(q('[data-testid="chat-bot-where-cloud-fix"]')).toBeNull();
   });
 
   it("a plan-limited admin sees the plan and the checkout link", async () => {
@@ -213,10 +225,8 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       }),
     });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-where-cloud-reason"]')?.textContent).toBe(
+    expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(true);
+    expect(q('#new-bot-choice-cloud-body')?.textContent?.trim()).toBe(
       "Cloud bots need the Agents plan ($500 a month). Indigo isn't on it yet.",
     );
     const link = q<HTMLAnchorElement>('[data-testid="chat-bot-where-cloud-fix"]');
@@ -227,10 +237,8 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
   it("no company: Cloud is shown, disabled, with the reason", async () => {
     render({ onCloudCreate: vi.fn(), agentTargets: [], directCloud: seam(true) });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.disabled).toBe(true);
-    expect(q('[data-testid="chat-bot-where-cloud-reason"]')?.textContent).toBe(
+    expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(true);
+    expect(q('#new-bot-choice-cloud-body')?.textContent?.trim()).toBe(
       "Cloud bots belong to a company. Create or join a company first.",
     );
   });
@@ -243,9 +251,7 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       directCloud: seam(true, { cmp_indigo: { state: "role", admins: [] } }),
     });
     await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    click('[data-testid="chat-bot-where-cloud"]');
+    click('[data-testid="new-bot-choice-cloud"]');
     await settle();
     const rows = Array.from(host.querySelectorAll<HTMLButtonElement>('[data-testid="chat-create-agent-company"]'));
     expect(rows.map((r) => [r.dataset.company, r.disabled, r.getAttribute("aria-selected")])).toEqual([
@@ -256,6 +262,8 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       "Only admins of Indigo can add cloud bots. Ask a company admin.",
     );
     click('[data-testid="create-bot-next"]');
+    await settle();
+    typeName("Dr Love");
     await settle();
     click('[data-testid="chat-bot-create"]');
     await settle();
@@ -273,10 +281,9 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       entryFix: { kind: "reload_quote" },
     });
     await settle();
-    click('[data-testid="create-bot-next"]');
+    click('[data-testid="new-bot-choice-cloud"]');
     await settle();
-    click('[data-testid="chat-bot-where-cloud"]');
-    await settle();
+    expect(q('[data-testid="chat-create-entry-fix"]')?.textContent).toContain("Get the new price");
     const before = loadCloudProvisionOptions.mock.calls.length;
     click('[data-testid="chat-create-entry-fix"]');
     await settle();
@@ -292,8 +299,44 @@ describe("New bot flow, agents.desktop-agent-creation on", () => {
       entryFix: { kind: "checkout", url: "https://checkout.test/x", label: "Upgrade plan" },
     });
     await settle();
+    // A refusal comes back from Create, so the person is on the cloud steps.
+    await openCloudDetails();
+    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("Cloud bots need the Agents plan.");
     const link = q<HTMLAnchorElement>('[data-testid="chat-create-entry-fix"]');
     expect(link?.tagName).toBe("A");
     expect(link?.getAttribute("href")).toBe("https://checkout.test/x");
+  });
+
+  it("a handle refusal at create sends the person back to the name step", async () => {
+    render({
+      onCloudCreate: vi.fn(),
+      agentTargets: COMPANIES,
+      directCloud: seam(true),
+      entryError: "That handle is taken in Indigo.",
+      entryFix: { kind: "edit_handle" },
+    });
+    await settle();
+    click('[data-testid="new-bot-choice-cloud"]');
+    await settle();
+    expect(q('[data-testid="create-bot-sunrise-home"]')).toBeTruthy();
+    const fix = q<HTMLButtonElement>('[data-testid="chat-create-entry-fix"]');
+    expect(fix?.textContent).toContain("Change handle");
+    fix!.click();
+    await settle();
+    expect(q('[data-testid="create-bot-sunrise-details"]')).toBeTruthy();
+    expect(q('[data-testid="chat-bot-name"]')).toBeTruthy();
+  });
+
+  it("shows an entry error on the Cloud/Local choice screen", async () => {
+    render({
+      onCloudCreate: vi.fn(),
+      agentTargets: COMPANIES,
+      directCloud: seam(true),
+      entryError: "Cloud bots need the Agents plan.",
+      entryFix: { kind: "checkout", url: "https://checkout.test/x", label: "Upgrade plan" },
+    });
+    await settle();
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+    expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("Cloud bots need the Agents plan.");
   });
 });

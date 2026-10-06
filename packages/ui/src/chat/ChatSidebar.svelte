@@ -1921,6 +1921,8 @@
   let newBotCompaniesAtOpen = $state<ScopeCompany[] | null>(null);
   /** The takeover opens on the "Cloud or Local?" question (every New bot entry; not a starting bot's row). */
   let newBotChoose = $state(false);
+  /** Open the takeover on its cloud create screen, the choice behind Back. */
+  let newBotOpenCloud = $state(false);
   /** The company a New bot entry was opened for (Team page Add agent). */
   let newBotPreferredCompanyUid = $state<string | null>(null);
   /** The "+" window's bot step wears the takeover shell: it was opened from the choice. */
@@ -1985,6 +1987,7 @@
    * another one.
    */
   function openNewBotTakeover(options: { choose?: boolean } = {}): void {
+    newBotOpenCloud = false;
     newBotFromCreateWindow = createOpen;
     createOpen = false;
     newBotChoose = options.choose ?? true;
@@ -2766,7 +2769,25 @@
     newBotCompaniesAtOpen = newBotTargets;
     openWakingKey = null;
     newBotChoose = true;
+    newBotOpenCloud = false;
     newBotOpen = true;
+  }
+
+  /**
+   * "Create a cloud bot instead" on the local steps: the cloud create screen
+   * when the takeover has one, else the "+" window's cloud flow.
+   */
+  function switchLocalToCloud(): void {
+    if (takeoverHasCloud) {
+      backToNewBotChoice();
+      newBotOpenCloud = true;
+      return;
+    }
+    if (!canMakeCloudBotInWindow) return;
+    // Close the local steps first: the window's flow is built for the home
+    // it opens with, so the cloud one must open fresh.
+    createOpen = false;
+    void tick().then(() => openBotFlowFromChoice("cloud"));
   }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
@@ -5056,6 +5077,7 @@
       sunrise={createSunrise}
       initialBotHome={createBotHome}
       onsunriseback={createSunrise ? backToNewBotChoice : null}
+      onsunrisecloud={createSunrise && newBotCloudReason === null ? switchLocalToCloud : null}
     />
   {/if}
 
@@ -5063,6 +5085,7 @@
     <NewBotTakeover
       canCreateLocalBot={!!oncreatebot}
       choose={newBotChoose}
+      openCloud={newBotOpenCloud}
       cloudReason={newBotCloudReason}
       localReason={newBotLocalReason}
       onchoosecloud={canMakeCloudBotInWindow ? () => openBotFlowFromChoice("cloud") : null}

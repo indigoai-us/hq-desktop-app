@@ -175,25 +175,100 @@ describe("Settings → Bots (Work shell)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
     await settleFlow();
-    expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).not.toBeNull();
-    // The flow itself, not a one-off form.
-    expect(host.querySelector('[data-testid="create-bot-kind-step"]')).not.toBeNull();
-
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await settleFlow();
-    expect(host.querySelector('[data-testid="create-bot-home-step"]')).not.toBeNull();
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await settleFlow();
+    // The shell is portalled out of the pane, so read the whole document.
+    expect(document.querySelector('[data-testid="settings-bots-create-dialog"]')).not.toBeNull();
+    // The flow itself, not a one-off form: details → kind → home.
+    const step = () => document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step");
+    expect(step()).toBe("details");
     // "assistant" is taken by the bot already on this Mac, so the flow moved on.
-    expect(host.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("scout");
+    expect(document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("scout");
 
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("kind");
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).not.toBeNull();
+    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("home");
+
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
+      expect(document.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
     });
     expect(host.querySelector('[data-testid="settings-bots-status"]')?.textContent).toContain("scout");
+  });
+
+  it("New bot opens the shared step flow in the takeover shell; Cancel and Escape close it; name → template → coding tool creates", async () => {
+    const create = vi.fn(async () => ok({}));
+    const workers = vi.fn(async () =>
+      ok({
+        workers: [{ id: "analyst", path: "workers/analyst", company: "acme", source: "company" as const, name: "Analyst", summary: "Reads the numbers." }],
+      }),
+    );
+    const adapter = fakeAdapter({ bots: { create, workers } });
+    await mountPane(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-button"]')).not.toBeNull();
+    });
+    const dialog = () => document.querySelector<HTMLElement>('[data-testid="settings-bots-create-dialog"]');
+    const step = () => document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step");
+    const open = async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
+      await settleFlow();
+    };
+
+    await open();
+    const shell = dialog();
+    expect(shell).not.toBeNull();
+    expect(shell!.getAttribute("data-sunrise")).toBe("true");
+    const card = shell!.querySelector('[data-testid="new-bot-sunrise-flow"]');
+    expect(card).not.toBeNull();
+    // Settings has no cloud create, so there is no Cloud/Local question.
+    expect(card!.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBeGreaterThan(1);
+    expect(card!.querySelector('[data-testid="create-bot-sunrise-details"]')).not.toBeNull();
+    // The old wizard's crumbs are gone.
+    expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
+
+    // Cancel closes it and creates nothing.
+    shell!.querySelector<HTMLButtonElement>('[data-testid="new-bot-takeover-cancel"]')!.click();
+    await settleFlow();
+    expect(dialog()).toBeNull();
+
+    // Escape closes it too.
+    await open();
+    expect(dialog()).not.toBeNull();
+    document
+      .querySelector<HTMLElement>('[data-testid="chat-bot-name"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settleFlow();
+    expect(dialog()).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+
+    // Name → template → coding tool → Create.
+    await open();
+    const name = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "ledger";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settleFlow();
+    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("kind");
+    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-kind-template"]')!.click();
+    await settleFlow();
+    const analyst = '[data-testid="create-bot-template-card"][data-template="analyst"]';
+    await vi.waitFor(() => expect(document.querySelector(analyst)).not.toBeNull());
+    document.querySelector<HTMLButtonElement>(analyst)!.click();
+    await settleFlow();
+    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("home");
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "ledger", runtime: "claude", worker: "analyst" }));
+    await vi.waitFor(() => expect(dialog()).toBeNull());
   });
 
   it("with a host modal, New bot opens the shared Messages modal instead of its own dialog", async () => {

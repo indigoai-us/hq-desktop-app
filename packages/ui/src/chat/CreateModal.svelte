@@ -229,6 +229,8 @@
     initialBotHome?: "local" | "cloud" | null;
     /** Back from the bot flow's first step when opened from the choice: return to it. */
     onsunriseback?: (() => void) | null;
+    /** The takeover's local steps offer "Create a cloud bot instead" with this. */
+    onsunrisecloud?: (() => void) | null;
   }
 
   let {
@@ -273,6 +275,7 @@
     sunrise = false,
     initialBotHome = null,
     onsunriseback = null,
+    onsunrisecloud = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -691,8 +694,13 @@
   let step = $state<Step>(
     untrack(() => (sunrise && initialStep === "bot" && (canCreateLocalBot || canCreateCloudBot) ? "bot" : "find")),
   );
-  /** The bot step is shown in the takeover shell. */
-  const sunriseBot = $derived(sunrise && step === "bot");
+  /**
+   * The bot step is always shown in the New bot takeover's shell, on its step
+   * screens: from the choice (`sunrise`) and from this window's own search.
+   */
+  const sunriseBot = $derived(step === "bot");
+  /** The takeover's local steps: "Create a cloud bot instead" goes to its cloud screen. */
+  const sunriseLocalSteps = $derived(sunrise && sunriseBot && initialBotHome === "local" && canCreateLocalBot);
   // Opened as "New company" (sidebar switcher): go straight to the second
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
@@ -2188,7 +2196,13 @@
         initialCompanyUid: botCompanyUid,
         initialCompanySlug: botCompanySlug,
         initialHome: initialBotHome,
-        firstBackLabel: sunrise && onsunriseback ? "Back" : "Cancel",
+        firstBackLabel: "Back",
+        onswitchcloud: sunriseLocalSteps && onsunrisecloud
+          ? () => {
+              if (entryBusy) return;
+              onsunrisecloud?.();
+            }
+          : null,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
         loadClaudeProviderFlag,
         loadCloudProvisionOptions,
@@ -2217,8 +2231,9 @@
 
 {#if sunriseBot}
   <!-- The New bot takeover's shell around the bot flow (opened from the
-       "Cloud or Local?" choice). Same classes and stylesheet as
-       NewBotTakeover; only the card is wider for the flow's preview rail. -->
+       "Cloud or Local?" choice, or this window's own search). Same classes
+       and stylesheet as NewBotTakeover. It covers the whole window and the
+       card shrinks and scrolls with it, so a small window fits it too. -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="new-bot-takeover chat-shell"
@@ -2245,7 +2260,7 @@
     <main class="new-bot-takeover-stage">
       <div
         bind:this={dialogEl}
-        class="new-bot-takeover-card new-bot-takeover-card--flow"
+        class="new-bot-takeover-card new-bot-takeover-card--flow new-bot-takeover-card--steps"
         data-testid="new-bot-sunrise-flow"
         role="dialog"
         aria-modal="true"
@@ -2268,7 +2283,6 @@
   <div
     bind:this={dialogEl}
     class="create-card"
-    class:create-card--wide={step === "bot"}
     role="dialog"
     aria-modal="true"
     aria-labelledby="create-modal-title"
@@ -2763,8 +2777,6 @@
           </button>
         {/if}
       </div>
-    {:else if step === "bot"}
-      {@render botFlow()}
     {:else if step === "email"}
       {#if emailOutcome}
         <div
@@ -3332,11 +3344,6 @@
   }
 
   /* The bot flow needs room for three cards and a preview rail. */
-  .create-card--wide {
-    width: min(880px, 100%);
-    max-height: min(88vh, 720px);
-  }
-
   .create-head {
     display: flex;
     align-items: center;
