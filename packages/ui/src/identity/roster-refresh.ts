@@ -185,6 +185,15 @@ export function subscribeRosterRefreshEvents(
   listen: RosterListenFn,
   onRefresh: (event: RosterRefreshEvent) => void,
 ): () => void {
+  const logCleanupFailure = (error: unknown) => {
+    console.warn("[hq-ui-roster-refresh] event listener cleanup failed", {
+      name:
+        error instanceof Error && /^[A-Za-z][A-Za-z0-9_.]*$/.test(error.name)
+          ? error.name
+          : "UnknownError",
+      message: "Roster event listener cleanup failed",
+    });
+  };
   let cancelled = false;
   const unlistens = ROSTER_REFRESH_EVENTS.map((eventName) =>
     listen(eventName, () => {
@@ -198,11 +207,12 @@ export function subscribeRosterRefreshEvents(
         .then((unlisten) => {
           try {
             unlisten();
-          } catch {
+          } catch (error) {
             /* teardown must never escape the caller's cleanup pass */
+            logCleanupFailure(error);
           }
         })
-        .catch(() => {});
+        .catch(logCleanupFailure);
     }
   };
 }
