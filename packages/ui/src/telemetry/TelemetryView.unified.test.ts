@@ -90,7 +90,7 @@ describe("My Telemetry unified view (OWNER-R35)", () => {
     expect(totals).toContain("stories shipped");
     expect(totals).toContain("345");
     expect(totals).toContain("731");
-    expect(totals).toContain("median gap between sessions on this Mac");
+    expect(totals).toContain("median gap on this Mac");
   });
 
   it("Sessions lists this Mac's records, opens the record in Files, and has no Outcome or Tokens column", async () => {
@@ -107,6 +107,34 @@ describe("My Telemetry unified view (OWNER-R35)", () => {
     expect(onopenthread).toHaveBeenCalledWith("workspace/threads/T-20261003-112000-a.json");
     expect((rows[1] as HTMLButtonElement).disabled).toBe(true);
     expect(section.textContent).not.toContain("not available yet");
+    // Full row: company, project, title and a humanized length.
+    const cells = (row: Element) => [...row.children].map((c) => c.textContent?.trim() ?? "");
+    const full = cells(rows[0]!);
+    expect(full.slice(2)).toEqual(["proj-a", "Title A", "1h 20m"]);
+    // Compact When that fits the column: "Oct 3, 10:00"-style, no AM/PM.
+    expect(full[0]).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2}$/);
+    // Unbound sessions say so instead of leaving the cell blank; no title or
+    // end time means empty cells, never a placeholder glyph.
+    expect(cells(rows[1]!)[1]).toBe("No company");
+    expect(cells(rows[1]!).slice(3)).toEqual(["", ""]);
+    expect(section.textContent).not.toContain("—");
+  });
+
+  it("Sessions marks background agent sessions and can hide them", async () => {
+    const { target } = await mountView({ localSessions: reader() });
+    const section = target.querySelector("[data-testid='telemetry-sessions']")!;
+    const badges = [...section.querySelectorAll(".kind")].map((b) => [b.getAttribute("data-kind"), b.textContent]);
+    expect(badges).toEqual([["agent", "Agent"]]);
+    const toggle = section.querySelector("[data-testid='telemetry-sessions-hide-agents']") as HTMLButtonElement;
+    expect(toggle.textContent).toBe("Hide agent sessions");
+    toggle.click();
+    flushSync();
+    expect(section.querySelectorAll("button.srow")).toHaveLength(2);
+    expect(section.querySelector(".kind")).toBeNull();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    toggle.click();
+    flushSync();
+    expect(section.querySelectorAll("button.srow")).toHaveLength(3);
   });
 
   it("Sessions is absent without a local source or with no sessions (OWNER-R31)", async () => {
@@ -123,7 +151,8 @@ describe("My Telemetry unified view (OWNER-R35)", () => {
   it("Models: families expand to exact models with ids; By model is a flat list; cost cell empty without a price", async () => {
     const { target } = await mountView();
     const fams = [...target.querySelectorAll("[data-section='models'] button.fam")].map((b) => b.getAttribute("data-family"));
-    expect(fams).toEqual(["Opus", "OpenAI Codex", "Grok", "OpenAI GPT"]);
+    // Provider order: Anthropic, OpenAI (Codex and GPT ids together), xAI.
+    expect(fams).toEqual(["Opus", "OpenAI", "Grok"]);
     expect(target.querySelector("[data-model='claude-opus-4-5-20251101']")).toBeNull();
     (target.querySelector("[data-family='Opus']") as HTMLButtonElement).click();
     flushSync();

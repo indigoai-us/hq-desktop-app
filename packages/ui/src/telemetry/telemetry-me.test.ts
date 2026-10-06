@@ -61,8 +61,8 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     expect(snap.storiesShipped).toBe(6);
     expect(snap.distinctSkills).toBe(2);
     expect(snap.skills).toEqual([{ name: "deploy", count: 5 }, { name: "review", count: 3 }]);
-    expect(snap.models.map((m) => m.model)).toEqual(["opus", "sonnet", "Codex"]);
-    expect(snap.modelMix).toBe("Opus 40% · Sonnet 40% · Codex 20%");
+    expect(snap.models.map((m) => m.model)).toEqual(["opus", "sonnet", "OpenAI"]);
+    expect(snap.modelMix).toBe("Opus 40% · Sonnet 40% · OpenAI 20%");
     expect(snap.days.map((d) => [d.opus, d.sonnet, d.haiku])).toEqual([[1000, 0, 0], [0, 1000, 0]]);
     expect(snap.rangeLabel).toBe("Sep 3 – Oct 2");
     expect(snap.cacheReadShare).toBe("34%");
@@ -96,7 +96,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
     totals.tokensByModel["grok-4.7-build"] = tokens(50, 0, 0, 0);
     totals.tokens = tokens(4950, 50, 0, 850);
     const snap = snapshotFromMe(body, "30d");
-    expect(snap.models.map((m) => m.label)).toEqual(["Fable", "Opus", "Sonnet", "Codex", "System", "mystery-9"]);
+    expect(snap.models.map((m) => m.label)).toEqual(["Fable", "Opus", "Sonnet", "OpenAI", "System", "mystery-9"]);
     expect(snap.models.find((m) => m.label === "System")?.hint).toBe("Tokens from HQ's own background tasks");
     expect(snap.models.find((m) => m.label === "Fable")?.family).toBeUndefined();
     // Seven groups exceed the six-row cap, so the smallest folds into Other and is named.
@@ -107,7 +107,7 @@ describe("My Telemetry from /v1/telemetry/me", () => {
   it("names models through one display helper", () => {
     expect(modelDisplayName("claude-fable-5-1")).toBe("Fable");
     expect(modelDisplayName("claude-opus-5-5")).toBe("Opus");
-    expect(modelDisplayName("gpt-6-sol")).toBe("Codex");
+    expect(modelDisplayName("gpt-6-sol")).toBe("OpenAI");
     expect(modelDisplayName("grok-4.7-build")).toBe("Grok");
     expect(modelDisplayName("<synthetic>")).toBe("System");
     expect(modelDisplayName("mystery-9")).toBe("mystery-9");

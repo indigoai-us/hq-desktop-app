@@ -20,6 +20,7 @@ import {
 } from "./telemetry-model.js";
 import { compactNumber } from "../common/compact-number.js";
 import { exactModels } from "./telemetry-models.js";
+import { modelFamilyOf } from "./telemetry-colors.js";
 
 export interface MyTelemetryApi {
   getMyTelemetry?(from: string, to: string): AdapterPromise<Json>;
@@ -101,7 +102,6 @@ function pct(part: number, total: number): number {
   return total > 0 ? Math.round((part / total) * 100) : 0;
 }
 
-const FAMILY_LABEL: Record<ModelId, string> = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
 
 /** Row name for tokens from HQ's own background tasks (`<synthetic>` and other internal ids). */
 export const SYSTEM_MODEL_LABEL = "System";
@@ -111,20 +111,16 @@ export const SYSTEM_MODEL_NOTE = "Tokens from HQ's own background tasks";
 export const MODEL_ROW_CAP = 6;
 
 /**
- * Display name for a model id reported by the server. Claude families and
- * known vendors get a short name; internal ids are "System"; anything else is
- * shown as-is.
+ * Display name for a model id reported by the server: its family name from
+ * the shared resolver (telemetry-colors.ts), so the stat row and chart use the
+ * same family as the Models table. Internal ids are "System"; an id no family
+ * claims is shown as-is.
  */
 export function modelDisplayName(model: string): string {
   const raw = model.trim();
-  const id = raw.toLowerCase();
-  if (/^<.*>$/.test(id) || id === "synthetic") return SYSTEM_MODEL_LABEL;
-  const family = modelFamily(id);
-  if (family) return FAMILY_LABEL[family];
-  if (id.includes("fable")) return "Fable";
-  if (id.startsWith("gpt-") || id.includes("codex")) return "Codex";
-  if (id.startsWith("grok")) return "Grok";
-  return raw;
+  const family = modelFamilyOf(raw);
+  if (family.key === "system") return SYSTEM_MODEL_LABEL;
+  return family.key === "other" ? raw : family.label;
 }
 
 function unattributedNote(hiddenModels: string[], noModelTokens: number): string {

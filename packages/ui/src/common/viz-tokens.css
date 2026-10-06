@@ -1,0 +1,54 @@
+/* Data-viz provider palette (My Telemetry and any chart that colors by model).
+ *
+ * The desktop material palette is achromatic (home/tokens.css). Charts are the
+ * one place that needs identity color, so the series colors live here, apart
+ * from surface and ink tokens. One hue per provider; a shade step per model
+ * family inside it; a neutral for unknown or unattributed tokens.
+ *
+ *   Anthropic  1 Opus  2 Sonnet  3 Fable  4 Haiku   (warm: rust, orange, rose, gold)
+ *   OpenAI     GPT, o-series and Codex              (blue)
+ *   xAI        Grok and its fast/mini/code variants (indigo)
+ *   neutral    unknown, System, Other
+ *
+ * Validated with the dataviz palette validator (lightness band, chroma floor,
+ * CVD and normal-vision separation, contrast) against #ffffff (light) and
+ * #111111 (dark) in the fixed stack order above. Text never wears these
+ * colors; labels stay in the text tokens beside a colored mark.
+ */
+:root,
+:root[data-force-theme="light"] {
+  --viz-anthropic-1: #8a4010;
+  --viz-anthropic-2: #e8721c;
+  --viz-anthropic-3: #d02860;
+  --viz-anthropic-4: #cdb42a;
+  --viz-openai: #1a90c8;
+  --viz-xai: #4f46e5;
+  --viz-neutral: #8a8a86;
+  /* Quiet single accent for neutral bars (Skills). */
+  --viz-quiet: rgba(0, 0, 0, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-force-theme="light"]) {
+    --viz-anthropic-1: #a24019;
+    --viz-anthropic-2: #d37812;
+    --viz-anthropic-3: #c3457f;
+    --viz-anthropic-4: #ab9017;
+    --viz-openai: #0aa0d2;
+    --viz-xai: #5a56c7;
+    --viz-neutral: #7a7a76;
+    --viz-quiet: rgba(255, 255, 255, 0.3);
+  }
+}
+
+.dark,
+:root[data-force-theme="dark"] {
+  --viz-anthropic-1: #a24019;
+  --viz-anthropic-2: #d37812;
+  --viz-anthropic-3: #c3457f;
+  --viz-anthropic-4: #ab9017;
+  --viz-openai: #0aa0d2;
+  --viz-xai: #5a56c7;
+  --viz-neutral: #7a7a76;
+  --viz-quiet: rgba(255, 255, 255, 0.3);
+}

@@ -172,7 +172,12 @@ pub async fn list_local_sessions(
     let offset = offset.unwrap_or(0);
     let limit = limit.unwrap_or(50).clamp(1, 500);
     tauri::async_runtime::spawn_blocking(move || {
-        hq_desktop_core::local_sessions::scan_local_sessions(&hq, &from, &to, Some(&allowed), offset, limit)
+        // Claude Code and Codex keep the session title and last activity in
+        // their own folders; HQ's meta.yaml never carries them.
+        let roots = dirs::home_dir()
+            .map(|home| hq_desktop_core::local_sessions::TranscriptRoots::under_home(&home))
+            .unwrap_or_default();
+        hq_desktop_core::local_sessions::scan_local_sessions_with(&hq, &roots, &from, &to, Some(&allowed), offset, limit)
     })
     .await
     .map_err(|error| format!("session history task join: {error}"))
