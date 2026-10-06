@@ -1,4 +1,11 @@
 export type RealtimeMode = 'poll-only' | 'realtime';
+
+export function pollOnlyStatusMode(
+  realtimeMode: RealtimeMode | null,
+  enabled: boolean,
+): RealtimeMode | null {
+  return enabled ? realtimeMode : null;
+}
 export type SyncDisplayState = 'idle' | 'syncing' | 'poll-only';
 export type PollOnlyTraySyncState =
   | 'idle'

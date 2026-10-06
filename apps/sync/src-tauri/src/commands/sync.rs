@@ -39,6 +39,13 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+const POLL_ONLY_STATUS_FLAG: &str = "sync.poll-only-status";
+
+#[tauri::command]
+pub async fn poll_only_status_enabled() -> bool {
+    crate::commands::hq_pro::feature_flag_enabled(POLL_ONLY_STATUS_FLAG).await
+}
+
 use chrono::SecondsFormat;
 use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, PreRunnerCause, PreRunnerSite};
 #[cfg(test)]

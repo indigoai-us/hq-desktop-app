@@ -26,6 +26,7 @@
     afterFanoutPlan,
     afterSyncComplete,
     formatPollOnlyStatus,
+    pollOnlyStatusMode,
     shouldRefreshPollOnlyTrayStatus,
     type RealtimeMode,
   } from './lib/poll-only-status';
@@ -144,6 +145,10 @@
   let replayIntro = $state(false);
   let syncState = $state<'idle' | 'syncing' | 'poll-only' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
   let realtimeMode = $state<RealtimeMode | null>(null);
+  // Fail closed until hq-flags resolves; a missing or unreadable flag keeps
+  // the current status behavior. The manager can enable the canary explicitly.
+  let pollOnlyStatusEnabled = $state(false);
+  const statusRealtimeMode = () => pollOnlyStatusMode(realtimeMode, pollOnlyStatusEnabled);
   let pollOnlyMinPollMs = $state(60_000);
   let pollOnlyMaxPollMs = $state(600_000);
   let transferActive = $state(false);
@@ -649,7 +654,7 @@
 
   async function refreshPollOnlyTrayStatus(minPollMs: number, maxPollMs: number) {
     if (!shouldRefreshPollOnlyTrayStatus(
-      realtimeMode,
+      statusRealtimeMode(),
       syncState,
       manualSyncActive,
       externalSyncActive,
@@ -665,7 +670,7 @@
       warnPollOnlyStatusFailure('journal read', error);
     }
     if (!shouldRefreshPollOnlyTrayStatus(
-      realtimeMode,
+      statusRealtimeMode(),
       syncState,
       manualSyncActive,
       externalSyncActive,
@@ -679,13 +684,13 @@
   }
 
   $effect(() => {
-    if (realtimeMode !== 'poll-only') return;
+    if (statusRealtimeMode() !== 'poll-only') return;
     const minPollMs = pollOnlyMinPollMs;
     const maxPollMs = pollOnlyMaxPollMs;
     void refreshPollOnlyTrayStatus(minPollMs, maxPollMs);
     const timer = setInterval(() => {
       if (!shouldRefreshPollOnlyTrayStatus(
-        realtimeMode,
+        statusRealtimeMode(),
         syncState,
         manualSyncActive,
         externalSyncActive,
@@ -1102,6 +1107,7 @@
         maxPollMs?: number;
       }>('sync:realtime-mode', async (event) => {
         realtimeMode = event.payload.mode;
+        if (!pollOnlyStatusEnabled) return;
         if (event.payload.mode === 'poll-only') {
           pollOnlyMinPollMs = event.payload.minPollMs ?? 60_000;
           pollOnlyMaxPollMs = event.payload.maxPollMs ?? 600_000;
@@ -1122,7 +1128,7 @@
       await listen<{ companies: Array<{ uid: string; slug: string; name?: string }> }>(
         'sync:fanout-plan',
         async (event) => {
-          syncState = afterFanoutPlan(realtimeMode, transferActive);
+          syncState = afterFanoutPlan(statusRealtimeMode(), transferActive);
           if (syncState === 'poll-only') {
             await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
           } else {
@@ -1174,7 +1180,7 @@
         if (!externalSyncActive) return;
         externalSyncActive = false;
         transferActive = false;
-        syncState = afterSyncComplete(realtimeMode);
+        syncState = afterSyncComplete(statusRealtimeMode());
         if (syncState === 'poll-only') {
           await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
         } else {
@@ -1250,7 +1256,7 @@
         transferActive = false;
         // Only flip to idle if nothing raised conflict/error mid-stream
         if (syncState !== 'conflict' && syncState !== 'error') {
-          syncState = afterSyncComplete(realtimeMode);
+          syncState = afterSyncComplete(statusRealtimeMode());
           if (syncState === 'poll-only') {
             await refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
           } else {
@@ -1808,6 +1814,20 @@
     // removed — the app must open clean with no permission dialogs.
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
+    // This new tray wording is dark until the dedicated hq-flags canary is
+    // explicitly enabled. A failed lookup preserves the previous status path.
+    invoke<boolean>('poll_only_status_enabled')
+      .then((enabled) => {
+        pollOnlyStatusEnabled = enabled;
+        if (enabled && realtimeMode === 'poll-only' && !manualSyncActive && !externalSyncActive && !transferActive) {
+          syncState = 'poll-only';
+          void refreshPollOnlyTrayStatus(pollOnlyMinPollMs, pollOnlyMaxPollMs);
+        }
+      })
+      .catch(() => {
+        pollOnlyStatusEnabled = false;
+      });
+
     invoke<boolean>('meetings_feature_enabled')
       .then((v) => {
         meetingsEnabled = v;

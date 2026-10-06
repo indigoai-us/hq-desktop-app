@@ -3,10 +3,16 @@ import {
   afterFanoutPlan,
   afterSyncComplete,
   formatPollOnlyStatus,
+  pollOnlyStatusMode,
   shouldRefreshPollOnlyTrayStatus,
 } from './poll-only-status';
 
 describe('poll-only sync status', () => {
+  it('uses poll-only status only when the hq-flag is enabled', () => {
+    expect(pollOnlyStatusMode('poll-only', false)).toBeNull();
+    expect(pollOnlyStatusMode('poll-only', true)).toBe('poll-only');
+  });
+
   it('keeps a completed poll-only plan out of the syncing state', () => {
     expect(afterFanoutPlan('poll-only', false)).toBe('poll-only');
   });
@@ -17,8 +23,9 @@ describe('poll-only sync status', () => {
   });
 
   it('keeps the current plan and completion behavior when the status flag is off', () => {
-    expect(afterFanoutPlan(null, false)).toBe('syncing');
-    expect(afterSyncComplete(null)).toBe('idle');
+    const modeWhenFlagOff = pollOnlyStatusMode('poll-only', false);
+    expect(afterFanoutPlan(modeWhenFlagOff, false)).toBe('syncing');
+    expect(afterSyncComplete(modeWhenFlagOff)).toBe('idle');
   });
 
   it('shows last completed sync age and polling cadence', () => {
