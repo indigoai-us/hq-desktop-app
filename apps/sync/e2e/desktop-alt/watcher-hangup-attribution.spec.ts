@@ -101,7 +101,7 @@ describe('watcher hangup attribution — source contracts', () => {
       /^let message = if code == Some\(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT\)\s*&& signal\.is_none\(\)/,
     );
     expect(messageBlock).toMatch(
-      /auto-sync watcher refused: another sync runner owns this HQ root[\s\S]*?\} else if runner_fatal_class == RunnerFatalClass::DiskFull\.as_str\(\) \{[\s\S]*?\} else if let Some\(exit_description\) = normalized_abort \{/,
+      /auto-sync watcher refused: another sync runner owns this HQ root[\s\S]*?\} else if exit_class == RunnerFatalClass::DiskFull\.as_str\(\) \{[\s\S]*?\} else if let Some\(exit_description\) = normalized_abort \{/,
     );
   });
 

@@ -2042,6 +2042,7 @@ struct WatcherExitCaptureContext {
     heartbeat_stall_termination_in_flight: bool,
     cancelled: bool,
     fatal_runner_signature_seen: bool,
+    saw_genuine_crash_fatal: bool,
     runner_fatal_class: String,
     /// Allow-listed libuv syscall identifier and integer errno for the last
     /// recognised libuv fatal-syscall stderr line, when present. Content-safe:
@@ -2295,6 +2296,7 @@ impl Default for WatcherExitCaptureContext {
             heartbeat_stall_termination_in_flight: false,
             cancelled: false,
             fatal_runner_signature_seen: false,
+            saw_genuine_crash_fatal: false,
             runner_fatal_class: "none".to_string(),
             runner_fatal_syscall: None,
             runner_fatal_errno: None,
@@ -2521,6 +2523,7 @@ fn watcher_exit_capture_context(
             .load(Ordering::Acquire),
         cancelled,
         fatal_runner_signature_seen: totals.saw_fatal_runner_signature,
+        saw_genuine_crash_fatal: totals.saw_genuine_crash_fatal,
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
         runner_fatal_errno: totals.runner_fatal_errno(),
@@ -4684,6 +4687,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         signal,
         node_fatal,
         memory_attributed,
+        context.saw_genuine_crash_fatal,
         &runner_fatal_class,
     );
     let fingerprint = ["sync-watcher-exit", exit_class];
@@ -4714,7 +4718,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
             "auto-sync watcher refused: another sync runner owns this HQ root, \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
-    } else if runner_fatal_class == RunnerFatalClass::DiskFull.as_str() {
+    } else if exit_class == RunnerFatalClass::DiskFull.as_str() {
         let exit_description = if code.is_some() && signal.is_some() {
             format!("code={code:?} signal={signal:?}")
         } else {
@@ -9259,6 +9263,38 @@ mod tests {
             "known disk-full cause should appear in the report title: {}",
             capture.message
         );
+    }
+
+    #[test]
+    fn stronger_crash_evidence_keeps_disk_full_stderr_out_of_the_disk_full_bucket() {
+        for (code, saw_genuine_crash_fatal) in [
+            (Some(21), true),
+            (Some(0xC000_001Du32 as i32), false),
+        ] {
+            let mut effects = RecordingWatcherEffects::default();
+            let context = WatcherExitCaptureContext {
+                runner_fatal_class: "disk_full".to_string(),
+                saw_genuine_crash_fatal,
+                ..WatcherExitCaptureContext::default()
+            };
+
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                Some("unrecognised stderr"),
+                current_termination_host(),
+                &context,
+            );
+
+            let capture = &effects.captures[0];
+            assert_eq!(recorded_tag(capture, "exit_class"), "other");
+            assert!(capture.message.contains("exited unexpectedly"));
+            assert!(!capture.message.contains("because the disk is full"));
+        }
     }
 
     #[test]
