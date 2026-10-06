@@ -4000,7 +4000,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
 
     match remote_tree {
         Ok(tree) => {
-            let blobs = tree
+            let blobs: BTreeMap<String, String> = tree
                 .into_iter()
                 .map(|(path, (sha, _))| (path, sha))
                 .collect();
