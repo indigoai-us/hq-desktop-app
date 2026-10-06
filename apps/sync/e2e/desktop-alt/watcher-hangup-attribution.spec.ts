@@ -65,7 +65,7 @@ function sliceBetween(
 const messageBlock = sliceBetween(
   daemonSource,
   'let message = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)',
-  '    };',
+  '\n    };\n\n    let (stderr_cause',
   'watcher exit message expression',
 );
 
@@ -73,21 +73,25 @@ describe('watcher hangup attribution — source contracts', () => {
   it('routes the signal-only fallback through the describe_exit renderer', () => {
     // The final arm names the exit via the shared renderer instead of a raw tuple.
     expect(messageBlock).toContain('describe_exit(code, signal)');
-    // describe_exit is called exactly once — the redundant Windows-status arm was
-    // collapsed into the same fallback rather than duplicated.
-    expect(messageBlock.match(/describe_exit\(code, signal\)/g)).toHaveLength(1);
+    // The known disk-full title and the generic unknown title both use the shared
+    // renderer when they need an exit description.
+    expect(messageBlock.match(/describe_exit\(code, signal\)/g)).toHaveLength(2);
   });
 
   it('keeps the raw rendering ONLY for the malformed both-present shape', () => {
-    // The raw Debug tuple survives in exactly one place: guarded behind the
+    // Each title path that needs the raw Debug tuple guards it behind the
     // both-present test, where describe_exit would otherwise drop the signal.
-    expect(messageBlock).toContain('code.is_some() && signal.is_some()');
     const rawTuple = /code=\{code:\?\} signal=\{signal:\?\}/g;
-    expect(messageBlock.match(rawTuple)).toHaveLength(1);
-    // The both-present guard precedes the surviving raw rendering.
-    expect(messageBlock).toMatch(
-      /code\.is_some\(\) && signal\.is_some\(\)[\s\S]*?code=\{code:\?\} signal=\{signal:\?\}/,
-    );
+    const rawTuplePositions = [...messageBlock.matchAll(rawTuple)].map((match) => match.index!);
+    expect(rawTuplePositions).toHaveLength(2);
+    rawTuplePositions.forEach((tuplePosition, index) => {
+      const guardPosition = messageBlock.lastIndexOf(
+        'if code.is_some() && signal.is_some() {',
+        tuplePosition,
+      );
+      const previousTuplePosition = rawTuplePositions[index - 1] ?? -1;
+      expect(guardPosition).toBeGreaterThan(previousTuplePosition);
+    });
   });
 
   it('names an exit-20 owner refusal only for a signal-free exit 20, ahead of the abort arm', () => {
@@ -97,7 +101,7 @@ describe('watcher hangup attribution — source contracts', () => {
       /^let message = if code == Some\(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT\)\s*&& signal\.is_none\(\)/,
     );
     expect(messageBlock).toMatch(
-      /auto-sync watcher refused: another sync runner owns this HQ root[\s\S]*?\} else if let Some\(exit_description\) = normalized_abort \{/,
+      /auto-sync watcher refused: another sync runner owns this HQ root[\s\S]*?\} else if runner_fatal_class == RunnerFatalClass::DiskFull\.as_str\(\) \{[\s\S]*?\} else if let Some\(exit_description\) = normalized_abort \{/,
     );
   });
 

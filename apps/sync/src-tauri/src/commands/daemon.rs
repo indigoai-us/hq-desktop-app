@@ -4718,7 +4718,9 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         let exit_description = if code.is_some() && signal.is_some() {
             format!("code={code:?} signal={signal:?}")
         } else {
-            normalized_abort.unwrap_or_else(|| describe_exit(code, signal))
+            normalized_abort
+                .map(str::to_owned)
+                .unwrap_or_else(|| describe_exit(code, signal))
         };
         format!(
             "auto-sync watcher exited because the disk is full ({exit_description}), \
