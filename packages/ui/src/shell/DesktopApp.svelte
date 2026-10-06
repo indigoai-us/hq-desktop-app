@@ -13241,6 +13241,7 @@
             accountId={tenantAccountId ?? "local"}
             listDeployApps={adapter.company?.listDeployApps}
             deployAppPreview={adapter.company?.deployAppPreview}
+            deployAppSnapshot={adapter.company?.deployAppSnapshot}
             companies={memberCompanies(companies)}
             openExternal={onopenurl}
             actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}

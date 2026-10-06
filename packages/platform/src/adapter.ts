@@ -1136,6 +1136,12 @@ export interface CompanyApi {
    */
   deployAppPreview?(appId: string, url: string, deployedAt: string, refresh: boolean): AdapterPromise<Json>;
   /**
+   * Rendered snapshot of one public deployed app: `{ snapshot, width, height }`
+   * with `snapshot` a PNG data: URL. Captured in a hidden window on selection
+   * and cached on disk by app id + deploy time. Desktop only; macOS today.
+   */
+  deployAppSnapshot?(appId: string, url: string, deployedAt: string, refresh: boolean): AdapterPromise<Json>;
+  /**
    * One hq-deploy access call (`access-policy`, `access-mode`,
    * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
    * host refuses any other route.

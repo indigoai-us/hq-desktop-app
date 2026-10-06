@@ -9,7 +9,7 @@ import { flushSync, mount, tick, unmount } from "svelte";
 
 import PersonalDeploymentsPage, { resetDeployPillsForTests } from "./PersonalDeploymentsPage.svelte";
 import { deployAppsFixture } from "./personal-deployments.fixture.js";
-import { resetDeployPreviewCacheForTests, type DeployPreviewFetcher } from "./deploy-preview.js";
+import { PREVIEW_DEBOUNCE_MS, resetPanelPreviewCacheForTests, type DeployPreviewFetcher, type DeploySnapshotFetcher } from "./deploy-preview.js";
 
 let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
@@ -21,10 +21,12 @@ afterEach(async () => {
   host = null;
   localStorage.clear();
   resetDeployPillsForTests();
-  resetDeployPreviewCacheForTests();
+  resetPanelPreviewCacheForTests();
 });
 
+/** Past the selection debounce, so the preview read has started. */
 async function settle(): Promise<void> {
+  await new Promise((done) => setTimeout(done, PREVIEW_DEBOUNCE_MS + 30));
   for (let i = 0; i < 6; i++) {
     await Promise.resolve();
     await tick();
@@ -34,7 +36,12 @@ async function settle(): Promise<void> {
 
 const THUMB = "data:image/png;base64,AA==";
 
-async function mountPage(deployAppPreview: DeployPreviewFetcher, opened: string[] = [], listDeployApps?: (scope: string) => Promise<unknown>): Promise<HTMLDivElement> {
+async function mountPage(
+  deployAppPreview: DeployPreviewFetcher,
+  opened: string[] = [],
+  listDeployApps?: (scope: string) => Promise<unknown>,
+  deployAppSnapshot?: DeploySnapshotFetcher,
+): Promise<HTMLDivElement> {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(PersonalDeploymentsPage, {
@@ -44,6 +51,7 @@ async function mountPage(deployAppPreview: DeployPreviewFetcher, opened: string[
       companies: [{ slug: "indigo", displayName: "Indigo", kind: "company", state: "cloud" }] as never,
       listDeployApps: listDeployApps ?? (async (scope: string) => ({ ok: true, value: deployAppsFixture(scope) as never })),
       deployAppPreview,
+      deployAppSnapshot,
       openExternal: (url: string) => opened.push(url),
     } as never,
   });
@@ -126,5 +134,62 @@ describe("Deployments side-panel og:image preview", () => {
     root.querySelector<HTMLButtonElement>("[data-testid='deploy-failed-scopes-retry']")!.click();
     await settle();
     expect(root.querySelector("[data-testid='deploy-failed-scopes']")).toBeNull();
+  });
+
+  // Owner: "what about an actual preview of what is on the page? that would be
+  // better than og". Public apps show a rendered snapshot of the page.
+  const SNAP = "data:image/png;base64,SNAP";
+  const withPublicApp = async (scope: string) => {
+    const value = deployAppsFixture(scope) as { apps: Record<string, unknown>[] };
+    if (scope === "personal") {
+      value.apps = [
+        { id: "pub", name: "launch-notes", subdomain: "launch-notes", url: "https://launch-notes.indigo-hq.com", status: "active", active: true, accessMode: "public", createdAt: new Date().toISOString() },
+        ...value.apps,
+      ];
+    }
+    return { ok: true, value: value as never };
+  };
+
+  it("shows the rendered page for a public app, with Refresh preview and click-to-open", async () => {
+    const opened: string[] = [];
+    const og = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: "https://x/og.png", thumbnail: THUMB } as never }));
+    const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: true, value: { snapshot: SNAP, width: 2560, height: 1600 } as never }));
+    const root = await mountPage(og, opened, withPublicApp, snapshot);
+    await choose(root, "launch-notes");
+    const snap = root.querySelector<HTMLButtonElement>("[data-testid='deploy-snapshot']")!;
+    expect(snap.querySelector("img")?.getAttribute("src")).toBe(SNAP);
+    expect(snapshot.mock.calls.map((call) => call[1])).toEqual(["https://launch-notes.indigo-hq.com"]);
+    snap.click();
+    expect(opened).toEqual(["https://launch-notes.indigo-hq.com"]);
+    root.querySelector<HTMLButtonElement>("[data-testid='deploy-preview-refresh']")!.click();
+    await settle();
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(snapshot.mock.calls[1]?.[3]).toBe(true);
+    // Protected apps never get a hidden-window render; they use the share image.
+    await choose(root, "indigo-standup-report");
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(root.querySelector("[data-testid='deploy-og'] img")?.getAttribute("src")).toBe(THUMB);
+  });
+
+  it("falls back to the share image when the snapshot fails, without raw errors", async () => {
+    const og = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: "https://x/og.png", thumbnail: THUMB } as never }));
+    const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: false, reason: "error", message: "snapshot: timed out" } as never));
+    const root = await mountPage(og, [], withPublicApp, snapshot);
+    await choose(root, "launch-notes");
+    expect(root.querySelector("[data-testid='deploy-og'] img")?.getAttribute("src")).toBe(THUMB);
+    expect(root.querySelector("[data-testid='deploy-inspector']")!.textContent).not.toContain("timed out");
+  });
+
+  it("reads only the row the selection stops on when moving quickly", async () => {
+    const og = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: null, thumbnail: null } as never }));
+    const root = await mountPage(og);
+    const calls = og.mock.calls.length;
+    for (const name of ["indigo-standup-report", "cut30-week-41", "hq-desktop-console-rail-storyboard", "indigo-standup-report"]) {
+      [...root.querySelectorAll<HTMLElement>(".table .drow:not(.hd)")].find((el) => el.textContent?.includes(name))!.click();
+      flushSync();
+    }
+    expect(root.querySelector("[data-testid='deploy-og-loading']")).not.toBeNull();
+    await settle();
+    expect(og.mock.calls.slice(calls).map((call) => call[1])).toEqual(["https://indigo-standup-report.indigo-hq.com"]);
   });
 });

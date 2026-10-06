@@ -15,12 +15,14 @@
   import RailButton from "../common/button/RailButton.svelte";
   import { untrack } from "svelte";
   import {
-    cachedDeployPreview,
-    loadDeployPreview,
+    cachedPanelPreview,
+    loadPanelPreview,
     previewable,
     previewCacheKey,
-    type DeployPreview,
+    PREVIEW_DEBOUNCE_MS,
     type DeployPreviewFetcher,
+    type DeploySnapshotFetcher,
+    type PanelPreview,
   } from "./deploy-preview.js";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
@@ -65,6 +67,8 @@
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     /** Lazy og:image preview for the selected app, read and cached by the desktop. */
     deployAppPreview?: DeployPreviewFetcher;
+    /** Rendered page snapshot for the selected public app; og:image is the fallback. */
+    deployAppSnapshot?: DeploySnapshotFetcher;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
     actions?: boolean;
@@ -77,7 +81,7 @@
     livePreview?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, deployAppPreview, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, deployAppSnapshot, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -244,44 +248,49 @@
     return active ? sortState(active) : "none";
   }
 
-  // Side-panel og:image preview. Read only for the selected row, never the
-  // whole list; a cached result paints at once (cache-first), otherwise a
-  // skeleton holds the space while the desktop fetches.
-  type PreviewState = { key: string; status: "loading" | "ready" | "failed"; data: DeployPreview | null };
+  // Side-panel preview: a rendered snapshot of the page for public apps, else
+  // the og:image. Read only for the selected row, never the whole list. A
+  // cached result paints at once (cache-first); otherwise a skeleton holds the
+  // space and the read starts after a short pause, so arrowing through the
+  // list reads only the row the user stops on.
+  type PreviewState = { key: string; status: "loading" | "ready" | "failed"; data: PanelPreview | null };
   let ogPreview = $state<PreviewState | null>(null);
   let previewAttempt = $state(0);
   let previewRefresh = false;
-  const ogTarget = $derived(!livePreview && deployAppPreview && previewable(selected) ? selected : null);
+  const ogTarget = $derived(!livePreview && (deployAppPreview || deployAppSnapshot) && previewable(selected) ? selected : null);
   const ogKey = $derived(ogTarget ? previewCacheKey(ogTarget) : null);
   $effect(() => {
     const key = ogKey;
     void previewAttempt;
-    const fetcher = deployAppPreview;
+    const fetchers = { og: deployAppPreview, snapshot: deployAppSnapshot };
     const row = untrack(() => ogTarget);
-    if (!key || !fetcher || !row) {
+    if (!key || !row) {
       ogPreview = null;
       return;
     }
     const refresh = previewRefresh;
     previewRefresh = false;
-    const hit = refresh ? null : cachedDeployPreview(row);
+    const hit = refresh ? null : cachedPanelPreview(row);
     if (hit) {
       ogPreview = { key, status: "ready", data: hit };
       return;
     }
     let live = true;
     ogPreview = { key, status: "loading", data: null };
-    loadDeployPreview(fetcher, row, { refresh }).then(
-      (data) => {
-        if (live) ogPreview = { key, status: "ready", data };
-      },
-      (err) => {
-        console.warn("[deployments] preview unavailable", err);
-        if (live) ogPreview = { key, status: "failed", data: null };
-      },
-    );
+    const timer = setTimeout(() => {
+      loadPanelPreview(fetchers, row, { refresh }).then(
+        (data) => {
+          if (live) ogPreview = { key, status: "ready", data };
+        },
+        (err) => {
+          console.warn("[deployments] preview unavailable", err);
+          if (live) ogPreview = { key, status: "failed", data: null };
+        },
+      );
+    }, PREVIEW_DEBOUNCE_MS);
     return () => {
       live = false;
+      clearTimeout(timer);
     };
   });
 
@@ -461,8 +470,6 @@
       </div>
       {#if selected}
         <aside class="inspector" aria-label="Deployment detail" data-testid="deploy-inspector">
-          <div class="title">{selected.name}</div>
-          {#if selected.url}<div class="url">{selected.url}</div>{/if}
           {#if previewUrl}
             {#key selected.id}
               <button
@@ -491,21 +498,25 @@
           {:else if livePreview}
             <p class="preview-note" data-testid="deploy-no-preview">No preview</p>
           {:else if ogPreview?.status === "loading"}
-            <div class="og og-wait" aria-busy="true" aria-label="Loading preview" data-testid="deploy-og-loading"></div>
+            <div class="og snap og-wait" aria-busy="true" aria-label="Loading preview" data-testid="deploy-og-loading"></div>
           {:else if ogPreview?.status === "failed"}
             <div class="og-failed" role="status" data-testid="deploy-og-failed">
               <span>Preview unavailable</span>
               <button type="button" class="link" data-testid="deploy-og-retry" onclick={retryPreview}>Retry</button>
             </div>
-          {:else if ogPreview?.status === "ready" && ogPreview.data?.thumbnail}
+          {:else if ogPreview?.status === "ready" && ogPreview.data?.src}
             <button
               type="button"
               class="og"
-              aria-label={`Open preview of ${selected.name}`}
-              data-testid="deploy-og"
+              class:snap={ogPreview.data.kind === "snapshot"}
+              aria-label={`Open ${selected.name}`}
+              data-testid={ogPreview.data.kind === "snapshot" ? "deploy-snapshot" : "deploy-og"}
               onclick={() => selected?.url && openExternal?.(selected.url)}
-            ><img src={ogPreview.data.thumbnail} alt="" /></button>
+            ><img src={ogPreview.data.src} alt="" /></button>
+            <button type="button" class="link refresh-preview" data-testid="deploy-preview-refresh" onclick={retryPreview}>Refresh preview</button>
           {/if}
+          <div class="title">{selected.name}</div>
+          {#if selected.url}<div class="url">{selected.url}</div>{/if}
           {#if progress}
             <div class="prog" role="status" data-testid="deploy-progress">
               <div class="phd">{statusLabel(selected)} <span>{progress.percent}%</span></div>
@@ -678,7 +689,9 @@
     display: block; width: 100%; aspect-ratio: 1200 / 630; padding: 0; border: 1px solid var(--line);
     border-radius: 8px; overflow: hidden; background: var(--raised); cursor: pointer; font: inherit;
   }
-  .og img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .og.snap { aspect-ratio: 1280 / 800; }
+  .og img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+  .refresh-preview { align-self: flex-start; margin-top: -6px; font-size: 13px; color: var(--t3); }
   .og-wait { cursor: default; animation: og-pulse 1.2s ease-in-out infinite; }
   @keyframes og-pulse { 50% { opacity: 0.55; } }
   @media (prefers-reduced-motion: reduce) { .og-wait { animation: none; } }

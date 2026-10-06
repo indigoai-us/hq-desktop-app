@@ -988,7 +988,13 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
-  list_deploy_apps: (args) => deployAppsFixture(String(args?.scope ?? 'personal')),
+  list_deploy_apps: (args) => {
+    const scope = String(args?.scope ?? 'personal');
+    const value = deployAppsFixture(scope) as { apps: Record<string, unknown>[] };
+    // One public live app so the side panel shows a rendered page snapshot.
+    if (scope === 'personal') value.apps = [{ id: 'pub', name: 'launch-notes', subdomain: 'launch-notes', url: 'https://launch-notes.indigo-hq.com', status: 'active', active: true, accessMode: 'public', createdAt: new Date(Date.now() - 600_000).toISOString(), views30d: 12 }, ...value.apps];
+    return value;
+  },
   deploy_app_preview: (args) => {
     const url = String(args?.url ?? '');
     const name = url.replace(/^https:\/\//, '').split('.')[0] ?? '';
@@ -996,6 +1002,13 @@ This final paragraph verifies spacing after a thematic break.
     if (/storyboard|rail-idea/.test(name)) return { ogImageUrl: null, thumbnail: null, fetchedAt: new Date().toISOString() };
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2a44"/><stop offset="1" stop-color="#6b4fd8"/></linearGradient></defs><rect width="1200" height="630" fill="url(#g)"/><text x="80" y="340" font-family="Helvetica" font-size="72" fill="#fff">${name}</text></svg>`;
     return { ogImageUrl: `${url}/og.png`, thumbnail: `data:image/svg+xml;base64,${btoa(svg)}`, fetchedAt: new Date().toISOString() };
+  },
+  deploy_app_snapshot: (args) => {
+    const url = String(args?.url ?? '');
+    const name = url.replace(/^https:\/\//, '').split('.')[0] ?? '';
+    // Stand-in for the rendered page; the desktop returns a 2560x1600 PNG.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800"><rect width="1280" height="800" fill="#f7f7f5"/><rect width="1280" height="64" fill="#fff"/><rect x="40" y="22" width="120" height="20" rx="4" fill="#1f2a44"/><text x="80" y="200" font-family="Helvetica" font-size="64" font-weight="700" fill="#111">${name}</text><text x="80" y="260" font-family="Helvetica" font-size="26" fill="#666">Deployed with HQ</text><rect x="80" y="320" width="520" height="300" rx="12" fill="#e6e3f7"/><rect x="640" y="320" width="560" height="300" rx="12" fill="#ececec"/></svg>`;
+    return { snapshot: `data:image/svg+xml;base64,${btoa(svg)}`, width: 2560, height: 1600 };
   },
   get_company_secrets: () => [
     {
