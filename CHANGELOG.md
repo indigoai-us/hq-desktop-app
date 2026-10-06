@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When live sync updates are unavailable, the tray shows the last completed sync and polling interval.
+
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
 ## [0.10.397] — 2026-10-06
