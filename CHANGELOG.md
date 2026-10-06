@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
 - People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
 
 ## [0.10.398] — 2026-10-06
