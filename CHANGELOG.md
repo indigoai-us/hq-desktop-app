@@ -8,7 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
-- Desktop company first push can retry through the existing presigned vault transport when its STS grant policy exceeds AWS limits. It discards partial STS credentials and reports failure if any path is refused.
+- Desktop company first push can retry through the existing presigned vault transport when its STS grant policy exceeds AWS limits. It uses an isolated snapshot of the same account session, discards partial STS credentials, and reports failure if any path is refused.
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
 ## [0.10.397] — 2026-10-06

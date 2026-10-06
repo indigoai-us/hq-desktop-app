@@ -29,10 +29,13 @@
 //! Argv:
 //!
 //! ```text
-//! hq sync push --creds-from-stdin --json --company <slug> --hq-root <path> <company_dir>
+//! hq sync push [--creds-from-stdin] --json --company <slug> --hq-root <path> <company_dir>
 //! ```
+//! The normal STS path uses `--creds-from-stdin`. The overflow fallback omits
+//! it and sets `HQ_STATE_DIR` to a short-lived, private snapshot of the same
+//! person session that authenticated `/sts/vend-child`.
 //!
-//! Stdin: a single JSON document conforming to `@indigoai-us/hq-cloud`'s
+//! Normal-path stdin: a single JSON document conforming to `@indigoai-us/hq-cloud`'s
 //! `EntityContext` shape (camelCase keys):
 //!
 //! ```json
@@ -74,6 +77,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::{fs, io::Write, path::PathBuf};
 
 use hq_desktop_core::first_push::{CliEvent, EntityContextPayload, EntityCredentials};
 use hq_desktop_core::runner_error_shape::PreRunnerCause;
@@ -230,6 +234,91 @@ fn configure_sync_push_command(
         .arg(company_dir.as_os_str());
 }
 
+struct PresignFallbackAuthSnapshot {
+    state_dir: PathBuf,
+}
+
+impl Drop for PresignFallbackAuthSnapshot {
+    fn drop(&mut self) {
+        if fs::remove_dir_all(&self.state_dir).is_err() {
+            log("first-push-cli", "failed to remove temporary auth snapshot");
+        }
+    }
+}
+
+fn snapshot_cli_auth_for_caller(
+    tokens: &hq_desktop_core::cognito::CognitoTokens,
+    expected_caller_subject: &str,
+    token_subject: Option<&str>,
+) -> Result<PresignFallbackAuthSnapshot, String> {
+    if token_subject != Some(expected_caller_subject) {
+        return Err("signed-in account changed during first push; retry first push".to_string());
+    }
+
+    let state_dir = std::env::temp_dir().join(format!("hq-first-push-auth-{}", ulid::Ulid::new()));
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(&state_dir)
+        .map_err(|_| "could not create temporary first-push auth state".to_string())?;
+
+    let result = (|| {
+        let token_path = state_dir.join("cognito-tokens.json");
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(token_path)
+            .map_err(|_| "could not write temporary first-push auth state".to_string())?;
+        let serialized = serde_json::to_vec(tokens)
+            .map_err(|_| "could not serialize temporary first-push auth state".to_string())?;
+        file.write_all(&serialized)
+            .map_err(|_| "could not write temporary first-push auth state".to_string())?;
+        file.flush()
+            .map_err(|_| "could not write temporary first-push auth state".to_string())?;
+        Ok(PresignFallbackAuthSnapshot {
+            state_dir: state_dir.clone(),
+        })
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&state_dir);
+    }
+    result
+}
+
+async fn create_presigned_fallback_auth_snapshot(
+    vault: &VaultClient,
+) -> Result<PresignFallbackAuthSnapshot, String> {
+    let expected_caller_subject = vault
+        .caller_subject()
+        .ok_or_else(|| "could not verify first-push account; retry first push".to_string())?;
+    let tokens = hq_desktop_core::cognito::get_valid_tokens()
+        .await
+        .map_err(|_| "could not verify first-push account; retry first push".to_string())?;
+    let token_subject = hq_desktop_core::cognito::decode_id_token_claims(&tokens.access_token)
+        .ok()
+        .and_then(|claims| claims.sub);
+    snapshot_cli_auth_for_caller(&tokens, &expected_caller_subject, token_subject.as_deref())
+}
+
+fn configure_presigned_auth_state(cmd: &mut Command, state_dir: &Path) {
+    // hq-cli uses this isolated person token cache for the presigned request.
+    // Removing machine overrides keeps the presign caller aligned with the
+    // account whose bearer token vended the child-policy response.
+    cmd.env("HQ_STATE_DIR", state_dir)
+        .env_remove("HQ_MACHINE_CREDS_FILE")
+        .env_remove("HQ_MACHINE_TOKEN_STATE_DIR");
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Run an initial push for `company`: vend STS creds → spawn `hq sync push` →
@@ -279,7 +368,17 @@ pub async fn first_push_company(
     };
 
     // Step 2: Build the optional pre-vended EntityContext. The presigned
-    // transport runs the standard hq CLI auth path and receives no STS creds.
+    // transport runs the standard hq CLI auth path under an isolated snapshot
+    // of the same person session that authenticated the vend-child request.
+    let fallback_auth_snapshot = if matches!(&transport, FirstPushTransport::Presigned) {
+        Some(
+            create_presigned_fallback_auth_snapshot(vault)
+                .await
+                .map_err(FirstPushFailure::push_failed)?,
+        )
+    } else {
+        None
+    };
     let payload_json = match transport {
         FirstPushTransport::Sts(vend_result) => {
             let payload = EntityContextPayload {
@@ -352,6 +451,9 @@ pub async fn first_push_company(
         &company_dir,
         use_presigned_transport,
     );
+    if let Some(snapshot) = &fallback_auth_snapshot {
+        configure_presigned_auth_state(&mut cmd, &snapshot.state_dir);
+    }
     cmd.env("PATH", &path_env)
         .stdin(if use_presigned_transport {
             Stdio::null()
@@ -605,6 +707,15 @@ mod tests {
         }
     }
 
+    fn auth_tokens() -> hq_desktop_core::cognito::CognitoTokens {
+        hq_desktop_core::cognito::CognitoTokens {
+            access_token: "synthetic-access-A".into(),
+            id_token: Some("synthetic-id-A".into()),
+            refresh_token: "synthetic-refresh-A".into(),
+            expires_at: 1_800_000_000_000,
+        }
+    }
+
     #[test]
     fn explicit_overflow_fallback_signal_selects_presigned_transport() {
         let err = VaultClientError::Http {
@@ -693,6 +804,51 @@ mod tests {
             ]
         );
         assert!(!args.iter().any(|arg| arg == "--creds-from-stdin"));
+    }
+
+    #[test]
+    fn fallback_token_snapshot_is_isolated_and_preserves_the_vended_account() {
+        let tokens = auth_tokens();
+        let snapshot = snapshot_cli_auth_for_caller(&tokens, "account-A", Some("account-A"))
+            .expect("matching caller can use isolated auth state");
+        let token_path = snapshot.state_dir.join("cognito-tokens.json");
+        let written: hq_desktop_core::cognito::CognitoTokens =
+            serde_json::from_slice(&fs::read(&token_path).expect("snapshot token file"))
+                .expect("valid serialized Cognito tokens");
+        assert_eq!(written, tokens);
+
+        let state_dir = snapshot.state_dir.clone();
+        drop(snapshot);
+        assert!(
+            !state_dir.exists(),
+            "snapshot is cleaned up after first push"
+        );
+    }
+
+    #[test]
+    fn fallback_token_snapshot_refuses_a_different_signed_in_account() {
+        let result = snapshot_cli_auth_for_caller(&auth_tokens(), "account-A", Some("account-B"));
+        assert!(
+            matches!(result, Err(message) if message == "signed-in account changed during first push; retry first push")
+        );
+    }
+
+    #[test]
+    fn fallback_command_uses_snapshot_person_tokens_and_ignores_machine_overrides() {
+        let mut command = Command::new("hq");
+        configure_presigned_auth_state(&mut command, Path::new("/tmp/hq-auth-snapshot"));
+
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.iter().any(|(key, value)| {
+            *key == "HQ_STATE_DIR"
+                && value.map(|path| path == "/tmp/hq-auth-snapshot") == Some(true)
+        }));
+        assert!(envs
+            .iter()
+            .any(|(key, value)| *key == "HQ_MACHINE_CREDS_FILE" && value.is_none()));
+        assert!(envs
+            .iter()
+            .any(|(key, value)| *key == "HQ_MACHINE_TOKEN_STATE_DIR" && value.is_none()));
     }
 
     // The verbatim shape of the observed HQ-DESKTOP-63 vend-child 403 body: prose plus
