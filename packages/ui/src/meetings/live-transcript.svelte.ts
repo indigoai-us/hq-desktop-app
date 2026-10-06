@@ -21,6 +21,8 @@ import type {
 import { mergeSegments } from "./live-transcript-model";
 
 export const LIVE_POLL_VISIBLE_MS = 3_000;
+export const LIVE_POLL_HIDDEN_MS = 30_000;
+export const LIVE_POLL_RETRY_LIMIT = 3;
 
 export type LiveTranscriptFetch = (
   req: LiveTranscriptRequest,
@@ -33,7 +35,7 @@ export type LiveTranscriptFetch = (
  * - `off`: the server has live transcripts turned off for this meeting.
  * - `unavailable`: this host cannot fetch a live transcript.
  */
-export type LiveTranscriptStatus = "connecting" | "listening" | "live" | "off" | "unavailable";
+export type LiveTranscriptStatus = "connecting" | "listening" | "live" | "off" | "unavailable" | "retry";
 
 export class LiveTranscriptState {
   segments = $state<LiveTranscriptSegmentWire[]>([]);
@@ -76,6 +78,7 @@ export class LiveTranscriptState {
 
   fail(): void {
     this.failures += 1;
+    if (this.failures >= LIVE_POLL_RETRY_LIMIT) this.status = "retry";
   }
 }
 
@@ -163,7 +166,7 @@ export function startLiveTranscriptPoll(opts: LivePollOptions): () => void {
     } finally {
       inFlight = false;
     }
-    if (opts.state.status === "off") {
+    if (opts.state.status === "off" || opts.state.status === "retry") {
       stop();
       return;
     }

@@ -75,7 +75,7 @@ describe("LiveTranscriptBody", () => {
     await settle();
 
     const status = el.querySelector("[data-testid=live-transcript-status]")!;
-    expect(status.textContent?.trim()).toBe("Notetaker is in the meeting");
+    expect(status.textContent?.trim()).toBe("Live");
     expect(status.querySelector(".dot.on")).not.toBeNull();
 
     const turns = [...el.querySelectorAll("[data-testid=live-turn]")].map((t) => [
@@ -107,15 +107,16 @@ describe("LiveTranscriptBody", () => {
     await settle(3_000);
     expect(el.querySelectorAll("[data-testid=live-turn]")).toHaveLength(3);
     expect(el.scrollTop).toBe(100);
+    expect(el.querySelector(".jump")?.textContent).toBe("Jump to latest");
   });
 
   it("says it is listening when the server has no live view yet", async () => {
     const fetch = transport([{ ok: true, value: { kind: "not-found" } }]);
     const el = render(LiveTranscriptBody, { recallBotId: "bot_1", companyId: "cmp_A", live: true, botStatus: "joining", fetch });
     await settle();
-    expect(el.querySelector("[data-testid=live-transcript-status]")?.textContent?.trim()).toBe("Notetaker is joining");
+    expect(el.querySelector("[data-testid=live-transcript-status]")?.textContent?.trim()).toBe("Waiting for the first words");
     expect(el.querySelector("[data-testid=live-transcript-empty]")?.textContent).toBe(
-      "Listening. Lines appear here as people talk.",
+      "Waiting for the first words",
     );
   });
 
@@ -137,9 +138,10 @@ describe("LiveTranscriptBody", () => {
     const fetch = vi.fn(async (): Promise<Reply> => fail);
     const el = render(LiveTranscriptBody, { recallBotId: "bot_1", companyId: "cmp_A", live: true, botStatus: "recording", fetch });
     await settle(9_000);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(el.textContent).not.toMatch(/500|HTTP|error/i);
-    expect(el.querySelector("[data-testid=live-transcript-empty]")?.textContent).toBe("Connecting to the notetaker…");
+    expect(el.querySelector("[data-testid=live-transcript-empty]")?.textContent).toBe("We could not reach the live transcript.");
+    expect(el.querySelector(".retry")?.textContent).toBe("Retry");
   });
 
   it("stops polling once the meeting is no longer live", async () => {
@@ -152,7 +154,7 @@ describe("LiveTranscriptBody", () => {
     flushSync();
     await settle(30_000);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(target.querySelector("[data-testid=live-transcript-status]")?.textContent?.trim()).toBe("Notetaker has left the meeting");
+    expect(target.querySelector("[data-testid=live-transcript-status]")?.textContent?.trim()).toBe("Notetaker ended - the saved transcript will be in Transcript shortly");
     expect(target.querySelectorAll("[data-testid=live-turn]")).toHaveLength(1);
   });
 });
