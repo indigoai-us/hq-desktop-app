@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { createLaunchActions, type LaunchKey } from "../settings/launch-actions";
   import { meetingAgentLaunchServices } from "./meetings-store.svelte";
   import { meetingAgentPrompt, readMeetingAgentProvider, rememberMeetingAgentProvider } from "./meeting-agent-prompt";
@@ -34,7 +35,7 @@
       const folder = status.ok && status.value && typeof status.value === "object"
         ? String((status.value as { hqFolderPath?: unknown }).hqFolderPath ?? "").trim() : "";
       if (!folder) { message = "HQ folder not configured yet. Finish setup first."; return; }
-      const actions = createLaunchActions({ shell: services.shell, hqFolderPath: folder, prompt: meetingAgentPrompt({ title, companyUid, recallBotId, startTime }) });
+      const actions = createLaunchActions({ shell: services.shell, hqFolderPath: folder, prompt: meetingAgentPrompt({ title, companyUid, recallBotId, startTime }), copyPromptOnTerminalLaunch: true });
       message = next === "claude" ? await actions.launchClaude() : await actions.launchCodex();
     } finally { pending = null; }
   }
@@ -47,15 +48,23 @@
 
 <div class="agent-launch" data-testid="meeting-agent-launch">
   <button type="button" class="open" disabled={pending !== null || !providerInstalled} aria-busy={pending === provider} onclick={() => void launch(provider)}>{pending === provider ? "Opening…" : label}</button>
-  <select aria-label="Choose agent" disabled={pending !== null} value={provider} onchange={(event) => void launch((event.currentTarget as HTMLSelectElement).value as LaunchKey)}>
-    <option value="claude" disabled={installed?.claude === false}>Claude Code</option><option value="codex" disabled={installed?.codex === false}>Codex</option>
-  </select>
+  <Dropdown
+    label="Choose agent"
+    testid="meeting-agent-provider"
+    value={provider}
+    disabled={pending !== null}
+    onchange={(next) => void launch(next as LaunchKey)}
+    options={[
+      { value: "claude", label: "Claude Code", disabled: installed?.claude === false },
+      { value: "codex", label: "Codex", disabled: installed?.codex === false },
+    ]}
+  />
   {#if message}<div class="message" role="status">{message} {#if message.includes("prompt")}<button type="button" onclick={() => void copyPrompt()}>Copy prompt</button>{/if}</div>{/if}
 </div>
 
 <style>
   .agent-launch { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .open, select, .message button { border: 1px solid var(--line2); background: var(--surface); color: var(--t1); border-radius: 6px; font: inherit; font-size: 13px; min-height: 28px; padding: 3px 8px; }
-  .open { cursor: pointer; } .open:disabled, select:disabled { opacity: .6; cursor: default; }
+  .open, .message button { border: 1px solid var(--line2); background: var(--surface); color: var(--t1); border-radius: 6px; font: inherit; font-size: 13px; min-height: 28px; padding: 3px 8px; }
+  .open { cursor: pointer; } .open:disabled { opacity: .6; cursor: default; }
   .message { flex-basis: 100%; color: var(--t2); font-size: 13px; } .message button { min-height: 24px; margin-left: 6px; cursor: pointer; }
 </style>

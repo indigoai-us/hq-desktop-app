@@ -48,7 +48,7 @@ describe("launch actions prompt recovery", () => {
     (shell.launchClaudeCode as ReturnType<typeof vi.fn>).mockResolvedValue(ok(undefined));
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const message = await createLaunchActions({ shell, hqFolderPath: "/hq", prompt: "meeting prompt" }).launchClaude();
+    const message = await createLaunchActions({ shell, hqFolderPath: "/hq", prompt: "meeting prompt", copyPromptOnTerminalLaunch: true }).launchClaude();
     expect(writeText).toHaveBeenCalledWith("meeting prompt");
     expect(message).toContain("prompt was copied");
   });

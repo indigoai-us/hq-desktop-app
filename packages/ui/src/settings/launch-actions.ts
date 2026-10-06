@@ -56,6 +56,8 @@ export interface LaunchActionsInput {
    * path settles trust before that scan, so it keeps `prompt` unchanged.
    */
   deepLinkPrompt?: string;
+  /** Copy a supplied prompt when a terminal launch cannot prefill it. */
+  copyPromptOnTerminalLaunch?: boolean;
 }
 
 export interface LaunchActions {
@@ -124,6 +126,7 @@ export function createLaunchActions({
   hqFolderPath,
   prompt,
   deepLinkPrompt,
+  copyPromptOnTerminalLaunch = false,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
@@ -149,7 +152,7 @@ export function createLaunchActions({
     if (path === "cli") {
       const res = await shell.launchClaudeCode(folder);
       if (!res.ok) return failureMessage(res, "Claude Code");
-      return copyPromptRecovery(prefill, "Claude Code");
+      return copyPromptOnTerminalLaunch ? copyPromptRecovery(prefill, "Claude Code") : null;
     }
     return claudeNotDetectedMessage(prefill);
   }
@@ -178,7 +181,7 @@ export function createLaunchActions({
         tool: SETUP_LAUNCH_COMMANDS.codex.kind,
       });
       if (!res.ok) return failureMessage(res, "Codex");
-      return copyPromptRecovery(prefill, "Codex");
+      return copyPromptOnTerminalLaunch ? copyPromptRecovery(prefill, "Codex") : null;
     }
     let copied = false;
     if (prefill) {
