@@ -1208,10 +1208,11 @@
 
   function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
     if (!firstLaunchDownloadJoinFlagPromise) {
-      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
-        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
-        2_000,
-      );
+      const downloadJoinFlag = resolveFirstLaunchPublicFlag(
+        FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
+        installAttemptId,
+      ).then((enabled) => enabled === true);
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(downloadJoinFlag, 2_000);
     }
     return firstLaunchDownloadJoinFlagPromise;
   }

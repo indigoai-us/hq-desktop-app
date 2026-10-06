@@ -796,6 +796,27 @@ describe('first-run sign-in screen', () => {
     expect(deliveredLaunches[0].anonId).toBe('download-key');
   });
 
+  it('omits the installer visitor key when its public flag is unavailable', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    httpFetch.mockImplementation(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => '',
+    }));
+    stubContinuationInvoke({
+      downloadAnonId: 'download-key',
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(false);
+  });
+
   it('omits the installer visitor key when the flag is off or the tag is missing', async () => {
     const deliveredLaunches: Array<Record<string, string | number>> = [];
     httpFetch.mockImplementation(async (input) => {
