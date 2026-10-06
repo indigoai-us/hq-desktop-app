@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
 - CLI update timeout messages stay actionable when lease-holder details cannot be read.
 
 ## [0.10.398] — 2026-10-06
