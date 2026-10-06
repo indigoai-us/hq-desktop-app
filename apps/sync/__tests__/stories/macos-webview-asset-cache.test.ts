@@ -188,7 +188,7 @@ describe('macOS custom-protocol frontend asset cache', () => {
       'commands::version_gate::setup_version_gate(app.handle());',
     );
     const telemetrySetup = main.indexOf(
-      'commands::telemetry::setup_daily_active_emit();',
+      'commands::telemetry::setup_daily_active_emit(',
       versionGate,
     );
     const heartbeatSetup = main.indexOf(

@@ -9,6 +9,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::commands::cognito;
@@ -18,6 +19,7 @@ use crate::util::logfile::log;
 
 const LOG_TAG: &str = "hq_pro";
 const FLAG_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+static COMPANY_SCOPED_FLAG_RESOLVE_UNSUPPORTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,10 +163,69 @@ pub async fn hq_pro_fetch(
 /// user and company scope, so each eligible update check reads the current
 /// authenticated scope instead of reusing a process-global cached snapshot.
 pub(crate) async fn feature_flag_enabled(flag: &str) -> bool {
-    feature_flag_enabled_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
-    })
+    feature_flag_enabled_for_company(flag, None).await
+}
+
+/// Resolve a flag in an explicitly selected company scope when one is known.
+/// Callers that do not have a company keep the historical unscoped request.
+pub(crate) async fn feature_flag_enabled_for_company(
+    flag: &str,
+    company_uid: Option<&str>,
+) -> bool {
+    feature_flag_enabled_for_company_with_fetch(
+        flag,
+        company_uid,
+        &COMPANY_SCOPED_FLAG_RESOLVE_UNSUPPORTED,
+        |path| async move { hq_pro_fetch(path, "GET".to_string(), None).await },
+    )
     .await
+}
+
+fn feature_flag_resolve_path(company_uid: Option<&str>) -> String {
+    match company_uid
+        .map(str::trim)
+        .filter(|uid| uid.starts_with("cmp_"))
+    {
+        Some(uid) => {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("companyUid", uid)
+                .finish();
+            format!("/v1/flags/resolve?{query}")
+        }
+        None => "/v1/flags/resolve".to_string(),
+    }
+}
+
+async fn feature_flag_enabled_for_company_with_fetch<Fetch, FetchFuture>(
+    flag: &str,
+    company_uid: Option<&str>,
+    scoped_resolve_unsupported: &AtomicBool,
+    mut fetch: Fetch,
+) -> bool
+where
+    Fetch: FnMut(String) -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    let scoped_path = feature_flag_resolve_path(company_uid);
+    if scoped_path == "/v1/flags/resolve" || scoped_resolve_unsupported.load(Ordering::Acquire) {
+        return feature_flag_enabled_with_fetch(flag, || fetch("/v1/flags/resolve".to_string()))
+            .await;
+    }
+
+    let evaluation = feature_flag_enabled_with_fetch_and_status(flag, || fetch(scoped_path)).await;
+    if matches!(evaluation.status, Some(400 | 403)) {
+        scoped_resolve_unsupported.store(true, Ordering::Release);
+        return feature_flag_enabled_with_fetch(flag, || fetch("/v1/flags/resolve".to_string()))
+            .await;
+    }
+
+    evaluation.enabled
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FeatureFlagEvaluation {
+    enabled: bool,
+    status: Option<u16>,
 }
 
 async fn feature_flag_enabled_with_fetch<Fetch, FetchFuture>(flag: &str, fetch: Fetch) -> bool
@@ -172,9 +233,46 @@ where
     Fetch: FnOnce() -> FetchFuture,
     FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
 {
-    feature_flag_value_with_fetch(flag, fetch)
+    feature_flag_enabled_with_fetch_and_status(flag, fetch)
         .await
-        .unwrap_or(false)
+        .enabled
+}
+
+async fn feature_flag_enabled_with_fetch_and_status<Fetch, FetchFuture>(
+    flag: &str,
+    fetch: Fetch,
+) -> FeatureFlagEvaluation
+where
+    Fetch: FnOnce() -> FetchFuture,
+    FetchFuture: Future<Output = Result<HqProHttpResponse, String>>,
+{
+    match tokio::time::timeout(FLAG_REQUEST_TIMEOUT, fetch()).await {
+        Ok(Ok(response)) => {
+            let status = response.status;
+            let parsed = parse_feature_flag_response(status, &response.body);
+            if status == 200 && parsed.is_none() {
+                log(LOG_TAG, "HQ_FLAGS_RESOLVE_INVALID_RESPONSE");
+            }
+            let enabled = parsed
+                .and_then(|values| values.get(flag).copied())
+                .unwrap_or(false);
+            FeatureFlagEvaluation {
+                enabled,
+                status: Some(status),
+            }
+        }
+        Ok(Err(_)) => FeatureFlagEvaluation {
+            enabled: false,
+            status: None,
+        },
+        Err(_) => {
+            log(LOG_TAG, "HQ_FLAGS_RESOLVE_TIMEOUT");
+            FeatureFlagEvaluation {
+                enabled: false,
+                status: None,
+            }
+        }
+    }
 }
 
 /// Resolve a hq-flags value and report whether it was configured at all.
@@ -273,6 +371,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn company_scoped_flag_resolution_includes_company_uid() {
+        assert_eq!(
+            feature_flag_resolve_path(Some("cmp_indigo")),
+            "/v1/flags/resolve?companyUid=cmp_indigo"
+        );
+    }
+
+    #[test]
+    fn flag_resolution_keeps_unscoped_request_when_company_is_unknown() {
+        assert_eq!(feature_flag_resolve_path(None), "/v1/flags/resolve");
+        assert_eq!(feature_flag_resolve_path(Some("  ")), "/v1/flags/resolve");
+        assert_eq!(
+            feature_flag_resolve_path(Some("legacy-company")),
+            "/v1/flags/resolve"
+        );
+    }
+
+    #[test]
     fn joins_relative_path_onto_vault_base() {
         assert_eq!(
             resolve_request_url("/v1/identity/whoami", "https://hqapi.hq.computer/").unwrap(),
@@ -367,6 +483,151 @@ mod tests {
 
         assert!(first_scope);
         assert!(!second_scope);
+    }
+
+    #[tokio::test]
+    async fn scoped_403_falls_back_to_unscoped_and_remembers_the_fallback() {
+        use std::cell::RefCell;
+        use std::sync::atomic::AtomicBool;
+
+        let flag = "desktop.push-events";
+        let unsupported = AtomicBool::new(false);
+        let paths = RefCell::new(Vec::new());
+        let enabled = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("cmp_stale"),
+            &unsupported,
+            |path| {
+                paths.borrow_mut().push(path.clone());
+                async move {
+                    if path.contains("companyUid=") {
+                        Ok(HqProHttpResponse {
+                            status: 403,
+                            body: String::new(),
+                            retry_after: None,
+                        })
+                    } else {
+                        Ok(HqProHttpResponse {
+                            status: 200,
+                            body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                            retry_after: None,
+                        })
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert!(enabled);
+        assert_eq!(
+            paths
+                .borrow()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "/v1/flags/resolve?companyUid=cmp_stale",
+                "/v1/flags/resolve"
+            ]
+        );
+        assert!(unsupported.load(Ordering::Acquire));
+
+        paths.borrow_mut().clear();
+        let next_tick = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("cmp_stale"),
+            &unsupported,
+            |path| {
+                paths.borrow_mut().push(path.clone());
+                async move {
+                    Ok(HqProHttpResponse {
+                        status: 200,
+                        body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                        retry_after: None,
+                    })
+                }
+            },
+        )
+        .await;
+        assert!(!next_tick);
+        assert_eq!(
+            paths
+                .borrow()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/v1/flags/resolve"]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_cmp_company_uid_uses_only_the_unscoped_request() {
+        use std::cell::RefCell;
+        use std::sync::atomic::AtomicBool;
+
+        let flag = "desktop.push-events";
+        let paths = RefCell::new(Vec::new());
+        let enabled = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("legacy-company"),
+            &AtomicBool::new(false),
+            |path| {
+                paths.borrow_mut().push(path);
+                async move {
+                    Ok(HqProHttpResponse {
+                        status: 200,
+                        body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                        retry_after: None,
+                    })
+                }
+            },
+        )
+        .await;
+
+        assert!(enabled);
+        assert_eq!(
+            paths
+                .borrow()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/v1/flags/resolve"]
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_200_does_not_issue_an_unscoped_request() {
+        use std::cell::RefCell;
+        use std::sync::atomic::AtomicBool;
+
+        let flag = "desktop.push-events";
+        let paths = RefCell::new(Vec::new());
+        let enabled = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("cmp_indigo"),
+            &AtomicBool::new(false),
+            |path| {
+                paths.borrow_mut().push(path.clone());
+                async move {
+                    Ok(HqProHttpResponse {
+                        status: 200,
+                        body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                        retry_after: None,
+                    })
+                }
+            },
+        )
+        .await;
+
+        assert!(enabled);
+        assert_eq!(
+            paths
+                .borrow()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/v1/flags/resolve?companyUid=cmp_indigo"]
+        );
     }
 
     #[tokio::test]

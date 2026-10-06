@@ -5,6 +5,7 @@
   import {
     createSyncPlatformAdapter,
     POST_READY_ACTION_TELEMETRY_FLAG,
+    POST_READY_DROP_REASON_FLAG,
     type Json,
   } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
@@ -96,6 +97,7 @@
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import {
     createPostReadyActionTelemetry,
+    postReadyIdentityAdapterValue,
     isPostReadyAction,
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
@@ -135,6 +137,10 @@
         const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
         return result.ok && result.value === true;
       },
+      isDropReasonFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
+        return result.ok && result.value === true;
+      },
       getIdentity: async (scope) => resolvePostReadyIdentity(scope),
     }))
     .catch((err) => {
@@ -144,6 +150,10 @@
         os: desktopTelemetryOs(),
         isFlagEnabled: async () => {
           const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        isDropReasonFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
           return result.ok && result.value === true;
         },
         getIdentity: async (scope) => resolvePostReadyIdentity(scope),
@@ -200,10 +210,8 @@
   async function resolvePostReadyIdentity(
     scope?: { companyUid?: string; companySlug?: string },
   ): Promise<{ personUid: string; companyUid: string | null } | null> {
-    const person = await traySyncAdapter.identity.whoami();
-    if (!person.ok) return null;
-    const workspaces = await traySyncAdapter.identity.listWorkspaces();
-    if (!workspaces.ok) return null;
+    const person = postReadyIdentityAdapterValue(await traySyncAdapter.identity.whoami());
+    const workspaces = postReadyIdentityAdapterValue(await traySyncAdapter.identity.listWorkspaces());
     let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
     if (!activeSlug && !scope?.companyUid) {
       activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {
@@ -211,7 +219,7 @@
         return null;
       })) ?? '';
     }
-    const memberships = workspaces.value as Json[];
+    const memberships = workspaces as Json[];
     const active = scope?.companyUid
       ? memberships.find(
           (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
@@ -224,7 +232,7 @@
             (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
           ) ?? (memberships.length === 1 ? memberships[0] : undefined);
     const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
-    return { personUid: person.value.personUid, companyUid: companyUid || null };
+    return { personUid: person.personUid, companyUid: companyUid || null };
   }
 
   function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
