@@ -8,7 +8,7 @@ export function safeMeetingTitle(value: string | null | undefined): string {
     .replace(/[\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-  return (flat || "Untitled meeting").slice(0, MAX_TITLE_LENGTH);
+  return (flat || "Untitled meeting").substring(0, MAX_TITLE_LENGTH);
 }
 
 export function meetingAgentPrompt(input: {

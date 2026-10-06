@@ -255,8 +255,7 @@
         (a, b) =>
           (eventEnd(b)?.getTime() ?? eventStart(b)?.getTime() ?? 0) -
           (eventEnd(a)?.getTime() ?? eventStart(a)?.getTime() ?? 0),
-      )
-      .slice(0, 3),
+      ),
   );
 
   // Upcoming meetings carrying >=1 extracted signal — powers "from N meetings" caption.
