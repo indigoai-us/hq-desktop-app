@@ -3116,7 +3116,7 @@
 
   .error button {
     flex: 0 0 auto;
-    min-height: 28px;
+    min-height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
@@ -3342,8 +3342,8 @@
      control language. */
   .row-button {
     justify-self: end;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border);
     border-radius: var(--v4-radius-button);
     background: var(--v4-secondary-bg);

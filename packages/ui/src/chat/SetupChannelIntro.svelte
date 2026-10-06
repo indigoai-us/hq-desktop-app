@@ -836,7 +836,7 @@
 
   .hero-actions :global(.setup-btn) {
     border-radius: 8px;
-    min-height: 32px;
+    min-height: var(--hq-btn-h);
     padding-inline: 14px;
   }
 

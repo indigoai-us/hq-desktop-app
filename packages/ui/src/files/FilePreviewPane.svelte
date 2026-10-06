@@ -529,8 +529,8 @@
     flex-shrink: 0;
     align-items: center;
     gap: var(--space-1, 4px);
-    height: 26px;
-    padding: 0 10px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border, var(--border));
     border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
     background: var(--v4-control-faint, var(--row-active));

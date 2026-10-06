@@ -67,7 +67,7 @@
   .tx { min-width: 0; }
   .tt { display: block; font-size: 13px; color: var(--t1); }
   .mm { display: block; font-size: 13px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--hover); }
   .btn:disabled, .link:disabled { color: var(--t3); cursor: default; }
   .rule { height: 1px; background: var(--line); margin: 8px 0; }

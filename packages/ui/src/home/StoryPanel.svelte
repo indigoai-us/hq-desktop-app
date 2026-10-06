@@ -789,7 +789,7 @@
 
   .status-control button,
   .panel-footer button {
-    height: 28px;
+    height: var(--hq-btn-h);
     border: 0;
     border-radius: var(--v4-radius-button);
     background: transparent;

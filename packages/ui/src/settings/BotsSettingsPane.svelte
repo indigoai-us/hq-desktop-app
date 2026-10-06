@@ -1263,8 +1263,8 @@
   button {
     font: inherit;
     font-size: 13px;
-    min-height: 36px;
-    padding: 6px 12px;
+    min-height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     background: var(--v4-control-bg);

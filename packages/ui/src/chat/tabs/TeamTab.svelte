@@ -235,14 +235,14 @@
 
   .team-btn {
     appearance: none;
-    height: 28px;
-    padding: 0 10px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid color-mix(in srgb, var(--t1) 12%, transparent);
     border-radius: 6px;
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 

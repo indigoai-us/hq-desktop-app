@@ -104,7 +104,7 @@
   .chip { font-size: 13px; color: var(--t2); white-space: nowrap; }
   .mm { font-size: 13px; color: var(--t3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .actions { display: flex; gap: 6px; margin-top: 12px; }
-  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--hover); }
   .btn.primary { border-color: transparent; background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--side-bg)); }
   /* Disabled reads as quiet text, not a grey block beside an enabled Cancel. */

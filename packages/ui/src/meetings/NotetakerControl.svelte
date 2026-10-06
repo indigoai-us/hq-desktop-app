@@ -59,7 +59,7 @@
 <style>
   .nt { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
   .msg { color: var(--t2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btn { height: 28px; padding: 0 10px; border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .btn { height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline); border: 1px solid var(--panel-border, var(--line)); border-radius: 6px; background: transparent; color: var(--t1); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
   .btn:hover:not(:disabled) { background: var(--hover); }
   .btn:disabled { color: var(--t3); cursor: default; }
 </style>

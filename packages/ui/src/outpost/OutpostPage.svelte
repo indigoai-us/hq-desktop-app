@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "../common/inline-banner.css";
   import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -201,8 +202,8 @@
     {:else if data.provisioned === null}
       <div class="empty sub" data-testid="outpost-loading"><ReadLoader testid="outpost-loader" onretry={() => retry()} /></div>
     {:else if offline}
-      <div class="banner" role="alert" data-testid="outpost-offline-banner" title={lastReport.title}>
-        {lastReport.text}
+      <div class="inline-banner banner" role="alert" data-testid="outpost-offline-banner" title={lastReport.title}>
+        <span class="inline-banner-text">{lastReport.text}</span>
         <RailButton icon="refresh" type="button" onclick={() => retry()}>Retry now</RailButton>
       </div>
     {/if}
@@ -312,7 +313,7 @@
   .dot.err { background: var(--red, var(--v4-error)); }
   .st.failed, .err, .ln.err { color: var(--red, var(--v4-error)); }
   .empty { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 24px 0; }
-  .banner { display: flex; gap: 8px; align-items: center; min-height: 40px; margin: 0 0 12px; padding: 0 12px; background: var(--raised, var(--v4-control-faint)); border-radius: 8px; }
+  .banner { margin: 0 0 12px; }
   .tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 4px; }
   .tabs :global([data-rail-btn]) { margin-left: auto; }
   .jrow { display: grid; grid-template-columns: minmax(0, 1.8fr) 120px 100px minmax(0, 1fr) 90px; gap: 8px; align-items: center; height: 31px; box-sizing: border-box; padding: 0 8px; border-radius: 8px; }

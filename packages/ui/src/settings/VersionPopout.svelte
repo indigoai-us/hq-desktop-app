@@ -720,10 +720,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: var(--hq-btn-gap);
     width: 100%;
-    min-height: 34px;
-    padding: 6px 12px;
+    min-height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--border-strong);
     border-radius: 6px;
     background: var(--row-active);
