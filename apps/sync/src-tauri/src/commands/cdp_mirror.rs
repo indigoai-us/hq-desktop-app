@@ -634,14 +634,23 @@ pub fn held_auth_rows_at(path: &std::path::Path, now: u64) -> Vec<Value> {
 }
 
 /// Persist one sign-in row for a later session. Only the closed labels
-/// `provider`, `step` and `errorCategory` are kept, never error text. Expired
-/// rows are pruned and the oldest dropped past [`AUTH_HELD_CAP`].
+/// `provider`, `step` and `errorCategory` plus UUID correlation keys are kept,
+/// never error text. Expired rows are pruned and the oldest dropped past
+/// [`AUTH_HELD_CAP`].
 pub fn hold_auth_row_at(
     path: &std::path::Path,
     event_name: &str,
     properties: Option<&Value>,
+    session_id: Option<&str>,
     now: u64,
 ) -> Result<(), String> {
+    // Resolve the install id before locking the read-modify-write below. Its
+    // helper also acquires the menubar lock while minting the id.
+    let install_attempt_id = if event_name == "desktop_auth_progress" {
+        super::first_run::install_attempt_id_at(path)
+    } else {
+        None
+    };
     // The held list is read, extended and written back; hold the lock across
     // all three so no other menubar.json write lands in between.
     let _lock = hq_desktop_core::first_run::lock_menubar_writes();
@@ -655,9 +664,18 @@ pub fn hold_auth_row_at(
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut rows = held_auth_rows_at(path, now);
+    let session_id = if event_name == "desktop_auth_progress" {
+        session_id
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .map(|value| value.to_string())
+    } else {
+        None
+    };
     rows.push(json!({
         "eventName": event_name,
         "properties": props,
+        "installAttemptId": install_attempt_id,
+        "sessionId": session_id,
         "occurredAt": occurred_at,
         "heldAtMs": now,
         "idempotencyKey": format!("hq-desktop-app:auth-held:{}", uuid::Uuid::new_v4()),
@@ -671,7 +689,7 @@ pub fn hold_auth_row_at(
 /// logged by kind only.
 pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
     let held = paths::menubar_json_path()
-        .and_then(|path| hold_auth_row_at(&path, event_name, properties, now_ms()));
+        .and_then(|path| hold_auth_row_at(&path, event_name, properties, None, now_ms()));
     if held.is_err() {
         crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
     }

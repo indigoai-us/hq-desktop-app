@@ -9,7 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
-
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
 ## [0.10.397] — 2026-10-06
