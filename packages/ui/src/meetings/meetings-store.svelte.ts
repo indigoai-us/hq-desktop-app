@@ -129,8 +129,10 @@ export function meetingAgentLaunchServices(): {
   shell: ShellApi;
   getSetupStatus: () => ReturnType<SettingsApi["getSetupStatus"]>;
 } | null {
-  if (!api?.shell || !api.launchSettings?.getSetupStatus) return null;
-  return { shell: api.shell, getSetupStatus: () => api.launchSettings!.getSetupStatus() };
+  const shell = api?.shell;
+  const launchSettings = api?.launchSettings;
+  if (!shell || !launchSettings?.getSetupStatus) return null;
+  return { shell, getSetupStatus: () => launchSettings.getSetupStatus() };
 }
 
 function unwrap<T>(res: AdapterResult<T>): T {
