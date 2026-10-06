@@ -1643,9 +1643,9 @@ mod tests {
             crate::app_version::current(),
             "compile-time version of the dying process must not cross the wire"
         );
-        assert_eq!(
-            body["updaterState"], "up_to_date",
-            "server must never see installed version + still-available update"
+        assert!(
+            matches!(body["updaterState"].as_str(), Some("unchecked" | "up_to_date")),
+            "post-update heartbeat must clear the app update; without a resolved runner, report unchecked"
         );
     }
 
