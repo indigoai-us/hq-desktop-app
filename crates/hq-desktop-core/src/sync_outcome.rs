@@ -2935,6 +2935,31 @@ pub fn watcher_exit_class(
     }
 }
 
+/// Preserve a recognized environmental runner cause in watcher grouping only
+/// when no stronger OS or sticky crash evidence is present. Unknown fatal classes,
+/// Windows native faults, and runs with any observed genuine crash keep their
+/// existing exit class.
+pub fn watcher_exit_class_with_fatal_cause(
+    code: Option<i32>,
+    signal: Option<i32>,
+    node_fatal: bool,
+    memory_attributed: bool,
+    saw_genuine_crash_fatal: bool,
+    runner_fatal_class: &str,
+) -> &'static str {
+    let exit_class = watcher_exit_class(code, signal, node_fatal, memory_attributed);
+    if exit_class == "other"
+        && signal.is_none()
+        && !is_windows_fault_exit(code)
+        && !saw_genuine_crash_fatal
+        && runner_fatal_class == RunnerFatalClass::DiskFull.as_str()
+    {
+        "disk_full"
+    } else {
+        exit_class
+    }
+}
+
 /// Closed, content-safe vocabulary naming the DISPOSITION of the signal that
 /// terminated an auto-sync watcher, so a signal-only termination is filterable in
 /// Sentry without parsing the message text. Every arm returns a fixed token that
@@ -4913,6 +4938,44 @@ mod tests {
         );
         assert_eq!(watcher_exit_class(Some(1), None, true, false), "node_fatal");
         assert_eq!(watcher_exit_class(Some(127), None, false, false), "other");
+    }
+
+    #[test]
+    fn watcher_exit_class_carries_disk_full_and_preserves_unknown_exits() {
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "disk_full"),
+            "disk_full"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "none"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                None,
+                Some(SIGSEGV_SIGNAL),
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, true, "disk_full"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                Some(0xC000_001Du32 as i32),
+                None,
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
     }
 
     #[test]
