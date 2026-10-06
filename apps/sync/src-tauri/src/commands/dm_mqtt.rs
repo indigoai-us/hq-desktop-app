@@ -692,7 +692,11 @@ async fn drive_eventloop(
                         continue;
                     }
                     if is_directory_changed_wake(&publish.payload) {
-                        let _ = app.emit(EVENT_CHANNEL_UNREAD_CHANGED, ());
+                        let _ = app.emit_to(
+                            crate::commands::desktop_alt::WINDOW_LABEL,
+                            EVENT_CHANNEL_UNREAD_CHANGED,
+                            (),
+                        );
                         continue;
                     }
                     // Work and notification topics are not DM wakes. Forward
