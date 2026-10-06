@@ -1167,6 +1167,57 @@ describe("MeshClient", () => {
     expect(h.events.wake[0]?.[0]).toBe("hq/cmp_acme/thread-directory");
   });
 
+  it("directory doorbell on the work topic emits a wake but never GETs work", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.events.wake.length = 0;
+    h.mqttClients[0].fire(
+      "message",
+      "hq/prs_alice/work",
+      new TextEncoder().encode(
+        JSON.stringify({
+          contractVersion: 2,
+          eventId: "evt_1",
+          eventType: "channel.directory.changed",
+          scope: "work",
+          resourceId: "chn_x",
+          recipientUid: "prs_alice",
+          createdAt: "2026-10-05T12:00:00.000Z",
+        }),
+      ),
+    );
+    await settle();
+    expect(h.fetchCalls).toEqual([]);
+    expect(h.events.wake.map((w) => w[0])).toEqual(["hq/prs_alice/work"]);
+  });
+
+  it("generic work wake on the work topic still GETs work", async () => {
+    const h = makeHarness();
+    await h.client.start();
+    await settle();
+    h.mqttClients[0].fire("connect");
+    await settle();
+    h.fetchCalls.length = 0;
+    h.mqttClients[0].fire(
+      "message",
+      "hq/prs_alice/work",
+      new TextEncoder().encode(
+        JSON.stringify({
+          contractVersion: 2,
+          eventType: "work.changed",
+          scope: "work",
+          resourceId: "thr_1",
+        }),
+      ),
+    );
+    await settle();
+    expect(h.fetchCalls).toEqual(["/v1/work-mesh/work"]);
+  });
+
   it("existing thread lane still connects and reconciles", async () => {
     const h = makeHarness();
     await h.client.start();

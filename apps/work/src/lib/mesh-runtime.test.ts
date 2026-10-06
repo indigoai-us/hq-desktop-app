@@ -177,6 +177,26 @@ describe("routeMeshWake", () => {
     expect(other).toEqual([]);
   });
 
+  it("maps the directory doorbell onto a directory refresh only", () => {
+    const wakes = createChatWakeBus();
+    const seen: string[] = [];
+    wakes.on("channel:unread-changed", () => seen.push("unread"));
+    wakes.on("channel:new-message", () => seen.push("channel"));
+    wakes.on("dm:new-message", () => seen.push("dm"));
+    expect(
+      routeMeshWake(
+        {
+          contractVersion: 2,
+          eventType: "channel.directory.changed",
+          scope: "work",
+          resourceId: "chn_x",
+        },
+        wakes,
+      ),
+    ).toBe("directory");
+    expect(seen).toEqual(["unread"]);
+  });
+
   it("maps hq-pro type:dm payloads onto dm:new-message", () => {
     const wakes = createChatWakeBus();
     const dms: Array<{ fromPersonUid: string }> = [];
