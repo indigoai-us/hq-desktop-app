@@ -136,6 +136,12 @@ pub struct VendChildResult {
     pub credentials: VendChildCredentials,
     pub session_name: String,
     pub expires_at: String,
+    /// Present when the server's fitted child policy omits ACL grants.
+    #[serde(default)]
+    pub policy_truncated: bool,
+    /// Explicitly dropped write grants, when returned by a newer server.
+    #[serde(default)]
+    pub dropped_write_grant_prefixes: Vec<String>,
 }
 
 /// Per-company white-label brand (hq-pro `CompanyBrand`). Canonical
@@ -685,7 +691,10 @@ impl VaultClient {
             200..=299 => Ok(ActivateCloudAck::Done),
             404 => Ok(ActivateCloudAck::NotFound),
             403 => Ok(ActivateCloudAck::Forbidden),
-            other => Err(VaultClientError::Http { status: other, body }),
+            other => Err(VaultClientError::Http {
+                status: other,
+                body,
+            }),
         }
     }
 
@@ -1054,7 +1063,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(info.cloud_activated_at.as_deref(), Some("2026-09-03T00:00:00Z"));
+        assert_eq!(
+            info.cloud_activated_at.as_deref(),
+            Some("2026-09-03T00:00:00Z")
+        );
     }
 
     #[tokio::test]
