@@ -2,10 +2,12 @@
  * Side-panel preview for one deployment, read only when a row is selected.
  *
  * First choice is a rendered snapshot of the live page: the desktop loads it in
- * a hidden window and captures a 1280x800 view (macOS today). Public apps only;
- * protected apps sit behind hq-deploy's access gate, which the hidden window
- * has no session for. When the snapshot fails, times out, or is unsupported,
- * the panel falls back to the page's og:image (or twitter:image). Both are kept
+ * a hidden window and captures a 1280x800 view (macOS today). Protected apps
+ * (password, company, invited-only) are captured with a short-lived,
+ * view-only preview pass from hq-deploy; the desktop asks for it only when the
+ * server advertises the capability. When the snapshot fails, times out, is
+ * unsupported, or the server has no preview pass, the panel falls back to the
+ * page's og:image (or twitter:image). Both are kept
  * on disk by the desktop, keyed by app id and deploy time; this module keeps a
  * session copy in memory so reselecting a row paints at once, and shares one
  * in-flight read per key.
@@ -84,7 +86,20 @@ export function loadDeployPreview(
   return request;
 }
 
-export type DeploySnapshotFetcher = DeployPreviewFetcher;
+/** What the desktop needs to request a preview pass for a protected app. */
+export interface SnapshotGate {
+  /** Company slug, or "personal". */
+  scope: string;
+  protected: boolean;
+}
+
+export type DeploySnapshotFetcher = (
+  appId: string,
+  url: string,
+  deployedAt: string,
+  refresh: boolean,
+  gate?: SnapshotGate,
+) => AdapterPromise<Json>;
 
 export interface PanelPreview {
   /** "snapshot" = rendered page, "og" = share image, "none" = nothing to show. */
@@ -97,9 +112,17 @@ export const PREVIEW_DEBOUNCE_MS = 250;
 /** The desktop gives up at 8 s; this covers the IPC round trip on top. */
 export const SNAPSHOT_TIMEOUT_MS = 10_000;
 
-/** Only public live apps are rendered; protected ones would show their access gate. */
+/** Public apps render directly; protected apps need a scope to request a preview pass. */
 export function snapshotEligible(row: PersonalDeployment | null): row is PersonalDeployment {
-  return previewable(row) && row.access === "Public";
+  return previewable(row) && snapshotGate(row) !== null;
+}
+
+/** The pass request for a row, or null when a protected row has no scope to ask in. */
+export function snapshotGate(row: PersonalDeployment): SnapshotGate | null {
+  const isProtected = row.access !== "Public";
+  const scope = row.scope === "personal" ? "personal" : (row.scopeId ?? "");
+  if (isProtected && !scope) return null;
+  return { scope, protected: isProtected };
 }
 
 const panelMemory = new Map<string, PanelPreview>();
@@ -132,7 +155,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 async function readSnapshot(fetcher: DeploySnapshotFetcher, row: PersonalDeployment, refresh: boolean, timeoutMs: number): Promise<string> {
-  const result = await withTimeout(Promise.resolve(fetcher(row.id, row.url, row.deployedAt ?? "", refresh)), timeoutMs);
+  const gate = snapshotGate(row) ?? undefined;
+  const result = await withTimeout(Promise.resolve(fetcher(row.id, row.url, row.deployedAt ?? "", refresh, gate)), timeoutMs);
   if (!result.ok) throw new Error(`deploy snapshot ${result.reason}`);
   const raw = (result.value && typeof result.value === "object" ? result.value : {}) as Record<string, unknown>;
   if (typeof raw.snapshot !== "string" || !raw.snapshot.startsWith("data:image/")) throw new Error("deploy snapshot empty");
@@ -140,7 +164,7 @@ async function readSnapshot(fetcher: DeploySnapshotFetcher, row: PersonalDeploym
 }
 
 /**
- * Snapshot first (public apps), then og:image, then nothing. Rejects only when
+ * Snapshot first, then og:image, then nothing. Rejects only when
  * every source that was tried failed; the panel then shows "Preview unavailable".
  */
 export function loadPanelPreview(

@@ -1303,8 +1303,15 @@ export function createSyncPlatformAdapter(
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
       deployAppPreview: (appId, url, deployedAt, refresh) =>
         call('deploy_app_preview', { appId, url, deployedAt, refresh }),
-      deployAppSnapshot: (appId, url, deployedAt, refresh) =>
-        call('deploy_app_snapshot', { appId, url, deployedAt, refresh }),
+      deployAppSnapshot: (appId, url, deployedAt, refresh, gate) =>
+        call('deploy_app_snapshot', {
+          appId,
+          url,
+          deployedAt,
+          refresh,
+          scope: gate?.scope ?? null,
+          protected: gate?.protected ?? false,
+        }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),

@@ -26,6 +26,7 @@ pub(crate) mod core_update_failure_diagnostics;
 pub mod daemon;
 pub mod hq_daemon_host;
 pub mod deploy_preview;
+pub mod deploy_preview_pass;
 pub mod deploy_snapshot;
 pub mod desktop_alt;
 pub mod desktop_auth;

@@ -128,13 +128,40 @@ describe("side-panel preview order", () => {
     }
   });
 
-  it("never renders protected apps; they go straight to the share image", async () => {
+  it("asks for a public snapshot without a preview pass", async () => {
+    const snapshot = vi.fn<DeploySnapshotFetcher>(() => ok({ snapshot: SNAP }));
+    await loadPanelPreview({ snapshot, og: og() }, publicRow());
+    expect(snapshot.mock.calls[0]![4]).toEqual({ scope: "personal", protected: false });
+  });
+
+  it("renders protected apps through a preview pass for the row's scope", async () => {
     const snapshot = vi.fn<DeploySnapshotFetcher>(() => ok({ snapshot: SNAP }));
     for (const access of ["Password", "Company", "Invited only", "Selected people"]) {
       resetPanelPreviewCacheForTests();
-      expect(snapshotEligible(row({ access }))).toBe(false);
-      expect((await loadPanelPreview({ snapshot, og: og() }, row({ access }))).kind).toBe("og");
+      snapshot.mockClear();
+      const company = row({ access, scope: "company", scopeId: "acme" });
+      expect(snapshotEligible(company)).toBe(true);
+      expect(await loadPanelPreview({ snapshot, og: og() }, company)).toEqual({ kind: "snapshot", src: SNAP });
+      expect(snapshot.mock.calls[0]![4]).toEqual({ scope: "acme", protected: true });
     }
+  });
+
+  it("falls back to the share image when the server has no preview pass", async () => {
+    const snapshot = vi.fn<DeploySnapshotFetcher>(() =>
+      Promise.resolve({ ok: false as const, reason: "error", message: "preview pass: not offered by this server" } as never),
+    );
+    const share = og();
+    const protectedRow = row({ access: "Company", scope: "company", scopeId: "acme" });
+    expect(await loadPanelPreview({ snapshot, og: share }, protectedRow)).toEqual({ kind: "og", src: OG });
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(share).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips the snapshot for a protected row with no scope to ask in", async () => {
+    const snapshot = vi.fn<DeploySnapshotFetcher>(() => ok({ snapshot: SNAP }));
+    const orphan = row({ access: "Password", scope: "company", scopeId: undefined });
+    expect(snapshotEligible(orphan)).toBe(false);
+    expect((await loadPanelPreview({ snapshot, og: og() }, orphan)).kind).toBe("og");
     expect(snapshot).not.toHaveBeenCalled();
   });
 

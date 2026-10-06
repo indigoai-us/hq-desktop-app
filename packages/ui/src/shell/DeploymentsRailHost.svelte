@@ -12,7 +12,13 @@
     accountId?: string;
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
     deployAppPreview?: (appId: string, url: string, deployedAt: string, refresh: boolean) => AdapterPromise<Json>;
-    deployAppSnapshot?: (appId: string, url: string, deployedAt: string, refresh: boolean) => AdapterPromise<Json>;
+    deployAppSnapshot?: (
+      appId: string,
+      url: string,
+      deployedAt: string,
+      refresh: boolean,
+      gate?: { scope: string; protected: boolean },
+    ) => AdapterPromise<Json>;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;
     /** RELEASE-001 gate for Redeploy and the "Your bots" filter. */

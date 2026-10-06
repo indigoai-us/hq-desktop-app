@@ -181,10 +181,21 @@ describe("Deployments side-panel og:image preview", () => {
     root.querySelector<HTMLButtonElement>("[data-testid='deploy-preview-refresh']")!.click();
     await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2), { timeout: 5000 });
     expect(snapshot.mock.calls[1]?.[3]).toBe(true);
-    // Protected apps never get a hidden-window render; they use the share image.
+    // Protected apps render through a preview pass requested for their scope.
+    await choose(root, "indigo-standup-report");
+    await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(3), { timeout: 5000 });
+    expect(snapshot.mock.calls[2]?.[4]).toMatchObject({ protected: true });
+    expect(snapshot.mock.calls[2]?.[4]?.scope).toBeTruthy();
+  });
+
+  it("uses the share image for a protected app when the server has no preview pass", async () => {
+    const og = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: "https://x/og.png", thumbnail: THUMB } as never }));
+    const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: false, reason: "error", message: "preview pass: not offered by this server" } as never));
+    const root = await mountPage(og, [], withPublicApp, snapshot);
     await choose(root, "indigo-standup-report");
     expect((await waitFor(root, "[data-testid='deploy-og'] img")).getAttribute("src")).toBe(THUMB);
-    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(snapshot.mock.calls.some((call) => call[4]?.protected === true)).toBe(true);
+    expect(root.querySelector("[data-testid='deploy-inspector']")!.textContent).not.toContain("preview pass");
   });
 
   it("falls back to the share image when the snapshot fails, without raw errors", async () => {

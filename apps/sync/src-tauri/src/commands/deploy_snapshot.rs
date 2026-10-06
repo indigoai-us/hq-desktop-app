@@ -13,15 +13,28 @@
 //! label, so the page has no access to app commands. It is closed after every
 //! capture, success or failure.
 //!
+//! Protected apps (password, company, invited-only) are captured through a
+//! preview session from hq-deploy (see `deploy_preview_pass.rs`). WKWebView
+//! cannot add headers to sub-resource loads, so the hidden window loads
+//! `hqpreview://<host>/<path>` instead of the https URL. The `hqpreview` scheme
+//! handler fetches each request from `https://<host>/<path>` and adds the
+//! session header. Relative and root-relative URLs resolve against the scheme,
+//! so the page, its css, js and images all go through the handler. The handler
+//! serves only hosts with a live session, only GET/HEAD, never follows
+//! redirects, and drops `Set-Cookie`. The session is removed after the
+//! capture.
+//!
 //! Only macOS can capture today (WKWebView `takeSnapshot`). Other platforms
 //! return an error and the panel falls back to the page's og:image.
 //!
 //! This file has no `crate::` imports so the capture test in
 //! `tests/deploy_snapshot_capture.rs` can include it directly.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use serde::Serialize;
@@ -39,6 +52,193 @@ pub const SETTLE: Duration = Duration::from_millis(700);
 pub const CACHE_CAP_BYTES: u64 = 40 * 1024 * 1024;
 
 static NEXT_LABEL: AtomicU64 = AtomicU64::new(0);
+
+/// Custom scheme the hidden window uses for protected pages.
+pub const PREVIEW_SCHEME: &str = "hqpreview";
+/// Request header hq-deploy's gate accepts in place of the access cookie.
+pub const PREVIEW_SESSION_HEADER: &str = "x-hq-preview-session";
+/// The server session lives 60 s; stop using it a little earlier.
+pub const PREVIEW_SESSION_TTL: Duration = Duration::from_secs(55);
+
+struct PreviewSession {
+    token: String,
+    expires: Instant,
+}
+
+static PREVIEW_SESSIONS: LazyLock<Mutex<HashMap<String, PreviewSession>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static PREVIEW_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(CAPTURE_TIMEOUT)
+        .build()
+        .unwrap_or_else(|err| {
+            eprintln!("[deploy-snapshot] preview client fallback: {err}");
+            reqwest::Client::new()
+        })
+});
+
+/// Make `host` servable through the preview scheme for `ttl`.
+pub fn register_preview_session(host: &str, token: String, ttl: Duration) {
+    if let Ok(mut map) = PREVIEW_SESSIONS.lock() {
+        map.insert(
+            host.to_ascii_lowercase(),
+            PreviewSession {
+                token,
+                expires: Instant::now() + ttl,
+            },
+        );
+    }
+}
+
+pub fn clear_preview_session(host: &str) {
+    if let Ok(mut map) = PREVIEW_SESSIONS.lock() {
+        map.remove(&host.to_ascii_lowercase());
+    }
+}
+
+fn preview_session_for(host: &str) -> Option<String> {
+    let mut map = PREVIEW_SESSIONS.lock().ok()?;
+    let key = host.to_ascii_lowercase();
+    match map.get(&key) {
+        Some(s) if s.expires > Instant::now() => Some(s.token.clone()),
+        Some(_) => {
+            map.remove(&key);
+            None
+        }
+        None => None,
+    }
+}
+
+/// `https://host/path?q` → `hqpreview://host/path?q`.
+pub fn preview_page_url(page: &url::Url) -> Option<url::Url> {
+    let host = page.host_str()?;
+    let mut out = url::Url::parse(&format!("{PREVIEW_SCHEME}://{host}/")).ok()?;
+    out.set_path(page.path());
+    out.set_query(page.query());
+    Some(out)
+}
+
+/// `hqpreview://host/path?q` → `https://host/path?q`. Anything else is None.
+pub fn upstream_url(uri: &str) -> Option<url::Url> {
+    let parsed = url::Url::parse(uri).ok()?;
+    if parsed.scheme() != PREVIEW_SCHEME
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let mut out = url::Url::parse(&format!("https://{host}/")).ok()?;
+    out.set_path(parsed.path());
+    out.set_query(parsed.query());
+    Some(out)
+}
+
+fn preview_response(status: u16, body: &[u8]) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(status)
+        .header("content-type", "text/plain; charset=utf-8")
+        .header("cache-control", "no-store")
+        .body(body.to_vec())
+        .unwrap_or_default()
+}
+
+/// Build the upstream request for one preview-scheme request, or the error
+/// response to return instead.
+pub fn preview_upstream_request(
+    client: &reqwest::Client,
+    method: &tauri::http::Method,
+    uri: &str,
+) -> Result<reqwest::Request, tauri::http::Response<Vec<u8>>> {
+    if method != tauri::http::Method::GET && method != tauri::http::Method::HEAD {
+        return Err(preview_response(405, b"method not allowed"));
+    }
+    let Some(target) = upstream_url(uri) else {
+        return Err(preview_response(404, b"not found"));
+    };
+    let Some(token) = target.host_str().and_then(preview_session_for) else {
+        return Err(preview_response(404, b"not found"));
+    };
+    let verb = if method == tauri::http::Method::HEAD {
+        reqwest::Method::HEAD
+    } else {
+        reqwest::Method::GET
+    };
+    client
+        .request(verb, target)
+        .header(PREVIEW_SESSION_HEADER, token)
+        .build()
+        .map_err(|_| preview_response(502, b"bad gateway"))
+}
+
+/// Handler for the `hqpreview` scheme. Redirects are not followed: a redirect
+/// here means the gate refused the session, and following it would render the
+/// sign-in page. `Set-Cookie` from the site is dropped.
+pub async fn proxy_preview_request(
+    request: tauri::http::Request<Vec<u8>>,
+) -> tauri::http::Response<Vec<u8>> {
+    let client = &*PREVIEW_CLIENT;
+    let upstream =
+        match preview_upstream_request(client, request.method(), &request.uri().to_string()) {
+            Ok(req) => req,
+            Err(resp) => return resp,
+        };
+    let res = match client.execute(upstream).await {
+        Ok(res) => res,
+        Err(err) => {
+            eprintln!(
+                "[deploy-snapshot] preview fetch failed: {}",
+                err.without_url()
+            );
+            return preview_response(502, b"bad gateway");
+        }
+    };
+    let status = res.status().as_u16();
+    if res.status().is_redirection() {
+        return preview_response(502, b"preview refused");
+    }
+    let content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = match res.bytes().await {
+        Ok(b) => b.to_vec(),
+        Err(_) => return preview_response(502, b"bad gateway"),
+    };
+    let mut builder = tauri::http::Response::builder()
+        .status(status)
+        .header("cache-control", "no-store");
+    if let Some(ct) = content_type {
+        builder = builder.header("content-type", ct);
+    }
+    builder.body(body).unwrap_or_default()
+}
+
+/// Check that the page itself opens with the session before loading the
+/// hidden window, so a refused session falls back instead of capturing an
+/// error page.
+pub async fn probe_preview_page(page: &url::Url) -> Result<(), String> {
+    let uri = preview_page_url(page)
+        .ok_or("snapshot: unreadable url")?
+        .to_string();
+    let req = preview_upstream_request(&PREVIEW_CLIENT, &tauri::http::Method::GET, &uri)
+        .map_err(|_| "snapshot: preview session missing".to_string())?;
+    let res = PREVIEW_CLIENT
+        .execute(req)
+        .await
+        .map_err(|e| format!("snapshot: preview probe failed: {}", e.without_url()))?;
+    if !res.status().is_success() {
+        return Err(format!(
+            "snapshot: preview refused ({})",
+            res.status().as_u16()
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -222,6 +422,7 @@ fn open_hidden<R: Runtime>(
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .on_navigation(move |next| {
             next.scheme() == "https"
+                || next.scheme() == PREVIEW_SCHEME
                 || (allow_http_loopback
                     && next.scheme() == "http"
                     && next.host_str() == Some("127.0.0.1"))
@@ -352,7 +553,14 @@ mod macos {
     }
 }
 
-/// Read (or render and store) the snapshot for one deployed app.
+/// A stored snapshot for this deploy, if any.
+pub fn cached_snapshot(dir: &Path, app_id: &str, deployed_at: &str) -> Option<DeploySnapshot> {
+    let (_, stem) = snapshot_stem(app_id, deployed_at);
+    read_snapshot(dir, &stem).and_then(|png| to_snapshot(&png).ok())
+}
+
+/// Read (or render and store) the snapshot for one deployed app. With a
+/// `preview_session` the page is loaded through the preview scheme.
 pub async fn load_snapshot<R: Runtime>(
     app: &AppHandle<R>,
     dir: &Path,
@@ -360,6 +568,7 @@ pub async fn load_snapshot<R: Runtime>(
     page_url: &str,
     deployed_at: &str,
     refresh: bool,
+    preview_session: Option<String>,
 ) -> Result<DeploySnapshot, String> {
     let page = validate_snapshot_url(page_url)?;
     let (app_hash, stem) = snapshot_stem(app_id, deployed_at);
@@ -368,7 +577,24 @@ pub async fn load_snapshot<R: Runtime>(
             return to_snapshot(&hit);
         }
     }
-    let png = capture_page(app, page, CAPTURE_TIMEOUT, false).await?;
+    let png = match preview_session {
+        None => capture_page(app, page, CAPTURE_TIMEOUT, false).await?,
+        Some(token) => {
+            let host = page
+                .host_str()
+                .ok_or("snapshot: unreadable url")?
+                .to_string();
+            register_preview_session(&host, token, PREVIEW_SESSION_TTL);
+            let result = async {
+                probe_preview_page(&page).await?;
+                let target = preview_page_url(&page).ok_or("snapshot: unreadable url")?;
+                capture_page(app, target, CAPTURE_TIMEOUT, false).await
+            }
+            .await;
+            clear_preview_session(&host);
+            result?
+        }
+    };
     let snapshot = to_snapshot(&png)?;
     if let Err(err) = write_snapshot(dir, &app_hash, &stem, &png, CACHE_CAP_BYTES) {
         eprintln!("[deploy-snapshot] {err}");
@@ -376,28 +602,8 @@ pub async fn load_snapshot<R: Runtime>(
     Ok(snapshot)
 }
 
-#[tauri::command]
-pub async fn deploy_app_snapshot(
-    app: AppHandle,
-    app_id: String,
-    url: String,
-    deployed_at: String,
-    refresh: Option<bool>,
-) -> Result<DeploySnapshot, String> {
-    let dir = cache_dir(&app)?;
-    let result = load_snapshot(
-        &app,
-        &dir,
-        &app_id,
-        &url,
-        &deployed_at,
-        refresh.unwrap_or(false),
-    )
-    .await;
-    if let Err(err) = &result {
-        eprintln!("[deploy-snapshot] {app_id}: {err}");
-    }
-    result
+pub fn cache_dir_for<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    cache_dir(app)
 }
 
 #[cfg(test)]
@@ -411,6 +617,85 @@ mod tests {
         b.extend_from_slice(&h.to_be_bytes());
         b.extend(std::iter::repeat_n(0, pad));
         b
+    }
+
+    #[test]
+    fn preview_scheme_maps_to_the_same_https_path() {
+        let page = url::Url::parse("https://secret.indigo-hq.com/docs/a?x=1").unwrap();
+        let mapped = preview_page_url(&page).unwrap();
+        assert_eq!(
+            mapped.as_str(),
+            "hqpreview://secret.indigo-hq.com/docs/a?x=1"
+        );
+        assert_eq!(upstream_url(mapped.as_str()).unwrap(), page);
+        // Root-relative assets keep the host.
+        assert_eq!(
+            upstream_url("hqpreview://secret.indigo-hq.com/assets/app.js")
+                .unwrap()
+                .as_str(),
+            "https://secret.indigo-hq.com/assets/app.js"
+        );
+        assert!(upstream_url("https://secret.indigo-hq.com/").is_none());
+        assert!(upstream_url("hqpreview://secret.indigo-hq.com:8443/").is_none());
+        assert!(upstream_url("hqpreview://user@secret.indigo-hq.com/").is_none());
+    }
+
+    #[test]
+    fn preview_requests_need_a_live_session_and_get_the_header() {
+        let client = reqwest::Client::new();
+        let get = tauri::http::Method::GET;
+        let host = "only-this.indigo-hq.com";
+        let uri = format!("hqpreview://{host}/assets/a.css");
+        assert_eq!(
+            preview_upstream_request(&client, &get, &uri)
+                .unwrap_err()
+                .status(),
+            404
+        );
+
+        register_preview_session(host, "sess-1".into(), Duration::from_secs(30));
+        let req = preview_upstream_request(&client, &get, &uri).unwrap();
+        assert_eq!(req.url().as_str(), format!("https://{host}/assets/a.css"));
+        assert_eq!(req.headers().get(PREVIEW_SESSION_HEADER).unwrap(), "sess-1");
+        // Another host gets nothing.
+        let other = "hqpreview://other.indigo-hq.com/";
+        assert_eq!(
+            preview_upstream_request(&client, &get, other)
+                .unwrap_err()
+                .status(),
+            404
+        );
+        // Only GET and HEAD.
+        let post = tauri::http::Method::POST;
+        assert_eq!(
+            preview_upstream_request(&client, &post, &uri)
+                .unwrap_err()
+                .status(),
+            405
+        );
+
+        clear_preview_session(host);
+        assert_eq!(
+            preview_upstream_request(&client, &get, &uri)
+                .unwrap_err()
+                .status(),
+            404
+        );
+    }
+
+    #[test]
+    fn expired_preview_sessions_are_not_used() {
+        let client = reqwest::Client::new();
+        let host = "expired.indigo-hq.com";
+        register_preview_session(host, "old".into(), Duration::from_millis(0));
+        std::thread::sleep(Duration::from_millis(5));
+        let uri = format!("hqpreview://{host}/");
+        assert_eq!(
+            preview_upstream_request(&client, &tauri::http::Method::GET, &uri)
+                .unwrap_err()
+                .status(),
+            404
+        );
     }
 
     #[test]
