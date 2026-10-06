@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- The Atlas inspector's Changed today and Related lists now show each item as a card: a small type icon instead of the grey type word, the name, a quiet line with how long ago it changed, and for projects with stories a thin progress bar with a count such as "12 / 20 stories". Projects without stories show no bar.
 - Every button in the app now has the same height and padding as the Launch and Core buttons in the top bar. The white primary buttons, such as Open console, are no longer taller than the rest.
 - The "Host unreachable" notice on the Outpost page now has even padding around its text and its Retry now button.
 - The secret detail panel is cleaner: a quiet label above the name, the path on its own line, one row of buttons that never wraps (extra buttons move into a More menu when space runs out), facts in a two-column list where empty values are left out instead of showing a dash, and a Who can read section that lists each reader. The personal connection and app panels use the same layout.

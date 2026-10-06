@@ -6,13 +6,13 @@
   import RailButton from "../common/button/RailButton.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import AtlasFace from "./AtlasFace.svelte";
+  import AtlasCard from "./AtlasCard.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
    * chips, Here now, PRD goal, stories, related, actions, Born/Touched/Inside.
    * Without: the company roll-up (objects, projects in progress, Working now).
    */
   import {
-    ATLAS_KIND_TAG,
     atlasFooterLine,
     districtLabel,
     type AtlasDetail,
@@ -146,10 +146,7 @@
       <div class="kind">Related</div>
       <div class="list" data-testid="atlas-inspector-related">
         {#each related as rel (rel.id)}
-          <button type="button" class="li rowbtn" onclick={() => onselect(rel.id)}>
-            <span class="r">{ATLAS_KIND_TAG[rel.type]}</span>
-            <div><div class="tt">{rel.label}</div><div class="mm">{rel.path}</div></div>
-          </button>
+          <AtlasCard node={rel} meta={rel.path} onclick={() => onselect(rel.id)} />
         {/each}
       </div>
     {/if}
@@ -180,15 +177,10 @@
         <div class="kind sub">Changed today</div>
         <div class="list" data-testid="atlas-today-changed">
           {#each todayShown as item (item.id)}
-            <button type="button" class="li rowbtn card" data-testid="atlas-today-row" onclick={() => onselect(item.id)}>
-              <span class="r">{ATLAS_KIND_TAG[item.type]}</span>
-              <div><div class="tt">{item.label}</div><div class="mm">{atlasAgo(item.touched ?? nowMs, nowMs)}{item.stories ? ` · ${item.stories.done} of ${item.stories.total} stories` : ""}</div></div>
-            </button>
+            <AtlasCard node={item} testid="atlas-today-row" meta={atlasAgo(item.touched ?? nowMs, nowMs)} onclick={() => onselect(item.id)} />
           {/each}
           {#if today.length > todayShown.length}
-            <button type="button" class="li rowbtn card more" data-testid="atlas-today-more" onclick={() => (todayOpen = true)}>
-              <span class="r"></span><div class="tt mm">Show {today.length - todayShown.length} more</div>
-            </button>
+            <button type="button" class="more" data-testid="atlas-today-more" onclick={() => (todayOpen = true)}>Show {today.length - todayShown.length} more</button>
           {/if}
         </div>
       {:else}
@@ -270,7 +262,8 @@
   /* Section title: small, uppercase, muted (owner rule for section titles). */
   .section { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--v4-text-3); }
   .kind.sub { margin-top: 8px; }
-  .more .tt { margin-top: 0; }
+  .more { margin: 4px -10px 0; padding: 8px 10px; background: none; border: 0; border-radius: 0; color: var(--v4-text-3); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .more:hover { background: var(--v4-hover, var(--v4-control-faint)); }
   .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }
   .online summary { cursor: pointer; }
   .online-names { margin-top: 4px; line-height: 1.5; }
@@ -386,12 +379,6 @@
     color: var(--v4-text-3);
     margin-top: var(--v4-row-stack-gap);
     overflow-wrap: anywhere;
-  }
-  .r {
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-    color: var(--v4-text-3);
-    min-width: 40px;
   }
   .mini {
     position: relative;
