@@ -1052,7 +1052,7 @@
               />{:else}Personal{/if}{#if dur}
               · {dur}{/if}
           </div>
-        {:else}
+        {:else if !initialLoadPending}
           <div class="next-title">Nothing scheduled next</div>
           <div class="next-meta">Waiting for the next calendar event</div>
         {/if}
