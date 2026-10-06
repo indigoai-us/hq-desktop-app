@@ -28,6 +28,11 @@
      * takeover opened on a starting bot's row goes straight to that bot.
      */
     choose?: boolean;
+    /**
+     * With `choose`: open on the cloud create screen with the choice behind
+     * Back ("Create a cloud bot instead" on the local steps).
+     */
+    openCloud?: boolean;
     /** Why Cloud cannot be picked on the choice screen. Null when it can. */
     cloudReason?: string | null;
     /** Why Local cannot be picked on the choice screen. Null when it can. */
@@ -104,6 +109,7 @@
   let {
     canCreateLocalBot = false,
     choose = false,
+    openCloud = false,
     cloudReason = null,
     localReason = null,
     onchoosecloud = null,
@@ -161,7 +167,7 @@
   /** True while the "Cloud or Local?" question is on screen. */
   // Read once, at open: the question is asked when the takeover opens on it.
   function opensOnChoice(): boolean {
-    return choose;
+    return choose && !(openCloud && hasCloudScreen);
   }
   let choosing = $state(opensOnChoice());
 

@@ -33,6 +33,9 @@
   import DetailsStep from "./DetailsStep.svelte";
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
+  import NewBotStepHead from "./NewBotStepHead.svelte";
+  import IdentityMark from "../messaging/IdentityMark.svelte";
+  import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
@@ -40,6 +43,7 @@
   import type { DirectCloudFlowSeam } from "./direct-cloud-lazy.js";
   import { newWizardIdempotencyKey } from "./wizard-key.js";
   import {
+    LOCAL_SUNRISE_TITLES,
     STEP_TITLES,
     botDisplayName,
     botHandle,
@@ -169,6 +173,14 @@
      * when `onback` returns to an earlier screen (the Cloud or Local choice).
      */
     firstBackLabel?: string;
+    /**
+     * "steps": the local flow in the New bot takeover, as the same one-question
+     * screens the cloud flow uses (name, blank or template, coding tool).
+     * "wizard" (default): the "+" window and Settings layout with the preview.
+     */
+    layout?: "wizard" | "steps";
+    /** Steps layout, first step: "Create a cloud bot instead". Hidden without it. */
+    onswitchcloud?: (() => void) | null;
   }
 
   let {
@@ -199,6 +211,8 @@
     initialCompanySlug = null,
     initialHome = null,
     firstBackLabel = "Cancel",
+    layout = "wizard",
+    onswitchcloud = null,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -288,7 +302,9 @@
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
   let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome)));
-  let step = $state<CreateBotStep>("kind");
+  // Steps layout: local only, read once at open.
+  const stepsLayout = untrack(() => layout === "steps" && initialHome === "local" && canLocal);
+  let step = $state<CreateBotStep>(untrack(() => (stepsLayout ? "details" : "kind")));
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
@@ -298,8 +314,8 @@
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   // Local was already picked on the choice screen: skip "Where does it run?"
   // and show its coding-tool sign-in and install on the Details step instead.
-  const skipHome = untrack(() => initialHome === "local" && canLocal);
-  const stepOpts = { skipHome };
+  const skipHome = untrack(() => !stepsLayout && initialHome === "local" && canLocal);
+  const stepOpts = { skipHome, sunrise: stepsLayout };
   const steps = $derived(stepsFor(draft, stepOpts));
   const stepIndex = $derived(Math.max(0, steps.indexOf(step)));
   const isLast = $derived(nextStep(step, draft, stepOpts) === null);
@@ -322,6 +338,7 @@
   const scopeText = $derived(scopeLine(draft, ctx));
   const previewKindLine = $derived(scopeText ? `${kindLine} · ${scopeText}` : kindLine);
   const previewAvatar = $derived(pickedAvatarSrc);
+  const runtimeLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
@@ -553,6 +570,18 @@
       void submit();
       return;
     }
+    if (stepsLayout && event.key === "Enter" && !event.shiftKey && !event.altKey) {
+      // The cloud flow's keys: Enter moves on (and creates on the last
+      // step); a button or a list handles its own Enter.
+      const target = event.target as HTMLElement | null;
+      if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
+      event.preventDefault();
+      if (busy) return;
+      if (isLast) {
+        if (createOk) void submit();
+      } else advance();
+      return;
+    }
     if (event.key === "Enter" && !isLast && advanceOk) {
       const target = event.target as HTMLElement | null;
       // Radios/cards handle their own Enter; a plain Enter on the search box advances.
@@ -576,6 +605,99 @@
   );
 </script>
 
+{#if stepsLayout}
+{@const head = LOCAL_SUNRISE_TITLES[step]}
+<!-- The takeover's local steps: the cloud flow's screens, one question each. -->
+<div class="new-bot-create" data-testid="chat-create-bot-step" data-step={step} data-layout="steps" role="group" onkeydown={onKey}>
+  <NewBotStepHead
+    total={steps.length}
+    current={stepIndex + 1}
+    onback={back}
+    backTestId="create-bot-back"
+    backDisabled={busy}
+    kicker={head.kicker}
+    lead={head.lead}
+    em={head.em}
+    tail={head.tail ?? ""}
+  >
+    {#if step !== "details"}
+      <!-- The old preview card, as one line: who is being made, and how. -->
+      <p class="new-bot-identity" data-testid="bot-identity-line">
+        <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${botHandle(draft) || "bot"}`} /></span>
+        <span class="new-bot-identity-name" data-testid="bot-identity-name">{draft.name.trim() || "your bot"}</span>
+        <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Local · {runtimeLabel}{chosenTemplateCard ? ` · from ${chosenTemplateCard.name}` : ""}{scopeText ? ` · ${scopeText}` : ""}</span>
+      </p>
+    {/if}
+  </NewBotStepHead>
+
+  <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
+    <section class="new-bot-step" data-testid={`create-bot-sunrise-${step}`}>
+      <p class="new-bot-create-copy">{head.copy.replace("this computer", `this ${hostNoun}`)}</p>
+      {#if step === "details"}
+        <DetailsStep
+          sunrise
+          {draft}
+          existingNames={names}
+          template={chosenTemplateCard}
+          {ownerCompanies}
+          {avatarPacks}
+          {loadAvatarPacks}
+          avatarSrc={pickedAvatarSrc}
+          disabled={busy}
+          onpatch={patch}
+          onavatar={(_selection, src) => (pickedAvatarSrc = src)}
+        />
+      {:else if step === "kind"}
+        <KindStep sunrise {draft} {templates} disabled={busy} onpatch={patch} onadvance={advance} />
+      {:else}
+        <HomeStep
+          runtimeOnly
+          {draft}
+          {canLocal}
+          {canCloud}
+          cloudAlwaysShown={directCloudOn}
+          cloudBlocked={cloudBlocked}
+          {companyBlocks}
+          runtimeReady={botRuntimeReady}
+          runtimeStatus={botRuntimeStatus}
+          {companies}
+          disabled={busy}
+          onpatch={patch}
+          {signInApi}
+          onsignin={onsignin ?? undefined}
+          onsignedin={onsignedin ?? undefined}
+          onrecheck={onrecheckruntimes ?? undefined}
+          {pollMs}
+          {aiTools}
+          {hqFolderPath}
+          {onopenassistant}
+          {onassistedinstall}
+          {onrequestaitools}
+        />
+      {/if}
+    </section>
+  </div>
+
+  <footer class="new-bot-create-foot">
+    {#if entryError}
+      <p class="new-bot-create-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
+    {/if}
+    {#if issue}<p class="new-bot-price" data-testid="create-bot-issue" aria-live="polite">{issue}</p>{/if}
+    <button
+      type="button"
+      class="new-bot-create-submit"
+      data-testid={isLast ? "chat-bot-create" : "create-bot-next"}
+      disabled={isLast ? !createOk : !advanceOk}
+      aria-busy={busy ? "true" : undefined}
+      onclick={primary}
+    ><RailIcon name={isLast ? "plus" : "arrow-right"} />{busy ? "Creating…" : isLast ? "Create bot" : "Continue"}</button>
+    {#if isLast}<p class="new-bot-price new-bot-chord-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="new-bot-chord">{primaryEnterHint}</kbd> to create</p>{/if}
+    {#if step === "details" && onswitchcloud}
+      <button type="button" class="new-bot-takeover-local" data-testid="create-bot-switch-cloud" disabled={busy} onclick={onswitchcloud}>Create a cloud bot instead</button>
+    {/if}
+  </footer>
+</div>
+{:else}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flow" class:rail={placement === "rail"} data-testid="chat-create-bot-step" data-step={step} onkeydown={onKey}>
   <div class="flow-main">
@@ -740,6 +862,7 @@
     </div>
   {/if}
 </div>
+{/if}
 
 <style>
   .flow {

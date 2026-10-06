@@ -526,6 +526,7 @@ export function templateBringsLine(card: TemplateCard | null): string {
  * channel's card that used to ask for them is no longer shown.
  */
 export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
+  if (opts.sunrise && draft.home === "local") return LOCAL_SUNRISE_STEPS;
   if (opts.skipHome && draft.home === "local") return ["kind", "details"];
   return ["kind", "home", "details"];
 }
@@ -537,7 +538,26 @@ export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions 
  */
 export interface StepOptions {
   skipHome?: boolean;
+  /**
+   * The local flow in the New bot takeover's step-by-step screens, the same
+   * ones a cloud bot is made with: name first, then blank or a template, then
+   * the coding tool with its sign-in and install. Local only.
+   */
+  sunrise?: boolean;
 }
+
+/** Local steps in the takeover, in the order the cloud flow asks: name first. */
+export const LOCAL_SUNRISE_STEPS: CreateBotStep[] = ["details", "kind", "home"];
+
+/**
+ * Each local takeover step's heading: the cloud flow's shape, a plain lead
+ * and the word that matters set apart ("Enter a <name.>").
+ */
+export const LOCAL_SUNRISE_TITLES: Record<CreateBotStep, { kicker: string; lead: string; em: string; tail?: string; copy: string }> = {
+  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "This is how your new teammate will appear in HQ." },
+  kind: { kicker: "Where it starts", lead: "Start", em: "blank", tail: "or from a template.", copy: "A blank bot is a general helper. A template starts from a worker your company already has." },
+  home: { kicker: "How it thinks", lead: "Pick the", em: "coding tool.", copy: "Your bot thinks with a coding tool signed in on this computer." },
+};
 
 export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
   const steps = stepsFor(draft, opts);

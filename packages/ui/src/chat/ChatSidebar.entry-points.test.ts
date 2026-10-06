@@ -143,18 +143,26 @@ async function chooseKind(kind: "cloud" | "local"): Promise<void> {
 
 /** Choice → Kind step → Home step (Blank is preselected) of the "+" window's bot flow. */
 /**
- * Choice (Local) → Kind step → Details. Local was picked already, so the
- * "Where does it run?" step is skipped and its coding-tool picker is on Details.
+ * Choice (Local) → the local steps, which are the cloud flow's screens: the
+ * name step comes first. Local was picked already, so "Where does it run?"
+ * is not asked again.
  */
-async function toLocalDetails(): Promise<void> {
+async function toLocalNameStep(): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
   await chooseKind("local");
+  expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-layout")).toBe("steps");
+  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+}
+
+/** Name → Blank or template → the coding tool step. */
+async function toLocalRuntimeStep(): Promise<void> {
+  click('[data-testid="create-bot-next"]');
+  await settle();
   expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   click('[data-testid="create-bot-next"]');
   await settle();
   expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
-  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
   expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
 }
 
@@ -1008,7 +1016,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-new-bot"]')).toBeNull();
   });
 
-  it("walks kind → details (Local already picked) and submits name, runtime, and pre-approval to the host", async () => {
+  it("walks name → kind → coding tool (Local already picked) and submits name, runtime, and pre-approval to the host", async () => {
     const oncreatebot = vi.fn(async () => ({
       ok: true as const,
       agentUid: "agt_new",
@@ -1022,17 +1030,15 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
-    await toLocalDetails();
-    click('[data-testid="chat-bot-runtime-grok"]');
-    await settle();
+    await toLocalNameStep();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     expect(name.value).toBe("assistant");
-    expect(q('[data-testid="bot-preview-name"]')?.textContent).toBe(
-      "assistant",
-    );
-    expect(q('[data-testid="bot-preview-thinks"]')?.textContent).toBe(
-      "thinks with Grok",
-    );
+    await toLocalRuntimeStep();
+    click('[data-testid="chat-bot-runtime-grok"]');
+    await settle();
+    // The old preview card is one line under the title now.
+    expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("assistant");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toContain("Local · Grok");
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreatebot).toHaveBeenCalledWith(
@@ -1093,7 +1099,8 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     });
     await settle();
     await openModal();
-    await toLocalDetails();
+    await toLocalNameStep();
+    await toLocalRuntimeStep();
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
     expect(
       q<HTMLButtonElement>(
@@ -1117,13 +1124,18 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(
       q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(false);
+    // Back to the name step: its Continue is the gate there.
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="create-bot-back"]');
+    await settle();
     const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
     // Spaces and capitals are a display name now, not an error.
     name.value = "Dr Love";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
     ).toBe(false);
     expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe(
       "@dr-love",
@@ -1133,7 +1145,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
     ).toBe(true);
     expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
       "no letters or digits",
@@ -1144,7 +1156,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     handle.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
     ).toBe(false);
     handle.value = "";
     handle.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1152,7 +1164,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
     ).toBe(true);
     expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
       "handle @scout",
@@ -1162,7 +1174,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
     ).toBe(false);
     expect(oncreatebot).not.toHaveBeenCalled();
   });

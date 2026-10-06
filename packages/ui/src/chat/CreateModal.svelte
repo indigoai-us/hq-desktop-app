@@ -229,6 +229,8 @@
     initialBotHome?: "local" | "cloud" | null;
     /** Back from the bot flow's first step when opened from the choice: return to it. */
     onsunriseback?: (() => void) | null;
+    /** The takeover's local steps offer "Create a cloud bot instead" with this. */
+    onsunrisecloud?: (() => void) | null;
   }
 
   let {
@@ -273,6 +275,7 @@
     sunrise = false,
     initialBotHome = null,
     onsunriseback = null,
+    onsunrisecloud = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -693,6 +696,8 @@
   );
   /** The bot step is shown in the takeover shell. */
   const sunriseBot = $derived(sunrise && step === "bot");
+  /** The takeover's local flow: the cloud flow's step screens, in its narrow card. */
+  const sunriseLocalSteps = $derived(sunriseBot && initialBotHome === "local" && canCreateLocalBot);
   // Opened as "New company" (sidebar switcher): go straight to the second
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
@@ -2189,6 +2194,14 @@
         initialCompanySlug: botCompanySlug,
         initialHome: initialBotHome,
         firstBackLabel: sunrise && onsunriseback ? "Back" : "Cancel",
+        // In the takeover a local bot is made on the cloud flow's step screens.
+        layout: sunriseLocalSteps ? "steps" : "wizard",
+        onswitchcloud: sunriseLocalSteps && onsunrisecloud
+          ? () => {
+              if (entryBusy) return;
+              onsunrisecloud?.();
+            }
+          : null,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
         loadClaudeProviderFlag,
         loadCloudProvisionOptions,
@@ -2246,6 +2259,7 @@
       <div
         bind:this={dialogEl}
         class="new-bot-takeover-card new-bot-takeover-card--flow"
+        class:new-bot-takeover-card--steps={sunriseLocalSteps}
         data-testid="new-bot-sunrise-flow"
         role="dialog"
         aria-modal="true"
