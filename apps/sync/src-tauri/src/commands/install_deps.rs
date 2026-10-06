@@ -7282,6 +7282,21 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
     }
+    let preflight_disk_space_message =
+        hq_desktop_core::installer_disk_space::install_disk_space_message();
+    let refused_disk_space_preflight =
+        result.error.as_deref() == Some(preflight_disk_space_message.as_str());
+    let command_reported_disk_full = diagnostic.is_some_and(|diagnostic| {
+        hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stdout)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stderr)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.error)
+    });
+    let result_reports_disk_full = result.error.as_deref().is_some_and(
+        hq_desktop_core::installer_disk_space::is_disk_full_output,
+    );
+    if refused_disk_space_preflight || command_reported_disk_full || result_reports_disk_full {
+        return OnboardingErrorCategory::DiskFull;
+    }
     match setup_error_kind(diagnostic) {
         Some("winget_pinned_certificate_mismatch") => return OnboardingErrorCategory::Network,
         Some("qmd_not_resolved") => return OnboardingErrorCategory::NotFound,
