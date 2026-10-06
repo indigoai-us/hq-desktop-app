@@ -120,6 +120,23 @@ describe("My Telemetry unified view (OWNER-R35)", () => {
     expect(section.textContent).not.toContain("—");
   });
 
+  it("Sessions marks background agent sessions and can hide them", async () => {
+    const { target } = await mountView({ localSessions: reader() });
+    const section = target.querySelector("[data-testid='telemetry-sessions']")!;
+    const badges = [...section.querySelectorAll(".kind")].map((b) => [b.getAttribute("data-kind"), b.textContent]);
+    expect(badges).toEqual([["agent", "Agent"]]);
+    const toggle = section.querySelector("[data-testid='telemetry-sessions-hide-agents']") as HTMLButtonElement;
+    expect(toggle.textContent).toBe("Hide agent sessions");
+    toggle.click();
+    flushSync();
+    expect(section.querySelectorAll("button.srow")).toHaveLength(2);
+    expect(section.querySelector(".kind")).toBeNull();
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    toggle.click();
+    flushSync();
+    expect(section.querySelectorAll("button.srow")).toHaveLength(3);
+  });
+
   it("Sessions is absent without a local source or with no sessions (OWNER-R31)", async () => {
     const none = await mountView();
     expect(none.target.querySelector("[data-section='sessions']")).toBeNull();
@@ -134,8 +151,8 @@ describe("My Telemetry unified view (OWNER-R35)", () => {
   it("Models: families expand to exact models with ids; By model is a flat list; cost cell empty without a price", async () => {
     const { target } = await mountView();
     const fams = [...target.querySelectorAll("[data-section='models'] button.fam")].map((b) => b.getAttribute("data-family"));
-    // Provider order: Anthropic, OpenAI (Codex, GPT), xAI.
-    expect(fams).toEqual(["Opus", "OpenAI Codex", "OpenAI GPT", "Grok"]);
+    // Provider order: Anthropic, OpenAI (Codex and GPT ids together), xAI.
+    expect(fams).toEqual(["Opus", "OpenAI", "Grok"]);
     expect(target.querySelector("[data-model='claude-opus-4-5-20251101']")).toBeNull();
     (target.querySelector("[data-family='Opus']") as HTMLButtonElement).click();
     flushSync();

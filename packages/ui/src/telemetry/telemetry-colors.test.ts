@@ -31,7 +31,7 @@ function blockTokens(css: string, selectorStart: string): Map<string, string> {
 describe("telemetry provider colors", () => {
   it("resolves every model family in the data to a provider token", () => {
     const families = modelFamilies(exactModels(Object.fromEntries(REAL_IDS.map((id) => [id, { inputTokens: 1 }]))));
-    expect(families.map((f) => f.family).sort()).toEqual(["Fable", "Grok", "Haiku", "OpenAI Codex", "OpenAI GPT", "Opus", "Sonnet"]);
+    expect(families.map((f) => f.family).sort()).toEqual(["Fable", "Grok", "Haiku", "OpenAI", "Opus", "Sonnet"]);
     for (const f of families) {
       const slot = vizSlotFor(f.family);
       expect(slot.provider, f.family).not.toBe("neutral");
@@ -44,6 +44,33 @@ describe("telemetry provider colors", () => {
     }
   });
 
+  it("resolves one family name and one color per model id on every surface", () => {
+    const usage = exactModels(Object.fromEntries(REAL_IDS.map((id) => [id, { inputTokens: 1 }])));
+    const tableFamily = new Map(modelFamilies(usage).flatMap((f) => f.models.map((m) => [m.id, f.family] as const)));
+    for (const id of REAL_IDS) {
+      const family = vizSlotFor(id);
+      // Stat row and chart/legend band label.
+      const band = modelDisplayName(id);
+      // Models table family row and By-model row.
+      const table = tableFamily.get(id)!;
+      const row = usage.find((m) => m.id === id)!.family;
+      expect([band, table, row], id).toEqual([family.label, family.label, family.label]);
+      expect(new Set([vizColor(band), vizColor(table), vizColor(row), vizColor(id)]).size, id).toBe(1);
+    }
+  });
+
+  it("puts gpt-*, o-series and codex ids in the one blue OpenAI family", () => {
+    for (const id of ["gpt-5.6-sol", "gpt-4o", "o3", "gpt-5.5-codex", "gpt-5.1-codex-max", "codex-mini-latest"]) {
+      expect(modelDisplayName(id), id).toBe("OpenAI");
+      expect(nameModel(id).family, id).toBe("OpenAI");
+      expect(vizColor(id), id).toBe("var(--viz-openai)");
+    }
+    // Legacy labels resolve the same way; there is no separate Codex hue.
+    for (const label of ["Codex", "OpenAI Codex", "OpenAI GPT"]) expect(vizColor(label)).toBe("var(--viz-openai)");
+    expect(VIZ_SLOTS.filter((s) => s.provider === "openai")).toHaveLength(1);
+    expect(read("../common/viz-tokens.css")).not.toMatch(/--viz-openai-\d|#047857|#258e6a/);
+  });
+
   it("keeps System, Other and unknown ids neutral", () => {
     for (const label of ["System", "Other", "Other / unattributed", "mystery-9", ""]) {
       expect(vizSlotFor(label).provider).toBe("neutral");
@@ -53,8 +80,9 @@ describe("telemetry provider colors", () => {
 
   it("gives each slot its own token with distinct light and dark values", () => {
     const css = read("../common/viz-tokens.css");
-    const tokens = VIZ_SLOTS.map((s) => s.token);
-    expect(new Set(tokens).size).toBe(tokens.length);
+    // System and Other share the neutral; every other family has its own token.
+    const tokens = [...new Set(VIZ_SLOTS.map((s) => s.token))];
+    expect(tokens.length).toBe(VIZ_SLOTS.length - 1);
     for (const selector of [":root,\n:root[data-force-theme=\"light\"]", ":root:not([data-force-theme=\"light\"])", ".dark,\n:root[data-force-theme=\"dark\"]"]) {
       const block = blockTokens(css, selector);
       const values = tokens.map((t) => block.get(t));
@@ -71,15 +99,15 @@ describe("telemetry provider colors", () => {
   });
 
   it("orders labels by provider then shade, Other last, and keeps ties stable", () => {
-    expect(vizOrder(["Other", "Grok", "Haiku", "Codex", "Sonnet", "Fable", "Opus", "System"], (l) => l)).toEqual([
-      "Opus", "Sonnet", "Fable", "Haiku", "Codex", "Grok", "Other", "System",
+    expect(vizOrder(["Other", "Grok", "Haiku", "OpenAI", "Sonnet", "Fable", "Opus", "System"], (l) => l)).toEqual([
+      "Opus", "Sonnet", "Fable", "Haiku", "OpenAI", "Grok", "System", "Other",
     ]);
   });
 
   it("parses the stat-row model mix in either word order", () => {
-    expect(mixParts("Opus 38% · Codex 26% · Fable 18%")).toEqual([
+    expect(mixParts("Opus 38% · OpenAI 26% · Fable 18%")).toEqual([
       { label: "Opus", share: "38%" },
-      { label: "Codex", share: "26%" },
+      { label: "OpenAI", share: "26%" },
       { label: "Fable", share: "18%" },
     ]);
     expect(mixParts("38% Opus · 61% Sonnet")).toEqual([
@@ -100,7 +128,10 @@ describe("TelemetryView draws with the provider tokens (source contract)", () =>
   it("colors chart stacks, legend, share bars and the model mix from telemetry-colors", () => {
     expect(src).toContain('import "../common/viz-tokens.css";');
     expect(src).toMatch(/<i data-band=\{band\.label\}[^>]*style:background=\{band\.color\}/);
-    expect(src).toMatch(/data-legend=\{label\} style:background=\{vizColor\(label\)\}/);
+    expect(src).toMatch(/data-legend=\{label\}><ProviderMark provider=\{vizSlotFor\(label\)\.provider\} color=\{vizColor\(label\)\} \/>/);
+    // Provider marks replace the plain color dots before every name.
+    expect(src).not.toContain('class="dot"');
+    expect(src.match(/<ProviderMark /g)!.length).toBeGreaterThanOrEqual(6);
     expect(src).toMatch(/style:width="\{sharePercent\(f\.total, tokenTotal\)\}%" style:background=\{vizColor\(f\.family\)\}/);
     expect(src).toMatch(/mixParts\(snapshot\.modelMix\)/);
     // No grey opacity ramp on stacks any more.

@@ -6,8 +6,8 @@
  * family inside it; a neutral for unknown or unattributed tokens.
  *
  *   Anthropic  1 Opus  2 Sonnet  3 Fable  4 Haiku   (warm: rust, orange, rose, gold)
- *   OpenAI     1 Codex 2 GPT                        (green, blue)
- *   xAI        1 Grok  2 Grok fast/mini/code        (indigo, lavender)
+ *   OpenAI     GPT, o-series and Codex              (blue)
+ *   xAI        Grok and its fast/mini/code variants (indigo)
  *   neutral    unknown, System, Other
  *
  * Validated with the dataviz palette validator (lightness band, chroma floor,
@@ -21,10 +21,8 @@
   --viz-anthropic-2: #e8721c;
   --viz-anthropic-3: #d02860;
   --viz-anthropic-4: #cdb42a;
-  --viz-openai-1: #047857;
-  --viz-openai-2: #1a90c8;
-  --viz-xai-1: #4f46e5;
-  --viz-xai-2: #9a86f5;
+  --viz-openai: #1a90c8;
+  --viz-xai: #4f46e5;
   --viz-neutral: #8a8a86;
   /* Quiet single accent for neutral bars (Skills). */
   --viz-quiet: rgba(0, 0, 0, 0.28);
@@ -36,10 +34,8 @@
     --viz-anthropic-2: #d37812;
     --viz-anthropic-3: #c3457f;
     --viz-anthropic-4: #ab9017;
-    --viz-openai-1: #258e6a;
-    --viz-openai-2: #0aa0d2;
-    --viz-xai-1: #5a56c7;
-    --viz-xai-2: #9f7ed6;
+    --viz-openai: #0aa0d2;
+    --viz-xai: #5a56c7;
     --viz-neutral: #7a7a76;
     --viz-quiet: rgba(255, 255, 255, 0.3);
   }
@@ -51,10 +47,8 @@
   --viz-anthropic-2: #d37812;
   --viz-anthropic-3: #c3457f;
   --viz-anthropic-4: #ab9017;
-  --viz-openai-1: #258e6a;
-  --viz-openai-2: #0aa0d2;
-  --viz-xai-1: #5a56c7;
-  --viz-xai-2: #9f7ed6;
+  --viz-openai: #0aa0d2;
+  --viz-xai: #5a56c7;
   --viz-neutral: #7a7a76;
   --viz-quiet: rgba(255, 255, 255, 0.3);
 }

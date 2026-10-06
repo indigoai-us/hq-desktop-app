@@ -49,7 +49,15 @@ pub struct LocalSession {
     pub outcome: Option<String>,
     /// HQ-relative path of the latest handoff, else the latest checkpoint.
     pub thread_path: Option<String>,
+    /// Who ran it: "you" (interactive), "agent" (a headless background agent
+    /// such as the checkpoint sibling) or "lane" (a worker a parent session
+    /// dispatched, e.g. a /conduct lane).
+    pub kind: String,
 }
+
+pub const KIND_YOU: &str = "you";
+pub const KIND_AGENT: &str = "agent";
+pub const KIND_LANE: &str = "lane";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +179,8 @@ struct TranscriptSummary {
     title: Option<String>,
     /// First prompt, one line, for sessions that were never named.
     first_prompt: Option<String>,
+    /// `KIND_AGENT` or `KIND_LANE` when the record shows a headless run.
+    kind: Option<&'static str>,
     cwd: Option<String>,
     last_at: Option<String>,
 }
@@ -182,26 +192,107 @@ fn transcript_cache() -> &'static Mutex<TranscriptCache> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Prompt text with injected context removed: `<tag>…</tag>` blocks (system
+/// reminders, hook context, `<command-message>`/`<command-name>` wrappers,
+/// Codex `<recommended_plugins>` and `<environment_context>`), the Codex
+/// `# AGENTS.md instructions` header, policy digest lines and the Claude Code
+/// local-command caveat. What is left is what a person or a dispatcher wrote.
+fn human_text(text: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut close: Option<String> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(end) = &close {
+            if t.contains(end.as_str()) {
+                close = None;
+            }
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix('<') {
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+            if !name.is_empty() {
+                let end = format!("</{name}>");
+                let after = t.find(&end).map(|i| t[i + end.len()..].trim());
+                match after {
+                    // Single-line block: keep any text after it.
+                    Some(tail) if !tail.is_empty() => out.push(tail),
+                    Some(_) => {}
+                    // Only a block that is closed later is skipped whole; an
+                    // unclosed opener drops just its own line.
+                    None if t.ends_with("/>") || !text.contains(&end) => {}
+                    None => close = Some(end),
+                }
+                continue;
+            }
+        }
+        if t.starts_with("# AGENTS.md instructions") || t.starts_with("> Policy ") || t.starts_with("Caveat: The messages below were generated") {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// Lane name from a dispatcher brief path `…/workflow-runner/<run>/<lane>/brief.md`.
+fn lane_name(text: &str) -> Option<String> {
+    let at = text.find("workflow-runner/")?;
+    let parts: Vec<&str> = text[at..].split('/').take(4).collect();
+    match parts.as_slice() {
+        [_, _run, lane, file] if file.starts_with("brief") && !lane.is_empty() => Some((*lane).to_string()),
+        _ => None,
+    }
+}
+
+/// Title and kind for a never-named session from its first prompt. A lane
+/// brief is titled by its lane name; a background agent by the first sentence
+/// of its brief ("You are the HQ checkpoint sibling — …" → "HQ checkpoint
+/// sibling — …"); anything else by its first human-written line.
+fn classify_prompt(text: &str) -> (Option<String>, Option<&'static str>) {
+    let human = human_text(text);
+    if let Some(lane) = lane_name(&human) {
+        return (Some(cap_line(&lane)), Some(KIND_LANE));
+    }
+    let lead = human.trim_start();
+    if lead.starts_with("EXECUTE NOW") {
+        return (prompt_summary(lead.lines().skip(1).collect::<Vec<_>>().join("\n").as_str()), Some(KIND_LANE));
+    }
+    for opener in ["You are the HQ ", "You are an HQ ", "You are a HQ "] {
+        if let Some(rest) = lead.strip_prefix(opener) {
+            let flat = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+            let sentence = flat.split(". ").next().unwrap_or(&flat).trim_end_matches('.');
+            return (Some(cap_line(&format!("HQ {sentence}"))), Some(KIND_AGENT));
+        }
+    }
+    (prompt_summary(&human), None)
+}
+
 /// Longest first-prompt summary shown as a title.
 const PROMPT_SUMMARY_CHARS: usize = 80;
+
+fn cap_line(line: &str) -> String {
+    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() <= PROMPT_SUMMARY_CHARS {
+        return collapsed;
+    }
+    let cut: String = collapsed.chars().take(PROMPT_SUMMARY_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
+}
 
 /// First meaningful text line of a prompt, whitespace collapsed and capped.
 /// Injected context blocks (`<...>` wrappers, slash-command markup) are skipped.
 fn prompt_summary(text: &str) -> Option<String> {
-    let line = text
+    let human = human_text(text);
+    let line = human
         .lines()
         .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with("```"))?;
-    let collapsed = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= PROMPT_SUMMARY_CHARS {
-        return Some(collapsed);
-    }
-    let cut: String = collapsed.chars().take(PROMPT_SUMMARY_CHARS - 1).collect();
-    Some(format!("{}…", cut.trim_end()))
+        .find(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with("```") && *l != "---")?;
+    Some(cap_line(line))
 }
 
-/// Text of the first user prompt in a Claude Code transcript head.
-fn claude_first_prompt(text: &str) -> Option<String> {
+/// Title and kind from the first user prompt in a Claude Code transcript head.
+/// `claude -p` runs carry `"entrypoint":"sdk-cli"` and count as agents.
+fn claude_first_prompt(text: &str) -> (Option<String>, Option<&'static str>) {
+    let headless = text.contains("\"entrypoint\":\"sdk-cli\"");
     for line in text.lines() {
         if !line.contains("\"type\":\"user\"") {
             continue;
@@ -211,24 +302,35 @@ fn claude_first_prompt(text: &str) -> Option<String> {
             continue;
         }
         let content = value.get("message").and_then(|m| m.get("content"));
-        let text = match content {
-            Some(serde_json::Value::String(s)) => Some(s.as_str()),
+        let text: Vec<&str> = match content {
+            Some(serde_json::Value::String(s)) => vec![s.as_str()],
             Some(serde_json::Value::Array(parts)) => parts
                 .iter()
-                .find(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
-                .and_then(|p| p.get("text"))
-                .and_then(|t| t.as_str()),
-            _ => None,
+                .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect(),
+            _ => Vec::new(),
         };
-        if let Some(summary) = text.and_then(prompt_summary) {
-            return Some(summary);
+        let (title, kind) = classify_prompt(&text.join("\n"));
+        if title.is_some() {
+            return (title, kind.or(headless.then_some(KIND_AGENT)));
         }
     }
-    None
+    (None, headless.then_some(KIND_AGENT))
 }
 
-/// Text of the first user prompt in a Codex rollout head.
-fn codex_first_prompt(text: &str) -> Option<String> {
+/// Title and kind from the first user prompt in a Codex rollout head.
+/// `codex exec` runs (`session_meta` source "exec") count as agents.
+fn codex_first_prompt(text: &str) -> (Option<String>, Option<&'static str>) {
+    let headless = text
+        .lines()
+        .next()
+        .and_then(|first| serde_json::from_str::<serde_json::Value>(first).ok())
+        .and_then(|v| v.get("payload").cloned())
+        .map(|p| {
+            p.get("source").and_then(|s| s.as_str()) == Some("exec") || p.get("originator").and_then(|s| s.as_str()) == Some("codex_exec")
+        })
+        .unwrap_or(false);
     for line in text.lines() {
         if !line.contains("\"role\":\"user\"") {
             continue;
@@ -236,12 +338,14 @@ fn codex_first_prompt(text: &str) -> Option<String> {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
         let Some(parts) = value.get("payload").and_then(|p| p.get("content")).and_then(|c| c.as_array()) else { continue };
         for part in parts {
-            if let Some(summary) = part.get("text").and_then(|t| t.as_str()).and_then(prompt_summary) {
-                return Some(summary);
+            let Some(t) = part.get("text").and_then(|t| t.as_str()) else { continue };
+            let (title, kind) = classify_prompt(t);
+            if title.is_some() {
+                return (title, kind.or(headless.then_some(KIND_AGENT)));
             }
         }
     }
-    None
+    (None, headless.then_some(KIND_AGENT))
 }
 
 /// Bytes read from the head of a transcript to find the first prompt.
@@ -326,8 +430,10 @@ fn summarize_transcript(path: &Path) -> Option<TranscriptSummary> {
             }
         }
     }
+    let (first_prompt, kind) = claude_first_prompt(&read_head(path, TRANSCRIPT_HEAD));
+    summary.kind = kind;
     if summary.title.is_none() {
-        summary.first_prompt = claude_first_prompt(&read_head(path, TRANSCRIPT_HEAD));
+        summary.first_prompt = first_prompt;
     }
     if let Ok(mut cache) = transcript_cache().lock() {
         cache.insert(path.to_path_buf(), (key.0, key.1, summary.clone()));
@@ -434,9 +540,11 @@ fn summarize_codex_rollout(path: &Path) -> Option<TranscriptSummary> {
         .next()
         .and_then(|first| serde_json::from_str::<serde_json::Value>(first).ok())
         .and_then(|v| v.get("payload").and_then(|p| p.get("cwd")).and_then(|c| c.as_str()).map(str::to_string));
+    let (first_prompt, kind) = codex_first_prompt(&head);
     let summary = TranscriptSummary {
         title: None,
-        first_prompt: codex_first_prompt(&head),
+        first_prompt,
+        kind,
         cwd,
         last_at: key.1.map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
     };
@@ -480,6 +588,12 @@ fn enrich_from_transcript(session: &mut LocalSession, summary: &TranscriptSummar
     }
     if !named {
         session.title = summary.first_prompt.clone();
+    }
+    // A lane bound by its parent stays a lane; otherwise the record decides.
+    if let Some(kind) = summary.kind {
+        if !(session.kind == KIND_LANE && kind == KIND_AGENT) {
+            session.kind = kind.to_string();
+        }
     }
     match (&session.last_at, &summary.last_at) {
         (None, Some(t)) => session.last_at = Some(t.clone()),
@@ -549,6 +663,9 @@ pub fn scan_local_sessions_with(
                 last_at: None,
                 outcome: None,
                 thread_path: None,
+                // `company_source: parent` is written when a parent session
+                // spawned this one with its company (HQ_SPAWN_COMPANY).
+                kind: if fields.get("company_source").map(String::as_str) == Some("parent") { KIND_LANE } else { KIND_YOU }.to_string(),
             });
         }
     }
@@ -739,6 +856,9 @@ mod tests {
             let with_project = page.rows.iter().filter(|r| r.project.is_some()).count();
             let with_last = page.rows.iter().filter(|r| r.last_at.is_some()).count();
             println!("  first 50: with_title={with_title} with_project={with_project} with_last={with_last} with_company={with_company}");
+            let agents = page.rows.iter().filter(|r| r.kind != KIND_YOU).count();
+            let plugin_titles = page.rows.iter().filter(|r| r.title.as_deref().is_some_and(|t| t.contains("plugins that are available"))).count();
+            println!("  first 50: non_interactive={agents} plugin_list_titles={plugin_titles}");
             println!("{days}d total={} with_thread={} median_gap_min={:?} ms={}", page.total, with_thread, page.median_gap_minutes, t.elapsed().as_millis());
         }
     }
@@ -770,6 +890,30 @@ mod tests {
         );
         // No transcript at all: no end time, nothing invented.
         meta("s-bare", "company_slug: acme\n");
+        // Interactive session whose first user block is a system reminder.
+        meta("s-reminder", "");
+        write(
+            &tx.join("s-reminder.jsonl"),
+            "{\"type\":\"user\",\"entrypoint\":\"claude-desktop\",\"message\":{\"content\":\"<system-reminder>\\nHere is a list of plugins that are available but not installed.\\n- Box\\n</system-reminder>\\n<command-message>hq</command-message>\\nfix the export button\"}}\n",
+        );
+        // Checkpoint sibling run headless through `claude -p`.
+        meta("s-sibling", "");
+        write(
+            &tx.join("s-sibling.jsonl"),
+            "{\"type\":\"user\",\"entrypoint\":\"sdk-cli\",\"message\":{\"content\":\"You are the HQ checkpoint sibling \\u2014 a background maintenance agent for this\\nHQ install. Your parent session's state is in /x/payload.json.\"}}\n",
+        );
+        // Conduct lane spawned with the parent's company.
+        meta("s-lane", "company_slug: acme\ncompany_source: parent\n");
+        write(
+            &tx.join("s-lane.jsonl"),
+            "{\"type\":\"user\",\"entrypoint\":\"claude-desktop\",\"message\":{\"content\":\"Working directory for this task: /x/repo\\n\\n---\\n\\nRead your brief at /x/HQ/workspace/tmp/workflow-runner/run-1/conduct-tokens-viz/brief.md and carry it out now.\"}}\n",
+        );
+        // Codex exec sibling: plugin list and AGENTS.md come before the brief.
+        meta("c-sibling", "");
+        write(
+            &dir.path().join("codex/sessions/2026/10/05/rollout-2026-10-05T10-00-00-c-sibling.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"c-sibling\",\"cwd\":\"/x/HQ\",\"source\":\"exec\",\"originator\":\"codex_exec\"}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<recommended_plugins>\\nHere is a list of plugins that are available but not installed.\\n- Box\\n</recommended_plugins>\"},{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions for /x/HQ\\n\\n<INSTRUCTIONS>\\n# HQ Claude Charter\\n</INSTRUCTIONS>\"},{\"type\":\"input_text\",\"text\":\"<environment_context>\\n  <cwd>/x/HQ</cwd>\\n</environment_context>\"}]}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"You are the HQ checkpoint sibling \\u2014 a background maintenance agent for this\\nHQ install. Work quietly.\"}]}}\n",
+        );
         // Codex: named thread (latest name wins), rollout cwd inside a repo.
         meta("c-codex", "company_slug: acme\n");
         write(&dir.path().join("codex/session_index.jsonl"), "{\"id\":\"c-codex\",\"thread_name\":\"Old name\"}\n{\"id\":\"c-codex\",\"thread_name\":\"Fix deploy script\"}\n");
@@ -805,6 +949,20 @@ mod tests {
         assert_eq!(codex.title.as_deref(), Some("Fix deploy script"));
         assert_eq!(codex.project.as_deref(), Some("deploy-kit"));
         assert!(codex.last_at.is_some());
+        let reminder = row("s-reminder");
+        assert_eq!(reminder.title.as_deref(), Some("fix the export button"));
+        assert_eq!(reminder.kind, KIND_YOU);
+        let sibling = row("s-sibling");
+        assert_eq!(sibling.title.as_deref(), Some("HQ checkpoint sibling \u{2014} a background maintenance agent for this HQ install"));
+        assert_eq!(sibling.kind, KIND_AGENT);
+        let lane = row("s-lane");
+        assert_eq!(lane.title.as_deref(), Some("conduct-tokens-viz"));
+        assert_eq!((lane.kind.as_str(), lane.company.as_deref()), (KIND_LANE, Some("acme")));
+        let codex_sibling = row("c-sibling");
+        assert_eq!(codex_sibling.kind, KIND_AGENT);
+        assert_eq!(codex_sibling.title.as_deref(), Some("HQ checkpoint sibling \u{2014} a background maintenance agent for this HQ install"));
+        assert!(!format!("{:?}", page.rows).contains("plugins that are available"));
+        assert_eq!(full.kind, KIND_YOU);
         // Prompt text never reaches the row.
         assert!(!format!("{:?}", page.rows).contains("secret prompt text"));
         // Without a transcripts root nothing is enriched.

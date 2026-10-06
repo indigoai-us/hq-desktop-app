@@ -16,7 +16,8 @@
   import "../chat/scroll-perf.css";
   import "../common/button/rail-type.css";
   import "../common/viz-tokens.css";
-  import { mixParts, modelShadeOpacity, vizColor } from "./telemetry-colors.js";
+  import { mixParts, modelShadeOpacity, vizColor, vizSlotFor } from "./telemetry-colors.js";
+  import ProviderMark from "../common/ProviderMark.svelte";
   import type { TelemetryCache } from "./telemetry-cache.js";
   import {
     LIST_RATE_LABEL,
@@ -37,6 +38,7 @@
   import {
     LOCAL_SESSIONS_NOTE,
     formatGap,
+    sessionKindLabel,
     type LocalSessionRow,
     type LocalSessionsReader,
   } from "./telemetry-local-sessions.js";
@@ -126,6 +128,8 @@
   let sessionsLoading = $state(false);
   let sessionsFailed = $state(false);
   let allSessions = $state(false);
+  /** Hide headless agent and lane sessions from the Sessions table. */
+  let hideAgentSessions = $state(false);
   let sessionsSeq = 0;
 
   async function loadSessions(next: TelemetryRange, limit = RECENT_SESSIONS): Promise<void> {
@@ -170,7 +174,11 @@
     if (sessions && sessions.rows.length < Math.min(sessions.total, LIST_PAGE_SIZE)) await moreSessions();
   }
 
-  const visibleSessions = $derived(sessions ? (allSessions ? sessions.rows : pageRows(sessions.rows, 1, RECENT_SESSIONS).rows) : []);
+  const visibleSessions = $derived.by(() => {
+    if (!sessions) return [];
+    const rows = hideAgentSessions ? sessions.rows.filter((r) => r.kind === "you") : sessions.rows;
+    return allSessions ? rows : pageRows(rows, 1, RECENT_SESSIONS).rows;
+  });
   // Absent (no gap) when the host has no local list or it found nothing.
   const showSessions = $derived(
     !!localSessions && (sessions ? sessions.total > 0 : sessionsLoading || sessionsFailed),
@@ -283,7 +291,7 @@
         {#if snapshot.modelMix}
           <div class="mix" data-testid="telemetry-model-mix">
             {#each mixParts(snapshot.modelMix) as part (part.label)}
-              <span class="mx"><i class="dot" style:background={vizColor(part.label)}></i>{part.label}<span class="pc">{part.share}</span></span>
+              <span class="mx"><ProviderMark provider={vizSlotFor(part.label).provider} color={vizColor(part.label)} />{part.label}<span class="pc">{part.share}</span></span>
             {/each}
           </div>
         {/if}
@@ -291,7 +299,7 @@
 
       <section data-section="tokens-per-day" tabindex="-1">
         <div class="sech">Tokens per day · stacked by model <span class="grow"></span>
-          <span class="lg" data-testid="telemetry-legend">{#each bandLabels as label (label)}<span class="lgi"><i data-legend={label} style:background={vizColor(label)}></i>{label}</span>{/each}</span>
+          <span class="lg" data-testid="telemetry-legend">{#each bandLabels as label (label)}<span class="lgi" data-legend={label}><ProviderMark provider={vizSlotFor(label).provider} color={vizColor(label)} />{label}</span>{/each}</span>
         </div>
         <div class="chart" data-testid="telemetry-bars">
           <span class="pk">{snapshot.peakLabel}</span>
@@ -320,7 +328,7 @@
               {@const open = openFamilies.includes(f.family)}
               {#if f.models.length}
                 <button class="trow fam" aria-expanded={open} data-family={f.family} title={tokenTypes(f)} onclick={() => toggleFamily(f.family)}>
-                  <span class="nm"><span class="chev" class:open aria-hidden="true">›</span><i class="dot" style:background={vizColor(f.family)}></i>{f.family}<span class="m">{familyNote(f.family) || `${f.models.length} ${f.models.length === 1 ? "model" : "models"}`}</span></span>
+                  <span class="nm"><span class="chev" class:open aria-hidden="true">›</span><ProviderMark provider={vizSlotFor(f.family).provider} color={vizColor(f.family)} />{f.family}<span class="m">{familyNote(f.family) || `${f.models.length} ${f.models.length === 1 ? "model" : "models"}`}</span></span>
                   <span class="n" title={f.total.toLocaleString("en-US")}>{compactNumber(f.total)}</span>
                   <span class="bar"><i style:width="{sharePercent(f.total, tokenTotal)}%" style:background={vizColor(f.family)}></i></span>
                   <span class="n">{sharePercent(f.total, tokenTotal)}%</span>
@@ -328,7 +336,7 @@
                 </button>
               {:else}
                 <div class="trow" data-family={f.family} title={tokenTypes(f)}>
-                  <span class="nm"><i class="dot" style:background={vizColor(f.family)}></i>{f.family}</span>
+                  <span class="nm"><ProviderMark provider={vizSlotFor(f.family).provider} color={vizColor(f.family)} />{f.family}</span>
                   <span class="n">{compactNumber(f.total)}</span>
                   <span class="bar"><i style:width="{sharePercent(f.total, tokenTotal)}%" style:background={vizColor(f.family)}></i></span>
                   <span class="n">{sharePercent(f.total, tokenTotal)}%</span>
@@ -338,7 +346,7 @@
               {#if open}
                 {#each f.models as m (m.id)}
                   <div class="trow sub-row" data-model={m.id} title={tokenTypes(m)}>
-                    <span class="nm"><i class="dot" style:background={vizColor(f.family)} style:opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)}></i>{m.name}<span class="m mono">{m.id}</span></span>
+                    <span class="nm"><ProviderMark provider={vizSlotFor(m.id).provider} color={vizColor(f.family)} opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)} />{m.name}<span class="m mono">{m.id}</span></span>
                     <span class="n" title={m.total.toLocaleString("en-US")}>{compactNumber(m.total)}</span>
                     <span class="bar"><i style:width="{sharePercent(m.total, tokenTotal)}%" style:background={vizColor(f.family)} style:opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)}></i></span>
                     <span class="n">{sharePercent(m.total, tokenTotal)}%</span>
@@ -350,7 +358,7 @@
           {:else}
             {#each flat as m (m.id)}
               <div class="trow" data-model={m.id} title={tokenTypes(m)}>
-                <span class="nm"><i class="dot" style:background={vizColor(m.family)} style:opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)}></i>{m.name}<span class="m">{m.provider || "Other"}</span></span>
+                <span class="nm"><ProviderMark provider={vizSlotFor(m.id).provider} color={vizColor(m.family)} opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)} />{m.name}<span class="m">{m.provider || "Other"}</span></span>
                 <span class="n" title={m.total.toLocaleString("en-US")}>{compactNumber(m.total)}</span>
                 <span class="bar"><i style:width="{sharePercent(m.total, tokenTotal)}%" style:background={vizColor(m.family)} style:opacity={modelShadeOpacity(modelRank.get(m.id) ?? 0)}></i></span>
                 <span class="n">{sharePercent(m.total, tokenTotal)}%</span>
@@ -360,7 +368,7 @@
           {/if}
           {#if snapshot.unattributed}
             <div class="trow" data-testid="telemetry-model-other">
-              <span class="nm"><i class="dot" style:background={vizColor("Other")}></i>Other / unattributed</span>
+              <span class="nm"><ProviderMark provider="neutral" color={vizColor("Other")} />Other / unattributed</span>
               <span class="n">{compactNumber(snapshot.unattributed.tokens)}</span>
               <span class="bar"><i style:background={vizColor("Other")} style:width="{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%"></i></span>
               <span class="n">{sharePercent(snapshot.unattributed.tokens, tokenTotal)}%</span>
@@ -399,6 +407,9 @@
           <div class="sech">Sessions on this Mac
             {#if sessions}<span class="meta" data-testid="telemetry-sessions-count">{sessions.total.toLocaleString("en-US")}</span>{/if}
             <span class="grow"></span>
+            {#if sessions?.rows.some((r) => r.kind !== "you")}
+              <button class="lnk" aria-pressed={hideAgentSessions} data-testid="telemetry-sessions-hide-agents" onclick={() => (hideAgentSessions = !hideAgentSessions)}>{hideAgentSessions ? "Show agent sessions" : "Hide agent sessions"}</button>
+            {/if}
             {#if sessions && !allSessions && sessions.total > RECENT_SESSIONS}
               <button class="lnk" onclick={() => void showAllSessions()}><RailIcon name="chevron-down" />Show all {sessions.total.toLocaleString("en-US")}</button>
             {/if}
@@ -420,7 +431,7 @@
                 <span>{row.when}</span>
                 <span class="co">{#if row.company}<CompanyLabel name={row.company} />{:else}<span class="unbound" title="This session was not bound to a company">No company</span>{/if}</span>
                 <span title={row.project || undefined}>{row.project}</span>
-                <span class="pr" title={row.title || undefined}>{row.title}</span>
+                <span class="pr" title={row.title || undefined}>{#if sessionKindLabel(row.kind)}<span class="kind" data-kind={row.kind} title={row.kind === "lane" ? "Dispatched by another session" : "Background agent, not started by you"}>{sessionKindLabel(row.kind)}</span>{/if}{row.title}</span>
                 <span class="n">{row.length}</span>
               </button>
             {/each}
@@ -479,13 +490,11 @@
   .mix { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px; color: var(--t2, var(--v4-text-2)); }
   .mx { display: inline-flex; align-items: center; gap: 6px; }
   .mx .pc { color: var(--t3, var(--v4-text-3)); font-variant-numeric: tabular-nums; }
-  .dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 2px; background: var(--viz-neutral); }
   .sech { display: flex; align-items: center; gap: 8px; min-height: 28px; margin: 0 0 4px; font-weight: 500; color: var(--t2, var(--v4-text-2)); }
   .lnk { height: 26px; padding: 0 8px; border-radius: 6px; font-weight: 400; color: var(--t2, var(--v4-text-2)); }
   .lg { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
   .lgi { display: inline-flex; align-items: center; gap: 6px; }
-  .lg i, .chart i, .bar i { background: var(--viz-neutral); }
-  .lg i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .chart i, .bar i { background: var(--viz-neutral); }
   /* The top padding keeps the peak label clear of the tallest stack. */
   .chart { position: relative; height: 116px; box-sizing: border-box; padding-top: 20px; display: flex; align-items: flex-end; gap: 3px; border-bottom: 1px solid var(--line, var(--v4-rowline)); }
   /* First legend entry sits on the baseline: stacks build upward in legend order. */
@@ -524,6 +533,7 @@
   .foot.dim { opacity: 0.72; }
   .empty-line { margin: 0; padding: 48px 16px; text-align: center; font-size: 13px; color: var(--t3); }
   .co { display: flex; align-items: center; gap: 6px; }
+  .kind { display: inline-block; margin-right: 6px; padding: 0 5px; border-radius: 4px; background: var(--hover, var(--v4-hover)); color: var(--t3, var(--v4-text-3)); }
   .nm { display: flex; align-items: center; gap: 6px; color: var(--t1, var(--v4-text-1)); }
   /* One column under ~1100px; nothing scrolls sideways at 1000x700. */
   @media (max-width: 1100px) {

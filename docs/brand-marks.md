@@ -46,3 +46,16 @@ next to the action that opens that tool. Sources were read on 2026-10-02.
 - Treatment: the previous simplified slashed-ring glyph stays, in the text
   colour. Replace it with the file from the zip, unaltered, once someone
   downloads it from a browser.
+
+## Provider marks on My Telemetry
+
+`packages/ui/src/common/provider-marks.ts` draws a 14px provider mark before
+each model or family name on the Tokens page, tinted with that family's chart
+color. The Anthropic mark is the `simple-icons` "Anthropic" path (CC0 1.0).
+The OpenAI mark reuses the Blossom path above and the xAI mark reuses the Grok
+glyph above. Unknown providers show a plain disc.
+
+OpenAI's brand terms ask that the Blossom not be recolored. On this page the
+mark is a series key for a chart, tinted with the OpenAI family color; if that
+is judged to fall under the brand terms, render the OpenAI mark in the text
+color and keep the color on the share bar only.

@@ -30,6 +30,19 @@ export interface LocalSessionRow {
   outcome: string;
   /** HQ-relative path of the handoff or checkpoint record, or "". */
   threadPath: string;
+  /** "you" (interactive), "agent" (headless background agent) or "lane" (dispatched by a parent session). */
+  kind: SessionKind;
+}
+
+export type SessionKind = "you" | "agent" | "lane";
+
+/** Badge text for a non-interactive session; "" for your own sessions. */
+export function sessionKindLabel(kind: SessionKind): string {
+  return kind === "agent" ? "Agent" : kind === "lane" ? "Lane" : "";
+}
+
+function sessionKind(v: unknown): SessionKind {
+  return v === "agent" || v === "lane" ? v : "you";
 }
 
 export interface LocalSessionsPage {
@@ -98,6 +111,7 @@ export function localSessionsFromNative(body: unknown): LocalSessionsPage {
       length: r.lastAt ? formatLength(startedAt, str(r.lastAt)) : "",
       outcome: str(r.outcome),
       threadPath: str(r.threadPath),
+      kind: sessionKind(r.kind),
     };
   });
   const gap = root.medianGapMinutes;
