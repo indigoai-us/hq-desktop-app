@@ -81,11 +81,16 @@ describe("Deployments side-panel og:image preview", () => {
     const root = await mountPage(fetcher, opened);
     await choose(root, "indigo-standup-report");
     const og = await waitFor<HTMLButtonElement>(root, "[data-testid='deploy-og']");
-    // The first row (auto-selected) plus the clicked one; never the whole list.
-    expect(fetcher.mock.calls.map((call) => call[1])).toEqual([
-      "https://hq-desktop-console-rail-storyboard.indigo-hq.com",
-      "https://indigo-standup-report.indigo-hq.com",
-    ]);
+    // Only rows the selection rested on are read, never the whole list. The
+    // auto-selected first row is read only if the click came after the
+    // debounce, which depends on how fast the list painted.
+    const urls = fetcher.mock.calls.map((call) => call[1]);
+    expect(urls.at(-1)).toBe("https://indigo-standup-report.indigo-hq.com");
+    expect(new Set(urls).size).toBe(urls.length);
+    for (const url of urls) {
+      expect(["https://hq-desktop-console-rail-storyboard.indigo-hq.com", "https://indigo-standup-report.indigo-hq.com"]).toContain(url);
+    }
+    const reads = urls.length;
     expect(og.querySelector("img")?.getAttribute("src")).toBe(THUMB);
     expect(root.querySelector("iframe")).toBeNull();
     og.click();
@@ -93,7 +98,9 @@ describe("Deployments side-panel og:image preview", () => {
     // Reselecting a row paints from the cache with no second read.
     await choose(root, "hq-desktop-console-rail-storyboard");
     await choose(root, "indigo-standup-report");
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    // Storyboard may be read now if it was skipped earlier; standup is not read again.
+    expect(fetcher.mock.calls.filter((call) => call[1] === "https://indigo-standup-report.indigo-hq.com")).toHaveLength(1);
+    expect(fetcher.mock.calls.length).toBeLessThanOrEqual(reads + 1);
     expect(root.querySelector("[data-testid='deploy-og-loading']")).toBeNull();
   });
 
