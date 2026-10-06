@@ -269,6 +269,27 @@ describe("DesktopApp: cards drawn from the bot's state", () => {
     await vi.waitFor(() => expect(line("linear.app")).toBe("Nova can use it."));
   });
 
+  it("still opens Slack when a recheck fails after an earlier connected status", async () => {
+    const connectedStatus = {
+      ...STATUS,
+      agent: {
+        ...STATUS.agent,
+        channels: { slack: { workspace: "acme", teamId: "T0ACME", connectionMode: "socket" } },
+        channelDiagnostics: { slack: { inboundCapability: "ok" } },
+      },
+    };
+    const w = world(page(HELLO, novaCards("b1", [SLACK_ABSENT], 20)), {
+      getStatus: vi
+        .fn()
+        .mockResolvedValueOnce(ok(connectedStatus))
+        .mockResolvedValue({ ok: false as const, reason: "error" as const, code: "http-500", message: "unavailable" }),
+    });
+    await mountDm(w);
+    await vi.waitFor(() => expect(primary("slack")?.textContent?.trim()).toBe("Connect Slack"));
+    primary("slack")!.click();
+    await vi.waitFor(() => expect(host.querySelector('[data-testid="card-modal"]')).not.toBeNull());
+  });
+
   it("a press whose live read shows the state moved on does not act, and the card shows the live state", async () => {
     // Since the bot wrote, the person opened Linear to everyone.
     const open = { ...LINEAR_ROW, access: { mode: "everyone" } };

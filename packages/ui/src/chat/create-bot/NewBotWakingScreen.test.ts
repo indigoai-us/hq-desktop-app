@@ -251,6 +251,32 @@ describe("NewBotWakingScreen", () => {
     expect(document.querySelector('[data-testid="new-bot-approval-open"]')?.textContent).toBe("Open Codex again");
   });
 
+  it("logs a refused clipboard write and still asks the person to copy the code", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const writeText = vi.fn(async () => {
+        throw new Error("clipboard denied");
+      });
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      const openExternal = vi.fn(() => true);
+      render({
+        ...beginWakingSession({ agentUid: "agt_nova", channelId: "chn_nova", companyUid: "cmp_acme", name: "Nova" }),
+        approval: { provider: "codex", url: "https://auth.openai.com/codex/device", code: "TEST-CODE", capturedAt: new Date().toISOString() },
+      }, { openExternal, getStatus: null });
+      await settle();
+      document.querySelector<HTMLButtonElement>('[data-testid="new-bot-approval-open"]')!.click();
+      await settle();
+      expect(openExternal).toHaveBeenCalledWith("https://auth.openai.com/codex/device");
+      expect(document.querySelector('[data-testid="new-bot-approval-message"]')?.textContent).toBe(
+        "Copy the code and paste it on the next page.",
+      );
+      expect(warn).toHaveBeenCalledWith("new-bot: clipboard write failed", "clipboard denied");
+      expect(warn.mock.calls.some((call) => String(call[1]).includes("TEST-CODE"))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("does not say the page is open when the host could not open it (review A-I13)", async () => {
     const openExternal = vi.fn(() => false);
     render({

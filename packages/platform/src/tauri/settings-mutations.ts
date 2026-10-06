@@ -33,7 +33,13 @@ export class SettingsMutationQueue {
 
     // Keep later mutations runnable after a rejected operation while returning
     // the original promise so the initiating surface can roll back its UI.
-    this.tail = operation.catch(() => undefined);
+    this.tail = operation.catch((error: unknown) => {
+      console.warn(
+        "settings-mutations: mutation failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      return undefined;
+    });
     return operation;
   }
 }

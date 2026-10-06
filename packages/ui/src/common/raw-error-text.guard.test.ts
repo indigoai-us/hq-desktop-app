@@ -64,8 +64,14 @@ export function findRawErrorText(source: string): string[] {
   const exempt = (i: number) => /raw-error-ok:/.test(raw[i] ?? "") || /raw-error-ok:/.test(raw[i - 1] ?? "");
   const clean = stripComments(source);
   const markup = markupOf(clean);
+  let inConsoleCall = false;
   clean.split("\n").forEach((line, i) => {
-    if (/console\.(warn|error|info|log|debug)\(/.test(line) || exempt(i)) return;
+    if (/console\.(warn|error|info|log|debug)\(/.test(line)) inConsoleCall = true;
+    if (inConsoleCall) {
+      if (/\);\s*$/.test(line)) inConsoleCall = false;
+      return;
+    }
+    if (exempt(i)) return;
     for (const [label, re] of PATTERNS.slice(0, 3)) {
       if (!seen.has(i) && re.test(line)) {
         seen.add(i);
@@ -87,6 +93,7 @@ describe("raw error text guard", () => {
     expect(findRawErrorText("x = err instanceof Error ? err.message : 'Nope';")).toHaveLength(1);
     expect(findRawErrorText("<script>let a;</script>\n<p>{error?.message}</p>")).toHaveLength(1);
     expect(findRawErrorText('console.warn("[x] failed", `${err.message}`);')).toHaveLength(0);
+    expect(findRawErrorText('console.error(\n  "[x] failed",\n  err instanceof Error ? err.message : String(err),\n);')).toHaveLength(0);
     expect(findRawErrorText("<p>{req.message}</p>")).toHaveLength(0);
     expect(findRawErrorText("<p>{view.error.message}</p>")).toHaveLength(0);
     expect(findRawErrorText("// raw-error-ok: classifier input\nconst r = err instanceof Error ? err.message : '';")).toHaveLength(0);

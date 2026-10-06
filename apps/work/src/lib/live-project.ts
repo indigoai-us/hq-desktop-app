@@ -9,7 +9,6 @@ import {
   parseLiveReadResponse,
   parseMeshProjectView,
   projectFilesToItems,
-  projectToStatus,
   projectViewToBoard,
   workMeshLivePath,
   type MeshProjectFile,
@@ -434,5 +433,3 @@ export async function loadLiveProjectMeta(
     definitiveMiss: false,
   };
 }
-
-export { projectToStatus };

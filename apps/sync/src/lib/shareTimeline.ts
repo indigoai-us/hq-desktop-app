@@ -75,7 +75,7 @@ interface TimelineEntry {
 
 /** True when this share already has a durable DM, so the client-side merge
  * must not inject a second share card. */
-export function shareHasLinkedDm(share: ShareEvent): boolean {
+function shareHasLinkedDm(share: ShareEvent): boolean {
   return Boolean(share.dmEventId?.trim());
 }
 

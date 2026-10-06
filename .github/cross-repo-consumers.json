@@ -1,0 +1,27 @@
+[
+  {
+    "path": "apps/sync/src-tauri/src/commands/install_deps.rs",
+    "consumers": [
+      {
+        "repo": "indigoai-us/hq-cloud",
+        "file": ".github/scripts/resolve-shipped-node.mjs"
+      }
+    ],
+    "required_tokens": [
+      "MANAGED_NODE_VERSION",
+      "WINDOWS_MANAGED_NODE_VERSION"
+    ]
+  },
+  {
+    "path": "crates/hq-desktop-core/src/hq_cloud.rs",
+    "consumers": [
+      {
+        "repo": "indigoai-us/hq-cloud",
+        "file": ".github/workflows/unreleased-commits-nag.yml"
+      }
+    ],
+    "required_tokens": [
+      "HQ_CLOUD_VERSION"
+    ]
+  }
+]

@@ -17,7 +17,7 @@ import {
 } from '@hq/ui';
 import { isFolderAttachment, type MessageAttachment } from './messageAttachments';
 
-export const MAX_ATTACHMENT_PREVIEW_BYTES = MAX_CHANNEL_FILE_PREVIEW_BYTES;
+const MAX_ATTACHMENT_PREVIEW_BYTES = MAX_CHANNEL_FILE_PREVIEW_BYTES;
 
 /** Shown when an older attachment row has no company vault to presign against. */
 export const ATTACHMENT_MISSING_COMPANY = 'This file has no company assigned.';

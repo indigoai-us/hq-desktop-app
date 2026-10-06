@@ -18,9 +18,9 @@ export type FirstLaunchSignInReachOutcome =
 const OUTCOME_SET: ReadonlySet<string> = new Set(FIRST_LAUNCH_SIGNIN_REACH_OUTCOMES);
 const INSTALL_ATTEMPT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_KEY = 'hq:first-launch-signin-reach:v1';
-export const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_MAX_ENTRIES = 32;
-export const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_KEY = 'hq:first-launch-signin-reach:v1';
+const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_MAX_ENTRIES = 32;
+const FIRST_LAUNCH_SIGNIN_REACH_QUEUE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface QueueEntry {
   installAttemptId: string;

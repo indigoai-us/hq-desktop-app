@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 - A meeting recorded directly from HQ Desktop now appears in the Meetings list while it records, even when it was not on your calendar. If that meeting is already on your calendar, HQ keeps one row for it instead of showing a duplicate. Once processing finishes, the saved recording continues to appear with the other past meetings.
 
+- Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.
 - Connection cards in a cloud bot's direct message can now come from the bot itself. A bot on the new runtime sends each card with the state it looked up (whether the app is connected, whether the bot can use it, who connected it, and whether the bot is in Slack), in the message's structured content instead of inside its text. The app draws those cards straight from what the bot sent, without reading the company's connection list: "Nova can use it." when the bot can use the app (for a bot named Nova), "Let Nova use it?" with the button when you connected it, "A teammate connected this. Ask them to share it with Nova." when someone else did, Connect when you can add apps, and "Ask a company admin" when you cannot. When you press one of these cards, the app first checks the live state and then acts on that, and it checks again when a note that a connection changed reaches the bot. Slack is still the first card and a row still shows three cards at most. Messages from older bots, and cards without state, work as before. The app now also keeps a direct message's structured content when it loads the conversation; it used to drop it.
 
 - Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
@@ -19,6 +20,30 @@ The release moves it under the version it ships in.
 - The file sync status of a cloud bot moved into the header of its direct message. The full-width "Syncing your company's files" strip and its progress bar under the header are gone. In their place a small sync icon and one short grey line sit to the right of "Direct message", next to the bot's name, for example "Syncing your company's files, 10 files so far", or with a percent when there is a real one. Nothing in it moves. In a narrow window the line is cut with "..." before anything else in the header gives way, and hovering it shows the full text. It goes away when the files are up to date, as the strip did.
 - Files opens a vault with its last known counts while the current index refreshes. The app now prewarms authorized vault indexes after the shell is ready and saves the paths, file metadata, and note links locally for the signed-in account, so the next launch can start with an incremental refresh instead of reading every note again.
 - Deployments now has an All companies filter that lists only scopes with apps, and every column can be sorted forward, reverse, then back to the default order.
+
+## [0.10.395] — 2026-10-05
+
+- Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.
+- With liveness telemetry enabled, the desktop app can report how it launched, whether start-at-login is registered, and why it exited. It does not change launch, autostart, window, or quit behavior.
+
+- Desktop Core now retries a baseline write once if its directory disappears during the final file rename.
+- First-launch records can include the installer's download visitor key when the `desktop.first-launch-download-join-v1` flag is on.
+- The git mirror removes an index lock left by its own timed-out Git write once the killed writer releases it.
+
+- Package-use lease timeout reports now include a bounded purpose for the oldest active HQ CLI holder.
+
+## [0.10.394] — 2026-10-05
+
+- Connection cards and the first hello in a cloud bot's direct message now read the company's connected apps with the server's faster summary list. For a company with about 135 connections that read took 7 to 9 seconds and should now take under a second. The cards and the hello show the same thing as before. An older server that does not know the summary list answers with the full one, as before.
+- Desktop launch telemetry now records the effective start-at-login preference by platform.
+- Desktop onboarding records provider sign-in starts and browser callbacks on the install session.
+
+## [0.10.393] — 2026-10-05
+
+- Rsync failure reports now include fixed categories for the exit status and sync phase.
+- A row of connection cards in a cloud bot's direct message now appears as one: the app waits until it knows every card in the row (the company's connections and each app the bot named), then shows them together, Slack first. If that takes longer than two seconds, it shows the cards it knows and the others join at the end of the row.
+- Connected connection cards no longer have a green border. They keep the same edge as the other cards; the green "Connected" mark stays.
+- In a cloud bot's direct message, the bot's own Slack card is now the first card of every row of connection cards. The app adds it when the bot's message names other apps but not Slack, moves it to the front when the bot named it later in the row, and keeps it, as "Nova is in Slack." (for a bot named Nova), once the bot is in Slack. A row still shows three cards at most, Slack counting as one.
 
 ## [0.10.392] — 2026-10-05
 

@@ -10,7 +10,7 @@
  * SAME orchestration and the same persisted pref rather than a parallel path.
  */
 
-export const RELEASE_CHANNELS = ["stable", "beta", "alpha"] as const;
+const RELEASE_CHANNELS = ["stable", "beta", "alpha"] as const;
 export type ReleaseChannelId = (typeof RELEASE_CHANNELS)[number];
 
 export interface ReleaseChannelOption {

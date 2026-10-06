@@ -209,7 +209,12 @@
         copying = Promise.reject(error);
       }
       // The answer is read below; a refusal must not go unhandled meanwhile.
-      copying.catch(() => {});
+      copying.catch((error: unknown) => {
+        console.warn(
+          "new-bot: clipboard write failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
     }
     let opening: Promise<void | boolean>;
     try {

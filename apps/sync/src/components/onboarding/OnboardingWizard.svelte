@@ -67,6 +67,7 @@
   import {
     classifyContinuationError,
     flushReceipts,
+    FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
     launchReceipt,
     recordReceipt,
     shouldSendFirstLaunchReceipt,
@@ -311,6 +312,7 @@
   let firstLaunchJoinKeyEnabled: boolean | null = null;
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
   let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
+  let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
     action: OnboardingAction;
@@ -1068,6 +1070,9 @@
       );
       authStep = 'callback_received';
       void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      recordStep(WELCOME_SIGNIN_STEP_INDEX, 'callback_received', {
+        provider: telemetryProvider,
+      });
       if (!isCurrentSignInCall(call)) return;
 
       const result = await invokeCommand<{
@@ -1133,8 +1138,29 @@
     // It survives re-renders and a resumed wizard, while recordReceipt keeps
     // an undelivered receipt's event id and timestamp stable for retry.
     if (firstLaunchReceiptRecorded) {
+      if (await resolveFirstLaunchDownloadJoinEnabled(context.installAttemptId)) {
+        try {
+          const downloadAnonId = await invokeCommand<string | null>('web_visitor_anon_id');
+          if (downloadAnonId) {
+            deps.downloadJoinEnabled = true;
+            deps.downloadAnonId = downloadAnonId;
+          }
+        } catch {
+          console.warn('onboarding: installer visitor key unavailable; launch receipt unchanged');
+        }
+      }
       void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
     }
+  }
+
+  function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
+    if (!firstLaunchDownloadJoinFlagPromise) {
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
+        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
+        2_000,
+      );
+    }
+    return firstLaunchDownloadJoinFlagPromise;
   }
 
   function resolveFirstLaunchJoinKeyEnabled(visitorId: string | null): Promise<boolean> {
