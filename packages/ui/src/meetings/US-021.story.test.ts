@@ -74,13 +74,15 @@ describe("US-021 Meetings sidepane and live canvas", () => {
       onselect,
     });
     const labels = [...el.querySelectorAll('[data-testid="meetings-section"]')].map((n) => n.getAttribute("data-section"));
-    expect(labels).toEqual(["live", "tomorrow"]);
+    // A meeting is live today, so Tomorrow waits until today is over.
+    expect(labels).toEqual(["live"]);
     const liveRow = el.querySelector('[data-row-id="standup"]') as HTMLButtonElement;
     expect(liveRow.dataset.live).toBe("true");
     expect(liveRow.getAttribute("aria-current")).toBe("page");
     expect(el.querySelector('[aria-label="Filter"]')).not.toBeNull();
-    (el.querySelector('[data-row-id="pricing"]') as HTMLButtonElement).click();
-    expect(onselect).toHaveBeenCalledWith("pricing");
+    (el.querySelector('[data-row-id="standup"]') as HTMLButtonElement).click();
+    expect(el.querySelector('[data-row-id="pricing"]')).toBeNull();
+    expect(onselect).toHaveBeenCalledWith("standup");
   });
 
   it("opens the filter popover from the header", () => {

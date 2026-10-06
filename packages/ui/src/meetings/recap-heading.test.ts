@@ -55,7 +55,7 @@ describe("recapHeading (QA-098)", () => {
       companyNamesByUid: new Map(),
       now,
     });
-    const row = sections.find((s) => s.id === "past")?.rows[0];
+    const row = sections.flatMap((s) => s.rows)[0];
     expect(row?.startMs).toBe(Date.parse("2026-10-02T19:00:00Z"));
     expect(recapHeading(row?.startMs, now)).toBe("Today's recap");
   });

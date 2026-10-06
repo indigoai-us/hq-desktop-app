@@ -26,6 +26,13 @@
   --titlebar-height: 48px;
   --titlebar-leading-inset: 16px;
 
+  /* Page edge: the left edge every in-flow page title and every page-sidebar
+     item's content share. Pages sit right of the rail, under the top bar, so
+     they never sit under the traffic lights and do not use the titlebar inset.
+     A page sidebar pads its rows so row content lands on this edge:
+     nav padding + row padding = --page-edge-inset. */
+  --page-edge-inset: 20px;
+
   /* Console-rail canvas type scale (docs/design-standard-console-rail.md §2).
      The canvas uses two sizes: 20px/500 for the one page or task title and
      13px/1.45 for everything else. Weight is capped at 500. */

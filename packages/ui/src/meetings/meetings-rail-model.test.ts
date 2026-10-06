@@ -34,21 +34,20 @@ const bots = new Map<string, ScheduledBot>([
 describe("meetingsRailSections", () => {
   const sections = meetingsRailSections({ events, botsByEventId: bots, companyNamesByUid: names, now });
 
-  it("groups into Live, Today, Tomorrow, Past and drops later days and cancelled", () => {
-    expect(sections.map((s) => s.id)).toEqual(["live", "today", "tomorrow", "past"]);
+  it("groups into Live, Today, Past, hides Tomorrow while today has meetings ahead, and drops later days and cancelled", () => {
+    expect(sections.map((s) => s.id)).toEqual(["live", "today", "past"]);
     expect(sections[0].rows.map((r) => r.id)).toEqual(["standup"]);
     expect(sections[0].rows[0].time).toBe("14m");
     expect(sections[1].label).toBe("TODAY · OCT 1");
-    expect(sections[3].label).toBe("YESTERDAY · SEP 30");
+    expect(sections[2].label).toBe("YESTERDAY · SEP 30");
     expect(sections[1].rows.map((r) => r.id)).toEqual(["flow"]);
-    expect(sections[2].rows.map((r) => r.id)).toEqual(["pricing"]);
-    expect(sections[3].rows.map((r) => r.id)).toEqual(["readout"]);
+    expect(sections[2].rows.map((r) => r.id)).toEqual(["readout"]);
   });
 
   it("shows time, company mark, and the recap mark on past rows", () => {
     expect(sections[1].rows[0]).toMatchObject({ time: "11:00", companyMark: "LR" });
     // The day lives in the header; past rows carry only the start time.
-    expect(sections[3].rows[0]).toMatchObject({ time: "15:00", hasRecap: true });
+    expect(sections[2].rows[0]).toMatchObject({ time: "15:00", hasRecap: true });
     expect(defaultMeetingId(sections)).toBe("standup");
   });
 
@@ -59,6 +58,70 @@ describe("meetingsRailSections", () => {
     expect(only.flatMap((s) => s.rows.map((r) => r.id))).toEqual(["flow"]);
     const recap = meetingsRailSections({ events, botsByEventId: bots, companyNamesByUid: names, filter: { ...EMPTY_MEETINGS_FILTER, hasRecap: true }, now });
     expect(recap.flatMap((s) => s.rows.map((r) => r.id))).toEqual(["readout"]);
+  });
+});
+
+describe("meetingsRailSections Today/Tomorrow grouping", () => {
+  // Oct 6 2026 in the test's local zone: two ended meetings, two still ahead.
+  const day = (h: number, m = 0, d = 6) => new Date(2026, 9, d, h, m).toISOString();
+  const recapBots = new Map<string, ScheduledBot>([
+    ["vyg", { botId: "b2", meetingUrl: "", platform: "zoom", status: "completed", calendarEventId: "vyg", autoScheduled: false, sourceLanded: true }],
+    ["dev", { botId: "b3", meetingUrl: "", platform: "zoom", status: "completed", calendarEventId: "dev", autoScheduled: false, sourceLanded: true }],
+  ]);
+  const todayEvents: MeetingEvent[] = [
+    ev("cut30", day(19), day(20)),
+    ev("vyg", day(7, 30), day(8)),
+    ev("lr", day(12, 30), day(13)),
+    ev("dev", day(9), day(9, 30)),
+    ev("tmrw-a", day(9, 0, 7), day(9, 30, 7)),
+    ev("tmrw-b", day(11, 0, 7), day(11, 30, 7)),
+    ev("yday", day(15, 0, 5), day(16, 0, 5)),
+  ];
+  const build = (at: Date, list = todayEvents) =>
+    meetingsRailSections({ events: list, botsByEventId: recapBots, companyNamesByUid: names, now: at });
+
+  it("mid-day: one Today section in start order and no Tomorrow", () => {
+    const s = build(new Date(2026, 9, 6, 10, 0));
+    expect(s.map((x) => x.id)).toEqual(["today", "past"]);
+    expect(s[0].rows.map((r) => r.id)).toEqual(["vyg", "dev", "lr", "cut30"]);
+    expect(s[0].rows.map((r) => r.time)).toEqual(["07:30", "09:00", "12:30", "19:00"]);
+    expect(s.some((x) => x.label.startsWith("EARLIER TODAY"))).toBe(false);
+    expect(s[1].label).toBe("YESTERDAY · OCT 5");
+  });
+
+  it("keeps the recap mark on ended rows and flags them as past", () => {
+    const rows = build(new Date(2026, 9, 6, 10, 0))[0].rows;
+    expect(rows.filter((r) => r.past).map((r) => r.id)).toEqual(["vyg", "dev"]);
+    expect(rows.filter((r) => r.hasRecap).map((r) => r.id)).toEqual(["vyg", "dev"]);
+    expect(rows.find((r) => r.id === "lr")?.past).toBeFalsy();
+  });
+
+  it("hides Tomorrow while the last meeting of today is live", () => {
+    const s = build(new Date(2026, 9, 6, 19, 30));
+    expect(s.map((x) => x.id)).toEqual(["live", "today", "past"]);
+  });
+
+  it("shows Tomorrow under Today once today's last meeting has ended", () => {
+    const s = build(new Date(2026, 9, 6, 20, 0));
+    expect(s.map((x) => x.id)).toEqual(["today", "tomorrow", "past"]);
+    expect(s[0].rows.map((r) => r.id)).toEqual(["vyg", "dev", "lr", "cut30"]);
+    expect(s[0].rows.every((r) => r.past)).toBe(true);
+    expect(s[1].rows.map((r) => r.id)).toEqual(["tmrw-a", "tmrw-b"]);
+  });
+
+  it("shows Tomorrow when today has no meetings", () => {
+    const s = build(new Date(2026, 9, 6, 8, 0), todayEvents.filter((e) => e.id.startsWith("tmrw") || e.id === "yday"));
+    expect(s.map((x) => x.id)).toEqual(["tomorrow", "past"]);
+  });
+
+  it("rolls over at midnight: yesterday's Today moves to Past and the new day's meetings are Today", () => {
+    const s = build(new Date(2026, 9, 7, 0, 1));
+    expect(s.map((x) => x.id)).toEqual(["today", "past", "past"]);
+    expect(s[0].rows.map((r) => r.id)).toEqual(["tmrw-a", "tmrw-b"]);
+    expect(s[0].label).toBe("TODAY · OCT 7");
+    expect(s[1].label).toBe("YESTERDAY · OCT 6");
+    expect(s[1].rows.map((r) => r.id)).toEqual(["cut30", "lr", "dev", "vyg"]);
+    expect(s[1].rows.some((r) => r.past)).toBe(false);
   });
 });
 

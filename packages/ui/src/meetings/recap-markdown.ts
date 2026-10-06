@@ -30,6 +30,56 @@ function listify(body: string): string {
   return items.map((item) => `- ${item}`).join("\n");
 }
 
+/** Section names a meeting recap uses as headings. */
+const SECTION_HEADS = [
+  "Key Topics",
+  "Key Points",
+  "Key Outcomes",
+  "Topics Discussed",
+  "Discussion",
+  "Decisions",
+  "Action Items",
+  "Next Steps",
+  "Open Questions",
+  "Overview",
+];
+
+/**
+ * A recap whose newlines were lost upstream reads "Summary **Meeting:** x
+ * **Participants:** y Key Topics 1. A — … 2. B — … Next Steps - one - two".
+ * Rebuild it: known section names become headings, "N. " runs become a
+ * numbered list, and " - " runs after a heading become a dash list. Text
+ * without at least one section heading is left for the label pass.
+ */
+export function segmentFlatRecap(text: string): string {
+  let source = text.trim().replace(/^(?:#{1,6}\s*)?Summary\s+(?=\*\*|[A-Z])/, "");
+  const heads = new RegExp(`(?:^|\\s)(?:#{1,6}\\s*)?(${SECTION_HEADS.map(escapeRegex).join("|")})(?=\\s+(?:\\d+\\.\\s|-\\s|\\*\\*|[A-Z]))`, "g");
+  const marks = [...source.matchAll(heads)];
+  if (!marks.length) return text.trim();
+  const parts: string[] = [];
+  const lead = source.slice(0, marks[0]!.index).trim();
+  if (lead) {
+    // Bold labels in the lead ("**Meeting:** x **Participants:** y") each get a line.
+    parts.push(lead.replace(/\s+(?=\*\*[A-Z][^*]{0,40}:\*\*)/g, "\n"));
+  }
+  marks.forEach((m, i) => {
+    const start = m.index! + m[0].length;
+    const end = i + 1 < marks.length ? marks[i + 1]!.index! : source.length;
+    const body = source.slice(start, end).trim();
+    parts.push(`### ${m[1]}`);
+    if (/^1\.\s/.test(body)) {
+      const items = body.split(/\s+(?=\d+\.\s)/).map((x) => x.trim()).filter(Boolean);
+      parts.push(items.join("\n"));
+    } else if (body.startsWith("- ")) {
+      parts.push(listify(body));
+    } else if (body) {
+      parts.push(body);
+    }
+  });
+  source = parts.join("\n\n");
+  return source;
+}
+
 /**
  * Restore paragraphs and lists in a recap summary. Text that already has
  * line structure is returned as is (only the title line is dropped).
@@ -50,6 +100,10 @@ export function normalizeRecapMarkdown(text: string, meetingTitle = ""): string 
   }
 
   // Already structured: leave the author's lines alone.
+  // Consecutive "**Label:** value" lines are separate facts, not one wrapped paragraph.
+  if (source.includes("\n")) return source.replace(/\n(?=\*\*[A-Z][^*\n]{0,40}:\*\*)/g, "\n\n");
+
+  source = segmentFlatRecap(source);
   if (source.includes("\n")) return source;
 
   const labels = [...source.matchAll(LABEL)];

@@ -160,7 +160,8 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 16px 20px;
+    /* Row content lands on --page-edge-inset, under the page title. */
+    padding: 16px calc(var(--page-edge-inset, 20px) - 10px);
     border-right: 1px solid var(--line);
     overflow: auto;
   }

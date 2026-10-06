@@ -246,6 +246,17 @@ export function signalBodyText(markdown: string): string {
     .trim();
 }
 
+/**
+ * Summary signal body as Markdown with its line structure kept. The
+ * frontmatter goes, and so does a leading heading that only says "Summary"
+ * (the recap already labels the section). Single-line signals (actions,
+ * decisions, questions) still use signalBodyText.
+ */
+export function signalBodyMarkdown(markdown: string): string {
+  const body = markdown.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---\r?\n?/, "").replace(/\r/g, "").trim();
+  return body.replace(/^#{1,6}\s*(?:Meeting\s+)?Summary\b[^\n]*\n+/i, "").trim();
+}
+
 /** Signal bodies read per page: the first page when a meeting opens, then one per "Load more". */
 export const RECORDED_SIGNAL_READ_LIMIT = 24;
 
@@ -286,7 +297,8 @@ export async function loadNextRecordedSignalPage(
       if (ref.title) return ref.title;
       if (!ref.url) return "";
       try {
-        return signalBodyText(await readText(ref.url));
+        const body = await readText(ref.url);
+        return ref.kind === "summary" ? signalBodyMarkdown(body) : signalBodyText(body);
       } catch (err) {
         console.warn(`[meetings] could not read ${ref.kind} signal body`, err);
         failed += 1;
@@ -303,7 +315,7 @@ export function recordedSignalsFromPages(pages: RecordedSignalPages): RecordedSi
   pages.texts.forEach((text, i) => {
     const ref = pages.refs[i];
     if (!text || !ref) return;
-    if (ref.kind === "summary") out.summary = out.summary ? `${out.summary} ${text}` : text;
+    if (ref.kind === "summary") out.summary = out.summary ? `${out.summary}\n\n${text}` : text;
     else out[ref.kind].push({ title: text });
   });
   return out;

@@ -1341,14 +1341,24 @@ describe("rail scope labels", () => {
     ).toBeNull();
   });
 
-  it("toggle off hides every label", () => {
+  it("toggle off hides every label except a company channel's company in All", () => {
+    expect(
+      railRowScopeLabel(
+        normalizeChannel(
+          channel({ channelId: "hq-desktop", name: "hq-desktop", scope: "project", companyUid: "cmp_indigo" }),
+        ),
+        { scope: "all", companies, enabled: false },
+      ),
+    ).toBeNull();
+    // Company channels share the date buckets in All, so their company
+    // always shows to tell same-named channels apart.
     expect(
       railRowScopeLabel(channelRow("hq-desktop", "cmp_indigo"), {
         scope: "all",
         companies,
         enabled: false,
       }),
-    ).toBeNull();
+    ).toEqual({ kind: "company", text: "Indigo" });
     expect(
       railRowScopeLabel(
         humanRow("prs_ada", "Ada", "ada@getindigo.ai"),

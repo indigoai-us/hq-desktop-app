@@ -408,6 +408,12 @@ export interface GroupedConversations {
   lastWeek: ConversationRow[];
   /** Full filtered list (for "Show all history…" view). */
   all: ConversationRow[];
+  /**
+   * Company channels known to hold no messages (`messageActivityAt === 0`),
+   * listed last under "No messages yet". Only filled when `groupByDay` is
+   * asked to (the All scope).
+   */
+  noMessages?: ConversationRow[];
 }
 
 export const PINS_STORAGE_KEY = "hq.chat.pins";
@@ -1658,11 +1664,19 @@ export function applySidebarFilters(
 export function groupByDay(
   rows: ConversationRow[],
   now: number = Date.now(),
-  options: { humanOnly?: boolean } = {},
+  options: { humanOnly?: boolean; emptyChannelsLast?: boolean } = {},
 ): GroupedConversations {
   const humanOnly = options.humanOnly === true;
   const pinned = rows.filter((r) => r.pinned);
-  const unpinned = rows.filter((r) => !r.pinned);
+  const noMessages: ConversationRow[] = [];
+  const unpinned = rows.filter((r) => {
+    if (r.pinned) return false;
+    if (options.emptyChannelsLast === true && isEmptyCompanyChannel(r)) {
+      noMessages.push(r);
+      return false;
+    }
+    return true;
+  });
 
   const todayStart = startOfLocalDay(now);
   // Anything with activity strictly before (todayStart - 6 days) is older than
@@ -1703,7 +1717,34 @@ export function groupByDay(
     sections,
     lastWeek,
     all: rows.slice(),
+    ...(options.emptyChannelsLast === true ? { noMessages } : {}),
   };
+}
+
+/**
+ * A company channel the server says has never been talked in. Rows from an
+ * older cache carry no `messageActivityAt`; those stay dated by
+ * `lastActivityAt` rather than guessing they are empty.
+ */
+export function isEmptyCompanyChannel(row: ConversationRow): boolean {
+  return isCompanyScopedChannel(row) && row.messageActivityAt === 0;
+}
+
+/**
+ * Rail rows for the All scope: company channels join DMs and project
+ * channels in the date buckets. They skip the rail's channel budget so a
+ * company channel is never hidden just because there are many of them.
+ */
+export function takeAllScopeRailRows(
+  rows: readonly ConversationRow[],
+  options: Parameters<typeof takeRailConversations>[1] = {},
+): ConversationRow[] {
+  const keep = new Set(
+    takeRailConversations(omitCompanyScopedChannels(rows), options).map(
+      (row) => row.id,
+    ),
+  );
+  return rows.filter((row) => keep.has(row.id) || isCompanyScopedChannel(row));
 }
 
 const TYPE_SECTION_ORDER: ReadonlyArray<{
@@ -1806,98 +1847,6 @@ export function companyChannelUnread(
     total += row.unreadCount ?? (row.unreadDot ? 1 : 0);
   }
   return total;
-}
-
-/** One company's channels in the All scope, under a quiet company header. */
-export interface CompanyChannelGroup {
-  companyUid: string;
-  label: string;
-  iconUrl: string | null;
-  rows: ConversationRow[];
-  /** Newest activity across the group's channels (0 when unknown). */
-  latestAt: number;
-  /** Summed unread across the group's channels (dots count as 1). */
-  unread: number;
-}
-
-/**
- * All scope: every company's channels, grouped by company. Groups are ordered
- * by their newest channel activity; channels inside a group keep the same
- * newest-first order the single-company Activity section uses. Rows keep
- * their own unread / muted flags untouched.
- */
-export function groupCompanyChannelsByCompany(
-  rows: readonly ConversationRow[],
-  companies: readonly ScopeCompany[] = [],
-): CompanyChannelGroup[] {
-  const byUid = new Map<string, ConversationRow[]>();
-  for (const row of rows) {
-    if (!isCompanyScopedChannel(row)) continue;
-    const uid = (row.companyUid ?? "").trim();
-    if (!uid) continue;
-    const list = byUid.get(uid);
-    if (list) list.push(row);
-    else byUid.set(uid, [row]);
-  }
-  const groups: CompanyChannelGroup[] = [];
-  for (const [uid, list] of byUid) {
-    const company = companies.find((c) => c.companyUid === uid);
-    const sorted = companyScopedChannels(list, uid);
-    groups.push({
-      companyUid: uid,
-      label: company?.label?.trim() || uid,
-      iconUrl: company?.iconUrl ?? null,
-      rows: sorted,
-      latestAt: sorted.reduce((max, r) => Math.max(max, r.lastActivityAt || 0), 0),
-      unread: sorted.reduce(
-        (sum, r) => sum + (r.unreadCount ?? (r.unreadDot ? 1 : 0)),
-        0,
-      ),
-    });
-  }
-  return groups.sort(
-    (a, b) => b.latestAt - a.latestAt || a.label.localeCompare(b.label),
-  );
-}
-
-export const COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY =
-  "hq.chat.collapsed-company-channels";
-
-/** Company uids whose channel group the user collapsed in the All scope. */
-export function loadCollapsedCompanyChannels(
-  storage: Pick<Storage, "getItem"> | null | undefined,
-): string[] {
-  if (!storage) return [];
-  try {
-    const parsed = JSON.parse(
-      storage.getItem(COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY) ?? "[]",
-    ) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0)
-      : [];
-  } catch (err) {
-    console.warn("[sidebar] collapsed company channels unreadable", err);
-    return [];
-  }
-}
-
-/** Toggle one company's collapse state and persist it; returns the new list. */
-export function toggleCollapsedCompanyChannels(
-  collapsed: readonly string[],
-  companyUid: string,
-  storage: Pick<Storage, "setItem"> | null | undefined,
-): string[] {
-  const uid = companyUid.trim();
-  if (!uid) return [...collapsed];
-  const next = collapsed.includes(uid)
-    ? collapsed.filter((v) => v !== uid)
-    : [...collapsed, uid];
-  try {
-    storage?.setItem(COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY, JSON.stringify(next));
-  } catch (err) {
-    console.warn("[sidebar] collapsed company channels not saved", err);
-  }
-  return next;
 }
 
 export function isProjectConversationRow(row: ConversationRow): boolean {
@@ -2089,6 +2038,7 @@ export function flattenGrouped(
   const out: ConversationRow[] = [...grouped.pinned];
   for (const section of grouped.sections) out.push(...section.rows);
   if (includeLastWeek) out.push(...grouped.lastWeek);
+  out.push(...(grouped.noMessages ?? []));
   return out;
 }
 
@@ -2810,8 +2760,14 @@ export function railRowScopeLabel(
     duplicateHumanTitles?: ReadonlySet<string>;
   },
 ): RailScopeLabel | null {
-  if (!options.enabled) return null;
   const allCompanies = options.scope === "all";
+  // All scope: a company channel always names its company, even with scope
+  // labels off, since channel names repeat across companies.
+  if (allCompanies && isCompanyScopedChannel(row)) {
+    const name = resolveRailCompanyName(row.companyUid, options.companies);
+    return name ? { kind: "company", text: name } : null;
+  }
+  if (!options.enabled) return null;
 
   if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
     if (!allCompanies) return null;
