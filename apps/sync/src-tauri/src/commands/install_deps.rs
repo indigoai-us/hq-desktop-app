@@ -11121,6 +11121,30 @@ mod managed_node_health_tests {
 }
 
 #[cfg(test)]
+mod disk_space_install_wiring_tests {
+    #[test]
+    fn npm_install_wires_preflight_before_cache_creation_and_translates_failures_for_users() {
+        let source = include_str!("install_deps.rs");
+        let install = source
+            .split("async fn run_managed_npm_install_with_cancellation")
+            .nth(1)
+            .expect("managed npm install entry point");
+        let preflight = install
+            .find("installer_disk_space::ensure_setup_disk_space_at")
+            .expect("managed npm storage preflight");
+        let cache_creation = install
+            .find("app_npm_cache(app)")
+            .expect("app-owned npm cache creation");
+        assert!(preflight < cache_creation, "space must be checked before preparing npm cache");
+        assert_eq!(
+            source.matches("installer_disk_space::user_facing_install_error(").count(),
+            2,
+            "both platform command runners must translate npm disk-full failures"
+        );
+    }
+}
+
+#[cfg(test)]
 mod dep_health_tests {
     use super::*;
 
