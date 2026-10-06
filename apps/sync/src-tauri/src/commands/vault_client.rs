@@ -3,6 +3,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::util::client_info::build_client;
 use hq_desktop_core::request_policy::RequestBuilderExt;
+use hq_desktop_core::routes::{path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -745,27 +746,37 @@ impl VaultClient {
             .filter(|s| !s.is_empty())
     }
 
-    /// `GET /v1/me/settings/hq-anywhere` — read the caller's opt-in setting.
+    /// `GET /v1/bot/auto-schedule?setting=hq-anywhere` — read the caller's opt-in setting.
     pub async fn get_hq_anywhere_person_setting(
         &self,
     ) -> Result<PersonSettingResponse, VaultClientError> {
         let resp = self
             .client
-            .get(format!("{}/v1/me/settings/hq-anywhere", self.base_url))
+            .get(format!(
+                "{}{}",
+                self.base_url,
+                path_for(PERSON_SETTING_GET, "")
+            ))
+            .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
             .send_retrying()
             .await?;
         self.handle_response(resp).await
     }
 
-    /// `PUT /v1/me/settings/hq-anywhere` — write only the authenticated caller's setting.
+    /// `PUT /v1/bot/auto-schedule?setting=hq-anywhere` — write the caller's setting.
     pub async fn put_hq_anywhere_person_setting(
         &self,
         value: bool,
     ) -> Result<PersonSettingResponse, VaultClientError> {
         let resp = self
             .client
-            .put(format!("{}/v1/me/settings/hq-anywhere", self.base_url))
+            .put(format!(
+                "{}{}",
+                self.base_url,
+                path_for(PERSON_SETTING_PUT, "")
+            ))
+            .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
             .json(&serde_json::json!({ "value": value }))
             .send_retrying()
@@ -956,7 +967,7 @@ impl VaultClient {
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(url: &str) -> VaultClient {
@@ -1543,7 +1554,8 @@ mod tests {
     async fn hq_anywhere_person_setting_uses_the_caller_scoped_contract() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/me/settings/hq-anywhere"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
                 "key": "hq-anywhere",
                 "value": false
@@ -1551,7 +1563,8 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("PUT"))
-            .and(path("/v1/me/settings/hq-anywhere"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
                 "key": "hq-anywhere",
                 "value": true
