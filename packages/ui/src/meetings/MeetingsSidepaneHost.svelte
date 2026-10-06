@@ -18,8 +18,14 @@
 
   let { memory }: Props = $props();
   let inviting = $state(false);
+  // Minute clock: Today/Tomorrow grouping moves as meetings end.
+  let now = $state(new Date());
+  $effect(() => {
+    const timer = setInterval(() => (now = new Date()), 60_000);
+    return () => clearInterval(timer);
+  });
 
-  // Recomputed when the snapshot changes; the minute clock lives in the store refresh.
+  // Recomputed when the snapshot changes or the minute clock ticks.
   const events = $derived(
     withRecordedEvents(
       meetingsStore.events,
@@ -33,6 +39,7 @@
       scheduledBots: meetingsStore.scheduledBots,
       companyNamesByUid: meetingsStore.companyNamesByUid,
       filter: meetingsRailState.filter,
+      now,
     }),
   );
   const selectedId = $derived(
