@@ -188,6 +188,26 @@ describe("subscribeRosterRefreshEvents", () => {
     await Promise.resolve();
     expect(() => teardown()).not.toThrow();
   });
+
+  it("logs listener teardown failures and keeps teardown non-throwing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cleanupError = new Error("native listener cleanup failed");
+    const listen = vi.fn(async () => () => {
+      throw cleanupError;
+    });
+    const teardown = subscribeRosterRefreshEvents(listen, vi.fn());
+    await Promise.resolve();
+
+    expect(() => teardown()).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warn).toHaveBeenCalledTimes(ROSTER_REFRESH_EVENTS.length);
+    expect(warn).toHaveBeenCalledWith(
+      "[hq-ui-roster-refresh] event listener cleanup failed",
+      { name: "Error", message: "Roster event listener cleanup failed" },
+    );
+  });
 });
 
 describe("createRosterRefresher onSettled", () => {

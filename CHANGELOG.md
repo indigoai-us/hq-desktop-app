@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
+- Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 
 ## [0.10.397] — 2026-10-06
 

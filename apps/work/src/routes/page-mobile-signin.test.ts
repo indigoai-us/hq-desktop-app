@@ -62,6 +62,12 @@ describe("the root route's mobile branch", () => {
     expect(route).toContain("flow.handleCallback(url)");
   });
 
+  it("logs mobile callback listener cleanup failures without changing the fire-and-forget fallback", () => {
+    expect(code).toMatch(
+      /void unlisten\.then\(\(stop\) => stop\(\)\)\.catch\(\(error\) => \{[\s\S]*?console\.warn\("\[hq-work-route\] mobile callback listener cleanup failed", \{[\s\S]*?name:[\s\S]*?message: "Mobile callback listener cleanup failed",[\s\S]*?\}\);[\s\S]*?\}\);/,
+    );
+  });
+
   it("leaves the web and desktop path exactly as it was", () => {
     expect(route).toContain(
       "<WorkShell {data} apiUrl={env.PUBLIC_HQ_PRO_API_URL} />",
