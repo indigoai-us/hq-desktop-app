@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Live tab now opens Claude Code or Codex in your HQ folder with the meeting reader ready to run. It remembers your last choice on this computer and copies the same meeting prompt when a terminal fallback cannot prefill it.
 - A meeting recorded directly from HQ Desktop now appears in the Meetings list while it records, even when it was not on your calendar. If that meeting is already on your calendar, HQ keeps one row for it instead of showing a duplicate. Once processing finishes, the saved recording continues to appear with the other past meetings.
 - Meetings with a notetaker now have a Live tab beside Recap, Transcript, and Notes. It shows the notetaker's live transcript while the call is in progress. When the saved transcript is ready, the Live tab points you to Transcript.
 

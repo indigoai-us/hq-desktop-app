@@ -188,6 +188,8 @@
           <LiveTranscriptDoor
             recallBotId={bot.botId}
             companyId={bot.companyId ?? event.sourceCompanyUid ?? null}
+            meetingTitle={event.summary ?? null}
+            startTime={event.start.dateTime ?? event.start.date ?? null}
             {live}
             botStatus={bot.status}
           />

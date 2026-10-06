@@ -15,6 +15,7 @@
   } from "./live-transcript.svelte";
   import { isAtBottom, liveTurns, notetakerInCall, partialLine } from "./live-transcript-model";
   import { liveTranscriptFetcher } from "./meetings-store.svelte";
+  import MeetingAgentLaunch from "./MeetingAgentLaunch.svelte";
 
   interface Props {
     recallBotId: string;
@@ -22,11 +23,13 @@
     /** True while the meeting is live; polling stops when it turns false. */
     live: boolean;
     botStatus?: string | null;
+    meetingTitle?: string | null;
+    startTime?: string | null;
     /** Transport override (tests). Defaults to the platform adapter. */
     fetch?: LiveTranscriptFetch | null;
   }
 
-  let { recallBotId, companyId = null, live, botStatus = null, fetch = undefined }: Props = $props();
+  let { recallBotId, companyId = null, live, botStatus = null, meetingTitle = null, startTime = null, fetch = undefined }: Props = $props();
 
   const transport = $derived(fetch === undefined ? liveTranscriptFetcher() : fetch);
   const transcript = $derived.by(() => {
@@ -125,9 +128,7 @@
 </script>
 
 <div class="lt" bind:this={root} data-testid="live-transcript" data-status={transcript.status}>
-  <p class="status" data-testid="live-transcript-status">
-    <i class="dot" class:on={live && inCall}></i>{statusText}
-  </p>
+  <div class="header"><p class="status" data-testid="live-transcript-status"><i class="dot" class:on={live && inCall}></i>{statusText}</p>{#if companyId}<MeetingAgentLaunch title={meetingTitle} companyUid={companyId} {recallBotId} {startTime} />{/if}</div>
   {#if turns.length || partial}
     <div class="turns" aria-live="polite">
       {#each turns as t (t.id)}
@@ -169,6 +170,7 @@
     color: var(--t2);
     font-size: 13px;
   }
+  .header { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
 
   .dot {
     width: 6px;

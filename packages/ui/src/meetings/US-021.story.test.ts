@@ -4,9 +4,10 @@
  * meeting is under Live and the room strip shows the speaker ringed.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import MeetingsSidepane from "./MeetingsSidepane.svelte";
 import MeetingCanvas from "./MeetingCanvas.svelte";
+import LiveTranscriptBody from "./LiveTranscriptBody.svelte";
 import { EMPTY_MEETINGS_FILTER, meetingsRailSections } from "./meetings-rail-model";
 import type { MeetingEvent } from "./meetings-model";
 
@@ -118,6 +119,19 @@ describe("US-021 Meetings sidepane and live canvas", () => {
     for (const id of ["meeting-outline", "meeting-notes", "meeting-signals"]) {
       expect(el.querySelector(`[data-testid="${id}"]`)).not.toBeNull();
     }
+  });
+
+  it("shows the agent action only in the Live tab for a meeting bot", async () => {
+    const el = render(MeetingCanvas, { event: live, now });
+    expect(el.querySelector('[data-testid="meeting-agent-launch"]')).toBeNull();
+    expect([...el.querySelectorAll("button")].find((button) => button.textContent === "Live")).toBeUndefined();
+    await unmount(mounted.pop()!);
+
+    const liveTab = render(LiveTranscriptBody, {
+      recallBotId: "recall_1", companyId: "cmp_indigo", live: true,
+    });
+    await tick();
+    expect(liveTab.querySelector('[data-testid="meeting-agent-launch"]')).not.toBeNull();
   });
 
   it("offers Confirm, Edit, Dismiss on actions and Answer, Park on questions", () => {

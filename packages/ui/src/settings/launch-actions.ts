@@ -56,6 +56,8 @@ export interface LaunchActionsInput {
    * path settles trust before that scan, so it keeps `prompt` unchanged.
    */
   deepLinkPrompt?: string;
+  /** Copy a supplied prompt when a terminal launch cannot prefill it. */
+  copyPromptOnTerminalLaunch?: boolean;
 }
 
 export interface LaunchActions {
@@ -124,6 +126,7 @@ export function createLaunchActions({
   hqFolderPath,
   prompt,
   deepLinkPrompt,
+  copyPromptOnTerminalLaunch = false,
 }: LaunchActionsInput): LaunchActions {
   const folder = hqFolderPath.trim();
   const prefill = prefillOf(prompt);
@@ -148,7 +151,8 @@ export function createLaunchActions({
     }
     if (path === "cli") {
       const res = await shell.launchClaudeCode(folder);
-      return res.ok ? null : failureMessage(res, "Claude Code");
+      if (!res.ok) return failureMessage(res, "Claude Code");
+      return copyPromptOnTerminalLaunch ? copyPromptRecovery(prefill, "Claude Code") : null;
     }
     return claudeNotDetectedMessage(prefill);
   }
@@ -176,7 +180,8 @@ export function createLaunchActions({
         path: folder,
         tool: SETUP_LAUNCH_COMMANDS.codex.kind,
       });
-      return res.ok ? null : failureMessage(res, "Codex");
+      if (!res.ok) return failureMessage(res, "Codex");
+      return copyPromptOnTerminalLaunch ? copyPromptRecovery(prefill, "Codex") : null;
     }
     let copied = false;
     if (prefill) {
@@ -216,4 +221,14 @@ export function createLaunchActions({
   }
 
   return { launchClaude, launchCodex, launchGrok, launchClaudeApp, launchCodexApp };
+}
+
+async function copyPromptRecovery(prompt: string | undefined, tool: string): Promise<string | null> {
+  if (!prompt) return null;
+  try {
+    await navigator.clipboard.writeText(prompt);
+    return `${tool} opened in a terminal. The meeting prompt was copied to your clipboard.`;
+  } catch {
+    return `${tool} opened in a terminal. Copy the meeting prompt below before continuing.`;
+  }
 }

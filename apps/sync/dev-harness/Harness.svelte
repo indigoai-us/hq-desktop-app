@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import type { Component } from 'svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
@@ -145,6 +147,37 @@
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
   const livePreviewState = params.get('liveState') ?? 'streaming';
+  const liveMeetingPreview = {
+    id: 'preview-live-meeting',
+    summary: 'Live product review',
+    start: { dateTime: new Date(Date.now() - 12 * 60_000).toISOString() },
+    end: { dateTime: new Date(Date.now() + 48 * 60_000).toISOString() },
+    status: 'confirmed',
+    meetingUrl: 'https://meet.google.com/preview-live',
+    sourceCompanyUid: 'cmp_preview',
+  };
+  const liveMeetingBotPreview = {
+    botId: 'preview-notetaker',
+    companyId: 'cmp_preview',
+    status: 'recording',
+    sourceLanded: false,
+  };
+  let LiveMeetingCanvas = $state<Component | null>(null);
+  let liveMeetingPreviewFailed = $state(false);
+
+  // Keep the live-meeting screenshot route out of the default shell bundle.
+  // Its transcript and agent-launch graph is only useful when that route is
+  // active, and the browser suite boots the shell for every spec.
+  onMount(() => {
+    if (view !== 'live-meeting') return;
+    void import('../../../packages/ui/src/meetings/MeetingCanvas.svelte')
+      .then((mod) => {
+        LiveMeetingCanvas = mod.default as Component;
+      })
+      .catch(() => {
+        liveMeetingPreviewFailed = true;
+      });
+  });
   let livePreviewReads = 0;
   const previewLiveTranscript = async () => {
     livePreviewReads += 1;
@@ -215,7 +248,7 @@
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
-          : view === 'live-transcript'
+          : view === 'live-transcript' || view === 'live-meeting'
             ? 'meetings-window'
           : view === 'drift'
             ? 'drift-detail'
@@ -282,6 +315,17 @@
       botStatus={livePreviewState === 'ended' ? 'completed' : 'recording'}
       fetch={previewLiveTranscript}
     />
+  </main>
+{:else if view === 'live-meeting'}
+  <!-- A live bot fixture for the actual MeetingCanvas Live tab. -->
+  <main class="live-meeting-preview">
+    {#if LiveMeetingCanvas}
+      <LiveMeetingCanvas event={liveMeetingPreview} bot={liveMeetingBotPreview} companyName="Preview company" />
+    {:else if liveMeetingPreviewFailed}
+      <p role="alert">The live meeting preview could not load.</p>
+    {:else}
+      <p aria-busy="true">Loading live meeting preview…</p>
+    {/if}
   </main>
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
