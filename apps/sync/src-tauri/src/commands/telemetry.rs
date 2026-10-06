@@ -5446,6 +5446,7 @@ mod codex_telemetry_tests {
         let _home = setup_home();
         write_menubar(_home.path(), "{}");
         let other_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(other_home.path().join(".hq")).unwrap();
         write_menubar(other_home.path(), "{}");
         let other_path = other_home.path().join(".hq/menubar.json");
         let expected_install_id = crate::commands::first_run::ensure_install_attempt_id(
