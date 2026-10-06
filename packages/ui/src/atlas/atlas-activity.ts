@@ -88,3 +88,19 @@ export function atlasStoryFraction(n: Pick<AtlasNode, "stories">): number | null
 export const ATLAS_RING_GAP = 2.5;
 /** Rings are hidden while the dot is smaller than this on screen (quiet at fit zoom). */
 export const ATLAS_RING_MIN_PX = 3;
+
+/** Story progress for a project card: done over total, or null when there are no stories. */
+export interface AtlasStoryProgress {
+  done: number;
+  total: number;
+  fraction: number;
+  text: string;
+}
+
+export function atlasStoryProgress(n: Pick<AtlasNode, "stories">): AtlasStoryProgress | null {
+  const fraction = atlasStoryFraction(n);
+  if (fraction === null || !n.stories) return null;
+  const done = Math.min(n.stories.done, n.stories.total);
+  const total = n.stories.total;
+  return { done, total, fraction, text: `${done} / ${total} ${total === 1 ? "story" : "stories"}` };
+}

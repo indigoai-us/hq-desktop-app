@@ -602,7 +602,7 @@
   .row.active, .drow.active { background: var(--sel); color: var(--t1); }
   main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .toolbar, .act { display: flex; align-items: center; gap: 8px; }
-  .toolbar { padding: 12px 16px 8px; }
+  .toolbar { padding: 12px 16px 8px var(--page-edge-inset, 20px); }
   h1 { font-size: var(--type-title, 20px); line-height: var(--type-title-line, 1.25); margin: 0; font-weight: var(--type-title-weight, 500); }
   .grow { flex: 1; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
