@@ -483,8 +483,10 @@ export function atlasScreenLabels(input: {
       );
       if (hit) continue;
       // A dot stacked on this object's own dot cannot be avoided, so it does not block.
+      // The hovered object always gets its name: in a packed section every
+      // spot can touch a neighbour's dot, and hover is how hidden names come back.
       const own = { left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr };
-      const onDot = dots.some(
+      const onDot = r > 0 && dots.some(
         (d) =>
           d.id !== n.id &&
           box.left < d.right && d.left < box.right && box.top < d.bottom && d.top < box.bottom &&

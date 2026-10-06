@@ -119,6 +119,30 @@ describe("atlas layout", () => {
     expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
   });
 
+  it("names the hovered object even when every label spot touches a neighbour's dot", () => {
+    // A packed section: four neighbours sit right, left, above and below the
+    // hovered dot, so each of its label spots covers one of their dots.
+    const packed = [
+      { id: "h", label: "h", x: 250, y: 250, r: 5 },
+      { id: "e", label: "e", x: 275, y: 246, r: 5 },
+      { id: "w", label: "w", x: 225, y: 246, r: 5 },
+      { id: "n", label: "n", x: 250, y: 233, r: 5 },
+      { id: "s", label: "s", x: 250, y: 266, r: 5 },
+    ].map((n) => ({ ...n, type: "knowledge" as const }));
+    const labels = atlasScreenLabels({
+      placed: packed,
+      selected: null,
+      hovered: "h",
+      related: new Set(),
+      nowMs: NOW,
+      view: { x: 0, y: 0, k: 1 },
+      width: 500,
+      height: 500,
+      measure: () => 40,
+    });
+    expect(labels.map((l) => l.id)).toContain("h");
+  });
+
   describe("owner 2026-10-05: only recent projects are named until a project is hovered", () => {
     type T = "project" | "knowledge" | "policy" | "repo" | "worker" | "skill";
     const at = (id: string, type: T, x: number, touched?: number) => ({ id, type, label: id, x, y: 0, r: 4, touched });

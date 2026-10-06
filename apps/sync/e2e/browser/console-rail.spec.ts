@@ -97,11 +97,11 @@ test.describe('console rail: full user path', () => {
     await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);
     await expect(page.getByTestId('create-bot-crumb-kind')).toBeVisible();
     await page.getByTestId('create-bot-next').click();
-    await expect(flow).toHaveAttribute('data-step', 'home');
-    await expect(page.getByTestId('chat-bot-where-external')).toBeVisible();
-    await page.getByTestId('chat-bot-where-local').click();
-    await page.getByTestId('create-bot-next').click();
+    // Local was already picked, so "Where does it run?" is skipped: the flow
+    // goes straight to Details, which carries the coding-tool picker.
     await expect(flow).toHaveAttribute('data-step', 'details');
+    await expect(page.getByTestId('chat-bot-where')).toHaveCount(0);
+    await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     await page.getByTestId('chat-bot-name').fill('Scout');
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });
     await page.getByTestId('chat-bot-create').click();

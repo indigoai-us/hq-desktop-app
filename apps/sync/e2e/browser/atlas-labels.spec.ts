@@ -50,7 +50,9 @@ for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
 }
 
 for (const theme of ['light', 'dark'] as const) {
-  test(`Atlas sections are shaded and their names stay uncovered (${theme})`, async ({ page }) => {
+  // Owner 2026-10-04: sections are packed groups with no drawn circle; each
+  // section keeps one name, and item labels never cover it.
+  test(`Atlas sections are named once and their names stay uncovered (${theme})`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 700 });
     await page.goto(`/desktop-alt.html?window=desktop-alt&theme=${theme}&persona=member&atlas=populated`);
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
@@ -59,19 +61,12 @@ for (const theme of ['light', 'dark'] as const) {
 
     const result = await page.evaluate(() => {
       const kinds = new Set([...document.querySelectorAll('[data-atlas-node]')].map((el) => el.getAttribute('data-kind')));
-      const shapes = [...document.querySelectorAll<SVGCircleElement>('circle.district')];
       const problems: string[] = [];
+      const shapes = document.querySelectorAll('circle.district').length;
+      if (shapes !== 0) problems.push(`${shapes} section circles drawn`);
       for (const kind of kinds) {
-        const mine = shapes.filter((s) => s.getAttribute('data-district') === kind);
-        if (mine.length !== 1) { problems.push(`${kind}: ${mine.length} regions`); continue; }
-        const c = mine[0]!;
-        const cx = Number(c.getAttribute('cx')); const cy = Number(c.getAttribute('cy')); const r = Number(c.getAttribute('r'));
-        const style = getComputedStyle(c);
-        if (Number(style.fillOpacity) <= 0 || style.fill === 'none') problems.push(`${kind}: not shaded`);
-        for (const node of document.querySelectorAll(`[data-atlas-node][data-kind="${kind}"] circle.dot`)) {
-          const nx = Number(node.getAttribute('cx')); const ny = Number(node.getAttribute('cy')); const nr = Number(node.getAttribute('r'));
-          if (Math.hypot(nx - cx, ny - cy) + nr > r + 0.5) problems.push(`${kind}: node outside`);
-        }
+        const named = document.querySelectorAll(`text.region[data-atlas-section="${kind}"]`).length;
+        if (named !== 1) problems.push(`${kind}: ${named} names`);
       }
       const names = [...document.querySelectorAll('text.region')].map((el) => el.getBoundingClientRect());
       const items = [...document.querySelectorAll('[data-testid^="atlas-label-"]')].map((el) => el.getBoundingClientRect());
