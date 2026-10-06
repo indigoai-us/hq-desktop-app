@@ -685,7 +685,10 @@ describe("Atlas Today panel", () => {
     expect(host.querySelector(sel("atlas-today-title"))?.textContent).toBe("Today at Indigo");
     const rows = [...host.querySelectorAll(sel("atlas-today-row"))];
     expect(rows.map((r) => r.querySelector(".tt")?.textContent)).toEqual(["hq desktop console rail", "pricing", "hq desktop app"]);
-    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("20 min ago · 0 of 9 stories");
+    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("20 min ago");
+    expect(rows[0]!.querySelector(sel("atlas-card-count"))?.textContent).toBe("0 / 9 stories");
+    expect(rows[0]!.textContent).not.toContain("project");
+    expect(rows[1]!.querySelector(sel("atlas-card-progress"))).toBeNull();
     flushSync(() => (rows[1] as HTMLButtonElement).click());
     expect(inspectorPath()).toBe("knowledge/pricing.md");
   });
