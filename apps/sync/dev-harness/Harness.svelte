@@ -8,6 +8,7 @@
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
+  import MeetingsShot from './MeetingsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -236,6 +237,8 @@
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />
+{:else if view === 'meetings-shot'}
+  <MeetingsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />

@@ -17,6 +17,7 @@
     relativeUntil,
     transcriptTurns,
     venueLabel,
+    recapDetailsLine,
     whenChip,
   } from "./meeting-states-model";
   import { eventStart } from "./meetings-model";
@@ -94,6 +95,7 @@
   let jumped = $state<string | null>(null);
 
   const recap = $derived(event ? recapModel(event, bot) : null);
+  const listedActions = $derived(recap ? recap.actions.filter((a) => !a.derived) : []);
   // Past meetings show tabs only when real notes exist on the server.
   const notesState = $derived(
     mode === "recap" && event ? pastNotesState(event, now, { bot, detailLoading: notesLoading, detailFailed: notesFailed }) : null,
@@ -233,7 +235,9 @@
       <div class="crumb">
         <b>{event.summary?.trim() || "Untitled meeting"}</b>
         <span class="chip">{whenChip(event)}</span>
-        <span class="chip">{venueLabel(event)}{mode === "recap" && bot?.sourceLanded ? " · recorded" : ""}</span>
+        {#if venueLabel(event) || (mode === "recap" && bot?.sourceLanded)}
+          <span class="chip" data-testid="meeting-venue">{[venueLabel(event), mode === "recap" && bot?.sourceLanded ? "recorded" : ""].filter(Boolean).join(" · ")}</span>
+        {/if}
       </div>
       <span class="grow"></span>
       {#if mode === "upcoming"}
@@ -317,9 +321,10 @@
                 </div>
               {/each}
             {/if}
-            {#if recap.actions.length}
-              <h2 class="sh">Action items <span class="n">{recap.actions.length}</span></h2>
-              {#each recap.actions as item (item.id)}
+            <!-- Actions read from the summary's Next Steps are already listed in it. -->
+            {#if listedActions.length}
+              <h2 class="sh">Action items <span class="n">{listedActions.length}</span></h2>
+              {#each listedActions as item (item.id)}
                 <div class="it" data-testid="recap-action"><span class="mk"></span><span class="md" use:markdownLinks={{ currentPath: "" }}>{@html renderInline(item.title)}{#if item.detail}<span class="q">{item.detail}</span>{/if}</span>{#if item.owner || item.bot}<span class="own"><span class="mini" class:sq={item.bot}>{item.bot ? "⌁" : item.ownerInitials}</span>{item.owner}</span>{:else}<span></span>{/if}<span class="chip">{item.status}</span></div>
               {/each}
             {/if}
@@ -393,9 +398,9 @@
         {#if mode === "upcoming"}
           <h2 class="sh">Live signals</h2>
           <p class="muted">Nothing yet. Action items, decisions, and questions appear here once the meeting is live.</p>
-        {:else if recap && hasNotes}
+        {:else if recap && hasNotes && recapDetailsLine(recap)}
           <h2 class="sh">Details</h2>
-          <p class="muted">{recap.decisions.length} decisions · {recap.actions.length} actions · {recap.questions.length} questions</p>
+          <p class="muted" data-testid="meeting-details-counts">{recapDetailsLine(recap)}</p>
         {/if}
       </aside>
     </div>
@@ -443,7 +448,10 @@
   .sh { display: flex; gap: 8px; margin: 16px 0 4px; font-size: 13px; font-weight: 500; line-height: 17px; color: var(--t2); }
   .n { color: var(--t3); font-weight: 400; }
   .more { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; }
-  .sum { max-width: 66ch; line-height: 1.55; }
+  .sum { max-width: 72ch; line-height: 1.55; }
+  /* Recap headings sit on the app's two-size scale: 13px, set apart by weight and space. */
+  .md :global(h1), .md :global(h2), .md :global(h3), .md :global(h4) { margin: 16px 0 6px; font-size: 13px; font-weight: 500; line-height: 1.4; color: var(--t1); }
+  .md :global(:is(h1, h2, h3, h4):first-child) { margin-top: 0; }
   .sum b { font-weight: 500; }
   .md :global(p) { margin: 0 0 8px; }
   .md :global(ul), .md :global(ol) { margin: 0 0 8px; padding-left: 20px; }

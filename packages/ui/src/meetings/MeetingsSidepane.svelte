@@ -165,6 +165,8 @@
           data-testid="meetings-row"
           data-row-id={row.id}
           data-live={row.live ? "true" : undefined}
+          data-past={row.past ? "true" : undefined}
+          class:is-past={row.past}
           onclick={() => onselect?.(row.id)}
         >
           {#if row.live}
@@ -292,6 +294,15 @@
 
   .row:hover {
     background: var(--hover);
+  }
+
+  /* Ended meetings inside Today read quieter than the ones still ahead. */
+  .row.is-past .time {
+    color: var(--t3);
+  }
+
+  .row.is-past .t {
+    color: var(--t2);
   }
 
   .row.is-selected {
