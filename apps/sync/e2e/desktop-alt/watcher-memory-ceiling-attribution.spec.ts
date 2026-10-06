@@ -172,7 +172,7 @@ describe('watcher memory-ceiling attribution — source contracts', () => {
 
   it('wires evidence-gated memory classification into the stable exit fingerprint', () => {
     expect(appDaemonSource).toMatch(
-      /watcher_exit_class_with_fatal_cause\(\s*code,\s*signal,\s*node_fatal,\s*memory_attributed,\s*&runner_fatal_class,\s*\)/,
+      /watcher_exit_class_with_fatal_cause\(\s*code,\s*signal,\s*node_fatal,\s*memory_attributed,\s*context\.saw_genuine_crash_fatal,\s*&runner_fatal_class,\s*\)/,
     );
     expect(appDaemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
     expect(appDaemonSource).toContain('"runner_heap_ceiling_mb"');
