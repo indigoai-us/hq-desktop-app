@@ -989,6 +989,14 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
   list_deploy_apps: (args) => deployAppsFixture(String(args?.scope ?? 'personal')),
+  deploy_app_preview: (args) => {
+    const url = String(args?.url ?? '');
+    const name = url.replace(/^https:\/\//, '').split('.')[0] ?? '';
+    // Protected fixture apps have no og:image, like their real gate pages.
+    if (/storyboard|rail-idea/.test(name)) return { ogImageUrl: null, thumbnail: null, fetchedAt: new Date().toISOString() };
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2a44"/><stop offset="1" stop-color="#6b4fd8"/></linearGradient></defs><rect width="1200" height="630" fill="url(#g)"/><text x="80" y="340" font-family="Helvetica" font-size="72" fill="#fff">${name}</text></svg>`;
+    return { ogImageUrl: `${url}/og.png`, thumbnail: `data:image/svg+xml;base64,${btoa(svg)}`, fetchedAt: new Date().toISOString() };
+  },
   get_company_secrets: () => [
     {
       env: 'production',

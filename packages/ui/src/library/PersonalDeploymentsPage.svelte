@@ -2,10 +2,8 @@
   import { DEFAULT_DEPLOY_PILLS as DEFAULTS, type DeployFilterPills as Pills } from "./personal-deployments.js";
   /** OWNER-R34: filter state survives leaving and coming back in a session. */
   let sessionPills: Pills = { ...DEFAULTS };
-  let sessionSort: import("./personal-deployments.js").DeploySort | null = null;
   export function resetDeployPillsForTests(): void {
     sessionPills = { ...DEFAULTS };
-    sessionSort = null;
   }
 </script>
 
@@ -15,6 +13,15 @@
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import { untrack } from "svelte";
+  import {
+    cachedDeployPreview,
+    loadDeployPreview,
+    previewable,
+    previewCacheKey,
+    type DeployPreview,
+    type DeployPreviewFetcher,
+  } from "./deploy-preview.js";
   /**
    * Personal Deployments (US-031). Real hq-deploy apps across the personal
    * scope and every cloud company. Paints the cached list first (loader on
@@ -38,6 +45,9 @@
     type DeploySortKey,
     formatViews,
     loadDeployments,
+    nextDeploySort,
+    readDeploySort,
+    writeDeploySort,
     progressFor,
     readPersonalDeploymentsCache,
     relativeAge,
@@ -53,6 +63,8 @@
   interface Props {
     accountId?: string;
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
+    /** Lazy og:image preview for the selected app, read and cached by the desktop. */
+    deployAppPreview?: DeployPreviewFetcher;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;    /** RELEASE-001 gate: false hides Redeploy and the "Your bots" filter. */
     actions?: boolean;
@@ -65,7 +77,7 @@
     livePreview?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, companies = [], openExternal, actions = true, livePreview = false }: Props = $props();
 
   /** Rows painted per step; the rest arrive on "Show more". */
   const PAGE = 200;
@@ -77,7 +89,8 @@
   // OWNER-R34: two header pills (status, scope) plus "Deployed by you" and
   // "Deployed by your bots" toggles. Kept for the session across visits.
   let pills = $state<DeployFilterPills>({ ...sessionPills });
-  let sort = $state<DeploySort | null>(sessionSort);
+  // Newest deploy first unless this user picked another column on this machine.
+  let sort = $state<DeploySort>(readDeploySort(untrack(() => accountId)));
   let query = $state("");
   let selectedId = $state<string | null>(null);
   let selectionCleared = $state(false);
@@ -166,7 +179,7 @@
   const rows = $derived(sortDeployments(filteredRows, sort));
   $effect(() => {
     sessionPills = { ...pills };
-    sessionSort = sort ? { ...sort } : null;
+    writeDeploySort(untrack(() => accountId), sort);
   });
   $effect(() => {
     if (
@@ -217,20 +230,64 @@
   }
 
   function toggleSort(key: DeploySortKey): void {
-    const initial = key === "lastVisit" ? "descending" : "ascending";
-    if (sort?.key !== key) sort = { key, direction: initial };
-    else if (sort.direction === initial) sort = { key, direction: initial === "ascending" ? "descending" : "ascending" };
-    else sort = null;
+    sort = nextDeploySort(sort, key);
     limit = PAGE;
   }
 
   function sortState(key: DeploySortKey): "ascending" | "descending" | "none" {
-    return sort?.key === key ? sort.direction : "none";
+    return sort.key === key ? sort.direction : "none";
   }
 
-  function sortMark(key: DeploySortKey): string {
-    const state = sortState(key);
-    return state === "ascending" ? "↑" : state === "descending" ? "↓" : "";
+  /** The App column header also sorts by deploy time; it reports whichever of the two is active. */
+  function columnSortState(keys: readonly DeploySortKey[]): "ascending" | "descending" | "none" {
+    const active = keys.find((key) => sort.key === key);
+    return active ? sortState(active) : "none";
+  }
+
+  // Side-panel og:image preview. Read only for the selected row, never the
+  // whole list; a cached result paints at once (cache-first), otherwise a
+  // skeleton holds the space while the desktop fetches.
+  type PreviewState = { key: string; status: "loading" | "ready" | "failed"; data: DeployPreview | null };
+  let ogPreview = $state<PreviewState | null>(null);
+  let previewAttempt = $state(0);
+  let previewRefresh = false;
+  const ogTarget = $derived(!livePreview && deployAppPreview && previewable(selected) ? selected : null);
+  const ogKey = $derived(ogTarget ? previewCacheKey(ogTarget) : null);
+  $effect(() => {
+    const key = ogKey;
+    void previewAttempt;
+    const fetcher = deployAppPreview;
+    const row = untrack(() => ogTarget);
+    if (!key || !fetcher || !row) {
+      ogPreview = null;
+      return;
+    }
+    const refresh = previewRefresh;
+    previewRefresh = false;
+    const hit = refresh ? null : cachedDeployPreview(row);
+    if (hit) {
+      ogPreview = { key, status: "ready", data: hit };
+      return;
+    }
+    let live = true;
+    ogPreview = { key, status: "loading", data: null };
+    loadDeployPreview(fetcher, row, { refresh }).then(
+      (data) => {
+        if (live) ogPreview = { key, status: "ready", data };
+      },
+      (err) => {
+        console.warn("[deployments] preview unavailable", err);
+        if (live) ogPreview = { key, status: "failed", data: null };
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
+
+  function retryPreview(): void {
+    previewRefresh = true;
+    previewAttempt += 1;
   }
 
   /** Desktop width the preview page lays out at before it is scaled into the card. */
@@ -320,15 +377,30 @@
       <input class="search" type="search" placeholder="Search subdomains" aria-label="Search subdomains" bind:value={query} oninput={() => (limit = PAGE)} />
     </div>
     {#if failedLabels && !loadFailed}
-      <p class="warn" data-testid="deploy-failed-scopes">Couldn't load {failedLabels} right now. Showing the rest.</p>
+      <div class="banner" role="status" data-testid="deploy-failed-scopes">
+        <p>Couldn't load {failedLabels} right now. Showing the rest.</p>
+        <RailButton icon="refresh" disabled={refreshing} data-testid="deploy-failed-scopes-retry" onclick={() => (loadAttempt += 1)}>Retry</RailButton>
+      </div>
     {/if}
     <div class="deploys">
       <div class="table" role="table" aria-label="Deployments">
         <div class="drow hd" role="row">
           {#each [
-            ["app", "App"], ["scope", "Scope"], ["status", "Status"], ["access", "Access"], ["views", "30d views"], ["lastVisit", "Last visit"],
-          ] as [key, label] (key)}
-            <span role="columnheader" aria-sort={sortState(key as DeploySortKey)}><button type="button" class="sort-header" data-testid={`deploy-sort-${key}`} onclick={() => toggleSort(key as DeploySortKey)}>{label}<span class="sort-mark" aria-hidden="true">{sortMark(key as DeploySortKey)}</span></button></span>
+            [["app", "App"], ["deployed", "Deployed"]], [["scope", "Scope"]], [["status", "Status"]], [["access", "Access"]], [["views", "30d views"]], [["lastVisit", "Last visit"]],
+          ] as column (column[0]![0])}
+            <span role="columnheader" class="hcell" aria-sort={columnSortState(column.map(([key]) => key as DeploySortKey))}>
+              {#each column as [key, label], index (key)}
+                {#if index > 0}<span class="hsep" aria-hidden="true">·</span>{/if}
+                <button
+                  type="button"
+                  class="sort-header"
+                  class:on={sortState(key as DeploySortKey) !== "none"}
+                  data-testid={`deploy-sort-${key}`}
+                  aria-label={sortState(key as DeploySortKey) === "none" ? `Sort by ${label}` : `${label}, sorted ${sortState(key as DeploySortKey)}`}
+                  onclick={() => toggleSort(key as DeploySortKey)}
+                >{label}{#if sortState(key as DeploySortKey) !== "none"}<span class="sort-mark" class:asc={sortState(key as DeploySortKey) === "ascending"} aria-hidden="true"><RailIcon name="chevron-down" /></span>{/if}</button>
+              {/each}
+            </span>
           {/each}
         </div>
         {#if !cache}
@@ -418,6 +490,21 @@
             <p class="preview-note">Preview may be blank for protected pages</p>
           {:else if livePreview}
             <p class="preview-note" data-testid="deploy-no-preview">No preview</p>
+          {:else if ogPreview?.status === "loading"}
+            <div class="og og-wait" aria-busy="true" aria-label="Loading preview" data-testid="deploy-og-loading"></div>
+          {:else if ogPreview?.status === "failed"}
+            <div class="og-failed" role="status" data-testid="deploy-og-failed">
+              <span>Preview unavailable</span>
+              <button type="button" class="link" data-testid="deploy-og-retry" onclick={retryPreview}>Retry</button>
+            </div>
+          {:else if ogPreview?.status === "ready" && ogPreview.data?.thumbnail}
+            <button
+              type="button"
+              class="og"
+              aria-label={`Open preview of ${selected.name}`}
+              data-testid="deploy-og"
+              onclick={() => selected?.url && openExternal?.(selected.url)}
+            ><img src={ogPreview.data.thumbnail} alt="" /></button>
           {/if}
           {#if progress}
             <div class="prog" role="status" data-testid="deploy-progress">
@@ -513,8 +600,12 @@
     width: 200px; height: 28px; box-sizing: border-box; border: 1px solid var(--line2); border-radius: 8px;
     background: var(--btn-bg); color: var(--t1); padding: 0 10px; font: inherit;
   }
-  .warn, .notice, .empty { margin: 0; color: var(--t3); }
-  .warn { padding: 0 16px 8px; }
+  .notice, .empty { margin: 0; color: var(--t3); }
+  .banner {
+    display: flex; align-items: center; gap: 12px; margin: 0 16px 8px; padding: 8px 8px 8px 12px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--t2);
+  }
+  .banner p { margin: 0; flex: 1; min-width: 0; }
   .empty { padding: 12px 8px; }
   .deploys { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; flex: 1; }
   /* QA-055: the table scrolls sideways once the columns reach their minimums,
@@ -541,7 +632,13 @@
   .hd { padding: 4px 8px; color: var(--t3); font-size: 13px; }
   .sort-header { display: inline-flex; align-items: center; gap: 3px; min-width: 0; border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: inherit; cursor: pointer; }
   .sort-header:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
-  .sort-mark { width: 10px; color: var(--t2); }
+  .hcell { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+  .hd > .hcell:nth-child(n + 5) { justify-content: flex-end; }
+  .hsep { color: var(--t3); }
+  .sort-header.on { color: var(--t1); }
+  .sort-mark { display: inline-flex; width: 12px; height: 12px; color: var(--t2); }
+  .sort-mark :global(svg) { width: 12px; height: 12px; }
+  .sort-mark.asc { transform: rotate(180deg); }
   .nm { display: flex; flex-direction: column; min-width: 0; }
   .nm .t { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .nm small, .sub, .foot, .url { color: var(--t3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -577,6 +674,17 @@
   }
   .preview iframe.ready { visibility: visible; }
   .preview-wait { position: absolute; inset: 0; display: grid; place-items: center; color: var(--t3); font-size: 13px; }
+  .og {
+    display: block; width: 100%; aspect-ratio: 1200 / 630; padding: 0; border: 1px solid var(--line);
+    border-radius: 8px; overflow: hidden; background: var(--raised); cursor: pointer; font: inherit;
+  }
+  .og img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .og-wait { cursor: default; animation: og-pulse 1.2s ease-in-out infinite; }
+  @keyframes og-pulse { 50% { opacity: 0.55; } }
+  @media (prefers-reduced-motion: reduce) { .og-wait { animation: none; } }
+  .og-failed { display: flex; align-items: center; gap: 8px; color: var(--t3); }
+  .link { border: 0; padding: 0; background: transparent; color: var(--t2); font: inherit; text-decoration: underline; cursor: pointer; }
+  .link:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
   .preview-note { margin: -6px 0 0; color: var(--t3); font-size: 13px; }
   .prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--raised); }
   .phd { display: flex; font-weight: 500; }

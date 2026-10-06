@@ -1301,6 +1301,8 @@ export function createSyncPlatformAdapter(
       listIntegrations: (companyUid) =>
         hqProJson('GET', COMPANY_INTEGRATION_PATHS.list(companyUid), undefined, COMPANY_INTEGRATIONS_TIMEOUT_SECS),
       listDeployApps: (scope) => call('list_deploy_apps', { scope }),
+      deployAppPreview: (appId, url, deployedAt, refresh) =>
+        call('deploy_app_preview', { appId, url, deployedAt, refresh }),
       deployAccessRequest: (scope, method, path, body) =>
         call('deploy_access_request', { scope, method, path, body: body ?? null }),
       getSecrets: (slug) => call('get_company_secrets', { slug }),

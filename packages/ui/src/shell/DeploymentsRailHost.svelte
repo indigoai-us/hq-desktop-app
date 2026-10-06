@@ -11,13 +11,14 @@
   interface Props {
     accountId?: string;
     listDeployApps?: (scope: string) => AdapterPromise<Json>;
+    deployAppPreview?: (appId: string, url: string, deployedAt: string, refresh: boolean) => AdapterPromise<Json>;
     companies?: Pick<Workspace, "slug" | "displayName" | "kind" | "state">[];
     openExternal?: (url: string) => void;
     /** RELEASE-001 gate for Redeploy and the "Your bots" filter. */
     actions?: boolean;
   }
 
-  let { accountId = "local", listDeployApps, companies = [], openExternal, actions = true }: Props = $props();
+  let { accountId = "local", listDeployApps, deployAppPreview, companies = [], openExternal, actions = true }: Props = $props();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let Page = $state<Component<any> | null>(null);
@@ -38,7 +39,7 @@
 
 <div class="host" data-testid="personal-deployments-host">
   {#if Page}
-    <Page {accountId} {listDeployApps} {companies} {openExternal} {actions} />
+    <Page {accountId} {listDeployApps} {deployAppPreview} {companies} {openExternal} {actions} />
   {:else}
     <div class="loading" aria-busy="true">
       <ReadLoader testid="personal-deployments-loading" />

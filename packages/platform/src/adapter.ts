@@ -1130,6 +1130,12 @@ export interface CompanyApi {
    */
   listDeployApps?(scope: string): AdapterPromise<Json>;
   /**
+   * Side-panel preview for one deployed app: `{ ogImageUrl, thumbnail }`.
+   * Read lazily on selection and cached on disk by app id + deploy time.
+   * Desktop only.
+   */
+  deployAppPreview?(appId: string, url: string, deployedAt: string, refresh: boolean): AdapterPromise<Json>;
+  /**
    * One hq-deploy access call (`access-policy`, `access-mode`,
    * `allowed-emails` under `/api/apps/:id`) for a scope. Desktop only; the
    * host refuses any other route.

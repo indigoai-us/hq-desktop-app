@@ -169,6 +169,9 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Buttons across the app now show a small icon before their label, including New project, Choose folder, Submit for review and Refresh.
 - Packs: the Uninstall button is no longer red, and every button on the page has an icon.
 - Deployments: the detail panel shows a small preview of a live deployment. Click it to open the page.
+- Deployments opens with the most recently deployed apps first. Click any column header, including the new Deployed header next to App, to sort by it; click again to reverse. Your choice is remembered on this computer.
+- Deployments: selecting a live app shows its share image (the og:image the page declares) in the detail panel. It is fetched only when you select the app, saved on this computer, and fetched again after a redeploy. Apps behind a password or sign-in show no image. Click it to open the page.
+- Deployments: when one company fails to load, the notice now sits in a banner with a Retry button.
 - Settings: the "Open this company on sign-in for members" switch is gone from General. It did not change anything.
 - Billing: the page shows the seat and hosted agent counts without the long list of names under them.
 - Atlas: the map names only recently touched projects until you point at something. Hovering or selecting a project names the repos, knowledge and policies it uses. Other sections show names when hovered, or once you zoom in.

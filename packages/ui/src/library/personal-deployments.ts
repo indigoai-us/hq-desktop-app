@@ -44,6 +44,8 @@ export interface PersonalDeployment {
   lastVisit: string;
   /** Absolute last visit (ISO). The page re-renders `lastVisit` from it every 30 s (QA-069). */
   lastVisitAt?: string;
+  /** Absolute deploy time (ISO): deployedAt, else updatedAt, else createdAt. Sorts the list and keys the preview cache. */
+  deployedAt?: string;
   /** 1-based deploy step when status is deploying or building. */
   step: number | null;
   liveVersion: string;
@@ -220,6 +222,7 @@ export function deploymentFromApp(
     views30d: typeof views === "number" && Number.isFinite(views) ? views : null,
     lastVisit: relativeAge(str(app.lastVisitAt), now),
     lastVisitAt: str(app.lastVisitAt) || undefined,
+    deployedAt: deployedAt || undefined,
     step: null,
     liveVersion: version,
     nextVersion: version,
@@ -321,17 +324,61 @@ export function pillsAreDefault(pills: DeployFilterPills): boolean {
   return pills.status === "all" && pills.scope === "all" && pills.company === "all" && !pills.byYou && !pills.byBots;
 }
 
-export type DeploySortKey = "app" | "scope" | "status" | "access" | "views" | "lastVisit";
+export type DeploySortKey = "app" | "deployed" | "scope" | "status" | "access" | "views" | "lastVisit";
 export type DeploySortDirection = "ascending" | "descending";
 export interface DeploySort {
   key: DeploySortKey;
   direction: DeploySortDirection;
+}
+const SORT_KEYS: readonly DeploySortKey[] = ["app", "deployed", "scope", "status", "access", "views", "lastVisit"];
+/** Newest deploy first. */
+export const DEFAULT_DEPLOY_SORT: DeploySort = { key: "deployed", direction: "descending" };
+/** Time and count columns open newest/largest first; text columns open A to Z. */
+export function initialSortDirection(key: DeploySortKey): DeploySortDirection {
+  return key === "deployed" || key === "lastVisit" || key === "views" ? "descending" : "ascending";
+}
+/** Header click: a new column opens in its initial direction, the active column flips. */
+export function nextDeploySort(current: DeploySort, key: DeploySortKey): DeploySort {
+  if (current.key !== key) return { key, direction: initialSortDirection(key) };
+  return { key, direction: current.direction === "ascending" ? "descending" : "ascending" };
+}
+
+const SORT_STORAGE_PREFIX = "hq.personal-deployments.sort.v1:";
+
+/** The sort a user last chose on this machine, or newest-first. */
+export function readDeploySort(accountId: string): DeploySort {
+  const raw = storage()?.getItem(SORT_STORAGE_PREFIX + accountId);
+  if (!raw) return { ...DEFAULT_DEPLOY_SORT };
+  try {
+    const parsed = JSON.parse(raw) as Partial<DeploySort>;
+    if (SORT_KEYS.includes(parsed.key as DeploySortKey) && (parsed.direction === "ascending" || parsed.direction === "descending")) {
+      return { key: parsed.key as DeploySortKey, direction: parsed.direction };
+    }
+  } catch (err) {
+    console.warn("[deployments] dropping unreadable sort", err);
+  }
+  return { ...DEFAULT_DEPLOY_SORT };
+}
+
+export function writeDeploySort(accountId: string, sort: DeploySort): void {
+  if (!accountId) return;
+  try {
+    storage()?.setItem(SORT_STORAGE_PREFIX + accountId, JSON.stringify(sort));
+  } catch (err) {
+    console.warn("[deployments] sort write failed", err);
+  }
 }
 
 function compareText(left: string, right: string): number {
   return left.localeCompare(right, undefined, { sensitivity: "base" });
 }
 
+function timeOf(iso: string | undefined): number | null {
+  const t = Date.parse(iso ?? "");
+  return Number.isNaN(t) ? null : t;
+}
+
+/** Missing values (null) sort last in both directions. */
 function compareMissingLast<T>(left: T | null, right: T | null, compare: (a: T, b: T) => number, direction: DeploySortDirection): number {
   if (left === null) return right === null ? 0 : 1;
   if (right === null) return -1;
@@ -339,24 +386,22 @@ function compareMissingLast<T>(left: T | null, right: T | null, compare: (a: T, 
   return direction === "descending" ? -result : result;
 }
 
-/** Sort filtered deployment rows. A null sort preserves the API's default scope/name order. */
+/** Sort filtered deployment rows. Ties keep their incoming order; a null sort is newest-first. */
 export function sortDeployments(rows: readonly PersonalDeployment[], sort: DeploySort | null): PersonalDeployment[] {
-  if (!sort) return [...rows];
+  const { key, direction } = sort ?? DEFAULT_DEPLOY_SORT;
+  const byNumber = (a: number, b: number) => a - b;
   return rows.map((row, index) => ({ row, index })).sort((left, right) => {
-    const { key, direction } = sort;
     let result = 0;
-    if (key === "app") result = compareText(left.row.name, right.row.name);
-    else if (key === "scope") result = compareText(left.row.scopeLabel, right.row.scopeLabel) || compareText(left.row.name, right.row.name);
-    else if (key === "status") result = compareText(statusLabel(left.row), statusLabel(right.row));
-    else if (key === "access") result = compareText(left.row.access, right.row.access);
-    else if (key === "views") result = compareMissingLast(left.row.views30d, right.row.views30d, (a, b) => a - b, direction);
-    else result = compareMissingLast(
-      Number.isNaN(Date.parse(left.row.lastVisitAt ?? "")) ? null : Date.parse(left.row.lastVisitAt ?? ""),
-      Number.isNaN(Date.parse(right.row.lastVisitAt ?? "")) ? null : Date.parse(right.row.lastVisitAt ?? ""),
-      (a, b) => a - b,
-      direction,
-    );
-    if (key !== "views" && key !== "lastVisit" && direction === "descending") result = -result;
+    if (key === "views") result = compareMissingLast(left.row.views30d, right.row.views30d, byNumber, direction);
+    else if (key === "lastVisit") result = compareMissingLast(timeOf(left.row.lastVisitAt), timeOf(right.row.lastVisitAt), byNumber, direction);
+    else if (key === "deployed") result = compareMissingLast(timeOf(left.row.deployedAt), timeOf(right.row.deployedAt), byNumber, direction);
+    else {
+      if (key === "app") result = compareText(left.row.name, right.row.name);
+      else if (key === "scope") result = compareText(left.row.scopeLabel, right.row.scopeLabel) || compareText(left.row.name, right.row.name);
+      else if (key === "status") result = compareText(statusLabel(left.row), statusLabel(right.row));
+      else result = compareText(left.row.access, right.row.access);
+      if (direction === "descending") result = -result;
+    }
     return result || left.index - right.index;
   }).map(({ row }) => row);
 }
