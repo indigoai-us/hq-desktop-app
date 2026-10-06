@@ -64,6 +64,8 @@
   } from "./work-push.js";
   import { relativeActivity } from "../common/relative-activity.js";
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
+  import { liveReadFor } from "../chat/live-read-store.svelte.js";
+  import { projectActivity, type ProjectActivity } from "./project-activity.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
   import ProjectRow from "./ProjectRow.svelte";
   import BoardFaces from "./BoardFaces.svelte";
@@ -310,6 +312,8 @@
   }
 
   let pushSessions = $state<PortfolioSessionRef[]>([]);
+  /** Every session push this page has seen, for board Active placement. */
+  let boardPushSessions = $state<PortfolioSessionRef[]>([]);
 
   onMount(() => {
     const tick = setInterval(() => {
@@ -332,11 +336,10 @@
         invalidateCompanyBoards();
         return;
       }
+      const marker = sessionRefFromSessionEvent(push);
+      boardPushSessions = upsertSessionMarker(boardPushSessions, marker);
       if (push.projectId && selected && push.projectId !== selected.id) return;
-      pushSessions = upsertSessionMarker(
-        pushSessions,
-        sessionRefFromSessionEvent(push),
-      );
+      pushSessions = upsertSessionMarker(pushSessions, marker);
     });
     return () => {
       clearInterval(tick);
@@ -448,12 +451,31 @@
     return goal.title || goal.id || null;
   }
 
+  // Work-mesh live read for this company (bound by the host, cache-first).
+  const liveRead = $derived(companyUid ? liveReadFor(companyUid) : undefined);
+
+  function activityFor(project: Project): ProjectActivity | null {
+    return projectActivity(project, {
+      now,
+      live: liveRead,
+      sessions: boardPushSessions,
+    });
+  }
+
   function resolveColumn(project: Project): PortfolioColumn {
-    // Active only when projectLiveRunView finds a real live session signal.
+    // Active = live presence, a running lane, or recent story/commit activity.
     return portfolioColumn(
       project,
-      projectLiveRunView(project, sessions, now) !== null,
+      activityFor(project) !== null ||
+        projectLiveRunView(project, sessions, now) !== null,
     );
+  }
+
+  function cardContext(column: PortfolioColumn, project: Project): string {
+    if (column === "active") {
+      return activityFor(project)?.label ?? portfolioStateContext(column, project);
+    }
+    return portfolioStateContext(column, project);
   }
 
   function matchesProjectFilter(
@@ -527,7 +549,7 @@
   );
 
   const portfolioGroups = $derived(
-    groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions),
+    groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions, resolveColumn),
   );
 
   /** The task view pane sits beside the board view only. */
@@ -1256,7 +1278,10 @@
                       goalLabel={goal}
                       {provenanceUnavailable}
                       liveRun={column === "active" ? liveRun : null}
-                      stateContext={portfolioStateContext(column, project)}
+                      stateContext={cardContext(column, project)}
+                      activityLabel={column === "active"
+                        ? (activityFor(project)?.label ?? null)
+                        : null}
                       {now}
                       onselect={(p) => openPeek(p)}
                       onlinkgoal={!goal ? requestLinkProject : undefined}

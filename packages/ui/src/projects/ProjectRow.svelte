@@ -49,6 +49,8 @@
      * column already carries the state, so this is only offered as a tooltip.
      */
     stateContext?: string | null;
+    /** Why an Active card is active, e.g. "active · Corey, 4 min ago". */
+    activityLabel?: string | null;
     /** Compact relative "now" for last-signal labels (injected for tests). */
     now?: number;
     onselect?: (project: Project) => void;
@@ -65,6 +67,7 @@
     provenanceUnavailable = false,
     liveRun = null,
     stateContext = null,
+    activityLabel = null,
     now = Date.now(),
     onselect,
     onlinkgoal,
@@ -184,6 +187,10 @@
           <span class="faces-caption">{facesCaption(liveFaces)}</span>
         </div>
       {/if}
+    {/if}
+
+    {#if activityLabel && !liveRun}
+      <p class="card-activity" data-testid="project-activity">{activityLabel}</p>
     {/if}
 
     <div class="card-foot" title={stateContext ?? undefined}>
@@ -634,5 +641,14 @@
     .live-dot {
       animation: none;
     }
+  }
+  .card-activity {
+    margin: 0;
+    color: var(--v4-text-3);
+    font-size: 13px;
+    line-height: 16px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>
