@@ -89,7 +89,7 @@ export function bestEffort<T>(promise: Promise<T>, fallback: T, label: string): 
       .replace(/https?:\/\/[^\s"<>]+/gi, '[URL]')
       .replace(/\b(Bearer|Basic)\s+\S+/gi, '$1 [REDACTED]')
       .replace(
-        /\b((?:access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret|authorization|token|api[_-]?key)\s*[:=]\s*)[^\s,;&]+/gi,
+        /\b((?:access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret|authorization|token|api[_-]?key)\s*[:=]\s*)(?:"[^"]*"?|'[^']*'?|[^\s,;&]+)/gi,
         '$1[REDACTED]',
       )
       .replace(/[\r\n\t]+/g, ' ')

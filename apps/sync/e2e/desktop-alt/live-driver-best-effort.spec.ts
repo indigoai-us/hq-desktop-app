@@ -25,6 +25,22 @@ describe('desktop-alt best-effort driver probes', () => {
     expect(formatRecentBestEffortFailures()).not.toContain('hidden-query');
   });
 
+  it('redacts whole quoted credential values that contain whitespace', async () => {
+    await bestEffort(
+      Promise.reject(new Error('probe failed password="top secret value" api_key=\'two words\' token: "unterminated tail')),
+      null,
+      'unit quoted secret probe',
+    );
+
+    expect(getBestEffortFailures().entries.at(-1)?.firstLine).toBe(
+      'probe failed password=[REDACTED] api_key=[REDACTED] token: [REDACTED]',
+    );
+    const report = formatRecentBestEffortFailures();
+    expect(report).not.toContain('secret value');
+    expect(report).not.toContain('two words');
+    expect(report).not.toContain('unterminated tail');
+  });
+
   it('returns a resolving promise value without recording a failure', async () => {
     const before = getBestEffortFailures();
     const value = await bestEffort(Promise.resolve('resolved-value'), 'fallback-value', 'unit resolving probe');
