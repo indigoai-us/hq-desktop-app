@@ -136,6 +136,10 @@ fn failed_git_commit_stderr_and_exit_status_reach_the_sanitized_event() {
             "-m",
             "forced test failure",
         ])
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
         .current_dir(&repo)
         .output()
         .expect("run forced failing git commit");

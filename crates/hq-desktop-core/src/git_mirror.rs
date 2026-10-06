@@ -4003,7 +4003,7 @@ fn drain_failure_class(error: &str) -> &'static str {
 fn drain_failure_details(error: &str) -> Option<(String, String)> {
     let (_, after_exit) = error.split_once(" failed (exit ")?;
     let (status, stderr) = after_exit.split_once("): ")?;
-    if status.is_empty() || !status.bytes().all(|byte| byte.is_ascii_digit()) {
+    if status.parse::<i32>().is_err() {
         return None;
     }
     Some((status.to_string(), redact_git_diagnostic(stderr)))
@@ -4023,6 +4023,7 @@ fn redact_git_diagnostic(stderr: &str) -> String {
         }
     }
     text = redact_branch_markers(&text);
+    text = redact_quoted_values(&text);
     // Replace absolute path tokens before they are attached to the event. Keep
     // punctuation and surrounding Git wording to preserve the failure reason.
     let mut output = String::with_capacity(text.len());
@@ -4051,6 +4052,7 @@ fn redact_git_diagnostic(stderr: &str) -> String {
             index += 1;
         }
     }
+    output = redact_relative_path_tokens(&output);
     const LIMIT: usize = 2 * 1024;
     if output.len() > LIMIT {
         let mut start = output.len() - LIMIT;
@@ -4061,6 +4063,47 @@ fn redact_git_diagnostic(stderr: &str) -> String {
     } else {
         output
     }
+}
+
+fn redact_quoted_values(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(start) = remaining.find(['\'', '"']) {
+        let quote = remaining.as_bytes()[start] as char;
+        output.push_str(&remaining[..=start]);
+        let content_start = start + 1;
+        if let Some((_, after_value)) = remaining[content_start..].split_once(quote) {
+            output.push_str("<value>");
+            output.push(quote);
+            remaining = after_value;
+        } else {
+            output.push_str("<value>");
+            return output;
+        }
+    }
+    output.push_str(remaining);
+    output
+}
+
+fn redact_relative_path_tokens(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(space) = remaining.find(char::is_whitespace) {
+        let token = &remaining[..space];
+        if token.contains('/') || token.contains('\\') {
+            output.push_str("<path>");
+        } else {
+            output.push_str(token);
+        }
+        output.push_str(&remaining[space..=space]);
+        remaining = &remaining[space + 1..];
+    }
+    if remaining.contains('/') || remaining.contains('\\') {
+        output.push_str("<path>");
+    } else {
+        output.push_str(remaining);
+    }
+    output
 }
 
 fn redact_branch_markers(text: &str) -> String {
@@ -12253,13 +12296,15 @@ mod tests {
     #[test]
     fn drain_failure_details_keep_status_and_redact_paths_and_branch_names() {
         let details = drain_failure_details(
-            "git commit failed (exit 128): fatal: cannot lock ref 'refs/heads/private-branch': Unable to create '/Users/alice/hq/.git/HEAD.lock'; C:\\Users\\Alice\\HQ\\repo; branch other-private-name",
+            "git commit failed (exit 128): fatal: cannot lock ref 'refs/heads/private-branch': Unable to create '/Users/alice/hq/.git/HEAD.lock'; C:\\Users\\Alice\\HQ\\repo; error: invalid object 0123 for 'private-customer-name.txt'; branch other-private-name; path subdir/relative-file",
         )
         .expect("formatted nonzero Git error should provide details");
         assert_eq!(details.0, "128");
-        assert!(details.1.contains("cannot lock ref '<branch-ref>'"));
+        assert!(details.1.contains("cannot lock ref '<value>'"));
         assert!(details.1.contains("<path>"));
         assert!(details.1.contains("branch <branch>"));
+        assert!(details.1.contains("invalid object 0123 for '<value>'"));
+        assert!(details.1.contains("path <path>"));
         for private in [
             "/Users/alice",
             "C:\\Users\\Alice",
@@ -12271,6 +12316,15 @@ mod tests {
                 "private value survived: {private}"
             );
         }
+    }
+
+    #[test]
+    fn drain_failure_details_keep_signed_windows_exit_statuses() {
+        let details =
+            drain_failure_details("git commit failed (exit -1073741819): fatal: process crashed")
+                .expect("signed Windows exit code should be retained");
+        assert_eq!(details.0, "-1073741819");
+        assert!(details.1.contains("process crashed"));
     }
 
     /// The complement of the failed-drain tag: an ordinary refusal carries
