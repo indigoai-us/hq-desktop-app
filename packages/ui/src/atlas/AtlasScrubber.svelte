@@ -9,6 +9,9 @@
     ATLAS_TIMELINE_DAYS,
     atlasHistogramHeights,
     atlasHotDays,
+    atlasPlaybackIndex,
+    atlasPlaybackStart,
+    atlasPlaybackStepMs,
     atlasScrubLabel,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
@@ -22,18 +25,34 @@
     disabled?: boolean;
     onmode: (mode: AtlasTimeMode) => void;
     onindex: (index: number | null) => void;
+    /** Playback started or stopped (the map shows the date and the day's changes while playing). */
+    onplaying?: (playing: boolean) => void;
   }
 
-  let { counts, mode, index, nowMs, disabled = false, onmode, onindex }: Props = $props();
+  let { counts, mode, index, nowMs, disabled = false, onmode, onindex, onplaying }: Props = $props();
 
-  /** Milliseconds per day of playback; 30 days play in about three seconds. */
-  const STEP_MS = 100;
+  /** Milliseconds per day of playback: the whole timeline plays in about 25 seconds. */
+  const STEP_MS = atlasPlaybackStepMs(ATLAS_TIMELINE_DAYS);
   const last = ATLAS_TIMELINE_DAYS - 1;
 
   const heights = $derived(atlasHistogramHeights(counts));
   const hot = $derived(atlasHotDays(counts));
   const at = $derived(index ?? last);
   const label = $derived(atlasScrubLabel(index, nowMs));
+  // The busiest day gets a caption, so the tall bar says what it is.
+  const peak = $derived.by(() => {
+    let at = -1;
+    let max = 0;
+    counts.forEach((c, i) => {
+      if (c > max) {
+        max = c;
+        at = i;
+      }
+    });
+    if (at < 0) return null;
+    const day = at >= last ? "Today" : atlasScrubLabel(at, nowMs);
+    return { at, text: `${day} · ${max}` };
+  });
 
   let playing = $state(false);
   let raf = 0;
@@ -41,9 +60,11 @@
   let dragging = false;
 
   function stop(): void {
+    const was = playing;
     playing = false;
     if (raf) cancelAnimationFrame(raf);
     raf = 0;
+    if (was) onplaying?.(false);
   }
 
   function play(): void {
@@ -52,13 +73,19 @@
       return;
     }
     playing = true;
+    onplaying?.(true);
     const start = performance.now();
-    const from = index == null || index >= last ? 0 : index;
+    const from = atlasPlaybackStart(index);
     onindex(from);
     const tickFrame = (t: number) => {
       if (!playing) return;
-      const next = from + Math.floor((t - start) / STEP_MS);
-      if (next >= last) {
+      // No playback while the window is hidden: pause where it is.
+      if (typeof document !== "undefined" && document.hidden) {
+        stop();
+        return;
+      }
+      const next = atlasPlaybackIndex(from, t - start, STEP_MS);
+      if (next === null) {
         onindex(null);
         stop();
         return;
@@ -154,6 +181,14 @@
     {#each heights as h, i (i)}
       <i class:hot={hot[i]} class:past={i > at} style:height={`${h}%`}></i>
     {/each}
+    {#if peak}
+      <span
+        class="peak"
+        class:flip={peak.at > ATLAS_TIMELINE_DAYS * 0.8}
+        data-testid="atlas-scrub-peak"
+        style:left={`${((peak.at + 0.5) / ATLAS_TIMELINE_DAYS) * 100}%`}
+      >{peak.text}</span>
+    {/if}
     <span
       class="ph"
       data-testid="atlas-scrub-playhead"
@@ -181,11 +216,13 @@
 
 <style>
   .scrub {
+    user-select: none;
+    -webkit-user-select: none;
     display: grid;
     grid-template-columns: 44px 1fr 170px;
     align-items: center;
     gap: 12px;
-    height: 48px;
+    height: 64px;
     padding: 0 12px 0 8px;
     margin-bottom: 6px;
     border-top: 1px solid var(--v4-rowline);
@@ -212,7 +249,7 @@
   }
   .hist {
     position: relative;
-    height: 30px;
+    height: 40px;
     display: flex;
     align-items: flex-end;
     gap: 2px;
@@ -234,6 +271,19 @@
   }
   .hist i.past {
     opacity: 0.4;
+  }
+  .peak {
+    position: absolute;
+    top: -13px;
+    transform: translateX(-50%);
+    font-size: 11px;
+    line-height: 1;
+    color: var(--v4-text-3);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .peak.flip {
+    transform: translateX(-100%);
   }
   .ph {
     position: absolute;

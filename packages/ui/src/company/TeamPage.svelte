@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
@@ -383,7 +384,7 @@
     {#if refreshing}
       <span class="meta-line" data-meta-line aria-live="polite" data-testid="team-refreshing">Refreshing…</span>
     {:else if refreshFailed}
-      <button type="button" class="meta-line quiet-retry" data-meta-line data-testid="team-refresh-failed" onclick={() => (readAttempt += 1)}>Couldn't refresh · Try again</button>
+      <button type="button" class="meta-line quiet-retry" data-meta-line data-testid="team-refresh-failed" onclick={() => (readAttempt += 1)}><RailIcon name="refresh" />Couldn't refresh · Try again</button>
     {/if}
     <RailButton icon="user-plus" type="button" data-testid="invite-teammate" onclick={() => (inviteOpen = true)}>
       Invite teammate

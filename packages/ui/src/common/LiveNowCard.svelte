@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "./button/RailIcon.svelte";
   import Dropdown from "./LazyDropdown.svelte";
   import RailButton from "./button/RailButton.svelte";
   import type { ActiveMeeting, RecordingMembership } from "./active-meeting";
@@ -203,7 +204,7 @@
             onclick={join}
             disabled={joining}
             aria-busy={joining}
-          >
+          ><RailIcon name="refresh" />
             {joining ? "Retrying…" : "Retry"}
           </button>
         </div>
@@ -333,7 +334,7 @@
     background: transparent;
     color: currentColor;
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
   .live-company {

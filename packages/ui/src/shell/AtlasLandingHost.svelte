@@ -8,6 +8,7 @@
   chips and the people filter come from the shell's presence stores.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { onMount } from "svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import { loadAtlas } from "./atlas-lazy.js";
@@ -19,6 +20,7 @@
   import type { NavigationDestination } from "./navigation-history.js";
   import { loadLocalProjects, ProjectsUnavailableError } from "../projects/local-projects.js";
   import { boardProjectsInProgress } from "../projects/projects-model.js";
+  import { requestLiveRefresh } from "../mesh/live-refresh.js";
 
   type AtlasModule = Awaited<ReturnType<typeof loadAtlas>>;
   type AtlasCache = ReturnType<AtlasModule["createAtlasCache"]>;
@@ -77,6 +79,14 @@
     atlasLocal = null,
     loadPeople = null,
   }: Props = $props();
+
+  // Who is working now comes from the live read. Ask for it when Atlas opens
+  // on a company: until now it only arrived on a realtime reconnect or a live
+  // wake, so a company with no wake since launch showed "Nobody is working".
+  $effect(() => {
+    const uid = companyUid?.trim();
+    if (uid) requestLiveRefresh(uid);
+  });
 
   // Shared cache with the company sidepane: paints the warm summary first and
   // refreshes in the background. No poller.
@@ -184,7 +194,7 @@
       {#if chunkFailed}
         <div class="note" data-testid="atlas-landing-error" role="alert">
           The map didn't load.
-          <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}>Retry</button>
+          <button type="button" data-testid="atlas-landing-retry" onclick={loadChunk}><RailIcon name="refresh" />Retry</button>
         </div>
       {:else if mod && !companyUid}<div class="note" data-testid="atlas-landing-unlinked">This company isn't linked to HQ cloud yet, so there is no map to show.</div>{/if}
     </div>

@@ -1974,7 +1974,7 @@
     color: var(--accent-fg);
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   :global([data-window='messages']) .btn-send:hover:not(:disabled) {

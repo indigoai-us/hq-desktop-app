@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import DayGroupHeader from "./DayGroupHeader.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
@@ -508,12 +509,8 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    /** US-006: when true, contacts whose last message is agent-only show their preview. */
-    showBotMessages?: boolean;
     /** Optional content rendered above the account footer. */
     bottomContent?: Snippet;
-    /** Fires when the user clicks the bot-message toggle in the sidebar header. */
-    onshowbotmessageschange?: (value: boolean) => void;
     /**
      * When true (the `desktop.human-only-conversations` flag is on), rows are
      * ordered and sectioned by the last message a person typed, in three
@@ -604,9 +601,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    showBotMessages = false,
     bottomContent,
-    onshowbotmessageschange,
     humanOnly = false,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
@@ -1636,6 +1631,8 @@
         }
         // The same list for as long as it is open, as "New bot" keeps it.
         newBotCompaniesAtOpen = newBotTargets;
+        // A starting bot's row goes straight to that bot: no Cloud or Local question.
+        newBotChoose = false;
         newBotOpen = true;
         return;
       }
@@ -1851,6 +1848,8 @@
   function openCreate(): void {
     closeAllOverlays();
     createBotCompanyUid = null;
+    createSunrise = false;
+    createBotHome = null;
     createOpen = true;
   }
   /** The "+" button opens the create menu. New company is not on this menu. */
@@ -1875,10 +1874,12 @@
       channelSheetOpen = true;
       return;
     }
-    // "New bot": the full-window takeover when a company has it, else the
-    // create window's own bot step.
-    if (newBotTargets.length > 0) {
-      openNewBotTakeover();
+    // "New bot": the full-window takeover, which asks "Cloud or Local?"
+    // first. Only when no bot can be made at all does the create window's
+    // own bot step open (it says why).
+    newBotPreferredCompanyUid = null;
+    if (newBotChoicePossible) {
+      openNewBotTakeover({ choose: true });
       return;
     }
     createKind = "channel";
@@ -1903,6 +1904,24 @@
    * of having the screen taken away under them.
    */
   let newBotCompaniesAtOpen = $state<ScopeCompany[] | null>(null);
+  /** The takeover opens on the "Cloud or Local?" question (every New bot entry; not a starting bot's row). */
+  let newBotChoose = $state(false);
+  /** The company a New bot entry was opened for (Team page Add agent). */
+  let newBotPreferredCompanyUid = $state<string | null>(null);
+  /** The "+" window's bot step wears the takeover shell: it was opened from the choice. */
+  let createSunrise = $state(false);
+  /** The home picked on the choice, preselected in the bot flow. */
+  let createBotHome = $state<"local" | "cloud" | null>(null);
+  /** A Local bot can be made on this computer. */
+  const canMakeLocalBot = $derived(!!oncreatebot);
+  /** A cloud bot can be made through the "+" window's flow (companies without the takeover too). */
+  const canMakeCloudBotInWindow = $derived(
+    !!oncreateagent && agentCompanies.some((company) => company.companyUid.trim()),
+  );
+  /** "New bot" has something to offer: the choice screen opens. */
+  const newBotChoicePossible = $derived(
+    canMakeLocalBot || newBotTargets.length > 0 || canMakeCloudBotInWindow,
+  );
   const takeoverCompanies = $derived(
     newBotOpen && newBotCompaniesAtOpen?.length
       ? newBotCompaniesAtOpen
@@ -1913,6 +1932,22 @@
    * step: local bots, and cloud bots in the companies the takeover does not
    * list.
    */
+  /** The takeover lists a company it can make a cloud bot in itself. */
+  const takeoverHasCloud = $derived(
+    !!oncreatenewbot && !!loadCloudProvisionOptions && takeoverCompanies.length > 0,
+  );
+  /** Why Cloud is off on the choice screen. Null when it can be picked. */
+  const newBotCloudReason = $derived(
+    takeoverHasCloud || canMakeCloudBotInWindow
+      ? null
+      : agentCompanies.length === 0 && scopeCompanies.length === 0
+        ? "Cloud bots run in a company. Join or create one first."
+        : "Cloud bots aren't available in your companies yet.",
+  );
+  /** Why Local is off on the choice screen. Null when it can be picked. */
+  const newBotLocalReason = $derived(
+    canMakeLocalBot ? null : "Local bots can't be made from this app.",
+  );
   const takeoverOtherWayLabel = $derived(
     newBotOtherWayLabel({
       local: !!oncreatebot,
@@ -1934,9 +1969,10 @@
    * reached from their own rows; none of them stands in the way of making
    * another one.
    */
-  function openNewBotTakeover(): void {
+  function openNewBotTakeover(options: { choose?: boolean } = {}): void {
     newBotFromCreateWindow = createOpen;
     createOpen = false;
+    newBotChoose = options.choose ?? true;
     newBotCompaniesAtOpen = newBotTargets;
     openWakingKey = null;
     newBotOpen = true;
@@ -2678,19 +2714,44 @@
       return;
     }
     createStep = "find";
+    createSunrise = false;
+    createBotHome = null;
     createOpen = true;
     await tick();
     document.querySelector<HTMLInputElement>('[data-testid="chat-create-query"]')?.focus();
   }
 
-  function openLocalBotFromTakeover(): void {
+  /**
+   * Leave the takeover for the "+" window's bot flow, worn in the same
+   * takeover shell: Local from the choice, Cloud in companies the takeover
+   * does not list, or the create screen's "local bot instead" (no preset).
+   */
+  function openBotFlowFromChoice(home: "local" | "cloud" | null): void {
     newBotOpen = false;
     newBotFromCreateWindow = false;
-    // No company was chosen for this bot: a preselect left by an earlier
-    // "Add agent" for one company must not carry over.
-    createBotCompanyUid = null;
+    // Only the company this New bot was opened for (Team page Add agent)
+    // carries over; an older preselect must not.
+    createBotCompanyUid = newBotPreferredCompanyUid;
+    createKind = "channel";
     createStep = "bot";
+    createSunrise = true;
+    createBotHome = home;
     createOpen = true;
+  }
+
+  function openLocalBotFromTakeover(): void {
+    openBotFlowFromChoice(null);
+  }
+
+  /** Back from the bot flow's first step: the "Cloud or Local?" question again. */
+  function backToNewBotChoice(): void {
+    createOpen = false;
+    createSunrise = false;
+    createBotHome = null;
+    newBotCompaniesAtOpen = newBotTargets;
+    openWakingKey = null;
+    newBotChoose = true;
+    newBotOpen = true;
   }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
@@ -2706,6 +2767,9 @@
     hint?: { title: string; companyUid: string | null },
   ): void {
     createOpen = false;
+    createSunrise = false;
+    createBotHome = null;
+    newBotPreferredCompanyUid = null;
     // The New channel sheet closes through here too (QA-019).
     channelSheetOpen = false;
     plusBtnEl?.focus();
@@ -2768,6 +2832,14 @@
 
   /** Host entry point (Team page Add agent): open on the New agent step. */
   function openNewAgent(companyUid: string | null = null): void {
+    // Every New bot entry starts on the "Cloud or Local?" question.
+    if (newBotChoicePossible) {
+      closeAllOverlays();
+      newBotPreferredCompanyUid = companyUid;
+      openNewBotTakeover({ choose: true });
+      return;
+    }
+    newBotPreferredCompanyUid = null;
     createKind = "channel";
     createStep = "bot";
     openCreate();
@@ -3129,7 +3201,7 @@
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        raceTimeout(api.listContacts({ showBotMessages }), bootTimeoutMs, "list_contacts").catch(
+        raceTimeout(api.listContacts({ showBotMessages: false }), bootTimeoutMs, "list_contacts").catch(
           (err) => {
             sidebarLog("boot-error", {
               source: "list_contacts",
@@ -3221,21 +3293,6 @@
     const seq = rosterWakeSeq;
     if (seq <= 0) return;
     untrack(() => {
-      void refreshLists();
-    });
-  });
-
-  // Re-fetch contacts when the bot-message toggle flips so list previews update.
-  // Skip the initial run: `onMount` already primes the roster with the current
-  // toggle value, so re-reading here would double the boot contacts fetch.
-  let botToggleSeen = false;
-  $effect(() => {
-    const _show = showBotMessages;
-    untrack(() => {
-      if (!botToggleSeen) {
-        botToggleSeen = true;
-        return;
-      }
       void refreshLists();
     });
   });
@@ -3967,26 +4024,6 @@
           />
         </svg>
       </button>
-      <!-- US-006: bot-message toggle -->
-      <button
-        type="button"
-        class="chat-icon-btn"
-        class:on={showBotMessages}
-        data-testid="chat-bot-toggle"
-        aria-label={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        aria-pressed={showBotMessages}
-        title={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        onclick={() => onshowbotmessageschange?.(!showBotMessages)}
-      >
-        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
-          <rect x="2" y="4" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.25" fill="none"/>
-          <rect x="4.5" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <rect x="8" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
-          <circle cx="7" cy="1" r="0.75" fill="currentColor"/>
-          <line x1="4.5" y1="9.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-        </svg>
-      </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
         <button
           type="button"
@@ -4205,7 +4242,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-all"
         onclick={selectAllVisible}
-      >
+      ><RailIcon name="check-circle" />
         Select all
       </button>
       <button
@@ -4214,7 +4251,7 @@
         data-testid="chat-selection-archive"
         disabled={selectionCount === 0}
         onclick={archiveSelection}
-      >
+      ><RailIcon name="archive" />
         {selectionAllArchived ? "Unarchive" : "Archive"}
       </button>
       <button
@@ -4222,7 +4259,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-done"
         onclick={exitSelectionMode}
-      >
+      ><RailIcon name="check" />
         Done
       </button>
     </div>
@@ -4326,7 +4363,7 @@
             data-testid="create-or-join-company"
             onclick={() => void oncreatecompany?.()}
           >
-            <span class="chat-glyph" aria-hidden="true">+</span>
+            <span class="chat-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
             <span class="chat-row-title">Create or join a company</span>
           </button>
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
@@ -4490,7 +4527,7 @@
       class="chat-history-affordance"
       data-testid="chat-show-history"
       onclick={openHistory}
-    >
+    ><RailIcon name="chevron-down" />
       Show all history{historyHiddenCount > 0
         ? ` (${historyHiddenCount})`
         : ""}…
@@ -4963,7 +5000,7 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
-      onnewcloudbot={newBotTargets.length > 0 ? openNewBotTakeover : null}
+      onnewcloudbot={newBotChoicePossible ? () => openNewBotTakeover({ choose: true }) : null}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {directCloud}
@@ -4986,18 +5023,26 @@
       {loadAvatarPacks}
       initialKind={createKind}
       initialStep={createStep}
+      sunrise={createSunrise}
+      initialBotHome={createBotHome}
+      onsunriseback={createSunrise ? backToNewBotChoice : null}
     />
   {/if}
 
   {#if newBotOpen}
     <NewBotTakeover
       canCreateLocalBot={!!oncreatebot}
+      choose={newBotChoose}
+      cloudReason={newBotCloudReason}
+      localReason={newBotLocalReason}
+      onchoosecloud={canMakeCloudBotInWindow ? () => openBotFlowFromChoice("cloud") : null}
+      onchooselocal={canMakeLocalBot ? () => openBotFlowFromChoice("local") : null}
       oncancel={cancelNewBotTakeover}
       onopenlocal={takeoverOtherWayLabel ? openLocalBotFromTakeover : null}
       otherWayLabel={takeoverOtherWayLabel}
       nameCompany={inSeveralCompanies}
       companies={takeoverCompanies}
-      currentCompanyUid={scopedCompanyUid || null}
+      currentCompanyUid={newBotPreferredCompanyUid ?? (scopedCompanyUid || null)}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
       {loadClaudeProviderFlag}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
@@ -200,13 +201,13 @@
                   class="btn"
                   data-testid="notification-accept-invite"
                   onclick={() => void acceptInvite(item)}
-                >Accept</button>
+                ><RailIcon name="check" />Accept</button>
                 <button
                   type="button"
                   class="btn"
                   data-testid="notification-decline-invite"
                   onclick={() => void declineInvite(item)}
-                >Decline</button>
+                ><RailIcon name="x" />Decline</button>
               </div>
               {#if inviteNotes[item.id]}
                 <span class="m" data-testid="notification-invite-error">{inviteNotes[item.id].message}</span>
@@ -227,17 +228,17 @@
                   class="btn"
                   data-testid="notification-approve"
                   onclick={() => void decide(item, "approve")}
-                >Approve</button>
+                ><RailIcon name="check" />Approve</button>
                 <button
                   type="button"
                   class="btn"
                   data-testid="notification-deny"
                   onclick={() => void decide(item, "deny")}
-                >Deny</button>
+                ><RailIcon name="x" />Deny</button>
               </div>
             {:else}
               <div class="act">
-                <button type="button" class="btn" onclick={() => onopen?.(item)}>Open</button>
+                <button type="button" class="btn" onclick={() => onopen?.(item)}><RailIcon name="external" />Open</button>
               </div>
             {/if}
           </div>
@@ -249,7 +250,7 @@
   <div class="nfoot">
     <span class="grow"></span>
     {#if onopensettings}
-      <button type="button" class="link" onclick={() => onopensettings?.()}>Notification settings</button>
+      <button type="button" class="link" onclick={() => onopensettings?.()}><RailIcon name="settings" />Notification settings</button>
     {/if}
   </div>
 </div>

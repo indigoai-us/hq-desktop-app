@@ -25,7 +25,7 @@ import { atlasEndpoint, createAtlasCache } from "./atlas-cache.js";
 const NOW = Date.UTC(2026, 8, 30, 12);
 
 describe("atlas layout", () => {
-  it("places six kind clusters on a ring in the fixed order", () => {
+  it("lists the six kind clusters in the fixed order and packs them around the largest", () => {
     const { regions, placed } = layoutAtlas(smokeAtlasGraph().nodes);
     expect(regions.map((r) => r.label)).toEqual([
       "Projects",
@@ -37,8 +37,13 @@ describe("atlas layout", () => {
     ]);
     expect(regions.map((r) => r.type)).toEqual([...ATLAS_RING_ORDER]);
     expect(placed).toHaveLength(smokeAtlasGraph().nodes.length);
-    expect(regions[0].y).toBeLessThan(0);
-    expect(Math.abs(regions[0].x)).toBeLessThan(1e-6);
+    // Packed, not on a fixed ring: the largest section sits at the centre and
+    // every other one is within reach of it.
+    const shapes = atlasDistrictShapes(placed, regions);
+    const largest = shapes.reduce((a, b) => (b.r > a.r ? b : a));
+    expect(Math.hypot(largest.x, largest.y)).toBeLessThan(1e-6);
+    const span = Math.max(...shapes.map((d) => Math.hypot(d.x, d.y) + d.r));
+    expect(span).toBeLessThan(shapes.reduce((sum, d) => sum + d.r * 2, 0));
   });
 
   it("sizes circles from story count, then file count", () => {
@@ -114,10 +119,112 @@ describe("atlas layout", () => {
     expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
   });
 
+  it("names the hovered object even when every label spot touches a neighbour's dot", () => {
+    // A packed section: four neighbours sit right, left, above and below the
+    // hovered dot, so each of its label spots covers one of their dots.
+    const packed = [
+      { id: "h", label: "h", x: 250, y: 250, r: 5 },
+      { id: "e", label: "e", x: 275, y: 246, r: 5 },
+      { id: "w", label: "w", x: 225, y: 246, r: 5 },
+      { id: "n", label: "n", x: 250, y: 233, r: 5 },
+      { id: "s", label: "s", x: 250, y: 266, r: 5 },
+    ].map((n) => ({ ...n, type: "knowledge" as const }));
+    const labels = atlasScreenLabels({
+      placed: packed,
+      selected: null,
+      hovered: "h",
+      related: new Set(),
+      nowMs: NOW,
+      view: { x: 0, y: 0, k: 1 },
+      width: 500,
+      height: 500,
+      measure: () => 40,
+    });
+    expect(labels.map((l) => l.id)).toContain("h");
+  });
+
+  describe("owner 2026-10-05: only recent projects are named until a project is hovered", () => {
+    type T = "project" | "knowledge" | "policy" | "repo" | "worker" | "skill";
+    const at = (id: string, type: T, x: number, touched?: number) => ({ id, type, label: id, x, y: 0, r: 4, touched });
+    const placed = [
+      at("p-old", "project", 0, NOW - 90 * 86_400_000),
+      at("p-new", "project", 100, NOW - 1000),
+      at("p-mid", "project", 200, NOW - 10 * 86_400_000),
+      at("k-recent", "knowledge", 300, NOW - 10),
+      at("pol", "policy", 400, NOW - 10),
+      at("repo", "repo", 500, NOW - 10),
+      at("w", "worker", 600, NOW - 10),
+      at("s", "skill", 700, NOW - 10),
+    ];
+    const edges = [
+      { source: "p-old", target: "repo", kind: "uses" as const },
+      { source: "p-old", target: "k-recent", kind: "cites" as const },
+      { source: "p-old", target: "pol", kind: "cites" as const },
+    ];
+    const base = { placed, nowMs: NOW, view: { x: 20, y: 100, k: 0.5 }, width: 2000, height: 400, measure: () => 20 };
+
+    it("idle labels are all projects, ordered by recency", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: null, related: new Set() });
+      expect(labels.map((l) => l.id)).toEqual(["p-new", "p-mid", "p-old"]);
+    });
+
+    it("idle state at fit zoom names no knowledge, policy, repo, worker or skill", () => {
+      const { placed: real } = layoutAtlas(smokeAtlasGraph().nodes);
+      const types = new Map(real.map((n) => [n.id, n.type]));
+      const view = frameAll(real, 1440, 900);
+      const fit = { ...view, k: Math.min(view.k, ATLAS_LABEL_ALL_ZOOM * 0.5) };
+      const labels = atlasScreenLabels({
+        placed: real,
+        selected: null,
+        hovered: null,
+        related: new Set(),
+        nowMs: NOW,
+        view: fit,
+        width: 1440,
+        height: 900,
+        measure: (t) => t.length * 8,
+      });
+      expect(labels.length).toBeGreaterThan(0);
+      expect(labels.every((l) => types.get(l.id) === "project")).toBe(true);
+    });
+
+    it("hovering a project names it and its related repo, knowledge and policy", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: "p-old", related: atlasRelatedIds("p-old", edges) });
+      const ids = labels.map((l) => l.id);
+      expect(ids.slice(0, 4).sort()).toEqual(["k-recent", "p-old", "pol", "repo"].sort());
+      expect(labels.find((l) => l.id === "p-old")?.rank).toBe(0);
+      expect(ids).not.toContain("w");
+      expect(ids).not.toContain("s");
+      // Recent projects keep their names; idle older ones step back.
+      expect(ids).toContain("p-new");
+      expect(ids).not.toContain("p-mid");
+    });
+
+    it("selecting a project keeps its related items named", () => {
+      const labels = atlasScreenLabels({ ...base, selected: "p-old", hovered: null, related: atlasRelatedIds("p-old", edges) });
+      expect(labels.map((l) => l.id).sort()).toEqual(["k-recent", "p-new", "p-old", "pol", "repo"]);
+    });
+
+    it("hovering a non-project item names that item", () => {
+      const labels = atlasScreenLabels({ ...base, selected: null, hovered: "w", related: new Set() });
+      expect(labels[0]?.id).toBe("w");
+      expect(labels.map((l) => l.id)).not.toContain("s");
+    });
+
+    it("zoomed in past the label-all zoom, other sections may be named again", () => {
+      const labels = atlasScreenLabels({ ...base, view: { x: 20, y: 100, k: ATLAS_LABEL_ALL_ZOOM }, width: 4000, selected: null, hovered: null, related: new Set() });
+      expect(labels.map((l) => l.id)).toContain("w");
+    });
+  });
+
   it("reveals more labels as the map zooms in (OWNER-D 4)", () => {
     const { placed } = layoutAtlas(smokeAtlasGraph().nodes);
     const base = { selected: null, hovered: null, related: new Set<string>(), nowMs: NOW, measure: (t: string) => t.length * 8 };
-    const fit = frameAll(placed, 1000, 700);
+    // Start below the label-all zoom: the ring is sized to its contents, so a
+    // small map can already frame at or above that zoom.
+    const fitK = Math.min(frameAll(placed, 1000, 700).k, ATLAS_LABEL_ALL_ZOOM * 0.5);
+    const centre = placed[0]!;
+    const fit = { x: 500 - centre.x * fitK, y: 350 - centre.y * fitK, k: fitK };
     const atFit = atlasScreenLabels({ ...base, placed, view: fit, width: 1000, height: 700 });
     // Zoomed in on the first object, with a viewport large enough to hold its district.
     const target = placed[0]!;

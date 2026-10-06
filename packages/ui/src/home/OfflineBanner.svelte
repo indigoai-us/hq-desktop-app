@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /** 36 px offline strip (console-rail US-016, scene home-offline). */
   interface Props {
     lastSynced?: string | null;
@@ -17,7 +18,7 @@
   <span class="t"><b>Offline</b> · last synced {lastSynced || "just now"} · {conflicts}</span>
   <span class="s">Messages you send stay on this Mac and go out in order when the connection returns.</span>
   <span class="grow"></span>
-  <button type="button" data-testid="offline-resolve" onclick={() => onresolve?.()}>Resolve</button>
+  <button type="button" data-testid="offline-resolve" onclick={() => onresolve?.()}><RailIcon name="check" />Resolve</button>
   <button type="button" data-testid="offline-dismiss" aria-label="Dismiss offline banner" onclick={() => ondismiss?.()}>✕</button>
 </div>
 

@@ -54,12 +54,17 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
   {
     name: 'New bot steps',
     root: '[data-testid="chat-create-bot-step"]',
-    open: (page) => createMenu(page, 'agent'),
+    open: async (page) => {
+      await createMenu(page, 'agent');
+      // New bot asks "Cloud or Local?" first; Local opens the step flow.
+      await page.getByTestId('new-bot-choice-local').click();
+    },
+    // Local was already picked, so Next skips "Where does it run?" and goes
+    // from "What kind of bot?" straight to Details.
     next: [
-      (page) => page.getByTestId('create-bot-next').click(),
       async (page) => {
-        await page.getByTestId('chat-bot-where-local').click();
         await page.getByTestId('create-bot-next').click();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'details');
         await expect(page.getByTestId('chat-bot-name')).toBeVisible();
       },
     ],

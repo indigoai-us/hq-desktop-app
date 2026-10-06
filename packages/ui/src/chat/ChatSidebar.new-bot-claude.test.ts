@@ -97,6 +97,9 @@ async function openBrainStep(props: Record<string, unknown>): Promise<void> {
   await settle();
   q<HTMLButtonElement>('[data-testid="chat-create-menu-agent"]')!.click();
   await settle();
+  // "New bot" asks "Cloud or Local?" first.
+  q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.click();
+  await settle();
   const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
   name.value = "Nova";
   name.dispatchEvent(new Event("input", { bubbles: true }));

@@ -778,7 +778,7 @@
             aria-label="Open HQ folder in an AI tool"
             aria-describedby={describedBy || undefined}
             onclick={toggleLaunch}
-          >
+          ><RailIcon name="play" />
             Launch
             <Caret tone="var(--t3)" />
           </button>
@@ -817,7 +817,7 @@
                   class="v4-launch-install"
                   data-testid={`titlebar-launch-${item.key}-install`}
                   onclick={() => void refreshLaunchTools()}
-                >Install</button>
+                ><RailIcon name="download" />Install</button>
               </div>
             {:else}
               <button

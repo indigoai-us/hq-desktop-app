@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import Dropdown from "../../common/LazyDropdown.svelte";
   /**
    * BoardTab — the project channel's Board view, ported faithfully from the
@@ -242,10 +243,10 @@
         disabled={memberPending || memberRosterLoading || memberRosterError}
       />
       </div>
-      <button type="submit" disabled={memberPending || memberRosterLoading || memberRosterError || !memberUid.trim()}>{memberPending ? "Adding…" : "Add member"}</button>
+      <button type="submit" disabled={memberPending || memberRosterLoading || memberRosterError || !memberUid.trim()}><RailIcon name="plus" />{memberPending ? "Adding…" : "Add member"}</button>
       {#if memberError}<p role="status">{memberError}</p>{/if}
       {#if memberNotice}<p role="status">{memberNotice}</p>{/if}
-      {#if memberRosterError}<p role="status">Could not load company members.</p><button type="button" onclick={loadCompanyMemberOptions}>Retry loading members</button>{/if}
+      {#if memberRosterError}<p role="status">Could not load company members.</p><button type="button" onclick={loadCompanyMemberOptions}><RailIcon name="refresh" />Retry loading members</button>{/if}
     </form>
   {/if}
 
@@ -255,8 +256,8 @@
       <label>Title <input use:focusOnMount required maxlength="300" bind:value={taskTitle} disabled={createPending} /></label>
       <label>Description <textarea maxlength="2000" bind:value={taskDescription} disabled={createPending}></textarea></label>
       {#if createError}<p role="alert">{createError}</p>{/if}
-      <button type="submit" disabled={createPending || !taskTitle.trim()}>{createPending ? "Creating…" : "Create task"}</button>
-      <button type="button" disabled={createPending} onclick={() => (createStage = null)}>Cancel</button>
+      <button type="submit" disabled={createPending || !taskTitle.trim()}><RailIcon name="plus" />{createPending ? "Creating…" : "Create task"}</button>
+      <button type="button" disabled={createPending} onclick={() => (createStage = null)}><RailIcon name="x" />Cancel</button>
     </form>
   {/if}
   {#if visibleColumns.length === 0}
@@ -427,7 +428,7 @@
               class="panel-btn"
               data-testid="board-open-in-channel"
               onclick={() => onOpenInChannel?.()}
-            >
+            ><RailIcon name="external" />
               Open in channel
             </button>
           </footer>

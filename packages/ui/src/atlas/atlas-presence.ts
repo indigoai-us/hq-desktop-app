@@ -15,8 +15,31 @@ export type AtlasLiveActorInput = {
   name: string;
   bot: boolean;
   projectId?: string;
+  /** Other hints from the live session about where the work is, when sent. */
+  repo?: string;
+  cwd?: string;
+  workerId?: string;
+  taskId?: string;
   signal?: string;
+  /** Online with no session in progress. */
+  idle?: boolean;
+  /** Profile or bot picture; chips fall back to initials without one. */
+  avatarUrl?: string;
 };
+
+/**
+ * One form for every place name, on both sides of a match: lower-case,
+ * trimmed, no trailing slash, the last path segment only (a cwd or a node
+ * path), and `_` read as `-`.
+ */
+export function atlasMatchKey(raw: string | null | undefined): string {
+  const path = (raw ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  const leaf = path.split("/").pop() ?? "";
+  return leaf.trim().toLowerCase().replace(/_/g, "-");
+}
+
+/** Node types an actor can stand on, in the order they are tried. */
+const PLACE_TYPES = ["project", "repo", "worker"] as const;
 
 /** Project slug for a project node: last path segment, lower-cased. */
 export function atlasProjectSlug(node: Pick<AtlasNode, "type" | "path">): string | null {
@@ -25,31 +48,87 @@ export function atlasProjectSlug(node: Pick<AtlasNode, "type" | "path">): string
   return leaf ? leaf.toLowerCase() : null;
 }
 
+/** The place an actor's session names, in words, when it names one. */
+function atlasActorWhere(a: AtlasLiveActorInput): string | undefined {
+  for (const raw of [a.projectId, a.repo, a.cwd, a.workerId]) {
+    const leaf = raw?.trim().replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop()?.trim();
+    if (leaf) return leaf;
+  }
+  return undefined;
+}
+
+/** Plain words for why an actor has no place on the map. */
+export function atlasUnplacedReason(a: AtlasLiveActorInput): string {
+  const where = atlasActorWhere(a);
+  if (where) return `Working in ${where}, which is not on this map`;
+  return a.idle ? "Online, no session in progress" : "In a session with no project";
+}
+
 /**
- * Map live actors onto graph nodes. An actor on a project that is on the map
- * gets that project's node id; anyone else keeps a `person:` id so the
- * inspector's Working now list still shows them.
+ * Map live actors onto graph nodes of the graph being shown (never another
+ * company's). Each session hint is tried in turn: project id, repo, cwd,
+ * worker id, then task id; each against project folders, then repos, then
+ * workers. An actor that matches nothing keeps a `person:` id and an
+ * `unplaced` reason so the map's Not on the map dock shows them; that row is
+ * dropped when the same actor is already placed elsewhere.
  */
 export function atlasPresenceFromActors(
   actors: readonly AtlasLiveActorInput[],
   nodes: readonly AtlasNode[],
 ): AtlasPresence[] {
-  const bySlug = new Map<string, string>();
+  const index = new Map<string, Map<string, string>>(PLACE_TYPES.map((t) => [t, new Map()]));
   for (const n of nodes) {
-    const slug = atlasProjectSlug(n);
-    if (slug && !bySlug.has(slug)) bySlug.set(slug, n.id);
+    const byKey = index.get(n.type);
+    const key = byKey ? atlasMatchKey(n.path) : "";
+    if (byKey && key && !byKey.has(key)) byKey.set(key, n.id);
   }
-  const out: AtlasPresence[] = [];
+  const place = (a: AtlasLiveActorInput): string | undefined => {
+    for (const raw of [a.projectId, a.repo, a.cwd, a.workerId, a.taskId]) {
+      const key = atlasMatchKey(raw);
+      if (!key) continue;
+      for (const type of PLACE_TYPES) {
+        const hit = index.get(type)!.get(key);
+        if (hit) return hit;
+      }
+    }
+    return undefined;
+  };
+  const rows: AtlasPresence[] = [];
   const seen = new Set<string>();
+  const placedActors = new Set<string>();
   for (const a of actors) {
-    const nodeId = (a.projectId && bySlug.get(a.projectId.toLowerCase())) || `person:${a.actorUid}`;
+    const hit = place(a);
+    const nodeId = hit ?? `person:${a.actorUid}`;
     const key = `${a.actorUid}>${nodeId}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ nodeId, actorUid: a.actorUid, name: a.name, bot: a.bot, signal: a.signal });
+    if (hit) placedActors.add(a.actorUid);
+    rows.push({
+      nodeId,
+      actorUid: a.actorUid,
+      name: a.name,
+      bot: a.bot,
+      signal: a.signal,
+      ...(a.idle ? { idle: true } : {}),
+      ...(a.avatarUrl ? { avatarUrl: a.avatarUrl } : {}),
+      ...(hit ? {} : { unplaced: atlasUnplacedReason(a) }),
+    });
   }
-  return out;
+  return rows.filter((p) => !p.unplaced || !placedActors.has(p.actorUid!));
 }
+
+/**
+ * Live actors with no object on the map, once each: people first, then
+ * bots, by name. The map's Not on the map dock lists them.
+ */
+export function atlasUnplacedActors(presence: readonly AtlasPresence[]): AtlasPresence[] {
+  return atlasDistinctActors(presence.filter((p) => p.unplaced)).sort(
+    (a, b) => Number(a.bot) - Number(b.bot) || a.name.localeCompare(b.name),
+  );
+}
+
+/** Dock chips shown before the +N chip that expands the rest in place. */
+export const ATLAS_DOCK_CAP = 12;
 
 /** Distinct live actors (one per uid) for counts and Working now. */
 export function atlasDistinctActors(presence: readonly AtlasPresence[]): AtlasPresence[] {
@@ -80,6 +159,14 @@ export type AtlasDockedChip = {
   name: string;
   bot: boolean;
   initials: string;
+  /** Position in this node's stack, 0 first. */
+  index: number;
+  /** What the actor is doing, when the live read says. */
+  signal?: string;
+  /** Online with no session in progress: drawn quieter, without the pulse. */
+  idle?: boolean;
+  /** Picture drawn inside the chip; initials when absent or it fails to load. */
+  avatarUrl?: string;
   /** Chip centre and the connector start on the node rim (world units). */
   x: number;
   y: number;
@@ -123,6 +210,10 @@ export function atlasDockedChips(
       name: who.name,
       bot: who.bot,
       initials: who.bot ? "⌁" : atlasInitials(who.name),
+      index: i,
+      signal: who.signal,
+      ...(who.idle ? { idle: true } : {}),
+      ...(who.avatarUrl ? { avatarUrl: who.avatarUrl } : {}),
       x: x1 + 18 + i * CHIP_GAP,
       y: y1 - 18,
       x1,

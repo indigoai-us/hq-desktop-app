@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   /**
    * VaultExplorer: the Files page. An Obsidian-style, read-only explorer over
@@ -464,14 +465,14 @@
           {/each}
         </nav>
         <div class="vx-actions">
-          {#if !lockedVault}<button type="button" class="vx-action" data-testid="vault-share" onclick={() => (sharePath = activePath)}>Share</button>{/if}
+          {#if !lockedVault}<button type="button" class="vx-action" data-testid="vault-share" onclick={() => (sharePath = activePath)}><RailIcon name="link" />Share</button>{/if}
           {#if isMarkdownPath(activePath)}
             {#if canLaunchClaude}
               <OpenFileInClaudeCode shell={adapter.shell} file={activePath} authorizedFile variant="compact" />
             {/if}
-            <button type="button" class="vx-action" onclick={() => copyPath(activePath)}>{copied ? "Copied" : "Copy path"}</button>
+            <button type="button" class="vx-action" onclick={() => copyPath(activePath)}><RailIcon name="copy" />{copied ? "Copied" : "Copy path"}</button>
             {#if canReveal && !content[activePath]?.cloud}
-              <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? `Show in ${fileManagerName}`}>{`Show in ${fileManagerName}`}</button>
+              <button type="button" class="vx-action" onclick={() => reveal(activePath)} title={revealError ?? `Show in ${fileManagerName}`}><RailIcon name="folder" />{`Show in ${fileManagerName}`}</button>
             {/if}
           {/if}
         </div>

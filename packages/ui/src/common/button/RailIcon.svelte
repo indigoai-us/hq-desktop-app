@@ -1,4 +1,5 @@
 <script lang="ts">
+  import "./rail-type.css";
   import { BRAND_ICONS, LINE_ICONS, isBrandIcon, type RailIconName } from "./rail-icons.js";
 
   interface Props {

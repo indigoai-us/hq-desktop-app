@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     parseMeshProjectView,
     projectViewToBoard,
@@ -54,7 +55,12 @@
     preloadDoorsWhenIdle,
     profilePaneDoor,
   } from "./lazy-doors.js";
-  import { pinCompany, type MoreCompany } from "./more-companies.js";
+  import {
+    localCompanyKey,
+    pinCompany,
+    type MoreCompany,
+  } from "./more-companies.js";
+  import type { LocalOnlyCompany } from "../company/company-display-map.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
   import {
@@ -938,6 +944,11 @@
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
     /**
+     * Company folders on this Mac with no cloud id. Listed in the company
+     * switcher only; they cannot be opened until they sync.
+     */
+    localCompanies?: readonly LocalOnlyCompany[];
+    /**
      * A company's home channel was just created/adopted client-side
      * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
      * `companies` roster prop hasn't caught up yet. The host should patch
@@ -1221,6 +1232,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    localCompanies = [],
     onhomechannelresolved,
     syncEvents = null,
     rosterStatus = null,
@@ -7275,17 +7287,6 @@
   let contactAvatarByUid = $state<Record<string, string>>({});
   let avatarOverridesByUid = $state<Record<string, string>>({});
   let rosterWakeSeq = $state(0);
-  const BOT_TOGGLE_KEY = 'hq:messages:show-bot-messages';
-  let showBotMessages = $state(
-    typeof localStorage !== 'undefined' && localStorage.getItem(BOT_TOGGLE_KEY) === 'true',
-  );
-  function handleShowBotMessagesChange(value: boolean) {
-    showBotMessages = value;
-    if (typeof localStorage !== 'undefined') {
-      if (value) localStorage.setItem(BOT_TOGGLE_KEY, 'true');
-      else localStorage.removeItem(BOT_TOGGLE_KEY);
-    }
-  }
   let agentAvatarSaving = $state(false);
   let agentAvatarSaveError = $state<string | null>(null);
   let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
@@ -11479,13 +11480,31 @@
 
   const moreCompanyList = $derived.by((): MoreCompany[] => {
     const snap = presenceSnapshot();
-    return railCompanyRoster.map((company) => ({
+    const cloud: MoreCompany[] = railCompanyRoster.map((company) => ({
       uid: company.uid,
       name: company.label,
       slug: company.slug,
       iconUrl: company.iconUrl,
       liveCount: companyLiveCount(snap, company.uid),
     }));
+    // A company with a cloud id is listed once, from the roster, even when
+    // its folder is also on this Mac.
+    const cloudSlugs = new Set(
+      (effectiveCompanies ?? [])
+        .filter((c) => (c.cloudUid ?? "").trim())
+        .map((c) => c.slug.toLowerCase()),
+    );
+    const local: MoreCompany[] = localCompanies
+      .filter((c) => !cloudSlugs.has(c.slug.toLowerCase()))
+      .map((c) => ({
+        uid: localCompanyKey(c.slug),
+        name: c.name,
+        slug: c.slug,
+        iconUrl: null,
+        liveCount: 0,
+        localOnly: true,
+      }));
+    return [...cloud, ...local];
   });
 
   $effect(() => {
@@ -11641,6 +11660,7 @@
           companyPaneCompany.uid,
           atlasRosterNames,
           self?.uid ?? null,
+          avatarByUid,
         )
       : [],
   );
@@ -11665,11 +11685,6 @@
 
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
-    if (rowId.startsWith("person:")) {
-      const uid = rowId.slice("person:".length);
-      atlasFilterActor = atlasFilterActor === uid ? null : uid;
-      return;
-    }
     atlasFilterActor = null;
     if (rowId === "invite-teammate") {
       // Land on Team with its invite sheet open.
@@ -12790,7 +12805,7 @@
           data-testid="navigation-unavailable-back"
           onclick={() => void goBack()}
           disabled={!navigationCanGoBack}
-        >
+        ><RailIcon name="arrow-left" />
           Back
         </button>
       </div>
@@ -12892,7 +12907,6 @@
             memory={sidepaneScrollMemory}
             companyApi={adapter.company ?? null}
             roster={atlasCompanyRoster}
-            rosterSelected={atlasFilterActor}
             rosterLoading={!directorySettled}
           />
         {:else if view === "meetings"}
@@ -13009,8 +13023,6 @@
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
-          {showBotMessages}
-          onshowbotmessageschange={handleShowBotMessagesChange}
         >
         </ChatSidebar>
         {/key}
@@ -13502,7 +13514,7 @@
                   class="edit-profile-btn"
                   data-testid="agent-edit-profile"
                   onclick={openAgentProfileFromHeader}
-                >
+                ><RailIcon name="pencil" />
                   Edit profile
                 </button>
               {/if}
@@ -14001,7 +14013,7 @@
                             data-testid="bot-message-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}
@@ -14104,7 +14116,7 @@
                         data-testid="bot-not-runnable-recheck"
                         disabled={botRecheckBusy}
                         onclick={() => void recheckSelectedBot()}
-                      >
+                      ><RailIcon name="refresh" />
                         {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                       </button>
                       {#if botAdoptError}
@@ -14124,7 +14136,7 @@
                             data-testid="local-bot-start"
                             disabled={localBotBusy === selectedLocalBot.name}
                             onclick={() => void startSelectedLocalBot()}
-                          >
+                          ><RailIcon name="play" />
                             {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
                           </button>
                         {:else}
@@ -14139,7 +14151,7 @@
                             data-testid="local-bot-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}

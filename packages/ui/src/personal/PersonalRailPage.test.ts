@@ -3,7 +3,8 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PersonalRailPage from "./PersonalRailPage.svelte";
 import { clearPersonalRailCache } from "./personal-rail-model.js";
-import { clearIntegrationsCache } from "./personal-integrations.js";
+import { clearIntegrationsCache, writeIntegrationsCache } from "./personal-integrations.js";
+import { sourceIconUrl } from "./google-source-icons.js";
 import { chooseDropdown } from "../test-support/dropdown.js";
 
 vi.mock("../company/company-store.svelte.js", () => ({
@@ -177,6 +178,43 @@ describe("US-033 PersonalRailPage", () => {
     expect(sources?.textContent).toContain("Calendar");
     expect(sources?.textContent).toContain("Drive");
     expect(sources?.textContent).toContain("Gmail");
+  });
+
+  it("shows each Google source with its bundled product icon", async () => {
+    const all = { accounts: [{ ...GOOGLE_BODY.accounts[0], capabilities: ["Gmail", "calendar", "DRIVE", "docs", "sheets", "contacts"] }] };
+    const target = mountPage("connections", { integrationsApi: integrationsApi({ listMyGoogleAccounts: vi.fn(async () => ({ ok: true as const, value: all })) }) });
+    await settle();
+    const items = target.querySelectorAll("[data-testid='integration-sources'] li");
+    expect(Array.from(items, (li) => li.textContent?.trim())).toEqual(["Calendar", "Contacts", "Docs", "Drive", "Gmail", "Sheets"]);
+    for (const key of ["calendar", "contacts", "docs", "drive", "gmail", "sheets"]) {
+      const img = target.querySelector(`[data-testid='integration-source-${key}'] img`) as HTMLImageElement | null;
+      expect(img?.getAttribute("src")).toBe(sourceIconUrl(key));
+      expect(img?.getAttribute("src")).toBeTruthy();
+    }
+  });
+
+  it("unknown or malformed sources fall back to the neutral mark, never an empty image", async () => {
+    writeIntegrationsCache([
+      { id: "google:g1", provider: "google", accountId: "g1", app: "Google", identity: "me@example.com", status: "active", connectedAt: "", sources: ["Gmail", "Photos", 7, ""] as unknown as string[] },
+    ]);
+    const target = mountPage("connections", { integrationsApi: { listMyGoogleAccounts: vi.fn(() => new Promise(() => {})) } });
+    flushSync();
+    const photos = target.querySelector("[data-testid='integration-source-photos']") as HTMLElement;
+    expect(photos.textContent?.trim()).toBe("Photos");
+    expect(photos.querySelector("img")).toBeNull();
+    expect(photos.querySelector("[data-rail-icon='circle-dot']")).not.toBeNull();
+    for (const img of target.querySelectorAll("[data-testid='integration-sources'] img")) expect(img.getAttribute("src")).toBeTruthy();
+    expect(target.querySelectorAll("[data-testid='integration-sources'] li")).toHaveLength(2);
+  });
+
+  it("a non-array sources value renders no list and does not throw", async () => {
+    writeIntegrationsCache([
+      { id: "google:g1", provider: "google", accountId: "g1", app: "Google", identity: "me@example.com", status: "active", connectedAt: "", sources: "gmail" as unknown as string[] },
+    ]);
+    const target = mountPage("connections", { integrationsApi: { listMyGoogleAccounts: vi.fn(() => new Promise(() => {})) } });
+    flushSync();
+    expect(target.querySelector("[data-testid='integration-inspector']")?.textContent).toContain("Google");
+    expect(target.querySelector("[data-testid='integration-sources']")).toBeNull();
   });
 
   it("paints cached integrations on the first frame and never flashes empty", async () => {

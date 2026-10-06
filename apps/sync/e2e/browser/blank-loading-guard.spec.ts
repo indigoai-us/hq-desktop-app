@@ -245,10 +245,15 @@ test.describe('BLANK-1/2/3: no blank screens, a loader while waiting, no empty c
         const failsAtFullSpeed = new Set<string>();
         const fast = await browser.newPage();
         await boot(fast, 'persona=member');
+        // Wait for the shared loader to clear too: expectSettled counts a
+        // surface with a visible ReadLoader as settled, so measuring then can
+        // miss a failure that lands a moment later on a busy machine.
         for (const dest of dests) {
           await open(fast, dest);
-          await expectSettled(fast, `${dest} at full speed`).catch(() => {});
-          if ((await fast.evaluate(measure)).failedText) failsAtFullSpeed.add(dest);
+          const end = await expectState(fast, `${dest} at full speed`, SETTLE_MS, (s) =>
+            s.loaders === 0 && s.loading.length === 0 && !(s.text < 20 && s.controls === 0),
+          ).catch(() => null);
+          if ((end ?? (await fast.evaluate(measure))).failedText) failsAtFullSpeed.add(dest);
         }
         await fast.close();
         // A read that answers after 20 s renders its data: settled, no failed line.

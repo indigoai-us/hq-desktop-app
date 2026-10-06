@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
   import { PROFILE_PANE_WIDTH, profilePhase, type UserProfileSnapshot } from "./profile-pane-model.js";
 
@@ -45,8 +46,8 @@
         <div class="chips">{#each snapshot.roleChips as chip (chip)}<span class="chip">{chip}</span>{/each}</div>
       {/if}
       <div class="acts">
-        <button type="button" class="btn primary" data-testid="user-profile-message" onclick={() => onmessage?.()}>Message</button>
-        {#if onatlas}<button type="button" class="btn" data-testid="user-profile-atlas" onclick={() => onatlas?.()}>View in Atlas</button>{/if}
+        <button type="button" class="btn primary" data-testid="user-profile-message" onclick={() => onmessage?.()}><RailIcon name="send" />Message</button>
+        {#if onatlas}<button type="button" class="btn" data-testid="user-profile-atlas" onclick={() => onatlas?.()}><RailIcon name="eye" />View in Atlas</button>{/if}
       </div>
       <div class="k">Presence</div>
       <div class="kv">
@@ -71,7 +72,7 @@
           <div class="li"><span class="fi">FILE</span><div><div>{file.name}</div><div class="mm">{file.meta}</div></div></div>
         {/each}
       {/if}
-      <div class="manage"><span>Access follows company membership.</span>{#if onmanage}<button type="button" class="link" data-testid="user-profile-manage" onclick={() => onmanage?.()}>Manage access</button>{/if}</div>
+      <div class="manage"><span>Access follows company membership.</span>{#if onmanage}<button type="button" class="link" data-testid="user-profile-manage" onclick={() => onmanage?.()}><RailIcon name="sliders" />Manage access</button>{/if}</div>
     </div>
   {/if}
 </aside>

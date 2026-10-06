@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
@@ -135,7 +136,7 @@
             </div>
           </div>
         {/each}
-        <button type="button" class="add" onclick={addKr}>Add key result</button>
+        <button type="button" class="add" onclick={addKr}><RailIcon name="plus" />Add key result</button>
       </div>
     </div>
     <div class="fr"><span class="lb">Linked projects</span>
@@ -146,7 +147,7 @@
             <button type="button" class="x" aria-label="Remove link" onclick={() => removeLink(link)}>✕</button>
           </div>
         {/each}
-        <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>+ Link</RailButton>
+        <RailButton icon="link" data-testid="new-goal-link" onclick={() => (linking = true)}>Link</RailButton>
       </div>
     </div>
   </div>

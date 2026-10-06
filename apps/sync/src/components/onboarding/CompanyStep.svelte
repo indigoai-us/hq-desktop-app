@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * First-run company step. Shown after the setup explainers and before the
    * ready ("Open HQ Desktop") screen, while the install runs, to a person with
@@ -602,13 +603,13 @@
         type="button"
         data-testid="onboarding-company-switch-account"
         onclick={switchAccount}
-      >Switch account</button>
+      ><RailIcon name="logout" />Switch account</button>
       <button
         class="btn btn-secondary"
         type="button"
         data-testid="onboarding-company-create-here"
         onclick={createAnother}
-      >Create a new company here</button>
+      ><RailIcon name="plus" />Create a new company here</button>
     </div>
   {:else if phase === 'existing' && path.kind === 'existing'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You already have a company</h2>
@@ -621,13 +622,13 @@
         type="button"
         data-testid="onboarding-company-use-existing"
         onclick={useExisting}
-      >Use {path.company.name}</button>
+      ><RailIcon name="check-circle" />Use {path.company.name}</button>
       <button
         class="btn btn-secondary"
         type="button"
         data-testid="onboarding-company-create-another"
         onclick={createAnother}
-      >Create another</button>
+      ><RailIcon name="plus" />Create another</button>
     </div>
   {:else if phase === 'join' && path.kind === 'join'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>You have an invite</h2>
@@ -641,13 +642,13 @@
           type="button"
           data-testid="onboarding-company-switch-account"
           onclick={switchAccount}
-        >Switch account</button>
+        ><RailIcon name="logout" />Switch account</button>
         <button
           class="btn btn-secondary"
           type="button"
           data-testid="onboarding-company-skip"
           onclick={() => oncomplete({ outcome: 'skipped' })}
-        >Skip for now</button>
+        ><RailIcon name="arrow-right" />Skip for now</button>
       </div>
     {:else if path.decision === 'invite_expired'}
       <p class="body" data-testid="onboarding-company-invite-expired">
@@ -659,7 +660,7 @@
           type="button"
           data-testid="onboarding-company-skip"
           onclick={() => oncomplete({ outcome: 'skipped' })}
-        >Skip for now</button>
+        ><RailIcon name="arrow-right" />Skip for now</button>
       </div>
     {:else}
       <p class="body">
@@ -678,14 +679,14 @@
           disabled={busy}
           aria-busy={busy}
           onclick={() => void joinInvite(path.invites.length === 1 ? path.invites[0]!.slug : null)}
-        >{busy ? 'Joining…' : path.invites.length === 1 ? `Join ${path.invites[0]!.name}` : 'Join all'}</button>
+        ><RailIcon name="check" />{busy ? 'Joining…' : path.invites.length === 1 ? `Join ${path.invites[0]!.name}` : 'Join all'}</button>
         <button
           class="btn btn-secondary"
           type="button"
           data-testid="onboarding-company-skip"
           disabled={busy}
           onclick={() => oncomplete({ outcome: 'skipped' })}
-        >Skip for now</button>
+        ><RailIcon name="arrow-right" />Skip for now</button>
       </div>
     {/if}
   {:else if phase === 'provisioning'}
@@ -704,13 +705,13 @@
         type="button"
         data-testid="onboarding-company-provisioning-retry"
         onclick={() => void awaitProvisioning(true)}
-      >Try again</button>
+      ><RailIcon name="refresh" />Try again</button>
       <button
         class="btn btn-secondary"
         type="button"
         data-testid="onboarding-company-skip"
         onclick={skipWhileProvisioning}
-      >Skip for now</button>
+      ><RailIcon name="arrow-right" />Skip for now</button>
     </div>
   {:else if phase === 'loading'}
     <h2 class="h" id="onboarding-title-company" tabindex="-1" data-scene-heading>Name your company</h2>
@@ -793,18 +794,18 @@
             data-testid="onboarding-company-skip"
             disabled={busy}
             onclick={() => oncomplete({ outcome: 'skipped' })}
-          >Skip for now</button>
+          ><RailIcon name="arrow-right" />Skip for now</button>
         </div>
       </form>
     {:else}
       <div class="btns split">
-        <button class="btn btn-primary" type="button" data-testid="onboarding-company-retry" onclick={() => void loadForm()}>Try again</button>
+        <button class="btn btn-primary" type="button" data-testid="onboarding-company-retry" onclick={() => void loadForm()}><RailIcon name="refresh" />Try again</button>
         <button
           class="btn btn-secondary"
           type="button"
           data-testid="onboarding-company-skip"
           onclick={() => oncomplete({ outcome: 'skipped' })}
-        >Skip for now</button>
+        ><RailIcon name="arrow-right" />Skip for now</button>
       </div>
     {/if}
   {:else if phase === 'plan'}
@@ -867,7 +868,7 @@
       </p>
     {/if}
     <div class="btns split">
-      <button class="btn btn-primary" type="button" data-testid="onboarding-checkout-done" onclick={() => finish(false)}>I finished checkout</button>
+      <button class="btn btn-primary" type="button" data-testid="onboarding-checkout-done" onclick={() => finish(false)}><RailIcon name="check-circle" />I finished checkout</button>
       <button
         class="btn btn-secondary"
         type="button"
@@ -876,7 +877,7 @@
           plan = 'starter';
           finish(false);
         }}
-      >Start on Starter for now</button>
+      ><RailIcon name="arrow-right" />Start on Starter for now</button>
     </div>
   {/if}
 </div>

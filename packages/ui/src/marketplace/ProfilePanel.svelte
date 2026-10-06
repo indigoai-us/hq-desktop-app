@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * ProfilePanel — the desktop-alt **Profile** tab body (US-016).
    *
@@ -336,7 +337,7 @@
         onclick={claim}
         disabled={!canClaim}
         aria-busy={claiming}
-      >
+      ><RailIcon name="check" />
         {claiming ? "Claiming…" : "Claim handle"}
       </button>
 
@@ -401,7 +402,7 @@
                 onclick={chooseAvatar}
                 disabled={saving || choosingAvatar}
                 aria-busy={choosingAvatar}
-              >
+              ><RailIcon name="upload" />
                 {choosingAvatar
                   ? "Choosing…"
                   : pendingAvatarPath || avatarUrl
@@ -478,7 +479,7 @@
           type="button"
           class="btn btn-secondary add-social"
           data-testid="profile-add-social"
-          onclick={addSocial}>+ Add link</button
+          onclick={addSocial}><RailIcon name="plus" />Add link</button
         >
       </div>
 
@@ -513,7 +514,7 @@
           onclick={save}
           disabled={!canSave}
           aria-busy={saving}
-        >
+        ><RailIcon name="save" />
           {saving ? "Saving…" : "Save profile"}
         </button>
         {#if saved}
@@ -545,7 +546,7 @@
           onclick={loadPreview}
           disabled={previewLoading}
           aria-busy={previewLoading}
-        >
+        ><RailIcon name="eye" />
           {previewLoading ? "Loading…" : preview ? "Refresh" : "Load preview"}
         </button>
       </div>
@@ -924,7 +925,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     align-self: flex-start;
     transition:

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Core popover (US-016) — opened from the titlebar "● Core ⌄" pill.
    *
@@ -577,10 +578,10 @@
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}><RailIcon name="refresh" />
         {returnNudgeBusy ? "Starting sync…" : "Sync now"}
       </button>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}><RailIcon name="x" />
         Dismiss
       </button>
     {/if}
@@ -633,7 +634,7 @@
             onclick={() => {
               if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
             }}
-          >
+          ><RailIcon name="arrow-right" />
             Upgrade plan
           </button>
         </div>
@@ -671,7 +672,7 @@
           class="core-link"
           data-testid="core-popover-resolve-conflicts"
           onclick={() => (resolveSheetOpen = true)}
-        >
+        ><RailIcon name="check" />
           Resolve conflicts
         </button>
       </header>
@@ -698,7 +699,7 @@
                 data-testid="core-popover-keep-local"
                 disabled={row.actionsDisabled}
                 onclick={() => void onresolve?.(row.path, "keep-local")}
-              >
+              ><RailIcon name="check" />
                 Keep local
               </button>
               <button
@@ -707,7 +708,7 @@
                 data-testid="core-popover-keep-cloud"
                 disabled={row.actionsDisabled}
                 onclick={() => void onresolve?.(row.path, "keep-remote")}
-              >
+              ><RailIcon name="check" />
                 Keep cloud
               </button>
               <button
@@ -716,7 +717,7 @@
                 data-testid="core-popover-open-editor"
                 disabled={row.actionsDisabled}
                 onclick={() => void onopeneditor?.(row.path)}
-              >
+              ><RailIcon name="external" />
                 Open in editor
               </button>
             </div>
@@ -793,7 +794,7 @@
             disabled={coreRestoring}
             aria-busy={coreRestoring}
             onclick={() => void handleRestore()}
-          >
+          ><RailIcon name="refresh" />
             {coreRestoring ? "Restoring…" : "Restore"}
           </button>
         {:else if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
@@ -804,7 +805,7 @@
             disabled={updateStore.checking}
             aria-busy={updateStore.checking}
             onclick={() => void handleCheckUpdates()}
-          >
+          ><RailIcon name="refresh" />
             {updateStore.checking ? "Checking…" : "Check"}
           </button>
         {/if}
@@ -840,7 +841,7 @@
               data-testid="core-popover-download-install"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleDownloadInstall()}
-            >
+            ><RailIcon name="download" />
               Download &amp; install
             </button>
           {:else if appActions.showRestart}
@@ -850,7 +851,7 @@
               data-testid="core-popover-restart-update"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleRestartToUpdate()}
-            >
+            ><RailIcon name="refresh" />
               Restart to update
             </button>
           {/if}
@@ -862,7 +863,7 @@
               disabled={updateStore.checking}
               aria-busy={updateStore.checking}
               onclick={() => void handleCheckUpdates()}
-            >
+            ><RailIcon name="refresh" />
               {updateStore.checking ? "Checking…" : "Check for updates"}
             </button>
           {/if}
@@ -935,7 +936,7 @@
           class="core-btn secondary"
           data-testid="core-popover-browse-packs"
           onclick={() => (browsePacksOpen = true)}
-        >
+        ><RailIcon name="search" />
           Browse packs
         </button>
         <button
@@ -946,7 +947,7 @@
             onopenMarketplace?.();
             onclose?.();
           }}
-        >
+        ><RailIcon name="external" />
           Open marketplace
         </button>
       </div>

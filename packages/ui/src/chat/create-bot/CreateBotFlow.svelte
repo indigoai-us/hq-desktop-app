@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The New bot flow: kind → home → details, with a live preview card and
    * one footer. Hosts it inside the create modal (and the Settings → Bots
@@ -158,6 +159,16 @@
     initialCompanyUid?: string | null;
     /** Slug of that company; a Local bot starts as its company bot (QA-043). */
     initialCompanySlug?: string | null;
+    /**
+     * The home picked on the New bot choice screen ("Cloud or Local?"). The
+     * flow opens with it selected; the Home step still lets the person change it.
+     */
+    initialHome?: "local" | "cloud" | null;
+    /**
+     * What the first step's back button says. "Cancel" by default; "Back"
+     * when `onback` returns to an earlier screen (the Cloud or Local choice).
+     */
+    firstBackLabel?: string;
   }
 
   let {
@@ -186,6 +197,8 @@
     previewPlacement = null,
     initialCompanyUid = null,
     initialCompanySlug = null,
+    initialHome = null,
+    firstBackLabel = "Cancel",
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -274,7 +287,7 @@
 
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
-  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug)));
+  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome)));
   let step = $state<CreateBotStep>("kind");
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
@@ -283,12 +296,16 @@
   let runtimeAnswered = false;
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
-  const steps = $derived(stepsFor(draft));
+  // Local was already picked on the choice screen: skip "Where does it run?"
+  // and show its coding-tool sign-in and install on the Details step instead.
+  const skipHome = untrack(() => initialHome === "local" && canLocal);
+  const stepOpts = { skipHome };
+  const steps = $derived(stepsFor(draft, stepOpts));
   const stepIndex = $derived(Math.max(0, steps.indexOf(step)));
-  const isLast = $derived(nextStep(step, draft) === null);
-  const advanceOk = $derived(!busy && canAdvance(step, draft, ctx));
-  const createOk = $derived(!busy && canCreate(draft, ctx));
-  const issue = $derived(stepIssue(step, draft, ctx));
+  const isLast = $derived(nextStep(step, draft, stepOpts) === null);
+  const advanceOk = $derived(!busy && canAdvance(step, draft, ctx, stepOpts));
+  const createOk = $derived(!busy && canCreate(draft, ctx, stepOpts));
+  const issue = $derived(stepIssue(step, draft, ctx, stepOpts));
   const chosenTemplate = $derived(
     draft.kind === "template" && draft.templateId
       ? (templates.find((t) => t.id === draft.templateId) ?? null)
@@ -456,21 +473,21 @@
 
   function advance(): void {
     if (!advanceOk) return;
-    const next = nextStep(step, draft);
+    const next = nextStep(step, draft, stepOpts);
     if (next) goTo(next);
   }
 
   function back(): void {
     if (busy) return;
-    const prev = prevStep(step, draft);
+    const prev = prevStep(step, draft, stepOpts);
     if (prev) goTo(prev);
     else onback?.();
   }
 
   async function submit(): Promise<void> {
     if (busy) return;
-    if (!canCreate(draft, ctx)) {
-      const blocking = firstBlockingStep(draft, ctx);
+    if (!canCreate(draft, ctx, stepOpts)) {
+      const blocking = firstBlockingStep(draft, ctx, stepOpts);
       if (blocking) goTo(blocking);
       return;
     }
@@ -634,6 +651,32 @@
           onpatch={patch}
         />
       {:else}
+        {#if skipHome}
+          <HomeStep
+            runtimeOnly
+            {draft}
+            {canLocal}
+            {canCloud}
+            cloudAlwaysShown={directCloudOn}
+            cloudBlocked={cloudBlocked}
+            {companyBlocks}
+            runtimeReady={botRuntimeReady}
+            runtimeStatus={botRuntimeStatus}
+            {companies}
+            disabled={busy}
+            onpatch={patch}
+            {signInApi}
+            onsignin={onsignin ?? undefined}
+            onsignedin={onsignedin ?? undefined}
+            onrecheck={onrecheckruntimes ?? undefined}
+            {pollMs}
+            {aiTools}
+            {hqFolderPath}
+            {onopenassistant}
+            {onassistedinstall}
+            {onrequestaitools}
+          />
+        {/if}
         <DetailsStep
           {draft}
           existingNames={names}
@@ -655,16 +698,16 @@
         {#if entryFix?.kind === "checkout"}
           <a class="flow-error-fix" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
         {:else if entryFix?.kind === "reload_quote"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Get the new price</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}><RailIcon name="refresh" />Get the new price</button>
         {:else if entryFix?.kind === "edit_handle" && step !== "details"}
-          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}>Change handle</button>
+          <button type="button" class="flow-error-fix" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}><RailIcon name="pencil" />Change handle</button>
         {/if}
       </p>
     {/if}
 
     <div class="flow-footer">
-      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}>
-        {prevStep(step, draft) ? "Back" : "Cancel"}
+      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}><RailIcon name={!prevStep(step, draft, stepOpts) && firstBackLabel === "Back" ? "arrow-left" : "x"} />
+        {prevStep(step, draft, stepOpts) ? "Back" : firstBackLabel}
       </button>
       <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
       <span class="flow-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="chord">{primaryEnterHint}</kbd> to create</span>

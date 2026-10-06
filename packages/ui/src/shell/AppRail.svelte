@@ -116,7 +116,10 @@
         ondragover={(event) => onDragOver(item, event)}
         ondrop={(event) => onDrop(item, event)}
         ondragend={() => (dragUid = "")}
-        onclick={() => {
+        onclick={(event) => {
+          // WebKit (the macOS app's engine) does not focus a clicked button,
+          // so a popover would return focus to the page instead of here.
+          if (item.kind === "more-companies" || item.kind === "you") event.currentTarget.focus({ preventScroll: true });
           if (item.kind === "more-companies" && onmore) {
             onmore();
             return;
@@ -134,9 +137,9 @@
         {:else if item.kind === "meetings"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
         {:else if item.kind === "company"}
-          <span class="co-tile" aria-hidden="true">
+          <span class="co-tile" class:has-logo={Boolean(item.iconUrl)} aria-hidden="true">
             {#if item.iconUrl}
-              <CompanyIcon iconUrl={item.iconUrl} size={18} label={item.label} />
+              <CompanyIcon iconUrl={item.iconUrl} size={30} label={item.label} />
             {:else}
               {initials(item.label)}
             {/if}
@@ -295,6 +298,24 @@
 
   .co-tile :global(.company-icon) {
     color: currentColor;
+  }
+
+  /* A logo fills the whole circle edge to edge: no grey plate, no inset
+     hairline, clipped by the tile's round shape. Selection still shows
+     through the button's own background. */
+  .co-tile.has-logo,
+  .rail-btn[aria-current="page"] .co-tile.has-logo {
+    background: transparent;
+    overflow: hidden;
+  }
+
+  .co-tile.has-logo :global(.company-icon),
+  .co-tile.has-logo :global(.company-icon-img) {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+    box-shadow: none;
   }
 
   .live {

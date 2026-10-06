@@ -65,17 +65,17 @@ describe("sidepane models (console-rail US-006)", () => {
     expect(ids).not.toContain(COMPANY_SETTINGS_ROW.id);
   });
 
-  it("atlas model selects Atlas and adds Live now and Idle rosters", () => {
+  it("atlas model selects Atlas and lists no Live now or Idle roster", () => {
     const model = atlasSidepaneModel({ uid: "co_a", label: "Indigo" }, [
       { uid: "u1", name: "Stefan", kind: "human", live: true },
       { uid: "b1", name: "Scout", kind: "bot", live: false },
     ]);
     expect(model.selectedId).toBe("atlas");
     expect(model.liveCount).toBe(1);
-    const live = model.sections.find((s) => s.id === "live-now");
-    const idle = model.sections.find((s) => s.id === "idle");
-    expect(live?.rows).toEqual([{ id: "person:u1", label: "Stefan", mark: "circle", live: true }]);
-    expect(idle?.rows).toEqual([{ id: "person:b1", label: "Scout", mark: "square", live: false }]);
+    expect(model.sections.some((s) => s.id === "live-now" || s.id === "idle")).toBe(false);
+    const ids = model.sections.flatMap((s) => s.rows.map((r) => r.id));
+    expect(ids.some((id) => id.startsWith("person:"))).toBe(false);
+    expect(ids).toContain("atlas");
   });
 
   it("adds an Invite a teammate row while the company has one human or fewer (US-014)", () => {

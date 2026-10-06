@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   import type { SettingsApi, UpdatesApi } from "@hq/platform";
   import type { SettingsUpdater } from "../common/settings-write";
@@ -456,7 +457,7 @@
         {#if checkingAnyUpdate}
           <span class="vp-inline-spinner" aria-hidden="true"></span>
           Checking app + Core…
-        {:else}
+        {:else}<RailIcon name="refresh" />
           Check all updates
         {/if}
       </button>
@@ -473,7 +474,7 @@
           {#if phase === "downloading"}
             <span class="vp-inline-spinner" aria-hidden="true"></span>
             Downloading…
-          {:else}
+          {:else}<RailIcon name="refresh" />
             Restart to update
           {/if}
         </button>
@@ -543,7 +544,7 @@
             class="vp-inline-retry"
             data-testid="version-popout-auto-retry"
             onclick={retryAutoUpdateSave}
-          >
+          ><RailIcon name="refresh" />
             Retry
           </button>
         </div>
@@ -562,7 +563,7 @@
             disabled={autoUpdateLoading}
             aria-busy={autoUpdateLoading}
             onclick={retryAutoUpdateLoad}
-          >
+          ><RailIcon name="refresh" />
             {autoUpdateLoading ? "Retrying…" : "Retry"}
           </button>
         </div>
@@ -729,7 +730,7 @@
     color: var(--fg);
     font: inherit;
     font-size: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
   }

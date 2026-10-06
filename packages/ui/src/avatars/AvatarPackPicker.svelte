@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Grid picker of avatar packs. Ghost layout: search, pack headings, a
    * 4-column swatch grid, keyboard movement, Save.
@@ -187,7 +188,7 @@
     data-testid="avatar-use-generated"
     aria-pressed={selection.kind === "generated"}
     onclick={selectGenerated}
-  >
+  ><RailIcon name="check-circle" />
     Use generated mark
   </button>
 
@@ -283,7 +284,7 @@
       data-testid="avatar-pack-save"
       disabled={saving || loading}
       onclick={() => void save()}
-    >
+    ><RailIcon name="save" />
       {saving ? "Saving…" : "Save"}
     </button>
   {/if}

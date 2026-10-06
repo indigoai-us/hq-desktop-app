@@ -128,6 +128,17 @@ afterEach(async () => {
   takePendingChannelOpen();
 });
 
+/**
+ * "New bot" asks "Cloud or Local?" first, in the full-window takeover. The
+ * flag decides what Cloud opens: the takeover's own create screen, or the
+ * "+" window's bot flow in the takeover shell.
+ */
+async function chooseKind(kind: "cloud" | "local"): Promise<void> {
+  expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  click(`[data-testid="new-bot-choice-${kind}"]`);
+  await settle();
+}
+
 describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
   it("stays on the in-modal flow until the host has an answer, then offers the takeover", async () => {
     const props = $state({
@@ -145,12 +156,15 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
 
-    // The answer arrives: Indigo has the flag.
-    click('[data-testid="chat-create-back"]');
+    // The answer arrives: Indigo has the flag. Close the bot flow first.
+    expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
+    click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
     props.newBotCompanyUids = ["cmp_indigo"];
     await settle();
     // On the rail, New bot is on the "+" menu, which closes after each pick.
@@ -158,6 +172,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -180,6 +195,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   });
@@ -199,6 +215,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
 
     // The person is part-way through. The screen is not taken away.
@@ -219,6 +236,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
   });
@@ -268,6 +286,7 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     await nameBot();
     await vi.waitFor(() =>
       expect(q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.disabled).toBe(false),

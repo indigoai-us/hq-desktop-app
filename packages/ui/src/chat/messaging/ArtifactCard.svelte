@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ArtifactCard — the collapsed tile under a chat bubble for a long
    * structured artifact (`hq dm --details` / `--prompt`, delegation + handoff
@@ -133,7 +134,7 @@
       aria-label={copied
         ? `${artifact.kindLabel} copied`
         : `Copy ${artifact.kindLabel.toLowerCase()}`}
-    >
+    ><RailIcon name="copy" />
       {copied ? "Copied" : "Copy"}
     </button>
     <button
@@ -145,7 +146,7 @@
         open();
       }}
       aria-label={`Open ${artifact.kindLabel.toLowerCase()} in side pane`}
-    >
+    ><RailIcon name="external" />
       Open
     </button>
   </span>

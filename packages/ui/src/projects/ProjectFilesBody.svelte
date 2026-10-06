@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Project Files body (US-025). Loaded through project-files-lazy.ts.
@@ -347,8 +348,8 @@
   <aside class="files-tree" aria-label="Project files">
     <header class="files-toolbar">
       <h2>Files</h2>
-      <button type="button" class="text-btn" data-testid="new-file-open" onclick={openNewFile}>New file</button>
-      <button type="button" class="text-btn" data-testid="upload-open" onclick={openUpload}>Upload</button>
+      <button type="button" class="text-btn" data-testid="new-file-open" onclick={openNewFile}><RailIcon name="plus" />New file</button>
+      <button type="button" class="text-btn" data-testid="upload-open" onclick={openUpload}><RailIcon name="upload" />Upload</button>
     </header>
     <div class="files-tree-scroll">
       {#each roots as root (root.kind + root.path)}
@@ -398,7 +399,7 @@
             <span>Folder</span>
             <div class="folder-line">
               <code>{newFolder}/</code>
-              <button type="button" onclick={() => openFolderPicker("new-file")}>Change</button>
+              <button type="button" onclick={() => openFolderPicker("new-file")}><RailIcon name="pencil" />Change</button>
             </div>
           </div>
           <div class="sheet-r">
@@ -414,8 +415,8 @@
         </div>
         <footer class="sheet-f">
           <span data-testid="new-file-help">{createHelp}</span>
-          <button type="button" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="primary" data-testid="new-file-create" disabled={creating} aria-busy={creating || undefined} onclick={() => void createFile()}>{creating ? "Creating…" : "Create"}</button>
+          <button type="button" onclick={() => (sheet = null)}><RailIcon name="x" />Cancel</button>
+          <button type="button" class="primary" data-testid="new-file-create" disabled={creating} aria-busy={creating || undefined} onclick={() => void createFile()}><RailIcon name="plus" />{creating ? "Creating…" : "Create"}</button>
         </footer>
       {:else if sheet === "folder-picker"}
         <header class="sheet-h">Choose folder<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = folderTarget)}>✕</button></header>
@@ -439,7 +440,7 @@
         <div class="sheet-b">
           <div class="drop">
             <p>Drop files here or choose them.</p>
-            <button type="button" onclick={() => fileInput?.click()}>Choose files…</button>
+            <button type="button" onclick={() => fileInput?.click()}><RailIcon name="folder" />Choose files…</button>
             <input bind:this={fileInput} type="file" multiple hidden onchange={(event) => addFiles((event.currentTarget as HTMLInputElement).files)} />
           </div>
           <ul>
@@ -453,7 +454,7 @@
           </ul>
           <div class="folder-line">
             <code>{uploadFolder}/</code>
-            <button type="button" onclick={() => openFolderPicker("upload")}>Change</button>
+            <button type="button" onclick={() => openFolderPicker("upload")}><RailIcon name="pencil" />Change</button>
           </div>
           <div class="choices" role="radiogroup" aria-label="On conflict">
             {#each [["keep-both", "Keep both"], ["replace", "Replace"], ["skip", "Skip"]] as [id, label] (id)}
@@ -463,8 +464,8 @@
         </div>
         <footer class="sheet-f">
           <span>{picked.length} files</span>
-          <button type="button" onclick={() => (sheet = null)}>Cancel</button>
-          <button type="button" class="primary" data-testid="upload-start" disabled={picked.length === 0} onclick={() => void startUpload()}>Upload</button>
+          <button type="button" onclick={() => (sheet = null)}><RailIcon name="x" />Cancel</button>
+          <button type="button" class="primary" data-testid="upload-start" disabled={picked.length === 0} onclick={() => void startUpload()}><RailIcon name="upload" />Upload</button>
         </footer>
       {:else}
         <header class="sheet-h">Uploading<button type="button" class="icon-x" aria-label="Close" onclick={() => (sheet = null)}>✕</button></header>
@@ -483,7 +484,7 @@
           <p>On conflict: {conflict === "keep-both" ? "Keep both" : conflict === "replace" ? "Replace" : "Skip"}</p>
         </div>
         <footer class="sheet-f">
-          <button type="button" class="primary" onclick={() => (sheet = null)}>Done</button>
+          <button type="button" class="primary" onclick={() => (sheet = null)}><RailIcon name="check" />Done</button>
         </footer>
       {/if}
     </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
@@ -643,7 +644,7 @@
             disabled={installing || !chosenTarget?.enabled}
             aria-busy={installing}
             onclick={runInstall}
-          >
+          ><RailIcon name="download" />
             {#if installing}
               <span
                 class="install-spinner"
@@ -1381,7 +1382,7 @@
     color: var(--v4-primary-fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     display: inline-flex;
     align-items: center;

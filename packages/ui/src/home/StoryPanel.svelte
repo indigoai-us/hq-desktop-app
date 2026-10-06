@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * StoryPanel — stable in-workspace task detail (DESKTOP-006).
    *
@@ -359,7 +360,7 @@
         class:active={currentPasses}
         disabled={saving}
         onclick={() => setPasses(true)}
-      >
+      ><RailIcon name="check" />
         {saving && currentPasses ? "Saving…" : "Done"}
       </button>
     </div>
@@ -557,14 +558,14 @@
         onclick={() => void copyStoryId()}
         disabled={footerBusy !== null}
         aria-busy={footerBusy === "copy"}
-      >
+      ><RailIcon name="copy" />
         {footerBusy === "copy" ? "Copying…" : "Copy ID"}
       </button>
       <button
         type="button"
         onclick={() => void openPrd()}
         disabled={footerBusy !== null || !prdPath}
-      >
+      ><RailIcon name="external" />
         {footerBusy === "prd" ? "Opening…" : "Open PRD"}
       </button>
       <button
@@ -572,7 +573,7 @@
         class="primary"
         onclick={() => void runStory()}
         disabled={footerBusy !== null}
-      >
+      ><RailIcon name="play" />
         {footerBusy === "run" ? "Opening…" : "Run story"}
       </button>
     </footer>

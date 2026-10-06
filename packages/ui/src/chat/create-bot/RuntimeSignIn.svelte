@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Inline runtime sign-in for the New bot flow's Home step. Opens the
    * runtime's browser sign-in through the host and polls until connected —
@@ -176,15 +177,15 @@
 <div class="signin" data-testid="runtime-signin" data-runtime={runtime} data-state={phase} aria-live="polite">
   {#if phase === "waiting"}
     <span class="signin-text">Finish signing in to {label} in your browser — HQ will notice on its own.</span>
-    <button type="button" class="signin-btn" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
+    <button type="button" class="signin-btn" data-testid="runtime-signin-cancel" onclick={() => void cancel()}><RailIcon name="x" />Cancel</button>
   {:else if phase === "connected"}
     <span class="signin-text ok">{label} is signed in.</span>
   {:else if busy}
     <span class="signin-text">Opening {label} sign-in…</span>
   {:else}
     <span class="signin-text" class:error={phase === "error"}>{message || "Sign-in did not complete."}</span>
-    <button type="button" class="signin-btn" data-testid="runtime-signin-retry" onclick={() => void start()}>Try again</button>
-    <button type="button" class="signin-btn quiet" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
+    <button type="button" class="signin-btn" data-testid="runtime-signin-retry" onclick={() => void start()}><RailIcon name="refresh" />Try again</button>
+    <button type="button" class="signin-btn quiet" data-testid="runtime-signin-cancel" onclick={() => void cancel()}><RailIcon name="x" />Cancel</button>
   {/if}
 </div>
 

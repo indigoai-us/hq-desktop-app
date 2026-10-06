@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PresenceEntry } from "@hq/core";
 
-import { atlasLiveActors, atlasRoster, atlasWorkingNow, rosterNamesFromRows } from "./atlas-landing.js";
+import { atlasLiveActors, atlasRoster, atlasWorkingNow, rosterNamesFromRows,
+  atlasNodeDestination,
+} from "./atlas-landing.js";
 
 function entry(status: "online" | "offline", actorType: "human" | "agent" = "human"): PresenceEntry {
   return { status, actorType, at: "2026-10-01T00:00:00.000Z" };
@@ -58,6 +60,8 @@ describe("Atlas landing roster (US-009)", () => {
 });
 
 describe("atlasLiveActors (US-013)", () => {
+  // Bots with no photo get the app's generated bot avatar, as in Messages.
+  const botPicture = expect.stringContaining("agent-avatars");
   const live = {
     participants: [
       {
@@ -83,12 +87,111 @@ describe("atlasLiveActors (US-013)", () => {
   it("keeps online actors, one row per open project, PresenceStore wins", () => {
     const actors = atlasLiveActors(live, snapshot, "co_a", new Map([["u_amy", "Amy B"]]));
     expect(actors).toEqual([
-      { actorUid: "u_amy", name: "Amy B", bot: false },
-      { actorUid: "b_scout", name: "scout", bot: true, projectId: "billing-v2", signal: "US-7" },
+      // Online with no session in progress: kept, but marked so Working now can set it apart.
+      { actorUid: "u_amy", name: "Amy B", bot: false, idle: true },
+      { actorUid: "b_scout", name: "scout", bot: true, avatarUrl: botPicture, projectId: "billing-v2", signal: "US-7" },
     ]);
+  });
+
+  it("marks an actor idle when every session is idle or ended", () => {
+    const quiet = {
+      participants: [
+        { actorUid: "b_nap", actorType: "agent", displayName: "nap", presence: "online", sessions: [{ projectId: "p", status: "idle" }, { status: "ended" }] },
+      ],
+    };
+    expect(atlasLiveActors(quiet, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "b_nap", name: "nap", bot: true, avatarUrl: botPicture, projectId: "p", signal: undefined, idle: true },
+    ]);
+  });
+
+  it("carries the app's profile and bot pictures, keyed by actor uid", () => {
+    const pics = {
+      participants: [
+        { actorUid: "u_pic", actorType: "human", displayName: "Pia", presence: "online", sessions: [{ projectId: "p", status: "active" }] },
+        { actorUid: "u_none", actorType: "human", displayName: "Ned", presence: "online", sessions: [{ projectId: "p", status: "active" }] },
+        { actorUid: "b_pic", actorType: "agent", displayName: "Bo", presence: "online", sessions: [{ projectId: "p", status: "active" }] },
+        { actorUid: "u_web", actorType: "human", displayName: "Wes", presence: "online", sessions: [{ projectId: "p", status: "active" }] },
+      ],
+    };
+    const avatars = {
+      u_pic: "data:image/png;base64,AAAA",
+      b_pic: "data:image/png;base64,BBBB",
+      // Not paintable under the app's CSP: dropped, initials instead.
+      u_web: "https://example.com/wes.png",
+    };
+    const byUid = new Map(atlasLiveActors(pics, new Map(), "co_a", new Map(), null, avatars).map((a) => [a.actorUid, a]));
+    expect(byUid.get("u_pic")?.avatarUrl).toBe("data:image/png;base64,AAAA");
+    expect(byUid.get("b_pic")?.avatarUrl).toBe("data:image/png;base64,BBBB");
+    expect(byUid.get("u_none")).not.toHaveProperty("avatarUrl");
+    expect(byUid.get("u_web")).not.toHaveProperty("avatarUrl");
   });
 
   it("returns nothing without a live read", () => {
     expect(atlasLiveActors(undefined, snapshot, "co_a", new Map())).toEqual([]);
+  });
+
+  it("keeps where a session with no project runs: repo, cwd, worker, task", () => {
+    const away = {
+      participants: [
+        {
+          actorUid: "b_box",
+          actorType: "agent",
+          displayName: "box",
+          presence: "online",
+          sessions: [
+            { repo: "hq-pro", taskId: "US-2", status: "active" },
+            { cwd: "/srv/work/hq-console/", status: "open" },
+            { cwd: "/srv/work/hq-console/", status: "open" },
+            { workerId: "reviewer", status: "ended" },
+          ],
+        },
+        { actorUid: "b_bare", actorType: "agent", displayName: "bare", presence: "online", sessions: [{ status: "active" }] },
+      ],
+    };
+    expect(atlasLiveActors(away, new Map(), "co_a", new Map())).toEqual([
+      { actorUid: "b_bare", name: "bare", bot: true, avatarUrl: botPicture },
+      { actorUid: "b_box", name: "box", bot: true, avatarUrl: botPicture, cwd: "/srv/work/hq-console/", signal: undefined },
+      { actorUid: "b_box", name: "box", bot: true, avatarUrl: botPicture, repo: "hq-pro", taskId: "US-2", signal: "US-2" },
+    ]);
+  });
+});
+
+describe("atlasNodeDestination: Open files shows a file, not a tree", () => {
+  it("opens a folder on its main file in the Files explorer", () => {
+    const skill = { type: "skill", path: "skills/deploy/", folder: true, file: "skills/deploy/SKILL.md" };
+    expect(atlasNodeDestination(skill, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: "companies/indigo/skills/deploy/SKILL.md",
+    });
+  });
+
+  it("opens a project on its main file, and keeps Open board on the Tasks tab", () => {
+    const project = { type: "project", path: "projects/billing-v2/", folder: true, file: "projects/billing-v2/README.md" };
+    expect(atlasNodeDestination(project, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: "companies/indigo/projects/billing-v2/README.md",
+    });
+    expect(atlasNodeDestination(project, "indigo", "board")).toEqual({
+      kind: "projects",
+      company: "indigo",
+      project: "billing-v2",
+      tab: "tasks",
+    });
+  });
+
+  it("falls back when a folder has no file to show", () => {
+    expect(atlasNodeDestination({ type: "project", path: "projects/empty/", folder: true }, "indigo", "files")).toEqual({
+      kind: "projects",
+      company: "indigo",
+      project: "empty",
+      tab: "files",
+    });
+    expect(atlasNodeDestination({ type: "knowledge", path: "knowledge/brand/", folder: true }, "indigo", "files")).toEqual({
+      kind: "explorer",
+      vault: "company:indigo",
+      path: null,
+    });
   });
 });

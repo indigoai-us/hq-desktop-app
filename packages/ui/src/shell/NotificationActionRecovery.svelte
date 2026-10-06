@@ -49,7 +49,7 @@
     background: transparent;
     color: var(--pop-text, #e8e8e8);
     font: inherit;
-    font-weight: 650;
+    font-weight: 500;
     cursor: pointer;
   }
 

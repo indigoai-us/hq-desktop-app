@@ -420,6 +420,12 @@ describe("DesktopApp New bot: the Cloud option", () => {
       await settle(10);
       clickAnywhere('[data-testid="chat-create-menu-agent"]');
       await settle(10);
+      // "New bot" asks "Cloud or Local?" first. This host makes no local
+      // bots, so Cloud: the takeover's create for a flagged company, else the
+      // "+" window's bot flow in the takeover shell.
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
+      clickAnywhere('[data-testid="new-bot-choice-cloud"]');
+      await settle(10);
       clickAnywhere('[data-testid="create-bot-next"]');
       await settle(10);
 
@@ -552,6 +558,12 @@ describe("DesktopApp New bot: the Cloud option", () => {
       await settle(10);
       clickAnywhere('[data-testid="chat-create-menu-agent"]');
       await settle(10);
+      // "New bot" asks "Cloud or Local?" first. This host makes no local
+      // bots, so Cloud: the takeover's create for a flagged company, else the
+      // "+" window's bot flow in the takeover shell.
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
+      clickAnywhere('[data-testid="new-bot-choice-cloud"]');
+      await settle(10);
       clickAnywhere('[data-testid="create-bot-next"]');
       await settle(10);
       document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-where-cloud"]')!.click();
@@ -617,6 +629,13 @@ describe("DesktopApp New bot: the Cloud option", () => {
     clickAnywhere('[data-testid="chat-new-message"]');
     await settle(10);
     clickAnywhere('[data-testid="chat-create-menu-agent"]');
+    await settle(10);
+    // "New bot" asks "Cloud or Local?" first. No cloud bot can be made
+    // here, so Cloud is shown off with its reason and Local is the way on.
+    const cloudChoice = document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]');
+    expect(cloudChoice?.disabled).toBe(true);
+    expect(cloudChoice?.textContent).toContain("Cloud bots");
+    clickAnywhere('[data-testid="new-bot-choice-local"]');
     await settle(10);
     clickAnywhere('[data-testid="create-bot-next"]');
     await settle(10);
@@ -759,6 +778,10 @@ describe("DesktopApp New bot takeover", () => {
     clickAnywhere('[data-testid="chat-new-message"]');
     await settle(10);
     clickAnywhere('[data-testid="chat-create-menu-agent"]');
+    await settle(10);
+    // "New bot" asks "Cloud or Local?" first. Cloud: the takeover's create
+    // for a flagged company, else the "+" window's bot flow in the takeover shell.
+    clickAnywhere('[data-testid="new-bot-choice-cloud"]');
     await settle(10);
   }
 

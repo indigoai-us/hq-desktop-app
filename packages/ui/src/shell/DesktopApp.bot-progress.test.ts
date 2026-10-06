@@ -179,8 +179,10 @@ async function createBot(): Promise<void> {
   await settle();
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
-  click('[data-testid="create-bot-next"]');
+  // "New bot" asks "Cloud or Local?" first.
+  click('[data-testid="new-bot-choice-local"]');
   await settle();
+  // Local was picked already, so Kind goes straight to Details.
   click('[data-testid="create-bot-next"]');
   await settle();
   const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;

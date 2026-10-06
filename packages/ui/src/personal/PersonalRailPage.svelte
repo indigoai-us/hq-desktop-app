@@ -1,8 +1,10 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import { sourceIconUrl, sourceNames } from "./google-source-icons.js";
   import { dismissable } from "../common/dismissable.js";
   /**
    * Personal Secrets and Connections (US-033).
@@ -284,7 +286,7 @@
           />
           <button type="button" class="toggle-pill" class:sel={secretPills.stale} aria-pressed={secretPills.stale} data-testid="secrets-stale-pill" onclick={() => (secretPills = { ...secretPills, stale: !secretPills.stale })}>Not rotated in 90 d</button>
           {#if !secretPillsAreDefault(secretPills)}
-            <button type="button" class="clear-pills" data-testid="secrets-clear-filters" onclick={() => (secretPills = { ...DEFAULT_SECRET_PILLS })}>Clear</button>
+            <button type="button" class="clear-pills" data-testid="secrets-clear-filters" onclick={() => (secretPills = { ...DEFAULT_SECRET_PILLS })}><RailIcon name="x" />Clear</button>
           {/if}
         </span>
         <span class="grow"></span>
@@ -423,10 +425,17 @@
             <h2>{integrationCurrent.app}</h2>
             <p class="meta">{integrationCurrent.identity}</p>
             {#if connectedLabel(integrationCurrent.connectedAt)}<p class="meta">{connectedLabel(integrationCurrent.connectedAt)}</p>{/if}
-            {#if integrationCurrent.sources.length > 0}
+            {@const sources = sourceNames(integrationCurrent.sources)}
+            {#if sources.length > 0}
               <p class="label">Connected sources</p>
               <ul class="sources" data-testid="integration-sources">
-                {#each integrationCurrent.sources as source (source)}<li>{source}</li>{/each}
+                {#each sources as source (source)}
+                  {@const icon = sourceIconUrl(source)}
+                  <li data-testid={`integration-source-${source.toLowerCase()}`}>
+                    {#if icon}<img class="src-icon" src={icon} alt="" width="16" height="16" />{:else}<span class="src-icon src-fallback"><RailIcon name="circle-dot" size={16} /></span>{/if}
+                    <span class="src-name">{source}</span>
+                  </li>
+                {/each}
               </ul>
             {/if}
           {/if}
@@ -503,7 +512,7 @@
                     if (row.status === "connected") sheet = "confirm-disconnect";
                     else openConnect(row.name);
                   }}
-                >{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</button>
+                ><RailIcon name="x" />{row.status === "available" ? "Connect" : row.status === "reconnect" ? "Reconnect" : "Disconnect"}</button>
               </div>
             {/each}
             {#if connectionPage.remaining > 0}
@@ -682,8 +691,11 @@
   .sheet { position: absolute; right: 16px; bottom: 16px; width: 320px; padding: 16px 20px; border: 1px solid var(--panel-border, var(--v4-rowline)); border-radius: 8px; background: var(--overlay-bg, var(--panel-bg, var(--v4-raised, var(--v4-ground)))); box-shadow: var(--panel-shadow, none); display: flex; flex-direction: column; gap: 8px; }
   .irow { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) 110px 110px; }
   .company-link { display: flex; gap: 8px; margin-top: 12px; }
-  .sources { list-style: none; margin: 0; padding: 0; color: var(--t2, var(--v4-text-2)); }
-  .sources li { height: 28px; line-height: 28px; }
+  .sources { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; color: var(--t1, var(--v4-text-1)); }
+  .sources li { display: flex; align-items: center; gap: 8px; height: 28px; min-width: 0; border-bottom: 1px solid var(--v4-rowline, var(--panel-border)); }
+  .src-icon { width: 16px; height: 16px; flex: none; display: inline-grid; place-items: center; }
+  .src-fallback { color: var(--t3, var(--v4-text-3)); }
+  .src-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; }
   .state.empty { text-align: center; padding: 48px 16px; color: var(--t3, var(--v4-text-3)); }
   .state { padding: 16px 8px; color: var(--t2, var(--v4-text-2)); }
   .state p { margin: 0 0 8px; }

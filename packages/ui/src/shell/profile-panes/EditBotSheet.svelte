@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import CompanyLabel from "../../company/CompanyLabel.svelte";
   import { dismissable } from "../../common/dismissable.js";
   /**
@@ -98,7 +99,7 @@
             </span>
           </div>
         {/each}
-        <div class="fr"><span></span><button type="button" class="btn" data-testid="edit-bot-add-path" onclick={() => (picker = "folders")}>Add a path…</button></div>
+        <div class="fr"><span></span><button type="button" class="btn" data-testid="edit-bot-add-path" onclick={() => (picker = "folders")}><RailIcon name="plus" />Add a path…</button></div>
         {#each local.secrets as secret (secret.name)}
           <div class="fr"><span>{secret.name}</span><span>{secret.granted ? "mounted per run" : "not granted"}</span></div>
         {/each}
@@ -108,7 +109,7 @@
           <span>Skills</span>
           <span class="chips">
             {#each local.skills.filter((skill) => skill.selected) as skill (skill.id)}<span class="chip">{skill.title}</span>{/each}
-            <button type="button" class="btn" data-testid="edit-bot-open-skills" onclick={() => (picker = "skills")}>Browse skills</button>
+            <button type="button" class="btn" data-testid="edit-bot-open-skills" onclick={() => (picker = "skills")}><RailIcon name="search" />Browse skills</button>
           </span>
         </div>
         {#each local.tools as tool (tool.id)}
@@ -135,8 +136,8 @@
     <footer class="sf">
       <span class="note">Applies on the next heartbeat · about 30 s</span>
       <span class="grow"></span>
-      <button type="button" class="btn" onclick={() => onclose?.()}>Cancel</button>
-      <button type="button" class="btn primary" data-testid="edit-bot-save" onclick={() => onsave?.(local)}>Save</button>
+      <button type="button" class="btn" onclick={() => onclose?.()}><RailIcon name="x" />Cancel</button>
+      <button type="button" class="btn primary" data-testid="edit-bot-save" onclick={() => onsave?.(local)}><RailIcon name="save" />Save</button>
     </footer>
   </div>
 </div>

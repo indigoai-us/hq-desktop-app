@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   /**
@@ -681,7 +682,7 @@
       {#if loadError}
         <p class="bots-error" data-testid="settings-bots-error">
           {loadError}
-          <button type="button" class="quiet" onclick={() => void load()}>Retry</button>
+          <button type="button" class="quiet" onclick={() => void load()}><RailIcon name="refresh" />Retry</button>
         </p>
       {/if}
       <div class="settings-card" data-testid="settings-bots-list">
@@ -727,11 +728,11 @@
             </div>
             <div class="actions">
               {#if bot.processAlive}
-                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "stop")}>
+                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "stop")}><RailIcon name="stop" />
                   {busy === bot.name ? "Working…" : "Stop"}
                 </button>
               {:else}
-                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "start")}>
+                <button type="button" disabled={Boolean(busy)} onclick={() => void act(bot.name, "start")}><RailIcon name="play" />
                   {busy === bot.name ? "Working…" : "Start"}
                 </button>
               {/if}
@@ -741,7 +742,7 @@
                 data-testid={`settings-bot-${bot.name}-remove`}
                 disabled={Boolean(busy)}
                 onclick={(event) => openLocalRemove(bot, event.currentTarget)}
-              >
+              ><RailIcon name="trash" />
                 Remove
               </button>
               {#if localAction?.name === bot.name && localAction.isError}
@@ -811,7 +812,7 @@
                   data-testid="settings-bots-restore-all"
                   disabled={restoreBusy || Boolean(adoptBusy)}
                   onclick={() => void restoreAll()}
-                >
+                ><RailIcon name="refresh" />
                   {restoreBusy ? "Restoring…" : BOT_RESTORE_FROM_SETTINGS}
                 </button>
                 {#if restoreResult}
@@ -876,7 +877,7 @@
             data-testid="settings-bots-create-button"
             disabled={Boolean(busy) || createOpen}
             onclick={() => void openCreate()}
-          >
+          ><RailIcon name="plus" />
             New bot
           </button>
         </div>
@@ -897,7 +898,7 @@
       <p class="bots-error" data-testid="settings-bots-cloud-error">
         {cloudError}
         {#if adapter?.agents?.listMobileRoster}
-          <button type="button" class="quiet" onclick={() => void loadCloud()}>Retry</button>
+          <button type="button" class="quiet" onclick={() => void loadCloud()}><RailIcon name="refresh" />Retry</button>
         {/if}
       </p>
     {/if}
@@ -952,7 +953,7 @@
                   data-testid={`settings-cloud-bot-${bot.uid}-resume`}
                   disabled={Boolean(cloudBusy)}
                   onclick={() => void actCloud(bot, "resume")}
-                >
+                ><RailIcon name="play" />
                   {cloudBusy === bot.uid ? "Working…" : "Resume"}
                 </button>
               {:else}
@@ -961,7 +962,7 @@
                   data-testid={`settings-cloud-bot-${bot.uid}-pause`}
                   disabled={Boolean(cloudBusy) || bot.status === "PROVISIONING"}
                   onclick={() => void actCloud(bot, "pause")}
-                >
+                ><RailIcon name="stop" />
                   {cloudBusy === bot.uid ? "Working…" : "Pause"}
                 </button>
               {/if}
@@ -971,7 +972,7 @@
                 data-testid={`settings-cloud-bot-${bot.uid}-remove`}
                 disabled={Boolean(cloudBusy)}
                 onclick={(event) => openCloudRemove(bot, event.currentTarget)}
-              >
+              ><RailIcon name="trash" />
                 Remove
               </button>
               {#if cloudAction?.uid === bot.uid && cloudAction.isError}

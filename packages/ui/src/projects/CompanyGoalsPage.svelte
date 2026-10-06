@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Goals — portfolio list + stable selected-goal detail (DESKTOP-007).
@@ -679,7 +680,7 @@
           onclick={newGoal}
           disabled={actionBusy !== null}
           aria-busy={actionBusy === "new-goal"}
-        >
+        ><RailIcon name="plus" />
           {actionBusy === "new-goal" ? "Opening…" : "New goal"}
         </button>
       </div>
@@ -768,7 +769,7 @@
                   data-testid="goal-detail-back"
                   aria-label="Back to goals list"
                   onclick={clearGoalSelection}
-                >
+                ><RailIcon name="arrow-left" />
                   Goals
                 </button>
                 <div class="goal-detail-heading title-stack">
@@ -860,7 +861,7 @@
                     disabled={actionBusy !== null}
                     aria-busy={actionBusy ===
                       `review-${selectedGoal.id || selectedGoal.title}`}
-                  >
+                  ><RailIcon name="eye" />
                     {actionBusy ===
                     `review-${selectedGoal.id || selectedGoal.title}`
                       ? "Opening…"

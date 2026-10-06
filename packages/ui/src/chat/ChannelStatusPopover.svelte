@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
@@ -416,7 +417,7 @@
               {#if migratingSessionId === s.id}
                 …
               {:else}
-                Move
+                <RailIcon name="arrow-right" />Move
               {/if}
             </button>
           {/if}

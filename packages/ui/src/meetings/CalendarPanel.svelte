@@ -4,6 +4,7 @@
   Microsoft has no backend connect yet, so its button says so.
 -->
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
   import { syncedAgo } from "./meeting-link";
   import {
@@ -41,20 +42,20 @@
       <span class="mm">Not connected</span>
     {/if}
   </span>
-  <button type="button" class="btn" data-testid="calendar-connect-google" disabled={pending} aria-busy={pending} onclick={() => void connectGoogleCalendar(openExternal)}>
+  <button type="button" class="btn" data-testid="calendar-connect-google" disabled={pending} aria-busy={pending} onclick={() => void connectGoogleCalendar(openExternal)}><RailIcon name="plug" />
     {pending ? "Waiting…" : accounts.length ? "Reconnect" : "Connect"}
   </button>
 </div>
 <div class="row" data-testid="calendar-provider-microsoft">
   <span class="mk">M</span>
   <span class="tx"><span class="tt">Microsoft Outlook</span><span class="mm">Not connected</span></span>
-  <button type="button" class="btn" data-testid="calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet">Connect</button>
+  <button type="button" class="btn" data-testid="calendar-connect-microsoft" disabled title="Microsoft calendar connect is not available yet"><RailIcon name="plug" />Connect</button>
 </div>
 <div class="rule"></div>
-<button type="button" class="link" data-testid="calendar-connect-another" disabled={pending} onclick={() => void connectGoogleCalendar(openExternal)}>Connect another account</button>
+<button type="button" class="link" data-testid="calendar-connect-another" disabled={pending} onclick={() => void connectGoogleCalendar(openExternal)}><RailIcon name="plug" />Connect another account</button>
 {#if primary}
   {#each accounts as a (a.accountId)}
-    <button type="button" class="link danger" data-testid="calendar-disconnect" disabled={meetingsStore.disconnectPendingByAccountId.has(a.accountId)} onclick={() => void disconnectCalendarAccount(a.accountId, emailOf(a))}>Disconnect {emailOf(a)}</button>
+    <button type="button" class="link danger" data-testid="calendar-disconnect" disabled={meetingsStore.disconnectPendingByAccountId.has(a.accountId)} onclick={() => void disconnectCalendarAccount(a.accountId, emailOf(a))}><RailIcon name="x" />Disconnect {emailOf(a)}</button>
   {/each}
 {/if}
 <p class="note">Meetings reads events and video links only. Disconnecting removes upcoming events from this list; recaps stay.</p>

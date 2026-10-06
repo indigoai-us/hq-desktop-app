@@ -1,7 +1,7 @@
 /**
  * Atlas ring layout, edge visibility, label rules and view transform math.
  *
- * Kind clusters sit on a ring (Console `layoutAtlas`, same hash packing);
+ * Kind clusters are packed against each other around the largest one;
  * pan and zoom are a single `translate/scale` on one SVG group so moving the
  * map never re-lays out nodes.
  */
@@ -14,6 +14,7 @@ import {
   type AtlasNode,
   type AtlasRefEdge,
 } from "./atlas-model.js";
+import { atlasHasActivityData, atlasProjectActivity } from "./atlas-activity.js";
 
 export const ATLAS_ORBIT = 420;
 export const ATLAS_SQUASH = 0.77;
@@ -77,6 +78,9 @@ const ATLAS_TYPE_DOTS: Record<AtlasDistrictType, number> = {
   skill: 8.55,
 };
 
+/** Dot radius approaches this and never reaches it. */
+export const ATLAS_DOT_SOFT_CAP = 13;
+
 /** The web lays the ring out at orbit 4000; this map uses ATLAS_ORBIT. */
 const WEB_SCALE = ATLAS_ORBIT / 4000;
 
@@ -87,11 +91,19 @@ const WEB_SCALE = ATLAS_ORBIT / 4000;
  */
 export function atlasRadius(n: Pick<AtlasNode, "count" | "stories"> & { type?: AtlasDistrictType }): number {
   const dots = ATLAS_TYPE_DOTS[n.type ?? "project"];
-  return Math.max(1.5, (0.2 + Math.sqrt(objectSize(n) + 1) * 0.45 * 10 * dots) * WEB_SCALE);
+  const raw = (0.2 + Math.sqrt(objectSize(n) + 1) * 0.45 * 10 * dots) * WEB_SCALE;
+  // Soft cap, like the web map's on-screen cap: size still orders objects,
+  // but one huge folder can no longer draw as a blob that hides its section.
+  return Math.max(1.5, raw / (1 + raw / ATLAS_DOT_SOFT_CAP));
 }
 
+/** Space kept between two dots of one section. */
+const DOT_GAP = 3;
+/** Share of a section's disc its dots (with their gap) may fill before relaxing. */
+const SECTION_FILL = 0.42;
+
 /** Push apart dots of one section that overlap, keeping the hash layout's shape. */
-function relaxSection(items: { x: number; y: number; r: number }[], gap = 7, rounds = 24): void {
+function relaxSection(items: { x: number; y: number; r: number }[], gap = DOT_GAP, rounds = 48): void {
   for (let round = 0; round < rounds; round++) {
     let moved = false;
     for (let i = 0; i < items.length; i++) {
@@ -121,7 +133,90 @@ function relaxSection(items: { x: number; y: number; r: number }[], gap = 7, rou
   }
 }
 
-export function layoutAtlas(nodes: AtlasNode[]): {
+/**
+ * Pack the sections against each other instead of spacing them on a fixed
+ * ring: the largest goes in the middle and each next one takes the free spot
+ * nearest the centre, leaning toward its ring angle so the arrangement stays
+ * familiar. A single large section no longer pushes the small ones far away.
+ * Sections keep SECTION_GAP and never overlap. Deterministic.
+ */
+function packSections(
+  regions: AtlasRegion[],
+  reach: Map<AtlasDistrictType, number>,
+): Map<AtlasDistrictType, { x: number; y: number }> {
+  const out = new Map<AtlasDistrictType, { x: number; y: number }>();
+  const todo = regions
+    .filter((g) => reach.has(g.type))
+    .map((g) => ({ type: g.type, r: reach.get(g.type) as number, angle: Math.atan2(g.y, g.x) }))
+    .sort((a, b) => b.r - a.r || ATLAS_RING_ORDER.indexOf(a.type) - ATLAS_RING_ORDER.indexOf(b.type));
+  const placed: { x: number; y: number; r: number }[] = [];
+  const fits = (x: number, y: number, r: number) =>
+    placed.every((p) => Math.hypot(p.x - x, p.y - y) >= p.r + r + SECTION_GAP - 1e-6);
+  for (const next of todo) {
+    if (!placed.length) {
+      placed.push({ x: 0, y: 0, r: next.r });
+      out.set(next.type, { x: 0, y: 0 });
+      continue;
+    }
+    const spots: { x: number; y: number }[] = [];
+    for (const p of placed) {
+      const d = p.r + next.r + SECTION_GAP;
+      for (let step = 0; step < PACK_ANGLES; step++) {
+        const a = next.angle + (step / PACK_ANGLES) * Math.PI * 2;
+        spots.push({ x: p.x + Math.cos(a) * d, y: p.y + Math.sin(a) * d });
+      }
+    }
+    // Touching two placed sections at once: the two circle-circle intersections.
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i]!;
+        const b = placed[j]!;
+        const ra = a.r + next.r + SECTION_GAP;
+        const rb = b.r + next.r + SECTION_GAP;
+        const d = Math.hypot(b.x - a.x, b.y - a.y);
+        if (d < 1e-6 || d > ra + rb || d < Math.abs(ra - rb)) continue;
+        const along = (ra * ra - rb * rb + d * d) / (2 * d);
+        const off = Math.sqrt(Math.max(0, ra * ra - along * along));
+        const ux = (b.x - a.x) / d;
+        const uy = (b.y - a.y) / d;
+        spots.push({ x: a.x + ux * along - uy * off, y: a.y + uy * along + ux * off });
+        spots.push({ x: a.x + ux * along + uy * off, y: a.y + uy * along - ux * off });
+      }
+    }
+    let best: { x: number; y: number } | null = null;
+    let bestScore = Infinity;
+    for (const spot of spots) {
+      if (!fits(spot.x, spot.y, next.r)) continue;
+      // Nearest the centre, on a canvas wider than tall, leaning to its ring angle.
+      const turn = Math.abs(Math.atan2(Math.sin(Math.atan2(spot.y, spot.x) - next.angle), Math.cos(Math.atan2(spot.y, spot.x) - next.angle)));
+      const score = Math.hypot(spot.x * PACK_WIDE, spot.y) + turn * next.r * PACK_ANGLE_PULL;
+      if (score < bestScore - 1e-9) {
+        bestScore = score;
+        best = spot;
+      }
+    }
+    // A spot always exists (the far side of the outermost section); guard anyway.
+    const at = best ?? { x: placed.reduce((m, p) => Math.max(m, p.x + p.r), 0) + next.r + SECTION_GAP, y: 0 };
+    placed.push({ ...at, r: next.r });
+    out.set(next.type, at);
+  }
+  return out;
+}
+
+/**
+ * Project dot size from recent activity (see atlas-activity.ts): an idle
+ * project is a small dot and a busy one grows, on the same soft cap as every
+ * other dot. Without `nowMs`, or when no project has a touched time, the
+ * size comes from story total or file count as before.
+ */
+export function atlasActivityRadius(score: number): number {
+  return atlasRadius({ type: "project", count: Math.max(1, 1 + score) });
+}
+
+export function layoutAtlas(
+  nodes: AtlasNode[],
+  opts: { nowMs?: number; edges?: AtlasRefEdge[] } = {},
+): {
   placed: AtlasPlaced[];
   regions: AtlasRegion[];
 } {
@@ -135,15 +230,21 @@ export function layoutAtlas(nodes: AtlasNode[]): {
       y: Math.sin(a) * ATLAS_ORBIT * ATLAS_SQUASH,
     };
   });
-  const siblings = new Map<AtlasDistrictType, number>();
-  for (const n of roots) siblings.set(n.type, (siblings.get(n.type) ?? 0) + 1);
-  // Offsets from the section centre: the web hash scatter and pack size,
-  // scaled to this map, then relaxed so no two dots overlap.
-  const offsets = roots.map((n) => {
-    const pack = (16 + 13 * Math.sqrt(siblings.get(n.type) ?? 1)) * 7.65 * WEB_SCALE;
+  // Offsets from the section centre: the web hash scatter, inside a disc
+  // sized to the area its dots need, then relaxed so no two dots overlap.
+  const activity =
+    opts.nowMs != null && atlasHasActivityData(roots) ? atlasProjectActivity(nodes, opts.edges, opts.nowMs) : null;
+  const sized = roots.map((n) => {
+    const score = n.type === "project" ? activity?.get(n.id) : undefined;
+    return { n, r: score == null ? atlasRadius(n) : atlasActivityRadius(score) };
+  });
+  const discArea = new Map<AtlasDistrictType, number>();
+  for (const { n, r } of sized) discArea.set(n.type, (discArea.get(n.type) ?? 0) + (r + DOT_GAP / 2) ** 2);
+  const offsets = sized.map(({ n, r }) => {
+    const pack = Math.sqrt((discArea.get(n.type) ?? 0) / SECTION_FILL);
     const rad = Math.sqrt(atlasHash(n.id)) * pack;
     const ang = atlasHash(`${n.id}b`) * Math.PI * 2;
-    return { n, x: Math.cos(ang) * rad, y: Math.sin(ang) * rad, r: atlasRadius(n) };
+    return { n, x: Math.cos(ang) * rad, y: Math.sin(ang) * rad, r };
   });
   const reach = new Map<AtlasDistrictType, number>();
   for (const type of ATLAS_RING_ORDER) {
@@ -153,29 +254,8 @@ export function layoutAtlas(nodes: AtlasNode[]): {
       reach.set(type, Math.max(40, Math.max(...members.map((o) => Math.hypot(o.x, o.y) + o.r)) + DISTRICT_PAD));
     }
   }
-  // OWNER-R4: sections never overlap. Widen the ring until every pair of
-  // shaded sections keeps a gap; small maps keep the web orbit.
-  let scale = 1;
-  const centre = (region: AtlasRegion) => ({ x: region.x * scale, y: region.y * scale });
-  for (let tries = 0; tries < 60; tries++) {
-    let clash = false;
-    for (let i = 0; i < regions.length && !clash; i++) {
-      for (let j = i + 1; j < regions.length; j++) {
-        const ra = reach.get(regions[i]!.type);
-        const rb = reach.get(regions[j]!.type);
-        if (ra === undefined || rb === undefined) continue;
-        const a = centre(regions[i]!);
-        const b = centre(regions[j]!);
-        if (Math.hypot(a.x - b.x, a.y - b.y) < ra + rb + SECTION_GAP) {
-          clash = true;
-          break;
-        }
-      }
-    }
-    if (!clash) break;
-    scale *= 1.08;
-  }
-  const scaled = regions.map((region) => ({ ...region, ...centre(region) }));
+  const centres = packSections(regions, reach);
+  const scaled = regions.map((region) => ({ ...region, ...(centres.get(region.type) ?? { x: region.x, y: region.y }) }));
   const placed = offsets.map(({ n, x, y, r }) => {
     const region = scaled.find((g) => g.type === n.type) as AtlasRegion;
     return { ...n, x: region.x + x, y: region.y + y, r };
@@ -222,9 +302,15 @@ export function atlasVisibleEdges(
 /** One shaded section: a circle around every object in the section. */
 export type AtlasDistrictShape = AtlasRegion & { r: number };
 
-const DISTRICT_PAD = 18;
+const DISTRICT_PAD = 14;
 /** Space kept between two shaded sections. */
-const SECTION_GAP = 24;
+const SECTION_GAP = 10;
+/** Candidate angles tried around each placed section when packing. */
+const PACK_ANGLES = 48;
+/** Under 1 favours spots left and right of centre over above and below. */
+const PACK_WIDE = 0.55;
+/** How strongly a section prefers its ring angle, in radii per radian. */
+const PACK_ANGLE_PULL = 0.35;
 
 /**
  * OWNER-D 7: the shaded area behind each section that has objects. Like the
@@ -252,10 +338,13 @@ export function atlasDistrictLabel(
   shape: AtlasDistrictShape,
   view: AtlasView,
   measure: (text: string) => number,
+  /** Object count drawn after the name; widens the reserved box. */
+  count?: number,
 ): AtlasScreenLabel {
   const cx = shape.x * view.k + view.x;
   const y = (shape.y - shape.r) * view.k + view.y - 6;
-  const w = measure(shape.label);
+  // Drawn uppercase with tracking at 11px: about the width of the 13px label.
+  const w = measure(count == null ? shape.label.toUpperCase() : `${shape.label.toUpperCase()}  ${count}`);
   return {
     id: `district:${shape.type}`,
     text: shape.label,
@@ -270,13 +359,26 @@ export const ATLAS_LABEL_PX = 13;
 /** From this zoom up, every object may carry a label when there is room. */
 export const ATLAS_LABEL_ALL_ZOOM = 1;
 /** Below that zoom, at most this many labels for objects nobody is looking at. */
-export const ATLAS_FIT_LABEL_CAP = 8;
+export const ATLAS_FIT_LABEL_CAP = 16;
 const LABEL_GAP = 4;
+/** Dots smaller than this on screen do not block a label. */
+const DOT_OBSTACLE_PX = 2.5;
 const LABEL_HEIGHT = 16;
+
+/** Longest name drawn on the map; the hover card and inspector show the rest. */
+export const ATLAS_LABEL_MAX_CHARS = 28;
+
+export function atlasShortLabel(label: string): string {
+  const text = label.trim();
+  if (text.length <= ATLAS_LABEL_MAX_CHARS) return text;
+  return `${text.slice(0, ATLAS_LABEL_MAX_CHARS - 1).trimEnd()}…`;
+}
 
 export interface AtlasScreenLabel {
   id: string;
   text: string;
+  /** 0 hovered, 1 selected, 2 related, 3 recent project, 4 everything else; drives label tone. */
+  rank?: number;
   x: number;
   y: number;
   box: { left: number; top: number; right: number; bottom: number };
@@ -284,17 +386,24 @@ export interface AtlasScreenLabel {
 
 /**
  * OWNER-D 4 (AUDIT-3-19): which labels to draw, in screen space, at a fixed
- * readable size. Ranked hovered, selected, related, then by significance:
- * touched in the last two days first, then most recently touched, then larger
- * objects (size comes from the object's item count). With an object selected
- * or hovered, only it, its relations and recent objects are labelled. Below
- * ATLAS_LABEL_ALL_ZOOM, at most ATLAS_FIT_LABEL_CAP labels go to objects
- * nobody is looking at. A label is kept only when it fits inside the map and
- * does not overlap a label already kept, so crowded maps show the most
- * significant names and the rest appear on hover or as the map zooms in.
+ * readable size. Ranked hovered, selected, related, then projects by
+ * recency: touched in the last two days first, then most recently touched,
+ * then larger projects (size comes from the item count).
+ *
+ * Owner 2026-10-05: with nothing hovered or selected only projects carry a
+ * name. Knowledge, policies, repos, workers and skills are named only when
+ * they are the focus or related to it (hovering or selecting a project names
+ * its related items), or once the map is zoomed to ATLAS_LABEL_ALL_ZOOM or
+ * further. With an object selected, only it, its relations and recent
+ * projects are labelled; the same holds while hovering below
+ * ATLAS_LABEL_ALL_ZOOM. Below ATLAS_LABEL_ALL_ZOOM, at most
+ * ATLAS_FIT_LABEL_CAP labels go to objects nobody is looking at. A label is
+ * kept only when it fits inside the map and does not overlap a label already
+ * kept or another object's dot, so crowded maps show the most significant
+ * names and the rest appear on hover or as the map zooms in.
  */
 export function atlasScreenLabels(input: {
-  placed: Pick<AtlasPlaced, "id" | "label" | "touched" | "x" | "y" | "r">[];
+  placed: (Pick<AtlasPlaced, "id" | "label" | "touched" | "x" | "y" | "r"> & { type?: AtlasDistrictType })[];
   selected: string | null;
   hovered: string | null;
   related: Set<string>;
@@ -314,8 +423,15 @@ export function atlasScreenLabels(input: {
     if (n.id === input.hovered) return 0;
     if (n.id === input.selected) return 1;
     if (input.related.has(n.id)) return 2;
-    if (recent(n)) return 3;
-    return all || (!input.hovered && !input.selected) ? 4 : -1;
+    // Only projects are named without a focus; other sections wait for a
+    // hover, a selection or a zoomed-in map.
+    const project = n.type === undefined || n.type === "project";
+    if (project && recent(n)) return 3;
+    // A selection is a deliberate focus: only it, its relations and recent
+    // projects keep a name. Hovering alone never blanks a zoomed-in map.
+    if (input.selected) return -1;
+    if (all) return 4;
+    return project && !input.hovered ? 4 : -1;
   };
   const candidates = input.placed
     .map((n) => ({ n, r: rank(n) }))
@@ -328,13 +444,25 @@ export function atlasScreenLabels(input: {
         a.n.id.localeCompare(b.n.id),
     );
   const kept: AtlasScreenLabel[] = [];
+  // Labels carry no outline, so one drawn across another object's dot would
+  // be unreadable. Dots on screen that are big enough to matter are obstacles.
+  const dots: (AtlasScreenLabel["box"] & { id: string })[] = [];
+  for (const n of input.placed) {
+    const rr = n.r * view.k;
+    if (rr < DOT_OBSTACLE_PX) continue;
+    const cx = n.x * view.k + view.x;
+    const cy = n.y * view.k + view.y;
+    if (cx + rr < 0 || cy + rr < 0 || cx - rr > width || cy - rr > height) continue;
+    dots.push({ id: n.id, left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr });
+  }
   let ambient = 0;
   for (const { n, r } of candidates) {
     if (r >= 3 && !all && ambient >= ATLAS_FIT_LABEL_CAP) break;
     const cx = n.x * view.k + view.x;
     const cy = n.y * view.k + view.y;
     const rr = n.r * view.k;
-    const w = input.measure(n.label);
+    const text = atlasShortLabel(n.label);
+    const w = input.measure(text);
     // Right of the dot first, then left, above and below.
     const spots = [
       { x: cx + rr + 5, y: cy + 4, left: cx + rr + 5 },
@@ -354,8 +482,19 @@ export function atlasScreenLabels(input: {
           k.top < box.bottom + LABEL_GAP,
       );
       if (hit) continue;
+      // A dot stacked on this object's own dot cannot be avoided, so it does not block.
+      // The hovered object always gets its name: in a packed section every
+      // spot can touch a neighbour's dot, and hover is how hidden names come back.
+      const own = { left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr };
+      const onDot = r > 0 && dots.some(
+        (d) =>
+          d.id !== n.id &&
+          box.left < d.right && d.left < box.right && box.top < d.bottom && d.top < box.bottom &&
+          !(own.left < d.right && d.left < own.right && own.top < d.bottom && d.top < own.bottom),
+      );
+      if (onDot) continue;
       if (r >= 3) ambient += 1;
-      kept.push({ id: n.id, text: n.label, x: spot.x, y: spot.y, box });
+      kept.push({ id: n.id, text, rank: r, x: spot.x, y: spot.y, box });
       break;
     }
   }

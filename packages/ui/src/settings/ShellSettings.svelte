@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import BillingSettingsPane from "./BillingSettingsPane.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
@@ -535,7 +536,7 @@
                 data-testid="settings-change-photo"
                 disabled={avatarBusy || !adapter}
                 onclick={pickPhoto}
-              >
+              ><RailIcon name="upload" />
                 {avatarBusy ? "Reading…" : "Change photo"}
               </button>
             </div>
@@ -578,7 +579,7 @@
                   data-testid="settings-profile-retry"
                   disabled={profileLoading}
                   onclick={() => void loadProfile()}
-                >
+                ><RailIcon name="refresh" />
                   {profileLoading ? "Loading…" : "Retry About"}
                 </button>
               {/if}
@@ -642,7 +643,7 @@
                 data-testid="settings-profile-save"
                 disabled={!adapter || savingProfile || !profileDirty}
                 onclick={() => void saveProfile()}
-              >
+              ><RailIcon name="check" />
                 {savingProfile ? "Saving…" : "Save changes"}
               </button>
             </div>
@@ -658,7 +659,7 @@
                 class="chip"
                 data-testid="settings-open-console"
                 onclick={() => void openConsole()}
-              >
+              ><RailIcon name="external" />
                 Open console
               </button>
             </div>
@@ -672,7 +673,7 @@
                 class="chip danger"
                 data-testid="settings-sign-out"
                 onclick={() => (signOutConfirmOpen = true)}
-              >
+              ><RailIcon name="logout" />
                 Sign out
               </button>
             </div>
@@ -692,7 +693,7 @@
               class="chip"
               data-testid="settings-profile-retry"
               onclick={() => void loadProfile()}
-            >
+            ><RailIcon name="refresh" />
               Retry
             </button>
           </div>

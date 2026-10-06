@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * Native desktop host for the shared @hq/work shell.
    *
@@ -1372,19 +1373,19 @@
     <section class="lifecycle-state" data-testid="hq-work-auth-recovery" role="status">
       <h1>Reconnecting your HQ Work session</h1>
       <p>Your credentials are still saved. We’ll retry when the connection returns.</p>
-      <button type="button" class="secondary" onclick={() => requestRevalidation()}>Retry now</button>
+      <button type="button" class="secondary" onclick={() => requestRevalidation()}><RailIcon name="refresh" />Retry now</button>
     </section>
   {:else if lifecycle === 'identity-error'}
     <section class="lifecycle-state" data-testid="hq-work-identity-error" role="alert">
       <h1>Couldn’t load your account</h1>
       <p>{identityError ?? 'Check your connection and retry.'}</p>
-      <button type="button" onclick={() => void hydrateSession()}>Retry</button>
+      <button type="button" onclick={() => void hydrateSession()}><RailIcon name="refresh" />Retry</button>
     </section>
   {:else if capabilities}
     {#if workspaceError}
       <div class="workspace-warning" data-testid="hq-work-workspace-error" role="status">
         <span>Workspaces couldn’t refresh.</span>
-        <button type="button" onclick={() => void retryWorkspaces()}>Retry</button>
+        <button type="button" onclick={() => void retryWorkspaces()}><RailIcon name="refresh" />Retry</button>
       </div>
     {/if}
     {#if signOutError}

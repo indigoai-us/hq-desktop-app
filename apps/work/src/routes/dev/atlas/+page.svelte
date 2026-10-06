@@ -14,14 +14,106 @@
   let mod = $state<AtlasModule | null>(null);
   let cache = $state<ReturnType<AtlasModule["createAtlasCache"]> | null>(null);
   let theme = $state("dark");
+  // deacon moves from US-014 to US-015 a few seconds in, so the rail project
+  // shows one work pulse (a live task moving on is a real Atlas pulse signal).
+  let deaconTask = $state("US-014 · desktop-alt e2e running · 14m");
+
+  /**
+   * `?crowd=1` adds a company-sized map (about 1,900 objects with a few huge
+   * folders and long names) to the smoke graph, to judge the layout at the
+   * scale a real vault has. The first 40 projects use a repo and cite a
+   * knowledge file and a policy, so hovering a project lights its relations.
+   * Deterministic.
+   */
+  function crowdGraph<G extends { nodes: unknown[]; edges?: unknown[] }>(base: G, scale: number): G {
+    const now = Date.UTC(2026, 8, 30, 12);
+    const sizes = { project: 700, knowledge: 520, policy: 430, repo: 22, worker: 60, skill: 90 } as const;
+    const folders = { project: "projects", knowledge: "knowledge", policy: "policies", repo: "repos", worker: "workers", skill: "skills" } as const;
+    let seed = 7;
+    const rand = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296);
+    const nodes = [...base.nodes];
+    for (const [type, total] of Object.entries(sizes) as [keyof typeof sizes, number][]) {
+      for (let i = 0; i < Math.round(total * scale); i += 1) {
+        const roll = rand();
+        const count = roll > 0.985 ? 4000 + Math.round(rand() * 20000) : roll > 0.9 ? 40 + Math.round(rand() * 300) : 1 + Math.round(rand() * 8);
+        const age = rand() > 0.93 ? rand() * 2 : 5 + rand() * 120;
+        const label = type === "policy" && i % 7 === 0 ? `indigo sentry feedback check already fixed stale ${i}` : `${type} item ${i}`;
+        nodes.push({
+          id: `${type}:${folders[type]}/crowd-${i}/`,
+          type,
+          label,
+          path: `${folders[type]}/crowd-${i}/`,
+          folder: true,
+          count,
+          touched: now - age * 86_400_000,
+          created: now - (age + 30) * 86_400_000,
+          ...(type === "project" ? { stories: { done: Math.round(rand() * 4), total: 1 + Math.round(rand() * (roll > 0.9 ? 80 : 9)) } } : {}),
+        });
+      }
+    }
+    const edges = [...(base.edges ?? [])];
+    for (let i = 0; i < Math.min(40, Math.round(sizes.project * scale)); i += 1) {
+      const source = `project:projects/crowd-${i}/`;
+      const pick = (type: keyof typeof sizes, n: number) => `${type}:${folders[type]}/crowd-${n % Math.max(1, Math.round(sizes[type] * scale))}/`;
+      edges.push({ source, target: pick("repo", i), kind: "uses" });
+      edges.push({ source, target: pick("knowledge", i * 7), kind: "cites" });
+      edges.push({ source, target: pick("policy", i * 11), kind: "cites" });
+    }
+    return { ...base, nodes, edges };
+  }
+
+  /**
+   * A few weeks of history on the small map: projects and documents born and
+   * touched across the last four weeks, some with stories, so playback, the
+   * Today panel and activity sizing all have something real to show.
+   */
+  function historyGraph<G extends { nodes: unknown[]; edges?: unknown[] }>(base: G): G {
+    const now = Date.UTC(2026, 8, 30, 12);
+    const day = 86_400_000;
+    const nodes = [...base.nodes];
+    const edges = [...(base.edges ?? [])];
+    const names = ["onboarding flow", "pricing page", "agent runtime", "search index", "mobile shell", "billing alerts", "atlas polish", "invite links"];
+    names.forEach((name, i) => {
+      const slug = name.replace(/ /g, "-");
+      const born = now - (28 - i * 3) * day;
+      const touched = i % 3 === 0 ? now - (i % 2) * 3_600_000 : born + (i + 2) * day;
+      nodes.push({
+        id: `project:projects/${slug}/`,
+        type: "project",
+        label: name,
+        path: `projects/${slug}/`,
+        folder: true,
+        count: 3 + i * 2,
+        created: born,
+        touched,
+        stories: { done: i % 4, total: 3 + i },
+      });
+      nodes.push({
+        id: `knowledge:knowledge/${slug}.md`,
+        type: "knowledge",
+        label: `${name} notes`,
+        path: `knowledge/${slug}.md`,
+        folder: false,
+        count: 1,
+        created: born + day,
+        touched: Math.min(now, touched + 3_600_000),
+      });
+      edges.push({ source: `project:projects/${slug}/`, target: `knowledge:knowledge/${slug}.md`, kind: "cites" });
+    });
+    return { ...base, nodes, edges };
+  }
 
   onMount(() => {
     theme = new URLSearchParams(location.search).get("theme") ?? "dark";
     void loadAtlas().then((m) => {
-      const graph = m.smokeAtlasGraph("Indigo");
+      const crowd = new URLSearchParams(location.search).get("crowd");
+      const base = historyGraph(m.smokeAtlasGraph("Indigo"));
+      const graph = crowd ? crowdGraph(base, Number(crowd) || 1) : base;
       cache = m.createAtlasCache({ fetcher: async () => graph });
       mod = m;
     });
+    const timer = setTimeout(() => (deaconTask = "US-015 · starting · 0m"), 5000);
+    return () => clearTimeout(timer);
   });
 </script>
 
@@ -35,8 +127,10 @@
         nowMs={Date.UTC(2026, 8, 30, 12)}
         presence={[
           { nodeId: "project:projects/hq-desktop-console-rail/", name: "Corey", bot: false, signal: "editing design/design.md · 12 s" },
-          { nodeId: "project:projects/hq-desktop-console-rail/", name: "deacon", bot: true, signal: "US-014 · desktop-alt e2e running · 14m" },
+          { nodeId: "project:projects/hq-desktop-console-rail/", name: "deacon", bot: true, signal: deaconTask },
           { nodeId: "repo:repos/private/hq-desktop-app/", name: "Eric B.", bot: false, signal: "41m" },
+          { nodeId: "person:b_lumen", actorUid: "b_lumen", name: "lumen", bot: true, unplaced: "In a session with no project" },
+          { nodeId: "person:b_ferry", actorUid: "b_ferry", name: "ferry", bot: true, unplaced: "Working in billing-v3, which is not on this map" },
         ]}
         loadDetail={async () => mod?.ATLAS_SMOKE_DETAIL}
       />

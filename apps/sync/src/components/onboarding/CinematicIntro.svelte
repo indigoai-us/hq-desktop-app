@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   /**
    * The cinematic first-run intro — the film that plays the first time
    * somebody opens HQ, before the setup wizard asks them for anything.
@@ -339,7 +340,7 @@
 
     <div class="actions">
       {#if position.index < lastBeatIndex}
-        <button class="skip ghost" type="button" onclick={complete}>Skip intro</button>
+        <button class="skip ghost" type="button" onclick={complete}><RailIcon name="arrow-right" />Skip intro</button>
       {/if}
       <button class="skip" type="button" onclick={advance}>
         {position.index >= lastBeatIndex ? 'Get started' : waiting ? 'Continue' : 'Next'}

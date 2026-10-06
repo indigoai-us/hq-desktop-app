@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { deployProgress } from "./deploy-progress.js";
 
   interface Props {
@@ -160,7 +161,7 @@
         onclick={openDeployment}
         disabled={opening}
         aria-busy={opening}
-      >
+      ><RailIcon name="refresh" />
         {opening ? "Retrying…" : "Retry"}
       </button>
     </div>
@@ -204,7 +205,7 @@
             onclick={openDeployment}
             disabled={opening}
             aria-busy={opening}
-          >
+          ><RailIcon name="refresh" />
             {opening
               ? "Opening…"
               : openError
@@ -414,7 +415,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -512,7 +513,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * More companies (console-rail US-005). 320 px popover on the More tile.
@@ -116,7 +117,7 @@
       {/each}
     </div>
     <div class="foot">
-      <button type="button" class="row" onclick={() => (replacing = null)}>Cancel</button>
+      <button type="button" class="row" onclick={() => (replacing = null)}><RailIcon name="x" />Cancel</button>
     </div>
   {:else}
     <div class="list" data-testid="more-companies-list">
@@ -142,7 +143,7 @@
     </div>
     <div class="foot">
       <button type="button" class="row" data-testid="more-new-company" onclick={() => onnewcompany?.()}>
-        <span class="mark" aria-hidden="true">+</span>
+        <span class="mark" aria-hidden="true"><RailIcon name="plus" /></span>
         <span class="name">New company</span>
       </button>
     </div>
@@ -150,6 +151,16 @@
 </div>
 
 {#snippet companyRow(company: MoreCompany, pinned: boolean)}
+  {#if company.localOnly}
+    <div class="row-wrap local" data-testid="more-local-company">
+      <div class="row">
+        <span class="name"
+          ><CompanyLabel name={company.name} iconUrl={null} size={16} /></span
+        >
+        <span class="local-tag">Local, not synced</span>
+      </div>
+    </div>
+  {:else}
   <div class="row-wrap">
     <button type="button" class="row" onclick={() => open(company)}>
       <span class="name"
@@ -166,6 +177,7 @@
       onclick={() => togglePin(company, pinned)}
     >{pinned ? "unpin" : "pin"}</button>
   </div>
+  {/if}
 {/snippet}
 
 <style>
@@ -315,6 +327,12 @@
   .row-wrap:focus-within .pin,
   .pin:focus-visible {
     opacity: 1;
+  }
+
+  .local-tag {
+    flex: 0 0 auto;
+    color: var(--v4-text-3);
+    font: 13px/1 var(--font-ui);
   }
 
   .foot {
