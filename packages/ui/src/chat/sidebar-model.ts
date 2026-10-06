@@ -1808,6 +1808,98 @@ export function companyChannelUnread(
   return total;
 }
 
+/** One company's channels in the All scope, under a quiet company header. */
+export interface CompanyChannelGroup {
+  companyUid: string;
+  label: string;
+  iconUrl: string | null;
+  rows: ConversationRow[];
+  /** Newest activity across the group's channels (0 when unknown). */
+  latestAt: number;
+  /** Summed unread across the group's channels (dots count as 1). */
+  unread: number;
+}
+
+/**
+ * All scope: every company's channels, grouped by company. Groups are ordered
+ * by their newest channel activity; channels inside a group keep the same
+ * newest-first order the single-company Activity section uses. Rows keep
+ * their own unread / muted flags untouched.
+ */
+export function groupCompanyChannelsByCompany(
+  rows: readonly ConversationRow[],
+  companies: readonly ScopeCompany[] = [],
+): CompanyChannelGroup[] {
+  const byUid = new Map<string, ConversationRow[]>();
+  for (const row of rows) {
+    if (!isCompanyScopedChannel(row)) continue;
+    const uid = (row.companyUid ?? "").trim();
+    if (!uid) continue;
+    const list = byUid.get(uid);
+    if (list) list.push(row);
+    else byUid.set(uid, [row]);
+  }
+  const groups: CompanyChannelGroup[] = [];
+  for (const [uid, list] of byUid) {
+    const company = companies.find((c) => c.companyUid === uid);
+    const sorted = companyScopedChannels(list, uid);
+    groups.push({
+      companyUid: uid,
+      label: company?.label?.trim() || uid,
+      iconUrl: company?.iconUrl ?? null,
+      rows: sorted,
+      latestAt: sorted.reduce((max, r) => Math.max(max, r.lastActivityAt || 0), 0),
+      unread: sorted.reduce(
+        (sum, r) => sum + (r.unreadCount ?? (r.unreadDot ? 1 : 0)),
+        0,
+      ),
+    });
+  }
+  return groups.sort(
+    (a, b) => b.latestAt - a.latestAt || a.label.localeCompare(b.label),
+  );
+}
+
+export const COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY =
+  "hq.chat.collapsed-company-channels";
+
+/** Company uids whose channel group the user collapsed in the All scope. */
+export function loadCollapsedCompanyChannels(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(
+      storage.getItem(COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY) ?? "[]",
+    ) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0)
+      : [];
+  } catch (err) {
+    console.warn("[sidebar] collapsed company channels unreadable", err);
+    return [];
+  }
+}
+
+/** Toggle one company's collapse state and persist it; returns the new list. */
+export function toggleCollapsedCompanyChannels(
+  collapsed: readonly string[],
+  companyUid: string,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): string[] {
+  const uid = companyUid.trim();
+  if (!uid) return [...collapsed];
+  const next = collapsed.includes(uid)
+    ? collapsed.filter((v) => v !== uid)
+    : [...collapsed, uid];
+  try {
+    storage?.setItem(COLLAPSED_COMPANY_CHANNELS_STORAGE_KEY, JSON.stringify(next));
+  } catch (err) {
+    console.warn("[sidebar] collapsed company channels not saved", err);
+  }
+  return next;
+}
+
 export function isProjectConversationRow(row: ConversationRow): boolean {
   if (row.kind !== "channel") return false;
   if (row.channelScope != null) {
