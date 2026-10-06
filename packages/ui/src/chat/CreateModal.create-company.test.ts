@@ -101,7 +101,8 @@ const created: CreateCompanyResult = {
   company: {
     companyUid: "cmp_new",
     companyChannelId: "chn_company",
-    inviteFailures: [],
+    inviteFailures: [], queuedInvites: [],
+    cloudError: null,
   },
 };
 
@@ -126,6 +127,7 @@ function seam(
           calls.submitted.push({ values, invites });
           return created;
         }),
+      ...(overrides.provision ? { provision: overrides.provision } : {}),
     },
   };
 }
@@ -334,7 +336,8 @@ describe("CreateModal — create company from the palette", () => {
         company: {
           companyUid: "cmp_new",
           companyChannelId: "chn_company",
-          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }],
+          inviteFailures: [{ email: "ada@example.com", reason: "Already a member." }], queuedInvites: [],
+          cloudError: null,
         },
       }),
     });
@@ -346,6 +349,67 @@ describe("CreateModal — create company from the palette", () => {
       $('[data-testid="chat-create-company-invite-error"]')?.textContent,
     ).toContain("ada@example.com wasn't invited: Already a member.");
     expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the modal open when cloud setup fails, and Try again provisions without creating again", async () => {
+    const provision = vi.fn(async () => ({ ok: true as const }));
+    const { seam: wired, calls } = seam({
+      submit: async (_form, values, invites, onPhase) => {
+        calls.submitted.push({ values, invites });
+        onPhase?.("provisioning");
+        return {
+          ok: true,
+          company: {
+            companyUid: "cmp_new",
+            companyChannelId: "chn_company",
+            inviteFailures: [],
+            queuedInvites: [],
+            cloudError: "Your company was created, but its cloud storage isn't set up yet. Try again to finish.",
+          },
+        };
+      },
+      provision,
+    });
+    const { onclose } = open({ companyCreate: wired });
+    await gotoCompanyStep();
+    $<HTMLButtonElement>('[data-testid="chat-create-company-submit"]')!.click();
+    await settle();
+    expect($('[data-testid="chat-create-company-error"]')?.textContent).toContain(
+      "cloud storage isn't set up yet",
+    );
+    expect(onclose).not.toHaveBeenCalled();
+    // The create button is gone: a second press would make a second company.
+    expect($('[data-testid="chat-create-company-submit"]')).toBeNull();
+    const retry = $<HTMLButtonElement>('[data-testid="chat-create-company-provision-retry"]')!;
+    expect(retry.textContent?.trim()).toBe("Try again");
+    retry.click();
+    await settle();
+    expect(provision).toHaveBeenCalledWith("cmp_new");
+    expect(calls.submitted).toHaveLength(1);
+    expect(onclose).toHaveBeenCalled();
+  });
+
+  it("shows the provisioning step on the button while cloud setup runs", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { seam: wired } = seam({
+      submit: async (_form, _values, _invites, onPhase) => {
+        onPhase?.("provisioning");
+        await gate;
+        return created;
+      },
+    });
+    const { onclose } = open({ companyCreate: wired });
+    await gotoCompanyStep();
+    $<HTMLButtonElement>('[data-testid="chat-create-company-submit"]')!.click();
+    await settle();
+    expect(
+      $('[data-testid="chat-create-company-submit"]')?.textContent?.trim(),
+    ).toBe("Setting up cloud storage…");
+    expect(onclose).not.toHaveBeenCalled();
+    release();
+    await settle();
+    expect(onclose).toHaveBeenCalled();
   });
 
   it("Back returns to the search step with the query intact", async () => {

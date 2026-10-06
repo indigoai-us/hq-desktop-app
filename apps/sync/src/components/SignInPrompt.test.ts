@@ -52,6 +52,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host.remove();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -92,5 +93,253 @@ describe('SignInPrompt browser continuation', () => {
     expect(providerButtons()[0]?.textContent).toContain('Waiting for browser…');
 
     resolveConfig({ protocolVersion: 1, minimumDesktopVersion: '0.10.229', variant: 'control', rolloutPercent: 100 });
+  });
+
+  it('asks for email before Microsoft OAuth so work accounts are not sent to MicrosoftPersonal', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'start_oauth_login':
+          return new Promise(() => {});
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[1]?.click();
+    flushSync();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'start_oauth_login',
+      expect.objectContaining({ provider: 'Microsoft' }),
+    );
+    const email = host.querySelector<HTMLInputElement>('[data-testid="microsoft-email"]');
+    expect(email).not.toBeNull();
+    email!.value = 'scottallen@dim6fitness.com';
+    email!.dispatchEvent(new Event('input', { bubbles: true }));
+    await flush();
+    host.querySelector<HTMLButtonElement>('[data-testid="microsoft-email-continue"]')?.click();
+    flushSync();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('start_oauth_login', {
+      provider: 'Microsoft',
+      email: 'scottallen@dim6fitness.com',
+    });
+  });
+});
+
+describe('SignInPrompt welcome handoff', () => {
+  it('advances when a valid native session appears while the welcome view is open', async () => {
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      if (command === 'desktop_continuation_context') return Promise.resolve(null);
+      if (command === 'get_auth_state') {
+        return Promise.resolve({ authenticated: true, expiresAt: '2099-01-01T00:00:00Z' });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+
+    await flushUntil(() => onsuccess.mock.calls.length === 1);
+
+    expect(onsuccess).toHaveBeenCalledWith({
+      authenticated: true,
+      expiresAt: '2099-01-01T00:00:00Z',
+    });
+  });
+
+  it('shows an in-place browser handoff with reopen and back actions', async () => {
+    let waitForCallback!: () => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      waitForCallback = () => resolve({ code: 'code' });
+    });
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+
+    expect(host.textContent).toContain('Finish signing in in your browser');
+    expect(host.textContent).toContain('Continue with Google in your browser');
+    host.querySelector<HTMLButtonElement>('[data-testid="reopen-browser-signin"]')?.click();
+    await flush();
+    expect(tauri.open).toHaveBeenCalledTimes(2);
+
+    Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Back')?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') === null);
+    expect(providerButtons()[0]?.disabled).toBe(false);
+
+    waitForCallback();
+  });
+
+  it('ends a stalled browser handoff with a plain Try again path', async () => {
+    vi.useFakeTimers();
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await vi.advanceTimersByTimeAsync(3 * 60 * 1_000);
+    await flush();
+
+    expect(host.textContent).toContain('We couldn’t finish sign-in. Try again.');
+    expect(host.querySelector<HTMLButtonElement>('[data-testid="retry-signin"]')?.textContent).toBe('Try again');
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('cancels the native listener and ignores its callback after unmount', async () => {
+    let resolveCallback!: (value: { code: string }) => void;
+    const callback = new Promise<{ code: string }>((resolve) => {
+      resolveCallback = resolve;
+    });
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return callback;
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.querySelector('[data-testid="signin-browser-handoff"]') !== null);
+    await unmount(component);
+    component = null;
+
+    expect(tauri.invoke).toHaveBeenCalledWith('oauth_cancel_listen', { state: 'state' });
+    resolveCallback({ code: 'late-code' });
+    await flush();
+
+    expect(tauri.invoke).not.toHaveBeenCalledWith(
+      'oauth_exchange_code',
+      expect.objectContaining({ code: 'late-code' }),
+    );
+    expect(onsuccess).not.toHaveBeenCalled();
+  });
+
+  it('reports manual sign-in success only once when the session poll observes it', async () => {
+    vi.useFakeTimers();
+    let authenticated = false;
+    const onsuccess = vi.fn();
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({
+            authenticated,
+            expiresAt: authenticated ? '2099-01-01T00:00:00Z' : '',
+          });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return Promise.resolve({ code: 'code' });
+        case 'oauth_exchange_code':
+          authenticated = true;
+          return Promise.resolve({ authenticated: true, expiresAt: '2099-01-01T00:00:00Z' });
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host, props: { onsuccess } });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => onsuccess.mock.calls.length === 1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await flush();
+
+    expect(onsuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a callback failure plain while recording the existing failure event', async () => {
+    tauri.invoke.mockImplementation((command: string) => {
+      switch (command) {
+        case 'desktop_continuation_context':
+          return Promise.resolve(null);
+        case 'get_auth_state':
+          return Promise.resolve({ authenticated: false, expiresAt: '' });
+        case 'start_oauth_login':
+          return Promise.resolve({ authorizeUrl: 'https://login.example.test/google', state: 'state' });
+        case 'oauth_listen_for_code':
+          return Promise.reject(new Error('callback rejected: provider detail'));
+        default:
+          return Promise.resolve(undefined);
+      }
+    });
+    tauri.open.mockResolvedValue(undefined);
+    component = mount(SignInPrompt, { target: host });
+    await flush();
+
+    providerButtons()[0]?.click();
+    await flushUntil(() => host.textContent?.includes('We couldn’t finish sign-in. Try again.') ?? false);
+
+    expect(host.textContent).not.toContain('provider detail');
+    expect(tauri.invoke).toHaveBeenCalledWith(
+      'emit_desktop_operational_telemetry',
+      expect.objectContaining({
+        eventName: 'desktop_auth_failure',
+        properties: expect.objectContaining({ step: 'provider_page_opened', errorCategory: 'auth' }),
+      }),
+    );
   });
 });

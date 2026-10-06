@@ -589,6 +589,9 @@ fn build_tray_icon(app: &AppHandle) -> Result<tauri::tray::TrayIcon, Box<dyn std
                         let _ = app_handle.emit("tray:open-settings", ());
                     }
                     id if id == MENU_QUIT => {
+                        crate::commands::telemetry::note_desktop_quit_reason(
+                            crate::commands::telemetry::DesktopQuitReason::TrayQuit,
+                        );
                         app_handle.exit(0);
                     }
                     id if id.starts_with(MENU_UPGRADE_PREFIX) => {

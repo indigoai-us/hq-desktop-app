@@ -45,7 +45,15 @@
 
   position: fixed;
   inset: 0;
+  /* The grain layer is 1.5x the window (inset: -50%), so with plain
+     `overflow: hidden` the root is still a scroll container that is wider
+     and taller than the window. Anything that scrolls an element into view
+     (keyboard focus, the text caret, automation clicks) then scrolls the
+     root, and the whole screen sits off-centre in the window. `clip` cuts
+     the overflow without making the root scrollable; `hidden` stays as the
+     fallback for WebKit without `clip`. */
   overflow: hidden;
+  overflow: clip;
   color: var(--w-text);
   font-family: var(--w-font-sans);
   font-size: 16px;
@@ -484,6 +492,37 @@
 .hq-welcome .signin-inner.busy .btns {
   opacity: 0.35;
   pointer-events: none;
+}
+.hq-welcome .signin .microsoft-email {
+  display: grid;
+  gap: 8px;
+  margin: 16px auto 0;
+  max-width: 320px;
+  text-align: left;
+}
+.hq-welcome .signin .microsoft-email label {
+  color: var(--w-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
+.hq-welcome .signin .microsoft-email input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border: 1px solid var(--w-choose-border);
+  border-radius: var(--w-radius-button);
+  background: var(--w-choose-bg);
+  color: var(--w-text);
+  font: inherit;
+  font-size: 14px;
+}
+.hq-welcome .signin .microsoft-email input:focus-visible {
+  outline: 1.5px solid var(--w-text);
+  outline-offset: 2px;
+}
+.hq-welcome .signin .microsoft-email input:disabled {
+  opacity: 0.6;
 }
 .hq-welcome.replay .signin .body {
   margin-bottom: 0;
@@ -1489,7 +1528,9 @@
   justify-content: center;
   gap: 10px;
 }
-.hq-welcome .tool-pills.tool-pills-status {
+.hq-welcome .tool-pills.tool-pills-status.ai-tools-status-stack {
+  flex-direction: column;
+  min-width: 0;
   align-items: center;
   gap: 12px;
 }
@@ -1749,7 +1790,8 @@
   font-size: 13px;
   line-height: 18px;
 }
-.hq-welcome .invite-form input {
+.hq-welcome .invite-form input,
+.hq-welcome .invite-form textarea {
   box-sizing: border-box;
   width: 100%;
   min-height: 40px;
@@ -1760,12 +1802,23 @@
   color: var(--w-text);
   font: inherit;
   font-size: 14px;
+  line-height: 20px;
 }
-.hq-welcome .invite-form input:focus-visible {
+.hq-welcome .invite-form textarea {
+  resize: vertical;
+}
+.hq-welcome .invite-form input::placeholder,
+.hq-welcome .invite-form textarea::placeholder {
+  color: var(--w-muted);
+  opacity: 1;
+}
+.hq-welcome .invite-form input:focus-visible,
+.hq-welcome .invite-form textarea:focus-visible {
   outline: 1.5px solid var(--w-text);
   outline-offset: 2px;
 }
-.hq-welcome .invite-form input:disabled {
+.hq-welcome .invite-form input:disabled,
+.hq-welcome .invite-form textarea:disabled {
   opacity: 0.6;
 }
 .hq-welcome .invite-form .btns {

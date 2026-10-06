@@ -43,14 +43,33 @@ function message(i: number, extra: Record<string, unknown> = {}) {
   };
 }
 
-function mountWith(messages: ReturnType<typeof message>[]) {
+function mountWith(messages: ReturnType<typeof message>[], onreply: ((rootEventId: string) => void) | null = () => {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
-  component = mount(ChannelConversation, { target: host, props: { messages } });
+  component = mount(ChannelConversation, { target: host, props: { messages, ...(onreply ? { onreply } : {}) } });
 }
 
 const copyButtons = () =>
   Array.from(host!.querySelectorAll<HTMLButtonElement>('[data-testid="message-copy"]'));
+
+describe("ChannelConversation Reply in thread (B-5)", () => {
+  it("is offered where the host opens threads, and opens the thread of that message", async () => {
+    const opened: string[] = [];
+    mountWith([message(1)], (id) => opened.push(id));
+    await tick();
+    const reply = host!.querySelector<HTMLButtonElement>('[data-testid="message-reply-quick"]');
+    expect(reply?.getAttribute("aria-label")).toBe("Reply in thread");
+    reply!.click();
+    expect(opened).toHaveLength(1);
+  });
+
+  it("is not drawn where the host opens no threads: Copy is still there", async () => {
+    mountWith([message(1)], null);
+    await tick();
+    expect(host!.querySelector('[data-testid="message-reply-quick"]')).toBeNull();
+    expect(copyButtons()).toHaveLength(1);
+  });
+});
 
 describe("ChannelConversation message Copy action", () => {
   it("renders Copy right after Reply in the message toolbar", async () => {

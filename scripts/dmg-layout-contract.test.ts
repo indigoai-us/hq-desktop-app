@@ -11,16 +11,24 @@ let settings = "";
 let backgroundHtml = "";
 let releaseWorkflow = "";
 let backgroundTiff = Buffer.alloc(0);
+let verifyDsStore = "";
 
 beforeAll(async () => {
-  [createDmg, settings, backgroundHtml, releaseWorkflow, backgroundTiff] =
-    await Promise.all([
-      readFile(resolve(rootDir, "apps/sync/scripts/create-dmg.sh"), "utf8"),
-      readFile(resolve(dmgDir, "settings.py"), "utf8"),
-      readFile(resolve(dmgDir, "background.html"), "utf8"),
-      readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
-      readFile(resolve(dmgDir, "background.tiff")),
-    ]);
+  [
+    createDmg,
+    settings,
+    backgroundHtml,
+    releaseWorkflow,
+    backgroundTiff,
+    verifyDsStore,
+  ] = await Promise.all([
+    readFile(resolve(rootDir, "apps/sync/scripts/create-dmg.sh"), "utf8"),
+    readFile(resolve(dmgDir, "settings.py"), "utf8"),
+    readFile(resolve(dmgDir, "background.html"), "utf8"),
+    readFile(resolve(rootDir, ".github/workflows/release.yml"), "utf8"),
+    readFile(resolve(dmgDir, "background.tiff")),
+    readFile(resolve(dmgDir, "verify_ds_store.py"), "utf8"),
+  ]);
 });
 
 /**
@@ -82,6 +90,53 @@ describe("DMG install-window layout contract", () => {
     const pin = /DMGBUILD_VERSION="(\d+\.\d+\.\d+)"/.exec(createDmg);
     expect(pin).not.toBeNull();
     expect(createDmg).toContain('"dmgbuild==$DMGBUILD_VERSION"');
+  });
+
+  // Up to 1.6.6, dmgbuild wrote a pBBk background bookmark into the volume's
+  // .DS_Store. From macOS 26.2, Finder shows a blank window when that record
+  // is present, so every HQ.dmg built with 1.6.5 opened with the icons in
+  // place on plain white (dmgbuild/dmgbuild#273). Never pin below the fix.
+  it("pins a dmgbuild that does not break the background on macOS 26.2+", () => {
+    const pin = /DMGBUILD_VERSION="(\d+)\.(\d+)\.(\d+)"/.exec(createDmg);
+    expect(pin).not.toBeNull();
+    const [major, minor, patch] = pin!.slice(1).map(Number);
+    const atLeast = (a: number[], b: number[]) => {
+      for (let i = 0; i < b.length; i += 1) {
+        if (a[i] !== b[i]) return a[i] > b[i];
+      }
+      return true;
+    };
+    expect(atLeast([major, minor, patch], [1, 6, 7])).toBe(true);
+  });
+
+  it("only ever runs the pinned dmgbuild", () => {
+    // A dmgbuild picked up from PATH, or left in a reused venv, can be any
+    // version — including one that ships an invisible background.
+    expect(createDmg).not.toMatch(/command -v dmgbuild/);
+    expect(createDmg).toMatch(/importlib\.metadata/);
+    expect(createDmg).toMatch(/"\$installed" != "\$DMGBUILD_VERSION"/);
+  });
+
+  it("checks the built image's background before calling it done", () => {
+    // The regression is silent — the build succeeds and the layout is right —
+    // so the packaging step mounts the result and inspects its .DS_Store.
+    expect(createDmg).toContain(
+      'VERIFY_DS_STORE="$DMG_DIR/verify_ds_store.py"',
+    );
+    expect(createDmg).toMatch(/hdiutil attach "\$DMG_PATH" -readonly/);
+    expect(createDmg).toMatch(
+      /"\$DMGBUILD_PYTHON" "\$VERIFY_DS_STORE" "\$VERIFY_MOUNT"/,
+    );
+    const build = createDmg.indexOf('"$DMGBUILD" \\');
+    const verify = createDmg.indexOf('"$DMGBUILD_PYTHON" "$VERIFY_DS_STORE"');
+    const done = createDmg.indexOf("==> DMG created");
+    expect(build).toBeGreaterThan(-1);
+    expect(verify).toBeGreaterThan(build);
+    expect(done).toBeGreaterThan(verify);
+
+    expect(verifyDsStore).toMatch(/b"pBBk"/);
+    expect(verifyDsStore).toMatch(/backgroundImageAlias/);
+    expect(verifyDsStore).toMatch(/sys\.exit\(1\)/);
   });
 
   it("fails loudly rather than shipping an unstyled disk image", () => {

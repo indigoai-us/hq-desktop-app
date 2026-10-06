@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -16,6 +18,9 @@ use sha2::{Digest, Sha256};
 
 use hq_desktop_core::agent_usage_scan::{
     enumerate_rollout_files, resolve_claude_projects_dirs, RolloutFile,
+};
+use hq_desktop_core::usage_upload_plan::{
+    AddUsageEvent, UsageUploadBatch, UsageUploadPlanner, UsageUploadSource,
 };
 
 use crate::commands::sync::resolve_vault_api_url;
@@ -815,17 +820,22 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "result",
     "errorKind",
     "channel",
+    "stage",
+    "fromVersion",
+    "toVersion",
     "desktopVersion",
     "appVersion",
     "localCoreVersion",
     "targetCoreVersion",
     "autoUpdateEnabled",
+    "autoUpdate",
     "eligible",
     "versionBehind",
     "durationMs",
     "exitCode",
     "skipReason",
     "enabled",
+    "registered",
     "companiesAttempted",
     "filesDownloaded",
     "bytesDownloaded",
@@ -844,6 +854,9 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "platform",
     "attemptCount",
     "failedDependency",
+    "retryAttempted",
+    "retryResult",
+    "depsOperation",
     "errorCategory",
     "failureStage",
     "setupRunId",
@@ -852,6 +865,46 @@ const ALLOWED_DESKTOP_PROPERTY_KEYS: &[&str] = &[
     "errorOperation",
     "errorIoKind",
     "errorCode",
+    "statusCode",
+    "deferralCount",
+    "firstDeferralAgeSeconds",
+    "lockTimeoutSeconds",
+    "holdReason",
+    "requiredGitVersion",
+    "detectedGitVersion",
+    "found",
+    "companyUidMissing",
+    "invitesSent",
+    // Company step route decision + provisioning + self-heal (look before create).
+    "existingCompanies",
+    "paidCompany",
+    "pendingInvites",
+    "decision",
+    "provisioningStep",
+    "selfHeal",
+    // Funnel rows mirrored to the CDP (cdp_mirror::OPERATIONAL_MIRRORS).
+    "isFirstLaunch",
+    "userHash",
+    "companyHash",
+    "success",
+    "errorClass",
+    "trigger",
+    "downloadedCount",
+    "count",
+    "route",
+    "plan",
+];
+
+const DEPS_RETRY_RESULT_VALUES: &[&str] = &[
+    "not-eligible",
+    "recovered",
+    "failed-again",
+    "skipped-flag-off",
+    "skipped-flag-unreadable",
+];
+
+const DEPS_OPERATION_VALUES: &[&str] = &[
+    "node", "yq", "qmd", "hq-cli", "git", "jq", "gh", "claude-code", "homebrew", "unknown",
 ];
 
 const SYMLINK_ERROR_OPERATION_VALUES: &[&str] = &[
@@ -1011,6 +1064,9 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     };
 
     let connector_import = input.get("step").and_then(Value::as_str) == Some("connector-import");
+    let deps_setup_failure = input.get("step").and_then(Value::as_str) == Some("setup")
+        && input.get("action").and_then(Value::as_str) == Some("failed")
+        && input.get("component").and_then(Value::as_str) == Some("deps");
     let mut out = Map::new();
 
     for (key, value) in input {
@@ -1023,6 +1079,14 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 ("failedDependency", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, FAILED_DEPENDENCY_VALUES),
                 )),
+                ("retryAttempted", Value::Bool(_)) if deps_setup_failure => Some(value),
+                ("retryResult", Value::String(value)) if deps_setup_failure => DEPS_RETRY_RESULT_VALUES
+                    .contains(&value.as_str())
+                    .then_some(Value::String(value.clone())),
+                ("depsOperation", Value::String(value)) if deps_setup_failure => DEPS_OPERATION_VALUES
+                    .contains(&value.as_str())
+                    .then_some(Value::String(value.clone())),
+                ("retryAttempted", _) | ("retryResult", _) | ("depsOperation", _) => None,
                 ("errorCategory", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, ERROR_CATEGORY_VALUES),
                 )),
@@ -1046,6 +1110,11 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                     .as_u64()
                     .filter(|code| *code <= 65_535)
                     .map(|_| Value::Number(number.clone())),
+                ("statusCode", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|status| (100..=599).contains(status))
+                    .map(|_| Value::Number(number.clone())),
+                ("statusCode", _) => None,
                 ("detectedSourceSet", Value::String(value)) => Some(Value::String(
                     normalize_closed_label(&value, CONNECTOR_IMPORT_SOURCE_SET_VALUES),
                 )),
@@ -1057,9 +1126,24 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
                 }
                 (_, Value::Bool(_)) => matches!(
                     key.as_str(),
-                    "enabled" | "autoUpdateEnabled" | "eligible" | "versionBehind" | "npxResolved"
+                    "enabled"
+                        | "autoUpdateEnabled"
+                        | "autoUpdate"
+                        | "eligible"
+                        | "registered"
+                        | "versionBehind"
+                        | "npxResolved"
+                        | "found"
+                        | "paidCompany"
+                        | "success"
+                        | "isFirstLaunch"
+                        | "companyUidMissing"
                 )
                 .then_some(value),
+                ("invitesSent", Value::Number(number)) => number
+                    .as_u64()
+                    .filter(|count| *count <= 20)
+                    .map(|_| Value::Number(number.clone())),
                 (_, Value::Number(n)) => {
                     (n.as_i64().is_some() || n.as_u64().is_some()).then_some(value)
                 }
@@ -1072,6 +1156,108 @@ fn sanitize_desktop_properties(properties: Option<Value>) -> Value {
     }
 
     Value::Object(out)
+}
+
+/// Onboarding rows that may name their company: company and invite-teammate
+/// steps, plus the missing-bucket self-heal (any step).
+fn properties_company_scoped(input: Option<&Map<String, Value>>) -> bool {
+    let Some(input) = input else {
+        return false;
+    };
+    matches!(
+        input.get("step").and_then(Value::as_str),
+        Some("company" | "invite-teammate")
+    )
+        || input.get("selfHeal").and_then(Value::as_str).is_some()
+}
+
+const POST_READY_ACTION_VALUES: &[&str] = &[
+    "open_folder",
+    "start_sync",
+    "open_cli",
+    "invite",
+    "ready_first_action_shown",
+    "ready_first_action_clicked",
+    "close_window",
+];
+
+const POST_READY_ACTION_DROP_REASON_VALUES: &[&str] = &[
+    "not_ready",
+    "already_sent",
+    "session_ended",
+    "flag_off",
+    "flag_error",
+    "identity_error",
+    "identity_missing",
+];
+
+fn sanitize_post_ready_action_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    for (key, prefix) in [
+        ("personUid", "prs_"),
+        ("companyUid", "cmp_"),
+        ("idempotencyKey", "post-ready."),
+    ] {
+        let Some(value) = input.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if value.starts_with(prefix) && is_safe_label_value(value) {
+            out.insert(key.to_string(), Value::String(value.to_string()));
+        }
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| POST_READY_ACTION_VALUES.contains(action))
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    if let Some(return_nudge) = input
+        .get("returnNudge")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "shown" | "clicked" | "dismissed"))
+    {
+        out.insert("returnNudge".to_string(), Value::String(return_nudge.to_string()));
+    }
+    Value::Object(out)
+}
+
+fn sanitize_post_ready_action_dropped_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return Value::Object(Map::new());
+    };
+    let mut out = Map::new();
+    if let Some(reason) = input
+        .get("reason")
+        .and_then(Value::as_str)
+        .filter(|reason| POST_READY_ACTION_DROP_REASON_VALUES.contains(reason))
+    {
+        out.insert("reason".to_string(), Value::String(reason.to_string()));
+    }
+    if let Some(action) = input
+        .get("action")
+        .and_then(Value::as_str)
+        .filter(|action| POST_READY_ACTION_VALUES.contains(action))
+    {
+        out.insert("action".to_string(), Value::String(action.to_string()));
+    }
+    Value::Object(out)
+}
+
+/// Tag every hq-pro desktop row with the website visitor id the CDP mirror
+/// uses, so the web→desktop funnel joins on one id. Only a safe label is
+/// attached; a caller-supplied `anonId` is never trusted.
+fn attach_anon_id(properties: &mut Value, anon_id: Option<String>) {
+    let Some(object) = properties.as_object_mut() else {
+        return;
+    };
+    object.remove("anonId");
+    if let Some(anon) = anon_id.filter(|id| is_safe_label_value(id)) {
+        object.insert("anonId".to_string(), Value::String(anon));
+    }
 }
 
 fn build_desktop_telemetry_event(
@@ -1091,7 +1277,62 @@ fn build_desktop_telemetry_event(
                     && input.get("component").and_then(Value::as_str) == Some("content")
             })
             .unwrap_or(false);
-    let mut properties = sanitize_desktop_properties(properties);
+    let is_post_ready_action = event_name == "desktop_post_ready_action";
+    let is_post_ready_action_dropped = event_name == "desktop_post_ready_action_dropped";
+    let is_desktop_quit = event_name == "desktop_app_quit";
+    let raw_company_scope = properties.as_ref().and_then(Value::as_object).cloned();
+    let mut properties = if is_post_ready_action {
+        sanitize_post_ready_action_properties(properties)
+    } else if is_post_ready_action_dropped {
+        sanitize_post_ready_action_dropped_properties(properties)
+    } else if is_desktop_quit {
+        sanitize_desktop_quit_properties(properties)
+    } else {
+        sanitize_desktop_properties(properties)
+    };
+    // The company step (route decision, provisioning, join) and the first-sync
+    // self-heal carry the company they are about; hq-pro takes it as the
+    // event-level `companyUid` (and checks the caller is a member).
+    let company_scoped_onboarding_row = event_name == "desktop_onboarding_step"
+        && properties_company_scoped(raw_company_scope.as_ref());
+    let company_uid = if is_post_ready_action {
+        properties
+            .get("companyUid")
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
+            .map(str::to_string)
+    } else if company_scoped_onboarding_row {
+        raw_company_scope
+            .as_ref()
+            .and_then(|input| input.get("companyUid"))
+            .and_then(Value::as_str)
+            .filter(|value| {
+                value.starts_with("cmp_") && value.len() <= 128 && is_safe_label_value(value)
+            })
+            .map(str::to_string)
+    } else {
+        None
+    };
+    let idempotency_key = if is_post_ready_action {
+        properties
+            .get("idempotencyKey")
+            .and_then(Value::as_str)
+            .filter(|value| is_safe_label_value(value))
+            .map(str::to_string)
+    } else if event_name == crate::commands::cdp_mirror::OP_APP_OPENED
+        && properties["isFirstLaunch"].as_bool() == Some(true)
+    {
+        crate::commands::first_run::install_attempt_id()
+            .filter(|id| is_safe_label_value(id))
+            .map(|id| crate::commands::cdp_mirror::first_open_idempotency_key(&id))
+    } else {
+        None
+    };
+    if is_post_ready_action {
+        if let Some(properties) = properties.as_object_mut() {
+            properties.remove("idempotencyKey");
+        }
+    }
     if !is_content_setup_failure {
         if let Some(properties) = properties.as_object_mut() {
             properties.remove("errorOperation");
@@ -1111,10 +1352,30 @@ fn build_desktop_telemetry_event(
     }
     if matches!(
         event_name.as_str(),
-        "desktop_onboarding_step" | "desktop_setup_completed"
-    ) {
+        "desktop_onboarding_step"
+            | "desktop_setup_completed"
+            | "desktop_post_ready_action"
+            | "desktop_post_ready_action_dropped"
+            | "desktop_update_outcome"
+            | "desktop_autostart_state"
+    ) || crate::commands::cdp_mirror::is_funnel_operational_row(&event_name)
+    {
         properties["appVersion"] = Value::String(crate::app_version::current().to_string());
     }
+    if is_post_ready_action || is_post_ready_action_dropped {
+        properties["os"] = Value::String(std::env::consts::OS.to_string());
+    }
+    attach_anon_id(
+        &mut properties,
+        crate::commands::cdp_mirror::current_anon_id(),
+    );
+    let schema_version = if event_name == "desktop_update_outcome" { 2 } else { 1 };
+    let install_attempt_id = matches!(
+        event_name.as_str(),
+        "desktop_setup_completed" | "desktop_onboarding_step" | "desktop_update_outcome" | "desktop_autostart_state"
+    )
+    .then(crate::commands::first_run::install_attempt_id)
+    .flatten();
     RawTelemetryEvent {
         event_name,
         app: "hq-desktop-app".to_string(),
@@ -1130,9 +1391,11 @@ fn build_desktop_telemetry_event(
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
             }),
         consent_basis: consent_basis.to_string(),
-        schema_version: 1,
-        idempotency_key: None,
+        schema_version,
+        idempotency_key,
         session_id: session_id.filter(|value| is_safe_label_value(value)),
+        company_uid,
+        install_attempt_id,
         properties,
     }
 }
@@ -1214,14 +1477,91 @@ async fn emit_desktop_operational_telemetry_with_vault(
 
 const OPERATIONAL_DESKTOP_EVENT_NAMES: &[&str] = &[
     "desktop_app_daily_active",
+    "desktop_app_quit",
     "desktop_onboarding_step",
+    "desktop_post_ready_action",
+    "desktop_post_ready_action_dropped",
     "desktop_setup_completed",
+    "desktop_auto_update_post_cap_outcome",
+    "desktop_update_outcome",
     "oauth_signin_succeeded",
     "telemetry_preference_changed",
+    "install_tag_read",
+    crate::commands::cdp_mirror::OP_APP_OPENED,
+    crate::commands::cdp_mirror::OP_ACCOUNT_LINKED,
+    crate::commands::cdp_mirror::OP_AGENT_SESSION_LAUNCHED,
+    crate::commands::cdp_mirror::OP_SYNC_STARTED,
+    crate::commands::cdp_mirror::OP_SYNC_COMPLETED,
+    crate::commands::cdp_mirror::OP_SYNC_FAILED,
+    crate::commands::cdp_mirror::OP_INVITE_SENT,
+    crate::commands::cdp_mirror::OP_INVITE_FAILED,
+    crate::commands::cdp_mirror::OP_COMPANY_JOINED,
+    crate::commands::cdp_mirror::OP_PLAN_SELECTED,
+    crate::commands::cdp_mirror::OP_AUTH_PROGRESS,
+    crate::commands::cdp_mirror::OP_AUTH_FAILURE,
 ];
 
 fn is_operational_desktop_event_name(event_name: &str) -> bool {
     OPERATIONAL_DESKTOP_EVENT_NAMES.contains(&event_name)
+}
+
+/// Token file that belongs to the install whose `menubar.json` is `menubar`.
+fn tokens_path_for_menubar(menubar: &Path) -> std::path::PathBuf {
+    menubar.with_file_name("cognito-tokens.json")
+}
+
+/// File `get_valid_access_token` reads. `tokens_file_path` is private, and
+/// `cognito.rs` is left unchanged. App tests compile that crate with
+/// `test-support`, so `HQ_TEST_HOME` wins there; a production build ignores
+/// it and uses `dirs::home_dir`, matching the private resolver.
+fn auth_resolver_tokens_path() -> Option<std::path::PathBuf> {
+    #[cfg(test)]
+    if let Some(home) = std::env::var_os("HQ_TEST_HOME") {
+        return Some(
+            std::path::PathBuf::from(home)
+                .join(".hq")
+                .join("cognito-tokens.json"),
+        );
+    }
+    dirs::home_dir().map(|home| home.join(".hq").join("cognito-tokens.json"))
+}
+
+/// Access token stored beside a captured menubar path, with no refresh.
+/// Refresh persists through the resolver and would write another home's file.
+fn unexpired_access_token_at(path: &Path) -> Result<String, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("Not signed in".to_string());
+        }
+        Err(error) => return Err(format!("Failed to read token file: {error}")),
+    };
+    let tokens: crate::commands::cognito::CognitoTokens = serde_json::from_str(&contents)
+        .map_err(|error| format!("Failed to parse token file: {error}"))?;
+    if tokens.access_token.is_empty() || crate::commands::cognito::is_expired(&tokens) {
+        return Err("Not signed in".to_string());
+    }
+    Ok(tokens.access_token)
+}
+
+/// Token for the install that owns `menubar`. The resolver is used only when
+/// it names that same file, so refresh and invalidation stay on one home.
+async fn access_token_for_captured_home(menubar: &Path) -> Result<String, String> {
+    let captured = tokens_path_for_menubar(menubar);
+    if auth_resolver_tokens_path().as_ref() == Some(&captured) {
+        crate::commands::cognito::get_valid_access_token().await
+    } else {
+        unexpired_access_token_at(&captured)
+    }
+}
+
+async fn access_token_for_optional_home(
+    menubar: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    match menubar {
+        Some(path) => access_token_for_captured_home(&path).await,
+        None => crate::commands::cognito::get_valid_access_token().await,
+    }
 }
 
 /// Emit an installation or delivery-health record. Operational telemetry is
@@ -1233,7 +1573,23 @@ pub async fn emit_desktop_operational_telemetry(
     session_id: Option<String>,
     occurred_at: Option<String>,
 ) -> Result<(), String> {
-    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    // Mirror the funnel stage to the CDP before any auth work: a queue push
+    // only, and independent of whether hq-pro accepts the row.
+    crate::commands::cdp_mirror::note_operational_event(&event_name, properties.as_ref());
+    // Capture once, before the token await. HOME and HQ_TEST_HOME are
+    // process-global and can diverge while this future is pending; the hold
+    // path and a later flush must keep using this install's menubar file.
+    let menubar_path = paths::menubar_json_path().ok();
+    let Some(access_token) = access_token_or_hold_auth_event(
+        &event_name,
+        properties.as_ref(),
+        menubar_path.clone(),
+        access_token_for_optional_home(menubar_path.clone()),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
     let api_url = resolve_vault_api_url()?;
     let vault = VaultClient::new(&api_url, &access_token);
     emit_desktop_operational_telemetry_with_vault(
@@ -1243,7 +1599,124 @@ pub async fn emit_desktop_operational_telemetry(
         session_id,
         occurred_at,
     )
+    .await?;
+    if let Some(path) = menubar_path {
+        crate::commands::cdp_mirror::flush_held_auth_rows_at(path).await;
+    } else {
+        crate::commands::cdp_mirror::flush_held_auth_rows_now().await;
+    }
+    Ok(())
+}
+
+async fn access_token_or_hold_auth_event<F>(
+    event_name: &str,
+    properties: Option<&Value>,
+    menubar_path: Option<std::path::PathBuf>,
+    access_token: F,
+) -> Result<Option<String>, String>
+where
+    F: std::future::Future<Output = Result<String, String>>,
+{
+    // Resolve the destination before awaiting auth: HOME is process-global, so
+    // a concurrent profile/test-home change must not redirect a held receipt.
+    // Callers that already captured the install path pass it in; a missing
+    // path is resolved here, still before the token future runs.
+    let held_path = if crate::commands::cdp_mirror::is_held_auth_event(event_name) {
+        menubar_path.or_else(|| paths::menubar_json_path().ok())
+    } else {
+        None
+    };
+    match access_token.await {
+        Ok(token) => Ok(Some(token)),
+        // A first sign-in has no session until the token exchange, so its
+        // progress and failure rows wait on disk for the next session.
+        Err(_) if crate::commands::cdp_mirror::is_held_auth_event(event_name) => {
+            let result = held_path
+                .ok_or_else(|| "Cannot determine home directory".to_string())
+                .and_then(|path| {
+                    crate::commands::cdp_mirror::hold_auth_row_at(
+                        &path,
+                        event_name,
+                        properties,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_millis() as u64)
+                            .unwrap_or(0),
+                    )
+                });
+            if result.is_err() {
+                crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
+            }
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// Send one row held by `cdp_mirror::hold_auth_row` with its own timestamp
+/// and idempotencyKey. `menubar_path` is the file the row was held on; the
+/// access token is read from that install, not from a later resolver home.
+pub async fn post_held_auth_row(row: &Value, menubar_path: &Path) -> Result<(), String> {
+    let event_name = row
+        .get("eventName")
+        .and_then(Value::as_str)
+        .filter(|name| crate::commands::cdp_mirror::is_held_auth_event(name))
+        .ok_or("held row has no sign-in event name")?;
+    let access_token = access_token_for_captured_home(menubar_path).await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    let mut event = build_desktop_telemetry_event(
+        event_name.to_string(),
+        row.get("properties").cloned(),
+        None,
+        row.get("occurredAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "no-consent",
+    );
+    event.idempotency_key = row
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    vault
+        .post_telemetry_events(&TelemetryEventsBatch {
+            events: vec![event],
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// hq-pro only, for a row whose CDP copy was queued earlier.
+pub async fn emit_desktop_operational_telemetry_unmirrored(
+    event_name: &str,
+    properties: Value,
+) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token().await?;
+    let api_url = resolve_vault_api_url()?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    emit_desktop_operational_telemetry_with_vault(
+        &vault,
+        event_name.to_string(),
+        Some(properties),
+        None,
+        None,
+    )
     .await
+}
+
+/// Queue consent-free updater outcome telemetry without delaying installation.
+pub fn emit_desktop_operational_telemetry_best_effort(event_name: &'static str, properties: Value) {
+    tauri::async_runtime::spawn(async move {
+        if emit_desktop_operational_telemetry(event_name.to_string(), Some(properties), None, None)
+            .await
+            .is_err()
+        {
+            crate::util::logfile::log(
+                "telemetry",
+                &format!("best-effort operational event failed: {event_name}"),
+            );
+        }
+    });
 }
 
 /// Queue a consent-gated desktop event without delaying the updater path.
@@ -1264,13 +1737,284 @@ pub fn emit_desktop_telemetry_best_effort(event_name: &'static str, properties: 
     });
 }
 
-fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
-    let day = utc_day.format("%Y-%m-%d");
-    let occurred_at = utc_day
-        .and_hms_opt(0, 0, 0)
-        .expect("midnight is a valid UTC time")
-        .and_utc()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+/// `occurredAt` is the send time. The once-per-day guarantee comes from the
+/// day in `idempotencyKey` (hq-pro keeps one row per subject, event and key);
+/// a midnight timestamp would put every row outside any daytime query window.
+const APP_LIVENESS_TELEMETRY_FLAG: &str = "desktop.app-liveness-telemetry-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopQuitReason {
+    TrayQuit,
+    AppMenuQuit,
+    OsShutdown,
+    UpdateRestart,
+    Unknown,
+}
+
+impl DesktopQuitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TrayQuit => "tray_quit",
+            Self::AppMenuQuit => "app_menu_quit",
+            Self::OsShutdown => "os_shutdown",
+            Self::UpdateRestart => "update_restart",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+static DESKTOP_QUIT_REASON: AtomicU8 = AtomicU8::new(0);
+
+const LIVENESS_FLAG_UNKNOWN: u8 = 0;
+const LIVENESS_FLAG_RESOLVING: u8 = 1;
+const LIVENESS_FLAG_OFF: u8 = 2;
+const LIVENESS_FLAG_ON: u8 = 3;
+static LIVENESS_FLAG_CACHE: AtomicU8 = AtomicU8::new(LIVENESS_FLAG_UNKNOWN);
+
+pub fn note_desktop_quit_reason(reason: DesktopQuitReason) {
+    let value = match reason {
+        DesktopQuitReason::Unknown => 0,
+        DesktopQuitReason::TrayQuit => 1,
+        DesktopQuitReason::AppMenuQuit => 2,
+        DesktopQuitReason::OsShutdown => 3,
+        DesktopQuitReason::UpdateRestart => 4,
+    };
+    DESKTOP_QUIT_REASON.store(value, Ordering::Release);
+}
+
+fn desktop_quit_reason() -> DesktopQuitReason {
+    match DESKTOP_QUIT_REASON.load(Ordering::Acquire) {
+        1 => DesktopQuitReason::TrayQuit,
+        2 => DesktopQuitReason::AppMenuQuit,
+        3 => DesktopQuitReason::OsShutdown,
+        4 => DesktopQuitReason::UpdateRestart,
+        _ => DesktopQuitReason::Unknown,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopLivenessContext {
+    pub launch_source: &'static str,
+    pub start_at_login: &'static str,
+}
+
+pub fn classify_desktop_launch_source(
+    from_updater_restart: bool,
+    from_login_item: bool,
+    source_is_observable: bool,
+) -> &'static str {
+    if from_updater_restart {
+        "update_restart"
+    } else if from_login_item {
+        "login_item"
+    } else if source_is_observable {
+        "user"
+    } else {
+        "unknown"
+    }
+}
+
+pub fn classify_start_at_login(
+    preference_enabled: Option<bool>,
+    registered: Option<bool>,
+) -> &'static str {
+    match (preference_enabled, registered) {
+        (_, Some(true)) => "registered",
+        (Some(false), Some(false)) => "opted_out",
+        (Some(true), Some(false)) => "registration_failed",
+        _ => "unknown",
+    }
+}
+
+fn days_since_setup_bucket(
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> &'static str {
+    let Some(setup_at) = setup_at.filter(|setup_at| *setup_at <= now) else {
+        return "unknown";
+    };
+    match (now - setup_at).num_days() {
+        0 => "0",
+        1..=7 => "1-7",
+        8.. => "8+",
+        _ => "unknown",
+    }
+}
+
+fn read_setup_completed_at() -> Option<chrono::DateTime<chrono::Utc>> {
+    let path = paths::menubar_json_path().ok()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    let timestamp = value.get("welcomeSetupCompletedAt")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+}
+
+fn build_daily_active_event_with_liveness(
+    now: chrono::DateTime<chrono::Utc>,
+    liveness: Option<DesktopLivenessContext>,
+) -> RawTelemetryEvent {
+    let mut event = build_daily_active_event(now);
+    if let Some(liveness) = liveness {
+        if let Some(properties) = event.properties.as_object_mut() {
+            properties.insert("launch_source".into(), json!(liveness.launch_source));
+            properties.insert("start_at_login".into(), json!(liveness.start_at_login));
+        }
+    }
+    event
+}
+
+fn sanitize_desktop_quit_properties(properties: Option<Value>) -> Value {
+    let Some(Value::Object(input)) = properties else {
+        return json!({ "reason": "unknown", "days_since_setup": "unknown" });
+    };
+    let reason = match input.get("reason").and_then(Value::as_str) {
+        Some("tray_quit" | "app_menu_quit" | "os_shutdown" | "update_restart") => {
+            input["reason"].as_str().unwrap_or("unknown")
+        }
+        _ => "unknown",
+    };
+    let days_since_setup = match input.get("days_since_setup").and_then(Value::as_str) {
+        Some("0" | "1-7" | "8+") => input["days_since_setup"].as_str().unwrap_or("unknown"),
+        _ => "unknown",
+    };
+    json!({ "reason": reason, "days_since_setup": days_since_setup })
+}
+
+fn build_desktop_quit_event(
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> RawTelemetryEvent {
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    build_desktop_telemetry_event(
+        "desktop_app_quit".to_string(),
+        Some(json!({
+            "reason": reason.as_str(),
+            "days_since_setup": days_since_setup_bucket(setup_at, now),
+        })),
+        None,
+        Some(occurred_at),
+        "no-consent",
+    )
+}
+
+fn quit_event_when_enabled(
+    enabled: bool,
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<RawTelemetryEvent> {
+    enabled.then(|| build_desktop_quit_event(now, reason, setup_at))
+}
+
+fn liveness_flag_is_enabled(read: Result<Option<bool>, ()>) -> bool {
+    matches!(read, Ok(Some(true)))
+}
+
+fn liveness_flag_cache_value(read: Result<Option<bool>, ()>) -> u8 {
+    if liveness_flag_is_enabled(read) {
+        LIVENESS_FLAG_ON
+    } else {
+        LIVENESS_FLAG_OFF
+    }
+}
+
+async fn resolve_liveness_flag_once_with<F, Fut>(cache: &AtomicU8, read: F) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<bool>, ()>>,
+{
+    match cache.compare_exchange(
+        LIVENESS_FLAG_UNKNOWN,
+        LIVENESS_FLAG_RESOLVING,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {
+            let value = liveness_flag_cache_value(read().await);
+            cache.store(value, Ordering::Release);
+            value == LIVENESS_FLAG_ON
+        }
+        Err(state) => state == LIVENESS_FLAG_ON,
+    }
+}
+
+fn daily_active_liveness_context(
+    enabled: bool,
+    context: DesktopLivenessContext,
+) -> Option<DesktopLivenessContext> {
+    enabled.then_some(context)
+}
+
+fn with_cached_liveness_on(cache: &AtomicU8, attempt: impl FnOnce()) -> bool {
+    if cache.load(Ordering::Acquire) != LIVENESS_FLAG_ON {
+        return false;
+    }
+    attempt();
+    true
+}
+
+fn quit_event_for_cached_liveness(
+    cache: &AtomicU8,
+    now: chrono::DateTime<chrono::Utc>,
+    reason: DesktopQuitReason,
+    setup_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<RawTelemetryEvent> {
+    (cache.load(Ordering::Acquire) == LIVENESS_FLAG_ON)
+        .then(|| build_desktop_quit_event(now, reason, setup_at))
+}
+
+fn wait_for_quit_telemetry_attempt(receiver: Receiver<Result<(), String>>) {
+    let _ = receiver.recv_timeout(Duration::from_millis(480));
+}
+
+fn report_quit_telemetry_attempt(sender: SyncSender<Result<(), String>>, result: Result<(), String>) {
+    let _ = sender.send(result);
+}
+
+/// Cached-off/unknown exits immediately. Cached-on telemetry gets at most 480ms.
+pub fn emit_desktop_quit_before_exit(reason: DesktopQuitReason) {
+    with_cached_liveness_on(&LIVENESS_FLAG_CACHE, || {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        tauri::async_runtime::spawn(async move {
+            let result = tokio::time::timeout(Duration::from_millis(450), async move {
+                let now = chrono::Utc::now();
+                let setup_at = read_setup_completed_at();
+                if let Some(event) = quit_event_for_cached_liveness(
+                    &LIVENESS_FLAG_CACHE,
+                    now,
+                    reason,
+                    setup_at,
+                ) {
+                    emit_desktop_operational_telemetry(
+                        event.event_name,
+                        Some(event.properties),
+                        None,
+                        Some(event.occurred_at),
+                    )
+                    .await
+                } else {
+                    Ok(())
+                }
+            })
+            .await
+            .map_err(|_| "desktop quit telemetry exceeded its send budget".to_string())
+            .and_then(|result| result);
+            report_quit_telemetry_attempt(sender, result);
+        });
+        wait_for_quit_telemetry_attempt(receiver);
+    });
+}
+
+pub fn emit_noted_desktop_quit_before_exit() {
+    emit_desktop_quit_before_exit(desktop_quit_reason());
+}
+
+fn build_daily_active_event(now: chrono::DateTime<chrono::Utc>) -> RawTelemetryEvent {
+    let day = now.date_naive().format("%Y-%m-%d");
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
     RawTelemetryEvent {
         event_name: "desktop_app_daily_active".to_string(),
@@ -1281,6 +2025,8 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
         schema_version: 1,
         idempotency_key: Some(format!("hq-desktop-app:daily-active:{day}")),
         session_id: None,
+        company_uid: None,
+        install_attempt_id: None,
         properties: json!({
             "platform": crate::commands::version_gate::platform_tag(),
             "appVersion": crate::app_version::current(),
@@ -1290,10 +2036,11 @@ fn build_daily_active_event(utc_day: chrono::NaiveDate) -> RawTelemetryEvent {
 
 async fn emit_daily_active_with_vault(
     vault: &VaultClient,
-    utc_day: chrono::NaiveDate,
+    now: chrono::DateTime<chrono::Utc>,
+    liveness: Option<DesktopLivenessContext>,
 ) -> Result<(), String> {
     let batch = TelemetryEventsBatch {
-        events: vec![build_daily_active_event(utc_day)],
+        events: vec![build_daily_active_event_with_liveness(now, liveness)],
     };
     vault
         .post_telemetry_events(&batch)
@@ -1301,12 +2048,20 @@ async fn emit_daily_active_with_vault(
         .map_err(|e| e.to_string())
 }
 
-async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
+async fn emit_daily_active_at(
+    now: chrono::DateTime<chrono::Utc>,
+    liveness: DesktopLivenessContext,
+) {
     let result = async {
+        let enabled = resolve_liveness_flag_once_with(&LIVENESS_FLAG_CACHE, || {
+            crate::commands::hq_pro::feature_flag_read(APP_LIVENESS_TELEMETRY_FLAG)
+        })
+        .await;
+        let liveness = daily_active_liveness_context(enabled, liveness);
         let access_token = crate::commands::cognito::get_valid_access_token().await?;
         let api_url = resolve_vault_api_url()?;
         let vault = VaultClient::new(&api_url, &access_token);
-        emit_daily_active_with_vault(&vault, utc_day).await
+        emit_daily_active_with_vault(&vault, now, liveness).await
     }
     .await;
 
@@ -1315,11 +2070,18 @@ async fn emit_daily_active_for_utc_day(utc_day: chrono::NaiveDate) {
     }
 }
 
-/// Start a best-effort daily-active emit without delaying application startup.
-pub fn setup_daily_active_emit() {
-    let utc_day = chrono::Utc::now().date_naive();
+/// How often a running app re-sends daily-active. hq-pro keeps the first row
+/// per UTC day, so repeats cost one request and cover a launch that had no
+/// session yet and an app left running past midnight.
+const DAILY_ACTIVE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Start best-effort daily-active emits without delaying application startup.
+pub fn setup_daily_active_emit(liveness: DesktopLivenessContext) {
     tauri::async_runtime::spawn(async move {
-        emit_daily_active_for_utc_day(utc_day).await;
+        loop {
+            emit_daily_active_at(chrono::Utc::now(), liveness).await;
+            tokio::time::sleep(DAILY_ACTIVE_INTERVAL).await;
+        }
     });
 }
 
@@ -1883,27 +2645,6 @@ impl CodexRolloutScanner {
     }
 }
 
-/// Per-line tracking used to commit acknowledged or zero-event scan progress.
-struct RowSource {
-    file_path: String,
-    end_offset: u64,
-    mtime: u64,
-    context: Option<CodexUsageContext>,
-}
-
-fn record_source(sources: &mut Vec<RowSource>, source: RowSource) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|existing| existing.file_path == source.file_path)
-    {
-        if source.end_offset > existing.end_offset {
-            *existing = source;
-        }
-    } else {
-        sources.push(source);
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct UsageAck {
     ok: bool,
@@ -1988,6 +2729,7 @@ enum FlushOutcome {
     Accepted,
     Unaccepted { reason: &'static str },
     ConsentRevoked,
+    BudgetReached,
 }
 
 impl FlushOutcome {
@@ -2109,10 +2851,18 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     // Resolved once per collection run — a login-shell probe, not worth
     // repeating per batch. None (CLI absent/unresolvable) omits the field.
     let cli_version = crate::commands::hq_cli_update::get_hq_cli_version().await;
-
-    let mut batch_events: Vec<Value> = Vec::new();
-    let mut batch_sources: Vec<RowSource> = Vec::new();
+    let empty_batch_bytes = serde_json::to_vec(&json!({
+        "machineId": machine_id,
+        "installerVersion": installer_version,
+        "events": []
+    }))
+    .expect("empty usage batch serializes")
+    .len();
+    let batch_overhead_bytes = empty_batch_bytes.saturating_sub(2); // remove `[]`
+    let mut upload_plan =
+        UsageUploadPlanner::for_desktop_usage(batch_overhead_bytes, MAX_BATCH_BYTES);
     let mut upload_failed = false;
+    let mut sync_budget_reached = false;
 
     'claude_files: for file_path in &file_paths {
         let path_str = normalize_cursor_file_key(file_path);
@@ -2195,56 +2945,67 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             };
 
             if !single_event_fits(&machine_id, &installer_version, &sanitized) {
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset: line_end_offsets[i],
-                        mtime: current_mtime,
-                        context: None,
-                    },
-                );
+                upload_plan.record_source(UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset: line_end_offsets[i],
+                    mtime: current_mtime,
+                    context: None,
+                });
                 continue;
             }
 
-            // Check if adding this row would exceed 1 MB
-            if !batch_events.is_empty() {
-                let candidate =
-                    build_wire_payload(&machine_id, &installer_version, &batch_events, &sanitized);
-                if candidate.len() > MAX_BATCH_BYTES {
-                    // Flush current batch
-                    if !flush_batch(
-                        &vault,
-                        &api_url,
-                        jwt,
-                        &machine_id,
-                        &installer_version,
-                        cli_version.as_deref(),
-                        &mut cursor,
-                        unix_now_secs(),
-                        &mut batch_events,
-                        &mut batch_sources,
-                        &mut newly_committed,
-                    )
-                    .await
-                    .is_accepted()
-                    {
+            let source = UsageUploadSource {
+                file_path: path_str.clone(),
+                end_offset: line_end_offsets[i],
+                mtime: current_mtime,
+                context: None,
+            };
+            loop {
+                match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                    Ok(AddUsageEvent::Added) => break,
+                    Ok(AddUsageEvent::TooLarge) => {
+                        eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
+                        upload_failed = true;
+                        break 'claude_files;
+                    }
+                    Ok(AddUsageEvent::FlushCurrentBatch) => {
+                        let batch = upload_plan.take_batch().expect("planner requested a flush");
+                        match flush_batch(
+                            &vault,
+                            &api_url,
+                            jwt,
+                            &machine_id,
+                            &installer_version,
+                            cli_version.as_deref(),
+                            &mut cursor,
+                            unix_now_secs(),
+                            &mut upload_plan,
+                            batch,
+                            &mut newly_committed,
+                        )
+                        .await
+                        {
+                            FlushOutcome::Accepted if upload_plan.budget_exhausted() => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Accepted => continue,
+                            FlushOutcome::BudgetReached => {
+                                sync_budget_reached = true;
+                                break 'claude_files;
+                            }
+                            FlushOutcome::Unaccepted { .. } | FlushOutcome::ConsentRevoked => {
+                                upload_failed = true;
+                                break 'claude_files;
+                            }
+                        }
+                    }
+                    Err(_) => {
                         upload_failed = true;
                         break 'claude_files;
                     }
                 }
             }
-
-            batch_events.push(sanitized);
-            record_source(
-                &mut batch_sources,
-                RowSource {
-                    file_path: path_str.clone(),
-                    end_offset: line_end_offsets[i],
-                    mtime: current_mtime,
-                    context: None,
-                },
-            );
         }
     }
 
@@ -2254,7 +3015,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     let mut codex_batches_sent = 0usize;
     let mut codex_bytes_scanned = 0u64;
     let mut codex_next_rollout = cursor.codex_next_rollout.clone();
-    if !upload_failed {
+    if !upload_failed && !sync_budget_reached {
         let rollouts = codex_rollouts_freshest_first(&home.join(".codex"));
         let mut pending_rollouts: Vec<_> = rollouts
             .into_iter()
@@ -2298,7 +3059,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
             let mut rollout_bytes_scanned = 0u64;
             let mut rollout_batches_sent = 0usize;
             let rollout_batch_allowance = rollout_batch_allowance(rollout_index, pending_count);
-            loop {
+            'rollout_records: loop {
                 let global_remaining =
                     MAX_CODEX_SCAN_BYTES_PER_SYNC.saturating_sub(codex_bytes_scanned);
                 if global_remaining == 0 {
@@ -2324,64 +3085,92 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 rollout_bytes_scanned = rollout_bytes_scanned.saturating_add(scanned);
                 previous_offset = end_offset;
 
+                let source = UsageUploadSource {
+                    file_path: path_str.clone(),
+                    end_offset,
+                    mtime: system_time_secs(rollout.mtime),
+                    context: Some(
+                        serde_json::to_value(&context).expect("Codex context serializes"),
+                    ),
+                };
                 if let Some(sanitized) = sanitized {
-                    if !batch_events.is_empty() {
-                        let candidate_payload = build_wire_payload(
-                            &machine_id,
-                            &installer_version,
-                            &batch_events,
-                            &sanitized,
-                        );
-                        if candidate_payload.len() > MAX_BATCH_BYTES {
-                            let batch_contains_codex =
-                                batch_sources.iter().any(|source| source.context.is_some());
-                            if !flush_batch(
-                                &vault,
-                                &api_url,
-                                jwt,
-                                &machine_id,
-                                &installer_version,
-                                cli_version.as_deref(),
-                                &mut cursor,
-                                unix_now_secs(),
-                                &mut batch_events,
-                                &mut batch_sources,
-                                &mut newly_committed,
-                            )
-                            .await
-                            .is_accepted()
-                            {
+                    loop {
+                        match upload_plan.add_event(sanitized.clone(), source.clone()) {
+                            Ok(AddUsageEvent::Added) => break,
+                            Ok(AddUsageEvent::TooLarge) => {
+                                eprintln!("[telemetry] usage row exceeds batch cap; leaving source offset uncommitted");
                                 upload_failed = true;
                                 break 'codex_files;
                             }
-                            if batch_contains_codex {
-                                codex_batches_sent += 1;
-                                rollout_batches_sent += 1;
-                                if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
-                                    hit_sync_limit = true;
-                                    codex_next_rollout = pending_paths
-                                        .get((rollout_index + 1) % pending_count)
-                                        .cloned();
-                                    break 'codex_files;
+                            Ok(AddUsageEvent::FlushCurrentBatch) => {
+                                let batch =
+                                    upload_plan.take_batch().expect("planner requested a flush");
+                                let batch_contains_codex = batch.contains_codex();
+                                match flush_batch(
+                                    &vault,
+                                    &api_url,
+                                    jwt,
+                                    &machine_id,
+                                    &installer_version,
+                                    cli_version.as_deref(),
+                                    &mut cursor,
+                                    unix_now_secs(),
+                                    &mut upload_plan,
+                                    batch,
+                                    &mut newly_committed,
+                                )
+                                .await
+                                {
+                                    FlushOutcome::Accepted => {
+                                        if batch_contains_codex {
+                                            codex_batches_sent += 1;
+                                            rollout_batches_sent += 1;
+                                            if codex_batches_sent >= MAX_CODEX_BATCHES_PER_SYNC {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'codex_files;
+                                            }
+                                            if rollout_batches_sent >= rollout_batch_allowance {
+                                                hit_sync_limit = true;
+                                                codex_next_rollout = pending_paths
+                                                    .get((rollout_index + 1) % pending_count)
+                                                    .cloned();
+                                                break 'rollout_records;
+                                            }
+                                        }
+                                        if upload_plan.budget_exhausted() {
+                                            hit_sync_limit = true;
+                                            codex_next_rollout =
+                                                pending_paths.get(rollout_index).cloned();
+                                            sync_budget_reached = true;
+                                            break 'codex_files;
+                                        }
+                                        continue;
+                                    }
+                                    FlushOutcome::BudgetReached => {
+                                        hit_sync_limit = true;
+                                        codex_next_rollout =
+                                            pending_paths.get(rollout_index).cloned();
+                                        sync_budget_reached = true;
+                                        break 'codex_files;
+                                    }
+                                    FlushOutcome::Unaccepted { .. }
+                                    | FlushOutcome::ConsentRevoked => {
+                                        upload_failed = true;
+                                        break 'codex_files;
+                                    }
                                 }
-                                if rollout_batches_sent >= rollout_batch_allowance {
-                                    break;
-                                }
+                            }
+                            Err(_) => {
+                                upload_failed = true;
+                                break 'codex_files;
                             }
                         }
                     }
-                    batch_events.push(sanitized);
                 }
-
-                record_source(
-                    &mut batch_sources,
-                    RowSource {
-                        file_path: path_str.clone(),
-                        end_offset,
-                        mtime: system_time_secs(rollout.mtime),
-                        context: Some(context),
-                    },
-                );
+                upload_plan.record_source(source);
 
                 if codex_bytes_scanned >= MAX_CODEX_SCAN_BYTES_PER_SYNC {
                     hit_sync_limit = true;
@@ -2395,15 +3184,15 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 }
             }
         }
-        if !hit_sync_limit && !upload_failed {
+        if !hit_sync_limit && !upload_failed && !sync_budget_reached {
             codex_next_rollout = None;
         }
     }
 
     // POST pending emitted rows before committing their scanned-line progress.
     // A zero-event scan slice can advance locally without making a request.
-    if !upload_failed {
-        if !batch_events.is_empty() {
+    if !upload_failed && !sync_budget_reached {
+        if let Some(batch) = upload_plan.take_batch() {
             let _ = flush_batch(
                 &vault,
                 &api_url,
@@ -2413,13 +3202,13 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
                 cli_version.as_deref(),
                 &mut cursor,
                 unix_now_secs(),
-                &mut batch_events,
-                &mut batch_sources,
+                &mut upload_plan,
+                batch,
                 &mut newly_committed,
             )
             .await;
-        } else if !batch_sources.is_empty() {
-            commit_acknowledged_sources(&batch_sources, &mut newly_committed);
+        } else if let Some(sources) = upload_plan.take_zero_event_sources() {
+            commit_acknowledged_sources(&sources, &mut newly_committed);
         }
     }
 
@@ -2448,7 +3237,7 @@ async fn send_telemetry_if_opted_in_at<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Build the full wire payload JSON for size-checking.
+/// Build the existing batch-size estimate used by the collector.
 fn build_wire_payload(
     machine_id: &str,
     installer_version: &str,
@@ -2457,7 +3246,7 @@ fn build_wire_payload(
 ) -> Vec<u8> {
     let mut events = existing.to_vec();
     events.push(candidate.clone());
-    let payload = serde_json::json!({
+    let payload = json!({
         "machineId": machine_id,
         "installerVersion": installer_version,
         "events": events,
@@ -2470,7 +3259,7 @@ fn single_event_fits(machine_id: &str, installer_version: &str, event: &Value) -
 }
 
 fn commit_acknowledged_sources(
-    sources: &[RowSource],
+    sources: &[UsageUploadSource],
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) {
     let mut max_per_file: HashMap<String, CursorEntry> = HashMap::new();
@@ -2478,7 +3267,10 @@ fn commit_acknowledged_sources(
         let entry = CursorEntry {
             offset: src.end_offset,
             mtime: src.mtime,
-            context: src.context.clone(),
+            context: src.context.as_ref().map(|context| {
+                serde_json::from_value(context.clone())
+                    .expect("Codex context from the rollout scanner must round-trip")
+            }),
         };
         max_per_file
             .entry(src.file_path.clone())
@@ -2501,31 +3293,42 @@ async fn flush_batch(
     cli_version: Option<&str>,
     cursor: &mut TelemetryCursor,
     cycle_started_at_unix_secs: u64,
-    batch_events: &mut Vec<Value>,
-    batch_sources: &mut Vec<RowSource>,
+    planner: &mut UsageUploadPlanner,
+    plan_batch: UsageUploadBatch,
     newly_committed: &mut HashMap<String, CursorEntry>,
 ) -> FlushOutcome {
     // Consent is checked at the request boundary, including the first and only
     // batch in a cycle. A withdrawal while files are being scanned must prevent
     // the pending payload from ever leaving the machine.
     if !resolve_telemetry_enabled(vault).await {
-        batch_events.clear();
-        batch_sources.clear();
         return FlushOutcome::ConsentRevoked;
     }
-    let event_count = batch_events.len();
-    let batch = UsageBatch {
+    let wire_batch = UsageBatch {
         machine_id: machine_id.to_string(),
         installer_version: installer_version.to_string(),
         cli_version: cli_version.map(str::to_string),
-        events: std::mem::take(batch_events),
+        events: plan_batch.events.clone(),
     };
-    let sources = std::mem::take(batch_sources);
+    let event_count = wire_batch.events.len();
+    let body = match serde_json::to_vec(&wire_batch) {
+        Ok(body) => body,
+        Err(_) => {
+            eprintln!("[telemetry] usage flush not accepted: serialization_failed");
+            record_unaccepted_flush(cursor, unix_now_secs().max(cycle_started_at_unix_secs));
+            return FlushOutcome::Unaccepted {
+                reason: "serialization_failed",
+            };
+        }
+    };
+    if !planner.reserve_request(body.len()) {
+        return FlushOutcome::BudgetReached;
+    }
 
     let response = match build_client()
         .post(format!("{}/v1/usage", api_url.trim_end_matches('/')))
         .bearer_auth(jwt)
-        .json(&batch)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body)
         .send()
         .await
     {
@@ -2567,6 +3370,7 @@ async fn flush_batch(
 
     let skipped_count = ack.skipped.len();
     if usage_ack_is_complete(&ack, event_count) {
+        let sources = UsageUploadPlanner::committable_sources(&plan_batch, true);
         commit_acknowledged_sources(&sources, newly_committed);
         reset_unaccepted_flushes(cursor);
         if skipped_count > 0 {
@@ -2614,6 +3418,215 @@ mod codex_telemetry_tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
+    fn post_ready_return_nudge_outcome_is_bounded() {
+        let shown = sanitize_post_ready_action_properties(Some(json!({
+            "action": "start_sync",
+            "returnNudge": "shown",
+        })));
+        assert_eq!(shown["returnNudge"], "shown");
+        for value in ["free text", "opened", "clicked elsewhere"] {
+            let sanitized = sanitize_post_ready_action_properties(Some(json!({
+                "action": "start_sync",
+                "returnNudge": value,
+            })));
+            assert!(sanitized.get("returnNudge").is_none(), "{value}");
+        }
+    }
+
+    #[test]
+    fn post_ready_action_sanitizer_keeps_all_supported_actions_and_drops_unknown() {
+        for action in ["ready_first_action_shown", "ready_first_action_clicked"] {
+            let sanitized = sanitize_post_ready_action_properties(Some(json!({
+                "action": action,
+            })));
+            assert_eq!(sanitized["action"], action);
+        }
+
+        let sanitized = sanitize_post_ready_action_properties(Some(json!({
+            "action": "unknown_action",
+        })));
+        assert!(sanitized.get("action").is_none());
+    }
+
+    #[test]
+    fn post_ready_drop_reason_sanitizer_keeps_only_bounded_reason_and_action() {
+        let accepted = sanitize_post_ready_action_dropped_properties(Some(json!({
+            "reason": "identity_missing",
+            "action": "ready_first_action_clicked",
+            "privateDetail": "discard me",
+        })));
+        assert_eq!(accepted, json!({
+            "reason": "identity_missing",
+            "action": "ready_first_action_clicked",
+        }));
+
+        let session_ended = sanitize_post_ready_action_dropped_properties(Some(json!({
+            "reason": "session_ended",
+            "action": "open_folder",
+        })));
+        assert_eq!(session_ended, json!({
+            "reason": "session_ended",
+            "action": "open_folder",
+        }));
+
+        for (properties, expected) in [
+            (
+                json!({ "reason": "free text", "action": "open_folder" }),
+                json!({ "action": "open_folder" }),
+            ),
+            (
+                json!({ "reason": "flag_off", "action": "free text" }),
+                json!({ "reason": "flag_off" }),
+            ),
+            (
+                json!({ "reason": 7, "action": "open_folder" }),
+                json!({ "action": "open_folder" }),
+            ),
+        ] {
+            let sanitized = sanitize_post_ready_action_dropped_properties(Some(properties));
+            assert_eq!(sanitized, expected);
+        }
+    }
+
+    #[test]
+    fn company_step_route_row_keeps_decision_counts_and_lifts_company_uid() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "company",
+                "action": "started",
+                "outcome": "joined_invite",
+                "decision": "joined_invite",
+                "existingCompanies": 0,
+                "paidCompany": false,
+                "pendingInvites": 1,
+                "companyUid": "cmp_company-1",
+                "email": "ada@example.com",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(event.properties["decision"], "joined_invite");
+        assert_eq!(event.properties["existingCompanies"], 0);
+        assert_eq!(event.properties["paidCompany"], false);
+        assert_eq!(event.properties["pendingInvites"], 1);
+        assert!(event.properties.get("email").is_none());
+        assert!(event.properties.get("companyUid").is_none());
+    }
+
+    #[test]
+    fn invite_teammate_outcomes_lift_company_uid_and_missing_company_is_explicit() {
+        for action in ["entered", "completed", "skipped", "failed"] {
+            let event = build_desktop_telemetry_event(
+                "desktop_onboarding_step".to_string(),
+                Some(json!({
+                    "step": "invite-teammate",
+                    "action": action,
+                    "companyUid": "cmp_company-1",
+                })),
+                Some("session-1".to_string()),
+                None,
+                "no-consent",
+            );
+            assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"), "{action}");
+        }
+
+        let missing = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "invite-teammate",
+                "action": "entered",
+                "companyUidMissing": true,
+            })),
+            Some("session-2".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(missing.company_uid.is_none());
+        assert_eq!(missing.properties["companyUidMissing"], true);
+    }
+
+    #[test]
+    fn invite_step_sent_count_is_bounded_to_twenty() {
+        let valid = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 20,
+        })));
+        assert_eq!(valid["invitesSent"], 20);
+
+        let too_large = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "completed",
+            "invitesSent": 21,
+        })));
+        assert!(too_large.get("invitesSent").is_none());
+    }
+
+    #[test]
+    fn self_heal_row_lifts_company_uid_but_other_steps_do_not() {
+        let heal = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "first-folder-sync",
+                "action": "started",
+                "selfHeal": "triggered",
+                "companyUid": "cmp_company-2",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(heal.company_uid.as_deref(), Some("cmp_company-2"));
+        assert_eq!(heal.properties["selfHeal"], "triggered");
+
+        let other = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered", "companyUid": "cmp_x"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(other.company_uid.is_none());
+    }
+
+    #[test]
+    fn post_ready_action_event_keeps_only_join_fields_and_server_environment() {
+        let event = build_desktop_telemetry_event(
+            "desktop_post_ready_action".to_string(),
+            Some(json!({
+                "action": "open_folder",
+                "personUid": "prs_person-1",
+                "companyUid": "cmp_company-1",
+                "idempotencyKey": "post-ready.session-1.open_folder",
+                "folderName": "Private Project",
+                "path": "/Users/ada/Private Project",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_company-1"));
+        assert_eq!(
+            event.idempotency_key.as_deref(),
+            Some("post-ready.session-1.open_folder")
+        );
+        assert_eq!(event.properties["action"], "open_folder");
+        assert_eq!(event.properties["personUid"], "prs_person-1");
+        assert_eq!(event.properties["companyUid"], "cmp_company-1");
+        assert_eq!(
+            event.properties["appVersion"],
+            crate::app_version::current()
+        );
+        assert_eq!(event.properties["os"], std::env::consts::OS);
+        assert!(event.properties.get("folderName").is_none());
+        assert!(event.properties.get("path").is_none());
+    }
+
+    #[test]
     fn core_update_lifecycle_properties_survive_sanitization_without_paths_or_errors() {
         let sanitized = sanitize_desktop_properties(Some(json!({
             "source": "automatic",
@@ -2631,6 +3644,12 @@ mod codex_telemetry_tests {
             "skipReason": "automatic_updates_disabled",
             "platform": "macos-aarch64",
             "errorCategory": "dns",
+            "deferralCount": 10,
+            "firstDeferralAgeSeconds": 21600,
+            "lockTimeoutSeconds": 900,
+            "holdReason": "timeout",
+            "requiredGitVersion": "2.19.0",
+            "detectedGitVersion": "2.15.0",
             "npxResolved": false,
             "npxResolution": "not_resolved",
             "logPath": "/Users/alice/private/core-update.log",
@@ -2652,6 +3671,12 @@ mod codex_telemetry_tests {
         assert_eq!(sanitized["skipReason"], "automatic_updates_disabled");
         assert_eq!(sanitized["platform"], "macos-aarch64");
         assert_eq!(sanitized["errorCategory"], "dns");
+        assert_eq!(sanitized["deferralCount"], 10);
+        assert_eq!(sanitized["firstDeferralAgeSeconds"], 21600);
+        assert_eq!(sanitized["lockTimeoutSeconds"], 900);
+        assert_eq!(sanitized["holdReason"], "timeout");
+        assert_eq!(sanitized["requiredGitVersion"], "2.19.0");
+        assert_eq!(sanitized["detectedGitVersion"], "2.15.0");
         assert_eq!(sanitized["npxResolved"], false);
         assert_eq!(sanitized["npxResolution"], "not_resolved");
         assert!(sanitized.get("logPath").is_none());
@@ -2681,6 +3706,124 @@ mod codex_telemetry_tests {
         assert!(unsafe_values.get("errorOperation").is_none());
         assert!(unsafe_values.get("errorIoKind").is_none());
         assert!(unsafe_values.get("errorCode").is_none());
+    }
+
+    #[test]
+    fn cdp_funnel_rows_are_operational_and_keep_their_props() {
+        let samples = json!({
+            "isFirstLaunch": true,
+            "userHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "companyHash": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "provider": "claude",
+            "surface": "terminal",
+            "success": false,
+            "errorClass": "not_found",
+            "trigger": "manual",
+            "flow": "runner",
+            "downloadedCount": 12,
+            "count": 1,
+            "route": "onboarding",
+            "plan": "workforce",
+        });
+        for (op, _, keys) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            assert!(is_operational_desktop_event_name(op), "{op} not approved");
+            let input: Map<String, Value> = keys
+                .iter()
+                .map(|key| ((*key).to_string(), samples[*key].clone()))
+                .collect();
+            let out = sanitize_desktop_properties(Some(Value::Object(input)));
+            for key in keys.iter() {
+                assert_eq!(out[*key], samples[*key], "{op}.{key} dropped");
+            }
+        }
+        // Identifiers and emails never pass, whatever the row.
+        let leaky = sanitize_desktop_properties(Some(json!({
+            "userHash": "prs_01ABC@example.com",
+            "personUid": "prs_01ABC",
+            "inviteeEmail": "a@b.c",
+        })));
+        assert!(leaky.as_object().unwrap().is_empty(), "{leaky}");
+    }
+
+    #[test]
+    fn invite_step_failure_keeps_error_kind_and_bounded_http_status() {
+        let sanitized = sanitize_desktop_properties(Some(json!({
+            "step": "invite-teammate",
+            "action": "failed",
+            "errorKind": "plan_limit",
+            "statusCode": 402,
+            "inviteeEmail": "person@example.com"
+        })));
+        assert_eq!(sanitized["errorKind"], "plan_limit");
+        assert_eq!(sanitized["statusCode"], 402);
+        assert!(sanitized.get("inviteeEmail").is_none());
+
+        for bad in [json!(99), json!(600), json!(-1), json!("409")] {
+            let sanitized = sanitize_desktop_properties(Some(json!({
+                "step": "invite-teammate",
+                "statusCode": bad
+            })));
+            assert!(sanitized.get("statusCode").is_none());
+        }
+    }
+
+    #[test]
+    fn deps_retry_diagnostics_survive_only_as_closed_failed_setup_values() {
+        let event = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "failed",
+                "component": "deps",
+                "retryAttempted": true,
+                "retryResult": "failed-again",
+                "depsOperation": "git",
+                "shellOutput": "private command output",
+            })),
+            Some("session-1".to_string()),
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["retryAttempted"], true);
+        assert_eq!(event.properties["retryResult"], "failed-again");
+        assert_eq!(event.properties["depsOperation"], "git");
+        assert!(event.properties.get("shellOutput").is_none());
+
+        let invalid = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "failed",
+                "component": "deps",
+                "retryAttempted": "yes",
+                "retryResult": "ran npm install from /private/path",
+                "depsOperation": "/private/path/git",
+            })),
+            Some("session-2".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(invalid.properties.get("retryAttempted").is_none());
+        assert!(invalid.properties.get("retryResult").is_none());
+        assert!(invalid.properties.get("depsOperation").is_none());
+
+        let wrong_scope = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({
+                "step": "setup",
+                "action": "completed",
+                "component": "deps",
+                "retryAttempted": true,
+                "retryResult": "recovered",
+                "depsOperation": "git",
+            })),
+            Some("session-3".to_string()),
+            None,
+            "no-consent",
+        );
+        assert!(wrong_scope.properties.get("retryAttempted").is_none());
+        assert!(wrong_scope.properties.get("retryResult").is_none());
+        assert!(wrong_scope.properties.get("depsOperation").is_none());
     }
 
     #[test]
@@ -2795,17 +3938,22 @@ mod codex_telemetry_tests {
                 "result",
                 "errorKind",
                 "channel",
+                "stage",
+                "fromVersion",
+                "toVersion",
                 "desktopVersion",
                 "appVersion",
                 "localCoreVersion",
                 "targetCoreVersion",
                 "autoUpdateEnabled",
+                "autoUpdate",
                 "eligible",
                 "versionBehind",
                 "durationMs",
                 "exitCode",
                 "skipReason",
                 "enabled",
+                "registered",
                 "companiesAttempted",
                 "filesDownloaded",
                 "bytesDownloaded",
@@ -2824,6 +3972,9 @@ mod codex_telemetry_tests {
                 "platform",
                 "attemptCount",
                 "failedDependency",
+                "retryAttempted",
+                "retryResult",
+                "depsOperation",
                 "errorCategory",
                 "failureStage",
                 "setupRunId",
@@ -2832,6 +3983,32 @@ mod codex_telemetry_tests {
                 "errorOperation",
                 "errorIoKind",
                 "errorCode",
+                "statusCode",
+                "deferralCount",
+                "firstDeferralAgeSeconds",
+                "lockTimeoutSeconds",
+                "holdReason",
+                "requiredGitVersion",
+                "detectedGitVersion",
+                "found",
+                "companyUidMissing",
+                "invitesSent",
+                "existingCompanies",
+                "paidCompany",
+                "pendingInvites",
+                "decision",
+                "provisioningStep",
+                "selfHeal",
+                "isFirstLaunch",
+                "userHash",
+                "companyHash",
+                "success",
+                "errorClass",
+                "trigger",
+                "downloadedCount",
+                "count",
+                "route",
+                "plan",
             ]
         );
         for key in ALLOWED_DESKTOP_PROPERTY_KEYS {
@@ -2880,6 +4057,13 @@ mod codex_telemetry_tests {
 
     #[test]
     fn onboarding_events_attach_the_trusted_build_version_after_property_redaction() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
         let event = build_desktop_telemetry_event(
             "desktop_onboarding_step".to_string(),
             Some(json!({
@@ -2896,6 +4080,10 @@ mod codex_telemetry_tests {
             crate::app_version::current()
         );
         assert_eq!(event.properties["step"], "connector-import");
+        assert_eq!(
+            serde_json::to_value(&event).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
 
         let completed = build_desktop_telemetry_event(
             "desktop_setup_completed".to_string(),
@@ -2907,6 +4095,130 @@ mod codex_telemetry_tests {
         assert_eq!(
             completed.properties["appVersion"],
             crate::app_version::current()
+        );
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
+
+        let (event_name, properties) =
+            crate::commands::autostart::autostart_state_event_after_reconciliation();
+        let expected_enabled = properties["enabled"].clone();
+        let expected_platform = properties["platform"].clone();
+        let expected_registered = properties.get("registered").cloned();
+        let autostart = build_desktop_telemetry_event(
+            event_name.to_string(),
+            Some(properties),
+            None,
+            None,
+            "desktop-opt-in",
+        );
+        assert_eq!(autostart.event_name, "desktop_autostart_state");
+        assert_eq!(autostart.properties["enabled"], expected_enabled);
+        assert_eq!(autostart.properties["platform"], expected_platform);
+        if let Some(expected_registered) = expected_registered {
+            assert_eq!(autostart.properties["registered"], expected_registered);
+        }
+        assert_eq!(
+            serde_json::to_value(&autostart).unwrap()["installAttemptId"],
+            install_attempt_id
+        );
+    }
+
+    #[test]
+    fn launch_classification_preserves_damaged_settings_before_attempt_id_initialization() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        let settings_path = home.path().join(".hq/menubar.json");
+        let damaged_contents = b"{malformed settings";
+        fs::write(&settings_path, damaged_contents).expect("write damaged settings fixture");
+
+        let app = tauri::test::mock_app();
+        assert_eq!(
+            crate::commands::first_run::classify_launch(&app.handle().clone()),
+            crate::commands::first_run::LaunchKind::Normal
+        );
+
+        assert_eq!(
+            fs::read(&settings_path).expect("damaged settings remain in place"),
+            damaged_contents,
+            "attempt-ID initialization must not move or replace damaged settings"
+        );
+    }
+
+    #[test]
+    fn first_run_attempt_id_is_persisted_before_setup_telemetry_and_reused() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|error| error.into_inner());
+
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        let app = tauri::test::mock_app();
+        assert_eq!(
+            crate::commands::first_run::classify_launch(&app.handle().clone()),
+            crate::commands::first_run::LaunchKind::FirstRun
+        );
+
+        let menubar_path = home.path().join(".hq/menubar.json");
+        let stored: Value = serde_json::from_slice(
+            &fs::read(&menubar_path).expect("launch classification persists first-run settings"),
+        )
+        .expect("persisted menubar settings are JSON");
+        let attempt_id = stored["installAttemptId"]
+            .as_str()
+            .expect("first-run initialization persists an attempt ID")
+            .to_string();
+        uuid::Uuid::parse_str(&attempt_id).expect("attempt ID is a UUID");
+
+        let step = build_desktop_telemetry_event(
+            "desktop_onboarding_step".to_string(),
+            Some(json!({"step": "welcome-signin", "action": "entered"})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(step).unwrap()["installAttemptId"],
+            attempt_id
+        );
+
+        let event = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 6})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(event).unwrap()["installAttemptId"],
+            attempt_id
+        );
+        assert_eq!(
+            crate::commands::first_run::install_attempt_id().as_deref(),
+            Some(attempt_id.as_str()),
+            "later setup events reuse the ID persisted during first-run classification"
+        );
+
+        drop(_home);
+        let existing_home = setup_home();
+        write_menubar(
+            existing_home.path(),
+            r#"{"installAttemptId":"11111111-1111-4111-8111-111111111111"}"#,
+        );
+        let _existing_home_scope = scoped_home(existing_home.path());
+        let existing_app = tauri::test::mock_app();
+        crate::commands::first_run::classify_launch(&existing_app.handle().clone());
+        let existing_event = build_desktop_telemetry_event(
+            "desktop_setup_completed".to_string(),
+            Some(json!({"stageCount": 6})),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(
+            serde_json::to_value(existing_event).unwrap()["installAttemptId"],
+            "11111111-1111-4111-8111-111111111111",
+            "an existing attempt ID is reused rather than replaced"
         );
     }
 
@@ -2998,6 +4310,41 @@ mod codex_telemetry_tests {
         ResponseTemplate::new(200).set_body_json(json!({
             "ok": true, "written": event_count, "deduped": 0, "skipped": []
         }))
+    }
+
+    fn test_upload_batch(
+        machine_id: &str,
+        installer_version: &str,
+        cli_version: Option<&str>,
+        events: Vec<Value>,
+        sources: Vec<UsageUploadSource>,
+    ) -> (UsageUploadPlanner, UsageUploadBatch) {
+        assert_eq!(events.len(), sources.len());
+        let empty = UsageBatch {
+            machine_id: machine_id.to_string(),
+            installer_version: installer_version.to_string(),
+            cli_version: cli_version.map(str::to_string),
+            events: Vec::new(),
+        };
+        let overhead = serde_json::to_vec(&empty).unwrap().len() - 2;
+        let mut planner = UsageUploadPlanner::new(overhead, MAX_BATCH_BYTES, None);
+        for (event, source) in events.into_iter().zip(sources) {
+            assert_eq!(
+                planner.add_event(event, source).unwrap(),
+                AddUsageEvent::Added
+            );
+        }
+        let batch = planner.take_batch().unwrap();
+        (planner, batch)
+    }
+
+    fn test_source(path: &str, offset: u64) -> UsageUploadSource {
+        UsageUploadSource {
+            file_path: path.to_string(),
+            end_offset: offset,
+            mtime: 1,
+            context: Some(serde_json::to_value(CodexUsageContext::default()).unwrap()),
+        }
     }
 
     /// Create a temp HOME with ~/.hq/ and ~/.claude/projects/ structure.
@@ -3295,6 +4642,8 @@ mod codex_telemetry_tests {
         let home = setup_home();
         write_menubar(home.path(), r#"{"machineId":"mid-desktop-on"}"#);
         std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
         let result = emit_desktop_operational_telemetry_with_vault(
@@ -3335,6 +4684,7 @@ mod codex_telemetry_tests {
         assert_eq!(event["schemaVersion"], 1);
         assert_eq!(event["occurredAt"], "2026-08-31T10:00:00.000Z");
         assert_eq!(event["sessionId"], "11111111-1111-4111-8111-111111111111");
+        assert_eq!(event["installAttemptId"], install_attempt_id);
 
         let allowed_event_keys = [
             "eventName",
@@ -3345,6 +4695,7 @@ mod codex_telemetry_tests {
             "schemaVersion",
             "idempotencyKey",
             "sessionId",
+            "installAttemptId",
             "properties",
         ];
         let event_keys = event.as_object().unwrap();
@@ -3381,8 +4732,65 @@ mod codex_telemetry_tests {
         );
     }
 
+    #[test]
+    fn desktop_update_outcome_uses_v2_and_the_install_join_key() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), r#"{"machineId":"mid-update-test"}"#);
+        std::env::set_var("HOME", home.path());
+        let install_attempt_id = crate::commands::first_run::install_attempt_id()
+            .expect("the persisted install attempt id is available");
+
+        let event = build_desktop_telemetry_event(
+            "desktop_update_outcome".to_string(),
+            Some(json!({
+                "stage": "download_ok",
+                "fromVersion": "0.10.386",
+                "toVersion": "0.10.387",
+                "channel": "stable",
+                "autoUpdate": true,
+                "error": "private diagnostic text must be dropped"
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+
+        std::env::remove_var("HOME");
+        let event = serde_json::to_value(event).unwrap();
+        assert_eq!(event["schemaVersion"], 2);
+        assert_eq!(event["installAttemptId"], install_attempt_id);
+        assert_eq!(event["properties"]["stage"], "download_ok");
+        assert_eq!(event["properties"]["fromVersion"], "0.10.386");
+        assert_eq!(event["properties"]["toVersion"], "0.10.387");
+        assert_eq!(event["properties"]["channel"], "stable");
+        assert_eq!(event["properties"]["autoUpdate"], true);
+        assert!(event["properties"].get("error").is_none());
+    }
+
+    #[test]
+    fn post_cap_update_outcomes_are_operational_and_keep_closed_reason() {
+        let event = build_desktop_telemetry_event(
+            "desktop_auto_update_post_cap_outcome".to_string(),
+            Some(json!({
+                "outcome": "still-held-by",
+                "holdReason": "CoreUpdateInProgress",
+                "email": "private@example.com",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(is_operational_desktop_event_name(&event.event_name));
+        assert_eq!(event.properties["outcome"], "still-held-by");
+        assert_eq!(event.properties["holdReason"], "CoreUpdateInProgress");
+        assert!(event.properties.get("email").is_none());
+    }
+
     #[tokio::test]
     async fn test_operational_telemetry_rejects_non_operational_event_names() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
         let vault = VaultClient::new(server.uri(), "test-jwt");
 
@@ -3475,13 +4883,583 @@ mod codex_telemetry_tests {
     }
 
     #[test]
+    fn funnel_operational_rows_carry_the_trusted_app_version() {
+        // Builds mint the install id under the current HOME.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        // Regression: the PR 1264 funnel rows reached hq-pro with no version.
+        for (op, _, _) in crate::commands::cdp_mirror::OPERATIONAL_MIRRORS {
+            let event = build_desktop_telemetry_event(
+                op.to_string(),
+                Some(json!({ "appVersion": "renderer-controlled-version" })),
+                None,
+                None,
+                "no-consent",
+            );
+            assert_eq!(
+                event.properties["appVersion"],
+                crate::app_version::current(),
+                "{op} must carry the build's app version"
+            );
+        }
+    }
+
+    async fn first_open_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            // HQ_VAULT_API_URL is process-wide, so a test running alongside
+            // can post its own rows here; count only the first-open rows.
+            .filter(|body| body["events"][0]["eventName"] == "desktop_app_opened")
+            .collect()
+    }
+
+    async fn first_open_server(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/telemetry/events"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    fn first_open_held(home: &std::path::Path) -> bool {
+        hq_desktop_core::first_run::read_menubar_obj(&home.join(".hq/menubar.json"))
+            .get(crate::commands::cdp_mirror::FIRST_OPEN_PENDING_KEY)
+            .and_then(Value::as_bool)
+            == Some(true)
+    }
+
+    #[tokio::test]
+    async fn first_launch_app_opened_is_held_until_a_session_exists() {
+        // Regression: the first launch has no session, so its
+        // `desktop_app_opened isFirstLaunch=true` row was dropped and only
+        // signed-in relaunches (`false`) ever reached hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // What `cdp_mirror::init` does on a first launch.
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let without_session = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+        assert!(!without_session, "no session: the row stays held");
+        assert!(first_open_held(home.path()));
+        write_valid_access_token(home.path());
+        assert!(
+            crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "the held row is sent once a session exists"
+        );
+        assert!(!first_open_held(home.path()));
+        assert!(
+            !crate::commands::cdp_mirror::flush_pending_first_open_now().await,
+            "sent once"
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1);
+        let event = &posts[0]["events"][0];
+        assert_eq!(event["eventName"], "desktop_app_opened");
+        assert_eq!(event["properties"]["isFirstLaunch"], true);
+        assert_eq!(
+            event["properties"]["appVersion"],
+            crate::app_version::current()
+        );
+    }
+
+    #[tokio::test]
+    async fn overlapping_first_open_flushes_send_one_row() {
+        // Regression: a flush checked the pending flag before taking the guard,
+        // so a flush that checked, then took the guard after another flush had
+        // sent and released it, sent the row a second time.
+        use crate::commands::cdp_mirror::{
+            flush_pending_first_open_now, FirstOpenGuardHook, FIRST_OPEN_GUARD_HOOK,
+        };
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+
+        let hook = std::sync::Arc::new(FirstOpenGuardHook {
+            reached: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        let late =
+            tokio::spawn(FIRST_OPEN_GUARD_HOOK.scope(hook.clone(), flush_pending_first_open_now()));
+        // `late` has seen the pending row and is parked before the guard.
+        hook.reached.notified().await;
+        let early = flush_pending_first_open_now().await;
+        hook.resume.notify_one();
+        let late = late.await.unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        assert!(early, "the first flush sends the row");
+        assert!(!late, "the overlapping flush finds it already sent");
+        assert!(!first_open_held(home.path()));
+        let posts = first_open_posts(&server).await;
+        assert_eq!(posts.len(), 1, "exactly one POST");
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        assert_eq!(
+            posts[0]["events"][0]["idempotencyKey"],
+            crate::commands::cdp_mirror::first_open_idempotency_key(&install)
+        );
+    }
+
+    #[test]
+    fn background_telemetry_flush_path_is_captured_before_home_changes() {
+        // Models a scheduled task whose first poll happens after another test
+        // changes HOME: the production task builders must already own this path.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let scheduled_home = setup_home();
+        let later_home = setup_home();
+
+        let _scheduled_home = scoped_home(scheduled_home.path());
+        let scheduled_path = crate::commands::cdp_mirror::capture_background_flush_path();
+        let scheduled_path = scheduled_path.expect("HOME A has a menubar path");
+        assert!(crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        let _later_home = scoped_home(later_home.path());
+
+        assert_eq!(
+            scheduled_path,
+            scheduled_home.path().join(".hq/menubar.json"),
+            "the path is captured synchronously before a background task is polled"
+        );
+        assert!(!crate::commands::cdp_mirror::flush_path_matches_current_home(
+            &scheduled_path
+        ));
+        assert_ne!(scheduled_path, later_home.path().join(".hq/menubar.json"));
+    }
+
+    #[test]
+    fn first_launch_app_opened_carries_a_stable_install_idempotency_key() {
+        // Regression: the held first-launch row had no idempotencyKey, so a
+        // repeated send was stored twice by hq-pro.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        let build = |first: bool| {
+            build_desktop_telemetry_event(
+                "desktop_app_opened".to_string(),
+                Some(json!({ "isFirstLaunch": first })),
+                None,
+                None,
+                "no-consent",
+            )
+        };
+        let first = build(true);
+        let retry = build(true);
+        let install = crate::commands::first_run::install_attempt_id().unwrap();
+        let key = first.idempotency_key.clone().unwrap();
+        assert_eq!(key, format!("hq-desktop-app:first-open:{install}"));
+        assert_eq!(retry.idempotency_key.as_deref(), Some(key.as_str()));
+        // hq-pro's envelope accepts [A-Za-z0-9_.:#-]{1,200} for idempotencyKey.
+        assert!(key.len() <= 200);
+        assert!(key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.:#-".contains(&b)));
+        assert_eq!(
+            serde_json::to_value(&first).unwrap()["idempotencyKey"],
+            json!(key)
+        );
+        assert!(
+            build(false).idempotency_key.is_none(),
+            "relaunch rows are not deduped"
+        );
+    }
+
+    fn first_open_warnings(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("[cdp] WARN first_open"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_open_failures_are_logged_as_warnings() {
+        // Regression: the hold write, the send and the clear write each
+        // dropped their error without a trace.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let logs = TempDir::new().unwrap();
+        let log = logs.path().join("hq-sync.log");
+        let _log = hq_desktop_core::logfile::LogOverrideGuard::new(log.clone());
+        let server = first_open_server(500).await;
+        let home = setup_home();
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // Hold: menubar.json is a directory, so the write fails.
+        std::fs::create_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+        crate::commands::cdp_mirror::hold_first_open();
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("hold_write_failed"), "{warnings:?}");
+        std::fs::remove_dir_all(home.path().join(".hq/menubar.json")).unwrap();
+
+        // Send: hq-pro answers 500; the row stays held.
+        write_menubar(home.path(), "{}");
+        write_valid_access_token(home.path());
+        crate::commands::cdp_mirror::hold_first_open();
+        assert!(!crate::commands::cdp_mirror::flush_pending_first_open_now().await);
+        assert!(first_open_held(home.path()));
+        let warnings = first_open_warnings(&log);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[1].contains("send_failed_held_for_retry"),
+            "{warnings:?}"
+        );
+
+        // Clear: the send succeeds but the config directory is read-only.
+        #[cfg(unix)]
+        {
+            server.reset().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/telemetry/events"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+                .mount(&server)
+                .await;
+            crate::commands::first_run::install_attempt_id().unwrap();
+            let hq_dir = home.path().join(".hq");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let sent = crate::commands::cdp_mirror::flush_pending_first_open_now().await;
+            std::fs::set_permissions(&hq_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::env::remove_var("HQ_VAULT_API_URL");
+            assert!(sent);
+            let warnings = first_open_warnings(&log);
+            assert_eq!(warnings.len(), 3, "{warnings:?}");
+            assert!(warnings[2].contains("clear_write_failed"), "{warnings:?}");
+        }
+        std::env::remove_var("HQ_VAULT_API_URL");
+    }
+
+    async fn auth_failure_posts(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::POST)
+            .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap())
+            .flat_map(|body| body["events"].as_array().cloned().unwrap_or_default())
+            .filter(|event| event["eventName"] == "desktop_auth_failure")
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn first_sign_in_failure_before_a_token_reaches_hq_pro_after_sign_in() {
+        // Regression: a brand-new user has no token until token_exchange_ok,
+        // so a sign-in failure before that was never sent to hq-pro. Only
+        // returning users' sign-in rows reached it.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        crate::commands::cognito::clear_tokens().await.unwrap();
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        // First-time sign-in, no token: the provider page fails to open.
+        let _ = emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": "provider_page_opened",
+                "errorCategory": "network",
+            })),
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "no session yet"
+        );
+
+        // The app quits here; only what is on disk carries over. On the next
+        // launch the user signs in and the app reports token_exchange_ok.
+        write_valid_access_token(home.path());
+        emit_desktop_operational_telemetry(
+            "desktop_auth_progress".to_string(),
+            Some(json!({ "provider": "google", "step": "token_exchange_ok" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "the pre-token failure must reach hq-pro");
+        assert_eq!(failures[0]["properties"]["step"], "provider_page_opened");
+        assert_eq!(failures[0]["properties"]["errorCategory"], "network");
+    }
+
+    fn held_auth_rows(home: &std::path::Path) -> Vec<Value> {
+        crate::commands::cdp_mirror::held_auth_rows_at(
+            &home.join(".hq/menubar.json"),
+            chrono::Utc::now().timestamp_millis() as u64,
+        )
+    }
+
+    async fn emit_pre_token_failure(step: &str) {
+        emit_desktop_operational_telemetry(
+            "desktop_auth_failure".to_string(),
+            Some(json!({
+                "provider": "google",
+                "step": step,
+                "errorCategory": "network",
+                "message": "connect error: secret-callback-code-123",
+            })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn held_auth_failure_uses_home_captured_before_token_resolution() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = setup_home();
+        let changed_home = setup_home();
+        write_menubar(original_home.path(), "{}");
+        write_menubar(changed_home.path(), "{}");
+        let _home = scoped_home(original_home.path());
+
+        let result = access_token_or_hold_auth_event(
+            "desktop_auth_failure",
+            Some(&json!({ "provider": "google", "step": "callback_received" })),
+            None,
+            async {
+                std::env::set_var("HOME", changed_home.path());
+                Err("Not signed in".to_string())
+            },
+        )
+        .await;
+        std::env::set_var("HOME", original_home.path());
+
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(held_auth_rows(original_home.path()).len(), 1);
+        assert!(held_auth_rows(changed_home.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_survives_app_quit_with_labels_only() {
+        // Regression: the row lived nowhere once the app quit after a failed
+        // first sign-in. It must be on disk, with closed labels only.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("provider_page_opened").await;
+        // Quit: nothing in memory carries over; read what a relaunch reads.
+        let raw = std::fs::read_to_string(home.path().join(".hq/menubar.json")).unwrap();
+        assert!(
+            !raw.contains("secret-callback-code"),
+            "no raw error text on disk"
+        );
+        let held = held_auth_rows(home.path());
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0]["properties"],
+            json!({ "provider": "google", "step": "provider_page_opened", "errorCategory": "network" })
+        );
+
+        // Next launch, user signs in; the launch-time flush sends it.
+        write_valid_access_token(home.path());
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            1
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert!(held_auth_rows(home.path()).is_empty());
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["occurredAt"], held[0]["occurredAt"]);
+        assert!(failures[0]["properties"].get("message").is_none());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_is_delivered_exactly_once_after_sign_in() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let _home = scoped_home(home.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("callback_received").await;
+        let key = held_auth_rows(home.path())[0]["idempotencyKey"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        write_valid_access_token(home.path());
+        for step in ["sign_in_started", "token_exchange_ok"] {
+            emit_desktop_operational_telemetry(
+                "desktop_auth_progress".to_string(),
+                Some(json!({ "provider": "google", "step": step })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            0
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+
+        let failures = auth_failure_posts(&server).await;
+        assert_eq!(failures.len(), 1, "delivered exactly once");
+        assert_eq!(failures[0]["idempotencyKey"], json!(key));
+        assert!(key.starts_with("hq-desktop-app:auth-held:") && key.len() <= 200);
+        assert!(held_auth_rows(home.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_failure_stays_on_its_home_when_token_home_disagrees() {
+        // The menubar path follows HOME. The token resolver follows
+        // HQ_TEST_HOME. A signed resolver home must not turn an unsigned
+        // install's first sign-in failure into a delivered row.
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let unsigned = setup_home();
+        let signed = setup_home();
+        write_menubar(unsigned.path(), "{}");
+        write_menubar(signed.path(), "{}");
+        write_valid_access_token(signed.path());
+        let _home = scoped_home(unsigned.path());
+        std::env::set_var("HQ_TEST_HOME", signed.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("provider_page_opened").await;
+
+        std::env::remove_var("HQ_VAULT_API_URL");
+        let held = held_auth_rows(unsigned.path());
+        assert_eq!(held.len(), 1);
+        assert_eq!(
+            held[0]["properties"],
+            json!({ "provider": "google", "step": "provider_page_opened", "errorCategory": "network" })
+        );
+        assert!(held_auth_rows(signed.path()).is_empty());
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "a foreign token must not deliver the unsigned install's failure"
+        );
+        let raw = std::fs::read_to_string(unsigned.path().join(".hq/menubar.json")).unwrap();
+        assert!(!raw.contains("secret-callback-code"));
+    }
+
+    #[tokio::test]
+    async fn held_sign_in_row_is_not_flushed_with_a_different_homes_token() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let server = first_open_server(200).await;
+        let unsigned = setup_home();
+        let signed = setup_home();
+        write_menubar(unsigned.path(), "{}");
+        write_menubar(signed.path(), "{}");
+        write_valid_access_token(signed.path());
+        let _home = scoped_home(unsigned.path());
+        std::env::set_var("HQ_VAULT_API_URL", server.uri());
+
+        emit_pre_token_failure("callback_received").await;
+        assert_eq!(held_auth_rows(unsigned.path()).len(), 1);
+        std::env::set_var("HQ_TEST_HOME", signed.path());
+
+        let emitted = emit_desktop_operational_telemetry(
+            crate::commands::cdp_mirror::OP_SYNC_STARTED.to_string(),
+            Some(json!({ "trigger": "manual", "flow": "sync" })),
+            None,
+            None,
+        )
+        .await;
+        assert!(emitted.is_err(), "the unsigned install has no session");
+        assert_eq!(
+            crate::commands::cdp_mirror::flush_held_auth_rows_now().await,
+            0
+        );
+        std::env::remove_var("HQ_VAULT_API_URL");
+        assert_eq!(held_auth_rows(unsigned.path()).len(), 1);
+        assert!(held_auth_rows(signed.path()).is_empty());
+        assert!(
+            auth_failure_posts(&server).await.is_empty(),
+            "the success-path flush must not clear the row with the other home's token"
+        );
+    }
+
+    #[test]
+    fn held_sign_in_rows_are_capped_and_expire() {
+        use crate::commands::cdp_mirror::{
+            held_auth_rows_at, hold_auth_row_at, AUTH_HELD_CAP, AUTH_HELD_TTL_MS,
+        };
+        let home = setup_home();
+        write_menubar(home.path(), "{}");
+        let path = home.path().join(".hq/menubar.json");
+        let start = 1_800_000_000_000u64;
+        let props = |i: usize| json!({ "provider": format!("p{i}"), "step": "sign_in_started" });
+        for i in 0..AUTH_HELD_CAP + 5 {
+            hold_auth_row_at(
+                &path,
+                "desktop_auth_progress",
+                Some(&props(i)),
+                start + i as u64,
+            )
+            .unwrap();
+        }
+        let rows = held_auth_rows_at(&path, start + 100);
+        assert_eq!(rows.len(), AUTH_HELD_CAP, "capped");
+        assert_eq!(
+            rows[0]["properties"]["provider"], "p5",
+            "oldest dropped first"
+        );
+
+        // Past the TTL every row is gone, and the next hold prunes the file.
+        let later = start + AUTH_HELD_TTL_MS + 100;
+        assert!(held_auth_rows_at(&path, later).is_empty(), "expired");
+        hold_auth_row_at(&path, "desktop_auth_failure", Some(&props(99)), later).unwrap();
+        let stored = hq_desktop_core::first_run::read_menubar_obj(&path);
+        assert_eq!(stored["cdpAuthHeld"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_daily_active_event_uses_stable_utc_day_values() {
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-15T14:30:05.250Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
 
-        let first = build_daily_active_event(utc_day);
-        let retry = build_daily_active_event(utc_day);
+        let first = build_daily_active_event(now);
+        let retry = build_daily_active_event(now);
 
-        assert_eq!(first.occurred_at, "2026-07-15T00:00:00.000Z");
+        // Regression: the row used to be stamped 00:00:00Z, so every daytime
+        // read of hq-pro telemetry returned no daily-active rows.
+        assert_eq!(first.occurred_at, "2026-07-15T14:30:05.250Z");
+        let later_same_day = build_daily_active_event(now + chrono::Duration::hours(6));
+        assert_eq!(
+            later_same_day.idempotency_key, first.idempotency_key,
+            "re-sends on the same UTC day share one idempotency key"
+        );
         assert_eq!(
             first.idempotency_key.as_deref(),
             Some("hq-desktop-app:daily-active:2026-07-15")
@@ -3527,9 +5505,9 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "test-jwt");
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
-        let result = emit_daily_active_with_vault(&vault, utc_day).await;
+        let result = emit_daily_active_with_vault(&vault, now, None).await;
 
         assert!(result.is_ok());
         let reqs = server.received_requests().await.unwrap();
@@ -3552,7 +5530,7 @@ mod codex_telemetry_tests {
     async fn test_daily_active_missing_or_invalid_token_does_not_fail_startup() {
         let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let server = MockServer::start().await;
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let now = chrono::Utc::now();
 
         for token_contents in [None, Some("{not valid json")] {
             let home = setup_home();
@@ -3562,7 +5540,14 @@ mod codex_telemetry_tests {
 
             std::env::set_var("HQ_TEST_HOME", home.path());
             std::env::set_var("HQ_VAULT_API_URL", server.uri());
-            emit_daily_active_for_utc_day(utc_day).await;
+            emit_daily_active_at(
+                now,
+                DesktopLivenessContext {
+                    launch_source: "unknown",
+                    start_at_login: "unknown",
+                },
+            )
+            .await;
             std::env::remove_var("HQ_TEST_HOME");
             std::env::remove_var("HQ_VAULT_API_URL");
         }
@@ -3590,8 +5575,15 @@ mod codex_telemetry_tests {
         std::env::set_var("HQ_TEST_HOME", home.path());
         std::env::set_var("HQ_VAULT_API_URL", server.uri());
 
-        let utc_day = chrono::NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
-        emit_daily_active_for_utc_day(utc_day).await;
+        let now = chrono::Utc::now();
+        emit_daily_active_at(
+            now,
+            DesktopLivenessContext {
+                launch_source: "unknown",
+                start_at_login: "unknown",
+            },
+        )
+        .await;
 
         std::env::remove_var("HQ_TEST_HOME");
         std::env::remove_var("HQ_VAULT_API_URL");
@@ -3692,7 +5684,7 @@ mod codex_telemetry_tests {
     fn version_heartbeat_is_wired_at_launch_and_after_update() {
         let main = include_str!("../main.rs");
         let daily = main
-            .find("commands::telemetry::setup_daily_active_emit();")
+            .find("commands::telemetry::setup_daily_active_emit(")
             .expect("daily-active setup");
         let heartbeat = main
             .find("commands::telemetry::setup_version_heartbeat();")
@@ -5362,15 +7354,15 @@ mod codex_telemetry_tests {
             })))
             .mount(&partial_server)
             .await;
-        let source = || RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
+        let source = || test_source("rollout", 99);
         let event = || json!({"uuid": "stable-event", "inputTokens": 1});
-        let mut events = vec![event()];
-        let mut sources = vec![source()];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         let mut committed = HashMap::new();
         let mut cursor = TelemetryCursor::default();
 
@@ -5384,8 +7376,8 @@ mod codex_telemetry_tests {
                 Some("9.9.9"),
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5408,8 +7400,13 @@ mod codex_telemetry_tests {
             .respond_with(complete_ack)
             .mount(&full_server)
             .await;
-        let mut retry_events = vec![event()];
-        let mut retry_sources = vec![source()];
+        let (mut retry_planner, retry_batch) = test_upload_batch(
+            "machine",
+            "version",
+            Some("9.9.9"),
+            vec![event()],
+            vec![source()],
+        );
         assert!(flush_batch(
             &full_vault,
             &full_server.uri(),
@@ -5419,8 +7416,8 @@ mod codex_telemetry_tests {
             Some("9.9.9"),
             &mut cursor,
             1_001,
-            &mut retry_events,
-            &mut retry_sources,
+            &mut retry_planner,
+            retry_batch,
             &mut committed,
         )
         .await
@@ -5622,13 +7619,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor {
             consecutive_unaccepted_flushes: 2,
             ..TelemetryCursor::default()
@@ -5645,8 +7642,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5684,13 +7681,13 @@ mod codex_telemetry_tests {
             .await;
 
         let vault = VaultClient::new(server.uri(), "token");
-        let mut events = vec![json!({"uuid": "event", "inputTokens": 1})];
-        let mut sources = vec![RowSource {
-            file_path: "rollout".to_string(),
-            end_offset: 99,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        }];
+        let (mut planner, batch) = test_upload_batch(
+            "machine",
+            "version",
+            None,
+            vec![json!({"uuid": "event", "inputTokens": 1})],
+            vec![test_source("rollout", 99)],
+        );
         let mut cursor = TelemetryCursor::default();
         let mut committed = HashMap::new();
 
@@ -5704,8 +7701,8 @@ mod codex_telemetry_tests {
                 None,
                 &mut cursor,
                 1_000,
-                &mut events,
-                &mut sources,
+                &mut planner,
+                batch,
                 &mut committed,
             )
             .await,
@@ -5719,17 +7716,12 @@ mod codex_telemetry_tests {
 
     #[test]
     fn source_checkpoints_coalesce_per_file() {
-        let source = |path: &str, offset: u64| RowSource {
-            file_path: path.to_string(),
-            end_offset: offset,
-            mtime: 1,
-            context: Some(CodexUsageContext::default()),
-        };
-        let mut sources = Vec::new();
+        let mut planner = UsageUploadPlanner::new(0, MAX_BATCH_BYTES, None);
         for offset in 1..=10_000 {
-            record_source(&mut sources, source("rollout-a", offset));
+            planner.record_source(test_source("rollout-a", offset));
         }
-        record_source(&mut sources, source("rollout-b", 7));
+        planner.record_source(test_source("rollout-b", 7));
+        let sources = planner.take_zero_event_sources().unwrap();
 
         assert_eq!(sources.len(), 2);
         assert_eq!(
@@ -6704,5 +8696,233 @@ mod codex_telemetry_tests {
         let (row, offset, _) = scanner.next_bounded(record.len() as u64).unwrap();
         assert_eq!(row.unwrap()["model"], "final-model");
         assert_eq!(offset, record.len() as u64);
+    }
+
+    #[test]
+    fn anon_id_is_attached_only_as_a_safe_label() {
+        let mut props = serde_json::json!({ "step": "x", "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("vyg-abc".into()));
+        assert_eq!(props["anonId"], "vyg-abc");
+        let mut props = serde_json::json!({ "anonId": "spoofed" });
+        attach_anon_id(&mut props, Some("bad id/with?url".into()));
+        assert!(props.get("anonId").is_none());
+        let mut props = serde_json::json!({});
+        attach_anon_id(&mut props, None);
+        assert!(props.get("anonId").is_none());
+    }
+
+    #[test]
+    fn install_tag_read_is_operational_and_keeps_only_labels() {
+        assert!(is_operational_desktop_event_name("install_tag_read"));
+        let event = build_desktop_telemetry_event(
+            "install_tag_read".into(),
+            Some(serde_json::json!({
+                "found": true,
+                "source": "whereFroms",
+                "url": "https://x.com/HQ.dmg?aid=vyg-1&secret=1"
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.properties["found"], true);
+        assert_eq!(event.properties["source"], "whereFroms");
+        assert!(event.properties.get("url").is_none());
+    }
+}
+
+#[cfg(test)]
+mod desktop_liveness_telemetry_regression_tests {
+    use super::*;
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-10-05T09:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn daily_active_has_closed_liveness_context_only_when_enabled() {
+        let off = build_daily_active_event_with_liveness(now(), None);
+        assert_eq!(off.properties, json!({
+            "platform": crate::commands::version_gate::platform_tag(),
+            "appVersion": crate::app_version::current(),
+        }));
+        let on = build_daily_active_event_with_liveness(
+            now(),
+            Some(DesktopLivenessContext {
+                launch_source: "login_item",
+                start_at_login: "registration_failed",
+            }),
+        );
+        assert_eq!(on.properties["launch_source"], "login_item");
+        assert_eq!(on.properties["start_at_login"], "registration_failed");
+    }
+
+    #[test]
+    fn each_launch_source_and_registration_state_is_closed() {
+        assert_eq!(classify_desktop_launch_source(false, true, true), "login_item");
+        assert_eq!(classify_desktop_launch_source(false, false, true), "user");
+        assert_eq!(classify_desktop_launch_source(true, true, true), "update_restart");
+        assert_eq!(classify_desktop_launch_source(false, false, false), "unknown");
+
+        assert_eq!(classify_start_at_login(Some(true), Some(true)), "registered");
+        assert_eq!(classify_start_at_login(Some(false), Some(false)), "opted_out");
+        assert_eq!(classify_start_at_login(Some(true), Some(false)), "registration_failed");
+        assert_eq!(classify_start_at_login(None, None), "unknown");
+    }
+
+    #[test]
+    fn each_quit_reason_and_setup_age_bucket_is_emitted_closed() {
+        let reasons = [
+            (DesktopQuitReason::TrayQuit, "tray_quit"),
+            (DesktopQuitReason::AppMenuQuit, "app_menu_quit"),
+            (DesktopQuitReason::OsShutdown, "os_shutdown"),
+            (DesktopQuitReason::UpdateRestart, "update_restart"),
+            (DesktopQuitReason::Unknown, "unknown"),
+        ];
+        for (reason, expected) in reasons {
+            let event = build_desktop_quit_event(now(), reason, Some(now()));
+            assert_eq!(event.event_name, "desktop_app_quit");
+            assert_eq!(event.properties["reason"], expected);
+        }
+        let sanitized = sanitize_desktop_quit_properties(Some(json!({
+            "reason": "arbitrary-text",
+            "days_since_setup": "900",
+            "unexpected": "discard-me",
+        })));
+        assert_eq!(sanitized, json!({ "reason": "unknown", "days_since_setup": "unknown" }));
+        let ages = [
+            (Some(now()), "0"),
+            (Some(now() - chrono::Duration::days(1)), "1-7"),
+            (Some(now() - chrono::Duration::days(8)), "8+"),
+            (None, "unknown"),
+            (Some(now() + chrono::Duration::seconds(1)), "unknown"),
+        ];
+        for (setup_at, expected) in ages {
+            let event = build_desktop_quit_event(now(), DesktopQuitReason::Unknown, setup_at);
+            assert_eq!(event.properties["days_since_setup"], expected);
+        }
+    }
+
+    #[test]
+    fn flag_off_or_unreadable_emits_no_new_fields_or_quit_event() {
+        let context = DesktopLivenessContext {
+            launch_source: "user",
+            start_at_login: "registered",
+        };
+        assert!(!liveness_flag_is_enabled(Ok(None)));
+        assert!(!liveness_flag_is_enabled(Err(())));
+        assert!(liveness_flag_is_enabled(Ok(Some(true))));
+        assert_eq!(daily_active_liveness_context(false, context), None);
+        assert_eq!(daily_active_liveness_context(true, context), Some(context));
+        assert!(quit_event_when_enabled(false, now(), DesktopQuitReason::TrayQuit, None).is_none());
+        let unchanged = build_daily_active_event_with_liveness(now(), None);
+        assert!(!unchanged.properties.as_object().unwrap().contains_key("launch_source"));
+        assert!(!unchanged.properties.as_object().unwrap().contains_key("start_at_login"));
+    }
+
+    #[test]
+    fn failed_quit_telemetry_result_does_not_hold_exit() {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        report_quit_telemetry_attempt(sender, Err("offline".to_string()));
+        let started = std::time::Instant::now();
+        wait_for_quit_telemetry_attempt(receiver);
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn daily_active_liveness_flag_is_resolved_once_and_cached() {
+        let cache = AtomicU8::new(LIVENESS_FLAG_UNKNOWN);
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+
+        let first = resolve_liveness_flag_once_with(&cache, || async {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(None)
+        })
+        .await;
+        let second = resolve_liveness_flag_once_with(&cache, || async {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(true))
+        })
+        .await;
+
+        assert!(!first);
+        assert!(!second);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(cache.load(Ordering::Acquire), LIVENESS_FLAG_OFF);
+    }
+
+    #[test]
+    fn quit_unknown_or_off_skips_flag_fetch_and_wait() {
+        for state in [LIVENESS_FLAG_UNKNOWN, LIVENESS_FLAG_OFF] {
+            let cache = AtomicU8::new(state);
+            let flag_fetches = std::sync::atomic::AtomicUsize::new(0);
+            let waits = std::sync::atomic::AtomicUsize::new(0);
+
+            let attempted = with_cached_liveness_on(&cache, || {
+                flag_fetches.fetch_add(1, Ordering::SeqCst);
+                waits.fetch_add(1, Ordering::SeqCst);
+            });
+
+            assert!(!attempted);
+            assert_eq!(flag_fetches.load(Ordering::SeqCst), 0);
+            assert_eq!(waits.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn quit_path_uses_only_cached_gate_before_any_wait() {
+        let source = include_str!("telemetry.rs");
+        let quit = source
+            .split("pub fn emit_desktop_quit_before_exit(")
+            .nth(1)
+            .expect("quit telemetry function");
+        let body = quit
+            .split("\npub fn emit_noted_desktop_quit_before_exit")
+            .next()
+            .expect("quit telemetry function body");
+
+        assert!(!body.contains("feature_flag_read"));
+        assert!(body.find("with_cached_liveness_on(").unwrap()
+            < body.find("sync_channel(1)").unwrap());
+        assert!(body.find("sync_channel(1)").unwrap()
+            < body.find("wait_for_quit_telemetry_attempt(").unwrap());
+    }
+
+    #[test]
+    fn cached_on_quit_builds_event_with_the_noted_reason() {
+        let cache = AtomicU8::new(LIVENESS_FLAG_ON);
+        let event = quit_event_for_cached_liveness(
+            &cache,
+            now(),
+            DesktopQuitReason::AppMenuQuit,
+            Some(now()),
+        )
+        .expect("cached-on quit has an event");
+
+        assert_eq!(event.event_name, "desktop_app_quit");
+        assert_eq!(event.properties["reason"], "app_menu_quit");
+    }
+
+    #[test]
+    fn deferred_update_restart_does_not_latch_an_update_quit_reason() {
+        let source = include_str!("autostart.rs");
+        let restart = source
+            .split("fn restart_preferring_launch_agent_with_update_version(")
+            .nth(1)
+            .expect("restart implementation");
+        let deferred = restart
+            .find("return false;")
+            .expect("protected activity defers restart");
+        let reason_latched = restart
+            .find("note_desktop_quit_reason(")
+            .expect("successful update restart labels its exit");
+        assert!(reason_latched > deferred);
+    }
+
+    #[test]
+    fn desktop_quit_is_an_approved_operational_event() {
+        assert!(is_operational_desktop_event_name("desktop_app_quit"));
     }
 }

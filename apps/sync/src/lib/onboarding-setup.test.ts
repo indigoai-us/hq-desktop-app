@@ -27,6 +27,14 @@ import {
   setupCompletionResult,
   setupProgressPercent,
   setupStageRecoveryAction,
+  resolveFlagWithTimeout,
+  resolveFlagStatusWithTimeout,
+  normalizeDepsOperation,
+  depsRetryWasAttemptedForFailure,
+  depsTimeoutRetryTelemetry,
+  normalizeDepsRetryResult,
+  DEPS_OPERATIONS,
+  DEPS_RETRY_RESULTS,
   setupSubStatus,
   stageAutoRetryLimit,
   stageCreepAt,
@@ -97,6 +105,47 @@ function emitContentProgress(payload: unknown): void {
   handler({ payload });
 }
 
+describe('bounded deps retry telemetry values', () => {
+  it('normalizes only dependency registry ids and retry result values', () => {
+    expect(DEPS_OPERATIONS).toEqual([
+      'node', 'yq', 'qmd', 'hq-cli', 'git', 'jq', 'gh', 'claude-code', 'homebrew', 'unknown',
+    ]);
+    expect(normalizeDepsOperation('git')).toBe('git');
+    expect(normalizeDepsOperation('npm install -g package')).toBeUndefined();
+    expect(DEPS_RETRY_RESULTS).toEqual([
+      'not-eligible', 'recovered', 'failed-again', 'skipped-flag-off', 'skipped-flag-unreadable',
+    ]);
+    expect(normalizeDepsRetryResult('failed-again')).toBe('failed-again');
+    expect(normalizeDepsRetryResult('retry with command')).toBeUndefined();
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'enabled', timedOut: false, retrySuppressed: false,
+      retryAttempted: true, retryRecovered: true,
+    })).toEqual({ retryAttempted: false, retryResult: 'not-eligible' });
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'enabled', timedOut: true, retrySuppressed: false,
+      retryAttempted: true, retryRecovered: true,
+    })).toEqual({ retryAttempted: true, retryResult: 'recovered' });
+    expect(depsTimeoutRetryTelemetry({
+      flagStatus: 'disabled', timedOut: true, retrySuppressed: false,
+      retryAttempted: false, retryRecovered: false,
+    })).toEqual({ retryAttempted: false, retryResult: 'skipped-flag-off' });
+  });
+
+  it('attributes retry only to the failure whose own recovery scheduled it', () => {
+    expect(depsRetryWasAttemptedForFailure(true, true)).toBe(true);
+    // A later deps timeout can be in the same batch as an earlier generic retry,
+    // but it did not itself get another attempt after the retry limit was reached.
+    expect(depsRetryWasAttemptedForFailure(false, true)).toBe(false);
+  });
+
+  it('keeps unreadable, disabled, and enabled flag resolutions distinct within the same timeout', async () => {
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(true), 20)).resolves.toBe('enabled');
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(false), 20)).resolves.toBe('disabled');
+    await expect(resolveFlagStatusWithTimeout(Promise.resolve(null), 20)).resolves.toBe('unreadable');
+    await expect(resolveFlagStatusWithTimeout(Promise.reject(new Error('unavailable')), 20)).resolves.toBe('unreadable');
+  });
+});
+
 describe('setup failure telemetry diagnostics', () => {
   it('keeps bounded content diagnostics and rejects unscoped or path-shaped values', () => {
     expect(setupFailureTelemetryDetails({
@@ -129,7 +178,7 @@ describe('setup failure telemetry diagnostics', () => {
       errorIoKind: 'not_found',
       errorCode: 3,
       failedDependency: 'node',
-    })).toEqual({ errorCategory: 'unknown', failedDependency: 'node' });
+    })).toEqual({ errorCategory: 'unknown', failedDependency: 'node', depsOperation: 'node' });
   });
 });
 
@@ -540,6 +589,47 @@ describe('automatic setup recovery', () => {
       }),
     ).toEqual({ kind: 'skip', message: hardTimeout });
   });
+
+  it('retries dependency hard timeouts only when enabled and while retry is available', () => {
+    const hardTimeout = 'This step took too long (over 540s) and was skipped.';
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({
+      kind: 'retry',
+      delayMs: 1000,
+      nextRetryCount: 1,
+      message: hardTimeout,
+    });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'deps',
+        message: hardTimeout,
+        retryCount: 1,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+    expect(
+      setupStageRecoveryAction({
+        stageId: 'content',
+        message: hardTimeout,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+      }),
+    ).toEqual({ kind: 'skip', message: hardTimeout });
+  });
 });
 
 describe('stage timeouts', () => {
@@ -606,6 +696,105 @@ describe('stage timeouts', () => {
     await vi.advanceTimersByTimeAsync(90_000);
     await assertion;
     expect(onTimeoutCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not return from an enabled dependency timeout until late cancellation finishes', async () => {
+    const hung = new Promise<void>(() => {});
+    let finishCancellation: (() => void) | undefined;
+    let retryStarted = false;
+    const guarded = withProgressTimeout(
+      hung,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () =>
+        new Promise<void>((resolve) => {
+          finishCancellation = resolve;
+        }),
+      undefined,
+      true,
+    ).catch(() => {
+      retryStarted = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(finishCancellation).toBeDefined();
+    expect(retryStarted).toBe(false);
+    finishCancellation?.();
+    await guarded;
+    expect(retryStarted).toBe(true);
+  });
+
+  it('waits for the enabled deps invocation to settle after cancellation before retrying', async () => {
+    let settleNativeInvocation: (() => void) | undefined;
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>((resolve) => {
+      settleNativeInvocation = resolve;
+    });
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await Promise.resolve();
+    expect(recovery).toBeUndefined();
+
+    settleNativeInvocation?.();
+    await guarded;
+    expect(recovery?.kind).toBe('retry');
+  });
+
+  it('skips instead of retrying when the enabled deps invocation exceeds the settle bound', async () => {
+    let recovery: ReturnType<typeof setupStageRecoveryAction> | undefined;
+    const nativeInvocation = new Promise<void>(() => {});
+    const guarded = withProgressTimeout(
+      nativeInvocation,
+      100,
+      () => new StageTimeoutError('deps', 100),
+      () => () => {},
+      () => Promise.resolve(),
+      undefined,
+      true,
+      10_000,
+    ).catch((error: StageTimeoutError) => {
+      recovery = setupStageRecoveryAction({
+        stageId: 'deps',
+        message: error.message,
+        retryCount: 0,
+        depsTimeoutRetryEnabled: true,
+        depsTimeoutRetrySuppressed: error.retrySuppressed,
+      });
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await guarded;
+    expect(recovery?.kind).toBe('skip');
+  });
+
+  it('fails closed when the setup flag lookup is slow or unavailable', async () => {
+    const unavailable = Promise.reject<boolean>(new Error('unreachable'));
+    await expect(resolveFlagWithTimeout(unavailable, 2_000)).resolves.toBe(false);
+
+    const slow = new Promise<boolean>(() => {});
+    const bounded = resolveFlagWithTimeout(slow, 2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(bounded).resolves.toBe(false);
   });
 
   it('renews the initial-sync inactivity timeout when the native push reports progress', async () => {

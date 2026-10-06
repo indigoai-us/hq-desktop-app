@@ -39,7 +39,7 @@ function entryFor(emoji: string): EmojiEntry | null {
 }
 
 /** Case-insensitive substring match against an entry's name + keywords. */
-export function matchesQuery(entry: EmojiEntry, normalizedQuery: string): boolean {
+function matchesQuery(entry: EmojiEntry, normalizedQuery: string): boolean {
   if (normalizedQuery.length === 0) return true;
   if (entry.name.toLowerCase().includes(normalizedQuery)) return true;
   return entry.keywords.some((k) => k.toLowerCase().includes(normalizedQuery));

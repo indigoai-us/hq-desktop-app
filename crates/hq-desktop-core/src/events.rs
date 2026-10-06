@@ -391,6 +391,8 @@ pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 pub const EVENT_SYNC_DELETE_REFUSED_STALE_ETAG: &str = "sync:delete-refused-stale-etag";
 pub const EVENT_SYNC_NEW_FILES: &str = "sync:new-files";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
+/// Additive watch-runner status (`waiting-for-lock`, pass start, etc.).
+pub const EVENT_SYNC_WATCHER_STATUS: &str = "sync:watcher-status";
 /// One per conflicted path, carrying `path` (+ `company`, `direction`,
 /// `resolution`). The shell builds its per-file conflict rows from this
 /// stream and clears them on `sync:all-complete`.
@@ -869,7 +871,10 @@ mod tests {
             other => panic!("expected PlanLimit, got {other:?}"),
         };
         let wire = serde_json::to_value(payload).expect("payload serializes");
-        assert_eq!(wire["upgradeUrl"], "https://hq.computer/companies/acme/billing?upgrade=team");
+        assert_eq!(
+            wire["upgradeUrl"],
+            "https://hq.computer/companies/acme/billing?upgrade=team"
+        );
         assert!(wire.get("upgrade_url").is_none());
     }
 

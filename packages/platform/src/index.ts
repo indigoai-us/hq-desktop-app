@@ -3,28 +3,43 @@ export * from "./adapter.js";
 export * from "./capabilities.js";
 export * from "./host-platform.js";
 export * from "./host-computer-noun.js";
+export * from "./post-ready-actions.js";
+export * from "./setup-tool-offer-telemetry.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";
 export {
   CLAUDE_PROVIDER_FLAG,
+  COMPANY_NAME_PREFILL_FLAG,
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
+  DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  FIRST_LAUNCH_JOIN_KEY_FLAG,
+  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
+  FIRST_WEEK_RETURN_NUDGE_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
-  INVITE_TEAMMATE_STEP_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
-  SETUP_STAGE_TIMEOUT_FIX_FLAG,
-  SETUP_DIRECTORY_PARENT_FALLBACK_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
+  POST_READY_ACTION_TELEMETRY_FLAG,
+  POST_READY_DROP_REASON_FLAG,
+  READY_FIRST_ACTION_FLAG,
+  SETUP_DEPS_TIMEOUT_RETRY_FLAG,
 } from "./flags.js";
 export {
+  compareHumanRecency,
   filterHumanMessages,
   humanRecencyKey,
+  humanRecencyState,
+  isUndatedNoHumanRow,
   isHumanMessage,
   orderChannelsForViewer,
 } from "./humanMessage.js";
 export type {
   HumanClassifiable,
   HumanRecencyChannel,
+  HumanRecencyState,
 } from "./humanMessage.js";
 
 // Shared 429 / Retry-After policy and the jittered background pollers (R2).

@@ -38,10 +38,28 @@ pub fn current_lifecycle_state(app: &AppHandle) -> Option<LifecycleState> {
         .map(|handle| handle.current())
 }
 
+/// Closed launch-source label using only evidence available on this platform.
+/// LaunchAgent argv distinguishes login-item launches on macOS. Windows' Run
+/// registration has no reliable process-origin signal, so it remains unknown
+/// unless the updater marker identifies the relaunch.
+pub fn desktop_liveness_launch_source(app: &AppHandle) -> &'static str {
+    let Some(inputs) = app.try_state::<LifecycleInputsHandle>() else {
+        return "unknown";
+    };
+    let from_login_item = std::env::args()
+        .any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    crate::commands::telemetry::classify_desktop_launch_source(
+        inputs.from_updater_restart,
+        from_login_item,
+        cfg!(target_os = "macos"),
+    )
+}
+
 /// Immutable lifecycle inputs captured at startup, for use by diagnostic
 /// commands that run after setup_lifecycle has returned.
 pub struct LifecycleInputsHandle {
     pub inputs: LifecycleInputs,
+    pub from_updater_restart: bool,
     pub manifest_incomplete: bool,
     pub tools_present: bool,
     pub bundled_cli_ready: bool,
@@ -49,6 +67,9 @@ pub struct LifecycleInputsHandle {
     pub hq_program_kind: Option<ResolvedProgramKind>,
     pub node_program_kind: Option<ResolvedProgramKind>,
     pub require_local_toolchain_demoted: bool,
+    pub hq_candidate_count_bucket: &'static str,
+    pub managed_hq_package_state: &'static str,
+    pub bundled_cli_mode: &'static str,
 }
 
 #[derive(serde::Serialize)]
@@ -116,6 +137,14 @@ pub fn setup_lifecycle(app: &AppHandle) {
     let _ = SETUP_LIFECYCLE_TIME.get_or_init(Instant::now);
     let launch_agent_relaunch =
         std::env::args().any(|arg| arg == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    let marker_matches = crate::commands::updater_restart_marker::consume_for_startup(
+        app,
+        crate::app_version::current(),
+    );
+    let from_updater_restart = crate::commands::updater_restart_marker::startup_is_updater_restart(
+        launch_agent_relaunch,
+        marker_matches,
+    );
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
         Err(e) => {
@@ -155,7 +184,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
                 install_in_progress: false,
                 consent_answered: false,
                 evidence_unreadable: true,
+                hq_root_recorded_by_prior_setup: false,
             },
+            from_updater_restart,
             manifest_incomplete: false,
             tools_present: false,
             bundled_cli_ready: false,
@@ -163,6 +194,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             hq_program_kind: None,
             node_program_kind: None,
             require_local_toolchain_demoted: false,
+            hq_candidate_count_bucket: "0",
+            managed_hq_package_state: "unknown",
+            bundled_cli_mode: "unknown",
         });
         return;
     }
@@ -206,7 +240,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     // LaunchAgent starts include login and KeepAlive relaunches as well as an
     // updater kick. Recheck an initially missing root briefly so a just-updated
     // app does not mistake a settling filesystem for a deleted HQ folder.
-    let root_probe = probe_hq_root_for_startup(&hq_root, launch_agent_relaunch);
+    let root_probe = probe_hq_root_for_startup(&hq_root, from_updater_restart);
     let hq_root_valid = root_probe == HqRootProbe::Valid;
     let hq_root_unreadable = root_probe == HqRootProbe::Unreadable;
     if hq_root_unreadable {
@@ -233,6 +267,24 @@ pub fn setup_lifecycle(app: &AppHandle) {
 
     let (install_in_progress, manifest_incomplete) =
         crate::commands::install_manifest::startup_manifest_evidence_from_disk();
+    // Did a prior setup on this machine record where the HQ folder lives?
+    // hq-installer v0.1.28+ writes `menubar.json.hqPath` at the end of the
+    // install wizard, and older flows wrote `config.json.hq_folder_path`.
+    // When either is set to a non-empty value AND the HQ root at that path is
+    // currently a valid install, this app installation ran its folder-choice
+    // step before — even if the completion markers were later lost (the
+    // concurrent-writer race fixed in #1307). This defends long-time users
+    // from being swept into #1226's reinstall-still-owes-full-setup gate
+    // after an auto-update that found their menubar.json missing those keys.
+    let hqpath_set = menubar
+        .get("hqPath")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    let config_path_set = config
+        .as_ref()
+        .and_then(|c| c.hq_folder_path.as_deref())
+        .is_some_and(|s| !s.is_empty());
+    let hq_root_recorded_by_prior_setup = hq_root_valid && (hqpath_set || config_path_set);
     let inputs = LifecycleInputs {
         install_completed,
         first_run_completed,
@@ -243,6 +295,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         install_in_progress,
         consent_answered,
         evidence_unreadable,
+        hq_root_recorded_by_prior_setup,
     };
     // macOS only: HQ is installed only when hq and node are on this computer.
     // A bundled CLI version mismatch is not "missing tools": auto-update
@@ -258,6 +311,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     ) = {
         // When the install evidence itself could not be read, a "tools are
         // missing" reading of the same filesystem is not trustworthy either,
@@ -268,7 +324,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // fresh installs still reach onboarding immediately when tools are absent.
         let mut resolved_programs = None;
         let tools_present = probe_local_toolchain_for_startup(
-            launch_agent_relaunch,
+            from_updater_restart,
             matches!(
                 classified.state,
                 LifecycleState::SteadyState
@@ -276,24 +332,29 @@ pub fn setup_lifecycle(app: &AppHandle) {
                     | LifecycleState::InstalledLegacyUpdate
             ),
             || {
-                let hq_program = paths::resolve_bin_with_kind("hq");
+                let (hq_program, resolver_diagnostics) = paths::resolve_hq_with_diagnostics();
                 let node_program = paths::resolve_bin_with_kind("node");
                 let tools_present = tools_present_for_lifecycle_gate(
                     hq_program.kind != ResolvedProgramKind::NotResolved,
                     node_program.kind != ResolvedProgramKind::NotResolved,
                 );
-                resolved_programs = Some((hq_program, node_program));
+                resolved_programs = Some((hq_program, node_program, resolver_diagnostics));
                 tools_present
             },
         );
         // The startup probe always performs its initial resolution.
-        let (hq_program, node_program) = resolved_programs
+        let (hq_program, node_program, resolver_diagnostics) = resolved_programs
             .expect("startup toolchain probe records its initial resolution");
-        let bundled_cli_ready = crate::commands::install_deps::bundled_hq_cli_ready(app);
+        let (bundled_cli_ready, bundled_cli_mode) =
+            crate::commands::install_deps::bundled_hq_cli_diagnostics(app);
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain(classified, tools_present)
+            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+                classified,
+                tools_present,
+                from_updater_restart,
+            )
         };
         let require_local_toolchain_demoted = !evidence_unreadable
             && classified.state != verdict.state
@@ -305,6 +366,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             Some(hq_program.kind),
             Some(node_program.kind),
             require_local_toolchain_demoted,
+            resolver_diagnostics.candidate_count_bucket(),
+            resolver_diagnostics.managed_package_state,
+            bundled_cli_mode,
         )
     };
     #[cfg(windows)]
@@ -316,10 +380,13 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     ) = {
         // Windows does not use require_local_toolchain for lifecycle routing,
         // but collect the same resolver observations for startup diagnostics.
-        let hq_program = paths::resolve_bin_with_kind("hq");
+        let (hq_program, resolver_diagnostics) = paths::resolve_hq_with_diagnostics();
         let node_program = paths::resolve_bin_with_kind("node");
         (
             true,
@@ -327,6 +394,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
             Some(hq_program.kind),
             Some(node_program.kind),
             false,
+            resolver_diagnostics.candidate_count_bucket(),
+            resolver_diagnostics.managed_package_state,
+            "unknown",
         )
     };
 
@@ -452,6 +522,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
+        from_updater_restart,
         manifest_incomplete,
         tools_present,
         bundled_cli_ready,
@@ -459,6 +530,9 @@ pub fn setup_lifecycle(app: &AppHandle) {
         hq_program_kind,
         node_program_kind,
         require_local_toolchain_demoted,
+        hq_candidate_count_bucket,
+        managed_hq_package_state,
+        bundled_cli_mode,
     });
 }
 
@@ -637,11 +711,11 @@ pub fn report_unexpected_startup_surface(
     let seconds_since_start = elapsed_since_start
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or(0);
-    let (auth_session_status, refresh_failure_class) =
+    let (auth_session_status, refresh_failure_class, refresh_rejection_class) =
         crate::commands::auth::startup_auth_diagnostic_tags();
     let diagnostic_tags =
         hq_desktop_core::unexpected_surface::apply_startup_token_store_diagnostics(
-            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_auth_session(
+            hq_desktop_core::unexpected_surface::startup_diagnostic_tags_with_rejection_class(
                 authenticated,
                 &token_presence,
                 elapsed_since_start.map(|elapsed| elapsed.as_millis()),
@@ -652,9 +726,13 @@ pub fn report_unexpected_startup_surface(
                     hq_program_kind: state.hq_program_kind,
                     node_program_kind: state.node_program_kind,
                     require_local_toolchain_demoted: state.require_local_toolchain_demoted,
+                    hq_candidate_count_bucket: state.hq_candidate_count_bucket,
+                    managed_hq_package_state: state.managed_hq_package_state,
+                    bundled_cli_mode: state.bundled_cli_mode,
                 },
                 auth_session_status,
                 refresh_failure_class,
+                refresh_rejection_class,
             ),
             &surface,
             &token_presence,
@@ -689,7 +767,7 @@ pub fn report_unexpected_startup_surface(
 
     // Always write the log line so diagnostics can find it.
     let log_line = format!(
-        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={}",
+        "unexpected_startup_surface surface={} lifecycle_state={} install_completed={} first_run_completed={} config_valid={} hq_root_valid={} has_auth={} tools_present={} bundled_cli_ready={} consent_answered={} evidence_unreadable={} token_file_exists={} token_file_age_minutes={} auth_check_failed={} probe_attempts={} session_restore_state={} token_present={} keychain_status={} ms_since_launch={} prior_surface={} from_updater_restart={} app_version={} invalidation_marker_present={} marker_kind={} refresh_rejection_class={} first_read_result={} recheck_read_result={} last_auth_transition={} last_auth_transition_age_seconds={} hq_candidate_count_bucket={} managed_hq_package_state={} bundled_cli_mode={}",
         surface,
         lc_state_str,
         inputs.install_completed,
@@ -710,13 +788,18 @@ pub fn report_unexpected_startup_surface(
         diagnostic_tags.keychain_status,
         diagnostic_tags.ms_since_launch,
         diagnostic_tags.prior_surface,
-        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG),
+        state.from_updater_restart,
         crate::app_version::current(),
         diagnostic_tags.invalidation_marker_present,
+        diagnostic_tags.marker_kind,
+        diagnostic_tags.refresh_rejection_class,
         diagnostic_tags.first_read_result,
         diagnostic_tags.recheck_read_result,
         last_auth_transition,
         last_auth_transition_age_seconds,
+        diagnostic_tags.hq_candidate_count_bucket,
+        diagnostic_tags.managed_hq_package_state,
+        diagnostic_tags.bundled_cli_mode,
     );
 
     if !should_report {
@@ -731,8 +814,7 @@ pub fn report_unexpected_startup_surface(
         return;
     }
 
-    let from_updater_restart =
-        std::env::args().any(|a| a == hq_platform::launchagent::LAUNCH_AGENT_RELAUNCH_ARG);
+    let from_updater_restart = state.from_updater_restart;
 
     let payload = hq_desktop_core::unexpected_surface::build_payload(
         surface.clone(),

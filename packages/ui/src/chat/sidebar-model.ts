@@ -16,11 +16,6 @@ import {
 } from "./channels";
 import type { ChannelDirectoryRow } from "./channel-directory-reconciler";
 import { isAgentUid } from "./agent-thinking";
-import {
-  filterAgentStubRows,
-  type AgentVisibilityOptions,
-} from "./agent-stubs";
-import { automatedAgentJoinNoticeKey } from "../inbox/automated-notices";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
@@ -49,12 +44,25 @@ export interface ConversationRow {
   /** Epoch-ms of most recent activity (0 when unknown). */
   lastActivityAt: number;
   /**
-   * Epoch-ms of the most recent HUMAN message (audience = human / both;
-   * mesh + system rows excluded). 0 when the server has never sent one.
-   * Read only when the `desktop.human-only-conversations` flag is on; the
-   * sidebar falls back to `lastActivityAt` when 0.
+   * Epoch-ms of the most recent message a person typed (mesh, bot, and
+   * system rows excluded). Present only when the server sent one. Read only
+   * when the `desktop.human-only-conversations` flag is on. See
+   * `rowHumanRecencyState` for the three states this and `hasHumanMessage`
+   * encode.
    */
   lastHumanMessageAt?: number;
+  /**
+   * `false` when the server knows the conversation holds no human message.
+   * Never `true`. Absent with no `lastHumanMessageAt` means unknown, and the
+   * sidebar then falls back to `lastActivityAt`.
+   */
+  hasHumanMessage?: false;
+  /**
+   * Epoch-ms creation time. Set only on rows known to hold no human message,
+   * where it is the recency key, on the same timeline as human times. Never
+   * used as activity.
+   */
+  createdAt?: number;
   /**
    * Epoch-ms of the most recent DURABLE MESSAGE, with no creation-time
    * fallback (0 when the conversation has never carried one). The directory
@@ -108,6 +116,188 @@ export interface ConversationRow {
   notifyLevel?: NotifyLevel | null;
   /** Channel creator uid, when known. */
   createdBy?: string | null;
+  /** A newly created cloud bot that is still waking up. */
+  wakingBot?: {
+    agentUid: string;
+    progress: number;
+  } | null;
+  /** A cancelled cloud bot that still exists: being removed, or not removed. */
+  removingBot?: {
+    agentUid: string;
+    phase: "removing" | "failed";
+  } | null;
+}
+
+export interface WakingSidebarBot {
+  agentUid: string;
+  channelId: string;
+  companyUid: string;
+  name: string;
+  startedAt: number;
+  progress: number;
+}
+
+/**
+ * Keeps a just-created bot visible before its conversation reaches the
+ * directory. The bot's conversation is its direct message: the real directory
+ * row replaces this optimistic row by id. A channel an older server made for
+ * the bot is left out, because the person talks to the bot in the direct
+ * message and nowhere else.
+ */
+export function withWakingBotRow(
+  rows: readonly ConversationRow[],
+  bot: WakingSidebarBot | null,
+): ConversationRow[] {
+  if (!bot || (!bot.agentUid && !bot.channelId)) return [...rows];
+  const wakingBot = { agentUid: bot.agentUid, progress: bot.progress };
+  if (bot.agentUid) {
+    const visible = bot.channelId
+      ? rows.filter((row) => row.channelId !== bot.channelId)
+      : [...rows];
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    if (known) {
+      return visible.map((row) => row === known ? { ...row, wakingBot } : row);
+    }
+    return [{
+      id: `dm:${bot.agentUid}`,
+      kind: "dm",
+      title: bot.name || "Your bot",
+      companyUid: null,
+      unreadDot: false,
+      lastActivityAt: bot.startedAt,
+      pinned: false,
+      personUid: bot.agentUid,
+      wakingBot,
+    }, ...visible];
+  }
+  // No bot id (a server that named only the channel): keep the channel row.
+  const id = `ch:${bot.channelId}`;
+  const known = rows.find((row) => row.id === id);
+  if (known) {
+    return rows.map((row) => row.id === id ? { ...row, wakingBot } : row);
+  }
+  return [{
+    id,
+    kind: "channel",
+    title: bot.name || "Your bot",
+    companyUid: bot.companyUid || null,
+    unreadDot: false,
+    lastActivityAt: bot.startedAt,
+    pinned: false,
+    channelId: bot.channelId,
+    channelScope: "company",
+    wakingBot,
+  }, ...rows];
+}
+
+/** A cancelled bot, as the sidebar needs to know it. */
+export interface CancelledSidebarBot {
+  agentUid: string;
+  channelId: string;
+  name: string;
+  phase: "stopping" | "removing" | "removed" | "failed" | "not-created";
+  /** True when the bot had a row before Cancel. */
+  hadRow: boolean;
+  /** When Cancel was pressed. */
+  startedAt: number;
+}
+
+/**
+ * Rows for cancelled bots. The list never says more than the server did:
+ *
+ * - removed: the bot's rows are left out, even if an older directory answer
+ *   still lists them.
+ * - removing: a bot that already had a row keeps it, marked, until the server
+ *   says it is gone. A bot cancelled before it had a row gets none.
+ * - failed: the bot still exists, so it has a marked row either way.
+ */
+export function withCancelledBotRows(
+  rows: readonly ConversationRow[],
+  bots: readonly CancelledSidebarBot[],
+  removedAgentUids: readonly string[] = [],
+): ConversationRow[] {
+  const removed = new Set(removedAgentUids);
+  let next = removed.size
+    ? rows.filter((row) => !(row.kind === "dm" && row.personUid && removed.has(row.personUid)))
+    : [...rows];
+  for (const bot of bots) {
+    if (!bot.agentUid && !bot.channelId) continue;
+    const isBotRow = (row: ConversationRow): boolean =>
+      (!!bot.agentUid && row.kind === "dm" && row.personUid === bot.agentUid) ||
+      (!!bot.channelId && row.channelId === bot.channelId);
+    if (bot.phase === "removed") {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    if (bot.phase !== "removing" && bot.phase !== "failed") continue;
+    const shown = !!bot.agentUid && (bot.phase === "failed" || bot.hadRow);
+    if (!shown) {
+      next = next.filter((row) => !isBotRow(row));
+      continue;
+    }
+    const removingBot = { agentUid: bot.agentUid, phase: bot.phase };
+    const visible = bot.channelId
+      ? next.filter((row) => row.channelId !== bot.channelId)
+      : next;
+    const known = visible.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    next = known
+      ? visible.map((row) => row === known ? { ...row, wakingBot: null, removingBot } : row)
+      : [{
+          id: `dm:${bot.agentUid}`,
+          kind: "dm",
+          title: bot.name || "Your bot",
+          companyUid: null,
+          unreadDot: false,
+          lastActivityAt: bot.startedAt,
+          pinned: false,
+          personUid: bot.agentUid,
+          removingBot,
+        }, ...visible];
+  }
+  return next;
+}
+
+export const BOT_SETUP_CHANNELS_STORAGE_KEY = "hq.chat.botSetupChannels.v1";
+
+/**
+ * Channels an older server created alongside a bot made in the new bot flow.
+ * The flow's conversation is the direct message, so these stay off the list.
+ */
+export function loadBotSetupChannels(
+  storage: Pick<Storage, "getItem"> | null | undefined,
+): string[] {
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(storage.getItem(BOT_SETUP_CHANNELS_STORAGE_KEY) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function rememberBotSetupChannel(
+  channelIds: readonly string[],
+  channelId: string,
+  storage: Pick<Storage, "setItem"> | null | undefined,
+): string[] {
+  const id = channelId.trim();
+  if (!id || channelIds.includes(id)) return [...channelIds];
+  const next = [id, ...channelIds].slice(0, 200);
+  try {
+    storage?.setItem(BOT_SETUP_CHANNELS_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // best-effort
+  }
+  return next;
+}
+
+export function withoutBotSetupChannels(
+  rows: readonly ConversationRow[],
+  channelIds: readonly string[],
+): ConversationRow[] {
+  if (channelIds.length === 0) return [...rows];
+  const hidden = new Set(channelIds);
+  return rows.filter((row) => !(row.channelId && hidden.has(row.channelId)));
 }
 
 /**
@@ -326,11 +516,16 @@ export interface DmContactInput {
   lastActivityAt?: string | null;
   lastDmAt?: string | null;
   /**
-   * Server-supplied timestamp of the last HUMAN message on this DM
-   * (audience = human / both). Absent on older servers; used only when
-   * the `desktop.human-only-conversations` flag is on.
+   * Server-supplied timestamp of the last message a person typed in this DM.
+   * Present only when the server knows it; used only when the
+   * `desktop.human-only-conversations` flag is on.
    */
   lastHumanMessageAt?: string | null;
+  /**
+   * `false` when the server knows the pair holds no human message; never
+   * `true`. Absent with no `lastHumanMessageAt` means unknown.
+   */
+  hasHumanMessage?: boolean | null;
   /** Local-only activity dot — used when server pair unread is absent. */
   activityDot?: boolean;
   /**
@@ -340,13 +535,6 @@ export interface DmContactInput {
    */
   unreadCount?: number | null;
   /**
-   * True when the ONLY inbound event we have seen for this agent is the
-   * server's membership announcement ("🤖 Izzy (an agent) just joined
-   * Indigo."). A join notice is not a conversation, so it neither stamps
-   * activity nor lights an unread badge.
-   */
-  agentJoinOnly?: boolean;
-  /**
    * Audience of the last message: "human" | "agent" | "both". Absent on
    * older servers. US-006 reads this to decide whether to show or suppress
    * the preview in the DM rail (default: hide agent-only previews).
@@ -354,42 +542,100 @@ export interface DmContactInput {
   lastMessageAudience?: string | null;
 }
 
+/** The two wire fields that describe a conversation's last human message. */
+export interface HumanRecencyFields {
+  lastHumanMessageAt?: string | null;
+  hasHumanMessage?: boolean | null;
+}
+
+/**
+ * Resolve the human-recency fields when a new payload arrives for a
+ * conversation the client already holds.
+ *
+ *  - incoming carries a time: known. A previous "none" is dropped.
+ *  - incoming says `hasHumanMessage: false`: known none. A previous time is
+ *    dropped, because the server is the only source of this value.
+ *  - incoming carries neither: unknown on this payload, so whatever was known
+ *    before is kept. An omitted field is never read as "none".
+ *
+ * Returns only the keys that apply, so the result can be spread over an
+ * object that holds neither key.
+ */
+export function resolveHumanRecency(
+  prev: HumanRecencyFields | null | undefined,
+  incoming: HumanRecencyFields | null | undefined,
+): { lastHumanMessageAt?: string; hasHumanMessage?: false } {
+  const incomingAt = (incoming?.lastHumanMessageAt ?? "").trim();
+  if (incomingAt) return { lastHumanMessageAt: incomingAt };
+  if (incoming?.hasHumanMessage === false) return { hasHumanMessage: false };
+  const prevAt = (prev?.lastHumanMessageAt ?? "").trim();
+  if (prevAt) return { lastHumanMessageAt: prevAt };
+  if (prev?.hasHumanMessage === false) return { hasHumanMessage: false };
+  return {};
+}
+
+/** Copy of `value` without the two human-recency keys. */
+function withoutHumanRecency<T extends HumanRecencyFields>(
+  value: T,
+): Omit<T, "lastHumanMessageAt" | "hasHumanMessage"> {
+  const copy: HumanRecencyFields = { ...value };
+  delete copy.lastHumanMessageAt;
+  delete copy.hasHumanMessage;
+  return copy as Omit<T, "lastHumanMessageAt" | "hasHumanMessage">;
+}
+
+/** One DM pair's human-recency fields, as read from GET /v1/notify/dm-threads. */
+export interface DmHumanRecencyInput extends HumanRecencyFields {
+  personUid: string;
+}
+
+/**
+ * Apply DM human-recency fields from the DM thread listing onto the contacts
+ * roster. Entries that carry neither field change nothing, so an older
+ * server (or an inbox-derived activity entry) cannot erase a known value.
+ * Returns the same array when nothing changed.
+ */
+export function applyDmHumanRecency(
+  contacts: readonly DmContactInput[],
+  entries: readonly DmHumanRecencyInput[],
+): DmContactInput[] {
+  const byUid = new Map<string, DmHumanRecencyInput>();
+  for (const entry of entries) {
+    const uid = (entry.personUid ?? "").trim();
+    if (!uid) continue;
+    const carriesTime = Boolean((entry.lastHumanMessageAt ?? "").trim());
+    if (!carriesTime && entry.hasHumanMessage !== false) continue;
+    byUid.set(uid, entry);
+  }
+  if (byUid.size === 0) return contacts as DmContactInput[];
+  let changed = false;
+  const next = contacts.map((contact) => {
+    const entry = byUid.get(contact.personUid.trim());
+    if (!entry) return contact;
+    const resolved = resolveHumanRecency(contact, entry);
+    const prevAt = (contact.lastHumanMessageAt ?? "").trim();
+    if (
+      (resolved.lastHumanMessageAt ?? "") === prevAt &&
+      (resolved.hasHumanMessage === false) ===
+        (!prevAt && contact.hasHumanMessage === false)
+    ) {
+      return contact;
+    }
+    changed = true;
+    return { ...withoutHumanRecency(contact), ...resolved };
+  });
+  return changed ? next : (contacts as DmContactInput[]);
+}
+
 export interface InboxEventInput {
   fromPersonUid?: string | null;
   fromEmail?: string | null;
   fromDisplayName?: string | null;
   createdAt?: string | null;
-  /**
-   * Message body, when the source carries one (the notify inbox page does;
-   * the pair-unread activity rollup and the `dm:new-message` wake do not).
-   * Present bodies let the merge recognise — and refuse to stamp — the
-   * automated agent join announcement.
-   */
+  /** Message body, when the source carries one. */
   body?: string | null;
   details?: string | null;
   prompt?: string | null;
-}
-
-/**
- * True when this inbox event is the server-authored agent membership
- * announcement rather than a message the agent actually sent the user.
- * Events with no body are NOT join notices — an unknown body is treated as a
- * real message so a windowed feed never hides a live conversation.
- */
-export function isAgentJoinNoticeEvent(event: InboxEventInput): boolean {
-  const body = (event.body ?? "").trim();
-  if (!body) return false;
-  return (
-    automatedAgentJoinNoticeKey({
-      kind: "dm",
-      body,
-      fromPersonUid: event.fromPersonUid,
-      fromEmail: event.fromEmail,
-      fromDisplayName: event.fromDisplayName,
-      details: event.details,
-      prompt: event.prompt,
-    }) !== null
-  );
 }
 
 export interface PairUnreadInput {
@@ -408,19 +654,9 @@ export function mergeContactsWithInbox(
   pairUnreads: readonly PairUnreadInput[] = [],
 ): DmContactInput[] {
   const latest = new Map<string, InboxEventInput>();
-  /** Agents whose only inbound event in this batch is the join announcement. */
-  const joinNoticeOnly = new Set<string>();
   for (const event of inboxEvents) {
     const uid = (event.fromPersonUid ?? "").trim();
     if (!uid) continue;
-    // A membership announcement is not a message. Record who announced, but
-    // never let it stamp activity — that stamp is what puts a never-used bot
-    // at the top of TODAY on every teammate's rail.
-    if (isAgentJoinNoticeEvent(event)) {
-      if (!latest.has(uid)) joinNoticeOnly.add(uid);
-      continue;
-    }
-    joinNoticeOnly.delete(uid);
     const prev = latest.get(uid);
     if (!prev || String(event.createdAt ?? "") > String(prev.createdAt ?? "")) {
       latest.set(uid, event);
@@ -460,9 +696,6 @@ export function mergeContactsWithInbox(
       lastMessageAt: at ?? contact.lastMessageAt,
       lastActivityAt: at ?? contact.lastActivityAt,
       ...(unread.has(uid) ? { unreadCount: unread.get(uid) } : {}),
-      ...(joinNoticeOnly.has(uid) && !contact.lastMessageAt
-        ? { agentJoinOnly: true }
-        : {}),
     });
   }
   for (const [uid, event] of latest) {
@@ -485,15 +718,7 @@ export function mergeContactsWithInbox(
     out.push({
       personUid: uid,
       unreadCount: count,
-      ...(joinNoticeOnly.has(uid) ? { agentJoinOnly: true } : {}),
     });
-  }
-  // An agent that only ever announced itself is still a contact (it must be
-  // findable in the typeahead) — just never a conversation.
-  for (const uid of joinNoticeOnly) {
-    if (seen.has(uid)) continue;
-    seen.add(uid);
-    out.push({ personUid: uid, agentJoinOnly: true });
   }
   return out;
 }
@@ -540,6 +765,9 @@ export function stampContactsFromDmThreads(
       lastMessageAt: last ?? prev?.lastMessageAt ?? null,
       lastActivityAt: last ?? prev?.lastActivityAt ?? null,
       ...(typeof unread === "number" ? { unreadCount: unread } : {}),
+      // The cached thread stamp says nothing about who typed. Keep what the
+      // roster already knew.
+      ...resolveHumanRecency(prev, null),
     });
   }
   return [...byUid.values()];
@@ -569,8 +797,7 @@ export function mergeContactActivity(
       newerIso(contact.lastActivityAt, prev?.lastActivityAt) ??
       newerIso(contact.lastDmAt, prev?.lastDmAt);
     out.push({
-      ...prev,
-      ...contact,
+      ...withoutHumanRecency({ ...prev, ...contact }),
       personUid: uid,
       displayName: contact.displayName || prev?.displayName,
       email: contact.email || prev?.email,
@@ -578,6 +805,9 @@ export function mergeContactActivity(
         last ?? contact.lastMessageAt ?? prev?.lastMessageAt ?? null,
       lastActivityAt:
         last ?? contact.lastActivityAt ?? prev?.lastActivityAt ?? null,
+      // A roster refresh that omits the human fields keeps the known state;
+      // one that carries a field replaces the pair as a unit.
+      ...resolveHumanRecency(prev, contact),
     });
   }
   for (const [uid, prev] of prevByUid) {
@@ -614,18 +844,12 @@ export interface NormalizeOptions {
    * simply carry whatever `channel.isCompanyHome` the server sent (or none).
    */
   homeChannelIdByUid?: ReadonlyMap<string, string> | Record<string, string>;
+  /** Company uid → display name for company-home channel rows. */
+  companyDisplayNamesByUid?: ReadonlyMap<string, string> | Record<string, string>;
   /** Local DM activity dots (personUid set). Absent-safe. */
   dmDots?: ReadonlySet<string> | readonly string[];
   /** Recently opened pair threads — stay conversations after mark-read. */
   recentDms?: ReadonlySet<string> | readonly string[];
-  /**
-   * Agent uids with proven real-message evidence (`hq.chat.agent-engaged`).
-   * An agent with no entry here and no user-side interaction is a directory
-   * stub, not a conversation — see `agent-stubs.ts`.
-   */
-  engagedAgentUids?: ReadonlySet<string> | readonly string[];
-  /** The user's own agents (local bots + owned cloud bots) — always visible. */
-  ownAgentUids?: ReadonlySet<string> | readonly string[];
   now?: number;
   /** Local project id → title so provisioned "Project slug hash" rows read as names. */
   projectTitles?: ReadonlyArray<{
@@ -661,6 +885,14 @@ export function normalizeChannel(
     parseActivityMs(channel.lastMessageAt),
   );
   const humanMessageActivity = parseActivityMs(channel.lastHumanMessageAt);
+  const knownNoHumanMessage =
+    humanMessageActivity <= 0 && channel.hasHumanMessage === false;
+  const createdForOrder = knownNoHumanMessage
+    ? Math.max(
+        parseActivityMs(channel.directoryCreatedAt),
+        parseActivityMs(channel.createdAt),
+      )
+    : 0;
   const unread = Math.max(0, channel.unread ?? 0);
   const homeChannelId = channel.companyUid
     ? options.homeChannelIdByUid instanceof Map
@@ -671,15 +903,24 @@ export function normalizeChannel(
     : undefined;
   const isCompanyHome =
     channel.scope === "company" ? isCompanyHomeChannel(channel, homeChannelId) : false;
+  const companyDisplayName = channel.companyUid
+    ? options.companyDisplayNamesByUid instanceof Map
+      ? options.companyDisplayNamesByUid.get(channel.companyUid)
+      : (options.companyDisplayNamesByUid as Record<string, string> | undefined)?.[
+          channel.companyUid
+        ]
+    : undefined;
 
   return {
     id,
     kind: isGroup ? "group" : "channel",
     ...(isGroup ? {} : { channelScope: channel.scope }),
     ...(isGroup ? {} : { isCompanyHome }),
-    title: channelDisplayName(channel, {
-      projectTitles: options.projectTitles,
-    }),
+    title:
+      (isCompanyHome ? companyDisplayName?.trim() : "") ||
+      channelDisplayName(channel, {
+        projectTitles: options.projectTitles,
+      }),
     companyUid:
       isGroup || channel.scope === "personal"
         ? null
@@ -693,6 +934,8 @@ export function normalizeChannel(
     ...(humanMessageActivity > 0
       ? { lastHumanMessageAt: humanMessageActivity }
       : {}),
+    ...(knownNoHumanMessage ? { hasHumanMessage: false as const } : {}),
+    ...(createdForOrder > 0 ? { createdAt: createdForOrder } : {}),
     pinned: pinnedIds.has(id),
     memberCount: channel.memberCount,
     members: channel.members,
@@ -735,14 +978,7 @@ export function normalizeDm(
   const humanMessageActivity = parseActivityMs(contact.lastHumanMessageAt);
   const localDot =
     contact.activityDot === true || dmDots.has(contact.personUid);
-  // A membership announcement must never read as an unread message. Suppress
-  // both the badge and the dot for an agent with no real conversation, so any
-  // surface that still renders the row (search, palette, deep link) agrees
-  // with the rail.
-  const joinNoticeOnlyAgent =
-    isAgentUid(contact.personUid) &&
-    !contactHasConversation(contact, options);
-  const serverUnread = joinNoticeOnlyAgent ? 0 : contact.unreadCount;
+  const serverUnread = contact.unreadCount;
   const hasServerUnread =
     typeof serverUnread === "number" && Number.isFinite(serverUnread);
   const unreadCount =
@@ -751,13 +987,11 @@ export function normalizeDm(
       : undefined;
   // Numeric badge replaces the server-driven dot; local dots still apply when
   // the server says zero (or when the field is absent and only local dots exist).
-  const unreadDot = joinNoticeOnlyAgent
-    ? false
-    : hasServerUnread
-      ? (serverUnread as number) > 0
-        ? false
-        : localDot
-      : localDot;
+  const unreadDot = hasServerUnread
+    ? (serverUnread as number) > 0
+      ? false
+      : localDot
+    : localDot;
 
   return {
     id,
@@ -769,7 +1003,9 @@ export function normalizeDm(
     lastActivityAt: activity,
     ...(humanMessageActivity > 0
       ? { lastHumanMessageAt: humanMessageActivity }
-      : {}),
+      : contact.hasHumanMessage === false
+        ? { hasHumanMessage: false as const }
+        : {}),
     pinned: pinnedIds.has(id),
     personUid: contact.personUid,
     email: contact.email ?? null,
@@ -832,18 +1068,6 @@ export function contactHasConversation(
   contact: DmContactInput,
   options: NormalizeOptions = {},
 ): boolean {
-  // Agents are held to a stricter rule than people: creating one announces it
-  // to the whole company, so a timestamp or an unread on an `agt_*` contact is
-  // evidence that the agent EXISTS, not that it ever talked to this user. The
-  // announcement itself is the "1" badge everyone was seeing. Only a proven
-  // real message, or the user opening/starting the thread, makes it a row.
-  if (isAgentUid(contact.personUid)) {
-    return (
-      toIdSet(options.engagedAgentUids).has(contact.personUid) ||
-      toIdSet(options.recentDms).has(contact.personUid) ||
-      toIdSet(options.ownAgentUids).has(contact.personUid)
-    );
-  }
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -882,17 +1106,7 @@ export function normalizeConversations(
     seen.add(row.id);
     deduped.push(row);
   }
-  // Agent rows (DM stubs AND provisioning channels) drop out unless they have
-  // a real conversation or a pin. Applied here, after dedupe, so every caller
-  // and every company scope — including "All" — gets the same rail.
-  const visible = filterAgentStubRows(deduped, {
-    engagedAgentUids: options.engagedAgentUids,
-    recentDmUids: options.recentDms,
-    ownAgentUids: options.ownAgentUids,
-    includeAgentsWithoutConversation:
-      options.includeContactsWithoutConversation === true,
-  } satisfies AgentVisibilityOptions);
-  return collapseDuplicateGroupRows(collapseDuplicateDmRows(visible));
+  return collapseDuplicateGroupRows(collapseDuplicateDmRows(deduped));
 }
 
 /**
@@ -1042,6 +1256,13 @@ export function directoryRowToChannel(
       : {}),
     projectId: row.projectId ?? prev?.projectId ?? null,
     lastActivityAt: activity,
+    // Three states: a time, a known "none", or neither. A row that omits both
+    // fields keeps what the previous payload established. See
+    // `resolveHumanRecency`.
+    ...resolveHumanRecency(prev, row),
+    ...(row.createdAt || prev?.directoryCreatedAt
+      ? { directoryCreatedAt: row.createdAt || prev?.directoryCreatedAt }
+      : {}),
     ...(activity
       ? { lastMessageAt: newestIso(prev?.lastMessageAt, activity) }
       : {}),
@@ -1219,21 +1440,104 @@ export function filterByPerson(
   );
 }
 
+/** What the row carries about the conversation's last human message. */
+export type RowHumanRecencyState = "known" | "none" | "unknown";
+
 /**
- * Recency key the sidebar sorts by. In `humanOnly` mode, prefer the
- * server-provided last-human-message stamp; when absent (older server /
- * channel with no human message), fall back to `lastActivityAt` so the
- * row is still orderable. Match `humanRecencyKey` in `@hq/platform`.
+ * The three human-recency states of a row. Match `humanRecencyState` in
+ * `@hq/platform`.
+ *
+ *  - `known`: the server sent a last-human-message time.
+ *  - `none`: the server said the conversation holds no human message.
+ *  - `unknown`: the server sent neither field (an older server, a 1:1 DM the
+ *    server does not report on, or a channel it has not examined).
+ */
+export function rowHumanRecencyState(row: ConversationRow): RowHumanRecencyState {
+  if ((row.lastHumanMessageAt ?? 0) > 0) return "known";
+  if (row.hasHumanMessage === false) return "none";
+  return "unknown";
+}
+
+/**
+ * Recency key of a row. It is the one value the sidebar places a row by: the
+ * row order (`compareRowRecency`), the day sections (`groupByDay`), the
+ * history view (`searchHistory`, `historyDayGroups`), and the boot pick
+ * (`pickAutoOpenConversation`) all read it, so a row cannot sit in a section
+ * that disagrees with where the order puts it. Match `humanRecencyKey` in
+ * `@hq/platform`.
+ *
+ * In `humanOnly` mode:
+ *  - `known`: the last-human-message time.
+ *  - `none` with a creation time: the creation time, on the same timeline
+ *    as human times. A conversation created today sits where "today" puts
+ *    it, and one created a month ago that only bots post in sits a month
+ *    back. Bot and session activity never moves such a row.
+ *  - `none` without a creation time: `lastActivityAt`, exactly like an
+ *    unknown row. Today that is every 1:1 DM, because the DM thread listing
+ *    carries no creation time. A new teammate's DM on the day they join, or
+ *    an agent's first DM, must be visible under Today and not buried in a
+ *    collapsed older section. This is an interim rule (owner decision,
+ *    2026-10-02) until the server supplies a creation time for DM rows.
+ *    With no activity time either, the key is 0 and `compareRowRecency`
+ *    places the row below every other.
+ *  - `unknown`: `lastActivityAt`, so a row the server has not reported on
+ *    keeps its place instead of sinking to the bottom in title order.
+ *
+ * With the flag off the key is `lastActivityAt`.
  */
 export function rowRecencyKey(
   row: ConversationRow,
   humanOnly: boolean,
 ): number {
   if (humanOnly) {
-    const human = row.lastHumanMessageAt ?? 0;
-    if (human > 0) return human;
+    const state = rowHumanRecencyState(row);
+    if (state === "known") return row.lastHumanMessageAt ?? 0;
+    if (state === "none" && (row.createdAt ?? 0) > 0) {
+      return row.createdAt ?? 0;
+    }
+    // `none` without a creation time is placed like `unknown`, below.
   }
   return row.lastActivityAt;
+}
+
+/**
+ * True for a row that has no place on the timeline in `humanOnly` mode: it
+ * is known to hold no human message and carries neither a creation time nor
+ * an activity time. Such rows form the bottom tier, ordered by title. A
+ * known-none row that has an activity time is not in it (see
+ * `rowRecencyKey`). Match `isUndatedNoHumanRow` in `@hq/platform`.
+ */
+export function isUndatedNoHumanRow(
+  row: ConversationRow,
+  humanOnly: boolean,
+): boolean {
+  return (
+    humanOnly &&
+    rowHumanRecencyState(row) === "none" &&
+    !((row.createdAt ?? 0) > 0) &&
+    !(row.lastActivityAt > 0)
+  );
+}
+
+/**
+ * Order two rows by recency: negative when `a` sorts first, 0 on a tie (the
+ * caller then applies its own tie-break). Rows are ordered by
+ * `rowRecencyKey`, newest first. In `humanOnly` mode a row known to hold no
+ * human message that has neither a creation time nor an activity time sorts
+ * below every other row; such rows tie, which leaves them in title order
+ * under the caller's tie-break. Match `compareHumanRecency` in
+ * `@hq/platform`.
+ */
+export function compareRowRecency(
+  a: ConversationRow,
+  b: ConversationRow,
+  humanOnly: boolean,
+): number {
+  const aBottom = isUndatedNoHumanRow(a, humanOnly);
+  const bBottom = isUndatedNoHumanRow(b, humanOnly);
+  if (aBottom !== bBottom) return aBottom ? 1 : -1;
+  if (aBottom && bBottom) return 0;
+  return rowRecencyKey(b, humanOnly) - rowRecencyKey(a, humanOnly);
 }
 
 export function sortConversations(
@@ -1251,24 +1555,59 @@ export function sortConversations(
     copy.sort((a, b) => {
       const kindDiff = order[a.kind] - order[b.kind];
       if (kindDiff !== 0) return kindDiff;
-      const ak = rowRecencyKey(a, humanOnly);
-      const bk = rowRecencyKey(b, humanOnly);
-      if (bk !== ak) return bk - ak;
+      const recency = compareRowRecency(a, b, humanOnly);
+      if (recency !== 0) return recency;
       return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
     });
     return copy;
   }
   // Recent
   copy.sort((a, b) => {
-    const ak = rowRecencyKey(a, humanOnly);
-    const bk = rowRecencyKey(b, humanOnly);
-    if (bk !== ak) return bk - ak;
-    const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
-    const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
-    if (bUnread !== aUnread) return bUnread - aUnread;
+    const recency = compareRowRecency(a, b, humanOnly);
+    if (recency !== 0) return recency;
+    // Unread breaks a tie, as it always has, including for a known-none row
+    // placed by its activity. The one exception is the bottom tier (known to
+    // hold no human message, with no creation time and no activity time):
+    // those rows are ordered by title, since nothing else places them.
+    const bottomTier = isUndatedNoHumanRow(a, humanOnly);
+    if (!bottomTier) {
+      const aUnread = a.unreadCount ?? (a.unreadDot ? 1 : 0);
+      const bUnread = b.unreadCount ?? (b.unreadDot ? 1 : 0);
+      if (bUnread !== aUnread) return bUnread - aUnread;
+    }
     return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
   });
   return copy;
+}
+
+/**
+ * True when a new-message wake could change a channel's human recency, so the
+ * sidebar should read the directory again.
+ *
+ * A row in the unknown state is ordered by `lastActivityAt`, which the wake
+ * itself stamps, so it needs no server read. A row in the known or none state
+ * is ordered by a value only the server computes: the wake names a sender and
+ * a time, but it cannot say whether a person typed the message (a work
+ * session posts under the person's uid). An agent's post never counts as a
+ * typed message, and a wake no newer than the known time changes nothing.
+ */
+export function wakeMayChangeHumanRecency(
+  channel: Pick<Channel, "lastHumanMessageAt" | "hasHumanMessage"> | undefined,
+  wake: { createdAt?: string | null; fromPersonUid?: string | null },
+): boolean {
+  if (!channel) return false;
+  const knownAt = (channel.lastHumanMessageAt ?? "").trim();
+  const knownNone = !knownAt && channel.hasHumanMessage === false;
+  if (!knownAt && !knownNone) return false;
+  if (isAgentUid((wake.fromPersonUid ?? "").trim())) return false;
+  const at = (wake.createdAt ?? "").trim();
+  if (!at) return false;
+  if (knownNone) return true;
+  const atMs = Date.parse(at);
+  const knownMs = Date.parse(knownAt);
+  return Number.isFinite(atMs) && Number.isFinite(knownMs)
+    ? atMs > knownMs
+    : at > knownAt;
 }
 
 export function applySidebarFilters(
@@ -1279,8 +1618,10 @@ export function applySidebarFilters(
     sort?: SortMode;
     personUid?: string | null;
     /**
-     * When true, sort by `lastHumanMessageAt` (with a per-row fallback to
-     * `lastActivityAt`). See `rowRecencyKey`.
+     * When true, sort by the last human message, in three states: a known
+     * time, a known "none" (by creation time, on the same timeline, or by
+     * `lastActivityAt` when the row has no creation time), or unknown
+     * (falls back to `lastActivityAt`). See `compareRowRecency`.
      */
     humanOnly?: boolean;
   } = {},
@@ -1301,11 +1642,23 @@ export function applySidebarFilters(
 /**
  * Split filtered rows into pinned + day sections + LAST WEEK (>7d).
  * `now` is injectable for deterministic tests.
+ *
+ * A row is bucketed by `rowRecencyKey`, the same key the order uses. With
+ * `humanOnly` on that is the last human message for a row that has one, the
+ * creation time for a row known to hold none that has one (never a day its
+ * bot or session activity fell on), and `lastActivityAt` for a known-none
+ * row without a creation time and for a row the server has not reported on.
+ * A row whose key is 0 lands in `lastWeek`. With it off the key is
+ * `lastActivityAt`.
+ * Rows keep their input order inside a bucket, so rows sorted with the same
+ * `humanOnly` come out in that order, section after section.
  */
 export function groupByDay(
   rows: ConversationRow[],
   now: number = Date.now(),
+  options: { humanOnly?: boolean } = {},
 ): GroupedConversations {
+  const humanOnly = options.humanOnly === true;
   const pinned = rows.filter((r) => r.pinned);
   const unpinned = rows.filter((r) => !r.pinned);
 
@@ -1318,7 +1671,8 @@ export function groupByDay(
   const byDay = new Map<number, ConversationRow[]>();
 
   for (const row of unpinned) {
-    const activity = row.lastActivityAt > 0 ? row.lastActivityAt : 0;
+    const key = rowRecencyKey(row, humanOnly);
+    const activity = key > 0 ? key : 0;
     if (activity < lastWeekCutoff) {
       lastWeek.push(row);
       continue;
@@ -1454,17 +1808,22 @@ export function takeRailConversations(
 
 /**
  * First conversation to open when the shell has no selection. Skips
- * browse-only owner rows. Prefer the newest lastActivityAt.
+ * browse-only owner rows. Prefer the most recent row by the order the rail
+ * uses (`compareRowRecency`): the newest `lastActivityAt`, or with
+ * `humanOnly` on the row the human order puts first. Otherwise the shell
+ * could open a conversation whose only recent activity is a bot's, which
+ * the rail lists in its last section.
  */
 export function pickAutoOpenConversation(
   rows: readonly ConversationRow[],
   selectedId?: string | null,
+  humanOnly = false,
 ): ConversationRow | null {
   if ((selectedId ?? "").trim()) return null;
   let best: ConversationRow | null = null;
   for (const row of rows) {
     if (row.browseOnly) continue;
-    if (!best || row.lastActivityAt > best.lastActivityAt) best = row;
+    if (!best || compareRowRecency(row, best, humanOnly) < 0) best = row;
   }
   return best;
 }
@@ -1496,11 +1855,13 @@ export function pickWelcomeFirstConversation(
 export function pickSettledBootConversation(
   rows: readonly ConversationRow[],
   selectedId?: string | null,
+  humanOnly = false,
 ): ConversationRow | null {
   if ((selectedId ?? "").trim()) return null;
   const live = pickAutoOpenConversation(
     rows.filter((row) => !isSetupChannel(row.channelId)),
     selectedId,
+    humanOnly,
   );
   if (live) return live;
   for (const row of rows) {
@@ -2079,16 +2440,21 @@ export function filterTypeahead(
   return sortConversations(base, "recent").slice(0, limit);
 }
 
-/** Client-side search over titles for the history view — newest first. */
+/**
+ * Client-side search over titles for the history view, newest first by the
+ * order the rail uses (`compareRowRecency`). With `humanOnly` off that is
+ * `lastActivityAt`, as before.
+ */
 export function searchHistory(
   rows: ConversationRow[],
   query: string,
+  humanOnly = false,
 ): ConversationRow[] {
   const q = query.trim().toLowerCase();
   const hits = q
     ? rows.filter((row) => row.title.toLowerCase().includes(q))
     : rows.slice();
-  return hits.sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
+  return hits.sort((a, b) => compareRowRecency(a, b, humanOnly));
 }
 
 export interface HistoryDayGroup {
@@ -2104,6 +2470,7 @@ export interface HistoryDayGroup {
 export function historyDayGroups(
   rows: ConversationRow[],
   now: Date = new Date(),
+  humanOnly = false,
 ): HistoryDayGroup[] {
   const labelFor = (at: number): string => {
     if (!at) return "Older";
@@ -2121,7 +2488,9 @@ export function historyDayGroups(
   };
   const groups: HistoryDayGroup[] = [];
   for (const row of rows) {
-    const label = labelFor(row.lastActivityAt ?? 0);
+    // The same key `searchHistory` orders by, so a row's day label cannot
+    // disagree with its position.
+    const label = labelFor(rowRecencyKey(row, humanOnly));
     const last = groups.at(-1);
     if (last && last.label === label) last.rows.push(row);
     else groups.push({ label, rows: [row] });

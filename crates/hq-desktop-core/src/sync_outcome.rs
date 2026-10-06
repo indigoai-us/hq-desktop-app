@@ -1656,6 +1656,85 @@ pub struct RunnerFatalSignature {
     pub class: RunnerFatalClass,
     pub syscall: Option<&'static str>,
     pub errno: Option<i64>,
+    /// Reporting-only stderr cause. Unlike `class`, this also distinguishes
+    /// expected owner-busy and lease-lost messages; neither is a fatal class.
+    pub stderr_cause: &'static str,
+    /// Owner lease outcome explicitly evidenced by the stderr line.
+    pub watch_owner_result: &'static str,
+    /// Process attribution evidenced by this stderr classifier.
+    pub exit_producer: &'static str,
+}
+
+/// Bounded, content-safe holder identity emitted by hq-cloud on watch-owner
+/// contention. Each field is copied only after it passes its own shape check;
+/// a field that is missing (runners before hq-cloud #837 print only owner and
+/// pid) or fails its check reads `unknown`, so arbitrary command lines and paths
+/// never leave the process and the remaining evidence is never dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchOwnerHolderFields {
+    pub owner: String,
+    pub pid: String,
+    pub process_name: &'static str,
+    pub started_at: String,
+}
+
+const UNKNOWN_HOLDER_FIELD: &str = "unknown";
+
+/// Parses the holder fields of an hq-cloud owner-refusal line. Returns `None`
+/// only when `line` is not a refusal line.
+pub fn parse_watch_owner_holder_fields(line: &str) -> Option<WatchOwnerHolderFields> {
+    let (_, rest) = line.split_once("already owned for this HQ root (")?;
+    let fields = rest.split_once(");").map_or(rest, |(fields, _)| fields);
+    let mut holder = WatchOwnerHolderFields {
+        owner: UNKNOWN_HOLDER_FIELD.to_string(),
+        pid: UNKNOWN_HOLDER_FIELD.to_string(),
+        process_name: UNKNOWN_HOLDER_FIELD,
+        started_at: UNKNOWN_HOLDER_FIELD.to_string(),
+    };
+    for field in fields.split(", ") {
+        let Some((key, value)) = field.split_once('=') else {
+            continue;
+        };
+        match key {
+            "owner"
+                if !value.is_empty()
+                    && value.len() <= 64
+                    && value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+                    }) =>
+            {
+                holder.owner = value.to_string()
+            }
+            "pid" => {
+                if let Some(pid) = value.parse::<u32>().ok().filter(|pid| *pid > 0) {
+                    holder.pid = pid.to_string();
+                }
+            }
+            "process" if value == "sync-runner" => holder.process_name = "sync-runner",
+            "startedAt" if is_bounded_utc_timestamp(value) => holder.started_at = value.to_string(),
+            _ => {}
+        }
+    }
+    Some(holder)
+}
+
+fn is_bounded_utc_timestamp(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (20..=24).contains(&bytes.len())
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'T')
+        && bytes.get(13) == Some(&b':')
+        && bytes.get(16) == Some(&b':')
+        && bytes.last() == Some(&b'Z')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7) && *byte == b'-'
+                || index == 10 && *byte == b'T'
+                || matches!(index, 13 | 16) && *byte == b':'
+                || index == bytes.len() - 1 && *byte == b'Z'
+                || index == 19 && *byte == b'.'
+                || byte.is_ascii_digit()
+        })
 }
 
 /// Fixed allow-list of libuv/Win32 syscall identifiers that libuv's
@@ -1880,12 +1959,17 @@ fn is_libuv_source_marker(lowercased: &str) -> bool {
 /// application assertions remain `none`.
 pub fn classify_runner_fatal_signature(line: &str) -> RunnerFatalSignature {
     let class = classify_runner_fatal_class(line);
+    let (stderr_cause, watch_owner_result, exit_producer) =
+        classify_runner_exit_diagnostics(line, class);
     if class == RunnerFatalClass::LibuvFatalSyscall {
         if let Some((syscall, errno)) = parse_libuv_fatal_syscall(line) {
             return RunnerFatalSignature {
                 class,
                 syscall: Some(syscall),
                 errno: Some(errno),
+                stderr_cause,
+                watch_owner_result,
+                exit_producer,
             };
         }
     }
@@ -1893,7 +1977,37 @@ pub fn classify_runner_fatal_signature(line: &str) -> RunnerFatalSignature {
         class,
         syscall: None,
         errno: None,
+        stderr_cause,
+        watch_owner_result,
+        exit_producer,
     }
+}
+
+fn classify_runner_exit_diagnostics(
+    line: &str,
+    class: RunnerFatalClass,
+) -> (&'static str, &'static str, &'static str) {
+    let lowered = line.to_ascii_lowercase();
+    if lowered.contains("hq-sync-runner already owned") {
+        return ("already_owned", "busy", "runner");
+    }
+    if lowered.contains("watch-owner lease lost") || lowered.contains("watch owner lease lost") {
+        return ("owner_lease_lost", "lost", "runner");
+    }
+    let stderr_cause = if class.seen() {
+        class.as_str()
+    } else {
+        "other"
+    };
+    // npm's own prefix is the classifier's explicit relay marker. Other Node or
+    // launcher failures remain unknown until protocol output or a Node report
+    // identifies which descendant supplied the status.
+    let exit_producer = if class == RunnerFatalClass::NpmInstallRelay {
+        "launcher"
+    } else {
+        "unknown"
+    };
+    (stderr_cause, "unknown", exit_producer)
 }
 
 /// Classify untrusted runner stderr without retaining any of it. The libuv
@@ -2220,6 +2334,8 @@ pub fn should_synthesize_all_complete(
 /// or scheduled sync is already mid-run — not a failure, so the menubar must
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 pub const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
+/// A watch-mode runner refused because a live owner already holds this root.
+pub const RUNNER_ALREADY_OWNED_EXIT: i32 = 20;
 
 /// Exit code returned by hq-cloud's `TRANSIENT_NETWORK_EXIT` / `EX_TEMPFAIL`
 /// retry contract. hq-cloud uses it at the auth-refresh return site, both
@@ -2796,7 +2912,9 @@ pub fn watcher_exit_class(
     node_fatal: bool,
     memory_attributed: bool,
 ) -> &'static str {
-    if memory_attributed {
+    if code == Some(RUNNER_ALREADY_OWNED_EXIT) && signal.is_none() {
+        "already_owned"
+    } else if memory_attributed {
         "runner_memory"
     } else if code == Some(0xC000_0005u32 as i32) {
         "access_violation"
@@ -4764,6 +4882,12 @@ mod tests {
     #[test]
     fn watcher_exit_class_groups_known_native_and_node_fatal_exits() {
         assert_eq!(
+            watcher_exit_class(Some(RUNNER_ALREADY_OWNED_EXIT), None, false, false),
+            "already_owned"
+        );
+        assert_eq!(watcher_exit_class(Some(19), None, false, false), "other");
+        assert_eq!(watcher_exit_class(Some(21), None, false, false), "other");
+        assert_eq!(
             watcher_exit_class(Some(0xC000_0005u32 as i32), None, false, false),
             "access_violation"
         );
@@ -5459,6 +5583,56 @@ mod tests {
     }
 
     #[test]
+    fn watch_owner_holder_fields_accept_only_bounded_safe_identity() {
+        let line = "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.";
+        assert_eq!(
+            parse_watch_owner_holder_fields(line),
+            Some(WatchOwnerHolderFields {
+                owner: "hq-daemon".to_string(),
+                pid: "1234".to_string(),
+                process_name: "sync-runner",
+                started_at: "2026-10-04T08:10:11.123Z".to_string(),
+            })
+        );
+
+        // An unsafe value is replaced by `unknown`; the other fields survive and
+        // the unsafe text never appears in the result.
+        for (unsafe_line, secret) in [
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.", "/private/path"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.", "/private/secret"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=sync-runner, startedAt=secret); exiting.", "secret"),
+            ("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=-7, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.", "-7"),
+        ] {
+            let fields = parse_watch_owner_holder_fields(unsafe_line).expect("refusal line keeps holder evidence");
+            assert!(!format!("{fields:?}").contains(secret), "{secret} leaked from {unsafe_line}");
+        }
+        let unsafe_owner = parse_watch_owner_holder_fields("[sync] hq-sync-runner already owned for this HQ root (owner=/private/path, pid=1234, process=sync-runner, startedAt=2026-10-04T08:10:11.123Z); exiting.").unwrap();
+        assert_eq!(unsafe_owner.owner, "unknown");
+        assert_eq!(unsafe_owner.pid, "1234");
+        let unsafe_process = parse_watch_owner_holder_fields("[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=1234, process=node /private/secret, startedAt=2026-10-04T08:10:11.123Z); exiting.").unwrap();
+        assert_eq!(unsafe_process.process_name, "unknown");
+        assert_eq!(unsafe_process.started_at, "2026-10-04T08:10:11.123Z");
+
+        assert_eq!(parse_watch_owner_holder_fields("later diagnostic 3"), None);
+    }
+
+    #[test]
+    fn watch_owner_holder_fields_read_unknown_for_pre_holder_format_line() {
+        // Runners before hq-cloud #837 print only owner and pid.
+        assert_eq!(
+            parse_watch_owner_holder_fields(
+                "[sync] hq-sync-runner already owned for this HQ root (owner=hq-daemon, pid=123); exiting."
+            ),
+            Some(WatchOwnerHolderFields {
+                owner: "hq-daemon".to_string(),
+                pid: "123".to_string(),
+                process_name: "unknown",
+                started_at: "unknown".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn npm_relay_stderr_classifies_as_npm_install_relay_and_never_exec() {
         let home_path = "/Users/ada/.npm/_npx/f72697f8e89f117e/node_modules/.bin/hq-sync-runner";
         // npm relays a failing lifecycle status while printing only its OWN
@@ -5517,6 +5691,43 @@ mod tests {
             ),
             RunnerFatalClass::ExecNotFound
         );
+    }
+
+    #[test]
+    fn watcher_owner_stderr_reports_safe_cause_producer_and_lease_result() {
+        let busy = classify_runner_fatal_signature(
+            "[sync] hq-sync-runner already owned for this HQ root (owner=PRIVATE_OWNER, pid=123); exiting.",
+        );
+        assert_eq!(busy.class, RunnerFatalClass::None);
+        let busy_debug = format!("{busy:?}");
+        for expected in [
+            "stderr_cause: \"already_owned\"",
+            "watch_owner_result: \"busy\"",
+            "exit_producer: \"runner\"",
+        ] {
+            assert!(
+                busy_debug.contains(expected),
+                "missing {expected} in {busy_debug}"
+            );
+        }
+        assert!(!busy_debug.contains("PRIVATE_OWNER"));
+
+        let lost = classify_runner_fatal_signature(
+            "[sync] watch-owner lease lost; stopping watch runner: PRIVATE_DETAIL",
+        );
+        assert_eq!(lost.class, RunnerFatalClass::None);
+        let lost_debug = format!("{lost:?}");
+        for expected in [
+            "stderr_cause: \"owner_lease_lost\"",
+            "watch_owner_result: \"lost\"",
+            "exit_producer: \"runner\"",
+        ] {
+            assert!(
+                lost_debug.contains(expected),
+                "missing {expected} in {lost_debug}"
+            );
+        }
+        assert!(!lost_debug.contains("PRIVATE_DETAIL"));
     }
 
     #[test]

@@ -1,0 +1,61 @@
+name: Release smoke token age
+
+# The non-Indigo release smoke token (HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO)
+# is a Cognito refresh token that lasts 30 days. When it expired on 2026-10-03,
+# v0.10.383 failed its release smoke with an error that looked like an app
+# regression. This job fails from day 25 and opens an issue so the token is
+# re-minted before a release needs it. The mint time comes from the
+# HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT repository variable, which the
+# re-mint command in docs/RELEASE.md sets alongside the secret.
+
+on:
+  schedule:
+    - cron: "41 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check smoke token age
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Check token age and exchange it once
+        id: age
+        env:
+          HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT: ${{ vars.HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT }}
+          HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO: ${{ secrets.HQ_RELEASE_SMOKE_REFRESH_TOKEN_NON_INDIGO }}
+        run: |
+          set -o pipefail
+          node scripts/smoke-token-age.mjs | tee "$RUNNER_TEMP/age.txt"
+      - name: Open or update the re-mint issue
+        if: failure() && steps.age.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Release smoke token needs re-minting"
+          body="$(sed 's/^::error:://' "$RUNNER_TEMP/age.txt")
+
+          Re-mint with the command in docs/RELEASE.md (\"Non-Indigo release smoke\"). It updates the secret and HQ_RELEASE_SMOKE_REFRESH_TOKEN_MINTED_AT together. Close this issue once the next scheduled check passes.
+
+          Run: $RUN_URL"
+          number="$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" -R "$REPO" --body "$body"
+          else
+            gh issue create -R "$REPO" --title "$title" --body "$body"
+          fi

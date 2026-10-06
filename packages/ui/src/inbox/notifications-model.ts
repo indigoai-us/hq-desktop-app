@@ -10,6 +10,7 @@
  * notificationGroups helper (Today / Yesterday / date).
  */
 
+import { isRecord } from "../common/is-record";
 import { dayKey, dayLabel } from "./notification-groups";
 import { bundleFileNotifications } from "./file-bundles";
 import { bundleAgentJoinNotifications } from "./agent-join-bundles";
@@ -29,6 +30,7 @@ export type NotificationDisplayKind =
   | "dm_received"
   | "channel_message"
   | "infra_flag"
+  | "plan_limit"
   | "generic";
 
 /** Icon key rendered beside each row (view maps to SVG). */
@@ -128,10 +130,6 @@ export interface NotificationsResponseWire {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -201,6 +199,10 @@ export function mapServerType(
   if (!t) return "generic";
 
   if (t === "mention" || t.includes("mention")) return "mention";
+
+  // A plan limit paused this company's uploads. Desktop-local row; the click
+  // opens the company's upgrade page rather than a conversation.
+  if (t === "plan_limit") return "plan_limit";
 
   if (
     t === "agent_finished_story" ||
@@ -274,6 +276,7 @@ export function typeIconForKind(
     case "channel_message":
       return "dm";
     case "infra_flag":
+    case "plan_limit":
       return "flag";
     default:
       return "generic";
@@ -427,7 +430,12 @@ export function mapNotificationRow(
     typeIcon: typeIconForKind(displayKind),
     actorName: actorNameResolved,
     actorInitials: actorNameResolved ? actorInitials(actorNameResolved) : (displayKind === "new_file" ? "FI" : "#"),
-    verbText: !actorNameResolved ? (displayKind === "new_file" ? "File added" : "New messages") : formatVerbLine(actorNameResolved, verb),
+    verbText:
+      displayKind === "plan_limit"
+        ? (title ?? "Uploads are paused")
+        : !actorNameResolved
+          ? (displayKind === "new_file" ? "File added" : "New messages")
+          : formatVerbLine(actorNameResolved, verb),
     contextLine,
     status: asStatus(raw.status),
     createdAt,
@@ -787,6 +795,8 @@ export type NotificationDestination =
       replyRootEventId?: string | null;
     }
   | { kind: "files" }
+  /** A host-owned row whose click-through opens an approved web page. */
+  | { kind: "external"; id: string; url: string }
   | { kind: "none" };
 
 export function personUidFromTargetRef(ref: string | null): string | null {
@@ -842,6 +852,12 @@ export function notificationDestination(
     target.startsWith("/files/");
   const channelMatch = target.match(/^\/channels\/(chn_[A-Za-z0-9_-]+)\b/);
   const replyRootEventId = replyRootFromTargetRef(target);
+
+  if (item.displayKind === "plan_limit") {
+    return /^https:\/\//i.test(target)
+      ? { kind: "external", id: item.id, url: target }
+      : { kind: "none" };
+  }
 
   if (isDm && uid) {
     return {

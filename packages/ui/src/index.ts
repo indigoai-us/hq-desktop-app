@@ -31,6 +31,8 @@ export * from "./chat/live-catchup.js";
 export * from "./chat/reply-layout.js";
 export * from "./chat/channels.js";
 export * from "./chat/setup-channel.js";
+export * from "./chat/create-company/create-company-flow.js";
+export * from "./chat/create-company/slug-availability.js";
 export * from "./chat/setup-run.js";
 export * from "./chat/setup-agent.svelte.js";
 // Agent "thinking" indicator state machine. Explicit list: `isAgentUid` is
@@ -57,6 +59,9 @@ export {
   applyAgentStatus,
   parseAgentStatusWake,
   type AgentStatusWake,
+  applyDmAgentStatus,
+  parseDmAgentStatusWake,
+  type DmAgentStatusWake,
   type MentionCandidate,
   type ThinkingPhase,
   type ThinkingEntry,
@@ -73,7 +78,6 @@ export * from "./chat/channel-admin.js";
 export * from "./chat/portfolio-session.js";
 export * from "./chat/channel-directory-reconciler.js";
 export * from "./chat/sidebar-model.js";
-export * from "./chat/agent-stubs.js";
 export {
   DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
   CONVERSATION_BOOT_GRACE_MS,

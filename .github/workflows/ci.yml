@@ -64,6 +64,67 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  cross-repo-consumers:
+    name: Cross-repository consumer contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Test cross-repo consumer guard
+        run: node --test .github/scripts/check-cross-repo-consumers.test.mjs
+      - name: Check cross-repo consumer files
+        run: node .github/scripts/check-cross-repo-consumers.mjs
+
+  # The required macOS Rust check stays present for every PR. This cheap
+  # preflight only skips the runner when the changed paths cannot affect its
+  # app, shared-crate, dependency, script, or workflow inputs.
+  rust-macos-scope:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
+    name: Rust macOS scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Decide whether the Rust macOS gate applies
+        id: filter
+        shell: bash
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+
+          # An edited PR can be a title/body edit that would otherwise mark a
+          # previously failing required check as skipped-success. Keep the
+          # existing CI contract and run the gate for every edited event.
+          if [ "$EVENT_ACTION" = "edited" ]; then
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            echo "edited pull request — running the Rust macOS gate"
+            exit 0
+          fi
+
+          if ! changed="$(git diff --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "relevant=true" >>"$GITHUB_OUTPUT"
+            echo "could not diff pull request — running the Rust macOS gate"
+            exit 0
+          fi
+
+          printf '%s\n' "$changed"
+          verdict="$(printf '%s\n' "$changed" | node scripts/macos-check-relevant.mjs)"
+          if [ "$verdict" != "false" ]; then
+            verdict=true
+          fi
+          echo "relevant=$verdict" >>"$GITHUB_OUTPUT"
+          echo "Rust macOS gate applies: $verdict"
+
   # The frontend gate used to be ONE job running twenty-odd steps back to back
   # on a single runner. Measured across runs 35050123787 / 35057647412 /
   # 35060749760 it took 10m03s, 7m58s and 5m47s -- the widest job in this file
@@ -356,7 +417,11 @@ jobs:
           --filter=@hq/platform
 
   rust-macos:
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    needs: [rust-macos-scope]
+    if: >-
+      ${{ always() &&
+      (github.event_name != 'pull_request' || needs.rust-macos-scope.result != 'success' || needs.rust-macos-scope.outputs.relevant != 'false') &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false) }}
     # NAME IS LOAD-BEARING: "Rust tests (macOS)" is a required status check in
     # the active `main` ruleset. Renaming this job makes that check never
     # report, which blocks every PR from merging. Change the ruleset first.

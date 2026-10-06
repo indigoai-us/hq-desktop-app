@@ -160,7 +160,7 @@ export function parseCompanyTab(raw: unknown): CompanyTabModel | null {
   };
 }
 
-export function fieldValue(
+function fieldValue(
   row: LifecycleCardModel,
   id: string,
 ): string {

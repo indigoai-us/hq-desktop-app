@@ -1721,6 +1721,8 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "unclassified"
                 | "not_applicable"
         )),
+        "rsync_exit_status" => Some(matches!(value, "23" | "24" | "other")),
+        "rsync_phase" => Some(matches!(value, "dry_run" | "overlay" | "unknown")),
         "rsync_translated_path_shape" => Some(matches!(
             value,
             "cygwin_drive"
@@ -1871,6 +1873,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "minus_one"
                 | "sigterm"
                 | "sigkill"
+                | "already_owned"
                 | "node_fatal"
                 | "other"
         )),
@@ -2209,6 +2212,45 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
         // producer bug that shipped a path, a raw report byte, or a stderr fragment
         // to `[Filtered]` instead of projecting it into a tag or Event.culprit.
         "runner_fatal_source" => Some(matches!(value, "stderr" | "node_report" | "none")),
+        // Existing watcher-exit event detail (SC-DESKTOP-89-INSTR). These tags
+        // are diagnostic only and each has an independent closed/shape validator
+        // so accidental raw process output fails closed at egress.
+        "exit_producer" => Some(matches!(value, "launcher" | "runner" | "unknown")),
+        "watch_owner_result" => Some(matches!(value, "acquired" | "busy" | "lost" | "unknown")),
+        "watch_owner_holder_owner" => Some(
+            !value.is_empty()
+                && value.len() <= 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')),
+        ),
+        "watch_owner_holder_pid" => Some(
+            value == "unknown" || value.parse::<u32>().is_ok_and(|pid| pid > 0),
+        ),
+        "watch_owner_holder_process" => Some(matches!(value, "sync-runner" | "unknown")),
+        "watch_owner_holder_started_at" => Some(
+            value == "unknown" || valid_watch_owner_started_at(value),
+        ),
+        "stderr_cause" => Some(matches!(
+            value,
+            "libuv_assert"
+                | "libuv_fatal_syscall"
+                | "node_check_abort"
+                | "node_fatal"
+                | "heap_oom"
+                | "rust_panic"
+                | "exec_permission_denied"
+                | "exec_not_found"
+                | "node_too_old"
+                | "disk_full"
+                | "npm_install_relay"
+                | "already_owned"
+                | "owner_lease_lost"
+                | "other"
+        )),
+        "node_error_code" => Some(valid_node_error_code(value)),
+        "node_error_name" => Some(valid_node_error_name(value)),
+        "node_top_frame" => Some(valid_node_top_frame(value)),
         "runner_report_read" => Some(matches!(
             value,
             "report_read"
@@ -2234,6 +2276,98 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
     }
 }
 
+fn valid_watch_owner_started_at(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (20..=24).contains(&bytes.len())
+        && bytes.get(4) == Some(&b'-')
+        && bytes.get(7) == Some(&b'-')
+        && bytes.get(10) == Some(&b'T')
+        && bytes.get(13) == Some(&b':')
+        && bytes.get(16) == Some(&b':')
+        && bytes.last() == Some(&b'Z')
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            (matches!(index, 4 | 7) && *byte == b'-')
+                || (index == 10 && *byte == b'T')
+                || (matches!(index, 13 | 16) && *byte == b':')
+                || (index == bytes.len() - 1 && *byte == b'Z')
+                || (index == 19 && *byte == b'.')
+                || byte.is_ascii_digit()
+        })
+}
+
+fn valid_node_error_code(value: &str) -> bool {
+    value == "unknown"
+        || (value.starts_with("ERR_")
+            && value.len() > 4
+            && value.len() <= 64
+            && value[4..]
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'))
+}
+
+fn valid_node_error_name(value: &str) -> bool {
+    value == "unknown"
+        || (!value.is_empty()
+            && value.len() <= 64
+            && (value.ends_with("Error") || value.ends_with("Exception"))
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
+}
+
+fn valid_node_top_frame(value: &str) -> bool {
+    if value == "unknown" || value == "external" {
+        return true;
+    }
+    let mut parts = value.rsplitn(3, ':');
+    let Some(column) = parts.next() else {
+        return false;
+    };
+    let Some(line) = parts.next() else {
+        return false;
+    };
+    let Some(filename) = parts.next() else {
+        return false;
+    };
+    !filename.is_empty()
+        && filename.len() <= 128
+        && filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && line
+            .parse::<u64>()
+            .map(|number| number > 0)
+            .unwrap_or(false)
+        && column
+            .parse::<u64>()
+            .map(|number| number > 0)
+            .unwrap_or(false)
+}
+
+/// Extract only the two bounded dimensions encoded in the runner's rescue
+/// reason. None of the reason text is copied into a tag.
+fn bounded_rsync_status_and_phase(reason: Option<&str>) -> (&'static str, &'static str) {
+    let Some(reason) = reason else {
+        return ("other", "unknown");
+    };
+    let Some(marker_index) = reason.find("rsync status ") else {
+        return ("other", "unknown");
+    };
+    let marker = &reason[marker_index + "rsync status ".len()..];
+    let mut parts = marker.split_whitespace();
+    let status = match parts.next() {
+        Some("23") => "23",
+        Some("24") => "24",
+        Some(_) | None => "other",
+    };
+    let phase = match (parts.next(), parts.next()) {
+        (Some("during"), Some("dry-run")) => "dry_run",
+        (Some("during"), Some("overlay")) => "overlay",
+        _ => "unknown",
+    };
+    (status, phase)
+}
+
 fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
     for (key, value) in event.tags.iter_mut() {
         if valid_runner_diagnostic_field(key, value) == Some(false) {
@@ -2250,6 +2384,19 @@ fn scrub_runner_diagnostic_fields(event: &mut Event<'static>) {
         if !is_valid {
             *value = Value::String("[Filtered]".to_string());
         }
+    }
+
+    if event.tags.get("rescue_step").map(String::as_str) == Some("rsync")
+        && event.tags.get("rescue_error_class").map(String::as_str) == Some("rsync_partial")
+    {
+        let reason = event.extra.get("rescueErrorReason").and_then(Value::as_str);
+        let (status, phase) = bounded_rsync_status_and_phase(reason);
+        event
+            .tags
+            .insert("rsync_exit_status".to_string(), status.to_string());
+        event
+            .tags
+            .insert("rsync_phase".to_string(), phase.to_string());
     }
 
     if event
@@ -2856,7 +3003,7 @@ pub fn init_with_identity(
     let guard = sentry::init(sentry::ClientOptions {
         dsn,
         release: Some(format!("{}@{release_version}", identity.release_prefix).into()),
-        environment: Some(environment.unwrap_or("production").to_string().into()),
+        environment: Some(resolve_sentry_environment(release_version, environment).into()),
         sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -2869,6 +3016,22 @@ pub fn init_with_identity(
     });
     configure_identity_scope(identity);
     Some(guard)
+}
+
+fn resolve_sentry_environment(release_version: &str, configured: Option<&str>) -> String {
+    if is_shelltest_release_version(release_version) {
+        "shelltest".to_string()
+    } else {
+        configured.unwrap_or("production").to_string()
+    }
+}
+
+fn is_shelltest_release_version(release_version: &str) -> bool {
+    let Some(run_number) = release_version.strip_prefix("0.0.0-shelltest.") else {
+        return false;
+    };
+    matches!(run_number.as_bytes().first(), Some(b'1'..=b'9'))
+        && run_number.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
 /// Bind the process-wide attribution tags onto the current Sentry scope.
@@ -2906,6 +3069,23 @@ fn resolve_build_commit(value: Option<&'static str>) -> &'static str {
 mod tests {
     use super::*;
     use sentry::protocol::{AppContext, Breadcrumb, Request, RuntimeContext};
+
+    #[test]
+    fn shelltest_release_uses_nonproduction_sentry_environment() {
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.483", None),
+            "shelltest"
+        );
+        assert_eq!(resolve_sentry_environment("0.10.382", None), "production");
+        assert_eq!(
+            resolve_sentry_environment("0.0.0-shelltest.bad", None),
+            "production"
+        );
+        assert_eq!(
+            resolve_sentry_environment("0.10.382", Some("staging")),
+            "staging"
+        );
+    }
 
     // Most scrubber tests are intentionally independent of the process-global
     // native diagnostics. Keep their existing assertions deterministic while
@@ -3133,6 +3313,49 @@ mod tests {
             expected.map(str::to_string),
             "known Core update classes should survive the before_send allowlist"
         );
+    }
+
+    #[test]
+    fn rsync_status_phase_and_stderr_tags_are_bounded_at_before_send() {
+        for (reason, expected_status, expected_phase) in [
+            ("rsync status 23 during dry-run", "23", "dry_run"),
+            ("rsync status 24 during overlay", "24", "overlay"),
+            ("rsync status 12 during overlay", "other", "overlay"),
+            ("unrecognized runner output", "other", "unknown"),
+        ] {
+            let mut event = Event::default();
+            event.fingerprint = std::borrow::Cow::Owned(vec![
+                std::borrow::Cow::Borrowed("existing-fingerprint"),
+            ]);
+            event.tags.insert("rescue_step".into(), "rsync".into());
+            event
+                .tags
+                .insert("rescue_error_class".into(), "rsync_partial".into());
+            event
+                .tags
+                .insert("rsync_stderr_class".into(), "file_locked".into());
+            event
+                .extra
+                .insert("rescueErrorReason".into(), Value::String(reason.into()));
+            event.extra.insert(
+                "rsyncStderrReason".into(),
+                Value::String(
+                    "rsync: open C:\\Users\\fixture\\private\\file failed: Permission denied"
+                        .into(),
+                ),
+            );
+
+            let filtered = before_send(event).expect("rsync failure remains reportable");
+            assert_eq!(filtered.tags["rsync_exit_status"], expected_status);
+            assert_eq!(filtered.tags["rsync_phase"], expected_phase);
+            assert_eq!(filtered.tags["rsync_stderr_class"], "file_locked");
+            assert_eq!(filtered.fingerprint.len(), 1);
+            assert_eq!(filtered.fingerprint[0].as_ref(), "existing-fingerprint");
+            assert!(filtered
+                .tags
+                .values()
+                .all(|tag| !tag.contains("C:\\Users\\fixture\\private\\file")));
+        }
     }
 
     #[test]
@@ -3881,6 +4104,7 @@ mod tests {
             "minus_one",
             "sigterm",
             "sigkill",
+            "already_owned",
             "node_fatal",
             "other",
         ] {
@@ -5074,6 +5298,103 @@ mod tests {
             result.culprit.as_deref(),
             Some("sync/runner push: heap oom")
         );
+    }
+
+    #[test]
+    fn watcher_exit_diagnostic_axes_are_safe_at_egress() {
+        for class in hq_desktop_core::sync_outcome::RunnerFatalClass::ALL {
+            if class != hq_desktop_core::sync_outcome::RunnerFatalClass::None {
+                assert_eq!(
+                    valid_runner_diagnostic_field("stderr_cause", class.as_str()),
+                    Some(true),
+                    "classifier token {} must pass stderr cause egress",
+                    class.as_str()
+                );
+            }
+        }
+        for (key, values) in [
+            ("exit_producer", vec!["launcher", "runner", "unknown"]),
+            (
+                "watch_owner_result",
+                vec!["acquired", "busy", "lost", "unknown"],
+            ),
+            (
+                "stderr_cause",
+                vec!["already_owned", "owner_lease_lost", "node_fatal", "other"],
+            ),
+            ("watch_owner_holder_owner", vec!["hq-daemon"]),
+            ("watch_owner_holder_pid", vec!["123", "unknown"]),
+            ("watch_owner_holder_process", vec!["sync-runner", "unknown"]),
+            (
+                "watch_owner_holder_started_at",
+                vec!["2026-10-04T08:10:11.123Z", "unknown"],
+            ),
+            ("node_error_code", vec!["ERR_MODULE_NOT_FOUND", "unknown"]),
+            ("node_error_name", vec!["Error", "TypeError", "unknown"]),
+            (
+                "node_top_frame",
+                vec!["sync-runner.js:23:17", "external", "unknown"],
+            ),
+        ] {
+            for value in values {
+                assert_eq!(
+                    valid_runner_diagnostic_field(key, value),
+                    Some(true),
+                    "valid {key} {value:?} must pass egress"
+                );
+            }
+        }
+
+        for (key, value) in [
+            ("exit_producer", "/private/npx"),
+            ("watch_owner_result", "owner=123"),
+            ("watch_owner_holder_owner", "/private/path"),
+            ("watch_owner_holder_pid", "pid=123"),
+            ("watch_owner_holder_process", "node /private/secret"),
+            ("watch_owner_holder_started_at", "secret"),
+            ("stderr_cause", "already_owned pid=123"),
+            ("node_error_code", "ERR_BAD/path"),
+            ("node_error_name", "Error: private message"),
+            ("node_top_frame", "/Users/ada/private-file.js:23:17"),
+            ("node_top_frame", "private-file.js:0:17"),
+        ] {
+            assert_eq!(
+                valid_runner_diagnostic_field(key, value),
+                Some(false),
+                "unsafe {key} {value:?} must fail egress"
+            );
+        }
+
+        let mut event = Event::default();
+        for (key, value) in [
+            ("sync_route", "watcher"),
+            ("exit_producer", "runner"),
+            ("watch_owner_result", "busy"),
+            ("watch_owner_holder_owner", "hq-daemon"),
+            ("watch_owner_holder_pid", "123"),
+            ("watch_owner_holder_process", "sync-runner"),
+            ("watch_owner_holder_started_at", "2026-10-04T08:10:11.123Z"),
+            ("stderr_cause", "already_owned"),
+            ("node_error_code", "ERR_MODULE_NOT_FOUND"),
+            ("node_error_name", "Error"),
+            ("node_top_frame", "external"),
+        ] {
+            event.tags.insert(key.to_string(), value.to_string());
+        }
+        let event = before_send(event).expect("event remains sendable");
+        assert_eq!(event.tags["exit_producer"], "runner");
+        assert_eq!(event.tags["watch_owner_result"], "busy");
+        assert_eq!(event.tags["watch_owner_holder_owner"], "hq-daemon");
+        assert_eq!(event.tags["watch_owner_holder_pid"], "123");
+        assert_eq!(event.tags["watch_owner_holder_process"], "sync-runner");
+        assert_eq!(
+            event.tags["watch_owner_holder_started_at"],
+            "2026-10-04T08:10:11.123Z"
+        );
+        assert_eq!(event.tags["stderr_cause"], "already_owned");
+        assert_eq!(event.tags["node_error_code"], "ERR_MODULE_NOT_FOUND");
+        assert_eq!(event.tags["node_error_name"], "Error");
+        assert_eq!(event.tags["node_top_frame"], "external");
     }
 
     #[test]

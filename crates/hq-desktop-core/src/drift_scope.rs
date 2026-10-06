@@ -174,6 +174,25 @@ pub fn persist_core_drift_baseline_with_diagnostics(
     commit: &str,
     normalized_blobs: BTreeMap<String, String>,
 ) -> Result<(), Box<CoreDriftBaselinePersistenceError>> {
+    persist_core_drift_baseline_with_diagnostics_and_rename(
+        hq_folder,
+        source_repo,
+        commit,
+        normalized_blobs,
+        |from, to| std::fs::rename(from, to),
+    )
+}
+
+fn persist_core_drift_baseline_with_diagnostics_and_rename<F>(
+    hq_folder: &Path,
+    source_repo: &str,
+    commit: &str,
+    normalized_blobs: BTreeMap<String, String>,
+    mut rename: F,
+) -> Result<(), Box<CoreDriftBaselinePersistenceError>>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     let dir = hq_folder.join(BASELINE_DIR);
     if source_repo.trim().is_empty() || commit.trim().len() < 7 {
         let unknown = dir.join("unknown.json");
@@ -223,7 +242,7 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             temp_preexisting,
         )
     })?;
-    std::fs::write(&temp, bytes).map_err(|error| {
+    std::fs::write(&temp, &bytes).map_err(|error| {
         baseline_persistence_error(
             "write_temp",
             persistence_error_kind(error.kind()),
@@ -247,8 +266,44 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             )
         })?;
     }
-    std::fs::rename(&temp, &path).map_err(|error| {
-        baseline_persistence_error(
+    match rename(&temp, &path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir).map_err(|error| {
+                baseline_persistence_error(
+                    "create_directory",
+                    persistence_error_kind(error.kind()),
+                    format!("create baseline directory {}: {error}", dir.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })?;
+            std::fs::write(&temp, &bytes).map_err(|error| {
+                baseline_persistence_error(
+                    "write_temp",
+                    persistence_error_kind(error.kind()),
+                    format!("write baseline temp {}: {error}", temp.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })?;
+            rename(&temp, &path).map_err(|error| {
+                baseline_persistence_error(
+                    "rename_temp",
+                    persistence_error_kind(error.kind()),
+                    format!("commit baseline {}: {error}", path.display()),
+                    &dir,
+                    &path,
+                    &temp,
+                    temp_preexisting,
+                )
+            })
+        }
+        Err(error) => Err(baseline_persistence_error(
             "rename_temp",
             persistence_error_kind(error.kind()),
             format!("commit baseline {}: {error}", path.display()),
@@ -256,8 +311,8 @@ pub fn persist_core_drift_baseline_with_diagnostics(
             &path,
             &temp,
             temp_preexisting,
-        )
-    })
+        )),
+    }
 }
 
 pub fn load_core_drift_baseline(
@@ -519,10 +574,63 @@ pub fn is_conflict_artifact(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Hash a drift blob while omitting the desktop-generated PATH field from the
+/// shared Claude settings file. Other settings in that file remain part of the
+/// hash so user-authored edits still surface.
+pub fn drift_blob_sha_for_path(path: &str, bytes: &[u8]) -> String {
+    if path != ".claude/settings.json" {
+        return drift_blob_sha(bytes);
+    }
+
+    let Ok(mut document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return drift_blob_sha(bytes);
+    };
+    let Some(root) = document.as_object_mut() else {
+        return drift_blob_sha(bytes);
+    };
+    let empty_env = root
+        .get_mut("env")
+        .and_then(serde_json::Value::as_object_mut)
+        .map(|vars| {
+            vars.remove("PATH");
+            vars.is_empty()
+        })
+        .unwrap_or(false);
+    if empty_env {
+        root.remove("env");
+    }
+
+    let Ok(normalized) = serde_json::to_vec(&document) else {
+        return drift_blob_sha(bytes);
+    };
+    drift_blob_sha(&normalized)
+}
+
+/// Use the normalized settings hash when available; retain the tree's raw
+/// hash on fetch/parse failure and return the error so the caller can log it.
+pub fn normalized_or_raw_drift_sha(
+    raw_sha: &str,
+    normalized: Result<String, String>,
+) -> (String, Option<String>) {
+    match normalized {
+        Ok(sha) => (sha, None),
+        Err(error) => (raw_sha.to_string(), Some(error)),
+    }
+}
+
 /// True iff the path falls under one of the excluded-path entries.
 /// Always does prefix matching (regardless of trailing slash): `core/packages`
 /// and `core/packages/` both exclude files under that directory tree.
 pub fn path_in_excluded_scope(path: &str, excluded: &[String]) -> bool {
+    // Company-skill wrapper inventory is generated locally and is not an
+    // editable Core file. Match only the marker basename, not its parent tree.
+    if path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name == ".hq-company-skill-wrappers")
+    {
+        return true;
+    }
     for scope in excluded {
         let prefix = scope.trim_end_matches('/');
         if path == prefix || path.starts_with(&format!("{}/", prefix)) {
@@ -578,6 +686,19 @@ pub fn git_blob_sha(content: &[u8]) -> String {
 pub fn drift_blob_sha(content: &[u8]) -> String {
     let normalized = normalize_newlines_for_drift(content);
     git_blob_sha(normalized.as_ref())
+}
+
+/// Compare semantic settings hashes when both exist, otherwise raw blob SHAs.
+pub fn drift_hash_matches_with_raw_fallback(
+    local_raw_sha: &str,
+    upstream_raw_sha: &str,
+    local_settings_sha: Option<&str>,
+    upstream_settings_sha: Option<&str>,
+) -> bool {
+    match (local_settings_sha, upstream_settings_sha) {
+        (Some(local), Some(upstream)) => local == upstream,
+        _ => local_raw_sha == upstream_raw_sha,
+    }
 }
 
 /// Normalize newlines for drift hashing only.
@@ -676,8 +797,8 @@ pub fn walk_local_under_scope(
                     continue;
                 };
                 let size = content.len() as u64;
-                let sha = drift_blob_sha(&content);
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+                let sha = drift_blob_sha(&content);
                 out.insert(rel_str, (sha, size));
             }
         } else {
@@ -721,7 +842,53 @@ fn test_write(root: &Path, rel: &str, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::fs;
+
+    #[test]
+    fn settings_env_path_is_ignored_for_drift() {
+        let before =
+            br#"{"env":{"PATH":"/old/bin","EDITOR":"vim"},"permissions":{"allow":["Read"]}}"#;
+        let after =
+            br#"{"permissions":{"allow":["Read"]},"env":{"EDITOR":"vim","PATH":"/new/bin"}}"#;
+
+        assert_eq!(
+            drift_blob_sha_for_path(".claude/settings.json", before),
+            drift_blob_sha_for_path(".claude/settings.json", after),
+        );
+        assert_eq!(
+            drift_blob_sha_for_path(".claude/settings.json", br#"{"env":{"PATH":"/custom/bin"}}"#),
+            drift_blob_sha_for_path(".claude/settings.json", b"{}"),
+        );
+    }
+
+    #[test]
+    fn settings_changes_other_than_env_path_still_drift() {
+        let before = br#"{"env":{"PATH":"/old/bin"},"permissions":{"allow":["Read"]}}"#;
+        let after = br#"{"env":{"PATH":"/new/bin"},"permissions":{"allow":["Write"]}}"#;
+
+        assert_ne!(
+            drift_blob_sha_for_path(".claude/settings.json", before),
+            drift_blob_sha_for_path(".claude/settings.json", after),
+        );
+    }
+
+    #[test]
+    fn settings_comparison_falls_back_to_raw_shas_when_semantic_hash_is_missing() {
+        assert!(drift_hash_matches_with_raw_fallback("same", "same", Some("left"), None));
+        assert!(!drift_hash_matches_with_raw_fallback("local", "upstream", Some("same"), None));
+    }
+
+    #[test]
+    fn local_settings_walk_keeps_the_real_git_blob_hash() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = br#"{"env":{"PATH":"/custom/bin"},"permissions":{"allow":["Read"]}}"#;
+        test_write(root.path(), ".claude/settings.json", settings);
+
+        let blobs = walk_local_under_scope(root.path(), &[".claude/settings.json".into()]);
+
+        assert_eq!(blobs[".claude/settings.json"].0, drift_blob_sha(settings),);
+    }
 
     #[test]
     fn git_blob_sha_matches_git_format() {
@@ -943,6 +1110,70 @@ contributes:
             load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
                 .unwrap();
         assert_eq!(loaded.normalized_blobs, second);
+    }
+
+    #[test]
+    fn baseline_persistence_recovers_once_when_parent_disappears_before_rename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut blobs = BTreeMap::new();
+        blobs.insert(
+            "core/policies/example.md".into(),
+            git_blob_sha(b"recovered\n"),
+        );
+        let attempts = Cell::new(0);
+
+        persist_core_drift_baseline_with_diagnostics_and_rename(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            blobs.clone(),
+            |from, to| {
+                let attempt = attempts.get();
+                attempts.set(attempt + 1);
+                if attempt == 0 {
+                    fs::remove_dir_all(from.parent().unwrap()).unwrap();
+                    Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "injected missing baseline directory",
+                    ))
+                } else {
+                    fs::rename(from, to)
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(attempts.get(), 2);
+        let loaded =
+            load_core_drift_baseline(tmp.path(), "indigoai-us/hq-core", "0123456789abcdef")
+                .unwrap();
+        assert_eq!(loaded.normalized_blobs, blobs);
+    }
+
+    #[test]
+    fn baseline_persistence_returns_diagnostic_after_second_rename_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let attempts = Cell::new(0);
+
+        let error = persist_core_drift_baseline_with_diagnostics_and_rename(
+            tmp.path(),
+            "indigoai-us/hq-core",
+            "0123456789abcdef",
+            BTreeMap::new(),
+            |_from, _to| {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "injected missing baseline directory",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 2);
+        let detail = error.to_string();
+        assert!(detail.contains("commit baseline "));
+        assert!(detail.contains("write_path=rename_temp error_kind=not_found"));
     }
 
     #[test]

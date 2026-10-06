@@ -19,6 +19,7 @@
 import type { LocalBotRow } from "@hq/platform";
 
 import { isAgentUid } from "./agent-thinking.js";
+import { SETUP_BOOTSTRAP_COMMAND, SETUP_CORE_MARKER, SETUP_REPAIR_COMMAND, SETUP_SKILL_PATH } from "./setup-channel.js";
 
 /**
  * FALLBACK FLAG (one build only). `true` = Run Setup creates the setup bot.
@@ -206,7 +207,9 @@ export function setupBotCopy(opts: { noun?: string } = {}): typeof SETUP_BOT_COP
  */
 export function setupBotNoRuntime(opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  return `HQ needs a coding tool signed in on this ${noun} to finish setup. Sign in above, then Retry.`;
+  // No "Sign in above, then Retry": the sign-in panel sits below this line,
+  // and it notices the sign-in by itself and offers Continue.
+  return `HQ needs a coding tool signed in on this ${noun} to finish setup.`;
 }
 
 /**
@@ -475,12 +478,66 @@ export function setupSuggestionsDue(
 }
 
 /**
- * The other way through setup, for people who already work in a coding tool:
- * shown on #welcome next to Run Setup, big enough to notice.
+ * The coding tools the setup bot can offer to continue in. The bot (hq-cli)
+ * sends the offer as its first message when the person already uses one of
+ * them a lot on this computer, with a `continueInTool` hq-block naming it.
  */
-export const SETUP_ELSEWHERE_COPY = {
-  title: "Already use Claude Code or Codex?",
-  body:
-    "You can set up HQ there instead. Open your HQ folder with the Launch button in the top right, " +
-    "then type /setup. Or open it straight from here, with /setup ready to go:",
+export type SetupOfferTool = "claude" | "codex";
+
+/** The reply that keeps setup in this conversation. hq-cli matches it exactly. */
+export const SETUP_KEEP_GOING_HERE = "Keep going here";
+
+/** Copy for the card under the setup bot's "continue setup there?" offer. */
+export const SETUP_TOOL_OFFER_COPY = {
+  claude: { name: "Claude", continue: "Continue in Claude" },
+  codex: { name: "Codex", continue: "Continue in Codex" },
+  keep: SETUP_KEEP_GOING_HERE,
+  /** The launch did not work: say what to do by hand, in plain words. `{name}` is the app. */
+  launchFailed: "Couldn't open the {name} app from here. Open your HQ folder in the {name} app and ask it to set up HQ.",
+  folderNotReady: "Your HQ folder isn't ready yet. Try again in a moment.",
 } as const;
+
+/**
+ * What the coding tool receives when the person picks "Continue in …": a
+ * plain-language request to run HQ setup in this folder. It names the setup
+ * file so it works whether or not the tool has loaded HQ's skills, and never
+ * starts with "/" (a leading slash is parsed as a command).
+ */
+export const SETUP_CONTINUE_IN_TOOL_PROMPT = [
+  "Please set up HQ with me in this folder. I started in the HQ desktop app and want to finish setup here.",
+  [
+    `1. If ${SETUP_SKILL_PATH} exists here, read it and run the HQ setup it describes, start to finish,`,
+    "   picking up from whatever is already done.",
+    `2. If that file is missing but ${SETUP_CORE_MARKER} exists, the HQ files are incomplete: run`,
+    `   \`${SETUP_REPAIR_COMMAND}\` here, then do step 1.`,
+    "3. If neither exists, HQ never finished downloading: run",
+    `   \`${SETUP_BOOTSTRAP_COMMAND}\` here to install it, then do step 1.`,
+  ].join("\n"),
+].join("\n\n");
+
+/**
+ * Should the "continue setup in your coding tool" card show, and for which
+ * tool? Pure.
+ *
+ * Only the bot's newest message with something to read counts, and only
+ * until the person writes again: clicking "Keep going here" (or writing
+ * anything) puts the card away, and a newer bot message replaces it.
+ *
+ * `messages` is the timeline, oldest first.
+ */
+export function setupToolOfferDue(
+  messages: ReadonlyArray<{ fromPersonUid?: string | null; body?: string | null; richContent?: unknown }>,
+  botUid: string,
+  hasVisibleContent: (message: { body?: string | null; richContent?: unknown }) => boolean,
+  toolFor: (message: { body?: string | null; richContent?: unknown }) => SetupOfferTool | null,
+): SetupOfferTool | null {
+  const uid = botUid.trim();
+  if (!uid) return null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if ((message.fromPersonUid ?? "").trim() !== uid) return null;
+    if (!hasVisibleContent(message)) continue;
+    return toolFor(message);
+  }
+  return null;
+}

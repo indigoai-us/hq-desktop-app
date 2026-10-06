@@ -70,6 +70,7 @@ export const INSTALLER_STEP_BY_WIZARD_STEP = {
   'welcome-signin': 'signin',
   directory: 'install',
   setup: 'setup',
+  company: null,
   'first-folder-sync': null,
   'invite-teammate': null,
   consent: 'consent',
@@ -152,6 +153,7 @@ export interface PingInstallerStepOptions {
   invokeCommand?: InvokeCommand;
   now?: () => number;
   endpoint?: string | null;
+  includeDeviceId?: boolean;
 }
 
 /**
@@ -159,12 +161,12 @@ export interface PingInstallerStepOptions {
  * `installSessionId`; attaches `personUid` once a real `prs_*` is known and a
  * best-effort hashed device id. Never throws.
  */
-export async function pingInstallerStep(opts: PingInstallerStepOptions): Promise<void> {
+export async function pingInstallerStep(opts: PingInstallerStepOptions): Promise<boolean> {
   try {
     const endpoint = opts.endpoint === undefined ? getInstallerStepEndpoint() : opts.endpoint;
-    if (!endpoint) return;
+    if (!endpoint) return false;
     const invokeCommand = opts.invokeCommand ?? (invoke as InvokeCommand);
-    const deviceId = await getDeviceId(invokeCommand);
+    const deviceId = opts.includeDeviceId === false ? undefined : await getDeviceId(invokeCommand);
     const personUid = isInstallerPersonUid(opts.personUid) ? opts.personUid : undefined;
     const body: Record<string, string | number> = {
       installSessionId: opts.installSessionId,
@@ -175,13 +177,16 @@ export async function pingInstallerStep(opts: PingInstallerStepOptions): Promise
     if (personUid) body.personUid = personUid;
     if (deviceId) body.deviceId = deviceId;
     const fetchFn = opts.fetch ?? tauriFetch;
-    await fetchFn(endpoint, {
+    const response = await fetchFn(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    return response.ok;
   } catch {
-    // Telemetry failure must never block, delay, or error the wizard.
+    // Keep the wizard best-effort while exposing a bounded diagnostic.
+    console.error('Installer step telemetry request failed', { step: opts.step });
+    return false;
   }
 }
 

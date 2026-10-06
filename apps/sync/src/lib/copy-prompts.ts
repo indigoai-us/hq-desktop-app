@@ -66,6 +66,49 @@ function num(issue: Issue, key: string): number {
   return typeof v === 'number' ? v : 0;
 }
 
+function snapshotCapacityLine(
+  logTail: string,
+): { needed: string; available: string; shortfall: string } | undefined {
+  const match =
+    /error: insufficient free space for safety snapshot \(need (\d+) bytes, have (\d+)\)\./.exec(
+      logTail,
+    );
+  if (!match) return undefined;
+
+  const neededBytes = Number(match[1]);
+  const availableBytes = Number(match[2]);
+  if (!Number.isSafeInteger(neededBytes) || !Number.isSafeInteger(availableBytes)) {
+    return undefined;
+  }
+  const shortfallBytes = neededBytes - availableBytes;
+  if (!Number.isSafeInteger(shortfallBytes) || shortfallBytes <= 0) return undefined;
+
+  const gib = 1024 ** 3;
+  const neededTenths = Math.ceil((neededBytes / gib) * 10);
+  const availableTenths = Math.floor((availableBytes / gib) * 10);
+  const shortfallTenths = Math.ceil((shortfallBytes / gib) * 10);
+  return {
+    needed: `${(neededTenths / 10).toFixed(1)} GiB`,
+    available: `${(availableTenths / 10).toFixed(1)} GiB`,
+    shortfall: `${(shortfallTenths / 10).toFixed(1)} GiB`,
+  };
+}
+
+function diskFullUpdatePrompt(logTail: string): string {
+  const capacity = snapshotCapacityLine(logTail);
+  return [
+    'My HQ menubar update stopped before changing anything because there was not enough free space for the safety snapshot.',
+    capacity
+      ? `The snapshot needs ${capacity.needed} free; ${capacity.available} is available.`
+      : '',
+    capacity
+      ? `Please free at least ${capacity.shortfall} more, then retry the update with \`/update-hq\`.`
+      : 'Please free some space, then retry the update with `/update-hq`.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 const builders: Record<IssueKind, (i: Issue) => string> = {
   'sync-conflict': (i) => {
     const count = num(i, 'count');
@@ -86,7 +129,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       msg ? `Error: ${msg}` : 'No error message was surfaced in the UI.',
       '',
-      `Please investigate using \`/diagnose\` if the error is non-deterministic, or \`/investigate\` for a reproducible failure. Start by reading \`~/.hq/logs/hq-sync.log\` (last 200 lines) and \`~/.hq/sync-journal.${company || '<slug>'}.json\` to see what the runner attempted. Then propose a fix or a retry strategy before re-running \`hq sync\`.`,
+      `Please investigate using \`/diagnose\` if the error is non-deterministic, or \`/investigate\` for a reproducible failure. When HQ daemon owns sync, read \`~/.hq/daemon/logs/sync.log\` (last 200 lines) for the current run and use \`~/.hq/logs/hq-sync.log\` for earlier runner history. When the daemon is not active, read \`~/.hq/logs/hq-sync.log\` as the current log. Also read \`~/.hq/sync-journal.${company || '<slug>'}.json\` to see what the runner attempted. Then propose a fix or a retry strategy before re-running \`hq sync\`.`,
     ].join('\n');
   },
 
@@ -313,6 +356,12 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
   'hq-core-update-failed': (i) => {
     const exitCode = num(i, 'exitCode');
     const logTail = val(i, 'logTail');
+    if (
+      logTail.includes('HQ_RESCUE_FAILURE_KIND=disk_full') ||
+      logTail.includes('error: insufficient free space for safety snapshot (need ')
+    ) {
+      return diskFullUpdatePrompt(logTail);
+    }
     const logPath = val(i, 'logPath');
     const channel = val(i, 'channel');
     const target = val(i, 'targetVersion');

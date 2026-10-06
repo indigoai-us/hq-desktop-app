@@ -254,6 +254,44 @@ describe("DesktopApp update-available card", () => {
     expect(errorEl?.textContent).toContain("A recording is in progress");
   });
 
+  it("keeps the sidebar card in a recording-deferred state", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A));
+    await settle();
+
+    installPendingUpdate.mockResolvedValueOnce(
+      failure("hold-active", "HQ will restart to update after your recording finishes"),
+    );
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      .click();
+    await settle();
+
+    expect(host.textContent).toContain("HQ will restart to update after your recording finishes");
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="update-install"]');
+    expect(button?.textContent).toContain("Waiting to restart");
+    expect(button?.disabled).toBe(true);
+  });
+
+  it("shows the Core update reason, not a recording, when Core holds the restart", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("update-gate://deferred", gatePayload(VERSION_A));
+    await settle();
+
+    installPendingUpdate.mockResolvedValueOnce(
+      failure("hold-active", "HQ will restart to update after the HQ Core update finishes"),
+    );
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="update-install"]')!
+      .click();
+    await settle();
+
+    expect(host.textContent).toContain("HQ will restart to update after the HQ Core update finishes");
+    expect(host.textContent).not.toContain("recording");
+  });
+
   it("re-enables the install button after an install error", async () => {
     const events = createSyncEventHost();
     await mountApp(events.host);

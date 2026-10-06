@@ -1,3 +1,5 @@
+import { hostComputerNoun, yourComputerNoun } from '@hq/platform';
+
 /**
  * Timing model for the cinematic first-run intro.
  *
@@ -174,12 +176,12 @@ export const INTRO_BEATS: readonly IntroBeat[] = [
     id: 'shortcuts',
     kind: 'keyboard',
     title: 'One shortcut to remember',
-    body: 'From anywhere on your Mac, this opens the HQ desktop view.',
+    body: `From anywhere on ${yourComputerNoun()}, this opens the HQ desktop view.`,
     holdMs: 9000,
     hue: 0.6,
     selfPaced: true,
     shortcuts: [
-      { keys: ['\u2325', '\u21E7', 'O'], does: 'Open the HQ desktop view' },
+      { keys: hostComputerNoun() === 'Mac' ? ['\u2325', '\u21E7', 'O'] : ['Alt', 'Shift', 'O'], does: 'Open the HQ desktop view' },
     ],
     highlightKeys: ['alt', 'shift', 'o'],
   },

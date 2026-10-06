@@ -9,10 +9,14 @@
 
 import {
   AGENT_PATHS,
+  SLACK_ATTACH_BODY,
   DELETE_CHANNEL_UNSUPPORTED_MESSAGE,
+  INTEGRATION_PATHS,
   buildReplyThreadPath,
   buildSendReplyRequest,
+  connectionGrantBody,
   failure,
+  integrationAppRefBody,
   normalizeReplyThreadValue,
   normalizeNotificationsFeed,
   ok,
@@ -20,10 +24,13 @@ import {
   validateFetchReplyThread,
   validateSendReply,
   vaultPutIntegrityFields,
+  withHttpStatus,
+  withoutSecret,
   type AdapterFailure,
   type AdapterPromise,
   type AdapterResult,
   type AgentProvisionOptionsView,
+  type IntegrationOAuthStart,
   type Json,
   type PlatformAdapter,
 } from "../adapter.js";
@@ -40,6 +47,7 @@ import {
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   PERSONAL_WORKSPACE_BOARD_FLAG,
+  PERSONAL_TRANSCRIPTS_FLAG,
   type FeatureFlagGate,
 } from "../flags.js";
 import {
@@ -53,6 +61,7 @@ interface WebAttempt<T> {
   result: AdapterResult<T>;
   status: number | null;
   retryAfter?: string | null;
+  lambdaInvoke504?: boolean;
 }
 
 /** `Retry-After` off a Response, tolerating a header-less test double. */
@@ -61,6 +70,18 @@ function readRetryAfter(res: Response): string | null {
     return res.headers?.get?.("retry-after") ?? null;
   } catch {
     return null;
+  }
+}
+
+function isLambdaInvoke504(response: Response, bodyText: string): boolean {
+  if (response.status !== 504) return false;
+  try {
+    const payload: unknown = JSON.parse(bodyText);
+    return typeof payload === "object" && payload !== null && !Array.isArray(payload) &&
+      Object.keys(payload).length === 1 &&
+      (payload as { message?: unknown }).message === "Internal server error";
+  } catch {
+    return false;
   }
 }
 
@@ -206,6 +227,8 @@ export const WEB_PATHS = {
     `/companies/${encodeURIComponent(slug)}/activity`,
   companyHomeChannel: (companyUid: string) =>
     `/v1/companies/${encodeURIComponent(companyUid)}/home-channel`,
+  firstWeekReturnNudge: (companyUid: string) =>
+    `/membership/first-week-return-nudge?companyUid=${encodeURIComponent(companyUid)}`,
 
   feedback: "/v1/feedback/bug-report",
 
@@ -229,6 +252,9 @@ export const WEB_PATHS = {
   agentPauseJob: AGENT_PATHS.pauseJob,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
+  agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
+  agentReauth: AGENT_PATHS.reauth,
+  agentLoginCode: AGENT_PATHS.loginCode,
   agentDeprovision: AGENT_PATHS.deprovision,
   agentMobileRoster: AGENT_PATHS.mobileRoster,
   agentOwners: AGENT_PATHS.owners,
@@ -252,6 +278,8 @@ export interface WebPlatformAdapterConfig {
    * `sleep` and a deterministic `random`; production uses the defaults.
    */
   requestPolicy?: RequestPolicyOptions;
+  /** Disable this retry when the injected fetch already retries at its own layer. */
+  retryLambdaInvoke504?: boolean;
 }
 
 function defaultOnUnauthorized(): void {
@@ -459,6 +487,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
   private readonly onUnauthorized: () => void;
   private readonly flags: FeatureFlagGate;
   private readonly requestPolicy: RequestPolicyOptions;
+  private readonly retryLambdaInvoke504: boolean;
   private activeCompany: string | null = null;
 
   constructor(config: WebPlatformAdapterConfig) {
@@ -471,6 +500,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     this.headers = config.headers ?? {};
     this.onUnauthorized = config.onUnauthorized ?? defaultOnUnauthorized;
     this.requestPolicy = config.requestPolicy ?? {};
+    this.retryLambdaInvoke504 = config.retryLambdaInvoke504 ?? true;
     this.flags = createFeatureFlagGate({
       endpoint: this.baseUrl,
       getToken: () => bearerTokenFromHeaders(this.headers),
@@ -490,7 +520,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     if (
       flag === "meetings" ||
       flag === "agents.claude-provider" ||
-      flag === PERSONAL_WORKSPACE_BOARD_FLAG
+      flag === PERSONAL_WORKSPACE_BOARD_FLAG ||
+      flag === PERSONAL_TRANSCRIPTS_FLAG
     ) {
       return Promise.resolve(ok(false));
     }
@@ -511,15 +542,54 @@ export class WebPlatformAdapter implements PlatformAdapter {
     // Shared policy (R2): 429/503 are honoured — `Retry-After` when the server
     // sends one, jittered exponential backoff otherwise — and the result the
     // caller finally sees is the same AdapterResult it saw before.
-    const attempted = await retryThrottled<WebAttempt<T>>(
+    return (await this.requestAttempt<T>(method, path, body)).result;
+  }
+
+  /** {@link request}, with the HTTP status of the answer the caller ends up with. */
+  private requestAttempt<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<WebAttempt<T>> {
+    let lambdaInvokeRetried = false;
+    return retryThrottled<WebAttempt<T>>(
       () => this.attempt<T>(method, path, body),
-      (outcome) => ({
-        status: outcome.status,
-        retryAfter: outcome.retryAfter,
-      }),
+      (outcome) => {
+        if (
+          this.retryLambdaInvoke504 &&
+          method === "GET" &&
+          !lambdaInvokeRetried &&
+          outcome.lambdaInvoke504
+        ) {
+          lambdaInvokeRetried = true;
+          const random = this.requestPolicy.random ?? Math.random;
+          return {
+            status: 503,
+            retryDelayMs: 25 + Math.floor(random() * 51),
+          };
+        }
+        return { status: outcome.status, retryAfter: outcome.retryAfter };
+      },
       this.requestPolicy,
     );
-    return attempted.result;
+  }
+
+  /**
+   * POST whose failure also carries the HTTP status, for the callers that
+   * tell a 403 or 404 from a refusal with a server code.
+   */
+  private postWithStatus<T>(path: string, body?: unknown): AdapterPromise<T> {
+    return this.requestWithStatus<T>("POST", path, body);
+  }
+
+  /** {@link request}, with the HTTP status on a failure. */
+  private async requestWithStatus<T>(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): AdapterPromise<T> {
+    const attempted = await this.requestAttempt<T>(method, path, body);
+    return withHttpStatus(attempted.result, attempted.status);
   }
 
   private async attempt<T>(
@@ -556,6 +626,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
           result: hqProFailure(details),
           status: res.status,
           retryAfter: readRetryAfter(res),
+          lambdaInvoke504: method === "GET" && isLambdaInvoke504(res, text),
         };
       }
       if (res.status === 204) {
@@ -604,6 +675,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? this.legacyHasFeature(flag)
         : this.flags.resolve(flag, () => this.legacyHasFeature(flag)),
+    // The browser build has no company flag source: every company flag is off.
+    hasCompanyFeature: () => Promise.resolve(false),
     subscribeFeature: (flag, onChange) =>
       WEB_REGISTRY_EXCLUDED_FLAGS.has(flag)
         ? () => {}
@@ -710,11 +783,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
     searchMessages: (q, opts) => {
       return this.get(buildWebMessageSearchPath(q, opts));
     },
-    fetchChannel: ({ channelId, limit, cursor, since }) => {
+    fetchChannel: ({ channelId, limit, cursor, since, view }) => {
       const params = new URLSearchParams();
       if (limit != null) params.set("limit", String(limit));
       if (cursor) params.set("cursor", cursor);
       if (since) params.set("since", since);
+      if (view) params.set("view", view);
       const qs = params.toString();
       return this.get(
         `${WEB_PATHS.channelMessages(channelId)}${qs ? `?${qs}` : ""}`,
@@ -749,6 +823,11 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `/v1/companies/slug-available?slug=${encodeURIComponent(slug)}`,
       ),
+    activateCompanyCloud: (companyUid) =>
+      this.post(
+        `/v1/companies/${encodeURIComponent(companyUid)}/activate-cloud`,
+        {},
+      ),
     getCompanyTab: (companyUid, tab) =>
       this.get(WEB_PATHS.companyTab(companyUid, tab)),
     runCompanyTabAction: (args) =>
@@ -762,10 +841,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
             ? crypto.randomUUID()
             : `tab-${Date.now()}`),
       }),
-    fetchDmThread: ({ withPersonUid, limit, since }) => {
+    fetchDmThread: ({ withPersonUid, limit, since, cursor, view }) => {
       const params = new URLSearchParams({ withPersonUid });
       if (limit != null) params.set("limit", String(limit));
       if (since) params.set("since", since);
+      if (cursor) params.set("cursor", cursor);
+      if (view) params.set("view", view);
       return this.get(`/v1/notify/thread?${params.toString()}`);
     },
     sendDm: (toPersonUid, body, extras) =>
@@ -774,6 +855,10 @@ export class WebPlatformAdapter implements PlatformAdapter {
         body,
         ...(extras?.attachments && extras.attachments.length > 0
           ? { attachments: extras.attachments }
+          : {}),
+        ...(extras?.audience ? { audience: extras.audience } : {}),
+        ...(extras?.idempotencyKey?.trim()
+          ? { idempotencyKey: extras.idempotencyKey.trim() }
           : {}),
       }),
     // Mirrors the Rust `build_compose_payload` contract: exactly one
@@ -958,7 +1043,19 @@ export class WebPlatformAdapter implements PlatformAdapter {
   readonly agents: PlatformAdapter["agents"] = {
     getProvisionOptions: (companyUid) =>
       this.get<AgentProvisionOptionsView>(AGENT_PATHS.provisionOptions(companyUid)),
-    getStatus: (agentUid) => this.get(WEB_PATHS.agentStatus(agentUid)),
+    getStatus: (agentUid, brain) => this.get(WEB_PATHS.agentStatus(agentUid, brain)),
+    restartBrainApproval: (agentUid, brain) =>
+      this.post(WEB_PATHS.agentReauth(agentUid), { brain }),
+    submitClaudeLoginCode: (agentUid, code) =>
+      this.post(WEB_PATHS.agentLoginCode(agentUid), { code }),
+    attachSlack: (agentUid) =>
+      this.postWithStatus(AGENT_PATHS.slackChannel(agentUid), { ...SLACK_ATTACH_BODY }),
+    // The token goes in the body only. The path names the bot, nothing else.
+    submitSlackAppToken: async (agentUid, appToken) =>
+      withoutSecret(
+        await this.postWithStatus<Json>(AGENT_PATHS.slackAppToken(agentUid), { appToken }),
+        appToken,
+      ),
     listMobileRoster: (companyUid) =>
       this.get(WEB_PATHS.agentMobileRoster(companyUid)),
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
@@ -968,12 +1065,34 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
     stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
     start: (agentUid) => this.post(WEB_PATHS.agentStart(agentUid)),
-    deprovision: (agentUid) =>
-      this.request("DELETE", WEB_PATHS.agentDeprovision(agentUid)),
+    retryProvisioning: (agentUid) =>
+      this.post(WEB_PATHS.agentRetryProvisioning(agentUid)),
+    deprovision: (agentUid, options) =>
+      this.request(
+        "DELETE",
+        WEB_PATHS.agentDeprovision(agentUid, options?.confirmDestroyInstanceId),
+      ),
     listOwners: (companyUid, agentUid) =>
       this.get(WEB_PATHS.agentOwners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.get(WEB_PATHS.agentCompanyTelemetry(companyUid, from, to)),
+  };
+
+  readonly integrations: PlatformAdapter["integrations"] = {
+    listConnections: (companyUid) =>
+      this.get(INTEGRATION_PATHS.connections(companyUid)),
+    grantConnectionAccess: (input) =>
+      this.post(INTEGRATION_PATHS.grantAccess, connectionGrantBody(input)),
+    catalogSearch: (companyUid, query, limit) =>
+      this.requestWithStatus("GET", INTEGRATION_PATHS.catalog(companyUid, query, limit)),
+    // No redirectUri: the server's default lands on the console's callback.
+    startOAuth: (input) =>
+      this.postWithStatus<IntegrationOAuthStart>(INTEGRATION_PATHS.oauthStart, integrationAppRefBody(input)),
+    // The key goes in the body only, and is taken out of any failure's text.
+    install: async (input) =>
+      withoutSecret(await this.postWithStatus<Json>(INTEGRATION_PATHS.install, input), input.bearerToken ?? ""),
+    blueprint: (input) =>
+      this.postWithStatus(INTEGRATION_PATHS.blueprint, integrationAppRefBody(input)),
   };
 
   readonly company: PlatformAdapter["company"] = {
@@ -995,6 +1114,8 @@ export class WebPlatformAdapter implements PlatformAdapter {
     getActivity: (slug) => this.get(WEB_PATHS.companyActivity(slug)),
     ensureHomeChannel: (companyUid) =>
       this.post(WEB_PATHS.companyHomeChannel(companyUid)),
+    getFirstWeekReturnNudge: (companyUid) =>
+      this.get(WEB_PATHS.firstWeekReturnNudge(companyUid)),
   };
 
   readonly feedback: PlatformAdapter["feedback"] = {
@@ -1106,6 +1227,7 @@ export class WebPlatformAdapter implements PlatformAdapter {
     startDaemon: async () => DESKTOP_ONLY,
     stopDaemon: async () => DESKTOP_ONLY,
     daemonStatus: async () => DESKTOP_ONLY,
+    daemonSyncStatus: async () => ok(null),
     startSync: async () => DESKTOP_ONLY,
     cancelSync: async () => DESKTOP_ONLY,
     getSyncStatus: async () => DESKTOP_ONLY,

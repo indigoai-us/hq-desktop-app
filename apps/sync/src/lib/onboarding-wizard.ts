@@ -20,22 +20,27 @@ export const WIZARD_STEPS = [
   { index: 0, id: 'welcome-signin', label: 'Welcome' },
   { index: 1, id: 'directory', label: 'Location' },
   { index: 2, id: 'setup', label: 'Setup' },
-  { index: 3, id: 'first-folder-sync', label: 'Sync your first folder' },
-  { index: 4, id: 'invite-teammate', label: 'Invite a teammate' },
+  // Name a company (or join a pending invite) and pick a plan. The website no
+  // longer creates a company, so first run has to. Skipped for anyone who is
+  // already an active member of a company. Shown after the setup explainers
+  // and before the ready screen, without waiting for the install.
+  { index: 3, id: 'company', label: 'Your company' },
+  { index: 4, id: 'first-folder-sync', label: 'Sync your first folder' },
+  { index: 5, id: 'invite-teammate', label: 'Invite a teammate' },
   // Consent is its own step, placed AFTER setup: the person entity is
   // provisioned during setup, so by the time we ask, the opt-in write has an
   // entity to land on (the old sign-in-panel checkbox posted before the entity
   // existed, so the answer 404'd and was silently dropped).
-  { index: 5, id: 'consent', label: 'Consent' },
+  { index: 6, id: 'consent', label: 'Consent' },
   // This runs after setup has made `hq` available, but before final handoff.
   // It auto-skips when Claude Desktop has no configured connectors.
-  { index: 6, id: 'connector-import', label: 'Import connectors' },
-  { index: 7, id: 'ready', label: 'Ready' },
-  { index: 8, id: 'trust', label: 'Trust workspace' },
-  { index: 9, id: 'settings', label: 'Settings' },
-  { index: 10, id: 'run-setup', label: 'Run setup' },
-  { index: 11, id: 'handoff', label: 'Handoff' },
-  { index: 12, id: 'build', label: 'Build' },
+  { index: 7, id: 'connector-import', label: 'Import connectors' },
+  { index: 8, id: 'ready', label: 'Ready' },
+  { index: 9, id: 'trust', label: 'Trust workspace' },
+  { index: 10, id: 'settings', label: 'Settings' },
+  { index: 11, id: 'run-setup', label: 'Run setup' },
+  { index: 12, id: 'handoff', label: 'Handoff' },
+  { index: 13, id: 'build', label: 'Build' },
 ] as const satisfies readonly WizardStep[];
 
 export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
@@ -44,7 +49,7 @@ export type WizardStepId = (typeof WIZARD_STEPS)[number]['id'];
  * The sole index mapping for wizard panels, graphics, and router transitions.
  * Keep panel identifiers in `WIZARD_STEPS`; do not hand-number a panel.
  */
-export const WIZARD_STEP_INDEX = Object.fromEntries(
+const WIZARD_STEP_INDEX = Object.fromEntries(
   WIZARD_STEPS.map((step) => [step.id, step.index]),
 ) as Record<WizardStepId, number>;
 
@@ -52,6 +57,7 @@ const FIRST_STEP_INDEX = WIZARD_STEPS[0].index;
 const WELCOME_SIGNIN_STEP_INDEX = WIZARD_STEP_INDEX['welcome-signin'];
 const DIRECTORY_STEP_INDEX = WIZARD_STEP_INDEX.directory;
 const SETUP_STEP_INDEX = WIZARD_STEP_INDEX.setup;
+const COMPANY_STEP_INDEX = WIZARD_STEP_INDEX.company;
 const FIRST_FOLDER_SYNC_STEP_INDEX = WIZARD_STEP_INDEX['first-folder-sync'];
 const INVITE_TEAMMATE_STEP_INDEX = WIZARD_STEP_INDEX['invite-teammate'];
 const CONSENT_STEP_INDEX = WIZARD_STEP_INDEX.consent;
@@ -67,6 +73,7 @@ const completedSteps = new Set<number>();
 
 export {
   BUILD_STEP_INDEX,
+  COMPANY_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
   FIRST_FOLDER_SYNC_STEP_INDEX,

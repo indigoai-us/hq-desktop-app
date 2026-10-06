@@ -24,6 +24,9 @@
 //! continues to use it via `app.updater()` because hard-yank always pulls
 //! the newest stable, regardless of channel preference.
 
+use std::collections::HashMap;
+use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -35,15 +38,19 @@ use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 use crate::commands::config::MenubarPrefs;
+use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
+use crate::updater_outcome::{UpdateOutcomeAttempt, UpdateOutcomeProperties, UpdateOutcomeStage};
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
-use crate::commands::update_gate::{AppFocusState, UpdateHoldsState};
-use hq_desktop_core::update_gate::{decide, DeferredEmitKey, HoldReason, should_emit_deferred, UpdateDecision, UpdateTrigger};
 use crate::util::release_channel::{
-    effective_channel, fetch_update_feed_policy, resolve_channel_endpoint, should_offer_update,
-    should_reinstall_feed_target, EndpointProvenance, ReleaseChannel, ResolvedChannelEndpoint,
-    UpdateFeedPolicy,
+    channel_accepts_version, effective_channel, fetch_update_feed_policy, resolve_channel_endpoint,
+    should_offer_update, should_reinstall_feed_target, EndpointProvenance, ReleaseChannel,
+    ResolvedChannelEndpoint, UpdateFeedPolicy,
+};
+use hq_desktop_core::update_gate::{
+    decide, should_emit_deferred, AppFocus, DeferReason, DeferredEmitKey, HoldReason,
+    UpdateDecision, UpdateHolds, UpdateTrigger,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,6 +91,28 @@ struct UpdateInstallStarted<'a> {
 pub(crate) fn download_progress_percent(downloaded: u64, total: Option<u64>) -> Option<u32> {
     let total = total.filter(|size| *size > 0)?;
     Some(((downloaded.min(total) * 100) / total) as u32)
+}
+
+fn send_update_outcome(properties: UpdateOutcomeProperties) -> Result<(), String> {
+    crate::commands::telemetry::emit_desktop_operational_telemetry_best_effort(
+        "desktop_update_outcome",
+        serde_json::json!({
+            "stage": properties.stage,
+            "fromVersion": properties.from_version,
+            "toVersion": properties.to_version,
+            "channel": properties.channel,
+            "autoUpdate": properties.auto_update,
+        }),
+    );
+    Ok(())
+}
+
+fn emit_update_outcome(
+    attempt: &UpdateOutcomeAttempt,
+    stage: UpdateOutcomeStage,
+    to_version: &str,
+) {
+    let _ = attempt.observe_result(stage, to_version, Ok::<(), ()>(()), send_update_outcome);
 }
 
 pub(crate) fn emit_update_download_progress(app: &AppHandle, downloaded: u64, total: Option<u64>) {
@@ -148,6 +177,7 @@ pub struct StagedDownload {
     info: UpdateInfo,
     bytes: Vec<u8>,
     downloaded_at: Instant,
+    telemetry_attempt: UpdateOutcomeAttempt,
 }
 
 #[derive(Default)]
@@ -283,6 +313,12 @@ pub(crate) const UPDATE_DEFERRED_DURING_MUTATION: &str =
     "Update deferred while an HQ change is active";
 pub(crate) const UPDATE_DEFERRED_DURING_PROCESS_EXIT: &str =
     "Update deferred while HQ processes are still stopping";
+/// A user-visible manual update refusal. The staged package stays intact and
+/// the normal automatic waiter is re-armed after the protected work finishes.
+pub(crate) const UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY: &str =
+    "HQ will restart to update after your recording finishes";
+pub(crate) const UPDATE_DEFERRED_DURING_CORE_UPDATE: &str =
+    "HQ will restart to update after the HQ Core update finishes";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackgroundUpdateAction {
@@ -431,6 +467,12 @@ fn install_failure_is_transient_deferral(error: &str) -> bool {
     )
 }
 
+fn automatic_install_should_retry(error: &str) -> bool {
+    error == UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        || error == UPDATE_DEFERRED_DURING_CORE_UPDATE
+        || install_failure_is_transient_deferral(error)
+}
+
 pub(crate) fn deferral_decision(
     trigger: InstallTrigger,
     transfers_in_progress: bool,
@@ -462,6 +504,20 @@ pub(crate) fn idle_wait_remaining(elapsed: Duration, cap: Duration) -> Duration 
     cap.saturating_sub(elapsed)
 }
 
+fn sample_automatic_sync_state(
+    sample_sync_in_progress: impl FnOnce() -> bool,
+    elapsed_since_download: Duration,
+) -> (bool, DeferralDecision) {
+    let sync_is_active = sample_sync_in_progress();
+    let decision = deferral_decision(
+        InstallTrigger::Automatic,
+        sync_is_active,
+        elapsed_since_download,
+        AUTO_INSTALL_DEFER_CAP,
+    );
+    (sync_is_active, decision)
+}
+
 fn log_deferral_decision(
     trigger: InstallTrigger,
     decision: DeferralDecision,
@@ -485,7 +541,7 @@ fn log_deferral_decision(
             log(
                 "updater",
                 &format!(
-                    "forced update v{version} bypassing idle wait; pausing new sync cycles then installing"
+                    "forced update v{version} bypassing idle wait; new sync cycles paused, draining in-flight transfers, then installing"
                 ),
             );
         }
@@ -508,7 +564,7 @@ fn log_deferral_decision(
             log(
                 "updater",
                 &format!(
-                    "automatic update v{version} deferral cap reached; pausing new sync cycles for up to {}s, then installing",
+                    "automatic update v{version} deferral cap reached; new sync cycles paused, draining in-flight transfers for up to {}s, then installing",
                     IN_FLIGHT_DRAIN_TIMEOUT.as_secs()
                 ),
             );
@@ -520,6 +576,129 @@ fn log_deferral_decision(
             );
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DeferredLogReason {
+    Focused,
+    Held(HoldReason),
+}
+
+impl std::fmt::Display for DeferredLogReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Focused => write!(f, "Focused"),
+            Self::Held(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct DeferralLogLimiter {
+    last_emitted: HashMap<DeferredLogReason, Instant>,
+}
+
+impl DeferralLogLimiter {
+    const INTERVAL: Duration = Duration::from_secs(60);
+
+    fn eligible_reasons(
+        &mut self,
+        decision: &UpdateDecision,
+        now: Instant,
+    ) -> Vec<DeferredLogReason> {
+        let reasons = match decision {
+            UpdateDecision::Defer {
+                reason: DeferReason::Focused,
+            } => vec![DeferredLogReason::Focused],
+            UpdateDecision::Defer {
+                reason: DeferReason::Held { reasons },
+            } => reasons
+                .iter()
+                .cloned()
+                .map(DeferredLogReason::Held)
+                .collect(),
+            UpdateDecision::InstallNow => Vec::new(),
+        };
+
+        reasons
+            .into_iter()
+            .filter(|reason| match self.last_emitted.get_mut(reason) {
+                Some(last) if now.duration_since(*last) < Self::INTERVAL => false,
+                Some(last) => {
+                    *last = now;
+                    true
+                }
+                None => {
+                    self.last_emitted.insert(reason.clone(), now);
+                    true
+                }
+            })
+            .collect()
+    }
+}
+
+struct AutomaticInstallGate {
+    decision: UpdateDecision,
+    reasons: Vec<HoldReason>,
+}
+
+fn automatic_install_gate_decision(
+    sync_decision: DeferralDecision,
+    focus: AppFocus,
+    holds: &UpdateHolds,
+) -> AutomaticInstallGate {
+    let after_cap = sync_decision == DeferralDecision::PauseThenInstall;
+    let relevant_holds = UpdateHolds::new();
+    for reason in holds.active() {
+        if after_cap && reason == HoldReason::UploadInFlight {
+            continue;
+        }
+        relevant_holds.acquire(reason);
+    }
+
+    // The ten-minute cap promises a bounded restart. App focus may defer during
+    // the natural idle-gap window, but cannot extend that bound; explicit
+    // meeting, transcript, and Core update holds remain authoritative.
+    let gate_focus = if after_cap {
+        AppFocus::Unfocused
+    } else {
+        focus
+    };
+    let decision = decide(UpdateTrigger::Automatic, gate_focus, &relevant_holds);
+    AutomaticInstallGate {
+        decision,
+        reasons: relevant_holds.active(),
+    }
+}
+
+/// Whether an install drains in-flight transfers after pausing new sync
+/// cycles. The install decision is made from a sync sample taken before the
+/// pause, so a cycle can register in between; draining after the pause catches
+/// it (the drain returns at once when sync is idle). Only a manual install,
+/// which a person explicitly asked to run now, skips the drain.
+fn drains_after_pause(trigger: InstallTrigger, decision: DeferralDecision) -> bool {
+    trigger != InstallTrigger::Manual || decision == DeferralDecision::PauseThenInstall
+}
+
+async fn pause_cycles_drain_then_install<P, Guard, Paused, Drain, Install, Output>(
+    drain_after_pause: bool,
+    pause_new_cycles: P,
+    on_paused: Paused,
+    drain: Drain,
+    install: Install,
+) -> Output
+where
+    P: FnOnce() -> Guard,
+    Paused: FnOnce(),
+    Drain: Future<Output = ()>,
+    Install: Future<Output = Output>,
+{
+    let _pause = pause_new_cycles();
+    on_paused();
+    if drain_after_pause {
+        drain.await;
+    }
+    install.await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,16 +807,75 @@ fn discovered_update(version: String, body: Option<String>, date: Option<String>
 /// decision time on every manual install path. Mirrors the inline probe block
 /// in the automatic waiter loop.
 pub(crate) fn sync_probed_holds(holds: &crate::commands::update_gate::UpdateHoldsState) {
-    if crate::commands::hq_core_state::is_core_update_in_progress() {
-        holds.0.acquire(HoldReason::CoreUpdateInProgress);
+    sync_probed_holds_with_sync_state(holds, sync_in_progress());
+}
+
+fn sync_probed_holds_with_sync_state(
+    holds: &crate::commands::update_gate::UpdateHoldsState,
+    sync_is_active: bool,
+) {
+    // Probe-owned holds are set, not reference-counted: this runs on every
+    // poll, and repeated acquires would leave a hold active after the probe
+    // reports idle.
+    holds.0.set(
+        HoldReason::CoreUpdateInProgress,
+        crate::commands::hq_core_state::is_core_update_in_progress(),
+    );
+    holds.0.set(HoldReason::UploadInFlight, sync_is_active);
+}
+
+/// Synchronise external probes and return active protected work. Every update
+/// installer and the final restart chokepoint use this same view so a recording
+/// which starts between checks cannot be interrupted by a process exit.
+pub(crate) fn protected_update_holds(app: &AppHandle) -> Vec<HoldReason> {
+    let Some(holds) = app.try_state::<UpdateHoldsState>() else {
+        return Vec::new();
+    };
+    sync_probed_holds(&holds);
+    holds.0.active()
+}
+
+/// Holds that stop a process restart. An in-flight upload does not: sync runs
+/// nearly continuously, and the automatic installer already waits for a sync
+/// gap (with a cap) before it gets here.
+pub(crate) fn restart_is_held(app: &AppHandle) -> Option<Vec<HoldReason>> {
+    let reasons: Vec<HoldReason> = protected_update_holds(app)
+        .into_iter()
+        .filter(HoldReason::blocks_restart)
+        .collect();
+    (!reasons.is_empty()).then_some(reasons)
+}
+
+/// The message a person sees when a restart they asked for has to wait.
+pub(crate) fn deferred_restart_message(reasons: &[HoldReason]) -> &'static str {
+    if reasons.iter().any(HoldReason::is_recording) {
+        UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
     } else {
-        holds.0.release(HoldReason::CoreUpdateInProgress);
+        UPDATE_DEFERRED_DURING_CORE_UPDATE
     }
-    if sync_in_progress() {
-        holds.0.acquire(HoldReason::UploadInFlight);
-    } else {
-        holds.0.release(HoldReason::UploadInFlight);
+}
+
+fn gate_staged_install(app: &AppHandle, trigger: UpdateTrigger) -> Result<(), String> {
+    let (Some(holds), Some(focus)) = (
+        app.try_state::<UpdateHoldsState>(),
+        app.try_state::<AppFocusState>(),
+    ) else {
+        return Ok(());
+    };
+    sync_probed_holds(&holds);
+    let gate = decide(trigger, focus.app_focus(), &holds.0);
+    if let UpdateDecision::Defer { reason } = gate {
+        log("updater", &format!("staged update deferred: {reason:?}"));
+        if matches!(trigger, UpdateTrigger::Manual) {
+            spawn_auto_install_waiter(app.clone());
+        }
+        let message = match &reason {
+            DeferReason::Held { reasons } => deferred_restart_message(reasons),
+            DeferReason::Focused => UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY,
+        };
+        return Err(message.to_string());
     }
+    Ok(())
 }
 
 /// Return the pending update version string, if any, from managed state.
@@ -919,9 +1157,21 @@ async fn channel_aware_updater_with_mode(
         .updater_builder()
         .endpoints(vec![endpoint])
         .map_err(|e| format!("updater_builder.endpoints: {e}"))?
-        .version_comparator(move |current, release| match mode {
-            UpdateOfferMode::Reinstall => should_reinstall_feed_target(&current, &release.version),
-            UpdateOfferMode::Standard => should_offer_update(&current, &release.version, &policy),
+        .version_comparator(move |current, release| {
+            // A feed target from a channel the user did not choose is never
+            // installed, even on Reinstall: a Stable user is never moved onto
+            // a beta or alpha build by a mis-flagged release.
+            if !channel_accepts_version(channel, &release.version) {
+                return false;
+            }
+            match mode {
+                UpdateOfferMode::Reinstall => {
+                    should_reinstall_feed_target(&current, &release.version)
+                }
+                UpdateOfferMode::Standard => {
+                    should_offer_update(&current, &release.version, &policy)
+                }
+            }
         })
         .build()
         .map_err(|e| format!("updater_builder.build: {e}"))?;
@@ -957,12 +1207,27 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
     let ticket = begin_app_check(&app)?;
     let updater = channel_aware_updater(&app).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
+    let telemetry_attempt = UpdateOutcomeAttempt::new(
+        crate::app_version::current().to_string(),
+        updater.channel.as_str(),
+        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+    );
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
+            );
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
             );
             record_and_announce_update(
                 &app,
@@ -977,6 +1242,11 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             // Up to date — clear any previously stored pending update so a
             // pulled/superseded release doesn't keep hydrating surfaces
             // (e.g. the version pop-out) as "Update available" forever.
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             Ok(apply_absent_and_emit(&app, ticket, authoritative)?.pending_info())
         }
         Err(e) => Err(e.to_string()),
@@ -1007,12 +1277,27 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
     let ticket = begin_app_check(&app)?;
     let updater = channel_aware_updater_with_mode(&app, UpdateOfferMode::Reinstall).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
+    let telemetry_attempt = UpdateOutcomeAttempt::new(
+        crate::app_version::current().to_string(),
+        updater.channel.as_str(),
+        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+    );
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
+            );
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
             );
             let _ = record_and_announce_update(
                 &app,
@@ -1033,13 +1318,32 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
             #[cfg(not(target_os = "windows"))]
             crate::commands::hq_work::spawn_maybe_co_install_hq_work();
             let version = update.version.clone();
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::InstallStarted,
+                &version,
+            );
             let result = install_verified_update(&app, &update).await;
+            let result = match result {
+                Err(error) => telemetry_attempt.observe_result(
+                    UpdateOutcomeStage::InstallFailed,
+                    &version,
+                    Err(error),
+                    send_update_outcome,
+                ),
+                Ok(()) => Ok(()),
+            };
             if let Err(message) = &result {
                 emit_update_install_failed(&app, &version, message);
             }
             result
         }
         Ok(None) => {
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
             Err("No release available to reinstall".to_string())
         }
@@ -1095,7 +1399,15 @@ async fn install_verified_update(
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&update.version).await;
-        crate::commands::autostart::restart_preferring_launch_agent(app);
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(
+            app,
+            &update.version,
+        ) {
+            // A recording won the final exit race. The updater work has already
+            // been deferred by the chokepoint instead of terminating the app.
+            return Ok(());
+        }
+        unreachable!("a successful restart handoff never returns")
     }
 }
 
@@ -1113,6 +1425,16 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
         return commit_staged_install_unguarded(app, InstallTrigger::Forced).await;
     }
     let updater = app.updater().map_err(|error| error.to_string())?;
+    let telemetry_attempt = UpdateOutcomeAttempt::new(
+        crate::app_version::current().to_string(),
+        ReleaseChannel::Stable.as_str(),
+        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+    );
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
@@ -1120,13 +1442,22 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
             );
-            stage_plugin_update(app, update, info).await?;
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
+            );
+            stage_plugin_update(app, update, info, &telemetry_attempt).await?;
             commit_staged_install_unguarded(app, InstallTrigger::Forced).await
         }
-        Ok(None) => Err(
-            "hq-pro hard-gate fired but tauri-updater sees no release; latest.json may be stale"
-                .to_string(),
-        ),
+        Ok(None) => {
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
+            Err("hq-pro hard-gate fired but tauri-updater sees no release; latest.json may be stale".to_string())
+        }
         Err(error) => Err(error.to_string()),
     }
 }
@@ -1135,10 +1466,11 @@ async fn stage_plugin_update(
     app: &AppHandle,
     update: tauri_plugin_updater::Update,
     info: UpdateInfo,
+    telemetry_attempt: &UpdateOutcomeAttempt,
 ) -> Result<UpdateInfo, String> {
     let version = update.version.clone();
     let mut downloaded = 0_u64;
-    let bytes = match update
+    let download_result = update
         .download(
             |chunk, total| {
                 downloaded = downloaded.saturating_add(chunk as u64);
@@ -1146,8 +1478,18 @@ async fn stage_plugin_update(
             },
             || {},
         )
-        .await
-    {
+        .await;
+    let download_result = telemetry_attempt.observe_result(
+        if download_result.is_ok() {
+            UpdateOutcomeStage::DownloadOk
+        } else {
+            UpdateOutcomeStage::DownloadFailed
+        },
+        &version,
+        download_result,
+        send_update_outcome,
+    );
+    let bytes = match download_result {
         Ok(bytes) => bytes,
         Err(error) => {
             let message = error.to_string();
@@ -1161,6 +1503,7 @@ async fn stage_plugin_update(
         info: info.clone(),
         bytes,
         downloaded_at: Instant::now(),
+        telemetry_attempt: telemetry_attempt.clone(),
     });
     log(
         "updater",
@@ -1170,12 +1513,30 @@ async fn stage_plugin_update(
     Ok(info)
 }
 
-async fn drain_in_flight_transfers(timeout: Duration) {
+async fn drain_in_flight_transfers_with<F, S, Fut>(
+    timeout: Duration,
+    mut sync_is_active: F,
+    mut sleep: S,
+) -> bool
+where
+    F: FnMut() -> bool,
+    S: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let started = Instant::now();
-    while sync_in_progress() && started.elapsed() < timeout {
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    loop {
+        if !sync_is_active() {
+            return true;
+        }
+        if started.elapsed() >= timeout {
+            return false;
+        }
+        sleep(Duration::from_millis(250)).await;
     }
-    if sync_in_progress() {
+}
+
+async fn drain_in_flight_transfers(timeout: Duration) {
+    if !drain_in_flight_transfers_with(timeout, sync_in_progress, tokio::time::sleep).await {
         log(
             "updater",
             &format!(
@@ -1192,30 +1553,265 @@ async fn commit_staged_install_unguarded(
     app: &AppHandle,
     trigger: InstallTrigger,
 ) -> Result<(), String> {
+    let update_trigger = match trigger {
+        InstallTrigger::Automatic => UpdateTrigger::Automatic,
+        InstallTrigger::Manual | InstallTrigger::Forced => UpdateTrigger::Manual,
+    };
+    // This is deliberately immediately before `take()`: no entry point may
+    // replace a staged bundle after a recording began.
+    gate_staged_install(app, update_trigger)?;
     let staged = app
         .state::<DownloadedUpdate>()
         .take()
         .ok_or_else(|| "No downloaded update to install".to_string())?;
-    let version = staged.info.version.clone();
     let elapsed = staged.downloaded_at.elapsed();
-    let decision = deferral_decision(trigger, sync_in_progress(), elapsed, AUTO_INSTALL_DEFER_CAP);
-    log_deferral_decision(
+    let sync_is_active = sync_in_progress();
+    let decision = deferral_decision(trigger, sync_is_active, elapsed, AUTO_INSTALL_DEFER_CAP);
+    commit_staged_install_with_decision(
+        app,
+        staged,
         trigger,
         decision,
-        &version,
         idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP),
+    )
+    .await
+}
+
+async fn commit_staged_install_from_waiter(
+    app: &AppHandle,
+    trigger: InstallTrigger,
+    decision: DeferralDecision,
+    remaining: Duration,
+) -> Result<(), String> {
+    let staged = app
+        .state::<DownloadedUpdate>()
+        .take()
+        .ok_or_else(|| "No downloaded update to install".to_string())?;
+    commit_staged_install_with_decision(app, staged, trigger, decision, remaining).await
+}
+
+#[derive(Clone, Copy)]
+struct DaemonPauseDrainPlan {
+    daemon_mode: bool,
+    drain_after_pause: bool,
+}
+
+async fn daemon_pause_drain_install<P, PFut, CyclePause, Guard, Paused, D, DFut, I, IFut, R, RFut>(
+    plan: DaemonPauseDrainPlan,
+    pause_daemon: P,
+    pause_new_cycles: CyclePause,
+    on_paused: Paused,
+    drain: D,
+    install: I,
+    resume_daemon: R,
+) -> Result<(), String>
+where
+    P: FnOnce() -> PFut,
+    PFut: Future<Output = bool>,
+    CyclePause: FnOnce() -> Guard,
+    Paused: FnOnce(),
+    D: FnOnce() -> DFut,
+    DFut: Future<Output = ()>,
+    I: FnOnce() -> IFut,
+    IFut: Future<Output = Result<(), String>>,
+    R: FnOnce() -> RFut,
+    RFut: Future<Output = ()>,
+{
+    let _local_pause = pause_new_cycles();
+    on_paused();
+    let daemon_paused = if plan.daemon_mode {
+        pause_daemon().await
+    } else {
+        false
+    };
+    if plan.drain_after_pause {
+        drain().await;
+    }
+    let result = install().await;
+    if daemon_paused && result.is_err() {
+        resume_daemon().await;
+    }
+    result
+}
+
+const DAEMON_UPDATE_PAUSE_MARKER: &str = "daemon-sync-paused-for-desktop-update";
+
+fn daemon_update_pause_marker(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|directory| directory.join(DAEMON_UPDATE_PAUSE_MARKER))
+        .map_err(|error| format!("could not resolve updater state directory: {error}"))
+}
+
+async fn pause_daemon_sync_for_update(app: &AppHandle) -> bool {
+    use crate::commands::hq_daemon_host::{
+        daemon_sync_pause_args, parse_daemon_sync_status, run_daemon_sync_command_blocking,
+    };
+
+    let status = run_daemon_sync_command_blocking(vec![
+        "daemon".into(),
+        "sync".into(),
+        "status".into(),
+        "--json".into(),
+    ])
+    .await
+    .and_then(|output| parse_daemon_sync_status(&output));
+    let Ok(status) = status else {
+        log(
+            "updater",
+            "daemon sync status unavailable; continuing with local drain",
+        );
+        return false;
+    };
+    if status.paused {
+        log(
+            "updater",
+            "daemon sync was already paused; preserving its existing pause",
+        );
+        return false;
+    }
+
+    let marker = match daemon_update_pause_marker(app) {
+        Ok(marker) => marker,
+        Err(error) => {
+            log("updater", &error);
+            return false;
+        }
+    };
+    let Some(parent) = marker.parent() else {
+        log("updater", "daemon pause marker has no parent directory");
+        return false;
+    };
+    if let Err(error) =
+        std::fs::create_dir_all(parent).and_then(|_| std::fs::write(&marker, b"paused"))
+    {
+        log(
+            "updater",
+            &format!("could not persist daemon pause marker: {error}"),
+        );
+        return false;
+    }
+
+    let args = daemon_sync_pause_args(true)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let paused = run_daemon_sync_command_blocking(args)
+        .await
+        .ok()
+        .and_then(|output| serde_json::from_str::<serde_json::Value>(&output).ok())
+        .and_then(|value| value.get("paused").and_then(serde_json::Value::as_bool))
+        == Some(true);
+    if !paused {
+        log(
+            "updater",
+            "daemon sync pause failed; continuing with local drain",
+        );
+        resume_daemon_sync_after_update(app).await;
+        return false;
+    }
+    true
+}
+
+pub(crate) async fn resume_daemon_sync_after_update(app: &AppHandle) {
+    use crate::commands::hq_daemon_host::{
+        daemon_sync_pause_args, run_daemon_sync_command_blocking,
+    };
+
+    let marker = match daemon_update_pause_marker(app) {
+        Ok(marker) if marker.exists() => marker,
+        _ => return,
+    };
+    let args = daemon_sync_pause_args(false)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let resumed = run_daemon_sync_command_blocking(args)
+        .await
+        .ok()
+        .and_then(|output| serde_json::from_str::<serde_json::Value>(&output).ok())
+        .and_then(|value| value.get("paused").and_then(serde_json::Value::as_bool))
+        == Some(false);
+    if resumed {
+        if let Err(error) = std::fs::remove_file(marker) {
+            log(
+                "updater",
+                &format!("daemon sync resumed but marker cleanup failed: {error}"),
+            );
+        }
+    } else {
+        log(
+            "updater",
+            "daemon sync resume failed; startup will retry on the next launch",
+        );
+    }
+}
+
+fn emit_post_cap_install_outcome(version: &str, outcome: &str, hold_reason: Option<&str>) {
+    let mut properties = serde_json::json!({
+        "appVersion": version,
+        "outcome": outcome,
+    });
+    if let Some(reason) = hold_reason {
+        properties["holdReason"] = serde_json::Value::String(reason.to_string());
+    }
+    crate::commands::telemetry::emit_desktop_operational_telemetry_best_effort(
+        "desktop_auto_update_post_cap_outcome",
+        properties,
     );
+}
+
+async fn commit_staged_install_with_decision(
+    app: &AppHandle,
+    staged: StagedDownload,
+    trigger: InstallTrigger,
+    decision: DeferralDecision,
+    remaining: Duration,
+) -> Result<(), String> {
+    let version = staged.info.version.clone();
     if decision == DeferralDecision::WaitForIdle {
         app.state::<DownloadedUpdate>().put(staged);
         return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
-    let _pause = crate::commands::process::pause_new_sync_cycles();
-    if decision == DeferralDecision::PauseThenInstall {
-        drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await;
-    }
+    let telemetry_attempt = staged.telemetry_attempt.clone();
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::InstallStarted,
+        &version,
+    );
     emit_update_install_started(app, &version);
-    let result = install_staged_update(app, &staged).await;
+    let drain_after_pause = drains_after_pause(trigger, decision);
+    let post_cap =
+        trigger == InstallTrigger::Automatic && decision == DeferralDecision::PauseThenInstall;
+    let daemon_mode = drain_after_pause
+        && crate::commands::hq_daemon_host::current_phase()
+            == crate::commands::hq_daemon_host::HostPhase::Daemon;
+    let result = daemon_pause_drain_install(
+        DaemonPauseDrainPlan {
+            daemon_mode,
+            drain_after_pause,
+        },
+        || pause_daemon_sync_for_update(app),
+        crate::commands::process::pause_new_sync_cycles,
+        || log_deferral_decision(trigger, decision, &version, remaining),
+        || async { drain_in_flight_transfers(IN_FLIGHT_DRAIN_TIMEOUT).await },
+        || install_staged_update(app, &staged, post_cap),
+        || resume_daemon_sync_after_update(app),
+    )
+    .await;
+    let result = match result {
+        Err(error) => telemetry_attempt.observe_result(
+            UpdateOutcomeStage::InstallFailed,
+            &version,
+            Err(error),
+            send_update_outcome,
+        ),
+        Ok(()) => Ok(()),
+    };
     if let Err(message) = &result {
+        if post_cap {
+            emit_post_cap_install_outcome(&version, "failed", None);
+        }
         emit_update_install_failed(app, &version, message);
         app.state::<DownloadedUpdate>().put(staged);
     }
@@ -1230,9 +1826,8 @@ fn spawn_auto_install_waiter(app: AppHandle) {
     let generation = AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
     tauri::async_runtime::spawn(async move {
         let _active = AutoInstallWaiterGuard::arm(generation);
-        let mut last_wait_log: Option<Instant> = None;
         let mut last_deferred_emit: Option<DeferredEmitKey> = None;
-        let mut last_gate_log: Option<Instant> = None;
+        let mut deferral_log_limiter = DeferralLogLimiter::default();
         loop {
             if AUTO_INSTALL_WAITER_GENERATION.load(Ordering::Acquire) != generation {
                 return;
@@ -1242,72 +1837,68 @@ fn spawn_auto_install_waiter(app: AppHandle) {
             }
             let elapsed = downloaded_at.elapsed();
             let remaining = idle_wait_remaining(elapsed, AUTO_INSTALL_DEFER_CAP);
-            let decision = deferral_decision(
-                InstallTrigger::Automatic,
-                sync_in_progress(),
-                elapsed,
-                AUTO_INSTALL_DEFER_CAP,
-            );
+            let (sync_is_active, decision) = sample_automatic_sync_state(sync_in_progress, elapsed);
             match decision {
                 DeferralDecision::WaitForIdle => {
                     emit_update_waiting_for_idle(&app, &version, remaining);
-                    let should_log = match last_wait_log {
-                        None => true,
-                        Some(at) => at.elapsed() >= Duration::from_secs(30),
+                    let wait_reason = UpdateDecision::Defer {
+                        reason: DeferReason::Held {
+                            reasons: vec![HoldReason::UploadInFlight],
+                        },
                     };
-                    if should_log {
+                    if !deferral_log_limiter
+                        .eligible_reasons(&wait_reason, Instant::now())
+                        .is_empty()
+                    {
                         log_deferral_decision(
                             InstallTrigger::Automatic,
                             decision,
                             &version,
                             remaining,
                         );
-                        last_wait_log = Some(Instant::now());
                     }
                     tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                 }
                 DeferralDecision::InstallNow | DeferralDecision::PauseThenInstall => {
-                    log_deferral_decision(InstallTrigger::Automatic, decision, &version, remaining);
                     // Focus + hold gate. Sync external-signal holds into the
-                    // registry so it is the single source of truth, then
-                    // decide once and act on the outcome.
+                    // registry using the exact sync sample already used for
+                    // the idle-gap/cap decision. This prevents a fresh sync
+                    // cycle from vetoing an idle sample a moment later.
                     if let (Some(holds), Some(focus)) = (
                         app.try_state::<UpdateHoldsState>(),
                         app.try_state::<AppFocusState>(),
                     ) {
-                        // Sync externally-probed holds before deciding.
-                        sync_probed_holds(&holds);
-                        let gate = decide(UpdateTrigger::Automatic, focus.app_focus(), &holds.0);
-                        if let UpdateDecision::Defer { ref reason } = gate {
-                            // Log at most once per minute.
-                            let should_log = match last_gate_log {
-                                None => true,
-                                Some(at) => at.elapsed() >= Duration::from_secs(60),
-                            };
-                            if should_log {
-                                log(
-                                    "updater",
-                                    &format!("[updater] deferred: {:?}", reason),
-                                );
-                                last_gate_log = Some(Instant::now());
+                        sync_probed_holds_with_sync_state(&holds, sync_is_active);
+                        let gate =
+                            automatic_install_gate_decision(decision, focus.app_focus(), &holds.0);
+                        if let UpdateDecision::Defer { .. } = &gate.decision {
+                            for reason in deferral_log_limiter
+                                .eligible_reasons(&gate.decision, Instant::now())
+                            {
+                                log("updater", &format!("[updater] deferred: {reason}"));
+                                if decision == DeferralDecision::PauseThenInstall {
+                                    emit_post_cap_install_outcome(
+                                        &version,
+                                        "still-held-by",
+                                        Some(&reason.to_string()),
+                                    );
+                                }
                             }
                             // Emit only when (version, decision, reasons) changes.
-                            let status = crate::commands::update_gate::current_gate_status(
-                                &holds,
-                                &focus,
-                                Some(version.clone()),
-                                UpdateTrigger::Automatic,
-                            );
+                            let status = crate::commands::update_gate::UpdateGateStatus {
+                                pending_version: Some(version.clone()),
+                                decision: gate.decision.clone(),
+                                reasons: gate.reasons.clone(),
+                                focused: focus.is_focused(),
+                            };
                             let emit_key = DeferredEmitKey::new(
                                 status.pending_version.clone(),
-                                gate,
+                                gate.decision,
                                 status.reasons.clone(),
                             );
-                            if should_emit_deferred(
-                                last_deferred_emit.as_ref(),
-                                &emit_key,
-                            ) {
-                                let _ = app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
+                            if should_emit_deferred(last_deferred_emit.as_ref(), &emit_key) {
+                                let _ =
+                                    app.emit_to("desktop-alt", UPDATE_GATE_DEFERRED_EVENT, &status);
                                 last_deferred_emit = Some(emit_key);
                             }
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
@@ -1326,7 +1917,14 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                         );
                         return;
                     };
-                    match commit_staged_install_unguarded(&app, InstallTrigger::Automatic).await {
+                    match commit_staged_install_from_waiter(
+                        &app,
+                        InstallTrigger::Automatic,
+                        decision,
+                        remaining,
+                    )
+                    .await
+                    {
                         Ok(()) => {
                             log("updater", "automatic update handed off successfully");
                         }
@@ -1335,7 +1933,7 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                             tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                             continue;
                         }
-                        Err(error) if install_failure_is_transient_deferral(&error) => {
+                        Err(error) if automatic_install_should_retry(&error) => {
                             log(
                                 "updater",
                                 "automatic update deferred during install startup; retrying soon",
@@ -1356,6 +1954,77 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                     return;
                 }
             }
+        }
+    });
+}
+
+static DEFERRED_RESTART_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DEFERRED_INSTALL_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
+    !held && !focused
+}
+
+/// A support-requested restart has no staged installer for the standard waiter
+/// to consume. Wait on the same poll cadence, then require the normal
+/// automatic-update focus rule before exiting the app.
+pub(crate) fn defer_restart_until_safe(app: AppHandle, update_version: Option<String>) {
+    if DEFERRED_RESTART_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let held = restart_is_held(&app).is_some();
+            let focused = app
+                .try_state::<AppFocusState>()
+                .is_some_and(|focus| focus.is_focused());
+            if deferred_restart_is_safe(held, focused) {
+                log("updater", "deferred restart is now safe; restarting");
+                if let Some(version) = update_version.as_deref() {
+                    crate::commands::autostart::restart_after_update_preferring_launch_agent(
+                        &app, version,
+                    );
+                } else {
+                    crate::commands::autostart::restart_preferring_launch_agent(&app);
+                }
+            }
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
+        }
+    });
+}
+
+/// A support-requested desktop update can arrive during a recording before an
+/// installer is staged. Preserve the command's safety boundary, then perform
+/// the normal updater flow once the same restart predicate is satisfied.
+pub(crate) fn defer_install_until_safe(app: AppHandle) {
+    if DEFERRED_INSTALL_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let held = restart_is_held(&app).is_some();
+            let focused = app
+                .try_state::<AppFocusState>()
+                .is_some_and(|focus| focus.is_focused());
+            if deferred_restart_is_safe(held, focused) {
+                DEFERRED_INSTALL_ACTIVE.store(false, Ordering::Release);
+                if let Err(error) = install_update(app.clone()).await {
+                    // A recording can begin in the narrow interval between the
+                    // waiter probe and install_update's final hold gate.
+                    // Re-arm instead of dropping the support-requested update.
+                    if error.starts_with("update held:") {
+                        defer_install_until_safe(app.clone());
+                    }
+                }
+                return;
+            }
+            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         }
     });
 }
@@ -1446,12 +2115,27 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let ticket = begin_app_check(&app)?;
     let updater = channel_aware_updater(&app).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
+    let telemetry_attempt = UpdateOutcomeAttempt::new(
+        crate::app_version::current().to_string(),
+        updater.channel.as_str(),
+        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+    );
+    emit_update_outcome(
+        &telemetry_attempt,
+        UpdateOutcomeStage::CheckStarted,
+        crate::app_version::current(),
+    );
     match updater.updater.check().await {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
                 update.body.clone(),
                 update.date.map(|d| d.to_string()),
+            );
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpdateAvailable,
+                &info.version,
             );
             let info = record_and_announce_update(
                 &app,
@@ -1462,13 +2146,18 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
             )
             .await?
             .unwrap_or(info);
-            let info = stage_plugin_update(&app, update, info).await?;
+            let info = stage_plugin_update(&app, update, info, &telemetry_attempt).await?;
             if hq_desktop_core::hq_cli_update::auto_update_enabled() {
                 spawn_auto_install_waiter(app.clone());
             }
             Ok(info)
         }
         Ok(None) => {
+            emit_update_outcome(
+                &telemetry_attempt,
+                UpdateOutcomeStage::UpToDate,
+                crate::app_version::current(),
+            );
             let _ = apply_absent_and_emit(&app, ticket, authoritative)?;
             Err("No update available".to_string())
         }
@@ -1484,16 +2173,29 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
 /// the automatic sync-idle deferral.
 #[tauri::command]
 pub async fn install_downloaded_update(app: AppHandle) -> Result<(), String> {
+    // Settings/Core popover "Restart to update" previously bypassed all holds.
+    // Re-arm the staged waiter on refusal so it restarts automatically only
+    // after the recording is finished and the app is unfocused.
+    gate_staged_install(&app, UpdateTrigger::Manual)?;
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     AUTO_INSTALL_WAITER_GENERATION.fetch_add(1, Ordering::AcqRel);
     commit_staged_install_unguarded(&app, InstallTrigger::Manual).await
 }
 
-async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Result<(), String> {
+async fn install_staged_update(
+    app: &AppHandle,
+    staged: &StagedDownload,
+    post_cap: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        crate::windows_update::install_verified_bytes(app, &staged.update, &staged.bytes).await
+        let result =
+            crate::windows_update::install_verified_bytes(app, &staged.update, &staged.bytes).await;
+        if result.is_ok() && post_cap {
+            emit_post_cap_install_outcome(&staged.info.version, "installed", None);
+        }
+        result
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1509,7 +2211,19 @@ async fn install_staged_update(app: &AppHandle, staged: &StagedDownload) -> Resu
         // server sees the post-update state (installed target version +
         // cleared updater state) without waiting for relaunch.
         crate::commands::client_health::emit_client_health_after_update(&staged.info.version).await;
-        crate::commands::autostart::restart_preferring_launch_agent(app);
+        if post_cap {
+            emit_post_cap_install_outcome(&staged.info.version, "installed", None);
+        }
+        if !crate::commands::autostart::restart_after_update_preferring_launch_agent(
+            app,
+            &staged.info.version,
+        ) {
+            // A recording won the final exit race. The staged install entry
+            // gate normally prevents this; retain a successful deferred
+            // outcome for the remaining narrow race window.
+            return Ok(());
+        }
+        unreachable!("a successful restart handoff never returns")
     }
 }
 
@@ -1780,7 +2494,10 @@ fn emit_shortcut_invoke(app: &AppHandle, id: &'static str) {
         return;
     };
     if let Err(e) = app.emit_to(&target, EVENT_SHORTCUT_INVOKE, ShortcutInvokePayload { id }) {
-        log("updater", &format!("shortcut:invoke emit failed ({id}): {e}"));
+        log(
+            "updater",
+            &format!("shortcut:invoke emit failed ({id}): {e}"),
+        );
     }
 }
 
@@ -1879,6 +2596,18 @@ pub fn setup_update_checker(app: &AppHandle) {
                         Ok(updater) => {
                             let authoritative = updater.provenance.absence_is_authoritative();
                             next_check = background_check_interval(updater.channel);
+                            let automatic_updates =
+                                hq_desktop_core::hq_cli_update::auto_update_enabled();
+                            let telemetry_attempt = UpdateOutcomeAttempt::new(
+                                crate::app_version::current().to_string(),
+                                updater.channel.as_str(),
+                                automatic_updates,
+                            );
+                            emit_update_outcome(
+                                &telemetry_attempt,
+                                UpdateOutcomeStage::CheckStarted,
+                                crate::app_version::current(),
+                            );
                             match updater.updater.check().await {
                                 Ok(Some(update)) => {
                                     let info = discovered_update(
@@ -1886,8 +2615,13 @@ pub fn setup_update_checker(app: &AppHandle) {
                                         update.body.clone(),
                                         update.date.map(|d| d.to_string()),
                                     );
+                                    emit_update_outcome(
+                                        &telemetry_attempt,
+                                        UpdateOutcomeStage::UpdateAvailable,
+                                        &info.version,
+                                    );
                                     match background_update_action(
-                                        hq_desktop_core::hq_cli_update::auto_update_enabled(),
+                                        automatic_updates,
                                         silent_install_supported(),
                                     ) {
                                         BackgroundUpdateAction::Install => {
@@ -1923,6 +2657,7 @@ pub fn setup_update_checker(app: &AppHandle) {
                                                             &handle,
                                                             update,
                                                             info.clone(),
+                                                            &telemetry_attempt,
                                                         )
                                                         .await
                                                         {
@@ -1967,6 +2702,13 @@ pub fn setup_update_checker(app: &AppHandle) {
                                             }
                                         }
                                         BackgroundUpdateAction::Announce => {
+                                            if !automatic_updates {
+                                                emit_update_outcome(
+                                                    &telemetry_attempt,
+                                                    UpdateOutcomeStage::InstallDeferredUserOff,
+                                                    &info.version,
+                                                );
+                                            }
                                             drop(update);
                                             if let Err(e) = record_and_announce_update(
                                                 &handle,
@@ -1985,6 +2727,11 @@ pub fn setup_update_checker(app: &AppHandle) {
                                     }
                                 }
                                 Ok(None) => {
+                                    emit_update_outcome(
+                                        &telemetry_attempt,
+                                        UpdateOutcomeStage::UpToDate,
+                                        crate::app_version::current(),
+                                    );
                                     log(
                                         "updater",
                                         &format!(
@@ -2040,6 +2787,13 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_restart_waits_for_both_the_hold_and_focus_to_clear() {
+        assert!(!deferred_restart_is_safe(true, false));
+        assert!(!deferred_restart_is_safe(false, true));
+        assert!(deferred_restart_is_safe(false, false));
+    }
 
     /// The "is newer" check runs against the runtime-resolved version. A
     /// cached shell compiled at 0.10.328 but assembled as 0.10.400 must not
@@ -2124,7 +2878,10 @@ mod tests {
             pick_shortcut_target(Some("recovery"), &all).as_deref(),
             Some("desktop-alt")
         );
-        assert_eq!(pick_shortcut_target(None, &all).as_deref(), Some("desktop-alt"));
+        assert_eq!(
+            pick_shortcut_target(None, &all).as_deref(),
+            Some("desktop-alt")
+        );
 
         // desktop-alt closed: never emit into the void when another shell
         // window is open and focused.
@@ -2142,7 +2899,10 @@ mod tests {
         );
 
         // No shell window at all → the caller logs instead of emitting.
-        assert_eq!(pick_shortcut_target(Some("recovery"), &labels(&["recovery"])), None);
+        assert_eq!(
+            pick_shortcut_target(Some("recovery"), &labels(&["recovery"])),
+            None
+        );
         assert_eq!(pick_shortcut_target(None, &[]), None);
     }
 
@@ -2439,6 +3199,45 @@ mod tests {
     }
 
     #[test]
+    fn deferred_restart_message_names_the_actual_reason() {
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::MeetingRecording]),
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        );
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::TranscriptFinishing]),
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        );
+        assert_eq!(
+            deferred_restart_message(&[HoldReason::CoreUpdateInProgress]),
+            UPDATE_DEFERRED_DURING_CORE_UPDATE
+        );
+        assert!(automatic_install_should_retry(
+            UPDATE_DEFERRED_DURING_CORE_UPDATE
+        ));
+    }
+
+    #[test]
+    fn repeated_sync_probes_do_not_leave_the_upload_hold_active() {
+        let holds = crate::commands::update_gate::UpdateHoldsState::default();
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, true);
+        sync_probed_holds_with_sync_state(&holds, false);
+        assert!(!holds.0.active().contains(&HoldReason::UploadInFlight));
+    }
+
+    #[test]
+    fn protected_activity_deferral_retries_without_consuming_the_staged_update() {
+        assert!(automatic_install_should_retry(
+            UPDATE_DEFERRED_DURING_PROTECTED_ACTIVITY
+        ));
+        assert!(!automatic_install_should_retry(
+            "signature verification failed"
+        ));
+    }
+
+    #[test]
     fn automatic_background_updates_install_on_idle_gap() {
         assert_eq!(
             deferral_decision(
@@ -2472,6 +3271,316 @@ mod tests {
             DeferralDecision::PauseThenInstall
         );
         assert_eq!(IN_FLIGHT_DRAIN_TIMEOUT, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn every_non_manual_install_drains_after_pausing_new_cycles() {
+        for decision in [
+            DeferralDecision::InstallNow,
+            DeferralDecision::PauseThenInstall,
+        ] {
+            assert!(drains_after_pause(InstallTrigger::Automatic, decision));
+            assert!(drains_after_pause(InstallTrigger::Forced, decision));
+        }
+        assert!(!drains_after_pause(
+            InstallTrigger::Manual,
+            DeferralDecision::InstallNow
+        ));
+    }
+
+    #[tokio::test]
+    async fn idle_gap_install_drains_a_cycle_that_started_before_the_pause() {
+        let (sync_is_active, decision) =
+            sample_automatic_sync_state(|| false, Duration::from_secs(5));
+        assert!(!sync_is_active);
+        assert_eq!(decision, DeferralDecision::InstallNow);
+
+        // A sync cycle registers after the idle sample but before
+        // pause_new_sync_cycles(); it finishes on the third drain probe.
+        let probes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let drain_probes = std::sync::Arc::clone(&probes);
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+
+        pause_cycles_drain_then_install(
+            drains_after_pause(InstallTrigger::Automatic, decision),
+            move || pause_events.lock().unwrap().push("paused"),
+            || {},
+            async move {
+                let drained = drain_in_flight_transfers_with(
+                    Duration::from_secs(5),
+                    || drain_probes.fetch_add(1, Ordering::SeqCst) < 2,
+                    |_| std::future::ready(()),
+                )
+                .await;
+                assert!(drained);
+                drain_events.lock().unwrap().push("drained");
+            },
+            async move { install_events.lock().unwrap().push("installed") },
+        )
+        .await;
+
+        assert_eq!(probes.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["paused", "drained", "installed"]
+        );
+    }
+
+    #[tokio::test]
+    async fn continuously_busy_waiter_pauses_drains_and_installs_after_cap() {
+        let sync_samples = std::cell::Cell::new(0);
+        let (sync_is_active, decision) = sample_automatic_sync_state(
+            || {
+                sync_samples.set(sync_samples.get() + 1);
+                true
+            },
+            AUTO_INSTALL_DEFER_CAP,
+        );
+        assert!(sync_is_active);
+        assert_eq!(sync_samples.get(), 1);
+        assert_eq!(decision, DeferralDecision::PauseThenInstall);
+
+        let holds = UpdateHolds::new();
+        holds.acquire(HoldReason::UploadInFlight);
+        let gate = automatic_install_gate_decision(decision, AppFocus::Focused, &holds);
+        assert_eq!(gate.decision, UpdateDecision::InstallNow);
+        assert!(gate.reasons.is_empty());
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let paused_log_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+
+        let completed = pause_cycles_drain_then_install(
+            drains_after_pause(InstallTrigger::Automatic, decision),
+            move || pause_events.lock().unwrap().push("paused"),
+            move || paused_log_events.lock().unwrap().push("pause-logged"),
+            async move {
+                let drained = drain_in_flight_transfers_with(
+                    Duration::from_millis(5),
+                    || sync_is_active,
+                    |_| tokio::time::sleep(Duration::from_millis(1)),
+                )
+                .await;
+                assert!(
+                    !drained,
+                    "the watch sync remains busy through the drain timeout"
+                );
+                drain_events.lock().unwrap().push("drained");
+            },
+            async move {
+                install_events.lock().unwrap().push("installed");
+                true
+            },
+        )
+        .await;
+
+        assert!(completed);
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["paused", "pause-logged", "drained", "installed"]
+        );
+    }
+
+    #[test]
+    fn meeting_transcript_and_core_update_holds_still_defer_after_cap() {
+        for reason in [
+            HoldReason::MeetingRecording,
+            HoldReason::TranscriptFinishing,
+            HoldReason::CoreUpdateInProgress,
+        ] {
+            let holds = UpdateHolds::new();
+            holds.acquire(reason.clone());
+
+            let gate = automatic_install_gate_decision(
+                DeferralDecision::PauseThenInstall,
+                AppFocus::Focused,
+                &holds,
+            );
+
+            assert_eq!(
+                gate.decision,
+                UpdateDecision::Defer {
+                    reason: DeferReason::Held {
+                        reasons: vec![reason.clone()],
+                    },
+                },
+                "{reason} remains a blocker after the sync deferral cap"
+            );
+            assert_eq!(gate.reasons, vec![reason]);
+        }
+    }
+
+    #[test]
+    fn focus_defers_during_idle_wait_but_not_after_the_cap() {
+        let holds = UpdateHolds::new();
+        assert_eq!(
+            automatic_install_gate_decision(
+                DeferralDecision::InstallNow,
+                AppFocus::Focused,
+                &holds
+            )
+            .decision,
+            UpdateDecision::Defer {
+                reason: DeferReason::Focused,
+            }
+        );
+        assert_eq!(
+            automatic_install_gate_decision(
+                DeferralDecision::PauseThenInstall,
+                AppFocus::Focused,
+                &holds,
+            )
+            .decision,
+            UpdateDecision::InstallNow
+        );
+    }
+
+    #[test]
+    fn idle_gap_uses_one_sync_sample_for_decision_and_gate() {
+        let sync_samples = std::cell::Cell::new(0);
+        let (sync_is_active, decision) = sample_automatic_sync_state(
+            || {
+                sync_samples.set(sync_samples.get() + 1);
+                false
+            },
+            Duration::from_secs(5),
+        );
+        let holds = UpdateHolds::new();
+        let gate = automatic_install_gate_decision(decision, AppFocus::Unfocused, &holds);
+
+        assert!(!sync_is_active);
+        assert_eq!(decision, DeferralDecision::InstallNow);
+        assert_eq!(gate.decision, UpdateDecision::InstallNow);
+        assert_eq!(sync_samples.get(), 1);
+    }
+
+    #[test]
+    fn repeated_deferral_logs_are_bounded_per_reason() {
+        let mut limiter = DeferralLogLimiter::default();
+        let sync_defer = UpdateDecision::Defer {
+            reason: DeferReason::Held {
+                reasons: vec![HoldReason::UploadInFlight],
+            },
+        };
+        let started = Instant::now();
+        let mut emitted = 0;
+
+        for attempt in 0..4_609 {
+            let now = started + Duration::from_secs(attempt * 2);
+            emitted += limiter.eligible_reasons(&sync_defer, now).len();
+        }
+
+        assert!(
+            emitted <= 155,
+            "4,609 two-second retries emitted {emitted} lines for one reason"
+        );
+        let another_reason = UpdateDecision::Defer {
+            reason: DeferReason::Held {
+                reasons: vec![HoldReason::UploadInFlight, HoldReason::MeetingRecording],
+            },
+        };
+        let next = limiter.eligible_reasons(&another_reason, started + Duration::from_secs(9_217));
+        assert_eq!(
+            next,
+            vec![DeferredLogReason::Held(HoldReason::MeetingRecording)]
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_pause_failure_still_drains_before_installing() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+        let result = daemon_pause_drain_install(
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
+            move || async move {
+                pause_events.lock().unwrap().push("pause");
+                false
+            },
+            || (),
+            || {},
+            move || async move { drain_events.lock().unwrap().push("drain") },
+            move || async move {
+                install_events.lock().unwrap().push("install");
+                Ok(())
+            },
+            || async {},
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(*events.lock().unwrap(), vec!["pause", "drain", "install"]);
+    }
+
+    #[tokio::test]
+    async fn daemon_pause_is_cleared_after_failed_install() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+        let resume_events = std::sync::Arc::clone(&events);
+        let result = daemon_pause_drain_install(
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
+            move || async move {
+                pause_events.lock().unwrap().push("pause");
+                true
+            },
+            || (),
+            || {},
+            move || async move { drain_events.lock().unwrap().push("drain") },
+            move || async move {
+                install_events.lock().unwrap().push("install");
+                Err("installer failed".to_string())
+            },
+            move || async move { resume_events.lock().unwrap().push("resume") },
+        )
+        .await;
+        assert_eq!(result, Err("installer failed".to_string()));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["pause", "drain", "install", "resume"]
+        );
+    }
+
+    #[tokio::test]
+    async fn daemon_pause_remains_armed_for_startup_cleanup_after_success() {
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let pause_events = std::sync::Arc::clone(&events);
+        let drain_events = std::sync::Arc::clone(&events);
+        let install_events = std::sync::Arc::clone(&events);
+        let resume_events = std::sync::Arc::clone(&events);
+        let result = daemon_pause_drain_install(
+            DaemonPauseDrainPlan {
+                daemon_mode: true,
+                drain_after_pause: true,
+            },
+            move || async move {
+                pause_events.lock().unwrap().push("pause");
+                true
+            },
+            || (),
+            || {},
+            move || async move { drain_events.lock().unwrap().push("drain") },
+            move || async move {
+                install_events.lock().unwrap().push("install");
+                Ok(())
+            },
+            move || async move { resume_events.lock().unwrap().push("resume") },
+        )
+        .await;
+        assert_eq!(result, Ok(()));
+        assert_eq!(*events.lock().unwrap(), vec!["pause", "drain", "install"]);
     }
 
     #[test]

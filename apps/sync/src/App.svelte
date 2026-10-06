@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { createSyncPlatformAdapter } from '@hq/platform';
+  import { fetch as tauriHttpFetch } from '@tauri-apps/plugin-http';
+  import {
+    createSyncPlatformAdapter,
+    POST_READY_ACTION_TELEMETRY_FLAG,
+    POST_READY_DROP_REASON_FLAG,
+    type Json,
+  } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
   import { emit, listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getVersion } from '@tauri-apps/api/app';
   import {
     isPermissionGranted as isNotifyPermissionGranted,
     sendNotification,
@@ -71,7 +78,15 @@
   } from './lib/brand';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
-  import { emitDesktopTelemetry } from './lib/desktop-telemetry';
+  import {
+    emitDesktopTelemetry,
+  } from './lib/desktop-telemetry';
+  import {
+    createFirstLaunchSignInReachReporter,
+    setFirstLaunchSignInReachReporter,
+    startupOutcomeForLifecycle,
+    resolveFirstLaunchSignInReachFlag,
+  } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
     replayRetainedDetections,
@@ -80,6 +95,7 @@
     type MeetingDetectedPayload,
   } from './lib/meetingDetection';
   import Onboarding from './components/Onboarding.svelte';
+  import { startupSplashFor } from './lib/startup-splash';
   import {
     armStopWatchdog,
     clearStopWatchdog,
@@ -87,12 +103,154 @@
   } from './lib/stopWatchdog';
   import { TELEMETRY_CONSENT_VERSION } from './lib/consent-version';
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
+  import {
+    createPostReadyActionTelemetry,
+    postReadyIdentityAdapterValue,
+    isPostReadyAction,
+    POST_READY_ACTION_EVENT,
+    registerPostReadyCloseTelemetry,
+  } from './lib/post-ready-action-telemetry';
+  import { registerSetupToolOfferTelemetry } from './lib/setup-tool-offer-telemetry';
+  import { registerMainReturnNudgeListener } from './lib/return-nudge-event-bridge';
   import './styles/popover.css';
 
   const traySyncAdapter = createSyncPlatformAdapter({
     invoke: (command, args) => invoke(command, args),
     primeMirrorQuarantineGate: true,
   });
+  const firstLaunchSignInReachReporter = createFirstLaunchSignInReachReporter({
+    isFirstRun: () => invoke<boolean>('is_first_run'),
+    isSuppressed: async () => {
+      const context = await invoke<unknown>('desktop_continuation_context');
+      return typeof context === 'object' && context !== null &&
+        'suppressFirstLaunchTelemetry' in context &&
+        context.suppressFirstLaunchTelemetry === true;
+    },
+    isEnabled: async (visitorId) => {
+      return resolveFirstLaunchSignInReachFlag(visitorId, tauriHttpFetch);
+    },
+    getInstallAttemptId: async () => {
+      const value = await invoke<unknown>('desktop_install_attempt_id');
+      return typeof value === 'string' ? value : null;
+    },
+    warn: (message, error) => console.warn(message, error),
+  });
+  setFirstLaunchSignInReachReporter(firstLaunchSignInReachReporter);
+  void firstLaunchSignInReachReporter.prepare();
+  const postReadyTelemetry = getVersion()
+    .then((appVersion) => createPostReadyActionTelemetry({
+      appVersion,
+      os: desktopTelemetryOs(),
+      isFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+        return result.ok && result.value === true;
+      },
+      isDropReasonFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
+        return result.ok && result.value === true;
+      },
+      getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+    }))
+    .catch((err) => {
+      console.warn('post-ready action telemetry initialization failed:', err);
+      return createPostReadyActionTelemetry({
+        appVersion: 'unknown',
+        os: desktopTelemetryOs(),
+        isFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        isDropReasonFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
+          return result.ok && result.value === true;
+        },
+        getIdentity: async (scope) => resolvePostReadyIdentity(scope),
+      });
+    });
+  function handlePostReadyAction(event: Event): void {
+    const detail = (
+      event as CustomEvent<{
+        action?: unknown;
+        companyUid?: unknown;
+        companySlug?: unknown;
+        returnNudge?: unknown;
+      }>
+    ).detail;
+    if (!detail || !isPostReadyAction(detail.action)) return;
+    const scope = {
+      ...(typeof detail.companyUid === 'string' ? { companyUid: detail.companyUid } : {}),
+      ...(typeof detail.companySlug === 'string' ? { companySlug: detail.companySlug } : {}),
+    };
+    if (detail.returnNudge === 'shown' || detail.returnNudge === 'clicked' || detail.returnNudge === 'dismissed') {
+      if (typeof detail.companyUid !== 'string') return;
+      void postReadyTelemetry.then((telemetry) =>
+        telemetry.recordReturnNudge(detail.returnNudge as 'shown' | 'clicked' | 'dismissed', {
+          companyUid: detail.companyUid as string,
+        }),
+      );
+      return;
+    }
+    void postReadyTelemetry.then((telemetry) =>
+      telemetry.record(
+        detail.action as Parameters<typeof telemetry.record>[0],
+        scope,
+      ),
+    );
+  }
+  window.addEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+  const unlistenReturnNudge = registerMainReturnNudgeListener(
+    (handler) => listen(POST_READY_ACTION_EVENT, (event) => handler(event.payload)),
+    (detail) => handlePostReadyAction(new CustomEvent(POST_READY_ACTION_EVENT, { detail })),
+  ).catch((error: unknown) => {
+    console.warn('post-ready action cross-window listener failed:', error);
+    return () => {};
+  });
+  const postReadyCloseListener = registerPostReadyCloseTelemetry(postReadyTelemetry);
+  // The setup bot's "continue setup in your coding tool" card (packages/ui).
+  const stopSetupToolOfferTelemetry = registerSetupToolOfferTelemetry();
+  onDestroy(() => {
+    stopSetupToolOfferTelemetry();
+    window.removeEventListener(POST_READY_ACTION_EVENT, handlePostReadyAction);
+    void unlistenReturnNudge.then((unlisten) => unlisten());
+    void postReadyCloseListener.then((unlisten) => unlisten());
+  });
+
+  async function resolvePostReadyIdentity(
+    scope?: { companyUid?: string; companySlug?: string },
+  ): Promise<{ personUid: string; companyUid: string | null } | null> {
+    const person = postReadyIdentityAdapterValue(await traySyncAdapter.identity.whoami());
+    const workspaces = postReadyIdentityAdapterValue(await traySyncAdapter.identity.listWorkspaces());
+    let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
+    if (!activeSlug && !scope?.companyUid) {
+      activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {
+        console.warn('active company lookup failed for post-ready telemetry:', err);
+        return null;
+      })) ?? '';
+    }
+    const memberships = workspaces as Json[];
+    const active = scope?.companyUid
+      ? memberships.find(
+          (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
+        )
+      : scope?.companySlug
+        ? memberships.find(
+            (workspace) => String(workspace.slug ?? workspace.companySlug ?? '') === scope.companySlug,
+          )
+        : memberships.find(
+            (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
+          ) ?? (memberships.length === 1 ? memberships[0] : undefined);
+    const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
+    return { personUid: person.personUid, companyUid: companyUid || null };
+  }
+
+  function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
+    const platform = typeof navigator === 'undefined'
+      ? ''
+      : `${navigator.platform} ${navigator.userAgent}`.toLowerCase();
+    if (platform.includes('mac')) return 'macos';
+    if (platform.includes('win')) return 'windows';
+    return 'linux';
+  }
   onDestroy(() => {
     void traySyncAdapter.dispose?.();
   });
@@ -130,6 +288,20 @@
   // are only ever shown from a resolved verdict — a failed probe holds the
   // neutral loading surface and re-probes (see `checkAuth`).
   let startupPhase = $state<StartupPhase>('loading');
+  // First launch: native setup gave `main` to the welcome flow (a transparent,
+  // work-area-sized window). Paint an opaque splash while the startup check
+  // runs so the window is visible from the first frame.
+  let welcomeWindowActive = $state(false);
+  void invoke<boolean>('get_welcome_window_active')
+    .then((active) => {
+      welcomeWindowActive = active === true;
+    })
+    .catch((err) => {
+      console.warn('get_welcome_window_active unavailable; using the compact spinner:', err);
+    });
+  const startupSplash = $derived(
+    startupSplashFor({ startupResolved: startupPhase === 'resolved', welcomeWindowActive }),
+  );
   let startupReprobeTimer: ReturnType<typeof setTimeout> | null = null;
   let lifecycleState = $state<string | null>(null);
   let startupSetupEvidence = $state<StartupSetupEvidence | null>(null);
@@ -144,6 +316,8 @@
   // film ends or is skipped.
   let replayIntro = $state(false);
   let syncState = $state<'idle' | 'syncing' | 'poll-only' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  let watcherWaitingForLock = $state(false);
+  let watcherLockHolder = $state<string | null>(null);
   let realtimeMode = $state<RealtimeMode | null>(null);
   // Fail closed until hq-flags resolves; a missing or unreadable flag keeps
   // the current status behavior. The manager can enable the canary explicitly.
@@ -774,6 +948,14 @@
     } catch (err) {
       console.error('install_update failed:', err);
       updateInstalling = false;
+      const message = err instanceof Error ? err.message : String(err);
+      // The main window owns update UI. Relay a recording deferral there so a
+      // notification action never degrades into a console-only failure.
+      if (message.startsWith('HQ will restart to update after')) {
+        void invoke('update_gate_status')
+          .then((status) => emit('update-gate://deferred', status))
+          .catch(() => {});
+      }
       // Ordinary callers swallow the failure — the desktop window's Settings →
       // Updates pane owns the visible install-error surface.
       // Custom notification actions request propagation so Rust can reject the
@@ -942,6 +1124,15 @@
   }
 
   async function setupTrayListeners(unlisteners: ListenerRegistry) {
+    unlisteners.push(
+      await listen<{ state: string; holderCommand?: string }>(
+        'sync:watcher-status',
+        ({ payload }) => {
+          watcherWaitingForLock = payload.state === 'waiting-for-lock';
+          watcherLockHolder = watcherWaitingForLock ? payload.holderCommand ?? null : null;
+        },
+      ),
+    );
     // Refresh the workspaces read every time this window gains focus (it is
     // shown for onboarding and sign-in). Cheap — a single Tauri command plus a
     // small vault round-trip — and it catches external mutations: a company
@@ -965,6 +1156,27 @@
     unlisteners.push(
       await listen('tray:sync-now', () => {
         handleSyncNow();
+      })
+    );
+
+    unlisteners.push(
+      await listen<{
+        title?: unknown;
+        message?: unknown;
+      }>('hq-core-update:automatic-failed', async ({ payload }) => {
+        const title = typeof payload.title === 'string'
+          ? payload.title.slice(0, 80)
+          : 'Core update failed';
+        const body = typeof payload.message === 'string'
+          ? payload.message.slice(0, 240)
+          : 'Open the Core update log for details.';
+        try {
+          if (await isNotifyPermissionGranted()) {
+            sendNotification({ title, body });
+          }
+        } catch (err) {
+          console.error('core update failure notification failed:', err);
+        }
       })
     );
 
@@ -1797,6 +2009,19 @@
     loadConfig();
     loadWorkspaces();
     const listenerRegistry = new ListenerRegistry();
+    void listen('version-gate:update-required', () => {
+      firstLaunchSignInReachReporter.record('update-gate');
+    })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('version-gate listener unavailable', error));
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        firstLaunchSignInReachReporter.record('window-closed');
+      })
+      .then((unlisten) => listenerRegistry.push(unlisten))
+      .catch((error) => console.warn('window-close reach listener unavailable', error));
+    const recordAppQuitBeforeSignIn = () => firstLaunchSignInReachReporter.record('quit');
+    window.addEventListener('pagehide', recordAppQuitBeforeSignIn);
     void setupTrayListeners(listenerRegistry).catch((err) => {
       // A failed registration must not turn into an unhandled rejection.
       console.error('setup tray listeners failed:', err);
@@ -1851,6 +2076,8 @@
       clearChannelUnreadRetry();
       recordingActionAcks.dispose();
       listenerRegistry.dispose();
+      window.removeEventListener('pagehide', recordAppQuitBeforeSignIn);
+      setFirstLaunchSignInReachReporter(null);
     };
   });
 
@@ -1966,6 +2193,7 @@
         outcome.error,
       );
       scheduleStartupReprobe();
+      firstLaunchSignInReachReporter.record('startup-error');
       return;
     }
 
@@ -1984,6 +2212,12 @@
     lifecycleState = probedLifecycle;
     startupSetupEvidence = setupEvidence ?? null;
     authenticated = shouldSkipSignIn(state);
+    const startupReachOutcome = startupOutcomeForLifecycle(
+      lifecycleState,
+      setupEvidence ?? null,
+      authenticated,
+    );
+    if (startupReachOutcome) firstLaunchSignInReachReporter.record(startupReachOutcome);
     expiresAt = state.expiresAt ?? '';
     if (hadStoredToken && !state.authenticated) {
       syncState = 'auth-error';
@@ -2102,7 +2336,22 @@
 </script>
 
 <main>
-  {#if startupPhase !== 'resolved'}
+  {#if watcherWaitingForLock}
+    <p class="watcher-lock-status" role="status">
+      {watcherLockHolder
+        ? `Waiting for another sync (${watcherLockHolder}) to finish`
+        : "Waiting for another sync to finish"}
+    </p>
+  {/if}
+  {#if startupSplash === 'welcome-splash'}
+    <div class="welcome-splash" data-testid="startup-welcome-splash" data-tauri-drag-region>
+      <svg class="welcome-splash-mark" viewBox="0 0 280 161" fill="currentColor" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HQ">
+        <path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8176H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z"/>
+        <path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z"/>
+      </svg>
+      <p class="welcome-splash-line"><span class="dot-spinner"></span>Starting HQ…</p>
+    </div>
+  {:else if startupSplash === 'spinner'}
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
@@ -2180,6 +2429,53 @@
     align-items: center;
     justify-content: center;
     height: 100vh;
+  }
+
+  .watcher-lock-status {
+    position: fixed;
+    z-index: 20;
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    margin: 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--popover-surface, #17171b);
+    color: var(--popover-text, #e0e0e0);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  .welcome-splash {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    background: #0b0b0f;
+    color: #ffffff;
+  }
+
+  .welcome-splash-mark {
+    width: 96px;
+    height: auto;
+  }
+
+  .welcome-splash-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.72);
+  }
+
+  .welcome-splash-line .dot-spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
   }
 
   .dot-spinner {

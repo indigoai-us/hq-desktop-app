@@ -19,7 +19,7 @@ import {
 } from "./appearance-seam.js";
 import type { SettingsUiSize } from "./settings-prefs.js";
 
-export const THEME_STORAGE_KEY = "hq-work-color-theme";
+const THEME_STORAGE_KEY = "hq-work-color-theme";
 
 export const APPEARANCE_THEMES: ReadonlyArray<{
   id: ColorTheme;
@@ -54,8 +54,6 @@ export const APPEARANCE_SIZES: ReadonlyArray<{
   { id: "default", label: "Default" },
   { id: "large", label: "Large" },
 ];
-
-export const MEETING_PLATFORM_ORDER = ["Zoom", "Google Meet", "Teams"] as const;
 
 export interface SettingsCompanyRow {
   id: string;
@@ -123,7 +121,7 @@ function toRow(workspace: Workspace): SettingsCompanyRow {
 }
 
 /** Prototype always shows a Personal vault row under companies. */
-export function personalSettingsRow(label?: string | null): SettingsCompanyRow {
+function personalSettingsRow(label?: string | null): SettingsCompanyRow {
   const name = (label ?? "").trim() || "Personal";
   return {
     id: "personal",
@@ -238,7 +236,7 @@ export function currentColorTheme(
 }
 
 /** Clamp to the user-facing slider range (which must include the default). */
-export function clampSliderOpacity(value: number): number {
+function clampSliderOpacity(value: number): number {
   return Math.min(
     MAX_SLIDER_WINDOW_OPACITY,
     Math.max(MIN_SLIDER_WINDOW_OPACITY, Math.round(value)),

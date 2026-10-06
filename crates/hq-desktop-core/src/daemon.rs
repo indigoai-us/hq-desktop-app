@@ -173,6 +173,13 @@ pub fn build_watch_runner_args_for_target(
     };
 
     let mut env = sync_child_env(hq_folder_path);
+    // HQ_OP_LOCK_TIMEOUT takes precedence over the CLI value in some runner
+    // versions. Pin it to the same validated bound so a malformed or negative
+    // inherited value cannot turn this watcher back into an unbounded wait.
+    env.insert(
+        "HQ_OP_LOCK_TIMEOUT".to_string(),
+        WATCH_RUNNER_LOCK_TIMEOUT_SECS.to_string(),
+    );
     let personal_sync_enabled = is_personal_sync_enabled();
 
     // Declare a V8 old-space ceiling for the runner child so its mid-pull heap
@@ -206,6 +213,11 @@ pub fn build_watch_runner_args_for_target(
         "--hq-root".to_string(),
         hq_folder_path.to_string(),
         "--watch".to_string(),
+        // Bound contention on the shared operation lock. A ten-minute window
+        // leaves normal long sync operations room to finish while ensuring a
+        // wedged holder cannot keep the watch process alive forever.
+        "--lock-timeout".to_string(),
+        WATCH_RUNNER_LOCK_TIMEOUT_SECS.to_string(),
     ];
 
     // `--event-push` is a runner capability, never V2 enrollment. The
@@ -272,6 +284,9 @@ pub fn build_watch_runner_args_for_target(
         env: Some(env),
     }
 }
+
+/// Maximum time a watch pass waits for another HQ operation to release its lock.
+pub const WATCH_RUNNER_LOCK_TIMEOUT_SECS: u64 = 600;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Runner memory ceiling (auto-sync watcher child unbounded-memory cluster)
@@ -1735,6 +1750,19 @@ pub fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive:
     (realtime_sync || autostart) && !daemon_alive
 }
 
+/// Decide whether the gated launch-only sync pass should run. Background
+/// Auto-sync and the autostart devtools path already start a long-lived host,
+/// so the one-shot path is only needed when the existing Sync on launch
+/// preference is enabled and both background paths are off.
+pub fn should_run_sync_on_launch(
+    flag_enabled: bool,
+    sync_on_launch: bool,
+    realtime_sync: bool,
+    autostart: bool,
+) -> bool {
+    flag_enabled && sync_on_launch && !realtime_sync && !autostart
+}
+
 /// Decide whether the desktop shell must terminate a live-but-stalled watch
 /// runner. PID liveness alone only says that a process exists; a runner that
 /// has stopped emitting its sync protocol cannot make progress and may still
@@ -1805,6 +1833,15 @@ mod tests {
         assert!(!should_respawn_daemon(false, false, false));
         // Auto-sync off, daemon alive → no-op.
         assert!(!should_respawn_daemon(false, false, true));
+    }
+
+    #[test]
+    fn test_should_run_sync_on_launch_is_gated_and_fills_only_the_auto_sync_gap() {
+        assert!(!should_run_sync_on_launch(false, true, false, false));
+        assert!(!should_run_sync_on_launch(true, false, false, false));
+        assert!(!should_run_sync_on_launch(true, true, true, false));
+        assert!(!should_run_sync_on_launch(true, true, false, true));
+        assert!(should_run_sync_on_launch(true, true, false, false));
     }
 
     // ── Cloud Off gating (V2 US-001 / US-016) ─────────────────────────────
@@ -2401,6 +2438,24 @@ mod tests {
     fn test_build_watch_runner_args_uses_runner_adaptive_poll_interval() {
         let args = build_watch_runner_args("/any");
         assert!(args.args.contains(&"--watch".to_string()));
+        let lock_timeout = args
+            .args
+            .iter()
+            .position(|arg| arg == "--lock-timeout")
+            .expect("watch runner lock wait must be bounded");
+        assert_eq!(
+            args.args.get(lock_timeout + 1).map(String::as_str),
+            Some("600"),
+            "ten minutes allows normal operations to finish without an unbounded wait"
+        );
+        assert_eq!(
+            args.env
+                .as_ref()
+                .and_then(|env| env.get("HQ_OP_LOCK_TIMEOUT"))
+                .map(String::as_str),
+            Some("600"),
+            "an inherited malformed value must not override the bounded CLI timeout"
+        );
         assert!(
             !args.args.iter().any(|arg| arg == "--poll-remote-ms"),
             "omitting --poll-remote-ms lets hq-cloud apply load-aware backoff: {:?}",

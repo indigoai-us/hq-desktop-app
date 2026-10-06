@@ -47,18 +47,19 @@ pub async fn poll_only_status_enabled() -> bool {
 }
 
 use chrono::SecondsFormat;
-use hq_desktop_core::runner_error_shape::{classify_runner_stack_input, PreRunnerCause, PreRunnerSite};
+use hq_desktop_core::runner_error_shape::{
+    classify_runner_stack_input, PreRunnerCause, PreRunnerSite,
+};
 #[cfg(test)]
 use hq_desktop_core::sync_outcome::classify_runner_exit_disposition;
 use hq_desktop_core::sync_outcome::{
-    classify_error_event, classify_runner_error_class,
-    classify_runner_exit_disposition_with_fault, classify_runner_fatal_class,
-    classify_windows_exit_status, describe_exit, is_expected_acl_scope_skip,
-    runner_phase_elapsed_bucket, runner_phase_from_event, runner_stack_shape_for_exit,
-    should_synthesize_all_complete, termination_fingerprint_token, windows_exit_status_hex,
-    windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass, SessionEndLatchReading,
-    SyncCancelCause, WindowsTerminatorAttribution, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
-    RUNNER_PHASE_PRE_PROTOCOL,
+    classify_error_event, classify_runner_error_class, classify_runner_exit_disposition_with_fault,
+    classify_runner_fatal_class, classify_windows_exit_status, describe_exit,
+    is_expected_acl_scope_skip, runner_phase_elapsed_bucket, runner_phase_from_event,
+    runner_stack_shape_for_exit, should_synthesize_all_complete, termination_fingerprint_token,
+    windows_exit_status_hex, windows_fault_symbol, RunnerExitDisposition, RunnerFatalClass,
+    SessionEndLatchReading, SyncCancelCause, WindowsTerminatorAttribution,
+    RUNNER_PHASE_PRE_PROTOCOL, SYNC_DISK_FULL_DETAIL, SYNC_FILE_LOCKED_DETAIL,
 };
 use hq_desktop_core::toolchain::ManagedToolchain;
 use hq_desktop_core::watcher_fault::{classify_unmatched_stderr_shape, UnmatchedStderrShapeRollup};
@@ -66,9 +67,6 @@ use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
 use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
-use crate::commands::session_end_attribution::{
-    current_session_end_latch_reading_for_exit, current_windows_terminator_attribution,
-};
 #[cfg(test)]
 use crate::commands::process::run_process_impl;
 use crate::commands::process::{
@@ -76,6 +74,9 @@ use crate::commands::process::{
     cancellation_record_for_generation, generation_for_handle, is_cancelled_for_generation,
     run_process_impl_for_generation, try_register_handle_gen, CancellationRecord, ProcessEvent,
     SpawnArgs,
+};
+use crate::commands::session_end_attribution::{
+    current_session_end_latch_reading_for_exit, current_windows_terminator_attribution,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::commands::vault_client::VaultClient;
@@ -1121,10 +1122,18 @@ enum ResolveJwtError {
     Other(String),
 }
 
+fn resolve_jwt_refresh_failure(error: cognito::CognitoRefreshError) -> ResolveJwtError {
+    if error.requires_reauth {
+        ResolveJwtError::NeedsReauth
+    } else {
+        ResolveJwtError::Other(error.message)
+    }
+}
+
 /// Fetch the current JWT from the on-disk token cache, refreshing and
 /// persisting it if expired. Terminal refresh rejection invalidates only the
-/// rejected token generation; a temporary failure preserves it but still
-/// routes this run to the reauth surface after the built-in retry is exhausted.
+/// rejected token generation. A temporary failure preserves it and returns
+/// the diagnostic to the sync failure surface without starting reauth.
 async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
     let tokens = cognito::get_tokens()
         .await
@@ -1148,7 +1157,7 @@ async fn resolve_jwt_classified() -> Result<String, ResolveJwtError> {
                     .await
                     .map_err(ResolveJwtError::Other)?;
             }
-            Err(ResolveJwtError::NeedsReauth)
+            Err(resolve_jwt_refresh_failure(err))
         }
     }
 }
@@ -1413,10 +1422,7 @@ fn progress_coalescers() -> &'static Mutex<HashMap<String, ProgressCoalescer>> {
     SYNC_PROGRESS_COALESCERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn with_progress_coalescer<T>(
-    hq_folder: &str,
-    f: impl FnOnce(&mut ProgressCoalescer) -> T,
-) -> T {
+fn with_progress_coalescer<T>(hq_folder: &str, f: impl FnOnce(&mut ProgressCoalescer) -> T) -> T {
     let mut map = progress_coalescers()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -1506,7 +1512,7 @@ fn handle_sync_line<R: tauri::Runtime>(
     // by using the inner value rather than crashing the sync thread.
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
-        t.accumulate(&event);
+        accumulate_runner_event_for_health(&mut t, &event, line);
     }
 
     // Unit struct variants (SetupNeeded) serialize to `()` when emitted via
@@ -1561,10 +1567,14 @@ fn handle_sync_line<R: tauri::Runtime>(
         // file-transfer totals, Recent Changes, and frontend progress.
         SyncEvent::MaintenanceProgress(_) => Ok(()),
         SyncEvent::Error(payload) => {
-            // `classify_error_event` is the test-covered classification boundary;
-            // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
-            // kept to these two lines so it is visually auditable without a harness.
-            if let Some(complete_event) = classify_error_event(payload) {
+            if runner_error_is_diagnostic(line) {
+                // The diagnostic stays in the local app log for doctor/support,
+                // but it must not put the user-facing sync status into error.
+                Ok(())
+            } else if let Some(complete_event) = classify_error_event(payload) {
+                // `classify_error_event` is the test-covered classification boundary;
+                // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
+                // kept to these two lines so it is visually auditable without a harness.
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "[sync] company '{}' not yet on S3 — treating as empty sync: {}",
@@ -1603,6 +1613,7 @@ fn handle_sync_line<R: tauri::Runtime>(
             app.emit(EVENT_SYNC_NEW_FILES, payload.clone())
         }
         SyncEvent::AllComplete(payload) => {
+            crate::commands::cdp_mirror::note_sync_files(payload.files_downloaded);
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
             let (conflicts, uploads_pass) = {
@@ -1751,11 +1762,34 @@ fn update_runner_stderr_totals(
     let mut totals = totals.lock().unwrap_or_else(|e| e.into_inner());
     if reauth.is_some() {
         totals.record_auth_error();
-    } else if let Some(payload) = runner_error.as_ref() {
-        totals.record_error(payload);
+    } else if !runner_error_is_diagnostic(line) {
+        if let Some(payload) = runner_error.as_ref() {
+            totals.record_error(payload);
+        }
     }
     totals.record_stderr_line(line);
     reauth
+}
+
+/// Runner diagnostic errors remain in the protocol stream for doctor and
+/// support tooling, but they do not describe a failed sync operation.
+fn runner_error_is_diagnostic(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|value| value.get("diagnostic").and_then(serde_json::Value::as_bool))
+        == Some(true)
+}
+
+pub(crate) fn accumulate_runner_event_for_health(
+    totals: &mut RunTotals,
+    event: &SyncEvent,
+    line: &str,
+) {
+    if runner_error_is_diagnostic(line) {
+        log("sync-diagnostic", line);
+    } else {
+        totals.accumulate(event);
+    }
 }
 
 /// Forward runner stderr protocol records that affect sync state.
@@ -2443,14 +2477,70 @@ pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
     hq_desktop_core::daemon::ensure_sync_spawn_allowed()
 }
 
-/// Returns the handle string on success (always `"hq-sync"`).
+/// Returns the handle string on success (always `"hq-sync"`). Every webview
+/// caller is a person pressing Sync; Rust callers name their own trigger via
+/// [`start_sync_with_trigger`].
 #[tauri::command]
 pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<String, String> {
+    start_sync_with_trigger(
+        app,
+        company_slug,
+        crate::commands::cdp_mirror::SyncTrigger::Manual,
+    )
+    .await
+}
+
+/// [`start_sync`] with the trigger reported on `sync_started` / `sync_completed`
+/// / `sync_failed`.
+pub(crate) async fn start_sync_with_trigger(
+    app: AppHandle,
+    company_slug: Option<String>,
+    trigger: crate::commands::cdp_mirror::SyncTrigger,
+) -> Result<String, String> {
+    let result = start_sync_inner(app, company_slug, trigger).await;
+    match &result {
+        Ok(handle) if handle == "hq-daemon-sync" => {
+            crate::commands::cdp_mirror::note_sync_started(trigger, "daemon");
+        }
+        // Only a pass this call registered is in flight; "already running"
+        // belongs to the other pass and must not end it.
+        Err(error) if error != SYNC_ALREADY_RUNNING => {
+            crate::commands::cdp_mirror::note_sync_start_failed();
+        }
+        _ => {}
+    }
+    result
+}
+
+const SYNC_ALREADY_RUNNING: &str = "Sync is already running";
+
+async fn start_sync_inner(
+    app: AppHandle,
+    company_slug: Option<String>,
+    trigger: crate::commands::cdp_mirror::SyncTrigger,
+) -> Result<String, String> {
     // V2 Cloud Off (US-001 / US-016): sync is paused on this device. Gate EVERY
     // caller of this command — the V2 window's Sync, the menubar popover's Sync
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
     start_sync_cloud_gate()?;
+    let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
+    if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
+        host_phase,
+        company_slug.as_deref(),
+        crate::commands::hq_daemon_host::request_daemon_sync_now,
+    ) {
+        return result;
+    }
+    match host_phase {
+        crate::commands::hq_daemon_host::HostPhase::Daemon => {
+            unreachable!("daemon phase returned through daemon_sync_now_for_phase")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Pending => {
+            unreachable!("pending phase is returned as a retry error")
+        }
+        crate::commands::hq_daemon_host::HostPhase::Legacy => {}
+    }
     let scope = parse_sync_scope(company_slug)?;
     log("sync", &format!("scope={scope:?}"));
     log("sync", "start_sync invoked");
@@ -2462,8 +2552,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
         log("sync", "BAIL: already running");
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
-        return Err("Sync is already running".to_string());
+        return Err(SYNC_ALREADY_RUNNING.to_string());
     };
+    crate::commands::cdp_mirror::note_sync_started(trigger, "runner");
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
@@ -3022,7 +3113,9 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // disposition flags or the three fingerprint rollups — so an exit a first-push
     // fault preceded is attributable without changing grouping or alerting.
     if !pre_runner_failures.is_empty() {
-        let mut initial = totals.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut initial = totals
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for (site, status, cause) in &pre_runner_failures {
             initial.record_pre_runner_failure(*site, *status, *cause);
         }
@@ -3044,6 +3137,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
     // the only evidence that existed instead of reaching Sentry with every axis
     // empty.
     let mut runner_unmatched_stderr = UnmatchedStderrShapeRollup::default();
+    #[cfg(test)]
+    crate::commands::process::record_sync_runner_spawn_attempt();
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -3261,11 +3356,10 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                     // only on clean completions (including no-change runs);
                     // everything else maps to a closed reason code and
                     // triggers an immediate heartbeat.
-                    let final_totals =
-                        totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    crate::commands::client_health::record_sync_run_ended(
-                        success,
-                        &final_totals,
+                    let final_totals = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    crate::commands::client_health::record_sync_run_ended(success, &final_totals);
+                    crate::commands::cdp_mirror::note_sync_ended(
+                        crate::commands::client_health::sync_failure_class(success, &final_totals),
                     );
                     // Remove this run's report directory if it still exists (a clean
                     // success wrote none; the capture path's read already removed it).
@@ -3292,10 +3386,8 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
                 capture_sync_error(None, "(spawn)", &message);
                 // No child existed, so no Exit event will close this run for
                 // client health — record the failed attempt here.
-                crate::commands::client_health::record_sync_run_ended(
-                    false,
-                    &RunTotals::default(),
-                );
+                crate::commands::client_health::record_sync_run_ended(false, &RunTotals::default());
+                crate::commands::cdp_mirror::note_sync_ended(Some("spawn_failed"));
                 ("(spawn)", message)
             } else {
                 // Preserve the existing user-visible error text. The typed
@@ -3324,6 +3416,11 @@ pub async fn start_sync(app: AppHandle, company_slug: Option<String>) -> Result<
 /// Returns `true` if a sync was running and cancellation was initiated.
 #[tauri::command]
 pub fn cancel_sync() -> bool {
+    if crate::commands::hq_daemon_host::current_phase()
+        != crate::commands::hq_daemon_host::HostPhase::Legacy
+    {
+        return false;
+    }
     generation_for_handle(SYNC_HANDLE)
         .map(|generation| {
             cancel_process_for_generation(
@@ -3344,12 +3441,44 @@ pub fn cancel_sync() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_error_lines_remain_parseable_without_affecting_health_totals() {
+        let line = r#"{"type":"error","diagnostic":true,"component":"runner","event":"retry","path":"(runner)","message":"retrying transient request"}"#;
+        let event = crate::events::parse_sync_line(line).expect("doctor can parse diagnostics");
+        let mut stdout_totals = RunTotals::default();
+        accumulate_runner_event_for_health(&mut stdout_totals, &event, line);
+        assert!(!stdout_totals.saw_error);
+        assert!(!stdout_totals.saw_alertable_error);
+
+        let stderr_totals = Mutex::new(RunTotals::default());
+        assert!(update_runner_stderr_totals(&stderr_totals, line).is_none());
+        let stderr_totals = stderr_totals.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!stderr_totals.saw_error);
+        assert!(!stderr_totals.saw_alertable_error);
+    }
     use crate::commands::cognito::CognitoTokens;
     #[cfg(not(windows))]
     use crate::util::test_support::write_usable_managed_git;
     use crate::util::test_support::{scoped_home, ENV_MUTEX};
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn invalid_client_refresh_failure_does_not_route_sync_to_reauth() {
+        let result = resolve_jwt_refresh_failure(cognito::CognitoRefreshError {
+            message: "Cognito returned status=400 code=invalid_client".to_string(),
+            requires_reauth: false,
+            status_code: Some(400),
+            error_code: Some("invalid_client".to_string()),
+            failure_class: cognito::CognitoRefreshFailureClass::Http4xx,
+            rejection_class: "unknown",
+        });
+        assert_eq!(
+            result,
+            ResolveJwtError::Other("Cognito returned status=400 code=invalid_client".to_string())
+        );
+    }
 
     // ── Per-file progress coalescing ────────────────────────────────────────
 
@@ -3365,7 +3494,10 @@ mod tests {
         let mut c = ProgressCoalescer::default();
         let t0 = Instant::now();
         assert_eq!(c.offer(progress("a"), t0), Some(progress("a")));
-        assert!(c.flush(t0).is_none(), "nothing held after an immediate emit");
+        assert!(
+            c.flush(t0).is_none(),
+            "nothing held after an immediate emit"
+        );
     }
 
     #[test]
@@ -3388,9 +3520,14 @@ mod tests {
         assert!(c.offer(progress("a"), t0).is_some());
         let t1 = t0 + SYNC_PROGRESS_EMIT_INTERVAL;
         // A held event is superseded by the due one (the UI wants the newest).
-        assert!(c.offer(progress("b"), t0 + Duration::from_millis(1)).is_none());
+        assert!(c
+            .offer(progress("b"), t0 + Duration::from_millis(1))
+            .is_none());
         assert_eq!(c.offer(progress("c"), t1), Some(progress("c")));
-        assert!(c.flush(t1).is_none(), "the due emit drops the stale held event");
+        assert!(
+            c.flush(t1).is_none(),
+            "the due emit drops the stale held event"
+        );
     }
 
     #[test]
@@ -3414,7 +3551,9 @@ mod tests {
         let totals = Mutex::new(RunTotals::default());
         let phase = Mutex::new(RunnerPhaseContext::default());
         let line = r#"{"type":"progress","company":"indigo","path":"run1.md","bytes":1}"#;
-        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line));
+        assert!(handle_sync_line(
+            &handle, folder, &totals, &phase, "jwt", line
+        ));
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["run1.md"]);
 
@@ -3431,7 +3570,9 @@ mod tests {
         // Run 2 starts immediately, well inside SYNC_PROGRESS_EMIT_INTERVAL of
         // run 1's emit. Without the prune its first progress would be HELD.
         let line2 = r#"{"type":"progress","company":"indigo","path":"run2.md","bytes":1}"#;
-        assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", line2));
+        assert!(handle_sync_line(
+            &handle, folder, &totals, &phase, "jwt", line2
+        ));
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(
             seen.lock().unwrap().as_slice(),
@@ -3461,7 +3602,9 @@ mod tests {
         for path in ["a.md", "b.md"] {
             let line =
                 format!(r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#);
-            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+            assert!(handle_sync_line(
+                &handle, folder, &totals, &phase, "jwt", &line
+            ));
         }
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"], "b.md is held");
@@ -3503,10 +3646,11 @@ mod tests {
         // Three per-file events back-to-back (well inside 120ms): only the first
         // is emitted immediately; the rest are coalesced.
         for path in ["a.md", "b.md", "c.md"] {
-            let line = format!(
-                r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#
-            );
-            assert!(handle_sync_line(&handle, folder, &totals, &phase, "jwt", &line));
+            let line =
+                format!(r#"{{"type":"progress","company":"indigo","path":"{path}","bytes":1}}"#);
+            assert!(handle_sync_line(
+                &handle, folder, &totals, &phase, "jwt", &line
+            ));
         }
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(seen.lock().unwrap().as_slice(), ["a.md"]);
@@ -3559,7 +3703,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
 
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1, "exactly one conflict event per conflicted path");
+        assert_eq!(
+            seen.len(),
+            1,
+            "exactly one conflict event per conflicted path"
+        );
         assert_eq!(seen[0]["path"], "knowledge/readme.md");
         assert_eq!(seen[0]["company"], "indigo");
         assert_eq!(seen[0]["canAutoResolve"], false);
@@ -4468,12 +4616,9 @@ mod tests {
         assert_eq!(code, Some(75));
         assert_eq!(signal, None);
         assert!(!success);
-        assert!(totals.saw_error);
-        assert!(totals.saw_alertable_error);
-        assert_eq!(
-            totals.runner_error_rollup.tag_value().as_deref(),
-            Some("OTHER:3")
-        );
+        assert!(!totals.saw_error);
+        assert!(!totals.saw_alertable_error);
+        assert_eq!(totals.runner_error_rollup.tag_value(), None);
 
         let disposition = classify_runner_exit_disposition(
             code,
@@ -4966,7 +5111,10 @@ mod tests {
         // prose records are lower-cased-prose-led, and each distinct message skeleton is
         // signed — making this exact flood self-describing on its next occurrence even
         // though the fingerprint (and the `unknown_unnamed` cause) are unchanged.
-        assert_eq!(event.tags["runner_error_unknown_profiles"], "lower_prose:160");
+        assert_eq!(
+            event.tags["runner_error_unknown_profiles"],
+            "lower_prose:160"
+        );
         assert_eq!(
             event.tags["runner_error_residual_signature"],
             "4620a8381a84:120,57244c1e9fa5:40"
@@ -5054,8 +5202,13 @@ mod tests {
             runner_unmatched_stderr_shapes: rollup.tag_value(),
             ..Default::default()
         };
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
         assert!(
             tags.iter().any(|(key, value)| {
                 *key == "runner_unmatched_stderr_shapes" && value.as_str() == "other:1"
@@ -5071,8 +5224,13 @@ mod tests {
         // assertion in watcher_capture_reports_not_applicable_fault_provenance.
         let context = ManualRunnerExitContext::default();
         assert!(context.runner_unmatched_stderr_shapes.is_none());
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
         assert!(
             tags.iter()
                 .all(|(key, _)| *key != "runner_unmatched_stderr_shapes"),
@@ -5112,9 +5270,18 @@ mod tests {
         // A run with no first-push failure attaches neither pre-runner axis (nor the
         // http axis), so a clean run's event is byte-identical to before.
         let context = ManualRunnerExitContext::default();
-        let (tags, _extras) =
-            runner_exit_telemetry_context(Some(1), None, &RunTotals::default(), &context, "uncancelled");
-        for absent in ["pre_runner_failures", "pre_runner_causes", "runner_error_http"] {
+        let (tags, _extras) = runner_exit_telemetry_context(
+            Some(1),
+            None,
+            &RunTotals::default(),
+            &context,
+            "uncancelled",
+        );
+        for absent in [
+            "pre_runner_failures",
+            "pre_runner_causes",
+            "runner_error_http",
+        ] {
             assert!(
                 tags.iter().all(|(key, _)| *key != absent),
                 "an absent pre-runner axis must attach no {absent} tag: {tags:?}"
@@ -5552,7 +5719,10 @@ mod tests {
             let grammar_ok = message.ends_with("(other;none;path_like)")
                 || message.ends_with("(other;none;ndjson_record)")
                 || message.ends_with("(other;none;other)");
-            assert!(grammar_ok, "unexpected breadcrumb grammar/class: {message:?}");
+            assert!(
+                grammar_ok,
+                "unexpected breadcrumb grammar/class: {message:?}"
+            );
             if message.ends_with("(other;none;path_like)") {
                 path_like += 1;
             }
@@ -6053,23 +6223,27 @@ mod tests {
         let mut terminal = None;
 
         let captures = sentry::test::with_captured_events(|| {
-            run_process_impl("manual-runner-unknown-unnamed", &spawn, |event| match event {
-                ProcessEvent::Stderr(line) => {
-                    sequence = sequence.saturating_add(1);
-                    sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
-                    assert!(update_runner_stderr_totals(&totals, &line).is_none());
-                    push_runner_stderr_tail(
-                        &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
-                        line,
-                    );
-                }
-                ProcessEvent::Exit {
-                    code,
-                    signal,
-                    success,
-                } => terminal = Some((code, signal, success)),
-                ProcessEvent::Stdout(_) => {}
-            })
+            run_process_impl(
+                "manual-runner-unknown-unnamed",
+                &spawn,
+                |event| match event {
+                    ProcessEvent::Stderr(line) => {
+                        sequence = sequence.saturating_add(1);
+                        sentry::add_breadcrumb(runner_stderr_breadcrumb(sequence, &line));
+                        assert!(update_runner_stderr_totals(&totals, &line).is_none());
+                        push_runner_stderr_tail(
+                            &mut stderr_tail.lock().unwrap_or_else(|e| e.into_inner()),
+                            line,
+                        );
+                    }
+                    ProcessEvent::Exit {
+                        code,
+                        signal,
+                        success,
+                    } => terminal = Some((code, signal, success)),
+                    ProcessEvent::Stdout(_) => {}
+                },
+            )
             .expect("real fake runner should run");
 
             // A first-push fault ALSO preceded this exit: seed the adopted pre-runner
@@ -6083,8 +6257,14 @@ mod tests {
                 );
             }
             let snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let context =
-                manual_runner_exit_context(&SyncRunScope::All, &phase, &stderr_tail, sequence, 0, None);
+            let context = manual_runner_exit_context(
+                &SyncRunScope::All,
+                &phase,
+                &stderr_tail,
+                sequence,
+                0,
+                None,
+            );
             capture_runner_exit_error(Some(2), None, &snapshot, &payload, &context);
         });
 
@@ -6168,30 +6348,54 @@ mod tests {
         // The observed HQ-DESKTOP-63/64 body carries the SCOPE_EXCEEDS_PARENT marker.
         let scope_body = "{\"error\":\"Child scope exceeds parent permissions: Requested prefixes not covered by parent grant\",\"code\":\"SCOPE_EXCEEDS_PARENT\"}";
         let plain_body = "vend-child returned HTTP 403 Forbidden for cmp_acme";
-        assert!(is_expected_acl_scope_skip(scope_body), "scope body is an expected skip");
-        assert!(!is_expected_acl_scope_skip(plain_body), "a plain 403 is not an expected skip");
+        assert!(
+            is_expected_acl_scope_skip(scope_body),
+            "scope body is an expected skip"
+        );
+        assert!(
+            !is_expected_acl_scope_skip(plain_body),
+            "a plain 403 is not an expected skip"
+        );
 
         // The expected ACL-scope skip yields ZERO captures.
         let skipped = sentry::test::with_captured_events(|| {
             report(scope_body, Some(403), PreRunnerCause::ScopeExceedsParent);
         });
-        assert!(skipped.is_empty(), "an expected ACL-scope skip must not be captured");
+        assert!(
+            skipped.is_empty(),
+            "an expected ACL-scope skip must not be captured"
+        );
 
         // A plain 403 vend failure yields exactly ONE content-safe capture.
         let captured = sentry::test::with_captured_events(|| {
             report(plain_body, Some(403), PreRunnerCause::VendHttp);
         });
-        assert_eq!(captured.len(), 1, "a plain first-push failure is captured once");
+        assert_eq!(
+            captured.len(),
+            1,
+            "a plain first-push failure is captured once"
+        );
         let event = hq_telemetry::before_send(captured.into_iter().next().unwrap())
             .expect("first-push capture remains sendable");
-        assert_eq!(event.fingerprint, vec!["sync", "first-push-failed", "vend_http"]);
+        assert_eq!(
+            event.fingerprint,
+            vec!["sync", "first-push-failed", "vend_http"]
+        );
         // The content-safe pre-runner capture tags ride the event and survive egress.
         assert_eq!(event.tags["pre_runner_cause"], "vend_http");
         assert_eq!(event.tags["pre_runner_status"], "http_403");
         // The constant message ships; the server body never rides the capture.
         let serialized = serde_json::to_string(&event).expect("serialize");
-        for forbidden in ["SCOPE_EXCEEDS_PARENT", "Forbidden", "Requested prefixes", "vend-child"] {
-            assert!(!serialized.contains(forbidden), "leaked body substring {forbidden:?}");
+        for forbidden in [
+            "SCOPE_EXCEEDS_PARENT",
+            "Forbidden",
+            "Requested prefixes",
+            "vend-child",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "leaked body substring {forbidden:?}"
+            );
         }
     }
 

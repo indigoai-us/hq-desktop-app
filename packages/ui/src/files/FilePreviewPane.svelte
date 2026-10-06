@@ -16,6 +16,7 @@
    * company membership before reading or dispatching anything.
    */
   import type { PlatformAdapter } from "@hq/platform";
+  import { isMac } from "../common/platform.js";
   import { renderMarkdownDocument } from "../common/markdown.js";
   import { filePreviewKind } from "./file-preview-kind.js";
   import OpenFileInClaudeCode from "./OpenFileInClaudeCode.svelte";
@@ -60,6 +61,7 @@
   let copyGeneration = 0;
 
   const fileName = $derived(path.split("/").pop() ?? path);
+  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
   const kind = $derived(filePreviewKind(path));
   const isMarkdown = $derived(kind === "markdown");
   const isImage = $derived(kind === "image");
@@ -302,8 +304,8 @@
           onclick={revealInFinder}
           disabled={revealing}
           aria-busy={revealing}
-          title={revealError ?? `Reveal ${fileName} in Finder`}
-          aria-label={`Reveal ${fileName} in Finder`}
+          title={revealError ?? `Reveal ${fileName} in ${fileManagerName}`}
+          aria-label={`Reveal ${fileName} in ${fileManagerName}`}
         >
           {#if revealing}
             <span class="action-spinner" aria-hidden="true"></span>
@@ -327,7 +329,7 @@
               ? "Opening…"
               : revealError
                 ? "Failed"
-                : "Reveal in Finder"}
+                : `Reveal in ${fileManagerName}`}
           </span>
         </button>{/if}
     </div>
@@ -390,7 +392,7 @@
         <div class="preview-unsupported">
           <strong>PDF preview unavailable</strong>
           <span
-            >Use Reveal in Finder or Open in Claude Code to open this file.</span
+            >{`Use Reveal in ${fileManagerName} or Open in Claude Code to open this file.`}</span
           >
         </div>
       </object>

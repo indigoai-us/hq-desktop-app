@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod banner;
 pub mod bots;
 pub mod calls;
+pub mod cdp_mirror;
 /// US-016 story acceptance tests (test builds only).
 #[cfg(test)]
 mod calls_story_tests;
@@ -85,6 +86,7 @@ pub mod sync;
 pub mod sync_mode;
 pub mod sync_progress_watch;
 pub mod telemetry;
+pub(crate) mod updater_restart_marker;
 pub mod un_notify;
 pub mod vault_client;
 pub mod vault_explorer;

@@ -19,7 +19,7 @@ const COGNITO_IDP = "https://cognito-idp.us-east-1.amazonaws.com";
 const COGNITO_IDENTITY = "https://cognito-identity.us-east-1.amazonaws.com";
 const DEV_DEFAULT_API_URL = "https://hqapi.hq.computer";
 
-export function hqProConnectOrigin(
+function hqProConnectOrigin(
   configured = env.PUBLIC_HQ_PRO_API_URL,
   dev = import.meta.env.DEV,
 ): string | null {

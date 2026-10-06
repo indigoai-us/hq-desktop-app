@@ -1,0 +1,938 @@
+@font-face {
+  font-family: "New Bot Fraunces";
+  src: url("./assets/new-bot-wallpapers/fraunces-variable-latin.woff2")
+    format("woff2");
+  font-style: italic;
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+.new-bot-takeover {
+  --new-bot-ink: #fafafa;
+  --new-bot-muted: rgba(250, 250, 250, 0.66);
+  --new-bot-line: rgba(255, 255, 255, 0.14);
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--new-bot-ink);
+  background: #09090b var(--new-bot-wallpaper) center / cover no-repeat;
+  color-scheme: dark;
+  font-family:
+    "Geist",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-weight: 400;
+}
+
+.new-bot-takeover-shade {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse at center,
+      rgba(9, 9, 11, 0.24),
+      rgba(9, 9, 11, 0.82)
+    ),
+    rgba(9, 9, 11, 0.2);
+}
+
+.new-bot-takeover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 28px;
+}
+
+.new-bot-takeover-wordmark {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+}
+
+.new-bot-takeover-cancel,
+.new-bot-takeover-local {
+  border: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.new-bot-takeover-cancel {
+  padding: 7px 0;
+}
+
+.new-bot-takeover-cancel:hover,
+.new-bot-takeover-local:hover {
+  color: var(--new-bot-ink);
+}
+
+.new-bot-takeover-cancel:focus-visible,
+.new-bot-takeover-local:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+.new-bot-takeover-stage {
+  display: grid;
+  place-items: center;
+  padding: 28px;
+}
+
+.new-bot-takeover-card {
+  width: min(480px, 100%);
+  border: 1px solid var(--new-bot-line);
+  border-radius: 18px;
+  padding: clamp(30px, 7vw, 42px);
+  /* A static fill, no backdrop-filter: the dawn behind this card redraws on
+     every animation frame (NewBotDawn.svelte), so a blur here would be
+     computed again for the whole card on every one of them
+     (scripts/perf-budget-contract.test.ts). The extra alpha carries the
+     frost instead. */
+  background: rgba(17, 17, 19, 0.8);
+  box-shadow:
+    0 30px 80px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  animation: new-bot-takeover-arrive 280ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.new-bot-takeover-kicker {
+  margin: 0 0 18px;
+  color: rgba(255, 255, 255, 0.54);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.new-bot-takeover h1 {
+  max-width: 340px;
+  margin: 0;
+  font-size: 34px;
+  font-weight: 400;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  padding-bottom: 0.22em;
+}
+
+.new-bot-takeover h1 em {
+  background: linear-gradient(90deg, #ff809f, #ffb580);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-family: "New Bot Fraunces", Fraunces, Georgia, serif;
+  font-style: italic;
+  font-weight: 300;
+}
+
+.new-bot-takeover-copy {
+  max-width: 360px;
+  margin: 12px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.new-bot-takeover-next {
+  margin: 28px 0 0;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+}
+
+.new-bot-takeover-local {
+  display: block;
+  margin-top: 22px;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.new-bot-create {
+  display: grid;
+  gap: 14px;
+}
+
+.new-bot-step {
+  display: grid;
+  gap: 14px;
+  min-height: 300px;
+  animation: new-bot-step-arrive 180ms ease-out both;
+}
+
+.new-bot-progress {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.new-bot-progress span {
+  width: 6px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.new-bot-progress span.active {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.new-bot-back {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-bot-create h1 {
+  margin-bottom: 0;
+}
+
+.new-bot-create-copy,
+.new-bot-price,
+.new-bot-muted {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.new-bot-create-label {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.new-bot-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.new-bot-create-input {
+  min-width: 0;
+  border: 1px solid var(--new-bot-line);
+  border-radius: 0;
+  padding: 10px 12px;
+  background: rgba(9, 9, 11, 0.5);
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.new-bot-create-input:focus-visible,
+.new-bot-create-submit:focus-visible,
+.new-bot-more:focus-visible,
+.new-bot-brain:has(input:focus-visible),
+.new-bot-size:has(input:focus-visible),
+.new-bot-email:has(input:focus-visible) {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+.new-bot-handle {
+  min-width: 0;
+  color: var(--new-bot-muted);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.new-bot-brains,
+.new-bot-sizes {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.new-bot-brain,
+.new-bot-size,
+.new-bot-company,
+.new-bot-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--new-bot-line);
+  border-radius: 0;
+  padding: 9px 10px;
+  background: rgba(9, 9, 11, 0.36);
+  color: var(--new-bot-ink);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.new-bot-brain.selected,
+.new-bot-size.selected,
+.new-bot-company.selected {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.new-bot-companies {
+  display: grid;
+  gap: 7px;
+}
+.new-bot-company {
+  min-height: 42px;
+}
+.new-bot-company input,
+.new-bot-brain input,
+.new-bot-size input {
+  accent-color: #fafafa;
+}
+
+.new-bot-brain small {
+  margin-left: auto;
+  color: var(--new-bot-muted);
+  font-size: 11px;
+}
+
+.new-bot-more {
+  justify-self: start;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-muted);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.new-bot-advanced {
+  display: grid;
+  gap: 10px;
+  border-left: 1px solid var(--new-bot-line);
+  padding-left: 12px;
+}
+
+.new-bot-email {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.new-bot-create-submit {
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 0;
+  padding: 11px 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111113;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.new-bot-create-submit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.new-bot-create-error {
+  margin: 0;
+  color: #fecaca;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.new-bot-waking {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+}
+
+.new-bot-waking-ring {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: conic-gradient(
+    #ffb580 var(--waking-progress),
+    rgba(255, 255, 255, 0.16) 0
+  );
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.2),
+    0 10px 34px rgba(0, 0, 0, 0.28);
+}
+
+.new-bot-waking-avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(17, 17, 19, 0.94);
+  color: var(--new-bot-ink);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+
+.new-bot-waking .new-bot-takeover-kicker {
+  margin: 4px 0 0;
+}
+
+.new-bot-waking-status {
+  margin: -4px 0 2px;
+  color: var(--new-bot-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-waking-action,
+.new-bot-waking-link,
+.new-bot-waking-close {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-bot-waking-action {
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  padding: 10px 13px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111113;
+  font-weight: 500;
+}
+
+.new-bot-waking-link,
+.new-bot-waking-close {
+  color: var(--new-bot-muted);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.new-bot-waking-close {
+  margin-top: 4px;
+}
+
+.new-bot-waking-action:focus-visible,
+.new-bot-waking-link:focus-visible,
+.new-bot-waking-close:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+@keyframes new-bot-takeover-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes new-bot-step-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 560px) {
+  .new-bot-takeover-header {
+    padding: 18px 20px;
+  }
+
+  .new-bot-takeover-stage {
+    padding: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-bot-takeover-card {
+    animation: none;
+  }
+
+  .new-bot-step {
+    animation: none;
+  }
+}
+
+/* The card never grows past the window. Head and foot stay put; the middle scrolls. */
+.new-bot-takeover-stage {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.new-bot-takeover-stage {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* The card is content-box, so its padding and border come off the available height. */
+.new-bot-takeover-card {
+  --new-bot-card-pad: clamp(30px, 7vw, 42px);
+  padding: var(--new-bot-card-pad);
+  max-height: calc(100% - 2 * var(--new-bot-card-pad) - 2px);
+  overflow-y: auto;
+}
+
+@media (max-height: 780px) {
+  .new-bot-takeover-stage {
+    padding-block: 14px;
+  }
+
+  .new-bot-takeover-card {
+    --new-bot-card-pad: 26px;
+  }
+
+  .new-bot-company {
+    min-height: 46px;
+  }
+}
+
+.new-bot-takeover-card:has(.new-bot-create) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.new-bot-takeover-card:has([data-testid="new-bot-step-3"]) {
+  width: min(640px, 100%);
+}
+
+.new-bot-create {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.new-bot-create-head,
+.new-bot-create-foot {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 14px;
+}
+
+.new-bot-create-scroll {
+  flex: 0 1 auto;
+  min-height: 0;
+  margin: 0 -6px;
+  padding: 10px 6px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 10px, #000 calc(100% - 10px), transparent 100%);
+}
+
+.new-bot-create-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.new-bot-create-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.new-bot-step {
+  min-height: 0;
+}
+
+.new-bot-filter-label {
+  color: var(--new-bot-muted);
+  font-size: 12px;
+}
+
+.new-bot-companies {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.new-bot-company {
+  position: relative;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 12px;
+  gap: 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
+}
+
+.new-bot-company:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.new-bot-company:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
+}
+
+.new-bot-company:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 2px;
+}
+
+.new-bot-company.selected {
+  border-image: linear-gradient(90deg, #ff809f, #ffb580) 1;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.new-bot-company-monogram {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.new-bot-company.selected .new-bot-company-monogram {
+  background: linear-gradient(135deg, rgba(255, 128, 159, 0.34), rgba(255, 181, 128, 0.34));
+  color: #fafafa;
+}
+
+.new-bot-company-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-bot-company-check {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: #ffb580;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.new-bot-company-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+}
+
+@media (max-width: 620px) {
+  .new-bot-companies {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 420px) {
+  .new-bot-companies {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .new-bot-company {
+    transition: none;
+  }
+
+  .new-bot-company:hover:not(:disabled),
+  .new-bot-company:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* The sunrise drawn while a bot is being created and woken up. */
+.new-bot-dawn {
+  width: 100%;
+  height: 176px;
+  margin-bottom: 6px;
+}
+
+.new-bot-dawn canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.new-bot-waking {
+  justify-items: stretch;
+}
+
+.new-bot-waking > button {
+  justify-self: start;
+}
+
+@media (max-height: 780px) {
+  .new-bot-dawn {
+    height: 136px;
+  }
+}
+
+/* The plan refusal: one primary action, two quiet ways out. */
+.new-bot-upgrade {
+  gap: 14px;
+}
+
+.new-bot-upgrade .new-bot-create-submit {
+  justify-self: stretch;
+  margin-top: 6px;
+}
+
+/* Brain approval: one panel holding the ask, the code and the actions. */
+.new-bot-approval {
+  display: grid;
+  justify-items: start;
+  gap: 16px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 20px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(9, 9, 11, 0.42);
+}
+
+.new-bot-approval-ask {
+  margin: 0;
+  color: var(--new-bot-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-approval-note {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.new-bot-code {
+  display: grid;
+  gap: 8px;
+}
+
+.new-bot-code-label {
+  color: rgba(255, 255, 255, 0.54);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.new-bot-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.new-bot-code-value {
+  color: var(--new-bot-ink);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  user-select: all;
+}
+
+.new-bot-code-copy,
+.new-bot-waking-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.new-bot-code-copy {
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.new-bot-waking-secondary {
+  padding: 10px 13px;
+  font-size: 13px;
+}
+
+.new-bot-code-copy:hover,
+.new-bot-waking-secondary:hover {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.new-bot-code-copy:focus-visible,
+.new-bot-waking-secondary:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+.new-bot-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+@media (max-height: 780px) {
+  .new-bot-waking {
+    gap: 12px;
+  }
+
+  .new-bot-approval {
+    gap: 12px;
+    padding: 14px 16px;
+  }
+
+  .new-bot-code-value {
+    font-size: 24px;
+  }
+}
+
+/* Cancel: the status of a cancelled bot, and the question asked before a bot
+   that exists is removed. */
+.new-bot-takeover:has(.new-bot-cancel-notices) {
+  grid-template-rows: auto 1fr auto;
+}
+
+.new-bot-cancel-notices {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 0 28px 22px;
+}
+
+.new-bot-cancel-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px 12px;
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.new-bot-cancel-notice[data-phase="failed"] {
+  color: #fecaca;
+}
+
+.new-bot-cancel-retry {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+}
+
+.new-bot-cancel-retry:focus-visible,
+.new-bot-confirm-remove:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 4px;
+}
+
+.new-bot-confirm-backdrop {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(9, 9, 11, 0.72);
+}
+
+.new-bot-confirm {
+  display: grid;
+  gap: 12px;
+  width: min(400px, 100%);
+  border: 1px solid var(--new-bot-line);
+  border-radius: 0;
+  padding: 24px;
+  background: #111113;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+}
+
+.new-bot-confirm h2 {
+  margin: 0;
+  color: var(--new-bot-ink);
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+}
+
+.new-bot-confirm p {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.new-bot-confirm-remove {
+  border: 1px solid #fecaca;
+  border-radius: 0;
+  padding: 10px 13px;
+  background: transparent;
+  color: #fecaca;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-bot-confirm-remove:hover {
+  background: rgba(254, 202, 202, 0.1);
+}

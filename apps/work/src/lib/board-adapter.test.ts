@@ -44,7 +44,12 @@ describe("board thread request deadlines", () => {
 
     expect(warn).toHaveBeenCalledWith(
       "[hq-work-board] thread request failed",
-      expect.objectContaining({ endpoint: "threads", event: "timeout" }),
+      expect.objectContaining({
+        endpoint: "threads",
+        event: "timeout",
+        name: "Error",
+        message: "Board thread request timed out",
+      }),
     );
   });
 
@@ -62,7 +67,12 @@ describe("board thread request deadlines", () => {
 
     expect(warn).toHaveBeenCalledWith(
       "[hq-work-board] thread request failed",
-      expect.objectContaining({ endpoint: "thread", event: "timeout" }),
+      expect.objectContaining({
+        endpoint: "thread",
+        event: "timeout",
+        name: "Error",
+        message: "Board thread request timed out",
+      }),
     );
   });
 
@@ -88,12 +98,19 @@ describe("board thread request deadlines", () => {
       expect.objectContaining({
         endpoint: "threads",
         event: "transport-error",
+        name: "Error",
+        message: "Board thread transport failed",
       }),
     );
     expect(warn).toHaveBeenNthCalledWith(
       2,
       "[hq-work-board] thread request failed",
-      expect.objectContaining({ endpoint: "thread", event: "body-error" }),
+      expect.objectContaining({
+        endpoint: "thread",
+        event: "body-error",
+        name: "Error",
+        message: "Board thread response body failed",
+      }),
     );
     expect(JSON.stringify(warn.mock.calls)).not.toContain(
       "secret transport detail",

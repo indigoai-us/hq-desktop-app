@@ -117,3 +117,32 @@ describe("WebPlatformAdapter sendDmToEmail", () => {
     });
   });
 });
+
+describe("WebPlatformAdapter sendDm", () => {
+  it("sends a plain message with no lane or key", async () => {
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: { eventId: "e1" } }));
+    await adapter.messaging.sendDm("agt_nova", "hello");
+    expect(calls[0]?.body).toEqual({ toPersonUid: "agt_nova", body: "hello" });
+  });
+
+  it("carries the bot-only lane and the once-only key when asked", async () => {
+    // The new bot flow asks a bot for its first message on the bot-only lane:
+    // the person must not see the request, and a repeated request must reach
+    // the bot once.
+    const { adapter, calls } = makeAdapter(() => ({ status: 200, body: { eventId: "e1" } }));
+    await adapter.messaging.sendDm("agt_nova", "say hello", {
+      audience: "agent",
+      idempotencyKey: " new-bot-hello-agt_nova ",
+    });
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: "/v1/notify/dm",
+      body: {
+        toPersonUid: "agt_nova",
+        body: "say hello",
+        audience: "agent",
+        idempotencyKey: "new-bot-hello-agt_nova",
+      },
+    });
+  });
+});

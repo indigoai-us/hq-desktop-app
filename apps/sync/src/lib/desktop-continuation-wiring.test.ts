@@ -152,6 +152,25 @@ describe('a manual sign-in invalidates anything continuation is holding', () => 
   });
 });
 
+describe('Microsoft work accounts are not sent to MicrosoftPersonal', () => {
+  it('resolves the Cognito provider through hq-pro instead of a static personal mapping', () => {
+    const start = rustFunction(oauth, 'start_oauth_login');
+    const resolve = rustFunction(oauth, 'resolve_identity_provider');
+    expect(start).toContain('email: Option<String>');
+    expect(start).toContain('resolve_identity_provider');
+    expect(start).not.toContain('MicrosoftPersonal');
+    expect(resolve).toContain('identity_provider_for_sign_in');
+    expect(oauth).not.toContain('cognito_identity_provider');
+  });
+
+  it('asks for an email on both sign-in surfaces before starting Microsoft OAuth', () => {
+    expect(signInPrompt).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(onboardingWizard).toContain("provider === 'Microsoft' && microsoftEmail.trim() === ''");
+    expect(signInPrompt).toContain('data-testid="microsoft-email"');
+    expect(onboardingWizard).toContain('data-testid="microsoft-email"');
+  });
+});
+
 describe('the first-run wizard never opens the browser on its own', () => {
   it('imports none of the continuation attempt functions', () => {
     // The first-run wizard opened the browser on the raw Cognito provider
@@ -174,9 +193,13 @@ describe('the first-run wizard never opens the browser on its own', () => {
       onboardingWizard.indexOf('async function recordLaunch'),
       onboardingWizard.indexOf('async function completeAuthenticatedSignIn'),
     );
-    expect(record).toContain('onboardingTelemetry.recordFirstLaunch()');
+    expect(record).toContain('onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)');
     expect(record).toContain('recordReceipt(deps, launchReceipt(deps))');
     expect(record).toContain('flushReceipts(deps)');
+    expect(record).toContain('onboardingTelemetry.setInstallAttemptId(context.installAttemptId)');
+    expect(record.indexOf('setInstallAttemptId(')).toBeLessThan(
+      record.lastIndexOf('onboardingTelemetry.recordFirstLaunch(receiptReachOutcome, receiptReachInstallAttemptId)'),
+    );
   });
 });
 
@@ -310,6 +333,31 @@ describe('authenticated desktop receipts keep the install-to-company join intact
     expect(connect).not.toMatch(
       /record_desktop_workspace_selected\([^)]*\)\s*\.await/,
     );
+  });
+
+  it('queues workspace-selected receipts for company create, pick, and invite-join paths', () => {
+    const record = rustFunction(desktopAuth, 'record_onboarding_workspace_selected');
+    const authorization = rustFunction(desktopAuth, 'workspace_receipt_authorization_for_current_session');
+    const fromBearer = rustFunction(desktopAuth, 'workspace_receipt_authorization_from_bearer_token');
+    const leaveCompany = onboardingWizard
+      .split('function leaveCompanyStep(')[1]
+      ?.split('/** Leave the teammate invite')[0] ?? '';
+    const recordRoute = onboardingWizard
+      .split('function recordCompanyRoute(')[1]
+      ?.split('/** A failed lookup')[0] ?? '';
+
+    expect(main).toContain('commands::desktop_auth::record_onboarding_workspace_selected,');
+    expect(record).toContain('workspace_receipt_authorization_for_current_session().await');
+    expect(record).toContain('record_desktop_workspace_selected');
+    expect(authorization).toContain('workspace_receipt_authorization()');
+    expect(authorization).toContain('super::sync::resolve_jwt().await');
+    expect(fromBearer).toContain('notification_identity_from_bearer_token');
+    expect(leaveCompany).toContain("result.outcome === 'created'");
+    expect(leaveCompany).toContain("result.outcome === 'joined'");
+    expect(leaveCompany).toContain("result.outcome === 'used_existing'");
+    expect(leaveCompany.match(/recordWorkspaceSelected\(/g)).toHaveLength(3);
+    expect(recordRoute).toContain('recordWorkspaceSelected(');
+    expect(recordRoute).toContain('route.company.companyUid');
   });
 
   it('keeps a partial cloud provision in the installer-to-company join', () => {

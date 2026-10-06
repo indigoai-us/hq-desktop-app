@@ -18,7 +18,8 @@
    * persisted cursor survives restarts. Cursor catch-up on MQTT connect/focus
    * heals gaps; the 3-minute safety poll runs only while MQTT is down.
    */
-  import { onMount, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { Snippet } from "svelte";
   import type { RuntimeStatus } from "./create-bot/runtime-status.js";
   import {
@@ -51,7 +52,15 @@
     type ChatSidebarApi,
     type ChatWakeBus,
   } from "./chat-api";
-  import type { CloudBotDraft, EntryPointResult } from "./lifecycle-entry-points.js";
+  import { CLOUD_BOT_NAME_TAKEN_REASON, type CloudBotDraft, type EntryPointResult } from "./lifecycle-entry-points.js";
+  import { beginWakingSession, markWakingHelloAsking, reopenWakingSession, wakingBotGone, wakingStopFromFailure, type WakingBotSession } from "./create-bot/waking-model.js";
+  import {
+    upsertWakingSession,
+    wakingSessionKey,
+    wakingSessionStore,
+    withoutWakingSession,
+  } from "./create-bot/waking-sessions.js";
+  import { agentChatReadiness } from "./agent-channel.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -62,7 +71,7 @@
   import type { BotDisplayNames } from "./bot-display-names.js";
   import { localBotForRow, localBotsAsContacts, type LocalBotEntryResult } from "./local-bots.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
-  import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
@@ -77,12 +86,6 @@
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
   import { isAgentUid } from "./agent-thinking";
-  import {
-    loadEngagedAgents,
-    rememberEngagedAgent,
-    saveEngagedAgents,
-    threadHasRealMessage,
-  } from "./agent-stubs";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
   import {
@@ -140,11 +143,15 @@
     type CompanySectionRow,
     migratePinnedCompanySelection,
     mergeContactActivity,
-    isAgentJoinNoticeEvent,
     mergeContactsWithInbox,
+    applyDmHumanRecency,
+    wakeMayChangeHumanRecency,
     normalizeChannel,
     normalizeConversations,
     rememberRecentDm,
+    loadBotSetupChannels,
+    rememberBotSetupChannel,
+    withoutBotSetupChannels,
     resolveSearchHitRow,
     rowAvatar,
     saveConversationCache,
@@ -161,6 +168,8 @@
     historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
+    withWakingBotRow,
+    withCancelledBotRows,
     flattenGrouped,
     pickAutoOpenConversation,
     pickSettledBootConversation,
@@ -183,6 +192,29 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import NewBotTakeover from "./create-bot/NewBotTakeover.svelte";
+  import {
+    beginBotRemoval,
+    loadAccountBotRemovals,
+    loadAccountRemovedBots,
+    rememberRemovedBot,
+    CANCELLED_CREATE_LOOKUP_DELAYS_MS,
+    readCancelledCreate,
+    resolveCancelledCreate,
+    saveOpenBotRemovals,
+    startBotRemoval,
+    type BotRemoval,
+    type BotRemovalRun,
+    type RemoveBotRequest,
+  } from "./create-bot/cancel-model.js";
+  import { createDraftSignature, releaseCreateKey, releaseCreateKeysFor, takeCreateKey } from "./create-bot/create-key.js";
+  import {
+    createdByAnotherPerson,
+    createdByViewer,
+    findCreatedBot,
+    rosterBaseline,
+  } from "./create-bot/created-bot-lookup.js";
+  import { withoutHiddenRequestHits } from "./create-bot/hidden-request-hits.js";
   import type { CompanyCreateSeam } from "./create-company/create-company-flow.js";
   import { registerShortcuts } from "../common/keyboard-shortcuts";
   import { titleWhenTruncated } from "../common/truncation-title";
@@ -275,12 +307,74 @@
     oncreatecompany?: (() => Promise<EntryPointResult>) | null;
     /** In-modal company creation (name → details + invites → create). */
     companyCreate?: CompanyCreateSeam | null;
+    /**
+     * The "+" modal's Cloud option: the host walks the server's create-agent
+     * card and opens the new bot's channel. Works for every company.
+     */
     oncreateagent?:
       | ((
           companyUid: string,
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /**
+     * The full-window New Bot flow's create. Separate from `oncreateagent` on
+     * purpose: it asks the server for the chat-first setup order, which the
+     * server runs only for a company in `newBotCompanyUids`.
+     */
+    oncreatenewbot?:
+      | ((
+          companyUid: string,
+          draft: CloudBotDraft,
+        ) => Promise<EntryPointResult>)
+      | null;
+    /**
+     * Companies the full-window New Bot flow is offered for: those the host
+     * read the `agents.desktop-agent-creation` flag as on for. Empty until
+     * the host has an answer, and empty when it could not get one. While it
+     * is empty "New bot" opens the "+" modal's own flow, with no takeover.
+     */
+    newBotCompanyUids?: readonly string[];
+    /**
+     * Tells the host which companies a cloud bot can be made in, so it can
+     * read their flag: when the list changes, and when the "+" modal opens.
+     */
+    onagentcompanies?: ((companyUids: string[]) => void) | null;
+    /** Polls a just-created cloud bot while its waking screen is open. */
+    loadAgentStatus?: ((agentUid: string, brain?: "grok" | "codex" | "claude") => Promise<unknown>) | null;
+    retryAgent?: ((agentUid: string) => Promise<unknown>) | null;
+    /**
+     * Ask the server to remove a cloud bot. Cancel in the new bot flow uses it
+     * for a bot the create already made. Safe to call again for the same bot.
+     */
+    removeAgent?: RemoveBotRequest | null;
+    /** A cancelled bot is gone from the server: drop what the host kept for it. */
+    onbotremoved?: ((agentUid: string) => void) | null;
+    /** Test seam: how long a removal waits before asking the server again. */
+    botRemovalRetryMs?: number;
+    /**
+     * Reads the bots of one company (the member-safe roster the app already
+     * reads elsewhere). Cancel uses it to learn whether a create with no
+     * answer made a bot. It only reads: Cancel never sends a create.
+     */
+    loadCompanyBots?: ((companyUid: string) => Promise<unknown>) | null;
+    /**
+     * A bot found after a create with no answer was taken up as that create's
+     * own. The host registers it as it does a create that answered.
+     */
+    onbotadopted?: ((agentUid: string, draft: CloudBotDraft) => void) | null;
+    /**
+     * Test seam: how long a cancelled create with no answer waits before each
+     * look at the company's bots.
+     */
+    botCreateLookupMs?: number;
+    /** Ask a new cloud bot, on the bot-only lane, to write its first message. */
+    sendBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
+    /** True once that first message is in the direct message. */
+    checkBotHello?: ((session: WakingBotSession) => Promise<boolean>) | null;
+    restartBrainApproval?: ((agentUid: string, brain: "grok" | "codex" | "claude") => Promise<unknown>) | null;
+    submitClaudeLoginCode?: ((agentUid: string, code: string) => Promise<unknown>) | null;
+    openExternal?: ((url: string) => void | Promise<void>) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
@@ -329,14 +423,6 @@
      * four of their own bots the moment the account listing was unavailable.
      */
     ownedLocalBotUids?: readonly string[] | null;
-    /**
-     * Agents this user has a real conversation with, seeded by the host.
-     * Creating an agent announces it to the whole company, so an `agt_*` row
-     * stays off the rail until it messages the user (or the user opens/pins
-     * it). The sidebar also persists its own evidence; this prop lets a host
-     * with its own store — or a test — seed it.
-     */
-    engagedAgentUids?: readonly string[] | null;
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
@@ -402,10 +488,12 @@
     onshowbotmessageschange?: (value: boolean) => void;
     /**
      * When true (the `desktop.human-only-conversations` flag is on), rows are
-     * ordered by `lastHumanMessageAt` — a channel whose only newer activity
-     * is work-mesh / bot chatter stays anchored to the last real human
-     * message. Falls back to `lastActivityAt` per-row when the server has
-     * not sent the human timestamp. Default off preserves legacy ordering.
+     * ordered and sectioned by the last message a person typed, in three
+     * states: a known `lastHumanMessageAt` places the row at that time; a
+     * row the server knows holds no human message is placed at its creation
+     * time (by `lastActivityAt` when it has none, as a 1:1 DM does today); a
+     * row the server sent neither field for falls back to `lastActivityAt`.
+     * Default off preserves legacy ordering.
      */
     humanOnly?: boolean;
   }
@@ -437,6 +525,22 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    oncreatenewbot = null,
+    newBotCompanyUids = [],
+    onagentcompanies = null,
+    loadAgentStatus = null,
+    retryAgent = null,
+    removeAgent = null,
+    onbotremoved = null,
+    botRemovalRetryMs = undefined,
+    loadCompanyBots = null,
+    onbotadopted = null,
+    botCreateLookupMs = undefined,
+    sendBotHello = null,
+    checkBotHello = null,
+    restartBrainApproval = null,
+    submitClaudeLoginCode = null,
+    openExternal = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     oncreatebot = null,
@@ -457,7 +561,6 @@
     localBots = null,
     botDisplayNames = null,
     ownedLocalBotUids = null,
-    engagedAgentUids = null,
     onrows,
     ondisplayrows,
     onactions,
@@ -492,6 +595,16 @@
   const storage = createTenantStorage(
     typeof window !== "undefined" ? window.localStorage : null,
     { accountId: tenantAccountId, companyId: tenantCompanyId ?? "all" },
+  );
+  /**
+   * Kept for the account, whatever company the sidebar is scoped to. This
+   * sidebar is rebuilt on a company switch, and what a rebuilt sidebar must
+   * still have (the bots that are starting) cannot live in a per-company
+   * partition. Each entry names its own company.
+   */
+  const accountStorage = createTenantStorage(
+    typeof window !== "undefined" ? window.localStorage : null,
+    { accountId: tenantAccountId, companyId: "all" },
   );
 
   function readShowScopeLabels(): boolean {
@@ -577,62 +690,6 @@
   }
   let dmDots = $state<string[]>(loadDmDots(storage));
   let recentDms = $state<string[]>(loadRecentDms(storage));
-  /**
-   * Agents with a proven real conversation. Creating an agent DMs the whole
-   * company, so an `agt_*` row stays off the rail until it actually talks to
-   * this user (or the user opens/pins it) — see `agent-stubs.ts`.
-   */
-  let engagedAgents = $state<string[]>([
-    ...new Set([...loadEngagedAgents(storage), ...(engagedAgentUids ?? [])]),
-  ]);
-  /** Agent uids whose thread we already probed for real-message evidence. */
-  const agentEngagementProbed = new Set<string>();
-
-  function markAgentEngaged(personUid: string | null | undefined): void {
-    const next = rememberEngagedAgent(engagedAgents, personUid);
-    if (next.size === engagedAgents.length) return;
-    engagedAgents = [...next];
-    saveEngagedAgents(next, storage);
-  }
-
-  /**
-   * A `dm:new-message` wake carries no body, and the membership announcement
-   * arrives on the same wake — so the wake alone can never prove engagement.
-   * Read the newest page of the agent's thread once and promote it only when
-   * something other than the announcement is in there.
-   */
-  async function resolveAgentEngagement(personUid: string): Promise<void> {
-    const uid = personUid.trim();
-    if (!uid || !isAgentUid(uid)) return;
-    if (engagedAgents.includes(uid) || agentEngagementProbed.has(uid)) return;
-    const fetchThread = api.fetchDmThread;
-    if (typeof fetchThread !== "function") {
-      // No thread seam on this host: fall back to trusting the wake rather
-      // than silently dropping a live agent conversation.
-      markAgentEngaged(uid);
-      return;
-    }
-    agentEngagementProbed.add(uid);
-    try {
-      const page = await fetchThread.call(api, { withPersonUid: uid, limit: 20 });
-      const messages = Array.isArray(page?.messages) ? page.messages : [];
-      const real = threadHasRealMessage(messages, uid, (message) =>
-        isAgentJoinNoticeEvent({
-          fromPersonUid: message.fromPersonUid,
-          fromEmail: message.fromEmail,
-          fromDisplayName: message.fromDisplayName,
-          body: message.body,
-          details: message.details,
-          prompt: message.prompt,
-        }),
-      );
-      if (real) markAgentEngaged(uid);
-      else agentEngagementProbed.delete(uid);
-    } catch {
-      // Best effort — retry on the agent's next message.
-      agentEngagementProbed.delete(uid);
-    }
-  }
   /** personUid → unreadCount from inbox `pairUnreads` (absent-safe). */
   let pairUnreads = $state<Map<string, number>>(new Map());
   /** Pending incoming connection requests (same source as MessagesShell). */
@@ -828,12 +885,6 @@
   let activeId = $state<string | null>(null);
   $effect(() => {
     activeId = selectedId;
-    // An open conversation is a conversation. A deep link, the DM widget, or
-    // a header click can select an agent thread the rail is still hiding —
-    // selecting it is the user saying it is real, so promote it.
-    if (selectedId?.startsWith("dm:")) {
-      markAgentEngaged(selectedId.slice(3));
-    }
   });
 
   // History searches are debounced; conversation completion stays synchronous
@@ -931,6 +982,70 @@
     return [...out.values()];
   });
 
+  /**
+   * Companies the full-window New Bot flow may create in: the ones a cloud
+   * bot can be added to AND the host read the flag as on for. The server
+   * runs that flow's setup order for no other company.
+   */
+  const newBotCompanies = $derived<ScopeCompany[]>(
+    oncreatenewbot && newBotCompanyUids.length > 0
+      ? agentCompanies.filter((company) =>
+          newBotCompanyUids.includes(company.companyUid),
+        )
+      : [],
+  );
+  /**
+   * The one company the sidebar is showing, or "" when it shows all of them
+   * (or the person's own space).
+   */
+  const scopedCompanyUid = $derived(scope === "all" || scope === "personal" ? "" : scope.trim());
+  /**
+   * The companies "New bot" opens the full-window flow for, from where the
+   * person stands. Scoped to one company, that company alone and only when
+   * it has the flag: a person looking at a company without it gets the "+"
+   * window's own flow, and is never sent to make a bot in another company.
+   * With no single company in view, every company that has the flag.
+   */
+  const newBotTargets = $derived<ScopeCompany[]>(
+    scopedCompanyUid
+      ? newBotCompanies.filter((company) => company.companyUid === scopedCompanyUid)
+      : newBotCompanies,
+  );
+  /** True when the person belongs to more than one company. The takeover then names its target. */
+  const inSeveralCompanies = $derived(
+    new Set([...agentCompanies, ...scopeCompanies].map((company) => company.companyUid)).size > 1,
+  );
+  /** A string, so the report below runs when the list changes and not on every recompute. */
+  const agentCompanyKey = $derived(
+    agentCompanies.map((company) => company.companyUid).join("\n"),
+  );
+
+  /**
+   * Bots made in the New Bot flow that are still starting, one entry per
+   * bot. The list belongs to the account, not to this sidebar: it is shared
+   * with whichever sidebar replaces this one and it is written to storage,
+   * so a company switch, a collapsed sidebar or a restart loses none of
+   * them (waking-sessions.ts).
+   */
+  const wakingStore = wakingSessionStore(tenantAccountId, accountStorage);
+  let wakingBots = $state<WakingBotSession[]>(wakingStore.get());
+  /** The bot whose waiting screen the takeover shows. Null: the create screen. */
+  let openWakingKey = $state<string | null>(null);
+  let botSetupChannels = $state<string[]>(loadBotSetupChannels(storage));
+  /**
+   * Where cancelled bots used to be written: the company partition this
+   * sidebar is scoped to. Null when that is the account's own partition.
+   */
+  const legacyRemovalStorage =
+    (tenantCompanyId ?? "").trim() && (tenantCompanyId ?? "").trim() !== "all" ? storage : null;
+  /**
+   * Cancelled bots: what is being removed, what was removed, what was not.
+   * Kept for the account, so the sidebar for any company scope finds a
+   * removal that is under way and goes on with it.
+   */
+  let botRemovals = $state<BotRemoval[]>(loadAccountBotRemovals(accountStorage, legacyRemovalStorage));
+  /** Bots the server confirmed removed. Their conversation stays off the list. */
+  let removedBotUids = $state<string[]>(loadAccountRemovedBots(accountStorage, legacyRemovalStorage));
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
@@ -939,11 +1054,22 @@
    * broadcast clutter the agent-stub rule exists to remove, so they stay on
    * the rail whether or not they have messaged.
    */
-  const ownAgentUids = $derived([
-    ...(localBots ?? []).map((bot) => bot.agentUid),
-    ...(ownedLocalBotUids ?? []),
-  ]);
-
+  /**
+   * The starting bots this sidebar shows: all of them, or when the sidebar
+   * is scoped to one company, that company's. A bot being removed has its
+   * own row and is not shown as starting.
+   */
+  const shownWakingBots = $derived(
+    wakingBots.filter((session) => {
+      const scoped = (tenantCompanyId ?? "").trim();
+      if (scoped && scoped !== "all" && session.companyUid && session.companyUid !== scoped) return false;
+      return !botIsCancelled(session.agentUid);
+    }),
+  );
+  /** The session the takeover is showing, as it stands now. */
+  const openWakingBot = $derived(
+    openWakingKey ? wakingBots.find((session) => wakingSessionKey(session) === openWakingKey) ?? null : null,
+  );
   // Synthetic #setup support channel (deduped against a real server `setup`
   // channel) — pinned by default; once unpinned it lists under TODAY (bottom)
   // instead of sinking into LAST WEEK with zero activity.
@@ -991,16 +1117,34 @@
     }
     return map;
   });
+  const companyDisplayNamesByUid = $derived.by(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      const uid = (company.cloudUid ?? "").trim();
+      const displayName = (company.displayName ?? "").trim();
+      if (uid && displayName) map.set(uid, displayName);
+    }
+    return map;
+  });
 
   const allRows = $derived(
-    normalizeConversations(channelsWithSetup, contactsWithUnreads, {
-      pinnedIds: pinsWithSetup,
-      dmDots,
-      recentDms,
-      engagedAgentUids: engagedAgents,
-      ownAgentUids,
-      homeChannelIdByUid,
-    }),
+    withCancelledBotRows(
+      // Each bot that is starting keeps a row of its own.
+      shownWakingBots.reduce<ConversationRow[]>(
+        (rows, bot) => withWakingBotRow(rows, bot),
+        withoutBotSetupChannels(normalizeConversations(channelsWithSetup, contactsWithUnreads, {
+          pinnedIds: pinsWithSetup,
+          dmDots,
+          recentDms,
+          homeChannelIdByUid,
+          companyDisplayNamesByUid,
+        }), botSetupChannels),
+      ),
+      // A cancel whose create has no known outcome names no bot and has no row.
+      // Nor has a cancelled bot of a company this sidebar is not showing.
+      botRemovals.filter((removal): removal is BotRemoval & { phase: Exclude<BotRemoval["phase"], "unconfirmed"> } => removal.phase !== "unconfirmed" && wakingBotInScope(removal)),
+      removedBotUids,
+    ),
   );
 
   /**
@@ -1022,7 +1166,7 @@
   const companySectionRows = $derived<CompanySectionRow[]>(
     resolveCompanySectionRows(
       (companies ?? [])
-        .filter((c) => (c.cloudUid ?? "").trim())
+        .filter((c) => c.kind === "company" && (c.cloudUid ?? "").trim())
         .map((c) => ({
           companyUid: (c.cloudUid as string).trim(),
           label: c.displayName || c.slug || c.cloudUid!,
@@ -1094,11 +1238,11 @@
     } else {
       // Not in the loaded rows yet: the stub row would otherwise paint the
       // raw `chn_…` id as the title/composer placeholder until the full
-      // directory catches up. Seed it with the company's slug — the same
-      // label the row itself will carry once loaded — so the header never
+      // directory catches up. Seed it with the company's display label,
+      // matching the home-channel row once loaded, so the header never
       // shows a raw id.
       requestChannelOpen(homeChannelId, {
-        title: company?.slug || company?.label || null,
+        title: company?.label || company?.slug || null,
         companyUid: company?.companyUid ?? null,
       });
     }
@@ -1306,6 +1450,7 @@
     const live = pickAutoOpenConversation(
       filteredRows.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
+      humanOnly,
     );
     if (live) {
       autoOpenRequestedId = live.id;
@@ -1314,7 +1459,11 @@
     }
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
-    const fallback = pickSettledBootConversation(filteredRows, selectedId);
+    const fallback = pickSettledBootConversation(
+      filteredRows,
+      selectedId,
+      humanOnly,
+    );
     if (!fallback) return;
     autoOpenRequestedId = fallback.id;
     sidebarLog("auto-open-fallback", {
@@ -1324,7 +1473,9 @@
     void openRow(fallback, undefined, true);
   });
   const grouped = $derived(
-    sortMode === "type" ? groupByType(railRows) : groupByDay(railRows),
+    sortMode === "type"
+      ? groupByType(railRows)
+      : groupByDay(railRows, Date.now(), { humanOnly }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
   const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
@@ -1410,6 +1561,37 @@
   function handleRowClick(row: ConversationRow, event: MouseEvent): void {
     const multi = event.metaKey || event.ctrlKey || event.shiftKey;
     if (!selectionMode && !multi) {
+      if (row.wakingBot || row.removingBot) {
+        // A bot that is starting, or a cancelled bot that still exists: its
+        // state lives in the new bot screen, and it has no conversation yet.
+        // A starting bot opens on its own waiting screen; a cancelled one
+        // opens on the create screen, where its removal is reported.
+        openWakingKey = row.wakingBot
+          ? row.wakingBot.agentUid || (row.channelId ? `ch:${row.channelId}` : null)
+          : null;
+        // A screen that stopped because the app was signed out says to open
+        // the bot from the list. Doing so starts the wait again.
+        const held = openWakingKey
+          ? wakingBots.find((session) => wakingSessionKey(session) === openWakingKey)
+          : null;
+        if (row.wakingBot && !wakingScreenFor(held)) {
+          // The waiting screen belongs to the full-window flow. With the
+          // company's flag off, or no session to show, the takeover would
+          // open on nothing: the bot's own conversation opens instead.
+          openWakingKey = null;
+          const { wakingBot: _waking, ...plain } = row;
+          void openRow(plain);
+          return;
+        }
+        if (held) {
+          const reopened = reopenWakingSession(held);
+          if (reopened !== held) changeWakingBots((sessions) => upsertWakingSession(sessions, reopened));
+        }
+        // The same list for as long as it is open, as "New bot" keeps it.
+        newBotCompaniesAtOpen = newBotTargets;
+        newBotOpen = true;
+        return;
+      }
       void openRow(row);
       return;
     }
@@ -1519,9 +1701,11 @@
     }
   }
   const historyRows = $derived(
-    searchHistory(filteredRows, historyQueryDebounced),
+    searchHistory(filteredRows, historyQueryDebounced, humanOnly),
   );
-  const historyGroups = $derived(historyDayGroups(historyRows));
+  const historyGroups = $derived(
+    historyDayGroups(historyRows, new Date(), humanOnly),
+  );
   const historyScopeLabel = $derived(
     historySearchScopeLabel(scope, scopeCompanies),
   );
@@ -1584,6 +1768,7 @@
     scopeMenuOpen = false;
     footerMenuOpen = false;
     createOpen = false;
+    newBotOpen = false;
     searchOpen = false;
   }
 
@@ -1613,7 +1798,788 @@
   /** What the create modal makes inside a company when opened by the host. */
   let createKind = $state<"channel" | "project">("channel");
   /** Which step the create modal opens on — "company" for New company. */
-  let createStep = $state<"find" | "company">("find");
+  let createStep = $state<"find" | "company" | "bot">("find");
+  /**
+   * The full-window New Bot takeover. "New bot" opens it only when the host
+   * read the flag as on for at least one company (`newBotCompanies`), and it
+   * lists only those. Otherwise "New bot" opens the "+" modal's own flow.
+   */
+  let newBotOpen = $state(false);
+  /**
+   * The companies the takeover was opened with. The host reads each flag
+   * again every five minutes, and a read that fails counts as off; a person
+   * part-way through the takeover keeps the list they started with instead
+   * of having the screen taken away under them.
+   */
+  let newBotCompaniesAtOpen = $state<ScopeCompany[] | null>(null);
+  const takeoverCompanies = $derived(
+    newBotOpen && newBotCompaniesAtOpen?.length
+      ? newBotCompaniesAtOpen
+      : newBotTargets,
+  );
+  /**
+   * What the takeover's second button says. It opens the "+" window's bot
+   * step: local bots, and cloud bots in the companies the takeover does not
+   * list.
+   */
+  const takeoverOtherWayLabel = $derived(
+    newBotOtherWayLabel({
+      local: !!oncreatebot,
+      otherCompanies:
+        !!oncreateagent &&
+        agentCompanies.some(
+          (company) => !takeoverCompanies.some((offered) => offered.companyUid === company.companyUid),
+        ),
+    }),
+  );
+  $effect(() => {
+    if (newBotOpen) return;
+    newBotCompaniesAtOpen = null;
+    openWakingKey = null;
+  });
+
+  /**
+   * "New bot" always opens the create screen. Bots that are starting are
+   * reached from their own rows; none of them stands in the way of making
+   * another one.
+   */
+  function openNewBotTakeover(): void {
+    createOpen = false;
+    newBotCompaniesAtOpen = newBotTargets;
+    openWakingKey = null;
+    newBotOpen = true;
+  }
+
+  // The host reads the flag per company. Tell it the list when it changes,
+  // and again when the "+" modal opens so an answer older than the host's
+  // five minutes is read again before the person reaches "New bot".
+  $effect(() => {
+    const key = agentCompanyKey;
+    void createOpen;
+    untrack(() => onagentcompanies?.(key ? key.split("\n") : []));
+  });
+
+  /** Change the account's list of starting bots. Every sidebar for the account hears of it. */
+  function changeWakingBots(change: (sessions: WakingBotSession[]) => WakingBotSession[]): void {
+    wakingBots = wakingStore.update(change);
+  }
+
+  // A sidebar that was replaced can still finish a create, and it writes the
+  // new bot to the shared list. This one hears of it here.
+  onMount(() =>
+    wakingStore.subscribe(() => {
+      wakingBots = wakingStore.get();
+    }),
+  );
+
+  function beginWakingBot(session: WakingBotSession): void {
+    if (botIsCancelled(session.agentUid)) return;
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
+    if (session.agentUid && session.channelId) {
+      botSetupChannels = rememberBotSetupChannel(botSetupChannels, session.channelId, storage);
+    }
+  }
+
+  /**
+   * A bot was removed. A key kept for a create of the same bot (same
+   * company, same handle) would be answered with the bot that is gone, so
+   * it is let go. The takeover makes the handle from the name.
+   */
+  function forgetKeysOfRemovedBot(companyUid: string, name: string): void {
+    for (const key of releaseCreateKeysFor(accountStorage, companyUid, botHandle({ name, handle: "" }))) {
+      createBaselines.delete(key);
+    }
+  }
+
+  function updateWakingBot(session: WakingBotSession): void {
+    if (botIsCancelled(session.agentUid)) return;
+    // A bot that is live, removed or out of reach is no longer waited for.
+    if (session.phase === "ready" || wakingBotGone(session)) {
+      if (session.phase === "stopped" && (session.stopped === "removed" || session.stopped === "removing")) {
+        forgetKeysOfRemovedBot(session.companyUid, session.name);
+      }
+      endWakingBot(session);
+      return;
+    }
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
+  }
+
+  /** The wait for this bot is over: it has no entry and no "starting" row any more. */
+  function endWakingBot(session: Pick<WakingBotSession, "agentUid" | "channelId">): void {
+    const key = wakingSessionKey(session);
+    if (!key) return;
+    changeWakingBots((sessions) => withoutWakingSession(sessions, key));
+  }
+
+  /**
+   * True when a starting bot's row should open its waiting screen: there is
+   * a session to show, and its company still has the full-window flow.
+   */
+  function wakingScreenFor(session: WakingBotSession | null | undefined): boolean {
+    if (!session) return false;
+    return newBotCompanies.some((company) => company.companyUid === session.companyUid);
+  }
+
+  /** True when this sidebar shows the session's company: all companies, or that one. */
+  function wakingBotInScope(session: Pick<WakingBotSession, "companyUid">): boolean {
+    const scoped = (tenantCompanyId ?? "").trim();
+    return !scoped || scoped === "all" || !session.companyUid || session.companyUid === scoped;
+  }
+
+  /**
+   * Ask a restored bot that can chat for its first message. The request is
+   * marked on the session before it leaves, with its key, so whatever asks
+   * next (this sidebar again, or the bot's waiting screen) sends the same
+   * request. Once it is sent the bot is no longer starting: it has its
+   * conversation, where its first message arrives.
+   */
+  async function askRestoredBot(agentUid: string): Promise<void> {
+    const send = sendBotHello;
+    const held = wakingStore.get().find((candidate) => candidate.agentUid === agentUid);
+    if (!send || !held || held.phase !== "waking" || held.helloAskedAt != null) return;
+    const asking = markWakingHelloAsking(held);
+    changeWakingBots((sessions) => upsertWakingSession(sessions, asking));
+    let sent = false;
+    try {
+      sent = await send(asking);
+    } catch {
+      sent = false;
+    }
+    // Not sent: the bot keeps its row, and opening it asks again under the same key.
+    if (sent) endWakingBot(asking);
+  }
+
+  /**
+   * A restart can outlast a bot. Ask the server once about each bot read
+   * back from storage: one that is gone, or that can chat and was already
+   * asked for its first message, is no longer shown as starting.
+   */
+  onMount(() => {
+    const readStatus = loadAgentStatus;
+    if (!readStatus) return;
+    for (const agentUid of wakingStore.takeRestored()) {
+      const session = wakingStore.get().find((candidate) => candidate.agentUid === agentUid);
+      if (!session) continue;
+      void readStatus(agentUid, session.brain ?? undefined)
+        .then((result) => {
+          const answer = result as { ok?: unknown; value?: unknown } | null;
+          if (answer?.ok === true) {
+            const phase = String(
+              (answer.value as { setupState?: { phase?: unknown } } | null)?.setupState?.phase ?? "",
+            ).toLowerCase();
+            const gone = phase === "deprovisioning" || phase === "deprovisioned";
+            const chatReady = agentChatReadiness(answer.value).chatReady;
+            const live = chatReady && session.helloAskedAt != null;
+            if (gone) forgetKeysOfRemovedBot(session.companyUid, session.name);
+            if (gone || live) endWakingBot(session);
+            else if (chatReady) {
+              // It can chat and was never asked for its first message. Ask
+              // now, without waiting for a click on its row, when this
+              // sidebar is showing its company. Otherwise the sidebar that
+              // does show it will.
+              if (wakingBotInScope(session)) void askRestoredBot(agentUid);
+              else wakingStore.deferRestored(agentUid);
+            }
+            return;
+          }
+          const stop = wakingStopFromFailure(result);
+          if (stop === "removed") forgetKeysOfRemovedBot(session.companyUid, session.name);
+          if (stop === "removed" || stop === "no-access") endWakingBot(session);
+        })
+        .catch(() => {
+          // Not known: the bot keeps its row, and its screen asks again.
+        });
+    }
+  });
+
+  // ── Cancel in the new bot flow ───────────────────────────────────────────
+  // Cancel stops the create and removes what it made. The sidebar holds the
+  // state, so a removal keeps going when the takeover closes and an answer
+  // that arrives after Cancel still finds its bot.
+
+  /** The create request that is out now. Cancel marks it; its answer is then handled here. */
+  let createInFlight: {
+    cancelled: boolean;
+    name: string;
+    companyUid: string;
+    brain: string | null;
+    removalId: string | null;
+    /** The handle the create was sent with. Cancel looks for it among the company's bots. */
+    handle: string;
+    /** The key the create went out under. */
+    key: string;
+    /** True when that key was kept from an earlier press with no answer. */
+    reused: boolean;
+    /**
+     * The bots the company had when Create bot was pressed, by id. Null when
+     * that could not be read. A bot is only taken as this create's own when
+     * it is not on this list.
+     */
+    baseline: Promise<ReadonlySet<string> | null>;
+    /** The create's answer, when it says what was made. Null when it does not. */
+    answer: EntryPointResult | null;
+    /** The request has ended, and what follows it here (a look for the bot, a status read) is under way. */
+    ended: boolean;
+    /** Resolves when this attempt has returned its answer to the screen. */
+    finished: Promise<void>;
+  } | null = null;
+
+  /**
+   * Bots a create that was not cancelled took up: named by its answer, or
+   * found by its handle. The settle of an earlier, cancelled create of the
+   * same draft must not remove one of these.
+   */
+  const takenUpBots = new Set<string>();
+
+  /**
+   * The company's bots as they were at the first press for each key. Kept
+   * for as long as the key is, so a second press of the same draft compares
+   * against what was there before the first.
+   */
+  const createBaselines = new Map<string, Promise<ReadonlySet<string> | null>>();
+
+  /** Read the company's bots before the create is sent. Never throws. */
+  function baselineFor(key: string, reused: boolean, companyUid: string): Promise<ReadonlySet<string> | null> {
+    const held = createBaselines.get(key);
+    if (held) return held;
+    // A key from before a restart has no list from before its first press.
+    const read = loadCompanyBots;
+    let baseline: Promise<ReadonlySet<string> | null> = Promise.resolve(null);
+    if (!reused && read) {
+      try {
+        // Called here, in the press, so the read leaves before the create does.
+        baseline = Promise.resolve(read(companyUid)).then(rosterBaseline).catch(() => null);
+      } catch {
+        baseline = Promise.resolve(null);
+      }
+    }
+    createBaselines.set(key, baseline);
+    return baseline;
+  }
+
+  /** The server answered this create: its key and its list are let go. */
+  function forgetCreateKey(key: string): void {
+    releaseCreateKey(accountStorage, key);
+    createBaselines.delete(key);
+  }
+
+  /**
+   * The attempt whose bot is being looked for on the takeover's screen. The
+   * create screen says "Checking whether {name} was created..." meanwhile.
+   */
+  let checkingCreate = $state.raw<object | null>(null);
+
+  /** Shown when the create got no answer. Sending it again picks up the first answer. */
+  function createUnknownReason(name: string): string {
+    return `We didn't hear back, so we can't tell if ${name.trim() || "this bot"} was created. Try again to pick up where it left off.`;
+  }
+
+  /** Shown when a create sent again after no answer is told the name is in use. */
+  const CREATE_MAYBE_CREATED_REASON =
+    "A bot with that name already exists in this company. It may be the one you just tried to create. Look in Settings, under Bots, before trying again.";
+
+  /** A late answer for a cancelled bot must never bring its waiting screen back. */
+  function botIsCancelled(agentUid: string): boolean {
+    const uid = agentUid.trim();
+    if (!uid) return false;
+    return removedBotUids.includes(uid) || botRemovals.some((removal) => removal.agentUid === uid);
+  }
+
+  function setBotRemovals(next: BotRemoval[]): void {
+    botRemovals = next;
+    saveOpenBotRemovals(next, accountStorage);
+  }
+
+  function patchBotRemoval(id: string, patch: Partial<BotRemoval>): void {
+    setBotRemovals(botRemovals.map((removal) => removal.id === id ? { ...removal, ...patch } : removal));
+  }
+
+  /** The takeover's create request, watched so Cancel can reach it. */
+  async function createAgentFromTakeover(
+    companyUid: string,
+    draft: CloudBotDraft,
+  ): Promise<EntryPointResult> {
+    return sendCreate(companyUid, draft, false);
+  }
+
+  /**
+   * Send one create. `resent` is true for the one time a create is sent
+   * again by the app itself: a kept key was answered with a bot that has
+   * since been removed, so the same draft goes out once more under a new key.
+   */
+  async function sendCreate(companyUid: string, draft: CloudBotDraft, resent: boolean): Promise<EntryPointResult> {
+    if (!oncreatenewbot) return { ok: false, blocked: false, reason: "" };
+    // One key for this draft, minted at the press and written down before
+    // the request leaves. A draft whose last create got no answer gets the
+    // same key again: the server answers with what that first request made.
+    const keyed = takeCreateKey(accountStorage, createDraftSignature(companyUid, draft));
+    const sent: CloudBotDraft = { ...draft, idempotencyKey: keyed.key };
+    let finish!: () => void;
+    const attempt = {
+      cancelled: false,
+      name: draft.name,
+      companyUid,
+      brain: draft.runtime ?? null,
+      removalId: null as string | null,
+      handle: botHandle({ name: draft.name, handle: draft.handle ?? "" }),
+      key: keyed.key,
+      reused: keyed.reused,
+      // Started before the create is sent, so it shows what was there before.
+      baseline: baselineFor(keyed.key, keyed.reused, companyUid),
+      answer: null as EntryPointResult | null,
+      ended: false,
+      finished: new Promise<void>((resolve) => { finish = resolve; }),
+    };
+    createInFlight = attempt;
+    const done = (): void => {
+      if (createInFlight === attempt) createInFlight = null;
+    };
+    const cancelledAnswer: EntryPointResult = { ok: false, blocked: false, reason: "", cancelled: true };
+    try {
+      let result: EntryPointResult | null = null;
+      try {
+        result = await oncreatenewbot(companyUid, sent);
+      } catch {
+        // A create that threw says nothing about what it made.
+        result = null;
+      }
+      const unknown = !result || (!result.ok && result.outcomeUnknown === true);
+      // "That name already exists", said to a create that was sent again after
+      // no answer, may be about the very bot the first request made: the
+      // server checks the name before it looks at the key, so a second request
+      // that arrives while the first is still running is refused this way.
+      const takenAfterResend =
+        keyed.reused && !!result && !result.ok && result.reason === CLOUD_BOT_NAME_TAKEN_REASON;
+      // What Cancel settles from. Neither of the two above says what was made.
+      attempt.answer = unknown || takenAfterResend ? null : result;
+      if (attempt.cancelled) {
+        done();
+        void settleCancelledCreate(attempt, attempt.answer);
+        return cancelledAnswer;
+      }
+      // The request is over. From here on Cancel settles the attempt itself.
+      attempt.ended = true;
+      if (unknown || takenAfterResend) {
+        // Look for the bot before anything else is offered. Create bot stays
+        // held meanwhile, so the common case (the first request did make the
+        // bot) never sends a second create at all.
+        if (loadCompanyBots) checkingCreate = attempt;
+        // After no answer: one look, then the person may send it again. After
+        // a refused resend there is nothing more to send: every look is used.
+        const found = await lookUpOwnBot(attempt, lookupDelays(unknown ? 1 : 3));
+        if (checkingCreate === attempt) checkingCreate = null;
+        // Cancel pressed during the looks settles on its own (cancelCreateInFlight).
+        if (attempt.cancelled) return cancelledAnswer;
+        done();
+        if (found) {
+          // The bot is this create's own: take it up as its answer would have.
+          forgetCreateKey(keyed.key);
+          const adopted: EntryPointResult = {
+            ok: true,
+            target: { channelId: "", cardId: null, cardKind: null, agentUid: found },
+          };
+          rememberCreatedBot(companyUid, draft, adopted);
+          // The host never saw this create answer, so it is told here.
+          onbotadopted?.(found, draft);
+          return adopted;
+        }
+        if (unknown) {
+          // The key stays: the next press of Create bot for this draft sends it again.
+          return { ok: false, blocked: false, reason: createUnknownReason(draft.name), outcomeUnknown: true };
+        }
+        // The server has answered this key for good, and the bot was not found.
+        forgetCreateKey(keyed.key);
+        return { ok: false, blocked: false, reason: CREATE_MAYBE_CREATED_REASON };
+      }
+      const answered = result as EntryPointResult;
+      const named = answered.ok && !answered.target.cardId ? (answered.target.agentUid ?? "").trim() : "";
+      if (keyed.reused && named && !resent) {
+        // A kept key is answered with the bot its first request made, however
+        // long ago. That bot may have been removed since. Its status is read
+        // once: if the server says it is gone, the key is let go and the same
+        // draft is sent once more as a new create.
+        if (await botIsGone(named)) {
+          if (attempt.cancelled) return cancelledAnswer;
+          done();
+          forgetCreateKey(keyed.key);
+          return sendCreate(companyUid, draft, true);
+        }
+        if (attempt.cancelled) return cancelledAnswer;
+      }
+      done();
+      // The server answered. Its answer is final for this key.
+      forgetCreateKey(keyed.key);
+      rememberCreatedBot(companyUid, draft, answered);
+      return answered;
+    } finally {
+      finish();
+    }
+  }
+
+  /** True when a status read says the server no longer has the bot, or is taking it down. */
+  async function botIsGone(agentUid: string): Promise<boolean> {
+    if (!loadAgentStatus) return false;
+    let status: unknown = null;
+    try {
+      status = await loadAgentStatus(agentUid);
+    } catch {
+      return false;
+    }
+    if (wakingStopFromFailure(status) === "removed") return true;
+    const answer = status as { ok?: unknown; value?: unknown } | null;
+    if (answer?.ok !== true) return false;
+    const phase = String(
+      (answer.value as { setupState?: { phase?: unknown } } | null)?.setupState?.phase ?? "",
+    ).toLowerCase();
+    return phase === "deprovisioning" || phase === "deprovisioned";
+  }
+
+  /** The waits before each look at the company's bots. */
+  function lookupDelays(count: number): number[] {
+    return botCreateLookupMs === undefined
+      ? CANCELLED_CREATE_LOOKUP_DELAYS_MS.slice(0, count)
+      : Array.from({ length: count }, () => botCreateLookupMs as number);
+  }
+
+  /** One look at the company's bots for the bot this create may have made. Null when they cannot be read. */
+  function createdBotLookup(attempt: NonNullable<typeof createInFlight>) {
+    const read = loadCompanyBots;
+    if (!read) return null;
+    return async () =>
+      findCreatedBot({
+        roster: await read(attempt.companyUid),
+        companyUid: attempt.companyUid,
+        handle: attempt.handle,
+        baseline: await attempt.baseline,
+      });
+  }
+
+  /**
+   * Whether a bot found by its handle is this person's own, from the creator
+   * the server records. Taking a bot up (`proven` false) is refused only when
+   * the server names another person: a read that fails, or does not say,
+   * decides nothing. Removing one (`proven` true) needs the server to name
+   * this person: anything less is not enough to remove a bot.
+   */
+  async function ownCreatedBot(agentUid: string, proven = false): Promise<boolean> {
+    let status: unknown = null;
+    try {
+      status = loadAgentStatus ? await loadAgentStatus(agentUid) : null;
+    } catch {
+      status = null;
+    }
+    return proven ? createdByViewer(status, self?.uid) : !createdByAnotherPerson(status, self?.uid);
+  }
+
+  /**
+   * Look for the bot a create with no usable answer made. Reads only.
+   * Resolves the bot's id when it is this create's own, else null.
+   */
+  async function lookUpOwnBot(
+    attempt: NonNullable<typeof createInFlight>,
+    delaysMs: readonly number[],
+  ): Promise<string | null> {
+    const outcome = await resolveCancelledCreate(null, createdBotLookup(attempt), {
+      delaysMs,
+      stopped: () => attempt.cancelled,
+    });
+    if (outcome.kind !== "created" || !outcome.agentUid || attempt.cancelled) return null;
+    // A bot the person cancelled is being removed: it is not taken up.
+    if (botIsCancelled(outcome.agentUid)) return null;
+    return (await ownCreatedBot(outcome.agentUid)) ? outcome.agentUid : null;
+  }
+
+  /**
+   * The create answered with a bot. Put it on the list of starting bots
+   * here, where the answer arrives, and not only when the takeover shows its
+   * waiting screen: the takeover, and this sidebar, may be gone by now (a
+   * company switch, a collapsed sidebar), and the bot must still get its row.
+   */
+  function rememberCreatedBot(companyUid: string, draft: CloudBotDraft, result: EntryPointResult): void {
+    // A card in the answer means nothing was created.
+    if (!result.ok || result.target.cardId) return;
+    const agentUid = result.target.agentUid?.trim() ?? "";
+    const channelId = result.target.channelId?.trim() ?? "";
+    if (!agentUid && !channelId) return;
+    if (agentUid) takenUpBots.add(agentUid);
+    beginWakingBot(
+      beginWakingSession({ agentUid, channelId, companyUid, name: draft.name, brain: draft.runtime ?? null }),
+    );
+  }
+
+  /** Cancel while the create request is out. Its answer decides what there is to remove. */
+  function cancelCreateInFlight(): void {
+    const attempt = createInFlight;
+    if (!attempt || attempt.cancelled) return;
+    attempt.cancelled = true;
+    createInFlight = null;
+    const removal = beginBotRemoval({ name: attempt.name, companyUid: attempt.companyUid, brain: attempt.brain });
+    attempt.removalId = removal.id;
+    setBotRemovals([removal, ...botRemovals]);
+    // The key goes with the attempt. A create of the same draft after this
+    // is a new create under a new key: it must not be answered with the bot
+    // this cancelled attempt made, which is about to be removed.
+    forgetCreateKey(attempt.key);
+    // The request already ended: nothing else will settle this attempt, so
+    // it is settled from here.
+    if (attempt.ended) void settleCancelledCreate(attempt, attempt.answer);
+    if (checkingCreate === attempt) checkingCreate = null;
+  }
+
+  /**
+   * The answer to a create the person cancelled. A bot it names exists and
+   * is removed. An answer that does not say (a timeout, a dropped
+   * connection) is not read as "nothing was created", and the create is not
+   * sent again to find out: a first request that never reached the server
+   * would then make the bot the person cancelled. The company's bots are
+   * read instead, a few times, and searched for the handle.
+   */
+  async function settleCancelledCreate(
+    attempt: NonNullable<typeof createInFlight>,
+    result: EntryPointResult | null,
+  ): Promise<void> {
+    const removalId = attempt.removalId;
+    if (!removalId) return;
+    const lookedUp = readCancelledCreate(result).kind === "unknown";
+    // A create sent under a kept key is answered with the bot that key's
+    // first request made, which may be from an earlier day and in use. Cancel
+    // removes a starting bot only after the person confirms, and nobody was
+    // asked here, so that bot is never removed and is not looked for.
+    const outcome = await resolveCancelledCreate(result, attempt.reused ? null : createdBotLookup(attempt), {
+      delaysMs: lookupDelays(3),
+    });
+    if (outcome.kind === "unknown" || (attempt.reused && outcome.kind === "created")) {
+      // Still not known, or not this press's to remove. Nothing is claimed.
+      patchBotRemoval(removalId, { phase: "unconfirmed" });
+      return;
+    }
+    forgetCreateKey(attempt.key);
+    if (outcome.kind === "not-created") {
+      patchBotRemoval(removalId, { phase: "not-created" });
+      return;
+    }
+    const agentUid = outcome.agentUid;
+    const channelId = outcome.channelId;
+    // An older server also makes a channel for the bot. The server does not
+    // remove that channel with the bot, so it stays off the list.
+    if (channelId) botSetupChannels = rememberBotSetupChannel(botSetupChannels, channelId, storage);
+    if (!agentUid) {
+      patchBotRemoval(removalId, { channelId, phase: "failed", problem: "unknown-bot" });
+      return;
+    }
+    if (lookedUp) {
+      // A later create of the same draft may be the one that made this bot.
+      // Its answer says so: wait for it before deciding whose bot this is.
+      const later = createInFlight;
+      if (
+        later &&
+        later !== attempt &&
+        !later.cancelled &&
+        later.companyUid === attempt.companyUid &&
+        later.handle === attempt.handle
+      ) {
+        await later.finished;
+      }
+    }
+    if (takenUpBots.has(agentUid) || botRemovals.some((other) => other.id !== removalId && other.agentUid === agentUid)) {
+      // The bot belongs to a create the person did not cancel, or another
+      // cancel already accounts for it. This cancel has nothing to remove.
+      setBotRemovals(botRemovals.filter((other) => other.id !== removalId));
+      return;
+    }
+    if (lookedUp) {
+      // The bot was found by its handle, not named by the create's answer.
+      if (!canRemoveBotIn(attempt.companyUid)) {
+        // This person may not remove bots: no removal is sent, and the line
+        // says who can remove it.
+        patchBotRemoval(removalId, { agentUid, phase: "failed", problem: "not-allowed" });
+        return;
+      }
+      // One more check before removing a bot found that way: the server
+      // must name this person as its creator.
+      if (!(await ownCreatedBot(agentUid, true))) {
+        patchBotRemoval(removalId, { phase: "unconfirmed" });
+        return;
+      }
+    }
+    patchBotRemoval(removalId, { agentUid, channelId, phase: "removing", problem: null });
+    void runRemoval(removalId);
+  }
+
+  /**
+   * False only when this person is known to be neither owner nor admin of
+   * that company. The server allows nobody else to remove a bot, so Cancel
+   * must not promise them a removal. A company this list does not know says
+   * nothing either way, and the server decides.
+   */
+  function canRemoveBotIn(companyUid: string): boolean {
+    if (isAdmin === true) return true;
+    const uid = companyUid.trim();
+    const role = ((companies ?? []).find((company) => (company.cloudUid ?? "").trim() === uid)?.role ?? "")
+      .trim()
+      .toLowerCase();
+    return !role || role === "owner" || role === "admin";
+  }
+
+  /** The person confirmed that a bot that is starting should be removed. */
+  function cancelWakingBot(session: WakingBotSession): void {
+    const agentUid = session.agentUid.trim();
+    endWakingBot(session);
+    openWakingKey = null;
+    const removal = beginBotRemoval({
+      name: session.name,
+      companyUid: session.companyUid,
+      agentUid,
+      channelId: session.channelId,
+      brain: session.brain,
+      hadRow: true,
+    });
+    if (!agentUid) {
+      setBotRemovals([{ ...removal, phase: "failed", problem: "unknown-bot" }, ...botRemovals]);
+      return;
+    }
+    setBotRemovals([removal, ...botRemovals.filter((other) => other.agentUid !== agentUid)]);
+    void runRemoval(removal.id);
+  }
+
+  /**
+   * Removals this sidebar is asking the server about right now, and the way
+   * to stop each. A run asks every few seconds for up to twenty minutes, so
+   * it must not outlive the sidebar that started it: the sidebar that
+   * replaces this one picks the removal up from what was written down.
+   */
+  const removalStops = new Map<string, () => void>();
+  onDestroy(() => {
+    for (const stop of removalStops.values()) stop();
+    removalStops.clear();
+  });
+
+  async function runRemoval(id: string): Promise<void> {
+    const removal = botRemovals.find((candidate) => candidate.id === id);
+    if (!removal || !removal.agentUid || removalStops.has(id)) return;
+    if (!removeAgent) {
+      patchBotRemoval(id, { phase: "failed", problem: "error" });
+      return;
+    }
+    patchBotRemoval(id, { phase: "removing", problem: null });
+    const agentUid = removal.agentUid;
+    const run = startBotRemoval(agentUid, removeAgent, { retryMs: botRemovalRetryMs });
+    removalStops.set(id, run.stop);
+    let outcome: BotRemovalRun = "error";
+    try {
+      outcome = await run.done;
+    } finally {
+      if (removalStops.get(id) === run.stop) removalStops.delete(id);
+    }
+    // Stopped with this sidebar, or by the run that took over for the same
+    // bot: nothing was decided. The removal stays written down as under way.
+    if (outcome === "stopped") return;
+    if (outcome !== "removed") {
+      patchBotRemoval(id, { phase: "failed", problem: outcome });
+      return;
+    }
+    // Gone on the server: forget the bot here, and keep its conversation off
+    // the list, because the server leaves the thread behind.
+    removedBotUids = rememberRemovedBot(removedBotUids, agentUid, accountStorage);
+    endWakingBot({ agentUid, channelId: "" });
+    forgetKeysOfRemovedBot(removal.companyUid, removal.name);
+    patchBotRemoval(id, { phase: "removed", problem: null });
+    onbotremoved?.(agentUid);
+  }
+
+  /**
+   * Put a failed removal away. The bot was not removed, so it goes back to
+   * being a bot that is starting: its row and its waiting screen return, and
+   * it hands off to chat when it is ready. A bot the server is still taking
+   * down gets no waiting screen back: it is on its way out.
+   */
+  function keepCancelledBot(id: string): void {
+    const removal = botRemovals.find((candidate) => candidate.id === id);
+    if (!removal || removal.phase !== "failed") return;
+    setBotRemovals(botRemovals.filter((candidate) => candidate.id !== id));
+    if (!removal.agentUid || removal.problem === "still-removing") return;
+    const session = beginWakingSession({
+      agentUid: removal.agentUid,
+      channelId: removal.channelId,
+      companyUid: removal.companyUid,
+      name: removal.name,
+      brain: removal.brain,
+    });
+    changeWakingBots((sessions) => upsertWakingSession(sessions, session));
+  }
+
+  // A removal the app was in the middle of when it last closed is asked again.
+  onMount(() => {
+    for (const removal of botRemovals) {
+      if (removal.phase === "removing") void runRemoval(removal.id);
+    }
+  });
+
+  // Finished cancels are read once. They leave when the takeover closes.
+  $effect(() => {
+    if (newBotOpen) return;
+    untrack(() => {
+      const finished = (removal: BotRemoval): boolean =>
+        removal.phase === "removed" || removal.phase === "not-created" || removal.phase === "unconfirmed";
+      if (botRemovals.some(finished)) {
+        setBotRemovals(botRemovals.filter((removal) => !finished(removal)));
+      }
+    });
+  });
+
+  /** The bot can chat: take the person to their direct message with it. */
+  function openWakingBotChat(session: WakingBotSession): void {
+    if (session.agentUid) {
+      const row: ConversationRow = allRows.find(
+        (candidate) => candidate.kind === "dm" && candidate.personUid === session.agentUid,
+      ) ?? {
+        id: `dm:${session.agentUid}`,
+        kind: "dm",
+        title: session.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: session.agentUid,
+      };
+      // The row still carries the waking marker for a moment; open the plain row.
+      const { wakingBot: _waking, ...plain } = row;
+      void openRow(plain);
+      return;
+    }
+    const row = allRows.find((candidate) => candidate.channelId === session.channelId);
+    if (row) {
+      void openRow(row);
+      return;
+    }
+    requestChannelOpen(session.channelId, {
+      title: session.name,
+      companyUid: session.companyUid,
+    });
+  }
+
+  /** The company's plan cannot host a cloud bot: open its channel on the upgrade card. */
+  function openUpgradeFromTakeover(target: { companyUid: string; channelId: string; cardId: string }): void {
+    newBotOpen = false;
+    requestChannelOpen(target.channelId, {
+      companyUid: target.companyUid,
+      focusCardId: target.cardId,
+    });
+  }
+
+  async function cancelNewBotTakeover(): Promise<void> {
+    newBotOpen = false;
+    createStep = "find";
+    createOpen = true;
+    await tick();
+    document.querySelector<HTMLInputElement>('[data-testid="chat-create-query"]')?.focus();
+  }
+
+  function openLocalBotFromTakeover(): void {
+    newBotOpen = false;
+    createStep = "bot";
+    createOpen = true;
+  }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
@@ -1729,7 +2695,7 @@
   function scopeShortcutLabel(optionId: string): string {
     // Only Personal keeps a key: ⌘0 collides with zoom-reset and ⌘1–4 switch
     // the main views app-wide.
-    if (optionId === "personal") return "⌘P";
+    if (optionId === "personal") return formatShortcut("Mod+P");
     return "";
   }
 
@@ -1863,7 +2829,12 @@
             limit: 50,
           });
           if (seq !== messageSearchSeq) return;
-          messageSearchHits = Array.isArray(resp?.results) ? resp.results : [];
+          // The requests the app writes to a bot are not for the person, and
+          // the server's search returns them like any message (review B-3).
+          messageSearchHits = withoutHiddenRequestHits(
+            Array.isArray(resp?.results) ? resp.results : [],
+            self?.uid,
+          );
         } catch (err) {
           if (seq !== messageSearchSeq) return;
           messageSearchHits = [];
@@ -1976,6 +2947,41 @@
       reconcileTimer = null;
       void directoryReconciler.reconcile("wake").catch(() => {});
     }, 400);
+  }
+
+  // Human-recency refresh. In humanOnly mode a row whose last human message
+  // is known (or known to be absent) is ordered by a value only the server
+  // computes, and a channel-message wake does not reconcile the directory. A
+  // message a person just typed would then leave the row where it was until
+  // the next unrelated reconcile. A wake that could change that value
+  // (`wakeMayChangeHumanRecency`) asks for a directory read, at most once per
+  // interval: the wake cannot say whether a person typed the message, and
+  // work sessions post often. The person's own send from the composer
+  // (`channel:own-send`) is known to be typed and is read at once.
+  const HUMAN_RECENCY_RECONCILE_MIN_INTERVAL_MS = 20_000;
+  let humanRecencyTimer: ReturnType<typeof setTimeout> | null = null;
+  let humanRecencyLastRunAt = 0;
+  function scheduleHumanRecencyReconcile(immediate: boolean): void {
+    if (immediate) {
+      // Replaces a pending throttled read, so one send costs one read.
+      if (humanRecencyTimer != null) {
+        clearTimeout(humanRecencyTimer);
+        humanRecencyTimer = null;
+      }
+      humanRecencyLastRunAt = Date.now();
+      scheduleDirectoryReconcile();
+      return;
+    }
+    if (humanRecencyTimer != null) return;
+    const wait = Math.max(
+      400,
+      humanRecencyLastRunAt + HUMAN_RECENCY_RECONCILE_MIN_INTERVAL_MS - Date.now(),
+    );
+    humanRecencyTimer = setTimeout(() => {
+      humanRecencyTimer = null;
+      humanRecencyLastRunAt = Date.now();
+      void directoryReconciler.reconcile("wake").catch(() => {});
+    }, wait);
   }
 
   async function refreshLists(): Promise<void> {
@@ -2182,6 +3188,9 @@
           fromDisplayName: entry.displayName,
         })),
       );
+      // The DM thread listing may also report each pair's last human
+      // message. Entries without those fields change nothing.
+      contacts = applyDmHumanRecency(contacts, activity);
       void resolveUnnamedDmPeers();
     }
     const entries = payload?.pairUnreads;
@@ -2233,6 +3242,15 @@
           // under TODAY. The unread gate used to be the only caller, which
           // left the row in an older day fold.
           if (stamp) {
+            if (
+              humanOnly &&
+              wakeMayChangeHumanRecency(
+                channels.find((c) => c.channelId === channelId),
+                { createdAt: stamp, fromPersonUid: payload.fromPersonUid },
+              )
+            ) {
+              scheduleHumanRecencyReconcile(false);
+            }
             channels = applyChannelMessageWake(channels, {
               channelId,
               createdAt: stamp,
@@ -2251,6 +3269,19 @@
             unread: absoluteUnread ? payload.unread : bump ? undefined : payload.unread,
             unreadDelta: absoluteUnread ? 0 : bump ? 1 : 0,
           });
+        }),
+      );
+
+      track(
+        wakes.on("channel:own-send", ({ channelId }) => {
+          if (!humanOnly) return;
+          const channel = channels.find((c) => c.channelId === channelId);
+          // A row in the unknown state is ordered by activity, which the
+          // send has already stamped.
+          const known =
+            Boolean((channel?.lastHumanMessageAt ?? "").trim()) ||
+            channel?.hasHumanMessage === false;
+          if (known) scheduleHumanRecencyReconcile(true);
         }),
       );
 
@@ -2286,22 +3317,6 @@
             contacts = mergeContactsWithInbox(contacts, [
               { fromPersonUid, createdAt: stamp },
             ]);
-            if (isAgentUid(fromPersonUid)) {
-              const body = payload.body ?? null;
-              if (body == null) {
-                // MQTT delivery carries no body — read the thread once.
-                void resolveAgentEngagement(fromPersonUid);
-              } else if (
-                !isAgentJoinNoticeEvent({
-                  fromPersonUid,
-                  body,
-                  details: payload.details,
-                  prompt: payload.prompt,
-                })
-              ) {
-                markAgentEngaged(fromPersonUid);
-              }
-            }
           }
           if (
             !shouldBumpDmUnread({
@@ -2437,6 +3452,10 @@
         clearTimeout(refreshTimer);
         refreshTimer = null;
       }
+      if (humanRecencyTimer != null) {
+        clearTimeout(humanRecencyTimer);
+        humanRecencyTimer = null;
+      }
       if (reconcileTimer != null) {
         clearTimeout(reconcileTimer);
         reconcileTimer = null;
@@ -2479,7 +3498,6 @@
       });
       recentDms = rememberRecentDm(recentDms, row.personUid);
       saveRecentDms(recentDms, storage);
-      markAgentEngaged(row.personUid);
       // Optimistic clear (local dot + numeric pair unread), then server mark-read.
       dmDots = clearDmDot(dmDots, row.personUid);
       saveDmDots(dmDots, storage);
@@ -2611,7 +3629,7 @@
         aria-label={`Company scope: ${scopeLabel}. Open menu.`}
         aria-expanded={scopeMenuOpen}
         aria-haspopup="menu"
-        title="Company scope (⌘P Personal)"
+        title={`Company scope (${formatShortcut("Mod+P")} Personal)`}
         onclick={openScopeMenu}
       >
         {#if scope === "all"}
@@ -3712,6 +4730,7 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
+      onnewcloudbot={newBotTargets.length > 0 ? openNewBotTakeover : null}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
       {agentCompanies}
@@ -3733,6 +4752,43 @@
       {loadAvatarPacks}
       initialKind={createKind}
       initialStep={createStep}
+    />
+  {/if}
+
+  {#if newBotOpen}
+    <NewBotTakeover
+      canCreateLocalBot={!!oncreatebot}
+      oncancel={cancelNewBotTakeover}
+      onopenlocal={takeoverOtherWayLabel ? openLocalBotFromTakeover : null}
+      otherWayLabel={takeoverOtherWayLabel}
+      nameCompany={inSeveralCompanies}
+      companies={takeoverCompanies}
+      currentCompanyUid={scopedCompanyUid || null}
+      runtimeReady={botRuntimeReady}
+      loadProvisionOptions={loadCloudProvisionOptions}
+      {loadClaudeProviderFlag}
+      oncreate={oncreatenewbot ? createAgentFromTakeover : null}
+      checkingCreate={checkingCreate !== null}
+      oncancelcreate={cancelCreateInFlight}
+      oncancelbot={removeAgent ? cancelWakingBot : null}
+      removals={botRemovals}
+      onretryremoval={(id) => void runRemoval(id)}
+      ondismissremoval={keepCancelledBot}
+      getStatus={loadAgentStatus}
+      {retryAgent}
+      {restartBrainApproval}
+      {submitClaudeLoginCode}
+      {openExternal}
+      sendHello={sendBotHello}
+      checkHello={checkBotHello}
+      wakingSession={openWakingBot}
+      onwaking={beginWakingBot}
+      onwakingchange={updateWakingBot}
+      onwakingdone={endWakingBot}
+      canRemoveBot={canRemoveBotIn}
+      onopenchat={openWakingBotChat}
+      onclosewaking={() => { newBotOpen = false; }}
+      onupgrade={openUpgradeFromTakeover}
     />
   {/if}
 </aside>
@@ -3845,8 +4901,17 @@
         onclick={(e) => handleRowClick(row, e)}
         oncontextmenu={(e) => openContextMenu(row, e)}
       >
-        {#if row.kind === "channel"}
-          <span class="chat-glyph-wrap" aria-hidden="true">
+        {#if row.wakingBot}
+          <span
+            class="chat-waking-ring"
+            data-testid="chat-waking-bot-ring"
+            style={`--chat-waking-progress: ${row.wakingBot.progress}%`}
+            aria-label={`${row.title} is waking up`}
+          >
+            <span>{initialsFor(row.title)}</span>
+          </span>
+        {:else if row.kind === "channel"}
+            <span class="chat-glyph-wrap" aria-hidden="true">
             {#if !hasChildren && isCompanyScopedRow(row)}
               <CompanyIcon iconUrl={rowCompanyIcon(row)} size={16} />
             {:else if !hasChildren}
@@ -3859,7 +4924,7 @@
                 aria-label="Someone online"
               ></span>
             {/if}
-          </span>
+            </span>
         {:else if row.kind === "group"}
           <span
             class="chat-avatar group"
@@ -3912,6 +4977,11 @@
           {#if archivedSet.has(row.id)}
             <span class="chat-row-archived-pill" data-testid="chat-row-archived-pill">
               Archived
+            </span>
+          {/if}
+          {#if row.removingBot}
+            <span class="chat-row-archived-pill" data-testid="chat-row-removing-pill" data-phase={row.removingBot.phase}>
+              {row.removingBot.phase === "failed" ? "Not removed" : "Removing"}
             </span>
           {/if}
           {#if extras?.badge}
@@ -4836,6 +5906,28 @@
        variable. */
     line-height: 1;
     letter-spacing: 0.02em;
+  }
+
+  .chat-waking-ring {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: conic-gradient(#e7a069 var(--chat-waking-progress), var(--bg3) 0);
+  }
+
+  .chat-waking-ring > span {
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: var(--bg1);
+    color: var(--t1);
+    font-size: 7px;
+    font-weight: 600;
   }
 
   .chat-avatar.group {

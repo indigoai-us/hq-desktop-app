@@ -4,7 +4,7 @@
 # (the per-target Recall sidecar binary and the MSVC toolchain are absent), so
 # this is the authoritative feedback loop for the `cfg(target_os = "windows")`
 # platform graft. It is EXPECTED TO BE RED until the platform-seam port in
-# PHASE3.md is complete; it becomes a required check once green.
+# docs/archive/PHASE3.md is complete; it becomes a required check once green.
 #
 # Triggers on PRs (not push to main) so main is not shown red while the fold is
 # in progress; also manually dispatchable. There is deliberately no `branches:`
@@ -62,7 +62,7 @@ jobs:
     outputs:
       windows: ${{ steps.filter.outputs.windows }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -148,7 +148,7 @@ jobs:
       HQ_SYNC_SENTRY_DSN: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -156,7 +156,7 @@ jobs:
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -191,6 +191,10 @@ jobs:
 
       - name: Install JS deps
         run: pnpm install --no-frozen-lockfile
+
+      - name: Desktop referral core tests
+        working-directory: apps/sync/src-tauri
+        run: cargo test --manifest-path ../../../crates/hq-desktop-core/Cargo.toml desktop_referral::tests
 
       # HQ-DESKTOP-4X. The pure fault-attribution core: the faulting-binary
       # allow-list, the WER Application Error 1000 XML parse, the pid/window/
@@ -291,7 +295,7 @@ jobs:
       HQ_SYNC_SENTRY_DSN: ""
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -299,7 +303,7 @@ jobs:
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -508,9 +512,10 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -518,7 +523,7 @@ jobs:
       # passing an explicit version here too is rejected as a conflict.
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -684,7 +689,7 @@ jobs:
       #   green runs, and ci-cost-contract.test.ts fails if you try.
       - name: Upload WebDriver diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-check-webdriver-logs
           if-no-files-found: warn
@@ -764,11 +769,11 @@ jobs:
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -875,7 +880,7 @@ jobs:
       # if-no-files-found: error, so a missing installer fails the job that
       # built it instead of surfacing later as an unexplained E2E failure.
       - name: Upload bridge NSIS installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-bridge
           if-no-files-found: error
@@ -883,7 +888,7 @@ jobs:
           path: apps/sync/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_${{ steps.versions.outputs.bridge }}_x64-setup.exe
 
       - name: Upload Tauri WebDriver bridge
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-tauri-driver
           if-no-files-found: error
@@ -905,11 +910,11 @@ jobs:
       RECALL_SIDECAR_TARGET: x86_64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -983,7 +988,7 @@ jobs:
           --features e2e-automation
 
       - name: Upload target NSIS updater
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-target
           if-no-files-found: error
@@ -1012,6 +1017,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ""
+      HQ_CI_FIRST_LAUNCH_TELEMETRY_SUPPRESSED: "1"
       BRIDGE_VERSION: ${{ needs.build-bridge-installers.outputs.bridge }}
       TARGET_VERSION: ${{ needs.build-bridge-installers.outputs.target }}
 
@@ -1026,11 +1032,11 @@ jobs:
           Write-Host "target build: ${{ needs.build-target-updater.result }}"
           throw "A Windows installer build job did not succeed; failing the required check rather than reporting it satisfied."
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: pnpm
@@ -1040,13 +1046,13 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Download bridge NSIS installer
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-installer-bridge
           path: ${{ runner.temp }}/installers/bridge
 
       - name: Download target NSIS updater
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-installer-target
           path: ${{ runner.temp }}/installers/target
@@ -1055,7 +1061,7 @@ jobs:
       # tauri-driver.exe, and the live harness only needs it on PATH
       # (e2e/desktop-alt/live-driver.ts resolves it by name).
       - name: Download Tauri WebDriver bridge
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-installer-tauri-driver
           path: ${{ runner.temp }}/tauri-driver
@@ -1145,7 +1151,7 @@ jobs:
       # fails with "The rootDirectory ... is not a parent directory of the file".
       - name: Upload application logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-e2e-app-logs
           if-no-files-found: warn
@@ -1153,7 +1159,7 @@ jobs:
 
       - name: Upload WebDriver diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-installer-e2e-webdriver-logs
           if-no-files-found: warn

@@ -19,7 +19,9 @@
  * points) is unchanged underneath: this module only maps it onto screens and
  * owns the chrome rules, so they can be tested without mounting anything.
  *
- * `first-folder` (the optional, flag-gated first-folder sync), `invite` (the
+ * `company` (name a company or join an invite, then pick a plan, for anyone
+ * with no company yet), `first-folder` (the optional, flag-gated first-folder
+ * sync), `invite` (the
  * optional, flag-gated teammate invite), `connectors` (the optional Claude
  * Desktop connector import) and the post-ready tutorial steps are not story
  * screens. They keep their own panels and sit outside the five-tick progress.
@@ -28,6 +30,7 @@
  */
 import {
   BUILD_STEP_INDEX,
+  COMPANY_STEP_INDEX,
   CONNECTOR_IMPORT_STEP_INDEX,
   CONSENT_STEP_INDEX,
   DIRECTORY_STEP_INDEX,
@@ -51,7 +54,7 @@ export const REPLAY_SCENES = ['welcome', 'folder', 'cloud', 'shortcut'] as const
 
 export type TutorialSceneId = 'trust' | 'settings' | 'run-setup' | 'handoff' | 'build';
 /** The optional steps offered from the ready screen once the install is done. */
-export type FollowOnSceneId = 'first-folder' | 'invite' | 'connectors';
+export type FollowOnSceneId = 'company' | 'first-folder' | 'invite' | 'connectors';
 export type SceneId = StorySceneId | 'consent' | FollowOnSceneId | TutorialSceneId;
 
 /**
@@ -75,6 +78,8 @@ export function sceneForStep(step: number): SceneId {
       return 'folder';
     case SETUP_STEP_INDEX:
       return 'cloud';
+    case COMPANY_STEP_INDEX:
+      return 'company';
     case FIRST_FOLDER_SYNC_STEP_INDEX:
       return 'first-folder';
     case INVITE_TEAMMATE_STEP_INDEX:
@@ -111,6 +116,8 @@ export function stepForScene(scene: SceneId): number {
       // Both explainers play while the install runs: to the wizard they are
       // the setup step.
       return SETUP_STEP_INDEX;
+    case 'company':
+      return COMPANY_STEP_INDEX;
     case 'first-folder':
       return FIRST_FOLDER_SYNC_STEP_INDEX;
     case 'invite':
@@ -143,8 +150,13 @@ export function isStoryScene(scene: SceneId): scene is StorySceneId {
  * steps (first-folder sync, teammate invite, connector import) are offered
  * from the ready screen, so they read as the ready position.
  */
-export function storyIndex(scene: SceneId): number | null {
-  if (scene === 'first-folder' || scene === 'invite' || scene === 'connectors') {
+function storyIndex(scene: SceneId): number | null {
+  if (
+    scene === 'company' ||
+    scene === 'first-folder' ||
+    scene === 'invite' ||
+    scene === 'connectors'
+  ) {
     return STORY_SCENES.indexOf('ready');
   }
   return isStoryScene(scene) ? STORY_SCENES.indexOf(scene) : null;
@@ -296,9 +308,9 @@ export interface InstallCardModel {
   total: number;
 }
 
-export const INSTALL_CARD_TITLE = 'Installing HQ in the background';
-export const INSTALL_CARD_DONE_TITLE = 'HQ is installed';
-export const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
+const INSTALL_CARD_TITLE = 'Installing HQ in the background';
+const INSTALL_CARD_DONE_TITLE = 'HQ is installed';
+const INSTALL_CARD_DONE_LINE = 'Keep going, you’re all set.';
 export const READY_PROGRESS_DONE_TEXT = 'Installed and synced across your devices.';
 
 /**

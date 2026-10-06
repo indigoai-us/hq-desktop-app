@@ -213,6 +213,104 @@ pub fn managed_npm_prefix_in(root: &Path) -> PathBuf {
     }
 }
 
+/// Managed Windows directories in hq-installer's `extended_search_path()`
+/// order: Node runtime, npm's flat global prefix, then HQ wrappers and Git.
+/// The desktop's fallback search directories use this order.
+pub fn managed_windows_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, false)
+}
+
+/// Managed Windows directories which lead the HQ settings PATH written by the
+/// settings-PATH repair. npm's flat global prefix comes before `node` so the
+/// delivered `hq.cmd` wins over a stale shim left in the Node directory; `node`
+/// follows so the selected shim still finds its runtime. Only the settings
+/// PATH uses this order; the installer-aligned search order is unchanged.
+pub fn managed_windows_settings_path_dirs_for_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    managed_windows_dirs_for_roots(roots, true)
+}
+
+fn managed_windows_dirs_for_roots(roots: &[PathBuf], npm_prefix_first: bool) -> Vec<PathBuf> {
+    let mut dirs = Vec::with_capacity(roots.len() * 5);
+    for root in roots {
+        // This function models the Windows layout independent of the host
+        // running its tests; `managed_npm_prefix_in` follows host cfgs.
+        if npm_prefix_first {
+            dirs.push(root.join("npm-prefix"));
+            dirs.push(managed_node_dir_in(root));
+        } else {
+            dirs.push(managed_node_dir_in(root));
+            dirs.push(root.join("npm-prefix"));
+        }
+        dirs.push(root.join("bin"));
+        dirs.push(root.join("git").join("cmd"));
+        dirs.push(root.join("git").join("mingw64").join("bin"));
+    }
+    dirs
+}
+
+/// Whether the settings-PATH repair has the platform-specific inputs it needs.
+/// Windows writes use LOCALAPPDATA-derived managed roots and the HQ folder;
+/// unlike Unix they do not consume the user's home or login-shell PATH.
+pub fn settings_path_repair_environment_available(
+    is_windows: bool,
+    home_available: bool,
+    hq_root_available: bool,
+    managed_roots_available: bool,
+) -> bool {
+    if is_windows {
+        hq_root_available && managed_roots_available
+    } else {
+        home_available
+    }
+}
+
+/// Compose Windows Claude `env.PATH` with HQ-managed tool directories first.
+/// Windows PATH entries are separated by `;` and compared case-insensitively;
+/// only duplicate entries for the managed directories are removed. All other
+/// existing entries, including their spelling and relative order, are retained.
+/// This function is platform-independent so Windows-shaped cases run in core's
+/// ordinary unit-test lane.
+pub fn compose_windows_settings_env_path(
+    toolchain_roots: &[PathBuf],
+    existing: Option<&str>,
+) -> String {
+    fn windows_path_key(path: &str) -> String {
+        let normalized = path.replace('/', "\\");
+        // `C:\\` is a drive root, while `C:` is drive-relative; don't fold
+        // those distinct Windows paths together when trimming separators.
+        let is_drive_root = normalized.len() == 3
+            && normalized.as_bytes()[1] == b':'
+            && normalized.as_bytes()[2] == b'\\';
+        if is_drive_root {
+            normalized.to_lowercase()
+        } else {
+            normalized.trim_end_matches('\\').to_lowercase()
+        }
+    }
+
+    let managed_dirs = managed_windows_settings_path_dirs_for_roots(toolchain_roots);
+    let mut managed_keys = std::collections::HashSet::new();
+    let mut entries = Vec::with_capacity(managed_dirs.len());
+    for dir in managed_dirs {
+        let entry = dir.to_string_lossy().replace('/', "\\");
+        let key = windows_path_key(&entry);
+        if !entry.is_empty() && managed_keys.insert(key) {
+            entries.push(entry);
+        }
+    }
+
+    if let Some(existing) = existing {
+        for entry in existing.split(';') {
+            if managed_keys.contains(&windows_path_key(entry)) {
+                continue;
+            }
+            entries.push(entry.to_string());
+        }
+    }
+
+    entries.join(";")
+}
+
 /// Directory the managed npm prefix places executable shims in — what goes on
 /// PATH. `<prefix>/bin` on unix; the prefix itself on Windows (its shims are
 /// written flat into the prefix, matching hq-installer-win's layout).
@@ -687,6 +785,20 @@ pub fn resolve_bin_on_child_path(name: &str) -> Option<ResolvedProgram> {
 /// version probes need exactly that distinction to report an installed-but-
 /// unreadable CLI honestly instead of reporting it as absent.
 pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
+    resolve_bin_with_diagnostics(name).0
+}
+
+/// Resolve the startup `hq` executable and return only observations already
+/// made by its ordinary resolver traversal. This is used by the lifecycle
+/// reporter; it never performs a second search or emits the selected path.
+pub fn resolve_hq_with_diagnostics() -> (ResolvedProgram, HqResolverDiagnostics) {
+    resolve_bin_with_diagnostics("hq")
+}
+
+fn resolve_bin_with_diagnostics(
+    name: &str,
+) -> (ResolvedProgram, HqResolverDiagnostics) {
+    let mut diagnostics = HqResolverDiagnostics::unknown();
     #[cfg(target_os = "windows")]
     {
         let candidates = candidate_filenames(name);
@@ -708,13 +820,20 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
             let mut dirs = settings_path_dirs();
             dirs.extend(extended_search_dirs());
             let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
-            if let Some(found) = select_hq_program_on_disk(&dirs, &candidates, &reject, &backing) {
-                return found;
+            let (found, observed) = select_hq_program_on_disk_with_diagnostics(
+                &dirs,
+                &candidates,
+                &reject,
+                &backing,
+            );
+            diagnostics = observed;
+            if let Some(found) = found {
+                return (found, diagnostics);
             }
         } else if let Some(found) =
             select_program_on_disk_rejecting(&extended_search_dirs(), &candidates, &reject)
         {
-            return found;
+            return (found, diagnostics);
         }
 
         let mut where_cmd = Command::new("where.exe");
@@ -730,13 +849,16 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     // Drop an npx-cache `hq` from where.exe's list too.
                     .filter(|l| !reject(Path::new(l)))
                     .collect();
+                if name == "hq" && diagnostics.candidate_count == 0 {
+                    diagnostics.candidate_count = matches.len().min(2) as u8;
+                }
                 if let Some(best) = pick_spawnable_program(&matches) {
-                    return best;
+                    return (best, diagnostics);
                 }
             }
         }
 
-        ResolvedProgram::not_resolved(name)
+        (ResolvedProgram::not_resolved(name), diagnostics)
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -747,7 +869,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         // environment and its login shell cannot be started.
         if name == "node" {
             if let Some(resolved) = resolve_bin_on_child_path(name) {
-                return resolved;
+                return (resolved, diagnostics);
             }
         }
 
@@ -758,7 +880,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         // with the one the child will execute.
         if name == "git" {
             if let Some(resolved) = resolve_bin_on_child_path(name) {
-                return resolved;
+                return (resolved, diagnostics);
             }
         }
 
@@ -777,31 +899,39 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
         if name == "hq" {
             let reject = |path: &Path| hq_lookup_rejects_candidate(name, path);
             let backing = |path: &Path| crate::hq_cli_update::hq_cli_backing(path);
-            if let Some(found) = select_hq_program_in_dirs(
+            let (found, observed) = select_hq_program_in_dirs_with_diagnostics(
                 &unix_hq_search_dirs(home_dir().as_deref()),
                 &[name.to_string()],
                 &is_executable_file,
                 &reject,
                 &backing,
-            ) {
+            );
+            diagnostics = observed;
+            if let Some(found) = found {
                 // Unix has no extension-based spawnability contract: normalise the
                 // selector's extensionless classification to `Exe` so the closed
                 // diagnostics keep the Unix arm's documented
                 // `resolved_program_kind: exe` vocabulary.
-                return ResolvedProgram {
-                    path: found.path,
-                    kind: ResolvedProgramKind::Exe,
-                };
+                return (
+                    ResolvedProgram {
+                        path: found.path,
+                        kind: ResolvedProgramKind::Exe,
+                    },
+                    diagnostics,
+                );
             }
         } else if let Some(path) = resolve_bin_in_dirs(home_dir().as_deref(), name) {
             // Every non-`hq` name keeps the untouched search. Unix has no
             // extension-based spawnability contract: a file the resolver found is
             // a program the loader will attempt, reported as `Exe` so the closed
             // diagnostics stay meaningful cross-platform.
-            return ResolvedProgram {
-                path,
-                kind: ResolvedProgramKind::Exe,
-            };
+            return (
+                ResolvedProgram {
+                    path,
+                    kind: ResolvedProgramKind::Exe,
+                },
+                diagnostics,
+            );
         }
 
         // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
@@ -831,7 +961,7 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                 // match otherwise — a machine whose only `hq` is unbacked still
                 // resolves and is never reported absent by this lane. Every other
                 // name keeps `command -v`'s single first match.
-                let mut first_found: Option<String> = None;
+                let mut first_found: Option<(String, CandidateBacking)> = None;
                 for line in stdout.lines() {
                     let path = line.trim();
                     if path.is_empty()
@@ -840,31 +970,52 @@ pub fn resolve_bin_with_kind(name: &str) -> ResolvedProgram {
                     {
                         continue;
                     }
-                    if name != "hq"
-                        || crate::hq_cli_update::hq_cli_backing(Path::new(path))
-                            == CandidateBacking::Backed
-                    {
-                        return ResolvedProgram {
-                            path: path.to_string(),
-                            kind: ResolvedProgramKind::Exe,
-                        };
-                    }
-                    if first_found.is_none() {
-                        first_found = Some(path.to_string());
+                    if name == "hq" {
+                        diagnostics.candidate_count =
+                            diagnostics.candidate_count.saturating_add(1).min(2);
+                        let candidate_backing =
+                            crate::hq_cli_update::hq_cli_backing(Path::new(path));
+                        if candidate_backing.is_backed() {
+                            diagnostics.managed_package_state =
+                                managed_hq_package_state(Path::new(path), candidate_backing);
+                            return (
+                                ResolvedProgram {
+                                    path: path.to_string(),
+                                    kind: ResolvedProgramKind::Exe,
+                                },
+                                diagnostics,
+                            );
+                        }
+                        if first_found.is_none() {
+                            first_found = Some((path.to_string(), candidate_backing));
+                        }
+                    } else {
+                        return (
+                            ResolvedProgram {
+                                path: path.to_string(),
+                                kind: ResolvedProgramKind::Exe,
+                            },
+                            diagnostics,
+                        );
                     }
                 }
-                if let Some(path) = first_found {
-                    return ResolvedProgram {
-                        path,
-                        kind: ResolvedProgramKind::Exe,
-                    };
+                if let Some((path, candidate_backing)) = first_found {
+                    diagnostics.managed_package_state =
+                        managed_hq_package_state(Path::new(&path), candidate_backing);
+                    return (
+                        ResolvedProgram {
+                            path,
+                            kind: ResolvedProgramKind::Exe,
+                        },
+                        diagnostics,
+                    );
                 }
             }
         }
 
         // Fall back to bare name — Command::new will then produce os error 2
         // with the binary name still recognizable in the error message.
-        ResolvedProgram::not_resolved(name)
+        (ResolvedProgram::not_resolved(name), diagnostics)
     }
 }
 
@@ -1460,25 +1611,14 @@ fn extended_search_dirs() -> Vec<PathBuf> {
 fn extended_search_dirs_raw() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    if let Some(toolchain) = managed_toolchain_dir() {
-        dirs.push(toolchain.join("node"));
-        // Keep this order aligned with hq-installer's
-        // `extended_search_path()`. Windows npm global shims and the
-        // drive-letter-translating rsync wrapper live directly in
-        // `npm-prefix`; the Core rescue must see that wrapper before the raw
-        // rsync.exe in `bin`.
-        dirs.push(toolchain.join("npm-prefix"));
-        dirs.push(toolchain.join("bin"));
-        dirs.push(toolchain.join("git").join("cmd"));
-        dirs.push(toolchain.join("git").join("mingw64").join("bin"));
-    }
-    if let Some(legacy) = legacy_managed_toolchain_dir() {
-        dirs.push(legacy.join("node"));
-        dirs.push(legacy.join("npm-prefix"));
-        dirs.push(legacy.join("bin"));
-        dirs.push(legacy.join("git").join("cmd"));
-        dirs.push(legacy.join("git").join("mingw64").join("bin"));
-    }
+    let managed_roots: Vec<PathBuf> = [managed_toolchain_dir(), legacy_managed_toolchain_dir()]
+        .into_iter()
+        .flatten()
+        .collect();
+    // Keep this order aligned with hq-installer's `extended_search_path()`.
+    // The settings PATH repair uses the same directories with npm's prefix
+    // first (`managed_windows_settings_path_dirs_for_roots`).
+    dirs.extend(managed_windows_path_dirs_for_roots(&managed_roots));
 
     if let Some(home) = home_dir() {
         dirs.push(home.join(".hq").join("bin"));
@@ -1869,12 +2009,58 @@ pub fn select_program_on_disk_rejecting(
 pub enum CandidateBacking {
     Backed,
     AbsentDefinitive,
+    ManifestInvalid,
+    ManifestUnreadable,
     Indeterminate,
 }
 
 impl CandidateBacking {
     fn is_backed(self) -> bool {
         matches!(self, Self::Backed)
+    }
+
+    pub fn managed_package_state_tag(self) -> &'static str {
+        match self {
+            Self::Backed => "present",
+            Self::AbsentDefinitive => "missing",
+            Self::ManifestInvalid => "invalid",
+            Self::ManifestUnreadable => "unreadable",
+            Self::Indeterminate => "unknown",
+        }
+    }
+}
+
+fn managed_hq_package_state(path: &Path, backing: CandidateBacking) -> &'static str {
+    if hq_bin_in_managed_root(path) {
+        backing.managed_package_state_tag()
+    } else {
+        "unknown"
+    }
+}
+
+/// Path-free summary of the candidate observations made by the normal `hq`
+/// resolver traversal. Counts only candidates the traversal actually checked;
+/// it does not initiate a second search to discover shadowed binaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HqResolverDiagnostics {
+    pub candidate_count: u8,
+    pub managed_package_state: &'static str,
+}
+
+impl HqResolverDiagnostics {
+    pub fn candidate_count_bucket(self) -> &'static str {
+        match self.candidate_count {
+            0 => "0",
+            1 => "1",
+            _ => "2_plus",
+        }
+    }
+
+    pub fn unknown() -> Self {
+        Self {
+            candidate_count: 0,
+            managed_package_state: "unknown",
+        }
     }
 }
 
@@ -1906,39 +2092,70 @@ pub fn select_hq_program_in_dirs(
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
 ) -> Option<ResolvedProgram> {
-    let base = select_program_in_dirs_rejecting(dirs, candidates, exists, reject)?;
-    // The base winner is already the best of its spawnability class (first
-    // spawnable, else first found). If it is also backed it cannot be outranked —
-    // return it without probing any other candidate's backing.
-    if backing(Path::new(&base.path)).is_backed() {
-        return Some(base);
-    }
-    // The base winner is unbacked. Widen for a backed candidate that outranks it:
-    //   - a spawnable base (tier 2) is only beaten by a backed+spawnable (tier 1);
-    //   - a non-spawnable base (tier 4 — no spawnable exists anywhere) is beaten by
-    //     the first backed candidate (tier 3).
-    let spawnable_only = base.is_spawnable();
-    first_backed_candidate(dirs, candidates, exists, reject, backing, spawnable_only).or(Some(base))
+    select_hq_program_in_dirs_with_diagnostics(dirs, candidates, exists, reject, backing).0
 }
 
-/// First existing, non-rejected, BACKED candidate in resolver order (directory
-/// precedence, spawnable candidates first). When `spawnable_only`, non-spawnable
-/// candidates are skipped so a backed non-spawnable can never outrank an unbacked
-/// spawnable. Used only on the widen path, so its extra backing probes never
-/// touch the healthy hot path.
-fn first_backed_candidate(
+/// The same short-circuiting selection as `select_hq_program_in_dirs`, with a
+/// bounded count of candidates observed during its existing traversal and the
+/// backing result for the selected program. No additional filesystem probes
+/// are performed for diagnostics.
+fn select_hq_program_in_dirs_with_diagnostics(
     dirs: &[PathBuf],
     candidates: &[String],
     exists: &dyn Fn(&Path) -> bool,
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
-    spawnable_only: bool,
-) -> Option<ResolvedProgram> {
-    let passes: &[bool] = if spawnable_only {
-        &[true]
-    } else {
-        &[true, false]
+) -> (Option<ResolvedProgram>, HqResolverDiagnostics) {
+    let mut observed = std::collections::HashSet::<PathBuf>::new();
+    let mut base = None;
+    for spawnable_pass in [true, false] {
+        'search: for dir in dirs {
+            for candidate in candidates {
+                if is_spawnable_program(candidate) != spawnable_pass {
+                    continue;
+                }
+                let full = dir.join(candidate);
+                if exists(&full) && !reject(&full) {
+                    observed.insert(full.clone());
+                    base = Some(ResolvedProgram {
+                        path: full.to_string_lossy().to_string(),
+                        kind: program_kind(candidate),
+                    });
+                    break 'search;
+                }
+            }
+        }
+        if base.is_some() {
+            break;
+        }
+    }
+    let Some(base) = base else {
+        return (
+            None,
+            HqResolverDiagnostics {
+                candidate_count: 0,
+                managed_package_state: "unknown",
+            },
+        );
     };
+    let base_backing = backing(Path::new(&base.path));
+    let base_package_state = managed_hq_package_state(Path::new(&base.path), base_backing);
+    if base_backing.is_backed() {
+        return (
+            Some(base),
+            HqResolverDiagnostics {
+                candidate_count: 1,
+                managed_package_state: base_package_state,
+            },
+        );
+    }
+
+    // Preserve the existing widening path exactly. It already revisits the
+    // candidate directories when the base winner is not backed; count only new
+    // candidates observed there and retain the chosen candidate's existing
+    // backing result.
+    let spawnable_only = base.is_spawnable();
+    let passes: &[bool] = if spawnable_only { &[true] } else { &[true, false] };
     for spawnable_pass in passes {
         for dir in dirs {
             for candidate in candidates {
@@ -1946,21 +2163,38 @@ fn first_backed_candidate(
                     continue;
                 }
                 let full = dir.join(candidate);
-                if exists(&full) && !reject(&full) && backing(&full).is_backed() {
-                    return Some(ResolvedProgram {
-                        path: full.to_string_lossy().to_string(),
-                        kind: program_kind(candidate),
-                    });
+                if !exists(&full) || reject(&full) {
+                    continue;
+                }
+                let is_new = observed.insert(full.clone());
+                let candidate_backing = backing(&full);
+                if candidate_backing.is_backed() {
+                    return (
+                        Some(ResolvedProgram {
+                            path: full.to_string_lossy().to_string(),
+                            kind: program_kind(candidate),
+                        }),
+                        HqResolverDiagnostics {
+                            candidate_count: if is_new { 2 } else { 1 },
+                            managed_package_state: managed_hq_package_state(&full, candidate_backing),
+                        },
+                    );
                 }
             }
         }
     }
-    None
+    (
+        Some(base),
+        HqResolverDiagnostics {
+            candidate_count: observed.len().min(2) as u8,
+            managed_package_state: base_package_state,
+        },
+    )
 }
 
 /// [`select_hq_program_in_dirs`] against the real filesystem, with the real
-/// backing oracle. This is the exact call the Windows `hq` arm of
-/// [`resolve_bin_with_kind`] makes, so the pure selection is compiled and
+/// backing oracle. The Windows `hq` arm of [`resolve_bin_with_kind`] uses the
+/// diagnostics companion below, so this pure selection remains compiled and
 /// exercised on every CI leg, not only on windows-latest.
 pub fn select_hq_program_on_disk(
     dirs: &[PathBuf],
@@ -1968,7 +2202,19 @@ pub fn select_hq_program_on_disk(
     reject: &dyn Fn(&Path) -> bool,
     backing: &dyn Fn(&Path) -> CandidateBacking,
 ) -> Option<ResolvedProgram> {
-    select_hq_program_in_dirs(
+    select_hq_program_on_disk_with_diagnostics(dirs, candidates, reject, backing).0
+}
+
+/// The exact on-disk helper called by the Windows `hq` resolver, returning
+/// diagnostics collected during the same traversal. It performs no extra
+/// filesystem probes beyond [`select_hq_program_in_dirs_with_diagnostics`].
+fn select_hq_program_on_disk_with_diagnostics(
+    dirs: &[PathBuf],
+    candidates: &[String],
+    reject: &dyn Fn(&Path) -> bool,
+    backing: &dyn Fn(&Path) -> CandidateBacking,
+) -> (Option<ResolvedProgram>, HqResolverDiagnostics) {
+    select_hq_program_in_dirs_with_diagnostics(
         dirs,
         candidates,
         &|path: &Path| path.exists(),
@@ -2547,6 +2793,86 @@ mod tests {
     }
 
     #[test]
+    fn windows_settings_path_hoists_managed_dirs_and_preserves_user_entries() {
+        let toolchain = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let existing = concat!(
+            r"C:\UserCli\npm",
+            ";",
+            r"c:/programdata/indigohq/toolchain/NPM-PREFIX/",
+            ";;",
+            r"C:\Program Files\PowerShell\7",
+            ";",
+            r"C:\UserCli\npm"
+        );
+
+        let composed = compose_windows_settings_env_path(&[toolchain.clone()], Some(existing));
+        assert_eq!(
+            composed,
+            concat!(
+                r"C:\ProgramData\IndigoHQ\toolchain\npm-prefix",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\node",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\bin",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\cmd",
+                ";",
+                r"C:\ProgramData\IndigoHQ\toolchain\git\mingw64\bin",
+                ";",
+                r"C:\UserCli\npm",
+                ";;",
+                r"C:\Program Files\PowerShell\7",
+                ";",
+                r"C:\UserCli\npm"
+            )
+        );
+        assert_eq!(composed.matches("npm-prefix").count(), 1);
+        assert_eq!(composed.matches(r"C:\UserCli\npm").count(), 2);
+        assert!(composed.contains(r"C:\UserCli\npm"));
+        assert!(composed.contains(r"C:\Program Files\PowerShell\7"));
+    }
+
+    #[test]
+    fn windows_settings_path_puts_npm_prefix_before_node() {
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_settings_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("npm-prefix"));
+        assert_eq!(dirs[1], root.join("node"));
+        assert_eq!(dirs[2], root.join("bin"));
+    }
+
+    #[test]
+    fn windows_search_dirs_keep_installer_node_npm_bin_order() {
+        // The fallback search order stays aligned with hq-installer (node,
+        // npm-prefix, bin); only the settings PATH puts npm-prefix first.
+        // Runs on every host; the Windows-only extended_search_dirs test
+        // checks the same order through the real resolver path.
+        let root = PathBuf::from(r"C:\ProgramData\IndigoHQ\toolchain");
+        let dirs = managed_windows_path_dirs_for_roots(&[root.clone()]);
+
+        assert_eq!(dirs[0], root.join("node"));
+        assert_eq!(dirs[1], root.join("npm-prefix"));
+        assert_eq!(dirs[2], root.join("bin"));
+    }
+
+    #[test]
+    fn windows_settings_path_repair_does_not_require_home() {
+        // Windows' writer ignores home and login_path. With LOCALAPPDATA-backed
+        // roots and an HQ folder available, the repair should still run when
+        // HOME and profile fallback variables are absent.
+        assert!(settings_path_repair_environment_available(
+            true, false, true, true
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, true, false
+        ));
+        assert!(!settings_path_repair_environment_available(
+            true, false, false, true
+        ));
+    }
+
+    #[test]
     fn settings_local_path_overrides_base_not_concatenated() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
@@ -3116,6 +3442,58 @@ mod tests {
     }
 
     #[test]
+    fn hq_resolver_diagnostics_bucket_only_candidates_seen_by_existing_walk() {
+        let lane_one = PathBuf::from("/resolver/lane-one");
+        let lane_two = PathBuf::from("/resolver/lane-two");
+        let dirs = vec![lane_one.clone(), lane_two.clone()];
+        let candidates = vec!["hq".to_string()];
+
+        let (none, none_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|_| false,
+            &never_reject,
+            &|_| CandidateBacking::AbsentDefinitive,
+        );
+        assert!(none.is_none());
+        assert_eq!(none_diagnostics.candidate_count_bucket(), "0");
+
+        let one = lane_one.join("hq");
+        let (one_program, one_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|path| path == one,
+            &never_reject,
+            &|_| CandidateBacking::Backed,
+        );
+        assert_eq!(
+            one_program.unwrap().path,
+            one.to_string_lossy().to_string()
+        );
+        assert_eq!(one_diagnostics.candidate_count_bucket(), "1");
+
+        let two = lane_two.join("hq");
+        let (two_program, two_diagnostics) = select_hq_program_in_dirs_with_diagnostics(
+            &dirs,
+            &candidates,
+            &|path| path == one || path == two,
+            &never_reject,
+            &|path| {
+                if path == one {
+                    CandidateBacking::AbsentDefinitive
+                } else {
+                    CandidateBacking::Backed
+                }
+            },
+        );
+        assert_eq!(
+            two_program.unwrap().path,
+            two.to_string_lossy().to_string()
+        );
+        assert_eq!(two_diagnostics.candidate_count_bucket(), "2_plus");
+    }
+
+    #[test]
     fn test_windows_hq_prefers_a_backed_install_over_an_earlier_unbacked_foreign_hq() {
         // A foreign spawnable `hq.cmd` sits EARLIER than the real backed install.
         // Cross-lane spawnable preference alone would keep the foreign one (both
@@ -3296,8 +3674,8 @@ mod tests {
 
         assert_eq!(
             crate::hq_cli_update::hq_cli_backing(&managed.join("hq.cmd")),
-            CandidateBacking::Indeterminate,
-            "an unreadable manifest is indeterminate, not a definitive absence"
+            CandidateBacking::ManifestUnreadable,
+            "an unreadable manifest has its precise state, but is not a definitive absence"
         );
 
         let managed_roots = [tmp.path().join("toolchain")];
@@ -3891,7 +4269,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             crate::hq_cli_update::hq_cli_backing(&hq),
-            CandidateBacking::Indeterminate
+            CandidateBacking::ManifestUnreadable
         );
 
         // Keep selection hermetic; search-directory expansion has its own test.

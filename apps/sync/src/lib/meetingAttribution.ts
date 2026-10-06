@@ -105,7 +105,7 @@ export function selectRecorded(bots: ScheduledBotLike[]): ScheduledBotLike[] {
   return bots.filter(isRecorded);
 }
 
-export function recordedTimestamp(bot: ScheduledBotLike): number {
+function recordedTimestamp(bot: ScheduledBotLike): number {
   const raw = bot.scheduledStartTime ?? bot.createdAt;
   if (!raw) return -Infinity;
   const timestamp = new Date(raw).getTime();
@@ -193,16 +193,6 @@ export function setCompanyErrorMessage(err: SetCompanyError): string {
     default:
       return "Couldn't update the meeting's company.";
   }
-}
-
-export function listScheduledBots(): Promise<ScheduledBotLike[]> {
-  return invoke<ScheduledBotLike[]>('meetings_list_scheduled_bots', {
-    calendarEventIds: null,
-  });
-}
-
-export function listMemberships(): Promise<CompanyMembershipLike[]> {
-  return invoke<CompanyMembershipLike[]>('meetings_list_memberships');
 }
 
 export async function setMeetingCompany(

@@ -261,6 +261,28 @@ describe("shared update store", () => {
     expect(updateStore.installError).toBe("disk full");
   });
 
+  it("a recording deferral keeps the staged package in its scheduled state", async () => {
+    await checkDesktopUpdates(
+      orch({ checkForUpdates: async () => pass({ version: "0.10.173" }) }),
+    );
+    await downloadDesktopUpdate(orch({}));
+    await restartToUpdate(
+      orch({
+        installDownloadedUpdate: async () =>
+          fail("HQ will restart to update after your recording finishes"),
+      }),
+    );
+    expect(updateStore.installPhase).toBe("deferred");
+    expect(updateStore.installError).toContain("recording finishes");
+    expect(
+      appRowStatusLabel({
+        status: "available",
+        installPhase: updateStore.installPhase,
+        downloadPercent: null,
+      }),
+    ).toBe("WAITING TO RESTART");
+  });
+
   it("hydrates a package downloaded while the surface was closed into Restart to update", async () => {
     await hydrateDownloadedUpdate(
       orch({ getDownloadedUpdate: async () => pass({ version: "0.10.173" }) }),
@@ -554,6 +576,36 @@ describe("shared store keeps pane and popover in lockstep", () => {
       expect(updates.installDownloadedUpdate).toHaveBeenCalledTimes(1);
       expect(popoverHost.textContent).toContain("INSTALLING");
       expect(paneHost.textContent).toContain("INSTALLING");
+    });
+  });
+
+  it("shows recording deferral on both the Core popover and Settings update row", async () => {
+    const adapter = updatesAdapter({
+      installDownloadedUpdate: vi.fn(async () =>
+        fail("HQ will restart to update after your recording finishes"),
+      ),
+    });
+    const { paneHost, popoverHost } = mountBoth(adapter);
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.querySelector('[data-testid="core-popover-download-install"]')).toBeTruthy();
+    });
+    popoverHost
+      .querySelector<HTMLButtonElement>('[data-testid="core-popover-download-install"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeTruthy();
+    });
+    popoverHost
+      .querySelector<HTMLButtonElement>('[data-testid="core-popover-restart-update"]')!
+      .click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(popoverHost.textContent).toContain("WAITING TO RESTART");
+      expect(paneHost.textContent).toContain("WAITING TO RESTART");
+      expect(popoverHost.querySelector('[data-testid="core-popover-restart-update"]')).toBeNull();
+      expect(paneHost.querySelector('[data-testid="settings-app-restart"]')).toBeNull();
     });
   });
 

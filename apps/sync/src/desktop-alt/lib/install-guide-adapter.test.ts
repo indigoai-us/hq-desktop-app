@@ -197,6 +197,9 @@ describe("createSetupInstallGuideCallbacks - onsignin", () => {
     const cb = createSetupInstallGuideCallbacks({
       invoke: invoke as unknown as InstallGuideDeps["invoke"],
       openUrl: async () => undefined,
+      sleep: async () => undefined,
+      signInPollMs: 0,
+      signInDeadlineMs: 5,
     });
     const result = await cb.onsignin("codex");
     expect(result.ok).toBe(false);
@@ -211,6 +214,141 @@ describe("createSetupInstallGuideCallbacks - onsignin", () => {
     });
     const result = await cb.onsignin("claude");
     expect(result.ok).toBe(false);
+  });
+});
+
+/**
+ * Regression for the fresh-Mac VM report: the guide showed "Sign-in did not
+ * complete" with "Complete sign-in in your browser." in red the moment the
+ * browser opened. `agent_provider_login_start` answers "waiting" right away;
+ * the adapter used to treat anything but "connected" as the final answer.
+ */
+describe("createSetupInstallGuideCallbacks - onsignin waits for the browser", () => {
+  function scripted(answers: Record<string, unknown[]>) {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+      calls.push([cmd, args]);
+      const queue = answers[cmd] ?? [];
+      const next = queue.length > 1 ? queue.shift() : queue[0];
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    return { invoke: invoke as unknown as InstallGuideDeps["invoke"], calls };
+  }
+
+  it("keeps waiting while the host says 'waiting', then resolves ok when signed in", async () => {
+    const { invoke, calls } = scripted({
+      agent_provider_login_start: [{ state: "waiting", message: "Complete sign-in in your browser." }],
+      agent_provider_login_status: [
+        { state: "waiting", message: "Complete sign-in in your browser." },
+        { state: "waiting", message: "Complete sign-in in your browser." },
+        { state: "connected" },
+      ],
+    });
+    const sleep = vi.fn(async () => undefined);
+    const cb = createSetupInstallGuideCallbacks({ invoke, openUrl: async () => undefined, sleep });
+    const result = await cb.onsignin("claude");
+    expect(result).toEqual({ ok: true });
+    expect(calls.filter(([cmd]) => cmd === "agent_provider_login_status")).toHaveLength(3);
+    expect(calls.find(([cmd]) => cmd === "agent_provider_login_status")?.[1]).toEqual({ tool: "claude" });
+    expect(sleep).toHaveBeenCalledWith(2_000);
+  });
+
+  it("never reports the waiting message as the failure reason", async () => {
+    const { invoke } = scripted({
+      agent_provider_login_start: [{ state: "waiting", message: "Complete sign-in in your browser." }],
+      agent_provider_login_status: [{ state: "error", message: "Sign-in timed out. Please retry." }],
+    });
+    const cb = createSetupInstallGuideCallbacks({ invoke, openUrl: async () => undefined, sleep: async () => undefined });
+    const result = await cb.onsignin("claude");
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("Sign-in timed out. Please retry.");
+  });
+
+  it("gives up after its deadline with a plain sentence, not the browser prompt", async () => {
+    const { invoke } = scripted({
+      agent_provider_login_start: [{ state: "waiting", message: "Complete sign-in in your browser." }],
+      agent_provider_login_status: [{ state: "waiting", message: "Complete sign-in in your browser." }],
+    });
+    const cb = createSetupInstallGuideCallbacks({
+      invoke,
+      openUrl: async () => undefined,
+      sleep: () => new Promise((r) => setTimeout(r, 2)),
+      signInPollMs: 1,
+      signInDeadlineMs: 10,
+    });
+    const result = await cb.onsignin("claude");
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toContain("Complete sign-in in your browser");
+    expect(result.reason).toContain("Claude Code");
+  });
+
+  it("rides out a status check that throws", async () => {
+    const { invoke } = scripted({
+      agent_provider_login_start: [{ state: "waiting" }],
+      agent_provider_login_status: [new Error("ipc hiccup"), { state: "connected" }],
+    });
+    const cb = createSetupInstallGuideCallbacks({ invoke, openUrl: async () => undefined, sleep: async () => undefined });
+    expect(await cb.onsignin("codex")).toEqual({ ok: true });
+  });
+
+  it("stops waiting when the guide aborts", async () => {
+    const { invoke } = scripted({
+      agent_provider_login_start: [{ state: "waiting" }],
+      agent_provider_login_status: [{ state: "waiting" }],
+    });
+    const controller = new AbortController();
+    const cb = createSetupInstallGuideCallbacks({
+      invoke,
+      openUrl: async () => undefined,
+      sleep: async () => {
+        controller.abort();
+      },
+    });
+    const result = await cb.onsignin("claude", { signal: controller.signal });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("Sign-in cancelled.");
+  });
+});
+
+describe("createSetupInstallGuideCallbacks - onstatus + oncancelsignin", () => {
+  it("reads 'connected' from agent_provider_login_status as signed in", async () => {
+    const invoke = vi.fn(async () => ({ state: "connected" }));
+    const cb = createSetupInstallGuideCallbacks({
+      invoke: invoke as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    expect(await cb.onstatus("codex")).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("agent_provider_login_status", { tool: "codex" });
+  });
+
+  it("reads anything else, including a failed check, as not signed in", async () => {
+    for (const answer of [{ state: "disconnected" }, { state: "waiting" }, { state: "error" }]) {
+      const cb = createSetupInstallGuideCallbacks({
+        invoke: (async () => answer) as unknown as InstallGuideDeps["invoke"],
+        openUrl: async () => undefined,
+      });
+      expect(await cb.onstatus("claude")).toBe(false);
+    }
+    const throwing = createSetupInstallGuideCallbacks({
+      invoke: (async () => {
+        throw new Error("no");
+      }) as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    expect(await throwing.onstatus("claude")).toBe(false);
+  });
+
+  it("cancels through agent_provider_login_cancel and swallows a failure", async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error("nothing running");
+    });
+    const cb = createSetupInstallGuideCallbacks({
+      invoke: invoke as unknown as InstallGuideDeps["invoke"],
+      openUrl: async () => undefined,
+    });
+    await expect(cb.oncancelsignin("claude")).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith("agent_provider_login_cancel", { tool: "claude" });
   });
 });
 

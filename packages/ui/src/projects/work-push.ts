@@ -36,7 +36,7 @@ function str(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-export function parseWorkPush(eventName: string, payload: unknown): WorkPush | null {
+function parseWorkPush(eventName: string, payload: unknown): WorkPush | null {
   const body =
     payload && typeof payload === "object"
       ? (payload as Record<string, unknown>)

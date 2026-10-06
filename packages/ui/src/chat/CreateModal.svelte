@@ -24,6 +24,7 @@
     LocalBotWorkerOption,
   } from "@hq/platform";
   import { hostComputerNoun } from "@hq/platform";
+  import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
   import type { AvatarPack } from "../avatars/types.js";
   import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
@@ -35,6 +36,7 @@
     CompanyDraftForm,
     CompanyInvite,
     InviteFailure,
+    CreateCompanyPhase,
   } from "./create-company/create-company-flow.js";
   import { slugFieldOf } from "./create-company/create-company-flow.js";
   import {
@@ -138,6 +140,8 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
+    /** Opens Desktop's cloud-only New Bot takeover. */
+    onnewcloudbot?: (() => void) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
@@ -199,7 +203,7 @@
      * Which step to open on. "company" is the New company entry: the modal
      * opens straight on its second step, with no name typed yet.
      */
-    initialStep?: "find" | "company";
+    initialStep?: "find" | "company" | "bot";
   }
 
   let {
@@ -216,6 +220,7 @@
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
+    onnewcloudbot = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
     agentCompanies = null,
@@ -314,6 +319,13 @@
   let companyError = $state<string | null>(null);
   /** Invites the server refused after the company was made. */
   let companyInviteFailures = $state<InviteFailure[]>([]);
+  /** Which step of creating the company is running, for the button label. */
+  let companyPhase = $state<CreateCompanyPhase>("creating");
+  /**
+   * A company that was created but whose cloud vault is not set up yet. While
+   * set, the primary button retries provisioning instead of creating again.
+   */
+  let companyUnprovisionedUid = $state<string | null>(null);
   /** The name typed in the palette, kept so Back can restore the query. */
   let companyName = $state("");
 
@@ -394,6 +406,7 @@
     companyInvites = [];
     companyInviteInput = "";
     companyInviteFailures = [];
+    companyUnprovisionedUid = null;
     companyRole = "member";
     stopCompanySlugWatch();
     step = "company";
@@ -462,6 +475,7 @@
     // A typed-but-not-added address is what the person meant to invite.
     if (companyInviteInput.trim()) addCompanyInvite();
     companyCreating = true;
+    companyPhase = "creating";
     companyError = null;
     companyInviteFailures = [];
     try {
@@ -469,9 +483,23 @@
       for (const field of companyForm.fields) {
         values[field.id] = (companyValues[field.id] ?? "").trim();
       }
-      const result = await companyCreate.submit(companyForm, values, companyInvites);
+      const result = await companyCreate.submit(
+        companyForm,
+        values,
+        companyInvites,
+        (phase) => (companyPhase = phase),
+      );
       if (!result.ok) {
         companyError = result.reason;
+        return;
+      }
+      if (result.company.cloudError) {
+        // The company exists but cannot sync yet. Stay open: the button now
+        // retries provisioning, never a second create.
+        companyUnprovisionedUid = result.company.companyUid;
+        companyError = result.company.cloudError;
+        companyInviteFailures = result.company.inviteFailures;
+        companyInvites = [];
         return;
       }
       if (result.company.inviteFailures.length > 0) {
@@ -480,6 +508,28 @@
         return;
       }
       onclose();
+    } catch (err) {
+      companyError = err instanceof Error ? err.message : String(err);
+    } finally {
+      companyCreating = false;
+    }
+  }
+
+  /** Retry cloud provisioning for the company this modal just created. */
+  async function retryCompanyProvision(): Promise<void> {
+    const uid = companyUnprovisionedUid;
+    if (!companyCreate?.provision || !uid || companyCreating) return;
+    companyCreating = true;
+    companyPhase = "provisioning";
+    companyError = null;
+    try {
+      const result = await companyCreate.provision(uid);
+      if (!result.ok) {
+        companyError = result.reason;
+        return;
+      }
+      companyUnprovisionedUid = null;
+      if (companyInviteFailures.length === 0) onclose();
     } catch (err) {
       companyError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -515,6 +565,10 @@
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────
   function newBot(): void {
     if (!canCreateLocalBot && !canCreateCloudBot) return;
+    if (canCreateCloudBot && onnewcloudbot) {
+      onnewcloudbot();
+      return;
+    }
     entryError = null;
     step = "bot";
   }
@@ -600,6 +654,7 @@
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
+    else if (initialStep === "bot") step = "bot";
   });
   let query = $state("");
   let queryDebounced = $state("");
@@ -2503,7 +2558,20 @@
         {/if}
       </div>
       <div class="create-footer" data-testid="chat-create-company-foot">
-        {#if companyInviteFailures.length > 0}
+        {#if companyUnprovisionedUid}
+          <!-- The company is made but its cloud vault is not. Retry only the
+               provisioning; creating again would make a second company. -->
+          <button
+            type="button"
+            class="create-submit"
+            data-testid="chat-create-company-provision-retry"
+            disabled={companyCreating || !companyCreate?.provision}
+            aria-busy={companyCreating}
+            onclick={() => void retryCompanyProvision()}
+          >
+            {companyCreating ? "Setting up cloud storage…" : "Try again"}
+          </button>
+        {:else if companyInviteFailures.length > 0}
           <!-- The company is made; only the invites failed. The one thing left
                to do here is leave. -->
           <button type="button" class="create-submit" onclick={() => onclose()}>
@@ -2517,7 +2585,13 @@
             disabled={companySubmitDisabled}
             onclick={submitCompany}
           >
-            {companyCreating ? "Creating…" : "Create company"}
+            {companyCreating
+              ? companyPhase === "provisioning"
+                ? "Setting up cloud storage…"
+                : companyPhase === "inviting"
+                  ? "Sending invites…"
+                  : "Creating…"
+              : "Create company"}
           </button>
         {:else if !companyOpening}
           <!-- The form never opened. Nothing to submit; the only move is to go
@@ -2614,7 +2688,7 @@
           </p>
         {/if}
         <div class="create-footer">
-          <span class="create-hint" aria-hidden="true">⌘↵ TO SEND</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO SEND</span>
           <button
             type="button"
             class="create-submit"
@@ -2980,7 +3054,7 @@
             >{blockReason}</span
           >
         {:else}
-          <span class="create-hint" aria-hidden="true">⌘↵ TO CREATE</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO CREATE</span>
         {/if}
         <button
           type="button"

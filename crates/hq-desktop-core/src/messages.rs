@@ -144,6 +144,19 @@ pub struct Channel {
     /// rail can order group DMs (which ship no activity timestamp) by creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+    /// Timestamp (ISO-8601) of the last message a person typed in the channel,
+    /// when the server knows it. The sidebar orders by it in human-only mode.
+    /// The server sends it on `directoryRow` and, on newer builds, also at the
+    /// top level of the list row; `ChannelWire` reads either. Dropping it here
+    /// left the webview with no human time for any channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_human_message_at: Option<String>,
+    /// `Some(false)` when the server knows the channel holds no human message.
+    /// The server never sends `true`. `None` together with a `None`
+    /// `last_human_message_at` means unknown (an older server, or a channel
+    /// not examined yet) and must not be read as "none".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_human_message: Option<bool>,
     /// Group-DM participant roster (caller excluded), so the rail can name an
     /// unnamed group DM by its people. Present only for group-scoped channels.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -208,6 +221,14 @@ struct ChannelWire {
     last_message_at: Option<String>,
     #[serde(default)]
     created_at: Option<String>,
+    /// Raw JSON so a surprising type can never fail the whole channel list.
+    #[serde(default)]
+    last_human_message_at: Option<serde_json::Value>,
+    #[serde(default)]
+    has_human_message: Option<serde_json::Value>,
+    /// The nested fabric row. Only the two human-message fields are read.
+    #[serde(default)]
+    directory_row: Option<serde_json::Value>,
     #[serde(default)]
     members: Option<Vec<ChannelParticipant>>,
     #[serde(default)]
@@ -245,6 +266,11 @@ impl From<ChannelWire> for Channel {
         };
         let notify_level = object_str("notifyLevel").or(wire.notify_level);
         let membership_source = object_str("source").or(wire.membership_source);
+        let (last_human_message_at, has_human_message) = human_message_fields(
+            wire.last_human_message_at.as_ref(),
+            wire.has_human_message.as_ref(),
+            wire.directory_row.as_ref(),
+        );
         Channel {
             channel_id: wire.channel_id,
             name: wire.name,
@@ -260,6 +286,8 @@ impl From<ChannelWire> for Channel {
             last_activity_at: wire.last_activity_at,
             last_message_at: wire.last_message_at,
             created_at: wire.created_at,
+            last_human_message_at,
+            has_human_message,
             members: wire.members,
             notify_level,
             membership_source,
@@ -267,6 +295,39 @@ impl From<ChannelWire> for Channel {
             is_company_home: wire.is_company_home,
         }
     }
+}
+
+/// Resolve a channel row's human-message fields from the top level of the list
+/// row and from its nested `directoryRow`. Three outcomes:
+///
+/// - a non-empty time: `(Some(time), None)`;
+/// - an explicit `hasHumanMessage: false` and no time: `(None, Some(false))`;
+/// - neither: `(None, None)`, which the webview treats as unknown.
+///
+/// A `true`, a `null`, or any other type counts as absent.
+fn human_message_fields(
+    top_at: Option<&serde_json::Value>,
+    top_has: Option<&serde_json::Value>,
+    directory_row: Option<&serde_json::Value>,
+) -> (Option<String>, Option<bool>) {
+    let nested = directory_row.and_then(|row| row.as_object());
+    let time = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let at = time(top_at).or_else(|| time(nested.and_then(|row| row.get("lastHumanMessageAt"))));
+    if at.is_some() {
+        return (at, None);
+    }
+    let is_false =
+        |value: Option<&serde_json::Value>| value.and_then(|v| v.as_bool()) == Some(false);
+    if is_false(top_has) || is_false(nested.and_then(|row| row.get("hasHumanMessage"))) {
+        return (None, Some(false));
+    }
+    (None, None)
 }
 
 /// A group-DM participant as returned on the channels list — enough to label the
@@ -370,6 +431,11 @@ pub struct ChannelMessage {
     pub created_at: String,
     #[serde(default)]
     pub direction: String,
+    /// Reader lane selected by the sender: `"human"`, `"agent"`, or `"both"`.
+    /// Older servers omit it. Keep it on the wire so the webview can apply the
+    /// human-only conversation view to channel rows as well as direct messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
     /// `"system"` for bridge events; absent for normal human/agent posts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_kind: Option<String>,
@@ -422,6 +488,60 @@ pub struct ChannelDetail {
     pub messages: Vec<ChannelMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// `"human"` when the server applied `view=human` to this page: it
+    /// filtered and paged the history itself. A server that predates the
+    /// parameter ignores it and sends no `view`, and the webview reads that
+    /// absence as an ordinary unfiltered page. Raw JSON, passed through
+    /// untouched, so a surprising type can never fail the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<serde_json::Value>,
+    /// `true` when the server's read budget ran out before it filled a
+    /// `view=human` page. It comes with a `next_cursor`; the webview keeps
+    /// paging. Raw JSON for the same reason as `view`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view_scan_truncated: Option<serde_json::Value>,
+}
+
+/// The one filtered history view the server accepts (`view=human`).
+pub const HUMAN_HISTORY_VIEW: &str = "human";
+
+/// The `view` query value to forward, if any. Only `human` is forwarded: the
+/// server answers 400 to any other value, so nothing else may reach the URL.
+pub fn history_view_param(view: Option<&str>) -> Option<&'static str> {
+    match view.map(str::trim) {
+        Some(HUMAN_HISTORY_VIEW) => Some(HUMAN_HISTORY_VIEW),
+        _ => None,
+    }
+}
+
+/// Build `GET /v1/notify/channels/{id}/messages` for one history page:
+/// optional `limit`, `cursor` (the previous page's `nextCursor`), and `view`.
+/// Without `view` the URL is the one this route has always been given.
+pub fn build_channel_history_url(
+    base_url: &str,
+    channel_id: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+    view: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "{}/v1/notify/channels/{}/messages",
+        base_url.trim_end_matches('/'),
+        esc_seg(channel_id),
+    );
+    let mut sep = '?';
+    if let Some(n) = limit {
+        url.push_str(&format!("{sep}limit={n}"));
+        sep = '&';
+    }
+    if let Some(c) = cursor.filter(|c| !c.is_empty()) {
+        url.push_str(&format!("{sep}cursor={}", esc_seg(c)));
+        sep = '&';
+    }
+    if let Some(v) = history_view_param(view) {
+        url.push_str(&format!("{sep}view={v}"));
+    }
+    url
 }
 
 /// URL-escape a path segment for the channel id / personUid. These are
@@ -834,6 +954,25 @@ mod tests {
     }
 
     #[test]
+    fn channel_message_audience_round_trips_server_wire_shape() {
+        // Captured server wire shape: an agent-lane channel message has an
+        // explicit audience. Serde otherwise drops unlisted fields silently.
+        let json = r#"{
+            "eventId": "evt_agent_lane",
+            "fromPersonUid": "agt_deacon",
+            "body": "Internal progress",
+            "createdAt": "2026-10-04T16:30:00Z",
+            "direction": "in",
+            "audience": "agent"
+        }"#;
+        let message: ChannelMessage = serde_json::from_str(json).expect("channel message parses");
+        assert_eq!(message.audience.as_deref(), Some("agent"));
+
+        let wire = serde_json::to_value(&message).expect("channel message serializes");
+        assert_eq!(wire["audience"], "agent");
+    }
+
+    #[test]
     fn channel_message_mentions_use_participant_uid_live_shape() {
         let json = r#"{
             "eventId": "evt_live",
@@ -881,6 +1020,93 @@ mod tests {
             .expect("mentions present");
         assert_eq!(mentions[0].participant_uid, "");
         assert_eq!(mentions[0].display_name.as_deref(), Some("Stefan Johnson"));
+    }
+
+    #[test]
+    fn build_channel_history_url_keeps_the_existing_shape_and_adds_view() {
+        let base = "https://api.example.com";
+        // Without `view`: exactly the URLs the command built before.
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", None, None, None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages"
+        );
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", Some(50), None, None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50"
+        );
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", Some(50), Some("Y3Vy"), None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50&cursor=Y3Vy"
+        );
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", None, Some("Y3Vy"), None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?cursor=Y3Vy"
+        );
+        // A blank cursor is omitted.
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", Some(50), Some(""), None),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50"
+        );
+        // With `view=human`: first page and an earlier page.
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", Some(50), None, Some("human")),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50&view=human"
+        );
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", Some(50), Some("Y3Vy"), Some("human")),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50&cursor=Y3Vy&view=human"
+        );
+        assert_eq!(
+            build_channel_history_url(base, "chn_eng", None, None, Some("human")),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?view=human"
+        );
+    }
+
+    #[test]
+    fn history_view_param_forwards_only_human() {
+        assert_eq!(history_view_param(Some("human")), Some("human"));
+        assert_eq!(history_view_param(Some(" human ")), Some("human"));
+        // The server answers 400 to any other value, so none is forwarded.
+        assert_eq!(history_view_param(Some("everything")), None);
+        assert_eq!(history_view_param(Some("")), None);
+        assert_eq!(history_view_param(None), None);
+        assert_eq!(
+            build_channel_history_url(
+                "https://api.example.com",
+                "chn_eng",
+                Some(50),
+                None,
+                Some("x&y=1")
+            ),
+            "https://api.example.com/v1/notify/channels/chn_eng/messages?limit=50"
+        );
+    }
+
+    #[test]
+    fn channel_detail_carries_the_human_view_echo_and_truncation() {
+        // A server that applied `view=human`: both fields reach the webview.
+        let json = r#"{
+            "messages": [],
+            "view": "human",
+            "nextCursor": "Y3Vy",
+            "viewScanTruncated": true
+        }"#;
+        let detail: ChannelDetail = serde_json::from_str(json).expect("ChannelDetail parses");
+        let v = serde_json::to_value(&detail).unwrap();
+        assert_eq!(v["view"], "human");
+        assert_eq!(v["viewScanTruncated"], true);
+        assert_eq!(v["nextCursor"], "Y3Vy");
+
+        // An older server: neither key is invented.
+        let old = r#"{ "messages": [], "nextCursor": "Y3Vy" }"#;
+        let detail: ChannelDetail = serde_json::from_str(old).expect("ChannelDetail parses");
+        let v = serde_json::to_value(&detail).unwrap();
+        assert!(v.get("view").is_none());
+        assert!(v.get("viewScanTruncated").is_none());
+
+        // A surprising type never fails the page.
+        let odd = r#"{ "messages": [], "view": 7, "viewScanTruncated": "yes" }"#;
+        assert!(serde_json::from_str::<ChannelDetail>(odd).is_ok());
     }
 
     #[test]
@@ -973,6 +1199,126 @@ mod tests {
         assert_eq!(c.membership.as_deref(), Some("joined"));
         assert!(c.notify_level.is_none());
         assert!(c.membership_source.is_none());
+    }
+
+    #[test]
+    fn channel_carries_last_human_message_at_from_top_level_or_directory_row() {
+        // Newer servers mirror the field at the top level of the list row.
+        let top = r#"{ "channelId": "chn_1", "lastHumanMessageAt": "2026-09-30T10:00:00.000Z" }"#;
+        let c: Channel = serde_json::from_str(top).unwrap();
+        assert_eq!(
+            c.last_human_message_at.as_deref(),
+            Some("2026-09-30T10:00:00.000Z")
+        );
+        assert!(c.has_human_message.is_none());
+
+        // The server in production today sends it only on `directoryRow`.
+        let nested = r#"{
+            "channelId": "chn_2",
+            "directoryRow": {
+                "channelId": "chn_2",
+                "lastActivityAt": "2026-10-01T09:00:00.000Z",
+                "lastHumanMessageAt": "2026-09-29T08:00:00.000Z"
+            }
+        }"#;
+        let c: Channel = serde_json::from_str(nested).unwrap();
+        assert_eq!(
+            c.last_human_message_at.as_deref(),
+            Some("2026-09-29T08:00:00.000Z")
+        );
+
+        // Serialized flat for the webview, and a round-trip keeps it.
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["lastHumanMessageAt"], "2026-09-29T08:00:00.000Z");
+        assert!(v.get("hasHumanMessage").is_none());
+        let back: Channel = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            back.last_human_message_at.as_deref(),
+            Some("2026-09-29T08:00:00.000Z")
+        );
+    }
+
+    #[test]
+    fn known_no_human_channel_keeps_its_creation_time_for_the_webview() {
+        // In human-only mode the sidebar places a channel known to hold no
+        // human message at its creation time. The server sends `createdAt`
+        // at the top level of the list row (the stored channel), never on
+        // `directoryRow`, for project channels and group DMs alike.
+        for scope in ["project", "group"] {
+            let json = format!(
+                r#"{{
+                    "channelId": "chn_1",
+                    "scope": "{scope}",
+                    "createdAt": "2026-09-30T08:00:00.000Z",
+                    "lastActivityAt": "2026-10-01T09:00:00.000Z",
+                    "directoryRow": {{
+                        "lastActivityAt": "2026-10-01T09:00:00.000Z",
+                        "hasHumanMessage": false
+                    }}
+                }}"#
+            );
+            let c: Channel = serde_json::from_str(&json).unwrap();
+            assert_eq!(c.has_human_message, Some(false));
+            assert_eq!(c.created_at.as_deref(), Some("2026-09-30T08:00:00.000Z"));
+            let v = serde_json::to_value(&c).unwrap();
+            assert_eq!(v["createdAt"], "2026-09-30T08:00:00.000Z");
+            assert_eq!(v["hasHumanMessage"], false);
+        }
+
+        // A row without `createdAt` sends none on: the sidebar then has no
+        // creation time for it.
+        let c: Channel =
+            serde_json::from_str(r#"{ "channelId": "chn_2", "hasHumanMessage": false }"#).unwrap();
+        assert!(c.created_at.is_none());
+        assert!(serde_json::to_value(&c).unwrap().get("createdAt").is_none());
+    }
+
+    #[test]
+    fn channel_carries_known_no_human_message_and_keeps_unknown_absent() {
+        // Known none: `hasHumanMessage: false`, at either level.
+        for json in [
+            r#"{ "channelId": "chn_1", "hasHumanMessage": false }"#,
+            r#"{ "channelId": "chn_1", "directoryRow": { "hasHumanMessage": false } }"#,
+        ] {
+            let c: Channel = serde_json::from_str(json).unwrap();
+            assert_eq!(c.has_human_message, Some(false));
+            assert!(c.last_human_message_at.is_none());
+            let v = serde_json::to_value(&c).unwrap();
+            assert_eq!(v["hasHumanMessage"], false);
+            assert!(v.get("lastHumanMessageAt").is_none());
+            let back: Channel = serde_json::from_value(v).unwrap();
+            assert_eq!(back.has_human_message, Some(false));
+        }
+
+        // Unknown: an older server sends neither field. Neither key may appear
+        // in what the webview receives, or absent would read as "none".
+        let unknown = r#"{ "channelId": "chn_2", "directoryRow": { "lastActivityAt": null } }"#;
+        let c: Channel = serde_json::from_str(unknown).unwrap();
+        assert!(c.has_human_message.is_none());
+        assert!(c.last_human_message_at.is_none());
+        let v = serde_json::to_value(&c).unwrap();
+        assert!(v.get("hasHumanMessage").is_none());
+        assert!(v.get("lastHumanMessageAt").is_none());
+
+        // A time wins over a stray `false`; `true`, `null`, and wrong types
+        // count as absent and never fail the row.
+        let both = r#"{
+            "channelId": "chn_3",
+            "hasHumanMessage": false,
+            "lastHumanMessageAt": "2026-09-30T10:00:00.000Z"
+        }"#;
+        let c: Channel = serde_json::from_str(both).unwrap();
+        assert!(c.has_human_message.is_none());
+        assert!(c.last_human_message_at.is_some());
+        let odd = r#"{
+            "channelId": "chn_4",
+            "hasHumanMessage": true,
+            "lastHumanMessageAt": null,
+            "directoryRow": { "hasHumanMessage": "no", "lastHumanMessageAt": 5 }
+        }"#;
+        let c: Channel = serde_json::from_str(odd).unwrap();
+        assert!(c.has_human_message.is_none());
+        assert!(c.last_human_message_at.is_none());
     }
 
     #[test]

@@ -89,7 +89,11 @@ async fn lookup(tool: SessionTool) -> Result<programs::ProgramLookup, String> {
     .map_err(|_| "Provider lookup timed out. Please retry.".to_owned())?
     .map_err(|_| "Provider lookup failed. Please retry.".to_owned())
 }
-async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command, ()> {
+async fn command(
+    tool: SessionTool,
+    program: &str,
+    args: &[&str],
+) -> Result<tokio::process::Command, ()> {
     let program = program.to_owned();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
     tokio::time::timeout(
@@ -99,8 +103,12 @@ async fn command(program: &str, args: &[&str]) -> Result<tokio::process::Command
                 &program,
                 &args.iter().map(String::as_str).collect::<Vec<_>>(),
             );
+            let child_path = match tool {
+                SessionTool::Claude => programs::claude_probe_path(),
+                _ => paths::child_path(),
+            };
             command
-                .env("PATH", paths::child_path())
+                .env("PATH", child_path)
                 .stdin(Stdio::null())
                 .kill_on_drop(true);
             apply_account_env(
@@ -319,7 +327,7 @@ async fn probe_detail(tool: SessionTool, program: &str) -> Result<bool, ProbeErr
         SessionTool::Codex => &["login", "status"],
         SessionTool::Grok => &["models"],
     };
-    let mut child = command(program, args)
+    let mut child = command(tool, program, args)
         .await
         .map_err(|()| ProbeError::failed("the lookup timed out"))?
         .stdout(Stdio::piped())
@@ -411,14 +419,14 @@ async fn run_login(
         return;
     }
     if force && tool == SessionTool::Claude {
-        if let Ok(mut logout) = command(&program, &["auth", "logout"]).await {
+        if let Ok(mut logout) = command(tool, &program, &["auth", "logout"]).await {
             if let Ok(mut child) = logout.stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
                 let _ = tokio::time::timeout(Duration::from_secs(8), child.wait()).await;
                 let _ = child.kill().await;
             }
         }
     }
-    let mut login = match command(&program, args).await {
+    let mut login = match command(tool, &program, args).await {
         Ok(login) => login,
         Err(()) => {
             *status
@@ -431,10 +439,8 @@ async fn run_login(
     let Ok(mut child) = login.stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         *status
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = state(
-            "error",
-            Some("Could not start sign-in. Check that the provider is installed and retry."),
-        );
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            state("error", Some(start_failed_message(tool)));
         return;
     };
     let result = tokio::select! {
@@ -449,6 +455,35 @@ async fn run_login(
     *status
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = result;
+}
+/// Plain copy for a sign-in that could not even be checked. Names the tool:
+/// "the provider" meant nothing to the person reading it.
+fn check_failed_message(tool: SessionTool) -> &'static str {
+    match tool {
+        SessionTool::Claude => {
+            "HQ couldn't reach Claude Code to sign you in. Make sure Claude Code is installed, then try again."
+        }
+        SessionTool::Codex => {
+            "HQ couldn't reach Codex to sign you in. Make sure Codex is installed, then try again."
+        }
+        SessionTool::Grok => {
+            "HQ couldn't reach Grok to sign you in. Make sure Grok is installed, then try again."
+        }
+    }
+}
+/// Plain copy for a sign-in window that could not be opened.
+fn start_failed_message(tool: SessionTool) -> &'static str {
+    match tool {
+        SessionTool::Claude => {
+            "HQ couldn't open the Claude Code sign-in. Make sure Claude Code is installed, then try again."
+        }
+        SessionTool::Codex => {
+            "HQ couldn't open the Codex sign-in. Make sure Codex is installed, then try again."
+        }
+        SessionTool::Grok => {
+            "HQ couldn't open the Grok sign-in. Make sure Grok is installed, then try again."
+        }
+    }
 }
 async fn start_with(
     attempts: &Attempts,
@@ -473,12 +508,7 @@ async fn start_with(
             attempts.remove(key(tool));
             return state("connected", None);
         }
-        Err(()) => {
-            return state(
-                "error",
-                Some("Could not check sign-in. Check that the provider is installed and retry."),
-            )
-        }
+        Err(()) => return state("error", Some(check_failed_message(tool))),
         Ok(_) => {}
     }
     let status = Arc::new(SyncMutex::new(state(
@@ -594,7 +624,11 @@ mod tests {
             "a lookup that found nothing is not installed, whatever a probe says"
         );
         assert_eq!(
-            classify_runtime(true, Err(ProbeError::failed("it did not answer in time")), searched),
+            classify_runtime(
+                true,
+                Err(ProbeError::failed("it did not answer in time")),
+                searched
+            ),
             RuntimeStatus::ProbeFailed {
                 reason: "it did not answer in time".to_owned()
             }
@@ -704,7 +738,11 @@ mod tests {
     #[tokio::test]
     async fn a_binary_that_is_not_on_disk_reports_missing_rather_than_signed_out() {
         let dir = tempfile::tempdir().unwrap();
-        let program = dir.path().join("definitely-not-here").to_string_lossy().into_owned();
+        let program = dir
+            .path()
+            .join("definitely-not-here")
+            .to_string_lossy()
+            .into_owned();
         let error = probe_detail(SessionTool::Claude, &program)
             .await
             .expect_err("a missing binary cannot answer");
@@ -798,18 +836,15 @@ mod tests {
         std::fs::write(dir.path().join("connected"), "stale").unwrap();
         let attempts = Attempts::default();
         assert_eq!(
-            start_with(
-                &attempts,
-                SessionTool::Claude,
-                program,
-                LOGIN_TIMEOUT,
-                true,
-            )
-            .await
-            .state,
+            start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, true,)
+                .await
+                .state,
             "waiting"
         );
-        assert_eq!(finished(&attempts, SessionTool::Claude).await.state, "connected");
+        assert_eq!(
+            finished(&attempts, SessionTool::Claude).await.state,
+            "connected"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.path().join("calls")).unwrap(),
             "login\n"
@@ -817,7 +852,10 @@ mod tests {
     }
     #[tokio::test]
     async fn repeated_clicks_are_single_flight_and_cancel_reaps_child() {
-        let (dir, program) = fake(SessionTool::Codex, "echo $$ > pid; sleep 60");
+        let (dir, program) = fake(
+            SessionTool::Codex,
+            ": > pid; sleep 0.05; echo $$ > pid; sleep 60",
+        );
         let attempts = Attempts::default();
         start_with(
             &attempts,
@@ -828,17 +866,18 @@ mod tests {
         )
         .await;
         start_with(&attempts, SessionTool::Codex, program, LOGIN_TIMEOUT, false).await;
-        for _ in 0..100 {
-            if dir.path().join("pid").exists() {
-                break;
+        let pid = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(dir.path().join("pid")) {
+                    if let Ok(pid) = contents.trim().parse::<i32>() {
+                        break pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let pid: i32 = std::fs::read_to_string(dir.path().join("pid"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        })
+        .await
+        .expect("fake provider did not write a parseable pid within 1 second");
         assert_eq!(
             cancel_with(&attempts, SessionTool::Codex).await.state,
             "disconnected"
@@ -890,7 +929,14 @@ mod tests {
             "echo 'secret-token-private-url' >&2; exit 1",
         );
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
+        start_with(
+            &attempts,
+            SessionTool::Claude,
+            program,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
         let reply = finished(&attempts, SessionTool::Claude).await;
         assert_eq!(reply.state, "error");
         assert!(!serde_json::to_string(&reply)
@@ -901,7 +947,14 @@ mod tests {
     async fn successful_exit_without_real_auth_is_not_connected() {
         let (_dir, program) = fake(SessionTool::Claude, "exit 0");
         let attempts = Attempts::default();
-        start_with(&attempts, SessionTool::Claude, program, LOGIN_TIMEOUT, false).await;
+        start_with(
+            &attempts,
+            SessionTool::Claude,
+            program,
+            LOGIN_TIMEOUT,
+            false,
+        )
+        .await;
         assert_eq!(
             finished(&attempts, SessionTool::Claude).await.state,
             "error"
@@ -973,7 +1026,10 @@ mod tests {
             account_name(Some("  ".into()), || Some("from-passwd".into())),
             Some("from-passwd".to_owned())
         );
-        assert_eq!(account_name(None, || Some("from-passwd".into())), Some("from-passwd".to_owned()));
+        assert_eq!(
+            account_name(None, || Some("from-passwd".into())),
+            Some("from-passwd".to_owned())
+        );
         // Nothing known: leave the child's environment alone rather than
         // inventing an account name that would read the wrong keychain item.
         assert_eq!(account_name(None, || None), None);
@@ -1055,6 +1111,24 @@ mod tests {
         )
         .await;
         assert_eq!(result.state, "error");
+        assert_eq!(
+            result.message,
+            Some(check_failed_message(SessionTool::Codex))
+        );
         assert!(!dir.path().join("calls").exists());
+    }
+
+    #[test]
+    fn sign_in_failure_copy_names_the_tool_not_the_provider() {
+        for (tool, name) in [
+            (SessionTool::Claude, "Claude Code"),
+            (SessionTool::Codex, "Codex"),
+            (SessionTool::Grok, "Grok"),
+        ] {
+            for message in [check_failed_message(tool), start_failed_message(tool)] {
+                assert!(message.contains(name), "{message}");
+                assert!(!message.contains("provider"), "{message}");
+            }
+        }
     }
 }

@@ -69,7 +69,8 @@ describe('master automatic-updates switch', () => {
     );
     expect(appUpdater).toContain('InstallTrigger::Forced');
     expect(appUpdater).toContain('InstallTrigger::Manual');
-    expect(appUpdater).toContain('pause_new_sync_cycles()');
+    expect(appUpdater).toContain('pause_cycles_drain_then_install(');
+    expect(appUpdater).toContain('crate::commands::process::pause_new_sync_cycles,');
     expect(appUpdater).toContain(
       'crate::windows_update::install_verified_update(app, update).await',
     );
@@ -112,11 +113,11 @@ describe('master automatic-updates switch', () => {
 
     expect(cliUpdateCore).toContain('pub struct AsyncSingleFlight');
     expect(normalize(command)).toContain(
-      '.run(move || install_hq_cli_update_once(app)) .await',
+      '.run(move || async move { Ok(install_hq_cli_update_once(app, retry_attempt).await) }) .await',
     );
     expect(command).not.toContain('non_convergent_cli_version()');
     expect(oneShot).toContain('let non_convergent_version = non_convergent_cli_version();');
-    expect(oneShot).toContain('run_npm_install_with_retries(&npm');
+    expect(oneShot).toContain('run_npm_install_with_retry_attempt(\n        &npm');
   });
 
   it('the CLI auto-installer cannot loop on an install that never converges', () => {
@@ -154,10 +155,14 @@ describe('master automatic-updates switch', () => {
     //    which, for the very pnpm/Homebrew layouts this guards, reports the copy
     //    npm just wrote while the resolved executable is untouched. That trades
     //    a loud reinstall loop for a silent "up to date" lie.
-    const installCall = 'run_npm_install_with_retries(&npm';
+    const installCall = 'run_npm_install_with_retry_attempt(\n        &npm';
     const afterInstall = cliUpdate.slice(cliUpdate.indexOf(installCall));
-    expect(afterInstall).toContain('let post_install_hq = paths::resolve_bin("hq");');
-    expect(afterInstall).toContain('resolved_hq_version(&hq)');
+    const finalizeStart = cliUpdate.indexOf('async fn finalize_convergence(');
+    const reaimStart = cliUpdate.indexOf('/// Build a one-shot re-aim', finalizeStart);
+    const finalize = cliUpdate.slice(finalizeStart, reaimStart);
+    expect(afterInstall).toContain('finalize_convergence(');
+    expect(finalize).toContain('let post_install_hq = paths::resolve_bin("hq");');
+    expect(finalize).toContain('resolved_hq_version(&hq)');
     expect(afterInstall).toContain('before_version.as_deref()');
     // The gate must be fed the execution-bound probe, never `get_local_version`'s
     // `npm root -g` fallback — that reading moves to `latest` for exactly the
@@ -207,10 +212,10 @@ describe('master automatic-updates switch', () => {
       'let already_blocked = non_convergent_episode_blocked(non_convergent_version.as_deref(), &latest);',
     );
     expect(normalizedCliUpdate).toContain(
-      'InstallExecutor::Pnpm => { install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await }',
+      'InstallExecutor::Pnpm => { install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked) .await .map_err(Into::into) }',
     );
     expect(normalizedCliUpdate).toContain(
-      'InstallExecutor::Bun => { install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await }',
+      'InstallExecutor::Bun => { install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked) .await .map_err(Into::into) }',
     );
     // Convergence is judged by re-resolving the binary the app executes, the
     // same rule the npm branch follows — not by trusting pnpm's zero exit.
@@ -244,7 +249,7 @@ describe('master automatic-updates switch', () => {
     // npm branch: resolve `latest` FIRST, then build the pinned argv from it, so
     // the version the app compares against is the version it installs.
     const npmBranchStart = cliUpdate.indexOf('let prefix = if first_install {');
-    const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retries(&npm');
+    const npmBranchEnd = cliUpdate.indexOf('run_npm_install_with_retry_attempt(\n        &npm');
     expect(npmBranchStart).toBeGreaterThan(-1);
     expect(npmBranchEnd).toBeGreaterThan(npmBranchStart);
     const npmBranch = cliUpdate.slice(npmBranchStart, npmBranchEnd);
@@ -613,7 +618,7 @@ describe('master automatic-updates switch', () => {
     expect(appCli).toContain('read_hq_cli_package_holders(prefix).await');
     expect(appCli).toContain('windows_busy_install_target_retry_rung(retry_number)');
     expect(appCli).toContain(
-      'windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)',
+      'windows_busy_install_target_retry_delay(retry_number)',
     );
     expect(appCli).toContain('tokio::time::sleep(delay).await');
     expect(appCli).toContain('WindowsBusyRetryOutcome::DeferredUserCli');
@@ -694,6 +699,18 @@ describe('installs the CLI when the machine has none', () => {
     const body = cliUpdateCore.slice(fallbackStart, fallbackEnd);
     expect(body).not.toContain('is_pnpm_global_shim');
     expect(body).not.toContain('is_bun_global_shim');
+  });
+
+  it('preserves an already-restored install when a later rollback step fails', () => {
+    const restoreStart = cliUpdate.indexOf('fn restore(&mut self) -> Result<(), String> {');
+    const restoreEnd = cliUpdate.indexOf('\n    }', restoreStart);
+    const restore = normalize(cliUpdate.slice(restoreStart, restoreEnd));
+
+    // A prior restore may consume the package backup before a later shim rename
+    // fails. A retry must only remove the target when its backup still exists.
+    expect(restore).toContain(
+      'if path_entry_exists(saved) { remove_install_path(target)?; std::fs::rename(saved, target)',
+    );
   });
 
   it('provisions HQ managed Node when a first install has no npm to run', () => {

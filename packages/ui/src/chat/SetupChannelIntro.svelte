@@ -30,7 +30,11 @@
   import { onMount } from "svelte";
   import type { AiTools } from "../settings/setup-launch";
   import SetupWelcomeMark from "./SetupWelcomeMark.svelte";
-  import type { SettingsApi, ShellApi } from "@hq/platform";
+  import {
+    dispatchPostReadyAction,
+    type SettingsApi,
+    type ShellApi,
+  } from "@hq/platform";
   import {
     createLaunchActions,
     type LaunchKey,
@@ -61,7 +65,6 @@
     setupBotCopy,
     SETUP_BOT_GENERIC_FAILURE,
     isSetupBotNoRuntimeMessage,
-    SETUP_ELSEWHERE_COPY,
     setupBotActionLabel,
     type SetupBotLauncher,
   } from "./setup-bot";
@@ -71,6 +74,7 @@
   import SetupInstallGuide, {
     type CodingTool,
     type InstallOutcome,
+    type SignInOptions,
   } from "../settings/SetupInstallGuide.svelte";
 
   interface Props {
@@ -117,6 +121,12 @@
      * company channel instead of #welcome.
      */
     onsetupstarted?: () => void;
+    /** Opt-in post-ready first real-use action, resolved by the desktop host. */
+    readyFirstActionEnabled?: boolean;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    readyFirstActionReady?: boolean;
+    /** Start the native sync path used by the first real-use action. */
+    onstartsync?: () => Promise<{ ok: boolean }> | { ok: boolean };
     /**
      * Host-provided guided run (see `SetupRunApi`). When present, Run Setup
      * runs `/setup` natively inside this hero — stepper, one-line status,
@@ -148,21 +158,14 @@
      */
     installGuide?: {
       oninstall(tool: CodingTool): Promise<InstallOutcome>;
-      onsignin(tool: CodingTool): Promise<InstallOutcome>;
+      onsignin(tool: CodingTool, options?: SignInOptions): Promise<InstallOutcome>;
+      /** Is this tool already signed in? Lets the guide skip to Continue. */
+      onstatus?(tool: CodingTool): Promise<boolean>;
+      /** Stop a pending sign-in so "Open the sign-in page again" can restart it. */
+      oncancelsignin?(tool: CodingTool): Promise<void>;
       onrefresh(): Promise<void>;
       downloadUrlFor(tool: CodingTool): string;
       onopen(url: string): Promise<InstallOutcome> | void;
-      /**
-       * Optional: open one of the assistant desktop apps with a fixed
-       * install prompt pre-filled — the operator-directed shortcut that
-       * lets a person set up their coding tool without opening a terminal.
-       * Wired via the install-guide adapter to `open_claude_code_link` /
-       * `open_codex_deep_link`.
-       */
-      onopenassistant?(
-        assistant: "claude-desktop" | "chatgpt-desktop",
-        url: string,
-      ): Promise<InstallOutcome>;
     } | null;
     /** "Show details": open the underlying session on the Sessions page. */
     onopensessiondetails?: (sessionId: string) => void;
@@ -183,6 +186,9 @@
     rosterStatus = null,
     onretryroster,
     onsetupstarted,
+    readyFirstActionEnabled = false,
+    readyFirstActionReady = false,
+    onstartsync,
     agent = null,
     onopensessiondetails,
     setupBot = null,
@@ -228,6 +234,32 @@
 
   let createAnotherBusy = $state(false);
   let createAnotherError = $state<string | null>(null);
+  let firstActionBusy = $state(false);
+  let firstActionError = $state<string | null>(null);
+  let firstActionShown = false;
+
+  $effect(() => {
+    if (readyFirstActionEnabled && readyFirstActionReady && onstartsync && !firstActionShown) {
+      firstActionShown = true;
+      dispatchPostReadyAction("ready_first_action_shown");
+    }
+  });
+
+  async function startFirstAction(): Promise<void> {
+    if (!onstartsync || firstActionBusy) return;
+    firstActionBusy = true;
+    firstActionError = null;
+    dispatchPostReadyAction("ready_first_action_clicked");
+    try {
+      const result = await onstartsync();
+      if (!result.ok) firstActionError = "Sync could not start. Try again.";
+    } catch (err) {
+      console.warn("[hq-desktop] ready first action failed:", err);
+      firstActionError = "Sync could not start. Try again.";
+    } finally {
+      firstActionBusy = false;
+    }
+  }
 
   async function createAnotherCompany(): Promise<void> {
     if (!oncreatecompany || createAnotherBusy) return;
@@ -299,6 +331,15 @@
   let botBusy = $state(false);
   let botError = $state<string | null>(null);
   const visibleBotError = $derived(botError ?? setupBot?.error);
+  /**
+   * No coding tool is signed in and the host can install and sign one in:
+   * the install guide owns the next step, so the hero's own Open Setup Agent
+   * button and the Retry button (both of which would only fail again) step
+   * aside and the guide's Continue takes over once a tool is signed in.
+   */
+  const showInstallGuide = $derived(
+    Boolean(installGuide) && isSetupBotNoRuntimeMessage(visibleBotError),
+  );
   /** The bot could not be made: the scripted run takes over from the next click. */
   let scriptedFallback = $state(false);
 
@@ -395,22 +436,6 @@
     { key: "grok", label: "Open setup in Grok Build", primary: false },
   ];
 
-  /** Coding tools found on this Mac; the "set up there instead" panel lists only these. */
-  let installedTools = $state<AiTools | null>(null);
-  onMount(() => {
-    void shell?.detectAiTools?.().then((res) => {
-      if (res.ok) installedTools = res.value as unknown as AiTools;
-    });
-  });
-  const installedLaunches = $derived(
-    LAUNCHES.filter((launch) =>
-      launch.key === "claude"
-        ? Boolean(installedTools?.claude_cli || installedTools?.claude_desktop)
-        : launch.key === "codex"
-          ? Boolean(installedTools?.codex_cli || installedTools?.codex_desktop)
-          : Boolean(installedTools?.grok_cli),
-    ),
-  );
 
 
   function openResourceLink(event: MouseEvent, href: string): void {
@@ -493,9 +518,28 @@
         <!-- No signed-in agent on this Mac yet: connect one first. -->
         <SetupConnectStep api={agent.api} providers={agent.providers} onrefresh={() => agent!.refreshProviders(true)} />
       {:else}
-      <div class="hero-actions" role="group" aria-label="Set up this Mac">
+      {#if !showInstallGuide}
+      {#if readyFirstActionEnabled && readyFirstActionReady && onstartsync}
+        <div class="hero-actions" role="group" aria-label="Start using HQ">
+          <SetupButton
+            variant="primary"
+            data-testid="ready-first-action"
+            disabled={firstActionBusy}
+            aria-busy={firstActionBusy}
+            onclick={() => void startFirstAction()}
+          >
+            {firstActionBusy ? "Starting sync…" : "Sync my HQ folder"}
+          </SetupButton>
+        </div>
+        {#if firstActionError}
+          <p class="launch-error" role="alert" data-testid="ready-first-action-error">
+            {firstActionError}
+          </p>
+        {/if}
+      {/if}
+      <div class="hero-actions" role="group" aria-label={`Set up this ${hostNoun}`}>
         <SetupButton
-          variant="primary"
+          variant={readyFirstActionEnabled && readyFirstActionReady && onstartsync ? "quiet" : "primary"}
           data-testid="setup-run"
           disabled={botBusy ||
             Boolean(setupBot?.starting && !scriptedFallback) ||
@@ -511,19 +555,25 @@
               : runLabel}
         </SetupButton>
       </div>
+      {/if}
       {#if visibleBotError}
         <!-- The bot could not be created: say why, offer another go, and
              keep the old scripted run one click away. -->
         <div class="bot-failure" data-testid="setup-bot-failure">
           <p class="launch-error" role="alert" data-testid="setup-bot-error">{visibleBotError}</p>
-          {#if installGuide && isSetupBotNoRuntimeMessage(visibleBotError)}
+          {#if installGuide && showInstallGuide}
             <!-- US-005: no coding tool is signed in. Instead of dead-ending
-                 the user, offer a guided Install + sign-in path. -->
+                 the user, offer a guided Install + sign-in path. Continue
+                 (shown as soon as a tool is signed in, detected by itself)
+                 starts the setup bot, which is what Retry used to do. -->
             {#await ensureInstallGuideTools() then _}
               <SetupInstallGuide
                 tools={installGuideTools}
                 oninstall={installGuide.oninstall}
                 onsignin={installGuide.onsignin}
+                onstatus={installGuide.onstatus}
+                oncancelsignin={installGuide.oncancelsignin}
+                oncontinue={runSetupBot}
                 onrefresh={async () => {
                   installGuideProbed = false;
                   await ensureInstallGuideTools();
@@ -531,14 +581,15 @@
                 }}
                 downloadUrlFor={installGuide.downloadUrlFor}
                 onopen={installGuide.onopen}
-                onopenassistant={installGuide.onopenassistant}
               />
             {/await}
           {/if}
           <div class="hero-actions" role="group" aria-label="Setup bot recovery">
-            <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
-              {copy.retry}
-            </SetupButton>
+            {#if !showInstallGuide}
+              <SetupButton data-testid="setup-bot-retry" disabled={botBusy} onclick={() => void runSetupBot()}>
+                {copy.retry}
+              </SetupButton>
+            {/if}
             <SetupButton
               variant="quiet"
               data-testid="setup-bot-fallback"
@@ -550,32 +601,6 @@
           </div>
         </div>
       {/if}
-      {/if}
-      {#if setupBot && !scriptedFallback && installedLaunches.length > 0}
-        <!-- The other way through: set up in the coding tool they already use. -->
-        <div class="setup-elsewhere" data-testid="setup-elsewhere" role="group" aria-label={SETUP_ELSEWHERE_COPY.title}>
-          <h3 class="setup-elsewhere-title">{SETUP_ELSEWHERE_COPY.title}</h3>
-          <p class="setup-elsewhere-body">
-            {SETUP_ELSEWHERE_COPY.body.split("/setup")[0]}<code>/setup</code>{SETUP_ELSEWHERE_COPY.body.split("/setup").slice(1).join("/setup")}
-          </p>
-          <div class="hero-actions" role="group" aria-label="Open setup in a coding tool">
-            {#each installedLaunches as launch (launch.key)}
-              <SetupButton
-                data-testid={`setup-elsewhere-${launch.key}`}
-                disabled={!canLaunch || launching !== null}
-                aria-busy={launching === launch.key}
-                onclick={() => void runLaunch(launch.key)}
-              >
-                {launching === launch.key ? "Opening…" : launch.label}
-              </SetupButton>
-            {/each}
-          </div>
-          {#each installedLaunches as launch (launch.key)}
-            {#if launchErrors[launch.key]}
-              <p class="launch-error" role="alert">{launchErrors[launch.key]}</p>
-            {/if}
-          {/each}
-        </div>
       {/if}
       {#if !onopensessions && launchErrors.claude && !(setupBot && !scriptedFallback)}
         <p class="launch-error" role="alert">{launchErrors.claude}</p>
@@ -1074,30 +1099,5 @@
     .resource-arrow {
       transition: none;
     }
-  }
-  .setup-elsewhere {
-    margin-top: 20px;
-    padding: 16px 18px;
-    border: 1px solid var(--setup-btn-line, rgba(127, 127, 127, 0.35));
-    border-radius: 10px;
-    background: rgba(127, 127, 127, 0.08);
-    max-width: 560px;
-  }
-  .setup-elsewhere-title {
-    margin: 0 0 6px;
-    font-size: 15px;
-    font-weight: 600;
-  }
-  .setup-elsewhere-body {
-    margin: 0 0 12px;
-    font-size: 13px;
-    line-height: 1.5;
-    opacity: 0.9;
-  }
-  .setup-elsewhere-body code {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: rgba(127, 127, 127, 0.18);
   }
 </style>

@@ -74,7 +74,7 @@ export function summarise(samples, warmup = 1) {
 /** Default: 25% worse before we will even consider calling it a regression. */
 export const DEFAULT_RELATIVE_TOLERANCE = 0.25;
 /** ...and it must also sit outside 2 standard deviations of the baseline. */
-export const DEFAULT_SIGMA = 2;
+const DEFAULT_SIGMA = 2;
 
 /**
  * Compare one metric against its baseline.

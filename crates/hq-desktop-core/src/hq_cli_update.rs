@@ -692,7 +692,19 @@ pub fn version_if_hq_cli(pkg: &Path) -> Option<String> {
 /// Read an hq-cli manifest while retaining enough information for the caller
 /// to distinguish an absent package from an unreadable or malformed one. A
 /// package for a different npm module is a normal ancestor-walk miss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManifestProbeFailure {
+    Invalid,
+    Unreadable,
+}
+
 fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
+    read_hq_cli_package_version_detailed(pkg).map_err(|_| ())
+}
+
+fn read_hq_cli_package_version_detailed(
+    pkg: &Path,
+) -> Result<Option<String>, ManifestProbeFailure> {
     let bytes = match std::fs::read(pkg) {
         Ok(bytes) => bytes,
         Err(error)
@@ -703,9 +715,10 @@ fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
         {
             return Ok(None)
         }
-        Err(_) => return Err(()),
+        Err(_) => return Err(ManifestProbeFailure::Unreadable),
     };
-    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ManifestProbeFailure::Invalid)?;
     if parsed.get("name").and_then(|name| name.as_str()) != Some("@indigoai-us/hq-cli") {
         return Ok(None);
     }
@@ -713,7 +726,7 @@ fn read_hq_cli_package_version(pkg: &Path) -> Result<Option<String>, ()> {
         .get("version")
         .and_then(|version| version.as_str())
         .map(|version| Some(version.to_string()))
-        .ok_or(())
+        .ok_or(ManifestProbeFailure::Invalid)
 }
 
 /// Resolve the installed version by anchoring to the *actual `hq` binary the
@@ -732,16 +745,37 @@ pub fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
 }
 
 fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeOutcome) {
+    let (version, outcome, _) = version_from_hq_binary_probe_detailed(hq_bin);
+    (version, outcome)
+}
+
+fn version_from_hq_binary_probe_detailed(
+    hq_bin: &Path,
+) -> (Option<String>, VersionProbeOutcome, paths::CandidateBacking) {
     let real = match std::fs::canonicalize(hq_bin) {
         Ok(real) => real,
-        Err(_) => return (None, VersionProbeOutcome::CanonicalizeFailed),
+        Err(_) => {
+            return (
+                None,
+                VersionProbeOutcome::CanonicalizeFailed,
+                paths::CandidateBacking::Indeterminate,
+            )
+        }
     };
-    let mut saw_manifest_failure = false;
+    let mut saw_manifest_invalid = false;
+    let mut saw_manifest_unreadable = false;
     for ancestor in real.ancestors() {
-        match read_hq_cli_package_version(&ancestor.join("package.json")) {
-            Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+        match read_hq_cli_package_version_detailed(&ancestor.join("package.json")) {
+            Ok(Some(version)) => {
+                return (
+                    Some(version),
+                    VersionProbeOutcome::Succeeded,
+                    paths::CandidateBacking::Backed,
+                )
+            }
             Ok(None) => {}
-            Err(()) => saw_manifest_failure = true,
+            Err(ManifestProbeFailure::Invalid) => saw_manifest_invalid = true,
+            Err(ManifestProbeFailure::Unreadable) => saw_manifest_unreadable = true,
         }
     }
     let hq_bin_str = hq_bin.to_string_lossy();
@@ -764,7 +798,11 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // unaffected and fall through to their own reads below.
     if let Some(home) = pnpm_home_from_hq_bin(hq_bin) {
         if let Some(version) = installed_hq_cli_version_in_pnpm_store(&home.to_string_lossy()) {
-            return (Some(version), VersionProbeOutcome::Succeeded);
+            return (
+                Some(version),
+                VersionProbeOutcome::Succeeded,
+                paths::CandidateBacking::Backed,
+            );
         }
     }
     // Bun's global shim is also a plain script. Its package manifest lives in
@@ -773,7 +811,11 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     if is_bun_global_shim(&hq_bin_str) {
         if let Some(home) = bun_home_from_hq_bin(hq_bin) {
             if let Some(version) = installed_hq_cli_version_in_bun_global(&home) {
-                return (Some(version), VersionProbeOutcome::Succeeded);
+                return (
+                    Some(version),
+                    VersionProbeOutcome::Succeeded,
+                    paths::CandidateBacking::Backed,
+                );
             }
         }
     }
@@ -784,19 +826,32 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
     // unrelated default global root.
     if let Some(prefix) = npm_prefix_from_hq_bin(&hq_bin_str) {
         for package_json in hq_cli_package_json_candidates(Path::new(&prefix), hq_bin) {
-            match read_hq_cli_package_version(&package_json) {
-                Ok(Some(version)) => return (Some(version), VersionProbeOutcome::Succeeded),
+            match read_hq_cli_package_version_detailed(&package_json) {
+                Ok(Some(version)) => {
+                    return (
+                        Some(version),
+                        VersionProbeOutcome::Succeeded,
+                        paths::CandidateBacking::Backed,
+                    )
+                }
                 Ok(None) => {}
-                Err(()) => saw_manifest_failure = true,
+                Err(ManifestProbeFailure::Invalid) => saw_manifest_invalid = true,
+                Err(ManifestProbeFailure::Unreadable) => saw_manifest_unreadable = true,
             }
         }
     }
-    let outcome = if saw_manifest_failure {
+    let outcome = if saw_manifest_invalid || saw_manifest_unreadable {
         VersionProbeOutcome::ManifestReadOrParseFailed
     } else {
         VersionProbeOutcome::PackageNotFound
     };
-    (None, outcome)
+    let backing = match (saw_manifest_invalid, saw_manifest_unreadable) {
+        (true, false) => paths::CandidateBacking::ManifestInvalid,
+        (false, true) => paths::CandidateBacking::ManifestUnreadable,
+        (false, false) => paths::CandidateBacking::AbsentDefinitive,
+        (true, true) => paths::CandidateBacking::Indeterminate,
+    };
+    (None, outcome, backing)
 }
 
 /// Whether an `@indigoai-us/hq-cli` package manifest is reachable from a resolved
@@ -815,11 +870,7 @@ fn version_from_hq_binary_probe(hq_bin: &Path) -> (Option<String>, VersionProbeO
 /// reinstall. This is the same `Ok(None)`-vs-`Err(())` distinction
 /// [`read_hq_cli_package_version`] already draws.
 pub fn hq_cli_backing(hq_bin: &Path) -> paths::CandidateBacking {
-    match version_from_hq_binary_probe(hq_bin).1 {
-        VersionProbeOutcome::Succeeded => paths::CandidateBacking::Backed,
-        VersionProbeOutcome::PackageNotFound => paths::CandidateBacking::AbsentDefinitive,
-        _ => paths::CandidateBacking::Indeterminate,
-    }
+    version_from_hq_binary_probe_detailed(hq_bin).2
 }
 
 /// Map an already-computed binary-anchor outcome for a resolved `hq` into the
@@ -1836,10 +1887,99 @@ pub enum ExecutedCopyAim {
 }
 
 impl ExecutedCopyAim {
+    /// Closed path-free token used by the install-non-convergent event.
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::Aimed => "aimed",
+            Self::Undrivable => "undrivable",
+            Self::NotYetAimed => "not_yet_aimed",
+        }
+    }
+
     /// Whether a ForeignManaged verdict under this aim may write the durable
     /// marker. Only [`Self::NotYetAimed`] must stay non-blocking.
     pub fn foreign_verdict_may_block(self) -> bool {
         !matches!(self, Self::NotYetAimed)
+    }
+}
+
+/// Closed classification of the prefix containing the `hq` binary that the
+/// desktop resolves after an install. This is diagnostic only; it never changes
+/// resolution or the installer target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolvedPrefixClass {
+    ManagedToolchain,
+    User,
+    System,
+    Other,
+    #[default]
+    Unresolved,
+}
+
+impl ResolvedPrefixClass {
+    pub fn telemetry_value(self) -> &'static str {
+        match self {
+            Self::ManagedToolchain => "managed_toolchain",
+            Self::User => "user",
+            Self::System => "system",
+            Self::Other => "other",
+            Self::Unresolved => "unresolved",
+        }
+    }
+}
+
+/// Safe, path-free facts about the resolved CLI prefix. Raw paths are consumed
+/// only while deriving these values and are never retained in the report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ResolvedPrefixTelemetry {
+    pub class: ResolvedPrefixClass,
+    pub under_home: bool,
+    pub colocated_npm: bool,
+    pub matches_installer_prefix: bool,
+}
+
+pub fn resolved_prefix_telemetry(
+    hq_bin: &str,
+    installer_prefix: Option<&str>,
+    managed_roots: &[PathBuf],
+    home: Option<&Path>,
+    source: paths::ResolutionSource,
+) -> ResolvedPrefixTelemetry {
+    let Some(prefix) = npm_prefix_from_hq_bin(hq_bin) else {
+        return ResolvedPrefixTelemetry::default();
+    };
+    let path = PathBuf::from(&prefix);
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let canonical_roots: Vec<PathBuf> = managed_roots
+        .iter()
+        .map(|root| std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        .collect();
+    let canonical_home =
+        home.map(|home| std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf()));
+    let class = if canonical_roots
+        .iter()
+        .any(|root| paths::path_is_within(&path, root))
+    {
+        ResolvedPrefixClass::ManagedToolchain
+    } else if paths::is_user_owned_prefix(&path, managed_roots, canonical_home.as_deref()) {
+        ResolvedPrefixClass::User
+    } else if source == paths::ResolutionSource::SystemPrefix {
+        ResolvedPrefixClass::System
+    } else {
+        ResolvedPrefixClass::Other
+    };
+    let matches_installer_prefix = installer_prefix.is_some_and(|installer| {
+        let installer = PathBuf::from(installer);
+        let installer = std::fs::canonicalize(&installer).unwrap_or(installer);
+        paths::path_is_within(&path, &installer) && paths::path_is_within(&installer, &path)
+    });
+    ResolvedPrefixTelemetry {
+        class,
+        under_home: canonical_home
+            .as_deref()
+            .is_some_and(|home| paths::path_is_within(&path, home)),
+        colocated_npm: colocated_npm_path(&path).exists(),
+        matches_installer_prefix,
     }
 }
 
@@ -2044,6 +2184,8 @@ pub struct SettingsPathTelemetry {
     pub repair: SettingsPathRepair,
     pub file: paths::SettingsPathFile,
     pub managed_bin: ManagedBinInSettingsPath,
+    pub executed_copy_aim: ExecutedCopyAim,
+    pub resolved_prefix: ResolvedPrefixTelemetry,
 }
 
 /// Whether HQ should attempt the settings-PATH repair, or the closed reason it
@@ -3229,22 +3371,49 @@ pub fn decide_post_install(ctx: &PostInstallContext<'_>) -> PostInstallOutcome {
             None,
         )
     };
-    let report = should_capture.then(|| NonConvergentReport {
-        executor,
-        kind,
-        latest: latest.to_string(),
-        local: after_version.map(str::to_owned),
-        hq_bin: hq_display.to_string(),
-        npm_prefix: npm_prefix_passed.map(str::to_owned),
-        installer_bin: installer_bin.to_string(),
-        hq_bin_changed: before_bin != after_bin,
-        delivered_version: delivered_version.map(str::to_owned),
-        pnpm: pnpm.clone(),
-        managed_shadow_repair,
-        hq_bin_lane,
-        delivered_prefix_shim,
-        settings_path,
-        executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
+    let report = should_capture.then(|| {
+        let mut settings_path = settings_path;
+        settings_path.executed_copy_aim = executed_copy_aim;
+        settings_path.resolved_prefix = resolved_prefix_telemetry(
+            hq_display,
+            npm_prefix_passed,
+            managed_roots,
+            paths::home_dir().as_deref(),
+            hq_bin_lane,
+        );
+        if settings_path.file == paths::SettingsPathFile::None
+            && settings_path.managed_bin == ManagedBinInSettingsPath::Unknown
+        {
+            let hq_root = paths::resolved_hq_folder();
+            let settings_file = paths::winning_settings_path_file(&hq_root);
+            let managed_bin = managed_roots
+                .first()
+                .map(|root| paths::managed_npm_bin_in(root))
+                .unwrap_or_default();
+            settings_path.file = settings_file;
+            settings_path.managed_bin = managed_bin_in_settings_path(
+                settings_file,
+                &paths::settings_path_dirs_in(&hq_root),
+                &managed_bin,
+            );
+        }
+        NonConvergentReport {
+            executor,
+            kind,
+            latest: latest.to_string(),
+            local: after_version.map(str::to_owned),
+            hq_bin: hq_display.to_string(),
+            npm_prefix: npm_prefix_passed.map(str::to_owned),
+            installer_bin: installer_bin.to_string(),
+            hq_bin_changed: before_bin != after_bin,
+            delivered_version: delivered_version.map(str::to_owned),
+            pnpm: pnpm.clone(),
+            managed_shadow_repair,
+            hq_bin_lane,
+            delivered_prefix_shim,
+            settings_path,
+            executed_copy_reaim: ExecutedCopyReaim::NotAttempted,
+        }
     });
 
     PostInstallOutcome {
@@ -3563,6 +3732,31 @@ pub fn report_non_convergent_install(report: &NonConvergentReport) {
             scope.set_tag(
                 "executed_copy_reaim",
                 report.executed_copy_reaim.telemetry_value(),
+            );
+            scope.set_tag(
+                "executed_copy_aim",
+                report.settings_path.executed_copy_aim.telemetry_value(),
+            );
+            scope.set_tag(
+                "resolved_prefix_class",
+                report.settings_path.resolved_prefix.class.telemetry_value(),
+            );
+            scope.set_tag(
+                "resolved_under_home",
+                bool_tag(report.settings_path.resolved_prefix.under_home),
+            );
+            scope.set_tag(
+                "resolved_colocated_npm",
+                bool_tag(report.settings_path.resolved_prefix.colocated_npm),
+            );
+            scope.set_tag(
+                "resolved_matches_installer_prefix",
+                bool_tag(
+                    report
+                        .settings_path
+                        .resolved_prefix
+                        .matches_installer_prefix,
+                ),
             );
             // The class is the existing closed `non_convergence_kind` tag, so a
             // foreign-managed shadow has one stable group independent of paths,
@@ -4115,6 +4309,134 @@ fn npm_path_shape(detail: &str, prefix: Option<&str>) -> NpmPathShape {
         NpmPathShape::BinHq
     } else {
         NpmPathShape::Other
+    }
+}
+
+/// Select a bounded set of regular files for a Windows Restart Manager query.
+/// `is_file` is supplied by the filesystem caller so selection stays pure and testable.
+pub fn select_rm_file_resources(
+    candidates: impl IntoIterator<Item = (std::path::PathBuf, bool)>,
+) -> Vec<std::path::PathBuf> {
+    candidates
+        .into_iter()
+        .filter_map(|(path, is_file)| is_file.then_some(path))
+        .take(32)
+        .collect()
+}
+
+/// Extract npm's reported rename resources and their in-prefix parents for a
+/// Windows Restart Manager query. Returned paths stay in process memory and
+/// must never cross the telemetry boundary.
+pub fn npm_reported_target_resources(prefix: &str, npm_detail: &str) -> Vec<std::path::PathBuf> {
+    fn normalized(value: &str) -> String {
+        value
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+
+    let prefix_text = normalized(prefix).trim_end_matches('\\').to_string();
+    let mut resources = Vec::new();
+    for line in npm_detail.lines() {
+        let Some(path) = line
+            .strip_prefix("npm error path ")
+            .or_else(|| line.strip_prefix("npm error dest "))
+        else {
+            continue;
+        };
+        let path_text = normalized(path);
+        if path_text.contains("\\..\\")
+            || path_text.ends_with("\\..")
+            || path_text.contains("\\.\\")
+            || (path_text != prefix_text && !path_text.starts_with(&format!("{prefix_text}\\")))
+        {
+            continue;
+        }
+        let mut current = path
+            .trim()
+            .trim_matches(|character| character == '\'' || character == '"')
+            .to_string();
+        loop {
+            if resources.len() >= 32 {
+                break;
+            }
+            resources.push(std::path::PathBuf::from(&current));
+            let Some((parent, _)) = current.rsplit_once('\\') else {
+                break;
+            };
+            let parent_text = normalized(parent);
+            if parent_text == prefix_text {
+                resources.push(std::path::PathBuf::from(parent));
+                break;
+            }
+            if !parent_text.starts_with(&format!("{prefix_text}\\")) {
+                break;
+            }
+            current = parent.to_string();
+        }
+    }
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+#[cfg(test)]
+mod npm_reported_target_resources_tests {
+    use super::npm_reported_target_resources;
+
+    #[test]
+    fn rm_resource_selection_excludes_directories() {
+        let candidates = [
+            (std::path::PathBuf::from(r"C:\npm\target"), false),
+            (std::path::PathBuf::from(r"C:\npm\target\file.js"), true),
+        ];
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected, [std::path::PathBuf::from(r"C:\npm\target\file.js")]);
+    }
+
+    #[test]
+    fn rm_resource_selection_caps_registered_files_at_32() {
+        let candidates = (0..40).map(|index| {
+            (
+                std::path::PathBuf::from(format!(r"C:\npm\node_modules\pkg\file-{index}.js")),
+                true,
+            )
+        });
+        let selected = super::select_rm_file_resources(candidates);
+
+        assert_eq!(selected.len(), 32);
+    }
+
+    #[test]
+    fn busy_query_registers_npm_rename_targets_and_each_parent_inside_the_prefix() {
+        let resources = npm_reported_target_resources(
+            r"C:\npm",
+            concat!(
+                "npm error path C:\\npm\\node_modules\\@indigoai-us\\hq-cli\n",
+                "npm error dest C:\\npm\\node_modules\\@indigoai-us\\.hq-cli-X\n",
+                "npm error path C:\\private\\outside.exe\n",
+                "npm error dest C:\\npm\\..\\private\\outside.exe\n",
+            ),
+        );
+        let path_strings = resources
+            .iter()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        for expected in [
+            r"c:\npm\node_modules\@indigoai-us\hq-cli",
+            r"c:\npm\node_modules\@indigoai-us",
+            r"c:\npm\node_modules",
+            r"c:\npm",
+            r"c:\npm\node_modules\@indigoai-us\.hq-cli-x",
+        ] {
+            assert!(
+                path_strings.iter().any(|path| path == expected),
+                "{expected}"
+            );
+        }
+        assert!(!path_strings.iter().any(|path| path.contains("private")));
     }
 }
 
@@ -5099,6 +5421,7 @@ pub struct RestartManagerHolderClassification {
     pub class: NpmLockHolderClass,
     pub count: u16,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderClassification {
@@ -5110,6 +5433,10 @@ impl RestartManagerHolderClassification {
         self.owned_processes.iter().any(|identity| {
             identity.process_id == process_id && identity.process_start_time == process_start_time
         })
+    }
+
+    pub fn image_basename(&self) -> Option<&str> {
+        self.image_basename.as_deref()
     }
 }
 
@@ -5175,6 +5502,7 @@ pub fn classify_restart_manager_holders(
     let mut identities = Vec::new();
     let mut owned_processes = Vec::new();
     let mut selected = NpmLockHolderClass::None;
+    let mut selected_image_basename: Option<String> = None;
     for result in results {
         if result.process_id == 0 {
             continue;
@@ -5202,13 +5530,45 @@ pub fn classify_restart_manager_holders(
         };
         if priority(class) > priority(selected) {
             selected = class;
+            selected_image_basename = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename);
+        } else if class == selected {
+            if let Some(image_basename) = result
+                .image_name
+                .as_deref()
+                .and_then(telemetry_image_basename)
+            {
+                if selected_image_basename
+                    .as_ref()
+                    .is_none_or(|current| image_basename < *current)
+                {
+                    selected_image_basename = Some(image_basename);
+                }
+            }
         }
     }
     RestartManagerHolderClassification {
         class: selected,
         count: identities.len().min(u16::MAX as usize) as u16,
         owned_processes,
+        image_basename: selected_image_basename,
     }
+}
+
+fn telemetry_image_basename(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.len() > 96
+        || value.contains('/')
+        || value.contains('\\')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -5236,6 +5596,7 @@ pub struct RestartManagerHolderObservation {
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
     owned_processes: Vec<RestartManagerProcessIdentity>,
+    image_basename: Option<String>,
 }
 
 impl RestartManagerHolderObservation {
@@ -5266,6 +5627,11 @@ impl RestartManagerHolderObservation {
                 .unwrap_or(classification.count),
             query_outcome,
             owned_processes: classification.owned_processes,
+            image_basename: if query_outcome == NpmLockHolderQueryOutcome::Complete {
+                classification.image_basename
+            } else {
+                None
+            },
         }
     }
 
@@ -5274,6 +5640,7 @@ impl RestartManagerHolderObservation {
             class: self.class,
             count: self.count,
             query_outcome: self.query_outcome,
+            image_basename: self.image_basename.clone(),
         }
     }
 
@@ -5288,13 +5655,14 @@ impl RestartManagerHolderObservation {
     }
 }
 
-/// Telemetry-safe holder summary. This type deliberately has no PID or name
-/// fields; only its closed values may cross the reporting boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Telemetry-safe holder summary. It carries no PID or path; the only process
+/// identifier is a validated basename with a bounded ASCII vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NpmLockHolderDiagnostic {
     pub class: NpmLockHolderClass,
     pub count: u16,
     pub query_outcome: NpmLockHolderQueryOutcome,
+    pub image_basename: Option<String>,
 }
 
 pub const WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES: usize = 3;
@@ -5307,26 +5675,8 @@ const WINDOWS_BUSY_INSTALL_TARGET_RETRY_RUNGS: [&str; WINDOWS_BUSY_INSTALL_TARGE
     "windows-busy-install-target-backoff-3",
 ];
 
-/// Four total npm attempts use three bounded waits totalling ten seconds.
+/// Four total npm attempts use three bounded waits with a 50-second ceiling.
 pub fn windows_busy_install_target_retry_delay(retry_number: usize) -> Option<std::time::Duration> {
-    match retry_number {
-        1 => Some(std::time::Duration::from_secs(1)),
-        2 => Some(std::time::Duration::from_secs(3)),
-        3 => Some(std::time::Duration::from_secs(6)),
-        _ => None,
-    }
-}
-
-/// Select the retry delays for the bounded Windows EBUSY recovery. The extended
-/// schedule is reserved for the explicit hq-flags rollout; the missing/false
-/// value preserves the current ten-second retry budget.
-pub fn windows_busy_install_target_retry_delay_for_recovery(
-    retry_number: usize,
-    extended: bool,
-) -> Option<std::time::Duration> {
-    if !extended {
-        return windows_busy_install_target_retry_delay(retry_number);
-    }
     match retry_number {
         1 => Some(std::time::Duration::from_secs(5)),
         2 => Some(std::time::Duration::from_secs(15)),
@@ -5872,6 +6222,128 @@ pub const STDERR_ORIGIN_EMPTY: &str = "empty";
 pub const STDERR_ORIGIN_NPM_LOGGER: &str = "npm-logger";
 pub const STDERR_ORIGIN_NON_NPM: &str = "non-npm";
 
+/// Closed classification for a Node process that died before npm's logger
+/// produced an error. Values are safe for tags and bounded grouping keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeCrashKind {
+    None,
+    V8HeapOom,
+    V8Fatal,
+    NativeAssertion,
+    AccessViolation,
+    StackBufferOverrun,
+    Abort,
+    Breakpoint,
+}
+
+impl NodeCrashKind {
+    fn tag_value(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::V8HeapOom => "v8_heap_oom",
+            Self::V8Fatal => "v8_fatal",
+            Self::NativeAssertion => "native_assertion",
+            Self::AccessViolation => "access_violation",
+            Self::StackBufferOverrun => "stack_buffer_overrun",
+            Self::Abort => "abort",
+            Self::Breakpoint => "breakpoint",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeCrashClassification {
+    kind: NodeCrashKind,
+    evidence: &'static str,
+}
+
+impl NodeCrashClassification {
+    const NONE: Self = Self {
+        kind: NodeCrashKind::None,
+        evidence: "none",
+    };
+}
+
+/// Recognize known Node crash statuses paired with stable Node/V8 stderr
+/// signatures. Windows access violations are also identifiable by status alone
+/// when the process produced no stderr. Arbitrary exit codes remain `none`.
+fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassification {
+    const NODE_ABORT: i32 = 134;
+    const STATUS_BREAKPOINT: i32 = -2_147_483_645;
+    const STATUS_ACCESS_VIOLATION: i32 = -1_073_741_819;
+    const STATUS_STACK_BUFFER_OVERRUN: i32 = -1_073_740_791;
+
+    let Some(code) = exit_code else {
+        return NodeCrashClassification::NONE;
+    };
+    if !matches!(
+        code,
+        NODE_ABORT
+            | STATUS_BREAKPOINT
+            | STATUS_ACCESS_VIOLATION
+            | STATUS_STACK_BUFFER_OVERRUN
+            | -1
+    ) {
+        return NodeCrashClassification::NONE;
+    }
+
+    // Windows can terminate Node with STATUS_ACCESS_VIOLATION before writing
+    // any stderr. The exit status itself is the stable evidence for this case.
+    if code == STATUS_ACCESS_VIOLATION && stderr.trim().is_empty() {
+        return NodeCrashClassification {
+            kind: NodeCrashKind::AccessViolation,
+            evidence: "exit_status_access_violation",
+        };
+    }
+
+    // npm's own marker proves this is not the pre-logger failure class, and
+    // matching only line prefixes avoids treating echoed input as Node evidence.
+    if has_any_npm_marker_line(stderr) {
+        return NodeCrashClassification::NONE;
+    }
+    let mut oom = false;
+    let mut fatal = false;
+    let mut assertion = false;
+    let mut native_trace = false;
+    for line in stderr.lines() {
+        let line = line.trim().to_ascii_lowercase();
+        fatal |= line.starts_with("fatal error:");
+        oom |= line.starts_with("fatal error:")
+            && line.contains("javascript heap out of memory");
+        assertion |= line.starts_with("assertion failed");
+        native_trace |= line.starts_with("node::") || line.starts_with("native stack trace");
+    }
+    if !(oom || fatal || assertion || native_trace) {
+        return NodeCrashClassification::NONE;
+    }
+
+    let evidence = if oom {
+        "javascript_heap_oom"
+    } else if assertion {
+        "assertion_failed"
+    } else if fatal {
+        "fatal_error_marker"
+    } else {
+        "node_native_trace"
+    };
+    let kind = if oom {
+        NodeCrashKind::V8HeapOom
+    } else if code == STATUS_BREAKPOINT {
+        NodeCrashKind::Breakpoint
+    } else if code == STATUS_ACCESS_VIOLATION {
+        NodeCrashKind::AccessViolation
+    } else if code == STATUS_STACK_BUFFER_OVERRUN {
+        NodeCrashKind::StackBufferOverrun
+    } else if assertion {
+        NodeCrashKind::NativeAssertion
+    } else if fatal {
+        NodeCrashKind::V8Fatal
+    } else {
+        NodeCrashKind::Abort
+    };
+    NodeCrashClassification { kind, evidence }
+}
+
 /// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
 /// case-insensitively). These are the lines npm's own error reporter writes; their
 /// presence proves npm ran and reported, even when it never emitted the structured
@@ -6094,13 +6566,32 @@ fn install_failure_signature_with_environment(
     // `none:unknown:none` bucket where unrelated causes merged into one permanently
     // Error issue. Give it a bounded structural signature — `unattributed:<origin>:
     // <dominant shape>`, at most 2 origins × 8 shapes = 16 groups — so distinct
-    // causes stop colliding and the next occurrence is self-diagnosing. An EMPTY
-    // stderr is deliberately excluded (returns `None` from the profile), so it keeps
-    // the byte-identical `none:unknown:none` envelope and its pinned test.
+    // causes stop colliding and the next occurrence is self-diagnosing. The report
+    // boundary may refine a non-npm signature to `node-crash:<kind>` when both a
+    // known process status and a stable Node/V8 marker agree. An EMPTY stderr is
+    // deliberately excluded (returns `None` from the profile), so it keeps the
+    // byte-identical `none:unknown:none` envelope and its pinned test.
     if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
         return format!("unattributed:{}:{}", profile.origin, profile.dominant_shape);
     }
     install_failure_signature(kind, detail, prefix)
+}
+
+/// Add a crash-specific signature only to non-npm markerless failures. The
+/// classifier requires both a known crash status and a stable Node/V8 marker;
+/// ordinary npm errors and unknown crashes retain their existing signature.
+fn install_failure_signature_with_exit_code(
+    exit_code: Option<i32>,
+    kind: InstallFailureKind,
+    detail: &str,
+    prefix: Option<&str>,
+    env: &InstallEnvironment,
+) -> String {
+    let crash = node_crash_kind(exit_code, detail);
+    if kind == InstallFailureKind::Unexpected && crash.kind != NodeCrashKind::None {
+        return format!("node-crash:{}", crash.kind.tag_value());
+    }
+    install_failure_signature_with_environment(kind, detail, prefix, env)
 }
 
 /// Free-up-space guidance shared by BOTH disk-full paths — the lifecycle
@@ -6335,7 +6826,8 @@ pub fn install_failure_report_with_environment(
     // Title the capture with the same signature the fingerprint groups on, so a
     // Sentry issue's title cannot drift across the events inside it. The raw
     // exit status stays on the `exit_code` tag and in `npm_diagnostics`.
-    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
+    let signature =
+        install_failure_signature_with_exit_code(exit_code, kind, detail, prefix, env);
     Some(format!("[hq-cli-update] install failed ({signature})"))
 }
 
@@ -6511,6 +7003,7 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: None,
         }
     }
 
@@ -6662,12 +7155,14 @@ mod windows_busy_deferral_tests {
             class: NpmLockHolderClass::DefenderOrIndexer,
             count: 1,
             query_outcome: NpmLockHolderQueryOutcome::Complete,
+            image_basename: Some("MsMpEng.exe".into()),
         };
-        assert_eq!(decide(true, real_holder, None), None);
+        assert_eq!(decide(true, real_holder.clone(), None), None);
         let incomplete_query = NpmLockHolderDiagnostic {
             class: NpmLockHolderClass::None,
             count: 0,
             query_outcome: NpmLockHolderQueryOutcome::Unavailable,
+            image_basename: None,
         };
         assert_eq!(decide(true, incomplete_query, None), None);
         assert!(install_failure_report(Some(-4082), DETAIL, Some(PREFIX)).is_some());
@@ -6743,6 +7238,34 @@ mod windows_busy_deferral_tests {
         assert_eq!(event.message.as_deref(), Some(expected.as_str()));
         assert_eq!(event.tags["npm_windows_busy_deferral_attempts"], "3");
         assert_eq!(event.tags["npm_windows_busy_deferral_outcome"], "exhausted");
+    }
+
+    #[test]
+    fn running_cli_version_tag_is_bounded_semver_or_unknown_and_path_free() {
+        let events = sentry::test::with_captured_events(|| {
+            let path_value = InstallEnvironment::default()
+                .with_running_cli_version(Some(r"C:\Users\Alice\hq-cli\5.210.0"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &path_value,
+            );
+            let semver_value = InstallEnvironment::default()
+                .with_running_cli_version(Some("5.211.0-beta.1"));
+            report_install_failure_with_environment(
+                Some(-4082),
+                DETAIL,
+                Some(PREFIX),
+                false,
+                &semver_value,
+            );
+        });
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].tags["hq_cli_running_version"], "unknown");
+        assert_eq!(events[1].tags["hq_cli_running_version"], "5.211.0-beta.1");
+        assert!(!events[0].tags["hq_cli_running_version"].contains("Users"));
     }
 
     #[test]
@@ -6877,6 +7400,7 @@ mod restart_manager_holder_tests {
         let classification = classify_restart_manager_holders(&[duplicate.clone(), duplicate]);
         assert_eq!(classification.class, NpmLockHolderClass::UserTerminalHqCli);
         assert_eq!(classification.count, 1);
+        assert_eq!(classification.image_basename(), Some("node.exe"));
         let mut windows_search = result(7, "Windows Search", Some("svchost.exe"), false, None);
         windows_search.service_short_name = "WSearch".to_string();
         assert_eq!(
@@ -6887,6 +7411,36 @@ mod restart_manager_holder_tests {
             classify_restart_manager_holders(&[]).class,
             NpmLockHolderClass::None
         );
+    }
+
+    #[test]
+    fn holder_telemetry_has_only_a_safe_basename_and_never_a_path_or_message() {
+        let safe = RestartManagerHolderObservation::from_results(
+            &[result(9, "untrusted message", Some("node.exe"), true, None)],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        assert_eq!(safe.class, NpmLockHolderClass::UserTerminalHqCli);
+        let safe_output = format!("{safe:?}");
+        assert!(safe_output.contains("image_basename: Some(\"node.exe\")"));
+
+        let path_shaped = RestartManagerHolderObservation::from_results(
+            &[result(
+                10,
+                "untrusted message",
+                Some(r"C:\Users\private\node.exe"),
+                true,
+                None,
+            )],
+            NpmLockHolderQueryOutcome::Complete,
+        )
+        .diagnostic();
+        let path_shaped_output = format!("{path_shaped:?}");
+        assert!(path_shaped_output.contains("image_basename: None"));
+        assert!(!format!("{safe_output} {path_shaped_output}").contains("untrusted message"));
+        let serialized = format!("{safe_output} {path_shaped_output}");
+        assert!(!serialized.contains('/'));
+        assert!(!serialized.contains('\\'));
     }
 
     #[test]
@@ -6918,35 +7472,22 @@ mod windows_busy_backoff_tests {
     const DETAIL: &str = "npm error code EBUSY\nnpm error errno -4082\nnpm error syscall rename\nnpm error path C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@indigoai-us\\hq-cli";
 
     #[test]
-    fn extended_windows_busy_backoff_is_opt_in_and_bounded() {
-        let default_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
-            .map(|retry| {
-                windows_busy_install_target_retry_delay_for_recovery(retry, false).unwrap()
-            })
-            .collect::<Vec<_>>();
-        let extended_delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
-            .map(|retry| windows_busy_install_target_retry_delay_for_recovery(retry, true).unwrap())
+    fn windows_busy_backoff_is_unconditional_and_bounded() {
+        let delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
+            .map(|retry| windows_busy_install_target_retry_delay(retry).unwrap())
             .collect::<Vec<_>>();
 
         assert_eq!(
-            default_delays,
-            [
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_secs(6),
-            ]
-        );
-        assert_eq!(
-            extended_delays,
+            delays,
             [
                 std::time::Duration::from_secs(5),
                 std::time::Duration::from_secs(15),
                 std::time::Duration::from_secs(30),
             ]
         );
-        assert!(windows_busy_install_target_retry_delay_for_recovery(4, true).is_none());
+        assert!(windows_busy_install_target_retry_delay(4).is_none());
         assert_eq!(
-            extended_delays
+            delays
                 .iter()
                 .map(|delay| delay.as_secs())
                 .sum::<u64>(),
@@ -6955,19 +7496,19 @@ mod windows_busy_backoff_tests {
     }
 
     #[test]
-    fn windows_busy_backoff_runs_three_bounded_retries_over_ten_seconds() {
+    fn windows_busy_backoff_runs_three_bounded_retries_over_fifty_seconds() {
         let delays = (1..=WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES)
             .map(|retry| windows_busy_install_target_retry_delay(retry).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             delays,
             [
-                std::time::Duration::from_secs(1),
-                std::time::Duration::from_secs(3),
-                std::time::Duration::from_secs(6),
+                std::time::Duration::from_secs(5),
+                std::time::Duration::from_secs(15),
+                std::time::Duration::from_secs(30),
             ]
         );
-        assert_eq!(delays.iter().map(|delay| delay.as_secs()).sum::<u64>(), 10);
+        assert_eq!(delays.iter().map(|delay| delay.as_secs()).sum::<u64>(), 50);
         assert!(windows_busy_install_target_retry_delay(4).is_none());
 
         let first_retry = windows_busy_install_target_retry_rung(1).unwrap();
@@ -7019,6 +7560,7 @@ mod deferred_user_cli_report_tests {
                 class: NpmLockHolderClass::UserTerminalHqCli,
                 count: 1,
                 query_outcome: NpmLockHolderQueryOutcome::Complete,
+                image_basename: Some("node.exe".into()),
             }),
             ..InstallEnvironment::default()
         };
@@ -7204,6 +7746,10 @@ pub struct InstallEnvironment {
     /// publishes most days and would make grouping unbounded. Defaults to `None`,
     /// emitted as NO tag, so every existing caller reproduces today's exact tag set.
     pub target_version: Option<String>,
+    /// The CLI version resolved when the updater observed failure. Tag-only,
+    /// never a grouping component. Opt-in callers with no readable version emit
+    /// `unknown`.
+    pub running_cli_version: Option<String>,
     /// Whether the failing install pinned an exact version or asked for the `latest`
     /// dist-tag. TAG ONLY, defaulting to [`RequestedSpecKind::Unknown`] (emitted as
     /// NO tag), so every existing caller's tag set is unchanged until it opts in.
@@ -7238,6 +7784,13 @@ impl InstallEnvironment {
     pub fn with_pinned_target_version(mut self, version: &str) -> Self {
         self.target_version = Some(version.to_string());
         self.requested_spec_kind = RequestedSpecKind::PinnedVersion;
+        self
+    }
+
+    /// Attach the CLI version that was running when the updater observed failure.
+    /// The report boundary reduces it to a bounded SemVer token or `unknown`.
+    pub fn with_running_cli_version(mut self, version: Option<&str>) -> Self {
+        self.running_cli_version = Some(version.unwrap_or("unknown").to_string());
         self
     }
 }
@@ -7278,12 +7831,7 @@ fn sanitized_target_version_token(raw: Option<&str>) -> String {
         return "unknown".to_string();
     };
     let value = raw.strip_prefix('v').unwrap_or(raw);
-    if (1..=48).contains(&value.len())
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
-        && value.bytes().any(|byte| byte.is_ascii_digit())
-    {
+    if (1..=48).contains(&value.len()) && semver::Version::parse(value).is_ok() {
         value.to_string()
     } else {
         "unknown".to_string()
@@ -7372,7 +7920,8 @@ pub fn report_install_failure_with_environment(
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
-    let signature = install_failure_signature_with_environment(kind, detail, prefix, env);
+    let signature =
+        install_failure_signature_with_exit_code(exit_code, kind, detail, prefix, env);
     let eacces =
         has_eacces_evidence(detail) || kind == InstallFailureKind::ExpectedPrefixPermission;
     let npm_path_shape = npm_path_shape(detail, prefix);
@@ -7429,6 +7978,10 @@ pub fn report_install_failure_with_environment(
         .target_version
         .as_deref()
         .map(|version| sanitized_target_version_token(Some(version)));
+    let hq_cli_running_version: Option<String> = env
+        .running_cli_version
+        .as_deref()
+        .map(|version| sanitized_target_version_token(Some(version)));
     let requested_spec_kind_tag = if env.requested_spec_kind != RequestedSpecKind::Unknown {
         Some(env.requested_spec_kind.tag_value())
     } else {
@@ -7438,6 +7991,20 @@ pub fn report_install_failure_with_environment(
     // `Some` only for the attributed subclass, so every other event's tags and the
     // diagnostics extra stay byte-identical to today.
     let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
+    let crash_kind = if kind == InstallFailureKind::Unexpected {
+        node_crash_kind(exit_code, detail)
+    } else {
+        NodeCrashClassification::NONE
+    };
+    let crash_diag_suffix = if crash_kind.kind == NodeCrashKind::None {
+        String::new()
+    } else {
+        format!(
+            " node_crash_kind={} node_crash_evidence={}",
+            crash_kind.kind.tag_value(),
+            crash_kind.evidence
+        )
+    };
     // Append the origin + shape render to the diagnostics extra ONLY for the
     // attributed subclass, so the extra stays a fixed-shape string within each class
     // (the six-key provenance suffix is unchanged for every other event).
@@ -7451,7 +8018,7 @@ pub fn report_install_failure_with_environment(
         None => String::new(),
     };
     let mut npm_diagnostics = format!(
-        "{} {}{}",
+        "{} {}{}{}",
         npm_diagnostics_summary(
             exit_str.as_str(),
             npm_errno,
@@ -7469,6 +8036,7 @@ pub fn report_install_failure_with_environment(
             env.managed_retry_outcome.tag_value(),
         ),
         unattributed_diag_suffix,
+        crash_diag_suffix,
     );
     // Append the missing-target diagnostic ONLY when the mkdir remedy actually ran
     // (state != Unknown). The default keeps every existing event's `npm_diagnostics`
@@ -7501,7 +8069,7 @@ pub fn report_install_failure_with_environment(
             env.windows_busy_retry_outcome,
             WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
         ) {
-            let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+            let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
             npm_diagnostics.push_str(&format!(
                 " lock_holder_class={} lock_holder_count={} lock_holder_query_outcome={}",
                 diagnostic.class.tag_value(),
@@ -7525,6 +8093,8 @@ pub fn report_install_failure_with_environment(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("install_failure_kind", kind.fingerprint_component());
+            scope.set_tag("node_crash_kind", crash_kind.kind.tag_value());
+            scope.set_tag("node_crash_evidence", crash_kind.evidence);
             scope.set_tag("exit_code", exit_str.as_str());
             scope.set_tag("eacces", if eacces { "true" } else { "false" });
             scope.set_tag("npm_failure_site", npm_failure_site(detail, prefix));
@@ -7593,6 +8163,9 @@ pub fn report_install_failure_with_environment(
             if let Some(target_version) = hq_cli_target_version.as_deref() {
                 scope.set_tag("hq_cli_target_version", target_version);
             }
+            if let Some(running_version) = hq_cli_running_version.as_deref() {
+                scope.set_tag("hq_cli_running_version", running_version);
+            }
             if let Some(spec_kind) = requested_spec_kind_tag {
                 scope.set_tag("npm_requested_spec_kind", spec_kind);
             }
@@ -7616,13 +8189,16 @@ pub fn report_install_failure_with_environment(
                     env.windows_busy_retry_outcome,
                     WindowsBusyRetryOutcome::NotArmed | WindowsBusyRetryOutcome::Failed
                 ) {
-                    let diagnostic = env.lock_holder_diagnostic.unwrap_or_default();
+                    let diagnostic = env.lock_holder_diagnostic.clone().unwrap_or_default();
                     scope.set_tag("npm_lock_holder_class", diagnostic.class.tag_value());
                     scope.set_tag("npm_lock_holder_count", diagnostic.count.to_string());
                     scope.set_tag(
                         "npm_lock_holder_query_outcome",
                         diagnostic.query_outcome.tag_value(),
                     );
+                    if let Some(image_basename) = diagnostic.image_basename.as_deref() {
+                        scope.set_tag("npm_lock_holder_image_basename", image_basename);
+                    }
                 }
                 scope.set_tag("npm_windows_busy_retry_attempts", attempts.to_string());
                 scope.set_tag(
@@ -7662,9 +8238,9 @@ pub fn report_install_failure_with_environment(
             // Structural attribution for a NON-EMPTY markerless failure
             // (HQ-DESKTOP-56): the stderr origin (closed 3-value enum) and a bounded
             // `shape:count` render of its unmatched-shape mix. Present ONLY for the
-            // attributed subclass; both are tags/diagnostics ONLY and must never enter
-            // the fingerprint — the shape counts vary run to run, so grouping keys only
-            // on `unattributed:<origin>:<dominant shape>` in the signature above.
+            // attributed subclass. These fields never enter the fingerprint: generic
+            // markerless events group on `unattributed:<origin>:<dominant shape>`,
+            // while recognized Node crashes use their closed `node-crash:<kind>` key.
             if let Some(profile) = &unattributed_profile {
                 scope.set_tag("npm_stderr_origin", profile.origin);
                 scope.set_tag("npm_stderr_shapes", profile.shapes_tag.as_str());
@@ -7829,10 +8405,19 @@ pub fn install_failure_episode_key_with_environment(
         // A NON-EMPTY markerless failure (HQ-DESKTOP-56) now carries a bounded
         // structural signature, so it CAN be episode-bounded: page once per published
         // CLI version per distinct `(origin, dominant shape)` instead of on every
-        // ~6-hourly check. The key mirrors the attributed SIGNATURE (same profile
-        // helper) so the key and the group can never disagree, and `|managed` matches
-        // the other shapes so a managed-retry event never collides with its user-path
-        // predecessor.
+        // ~6-hourly check. Recognized Node crashes use `(node-crash, kind)` for both
+        // the key and Sentry signature; other profiles keep `(origin, dominant shape)`.
+        // `|managed` matches the other shapes so a managed-retry event never collides
+        // with its user-path predecessor.
+        let crash = node_crash_kind(exit_code, detail);
+        if crash.kind != NodeCrashKind::None {
+            let key = format!("{latest}|node-crash|{}", crash.kind.tag_value());
+            return Some(if env.managed_toolchain_retry {
+                format!("{key}|managed")
+            } else {
+                key
+            });
+        }
         if let Some(profile) = install_failure_unattributed_profile(kind, detail, prefix) {
             let key = format!(
                 "{latest}|unattributed|{}|{}",
@@ -8191,6 +8776,76 @@ pub fn report_npm_cache_setup_failure(category: &'static str) {
         || {
             sentry::capture_message(
                 "[hq-cli-update] app-owned npm cache could not be prepared",
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
+/// Why an automatic HQ CLI update attempt failed, for retry scheduling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoUpdateFailureKind {
+    PackageUseLeaseTimeout,
+    Other,
+}
+
+/// A package-use lease timeout earns up to three retries ten minutes apart;
+/// every other failure waits for the regular check.
+pub fn auto_update_retry_delay(
+    failure: AutoUpdateFailureKind,
+    retries_scheduled: u8,
+) -> Option<Duration> {
+    (failure == AutoUpdateFailureKind::PackageUseLeaseTimeout && retries_scheduled < 3)
+        .then_some(Duration::from_secs(10 * 60))
+}
+
+pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
+    match attempt {
+        0 => "0",
+        1 => "1",
+        2 => "2",
+        _ => "3",
+    }
+}
+
+/// Report a bounded timeout while waiting for active HQ CLI processes to
+/// release the package-use lease. The fixed message, tag, and fingerprint
+/// intentionally exclude local paths and process details.
+pub fn report_package_use_lease_timeout(
+    summary: &crate::package_use_lease::PackageUseLeaseTimeoutSummary,
+    retry_attempt: u8,
+) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("install_failure_kind", "package_use_lease_timeout");
+            scope.set_tag("hq_cli_update_stage", "package_use_lease_timeout");
+            scope.set_tag(
+                "lease_retry_attempt",
+                package_use_lease_retry_attempt_tag(retry_attempt),
+            );
+            scope.set_tag(
+                "holder_live_count_bucket",
+                summary.live_holder_count.as_tag(),
+            );
+            scope.set_tag("holder_version_bucket", summary.holder_version.as_tag());
+            scope.set_tag(
+                "oldest_holder_age_bucket",
+                summary.oldest_holder_age.as_tag(),
+            );
+            scope.set_tag(
+                "oldest_holder_purpose",
+                summary.oldest_holder_purpose.as_tag(),
+            );
+            scope.set_fingerprint(Some(&[
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout",
+            ]));
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] timed out waiting for active HQ CLI package use",
                 sentry::Level::Error,
             );
         },
@@ -9093,6 +9748,288 @@ fn read_installed_version_probe(
 mod tests {
     use super::*;
     use std::cmp::Ordering;
+
+    fn captured_non_convergent_event(
+        hq_bin: &str,
+        installer_prefix: Option<&str>,
+        aim: ExecutedCopyAim,
+        lane: paths::ResolutionSource,
+    ) -> serde_json::Value {
+        let managed_roots = paths::managed_toolchain_roots();
+        let context = PostInstallContext::npm(
+            hq_bin,
+            hq_bin,
+            Some("4.0.0"),
+            Some("4.0.0"),
+            "5.0.0",
+            installer_prefix,
+            "npm",
+            false,
+            Some("5.0.0"),
+        )
+        .with_managed_roots(&managed_roots)
+        .with_executed_copy_aim(aim)
+        .with_resolution_telemetry(lane, DeliveredPrefixShim::Present);
+        let report = decide_post_install(&context)
+            .capture
+            .expect("fixture must produce a non-convergent report");
+        let event = sentry::test::with_captured_events(|| report_non_convergent_install(&report))
+            .into_iter()
+            .next()
+            .expect("report must capture an event");
+        serde_json::json!({
+            "tags": event.tags,
+            "contexts": event.contexts,
+            "extras": event.extra,
+        })
+    }
+
+    fn fixture_prefix() -> (tempfile::TempDir, String, String) {
+        let home = paths::home_dir().expect("test home is available");
+        let temp = tempfile::Builder::new()
+            .prefix("sc-desktop-8a-")
+            .tempdir_in(home)
+            .expect("create private path fixture");
+        let prefix = temp.path().join("npm-global");
+        let npm = colocated_npm_path(&prefix);
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        std::fs::write(&npm, "fixture").unwrap();
+        let hq = prefix_hq_shim_path(&prefix).to_string_lossy().into_owned();
+        (temp, prefix.to_string_lossy().into_owned(), hq)
+    }
+
+    #[test]
+    fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
+        use crate::package_use_lease::{
+            HolderAgeBucket, HolderPurposeBucket, HolderVersionBucket, LiveHolderCountBucket,
+            PackageUseLeaseTimeoutSummary,
+        };
+
+        let summary = PackageUseLeaseTimeoutSummary {
+            live_holder_count: LiveHolderCountBucket::TwoToThree,
+            holder_version: HolderVersionBucket::Pre53424,
+            oldest_holder_age: HolderAgeBucket::From1hTo24h,
+            oldest_holder_purpose: HolderPurposeBucket::Daemon,
+        };
+        let events =
+            sentry::test::with_captured_events(|| report_package_use_lease_timeout(&summary, 0));
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.level, sentry::Level::Error);
+        assert_eq!(event.tags["hq_cli_update_kind"], "install-failed");
+        assert_eq!(
+            event.tags["install_failure_kind"],
+            "package_use_lease_timeout"
+        );
+        assert_eq!(
+            event.tags["hq_cli_update_stage"],
+            "package_use_lease_timeout"
+        );
+        assert_eq!(event.tags["lease_retry_attempt"], "0");
+        assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
+        assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
+        assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
+        assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
+        let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
+        assert_eq!(
+            fingerprint,
+            vec![
+                "hq-cli-update",
+                "install-failed",
+                "package_use_lease_timeout"
+            ]
+        );
+        let message = event.message.as_deref().expect("static event message");
+        assert!(!message.contains('/') && !message.contains('\\'));
+        assert!(event.extra.is_empty());
+    }
+
+    #[test]
+    fn package_use_lease_retry_schedule_is_bounded_and_only_has_timeout_delays() {
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 0),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 1),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 2),
+            Some(Duration::from_secs(10 * 60))
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, 3),
+            None
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::PackageUseLeaseTimeout, u8::MAX),
+            None
+        );
+        assert_eq!(
+            auto_update_retry_delay(AutoUpdateFailureKind::Other, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn package_use_lease_retry_attempt_tag_has_only_fixed_values() {
+        assert_eq!(package_use_lease_retry_attempt_tag(0), "0");
+        assert_eq!(package_use_lease_retry_attempt_tag(1), "1");
+        assert_eq!(package_use_lease_retry_attempt_tag(2), "2");
+        assert_eq!(package_use_lease_retry_attempt_tag(3), "3");
+        assert_eq!(package_use_lease_retry_attempt_tag(u8::MAX), "3");
+    }
+
+    #[test]
+    fn non_convergence_report_tags_the_executed_copy_aim() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["executed_copy_aim"].as_str(),
+            Some("not_yet_aimed")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_classifies_resolved_prefix() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some("/installer/prefix"),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_prefix_class"].as_str(),
+            Some("user")
+        );
+        assert_eq!(prefix, npm_prefix_from_hq_bin(&hq).unwrap());
+    }
+
+    #[test]
+    fn non_convergence_report_marks_resolved_prefix_under_home() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(event["tags"]["resolved_under_home"].as_str(), Some("true"));
+    }
+
+    #[test]
+    fn non_convergence_report_marks_colocated_npm() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_colocated_npm"].as_str(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_compares_installer_and_resolved_prefixes() {
+        let (_temp, prefix, hq) = fixture_prefix();
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::NotYetAimed,
+            paths::ResolutionSource::UserPrefix,
+        );
+        assert_eq!(
+            event["tags"]["resolved_matches_installer_prefix"].as_str(),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_reads_the_winning_settings_path_file() {
+        let event = captured_non_convergent_event(
+            "hq",
+            None,
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::NotResolved,
+        );
+        let expected = paths::winning_settings_path_file(&paths::resolved_hq_folder());
+        assert_eq!(
+            event["tags"]["settings_path_file"].as_str(),
+            Some(expected.telemetry_value())
+        );
+    }
+
+    #[test]
+    fn non_convergence_report_measures_managed_bin_in_settings_path() {
+        let event = captured_non_convergent_event(
+            "hq",
+            None,
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::NotResolved,
+        );
+        let root = paths::resolved_hq_folder();
+        let file = paths::winning_settings_path_file(&root);
+        let roots = paths::managed_toolchain_roots();
+        let managed = roots
+            .first()
+            .map(|root| paths::managed_npm_bin_in(root))
+            .unwrap_or_default();
+        let expected =
+            managed_bin_in_settings_path(file, &paths::settings_path_dirs_in(&root), &managed);
+        assert_eq!(
+            event["tags"]["managed_bin_in_settings_path"].as_str(),
+            Some(expected.telemetry_value())
+        );
+    }
+
+    #[test]
+    fn windows_profile_path_never_enters_non_convergence_tags_or_contexts() {
+        #[cfg(windows)]
+        let (profile, prefix, hq) = {
+            let profile = paths::home_dir().expect("Windows profile home is available");
+            let prefix = profile.join("AppData/Roaming/npm");
+            let hq = prefix.join("hq.cmd");
+            (
+                profile.to_string_lossy().into_owned(),
+                prefix.to_string_lossy().into_owned(),
+                hq.to_string_lossy().into_owned(),
+            )
+        };
+        #[cfg(not(windows))]
+        let (profile, prefix, hq) = (
+            r"C:\Users\sc-desktop-8a-privacy-fixture".to_string(),
+            r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm".to_string(),
+            r"C:\Users\sc-desktop-8a-privacy-fixture\AppData\Roaming\npm\hq.cmd".to_string(),
+        );
+        let event = captured_non_convergent_event(
+            &hq,
+            Some(&prefix),
+            ExecutedCopyAim::Undrivable,
+            paths::ResolutionSource::SettingsPath,
+        );
+        let tags_and_contexts = serde_json::json!({
+            "tags": event["tags"],
+            "contexts": event["contexts"],
+        })
+        .to_string();
+        assert!(!tags_and_contexts.contains(&profile));
+        #[cfg(windows)]
+        {
+            let extras = event["extras"].to_string();
+            assert!(!extras.contains(&profile));
+            assert!(extras.contains("~"));
+        }
+    }
 
     #[test]
     fn version_command_timeout_kills_and_reaps_the_child() {
@@ -10473,6 +11410,7 @@ mod tests {
             repair,
             file: paths::SettingsPathFile::Local,
             managed_bin: ManagedBinInSettingsPath::Absent,
+            ..SettingsPathTelemetry::default()
         })
     }
 
@@ -10653,6 +11591,7 @@ mod tests {
             repair: SettingsPathRepair::Rewritten,
             file: paths::SettingsPathFile::Local,
             managed_bin: ManagedBinInSettingsPath::Present,
+            ..SettingsPathTelemetry::default()
         });
         let outcome = decide_post_install(&converged);
         assert!(matches!(
@@ -16014,7 +16953,7 @@ mod tests {
     // ---- HQ-DESKTOP-3P: hq-cli backing oracle + telemetry sub-case. ----
 
     #[test]
-    fn hq_cli_backing_classifies_backed_absent_and_indeterminate() {
+    fn hq_cli_backing_classifies_backed_absent_invalid_and_unreadable() {
         let tmp = tempfile::TempDir::new().unwrap();
 
         // Backed: a shim whose @indigoai-us/hq-cli manifest is reachable from the
@@ -16049,7 +16988,22 @@ mod tests {
         std::fs::write(locked.join("hq.cmd"), "@echo off\n").unwrap();
         assert_eq!(
             hq_cli_backing(&locked.join("hq.cmd")),
-            paths::CandidateBacking::Indeterminate
+            paths::CandidateBacking::ManifestUnreadable
+        );
+
+        // Invalid: a readable package manifest that cannot be parsed must not
+        // be conflated with either an absent package or an unreadable file.
+        let invalid = tmp.path().join("invalid");
+        std::fs::create_dir_all(invalid.join("node_modules/@indigoai-us/hq-cli")).unwrap();
+        std::fs::write(invalid.join("hq.cmd"), "@echo off\n").unwrap();
+        std::fs::write(
+            invalid.join("node_modules/@indigoai-us/hq-cli/package.json"),
+            b"{invalid json",
+        )
+        .unwrap();
+        assert_eq!(
+            hq_cli_backing(&invalid.join("hq.cmd")),
+            paths::CandidateBacking::ManifestInvalid
         );
     }
 
@@ -16924,6 +17878,7 @@ mod tests {
             lock_holder_diagnostic: None,
             missing_target_state: MissingTargetState::Unknown,
             target_version: None,
+            running_cli_version: None,
             requested_spec_kind: RequestedSpecKind::Unknown,
             registry_serving_lag_recurred: false,
         };
@@ -17993,6 +18948,13 @@ mod tests {
     fn sanitized_target_version_token_preserves_valid_prereleases_but_rejects_free_text() {
         // A stable version passes through unchanged.
         assert_eq!(sanitized_target_version_token(Some("5.103.27")), "5.103.27");
+        assert_eq!(sanitized_target_version_token(Some("AliceCase123")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("1.2")), "unknown");
+        assert_eq!(sanitized_target_version_token(Some("5.335.0")), "5.335.0");
+        assert_eq!(
+            sanitized_target_version_token(Some("5.335.0-beta.1")),
+            "5.335.0-beta.1"
+        );
         // Valid SemVer prereleases / build metadata survive (the P2 fix): the
         // digits-and-dots-only sanitizer would have collapsed these to `unknown`.
         assert_eq!(
@@ -18279,6 +19241,212 @@ mod tests {
             cmp_semver(HQ_CLI_MIN_VERSION, resolver_floor),
             std::cmp::Ordering::Less,
             "HQ_CLI_MIN_VERSION ({HQ_CLI_MIN_VERSION}) is below the resolver's npx range floor ({resolver_floor})"
+        );
+    }
+
+    #[test]
+    fn node_crash_kinds_require_known_exit_and_stable_runtime_signature() {
+        let cases = [
+            (
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                "v8_heap_oom",
+                "javascript_heap_oom",
+            ),
+            (
+                Some(134),
+                "FATAL ERROR: v8 internal failure",
+                "v8_fatal",
+                "fatal_error_marker",
+            ),
+            (
+                Some(134),
+                "Assertion failed: node invariant",
+                "native_assertion",
+                "assertion_failed",
+            ),
+            (
+                Some(-2_147_483_645),
+                "Native stack trace from node::",
+                "breakpoint",
+                "node_native_trace",
+            ),
+            (
+                Some(-1_073_741_819),
+                "node::OnFatalError Native stack trace",
+                "access_violation",
+                "node_native_trace",
+            ),
+            (
+                Some(-1_073_740_791),
+                "Native stack trace from node::",
+                "stack_buffer_overrun",
+                "node_native_trace",
+            ),
+            (
+                Some(-1),
+                "node::OnFatalError",
+                "abort",
+                "node_native_trace",
+            ),
+        ];
+        for (exit_code, stderr, expected_kind, expected_evidence) in cases {
+            let actual = node_crash_kind(exit_code, stderr);
+            assert_eq!(actual.kind.tag_value(), expected_kind);
+            assert_eq!(actual.evidence, expected_evidence);
+        }
+        let empty_access_violation = node_crash_kind(Some(-1_073_741_819), "");
+        assert_eq!(empty_access_violation.kind.tag_value(), "access_violation");
+        assert_eq!(empty_access_violation.evidence, "exit_status_access_violation");
+        // The command boundary decodes captured stderr lossily and trims it
+        // before calling the core classifier; stable ASCII crash markers survive
+        // that production transform.
+        let captured = String::from_utf8_lossy(
+            b"\r\nFATAL ERROR: JavaScript heap out of memory\r\n",
+        )
+        .trim()
+        .to_string();
+        assert_eq!(
+            node_crash_kind(Some(134), &captured).kind.tag_value(),
+            "v8_heap_oom"
+        );
+
+        assert_eq!(
+            node_crash_kind(Some(134), "npm error code E404").kind.tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(
+                Some(134),
+                "npm error command failed\nFATAL ERROR: JavaScript heap out of memory"
+            )
+            .kind
+            .tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(134), "echoed input: FATAL ERROR: failure")
+                .kind
+                .tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(7), "Native stack trace").kind.tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(Some(-1), "unclassified process failure")
+                .kind
+                .tag_value(),
+            "none"
+        );
+        assert_eq!(
+            node_crash_kind(None, "FATAL ERROR: failure").kind.tag_value(),
+            "none"
+        );
+    }
+
+    #[test]
+    fn crash_signature_splits_only_classified_non_npm_failures() {
+        let env = reopen_env();
+        let oom = install_failure_signature_with_exit_code(
+            Some(134),
+            InstallFailureKind::Unexpected,
+            "FATAL ERROR: JavaScript heap out of memory",
+            None,
+            &env,
+        );
+        assert_eq!(oom, "node-crash:v8_heap_oom");
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|node-crash|v8_heap_oom")
+        );
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(134),
+                "FATAL ERROR: JavaScript heap out of memory",
+                None,
+                false,
+                &env,
+            )
+            .as_deref(),
+            Some("[hq-cli-update] install failed (node-crash:v8_heap_oom)")
+        );
+
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(-1_073_741_819),
+                InstallFailureKind::Unexpected,
+                "",
+                None,
+                &env,
+            ),
+            "node-crash:access_violation"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|node-crash|access_violation")
+        );
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            )
+            .as_deref(),
+            Some("[hq-cli-update] install failed (node-crash:access_violation)")
+        );
+
+        let npm_error = "npm error code ENOTEMPTY";
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(134),
+                InstallFailureKind::Unexpected,
+                npm_error,
+                None,
+                &env,
+            ),
+            "ENOTEMPTY:unknown:none"
+        );
+        assert_eq!(
+            install_failure_signature_with_exit_code(
+                Some(134),
+                InstallFailureKind::Unexpected,
+                "unclassified process failure",
+                None,
+                &env,
+            ),
+            "unattributed:non-npm:other"
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(134),
+                "unclassified process failure",
+                None,
+                false,
+                "5.342.18",
+                &env,
+            )
+            .as_deref(),
+            Some("5.342.18|unattributed|non-npm|other")
         );
     }
 

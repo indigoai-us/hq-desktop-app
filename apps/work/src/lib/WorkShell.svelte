@@ -48,6 +48,7 @@
     type SetupRunApi,
     type Workspace,
     type WorkMeshThread,
+    type ProjectMemberAddResult,
     conversationDeepLinkFromLocation,
     conversationRowForDeepLink,
     attachmentVaultScopeUid,
@@ -69,6 +70,7 @@
   import { loadWorkThreads } from "./work-thread-loader";
   import { projectIdFromDirectoryRow } from "./live-sidebar";
   import {
+    addLiveProjectMember,
     loadLiveProjectMeta,
     loadWebVaultFilePreview,
     type LiveProjectMeta,
@@ -139,6 +141,14 @@
     packagesEvents?: PackagesEvents | null;
     /** Native notification wake edge forwarded by a desktop host. */
     notificationWakeSeq?: number;
+    /**
+     * Host-owned session-local notification rows (paused uploads). They join
+     * the feed beside channel wakes; ack and read-all are handed back.
+     */
+    hostNotifications?: Record<string, unknown>[];
+    onackhostnotification?: (id: string) => void;
+    onreadallhostnotifications?: () => void;
+    onopenhostnotification?: (id: string, url: string) => void;
     /** Native hosts can bound first paint without replacing DesktopApp's default. */
     bootTimeoutMs?: number;
     /** Native hosts receive DesktopApp's first successful shell-paint signal. */
@@ -166,6 +176,10 @@
           }
         | null,
     ) => void;
+    /** QA-075: company whose pane is open; null on personal pages. */
+    onactivecompanychange?: (company: { uid: string | null; slug: string } | null) => void;
+    /** The persisted post-ready marker used by the desktop telemetry path. */
+    postReadyActionReady?: boolean;
     /** Native host-only full-column surfaces, forwarded to DesktopApp. */
     extraPages?: Record<
       string,
@@ -256,6 +270,10 @@
     uiVersion = null,
     packagesEvents,
     notificationWakeSeq: hostNotificationWakeSeq,
+    hostNotifications = [],
+    onackhostnotification,
+    onreadallhostnotifications,
+    onopenhostnotification,
     bootTimeoutMs,
     onShellReady,
     onOpenConsole: hostOnOpenConsole,
@@ -263,6 +281,8 @@
     callsHost = null,
     onembeddednavigationready,
     onactivethreadchange,
+    onactivecompanychange,
+    postReadyActionReady = false,
     extraPages,
     rowExtrasLoading = false,
     rowExtrasError = false,
@@ -302,6 +322,8 @@
     : new WebPlatformAdapter({
         baseUrl: resolveHqProApiUrl(),
         fetch: workFetch,
+        // hqProFetch owns the 504 retry; custom host fetches use the adapter.
+        retryLambdaInvoke504: workFetch !== hqProFetch,
         onUnauthorized: onUnauthorized ?? redirectToSigninWithCallback,
       });
   onDestroy(() => {
@@ -345,8 +367,12 @@
   let localNotificationRows = $state<Record<string, unknown>[]>([]);
   const pendingNotificationLookups = new Set<{ id: string; acknowledged: boolean; row?: Record<string, unknown> }>();
   const baseNotificationsApi = createNotificationsApi(adapter, {
-    localNotifications: () => localNotificationRows,
+    localNotifications: () => [...hostNotifications, ...localNotificationRows],
     ackLocalNotification: (id) => {
+      if (hostNotifications.some((row) => row.id === id)) {
+        onackhostnotification?.(id);
+        return;
+      }
       for (const lookup of pendingNotificationLookups) {
         if (lookup.id === id) lookup.acknowledged = true;
       }
@@ -367,6 +393,7 @@
       const lookups = [...pendingNotificationLookups];
       await baseNotificationsApi.readAllNotifications();
       if (account !== effectiveTenantAccountId || generation !== effectiveTenantGeneration) return;
+      onreadallhostnotifications?.();
       for (const lookup of lookups) {
         lookup.acknowledged = true;
         if (lookup.row) rows.add(lookup.row);
@@ -880,6 +907,12 @@
     // work-mesh activity as Board tasks.
     return ensureProjectMeta(row)?.board ?? null;
   });
+  const addProjectMember = async (row: ConversationRow, personUid: string): Promise<ProjectMemberAddResult> => {
+    const companyUid = (row.companyUid ?? "").trim();
+    const projectId = projectIdFor(row) ?? "";
+    if (!companyUid || !projectId) throw new Error("This row is not a company project");
+    return addLiveProjectMember(companyUid, projectId, personUid, workFetch);
+  };
   const filesByRow = $derived(
     (row: ConversationRow): ChannelFileItemModel[] => {
       return ensureProjectMeta(row)?.files ?? [];
@@ -971,6 +1004,7 @@
       {messagesByRow}
       {reactionsByRow}
       {boardByRow}
+      {addProjectMember}
       {filesByRow}
       {loadFilePreview}
       {channelStatusByRow}
@@ -980,6 +1014,7 @@
       mentionCandidates={mentionTargetsFromContacts(shallow.contacts)}
       coreFixtures={false}
       onopenurl={hostOpenUrl ?? openUrl}
+      {onopenhostnotification}
       {wakes}
       {companies}
       onhomechannelresolved={handleHomeChannelResolved}
@@ -1010,6 +1045,8 @@
       {refreshAppVersion}
       {uiVersion}
       {onactivethreadchange}
+      {onactivecompanychange}
+      readyFirstActionReady={postReadyActionReady}
       {extraPages}
       {rowExtrasLoading}
       {rowExtrasError}

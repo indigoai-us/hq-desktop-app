@@ -1,3 +1,61 @@
+export const DEPS_OPERATIONS = [
+  'node',
+  'yq',
+  'qmd',
+  'hq-cli',
+  'git',
+  'jq',
+  'gh',
+  'claude-code',
+  'homebrew',
+  'unknown',
+] as const;
+
+export type DepsOperation = (typeof DEPS_OPERATIONS)[number];
+
+export const DEPS_RETRY_RESULTS = [
+  'not-eligible',
+  'recovered',
+  'failed-again',
+  'skipped-flag-off',
+  'skipped-flag-unreadable',
+] as const;
+
+export type DepsRetryResult = (typeof DEPS_RETRY_RESULTS)[number];
+export type DepsTimeoutRetryFlagStatus = 'enabled' | 'disabled' | 'unreadable';
+
+export function depsRetryWasAttemptedForFailure(
+  failureScheduledRetry: boolean,
+  subsequentAttemptRan: boolean,
+): boolean {
+  return failureScheduledRetry && subsequentAttemptRan;
+}
+
+export function depsTimeoutRetryTelemetry(input: {
+  flagStatus: DepsTimeoutRetryFlagStatus;
+  timedOut: boolean;
+  retrySuppressed: boolean;
+  retryAttempted: boolean;
+  retryRecovered: boolean;
+}): { retryAttempted: boolean; retryResult: DepsRetryResult } {
+  if (!input.timedOut || input.retrySuppressed) {
+    return { retryAttempted: false, retryResult: 'not-eligible' };
+  }
+  if (input.retryAttempted && input.flagStatus === 'enabled') {
+    return {
+      retryAttempted: true,
+      retryResult: input.retryRecovered ? 'recovered' : 'failed-again',
+    };
+  }
+  if (input.flagStatus === 'disabled') {
+    return { retryAttempted: false, retryResult: 'skipped-flag-off' };
+  }
+  if (input.flagStatus === 'unreadable') {
+    return { retryAttempted: false, retryResult: 'skipped-flag-unreadable' };
+  }
+  return { retryAttempted: false, retryResult: 'not-eligible' };
+}
+
 export type StageId =
   | 'content'
   | 'deps'
@@ -178,6 +236,18 @@ export const STAGE_ORDER: StageId[] = [
   'indexing',
 ];
 
+export function normalizeDepsOperation(value: unknown): DepsOperation | undefined {
+  return typeof value === 'string' && DEPS_OPERATIONS.includes(value as DepsOperation)
+    ? (value as DepsOperation)
+    : undefined;
+}
+
+export function normalizeDepsRetryResult(value: unknown): DepsRetryResult | undefined {
+  return typeof value === 'string' && DEPS_RETRY_RESULTS.includes(value as DepsRetryResult)
+    ? (value as DepsRetryResult)
+    : undefined;
+}
+
 export function normalizeFailedDependency(value: unknown): FailedDependency {
   return typeof value === 'string' && FAILED_DEPENDENCIES.includes(value as FailedDependency)
     ? (value as FailedDependency)
@@ -207,6 +277,7 @@ export function normalizeFailedStageIds(values: Iterable<unknown>): StageId[] {
 
 export interface SetupFailureTelemetryDetails {
   errorCategory: ErrorCategory;
+  depsOperation?: DepsOperation;
   errorKind?: SetupErrorKind;
   failedDependency?: FailedDependency;
   errorOperation?: SymlinkErrorOperation;
@@ -219,6 +290,7 @@ export function setupFailureTelemetryDetails(input: {
   errorCategory?: unknown;
   errorKind?: unknown;
   failedDependency?: unknown;
+  depsOperation?: unknown;
   errorOperation?: unknown;
   errorIoKind?: unknown;
   errorCode?: unknown;
@@ -253,6 +325,9 @@ export function setupFailureTelemetryDetails(input: {
         errorCategory,
         ...(errorKind === undefined ? {} : { errorKind }),
         failedDependency: normalizeFailedDependency(input.failedDependency),
+        ...(normalizeDepsOperation(input.depsOperation ?? input.failedDependency) === undefined
+          ? {}
+          : { depsOperation: normalizeDepsOperation(input.depsOperation ?? input.failedDependency) }),
       }
     : {
         errorCategory,
@@ -645,6 +720,7 @@ export const STAGE_SKIP_THRESHOLD_MS: Partial<Record<StageId, number>> = {
 };
 
 export const STAGE_TIMEOUT_GRACE_MS = 300_000;
+export const SETUP_TIMEOUT_NATIVE_SETTLE_TIMEOUT_MS = 10_000;
 export const DEFAULT_STAGE_TIMEOUT_MS =
   DEFAULT_STAGE_SKIP_THRESHOLD_MS + STAGE_TIMEOUT_GRACE_MS;
 
@@ -727,6 +803,46 @@ export function setupAutoRetryDelayMs(retryNumber: number): number {
   );
 }
 
+export function resolveFlagWithTimeout(
+  flag: Promise<boolean>,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    flag.then(
+      (enabled) => finish(enabled === true),
+      () => finish(false),
+    );
+  });
+}
+
+export function resolveFlagStatusWithTimeout(
+  flag: Promise<boolean | null>,
+  timeoutMs: number,
+): Promise<DepsTimeoutRetryFlagStatus> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (status: DepsTimeoutRetryFlagStatus) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(status);
+    };
+    const timer = setTimeout(() => finish('unreadable'), timeoutMs);
+    flag.then(
+      (enabled) => finish(enabled === true ? 'enabled' : enabled === false ? 'disabled' : 'unreadable'),
+      () => finish('unreadable'),
+    );
+  });
+}
+
 export interface TransientSetupStageFailureInput {
   stageId: StageId;
   message: string | null | undefined;
@@ -774,6 +890,8 @@ export interface SetupStageRecoveryInput {
   stageId: StageId;
   message: string | null | undefined;
   retryCount: number;
+  depsTimeoutRetryEnabled?: boolean;
+  depsTimeoutRetrySuppressed?: boolean;
 }
 
 export function setupStageRecoveryAction(
@@ -782,6 +900,20 @@ export function setupStageRecoveryAction(
   const message =
     input.message?.trim() || 'Stage failed with no detail recorded.';
   if (isHardStageTimeoutMessage(message)) {
+    const nextRetryCount = Math.max(0, Math.floor(input.retryCount)) + 1;
+    if (
+      input.stageId === 'deps' &&
+      input.depsTimeoutRetryEnabled === true &&
+      input.depsTimeoutRetrySuppressed !== true &&
+      nextRetryCount <= stageAutoRetryLimit('deps')
+    ) {
+      return {
+        kind: 'retry',
+        delayMs: setupAutoRetryDelayMs(nextRetryCount),
+        nextRetryCount,
+        message,
+      };
+    }
     return { kind: 'skip', message };
   }
 
@@ -802,6 +934,8 @@ export function setupStageRecoveryAction(
 }
 
 export class StageTimeoutError extends Error {
+  retrySuppressed = false;
+
   constructor(public readonly stageId: StageId, public readonly ms: number) {
     super(`This step took too long (over ${Math.round(ms / 1000)}s) and was skipped.`);
     this.name = 'StageTimeoutError';
@@ -848,6 +982,26 @@ export function withTimeout<T>(
  * subscriber is installed before the timer starts and is always removed when
  * the operation settles or times out.
  */
+function settlesWithin(
+  promise: Promise<unknown>,
+  ms: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), ms);
+    promise.then(
+      () => finish(true),
+      () => finish(true),
+    );
+  });
+}
+
 export function withProgressTimeout<T>(
   promise: Promise<T>,
   ms: number,
@@ -855,6 +1009,8 @@ export function withProgressTimeout<T>(
   subscribeToProgress: (onProgress: () => void) => () => void,
   onTimeoutCancel?: () => void | Promise<void>,
   maxElapsedMs?: number,
+  awaitTimeoutCancel = false,
+  awaitTimeoutOperationMs = 0,
 ): Promise<T> {
   if (!(ms > 0)) return promise;
   return new Promise<T>((resolve, reject) => {
@@ -878,11 +1034,40 @@ export function withProgressTimeout<T>(
       timer = setTimeout(() => {
         if (settled) return;
         settled = true;
-        try {
-          void onTimeoutCancel?.();
-        } finally {
-          clear();
-          reject(onTimeout(reachedMaxElapsed ? maxElapsedMs : ms));
+        const timeoutError = onTimeout(reachedMaxElapsed ? maxElapsedMs : ms);
+        if (awaitTimeoutCancel && onTimeoutCancel) {
+          let cancellation: void | Promise<void>;
+          try {
+            cancellation = onTimeoutCancel();
+          } catch {
+            clear();
+            reject(timeoutError);
+            return;
+          }
+          const finishTimeout = async () => {
+            if (awaitTimeoutOperationMs > 0) {
+              const operationSettled = await settlesWithin(
+                promise,
+                awaitTimeoutOperationMs,
+              );
+              if (
+                !operationSettled &&
+                timeoutError instanceof StageTimeoutError
+              ) {
+                timeoutError.retrySuppressed = true;
+              }
+            }
+            clear();
+            reject(timeoutError);
+          };
+          Promise.resolve(cancellation).then(finishTimeout, finishTimeout);
+        } else {
+          try {
+            void onTimeoutCancel?.();
+          } finally {
+            clear();
+            reject(timeoutError);
+          }
         }
       }, timeoutMs);
     };

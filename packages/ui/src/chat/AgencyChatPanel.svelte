@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { primaryEnterKeyHint } from "@hq/platform";
   /**
    * Mission Control — the Manager ⇄ Liaison conversation for one team, so the
    * operator has the full context behind a pending question, plus a composer to
@@ -192,7 +193,7 @@
     <div class="composer">
       <textarea
         rows="2"
-        placeholder="Message the team directly… (⌘↵ to send)"
+        placeholder={`Message the team directly… (${primaryEnterKeyHint()} to send)`}
         bind:value={draft}
         onkeydown={onKey}
       ></textarea>

@@ -109,34 +109,32 @@ pub use hq_desktop_core::hq_cli_update::{
     report_install_failure_episode, report_install_failure_with_environment,
     report_install_failure_with_final_attempt, report_non_convergent_install,
     report_non_convergent_marker_unpersisted, report_npm_cache_setup_failure,
-    report_registry_serving_lag_marker_unpersisted, report_unreadable_version, resolved_hq_version,
-    should_auto_install, should_report_unreadable_version,
-    should_retry_windows_busy_install_target, suppress_for_dismissal,
-    unattributed_install_stderr_origin, user_prefix_aim_decision, version_from_hq_binary,
-    version_if_hq_cli, windows_busy_cli_version_unchanged, windows_busy_deferral_decision,
-    windows_busy_install_target_retry_delay_for_recovery, windows_busy_install_target_retry_rung,
-    AsyncSingleFlight, DeliveredPrefixShim, ExecutedCopyAim, ExecutedCopyReaim,
-    ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment, InstallExecutor,
-    InstallFailureEpisode, InstallFailureKind, InterpreterRecovery, LaunchCliCheck,
-    LocalVersionProbeDiagnostics, LocalVersionProbeResult, ManagedRepairDisposition,
-    ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction, ManagedShadowRepairOutcome,
-    MissingTargetState, NonConvergenceKind, NonConvergentReport, NpmLatest, NpmLockHolderClass,
-    NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome, NpmToolchainSource, PnpmGlobalEnv,
-    PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily, PostInstallContext,
-    PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind, RestartManagerHolderObservation,
-    SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome, WindowsBusyDeferralDecision,
-    WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome, WindowsBusyRetryOutcome,
-    DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE, NON_CONVERGENT_CONTRACT_KEY,
-    NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY, NPM_INSTALL_CHILD_ENV,
-    PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES, STDERR_ORIGIN_NON_NPM,
-    WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS, WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
+    report_package_use_lease_timeout, report_registry_serving_lag_marker_unpersisted,
+    report_unreadable_version, resolved_hq_version, should_auto_install,
+    should_report_unreadable_version, should_retry_windows_busy_install_target,
+    suppress_for_dismissal, unattributed_install_stderr_origin, user_prefix_aim_decision,
+    version_from_hq_binary, version_if_hq_cli, windows_busy_cli_version_unchanged,
+    windows_busy_deferral_decision, windows_busy_install_target_retry_delay,
+    windows_busy_install_target_retry_rung, AsyncSingleFlight, DeliveredPrefixShim,
+    ExecutedCopyAim, ExecutedCopyReaim, ExecutedCopyReaimGate, HqCliUpdateInfo, InstallEnvironment,
+    InstallExecutor, InstallFailureEpisode, InstallFailureKind, InterpreterRecovery,
+    LaunchCliCheck, LocalVersionProbeDiagnostics, LocalVersionProbeResult,
+    ManagedRepairDisposition, ManagedRetryOutcome, ManagedRetryStart, ManagedShadowRepairAction,
+    ManagedShadowRepairOutcome, MissingTargetState, NonConvergenceKind, NonConvergentReport,
+    NpmLatest, NpmLockHolderClass, NpmLockHolderDiagnostic, NpmLockHolderQueryOutcome,
+    NpmToolchainSource, PnpmGlobalEnv, PnpmHomeSource, PnpmRunDiagnostics, PnpmStoreFamily,
+    PostInstallContext, PostInstallCoreEffects, PostInstallOutcome, RequestedSpecKind,
+    RestartManagerHolderObservation, SettingsPathTelemetry, UserPrefixAim, VersionProbeOutcome,
+    WindowsBusyDeferralDecision, WindowsBusyDeferralMarker, WindowsBusyDeferralOutcome,
+    WindowsBusyRetryOutcome, DISMISSED_VERSION_KEY, HQ_CLI_MIN_VERSION, HQ_CLI_PACKAGE,
+    NON_CONVERGENT_CONTRACT_KEY, NON_CONVERGENT_ERROR_PREFIX, NON_CONVERGENT_VERSION_KEY,
+    NPM_INSTALL_CHILD_ENV, PINNED_MARKER_CONTRACT, REGISTRY_SERVING_LAG_RECURRENCE_GAP_MINUTES,
+    STDERR_ORIGIN_NON_NPM, WINDOWS_BUSY_INSTALL_TARGET_MAX_DEFERRALS,
+    WINDOWS_BUSY_INSTALL_TARGET_MAX_RETRIES,
 };
 
-// The settings-PATH repair (HQ-DESKTOP-46) runs only on unix — Windows PATH is
-// registry-managed, so there is no `.claude` settings file to rewrite. These
-// symbols are used exclusively by `settings_path_repair_and_refinalize`, so they
-// are imported under the same cfg to avoid unused-import warnings on Windows.
-#[cfg(not(windows))]
+// The settings-PATH repair also handles Windows: Claude's winning HQ settings
+// file can override the registry PATH and shadow the managed `.cmd` shim.
 use hq_desktop_core::hq_cli_update::{
     managed_bin_in_settings_path, settings_path_repair_gate, settings_path_repair_outcome,
     SettingsPathRepairGate,
@@ -588,8 +586,11 @@ async fn run_npm_install(
 }
 
 const MAX_NPM_INSTALL_ATTEMPTS: usize = 4;
-pub(crate) const WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG: &str =
-    "desktop.windows-hq-cli-contention-recovery-v1";
+const CLI_PACKAGE_USE_LEASE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn remaining_cli_package_use_lease_budget(elapsed: Duration) -> Duration {
+    CLI_PACKAGE_USE_LEASE_TIMEOUT.saturating_sub(elapsed)
+}
 
 #[derive(Debug)]
 struct NpmInstallAttempt {
@@ -620,6 +621,7 @@ struct NpmInstallRun {
     windows_busy_retry_attempts: Option<u8>,
     windows_busy_retry_outcome: WindowsBusyRetryOutcome,
     lock_holder_diagnostic: Option<NpmLockHolderDiagnostic>,
+    previous_install_restored: bool,
 }
 
 async fn read_hq_cli_package_holders(prefix: Option<&str>) -> RestartManagerHolderObservation {
@@ -676,6 +678,40 @@ async fn read_hq_cli_package_holder_roots(
             )
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+async fn read_hq_cli_package_busy_holders(
+    prefix: &str,
+    npm_detail: &str,
+) -> RestartManagerHolderObservation {
+    let prefix = prefix.to_string();
+    let npm_detail = npm_detail.to_string();
+    match tauri::async_runtime::spawn_blocking(move || {
+        crate::commands::process::query_hq_cli_package_busy_holders(&prefix, &npm_detail)
+    })
+    .await
+    {
+        Ok(observation) => observation,
+        Err(_) => {
+            log(
+                "hq-cli-update",
+                "Restart Manager rename-target query worker failed; holder class is unavailable",
+            );
+            RestartManagerHolderObservation::from_results(
+                &[],
+                NpmLockHolderQueryOutcome::Unavailable,
+            )
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn read_hq_cli_package_busy_holders(
+    prefix: &str,
+    _npm_detail: &str,
+) -> RestartManagerHolderObservation {
+    read_hq_cli_package_holders(Some(prefix)).await
 }
 
 fn record_deferred_user_cli_breadcrumb(diagnostic: NpmLockHolderDiagnostic, attempts: u8) {
@@ -1047,7 +1083,6 @@ async fn run_npm_install_local_recovery_ladder(
     // Never terminate or signal the holder.
     if !output.status.success() {
         let mut retries_started = 0usize;
-        let mut extended_recovery_enabled = None;
         loop {
             let detail = npm_output_detail(&output);
             let is_locked_target =
@@ -1056,7 +1091,11 @@ async fn run_npm_install_local_recovery_ladder(
                 break;
             }
 
-            let observation = read_hq_cli_package_holders(prefix).await;
+            let observation = if let Some(prefix) = prefix {
+                read_hq_cli_package_busy_holders(prefix, &detail).await
+            } else {
+                read_hq_cli_package_holders(prefix).await
+            };
             *lock_holder_diagnostic = Some(observation.diagnostic());
             if observation.class == NpmLockHolderClass::UserTerminalHqCli {
                 *windows_busy_retry_attempts = Some(retries_started as u8);
@@ -1115,20 +1154,7 @@ async fn run_npm_install_local_recovery_ladder(
                 };
                 break;
             }
-            let extended = match extended_recovery_enabled {
-                Some(enabled) => enabled,
-                None => {
-                    let enabled = crate::commands::hq_pro::feature_flag_enabled(
-                        WINDOWS_HQ_CLI_CONTENTION_RECOVERY_FLAG,
-                    )
-                    .await;
-                    extended_recovery_enabled = Some(enabled);
-                    enabled
-                }
-            };
-            let Some(delay) =
-                windows_busy_install_target_retry_delay_for_recovery(retry_number, extended)
-            else {
+            let Some(delay) = windows_busy_install_target_retry_delay(retry_number) else {
                 *windows_busy_retry_attempts = Some(retries_started as u8);
                 *windows_busy_retry_outcome = if retries_started > 0 {
                     WindowsBusyRetryOutcome::Failed
@@ -1177,6 +1203,341 @@ async fn run_npm_install_local_recovery_ladder(
     Ok(output)
 }
 
+struct HqCliInstallBackup {
+    targets: Vec<PathBuf>,
+    moved: Vec<(PathBuf, PathBuf)>,
+    active: bool,
+}
+
+fn hq_cli_install_targets(prefix: &str) -> Vec<PathBuf> {
+    let root = Path::new(prefix);
+    let package = npm_global_package_scope_dir_for(
+        prefix,
+        cfg!(target_os = "windows"),
+        "@indigoai-us/hq-cli",
+    )
+    .join("hq-cli");
+    let bin = if cfg!(target_os = "windows") {
+        root.to_path_buf()
+    } else {
+        root.join("bin")
+    };
+    let mut targets = vec![package];
+    for shim in [
+        "hq",
+        "hq.cmd",
+        "hq.ps1",
+        "hq-auth-refresh",
+        "hq-auth-refresh.cmd",
+        "hq-auth-refresh.ps1",
+    ] {
+        targets.push(bin.join(shim));
+    }
+    targets
+}
+
+fn path_entry_exists(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn remove_install_path(path: &Path) -> Result<(), String> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect {}: {error}", path.display())),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    } else {
+        std::fs::remove_file(path).map_err(|error| format!("remove {}: {error}", path.display()))
+    }
+}
+
+fn copy_install_path(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(source)
+        .map_err(|error| format!("inspect {}: {error}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)
+            .map_err(|error| format!("read link {}: {error}", source.display()))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)
+            .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+        #[cfg(windows)]
+        {
+            let is_dir = std::fs::metadata(source)
+                .map(|target| target.is_dir())
+                .unwrap_or(false);
+            if is_dir {
+                std::os::windows::fs::symlink_dir(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            } else {
+                std::os::windows::fs::symlink_file(target, destination)
+                    .map_err(|error| format!("copy link {}: {error}", source.display()))?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        return Err(format!(
+            "cannot preserve link {} on this platform",
+            source.display()
+        ));
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir(destination)
+            .map_err(|error| format!("create backup {}: {error}", destination.display()))?;
+        for entry in std::fs::read_dir(source)
+            .map_err(|error| format!("list install directory {}: {error}", source.display()))?
+        {
+            let entry = entry
+                .map_err(|error| format!("list install directory {}: {error}", source.display()))?;
+            copy_install_path(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(destination, metadata.permissions()).map_err(|error| {
+            format!("set backup permissions {}: {error}", destination.display())
+        })?;
+        return Ok(());
+    }
+    std::fs::copy(source, destination)
+        .map(|_| ())
+        .map_err(|error| format!("copy install file {}: {error}", source.display()))
+}
+
+fn preserve_hq_cli_install(prefix: &str) -> Result<HqCliInstallBackup, String> {
+    let targets = hq_cli_install_targets(prefix);
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for target in &targets {
+        match std::fs::symlink_metadata(target) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect existing install {}: {error}",
+                    target.display()
+                ))
+            }
+        }
+        let parent = target
+            .parent()
+            .ok_or_else(|| format!("install path has no parent: {}", target.display()))?;
+        let backup = parent.join(format!("hq-cli-install-backup-{}", ulid::Ulid::new()));
+        if let Err(error) = copy_install_path(target, &backup) {
+            let _ = remove_install_path(&backup);
+            for (_, saved) in moved.iter().rev() {
+                let _ = remove_install_path(saved);
+            }
+            return Err(format!(
+                "preserve existing install {}: {error}",
+                target.display()
+            ));
+        }
+        moved.push((target.clone(), backup));
+    }
+    Ok(HqCliInstallBackup {
+        targets,
+        moved,
+        active: true,
+    })
+}
+
+impl HqCliInstallBackup {
+    fn finish(&mut self, install_succeeded: bool) -> Result<bool, String> {
+        let had_previous_install = self
+            .moved
+            .iter()
+            .any(|(target, _)| target.ends_with(Path::new("hq-cli")));
+        if !install_succeeded {
+            self.restore()?;
+            return Ok(had_previous_install);
+        }
+
+        for (target, saved) in &self.moved {
+            if !path_entry_exists(target) {
+                // npm can exit 0 without recreating a shim/package in a reachable target.
+                // Keep the old artifact so the caller's convergence check can still use it.
+                if let Err(error) = std::fs::rename(saved, target) {
+                    log(
+                        "hq-cli-update",
+                        &format!(
+                            "could not restore {} after incomplete install: {error}",
+                            target.display()
+                        ),
+                    );
+                }
+            } else if let Err(error) = remove_install_path(saved) {
+                log(
+                    "hq-cli-update",
+                    &format!("could not remove install backup: {error}"),
+                );
+            }
+        }
+        self.active = false;
+        Ok(false)
+    }
+
+    fn restore(&mut self) -> Result<(), String> {
+        // Targets without backups were absent before install, so remove any
+        // partially installed artifacts. Backed-up targets are handled below:
+        // if a prior restore consumed their backup, preserve the restored target.
+        for target in &self.targets {
+            let had_previous_entry = self
+                .moved
+                .iter()
+                .any(|(moved_target, _)| moved_target == target);
+            if !had_previous_entry {
+                remove_install_path(target)?;
+            }
+        }
+        for (target, saved) in &self.moved {
+            if path_entry_exists(saved) {
+                remove_install_path(target)?;
+                std::fs::rename(saved, target).map_err(|error| {
+                    format!("restore previous install {}: {error}", target.display())
+                })?;
+            }
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for HqCliInstallBackup {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.restore() {
+                log(
+                    "hq-cli-update",
+                    &format!("failed to restore previous hq-cli install: {error}"),
+                );
+            }
+        }
+    }
+}
+
+fn npm_install_failure_message(
+    raw_detail: &str,
+    user_detail: &str,
+    previous_install_restored: bool,
+) -> String {
+    let cause = npm_lifecycle_cause(raw_detail);
+    let step = match cause {
+        "toolchain-missing" | "prebuild-unavailable" => "native module build",
+        "postinstall-script" => "package lifecycle script",
+        _ if raw_detail.to_ascii_lowercase().contains("gyp err!") => "native module build",
+        _ => "npm install",
+    };
+    let restored = if previous_install_restored {
+        " The previous working hq-cli was restored."
+    } else {
+        ""
+    };
+    format!("HQ CLI {step} failed.{restored} {user_detail}")
+}
+
+async fn resolve_npm_global_prefix_for_lease(npm: &str, path: &str) -> Result<String, String> {
+    let mut command = paths::spawn_command(npm, &[]);
+    command.args(["prefix", "-g"]).env("PATH", path);
+    let output = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::process::Command::from(command)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "Timed out resolving npm's global prefix; npm was not started".to_string())?
+    .map_err(|error| {
+        format!(
+            "Could not resolve npm's global prefix ({:?}); npm was not started",
+            error.kind()
+        )
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "npm could not resolve its global prefix (exit {:?}); npm was not started",
+            output.status.code()
+        ));
+    }
+    let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if prefix.is_empty() || !Path::new(&prefix).is_absolute() {
+        return Err("npm returned an invalid global prefix; npm was not started".to_string());
+    }
+    Ok(prefix)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum HqCliUpdateFailure {
+    PackageUseLeaseTimeout { display_message: Option<String> },
+    Other(String),
+}
+
+impl std::fmt::Display for HqCliUpdateFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PackageUseLeaseTimeout {
+                display_message: Some(message),
+            } => formatter.write_str(message),
+            Self::PackageUseLeaseTimeout {
+                display_message: None,
+            } => formatter
+                .write_str(hq_desktop_core::package_use_lease::PACKAGE_USE_LEASE_TIMEOUT_ERROR),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<String> for HqCliUpdateFailure {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+async fn acquire_cli_package_update_lease(
+    npm: &str,
+    path: &str,
+    prefix: Option<&str>,
+    retry_attempt: u8,
+) -> Result<
+    (
+        hq_desktop_core::package_use_lease::PackageUseUpdateGuard,
+        crate::commands::process::UpdateQuiescenceGuard,
+    ),
+    HqCliUpdateFailure,
+> {
+    let started = tokio::time::Instant::now();
+    let resolved_prefix = match prefix {
+        Some(prefix) => prefix.to_string(),
+        None => resolve_npm_global_prefix_for_lease(npm, path).await?,
+    };
+    let request = hq_desktop_core::package_use_lease::PackageUseUpdateRequest::begin(Path::new(
+        &resolved_prefix,
+    ))?;
+
+    // The pending lock prevents fresh CLI entry and asks resident daemons to
+    // hand off. Close this app's child admission as well, so no controlled CLI
+    // work can start while the updater waits for the package's shared lease.
+    #[cfg(target_os = "windows")]
+    let process_guard = crate::commands::process::wait_for_cli_install_quiescence(
+        remaining_cli_package_use_lease_budget(started.elapsed()),
+    )
+    .await?;
+    #[cfg(not(target_os = "windows"))]
+    let process_guard = crate::commands::process::close_cli_process_admission_for_update()?;
+
+    let remaining = remaining_cli_package_use_lease_budget(started.elapsed());
+    let package_guard = match request.wait_with_summary(remaining).await {
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Timeout(summary)) => {
+            report_package_use_lease_timeout(&summary, retry_attempt);
+            return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+                display_message: None,
+            });
+        }
+        Ok(guard) => guard,
+        Err(hq_desktop_core::package_use_lease::PackageUseLeaseWaitError::Other(error)) => {
+            return Err(error.into());
+        }
+    };
+    Ok((package_guard, process_guard))
+}
+
 async fn run_npm_install_with_retries(
     npm: &str,
     path: &str,
@@ -1184,6 +1545,22 @@ async fn run_npm_install_with_retries(
     prefix: Option<&str>,
     base_args: Vec<String>,
 ) -> Result<NpmInstallRun, String> {
+    run_npm_install_with_retry_attempt(npm, path, npm_cache, prefix, base_args, 0)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn run_npm_install_with_retry_attempt(
+    npm: &str,
+    path: &str,
+    npm_cache: &Path,
+    prefix: Option<&str>,
+    base_args: Vec<String>,
+    retry_attempt: u8,
+) -> Result<NpmInstallRun, HqCliUpdateFailure> {
+    let (_package_use_lease, _process_admission) =
+        acquire_cli_package_update_lease(npm, path, prefix, retry_attempt).await?;
+    let mut backup = prefix.map(preserve_hq_cli_install).transpose()?;
     let mut ledger = Vec::with_capacity(MAX_NPM_INSTALL_ATTEMPTS);
     let mut missing_target_state = MissingTargetState::Unknown;
     let mut windows_busy_retry_attempts = None;
@@ -1287,6 +1664,10 @@ async fn run_npm_install_with_retries(
         break;
     }
 
+    let previous_install_restored = match backup.as_mut() {
+        Some(backup) => backup.finish(output.status.success())?,
+        _ => false,
+    };
     log_npm_install_attempt_ledger(&ledger);
     let final_attempt_forced = ledger.last().is_some_and(|attempt| attempt.forced);
     let rungs = ledger.iter().map(|attempt| attempt.rung).collect();
@@ -1298,6 +1679,7 @@ async fn run_npm_install_with_retries(
         windows_busy_retry_attempts,
         windows_busy_retry_outcome,
         lock_holder_diagnostic,
+        previous_install_restored,
     })
 }
 
@@ -1583,6 +1965,7 @@ async fn probe_install_environment(
         // remedy's diagnostic (HQ-DESKTOP-5K) when that remedy ran.
         missing_target_state: MissingTargetState::Unknown,
         target_version: None,
+        running_cli_version: None,
         requested_spec_kind: RequestedSpecKind::Unknown,
         registry_serving_lag_recurred: false,
     }
@@ -2331,20 +2714,53 @@ pub(crate) fn acquire_cli_install_lock_waiting(
     }
 }
 
-static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateInfo>> = OnceLock::new();
+type HqCliUpdateResult = Result<HqCliUpdateInfo, HqCliUpdateFailure>;
 
-fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateInfo> {
+static HQ_CLI_INSTALL_FLIGHT: OnceLock<AsyncSingleFlight<HqCliUpdateResult>> = OnceLock::new();
+
+fn hq_cli_install_flight() -> &'static AsyncSingleFlight<HqCliUpdateResult> {
     HQ_CLI_INSTALL_FLIGHT.get_or_init(AsyncSingleFlight::new)
 }
 
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
-    hq_cli_install_flight()
-        .run(move || install_hq_cli_update_once(app))
+    install_hq_cli_update_with_retry_attempt(app, 0)
         .await
+        .map_err(|error| error.to_string())
 }
 
-async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
+async fn install_hq_cli_update_with_retry_attempt(
+    app: AppHandle,
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
+    hq_cli_install_flight()
+        .run(move || async move { Ok(install_hq_cli_update_once(app, retry_attempt).await) })
+        .await
+        .map_err(HqCliUpdateFailure::Other)?
+}
+
+/// Resolve the executable again at the point an npm failure is reported. The
+/// pre-install `hq` value can be the bare unresolved sentinel or a copy that a
+/// successful install has since replaced.
+fn running_cli_version_after_failure_with(
+    resolve_hq: impl FnOnce() -> String,
+    read_version: impl FnOnce(&str) -> Option<String>,
+) -> Option<String> {
+    let resolved_hq = resolve_hq();
+    read_version(&resolved_hq)
+}
+
+fn running_cli_version_after_failure() -> Option<String> {
+    running_cli_version_after_failure_with(
+        || paths::resolve_bin("hq"),
+        |resolved_hq| resolved_hq_version(resolved_hq),
+    )
+}
+
+async fn install_hq_cli_update_once(
+    app: AppHandle,
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     // Held for the WHOLE install — every executor path below (npm, pnpm, bun,
     // and the managed-toolchain retry) mutates the same global CLI layout, so
     // the guard must outlive them all. Drop (including panic unwind) releases.
@@ -2442,10 +2858,14 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         }
         return match executor {
             InstallExecutor::Pnpm => {
-                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_pnpm(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Bun => {
-                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked).await
+                install_hq_cli_update_via_bun(&app, &hq, &latest, already_blocked)
+                    .await
+                    .map_err(Into::into)
             }
             InstallExecutor::Npm => unreachable!("npm handled below"),
         };
@@ -2556,11 +2976,6 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             .flatten()
     };
 
-    #[cfg(target_os = "windows")]
-    let _cli_process_quiescence = crate::commands::process::wait_for_cli_install_quiescence(
-        CLI_INSTALL_PROCESS_QUIESCE_TIMEOUT,
-    )
-    .await?;
     let initial_holder_observation = read_hq_cli_package_holders(prefix.as_deref()).await;
     if initial_holder_observation.class == NpmLockHolderClass::UserTerminalHqCli {
         record_deferred_user_cli_breadcrumb(initial_holder_observation.diagnostic(), 0);
@@ -2580,8 +2995,15 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         )
         .await?;
     }
-    let install_run =
-        run_npm_install_with_retries(&npm, &path, &npm_cache, prefix.as_deref(), base_args).await?;
+    let install_run = run_npm_install_with_retry_attempt(
+        &npm,
+        &path,
+        &npm_cache,
+        prefix.as_deref(),
+        base_args,
+        retry_attempt,
+    )
+    .await?;
 
     if install_run.windows_busy_retry_outcome == WindowsBusyRetryOutcome::DeferredUserCli {
         record_deferred_user_cli_breadcrumb(
@@ -2610,7 +3032,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             prefix.as_deref(),
             install_run.windows_busy_retry_attempts,
             install_run.windows_busy_retry_outcome,
-            install_run.lock_holder_diagnostic,
+            install_run.lock_holder_diagnostic.clone(),
         )
         .await
         {
@@ -2667,6 +3089,17 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // built with `Some(latest)`, a pinned spec — never the `@latest` dist-tag.
         // Tag-only: never a fingerprint/signature/episode-key component.
         install_env = install_env.with_pinned_target_version(&latest);
+        // Resolve the CLI version again after npm failed so the event records the
+        // version present at failure time, rather than the requested target or the
+        // earlier pre-install snapshot. The core reporter bounds this to SemVer or
+        // `unknown` before it reaches Sentry.
+        let running_version = tauri::async_runtime::spawn_blocking(|| {
+            running_cli_version_after_failure()
+        })
+        .await
+        .ok()
+        .flatten();
+        install_env = install_env.with_running_cli_version(running_version.as_deref());
         let failing_node_abi = install_env
             .node_abi
             .as_deref()
@@ -2715,6 +3148,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         // disk-space/network lifecycle cause is refused); every other kind/cause keeps
         // today's behaviour. HQ blames the user's toolchain (the copy below) only AFTER
         // its own repair was attempted and could not converge.
+        let mut managed_retry_lease_timed_out = false;
         if install_failure_earns_managed_retry(
             failure_kind,
             install_env.toolchain_source,
@@ -2731,6 +3165,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 already_blocked,
                 ordinary_user_aim.as_ref(),
                 failing_node_abi,
+                retry_attempt,
             )
             .await
             {
@@ -2744,13 +3179,16 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
                 // reported exactly once — with managed provenance for a failure,
                 // or as non-convergence for a shadowed exit-0 — so surface its
                 // detail without a second capture.
-                ManagedRetryAttempt::RanAndReported(detail) => return Err(detail),
+                ManagedRetryAttempt::RanAndReported(detail) => return Err(detail.into()),
+                ManagedRetryAttempt::PackageUseLeaseTimeout => {
+                    managed_retry_lease_timed_out = true;
+                }
                 // HQ can identify the user's hq copy but cannot safely build into
                 // it with the managed runtime. Do not install a shadow copy and
                 // quietly take over PATH; the returned message gives the one-time
                 // action that updates the command the user actually runs.
                 ManagedRetryAttempt::CannotSafelyTargetExecutedUserCopy => {
-                    return Err(managed_retry_user_copy_detail());
+                    return Err(managed_retry_user_copy_detail().into());
                 }
                 // The retry did not run. Record WHICH branch declined on the
                 // user-path event so the next occurrence is self-diagnosing (the
@@ -2776,6 +3214,11 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             install_run.final_attempt_forced,
             &install_env,
         );
+        let detail = npm_install_failure_message(
+            &raw_detail,
+            &detail,
+            install_run.previous_install_restored,
+        );
         log(
             "hq-cli-update",
             &format!(
@@ -2799,7 +3242,12 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
             &latest,
             &reported_episode_keys,
         ));
-        return Err(detail);
+        if managed_retry_lease_timed_out {
+            return Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+                display_message: Some(detail),
+            });
+        }
+        return Err(HqCliUpdateFailure::Other(detail));
     }
 
     // npm exit 0 only proves npm wrote a package somewhere; the shared finalize
@@ -2814,6 +3262,7 @@ async fn install_hq_cli_update_once(app: AppHandle) -> Result<HqCliUpdateInfo, S
         &latest,
         prefix.as_deref(),
         already_blocked,
+        retry_attempt,
     )
     .await
 }
@@ -3031,7 +3480,8 @@ async fn finalize_convergence(
     latest: &str,
     prefix: Option<&str>,
     already_blocked: bool,
-) -> Result<HqCliUpdateInfo, String> {
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     let post_install_hq = paths::resolve_bin("hq");
     let resolved = {
         let hq = post_install_hq.clone();
@@ -3120,7 +3570,8 @@ async fn finalize_convergence(
                 &managed_roots,
                 &post_install_hq,
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3130,9 +3581,9 @@ async fn finalize_convergence(
     // prefix (present shim). Rewrite that settings file's PATH managed-first and
     // re-resolve, instead of wedging auto-update for a shape HQ can actually
     // repair — HQ owns the one input it never fixed: the winning file's env.PATH.
-    // Unix-only: Windows PATH is registry-managed, so there is no settings file
-    // to rewrite (configure_claude_settings_path is a no-op there).
-    #[cfg(not(windows))]
+    // On every platform, the writer updates only the winning settings file under
+    // this HQ root. Windows composes its managed `node` and `npm-prefix` dirs
+    // with the native `;` delimiter so the fresh resolver finds the `.cmd` shim.
     if outcome.non_convergence_kind == Some(NonConvergenceKind::ForeignManaged)
         && executed_copy_aim == ExecutedCopyAim::Undrivable
         && delivered_prefix_shim == DeliveredPrefixShim::Present
@@ -3151,7 +3602,8 @@ async fn finalize_convergence(
                 delivered_version.as_deref(),
                 resolved.as_deref(),
             )
-            .await;
+            .await
+            .map_err(Into::into);
         }
     }
 
@@ -3182,6 +3634,7 @@ async fn finalize_convergence(
                     already_blocked,
                     aim,
                     outcome,
+                    retry_attempt,
                 )
                 .await;
             }
@@ -3200,7 +3653,7 @@ async fn finalize_convergence(
     }
 
     log("hq-cli-update", &outcome.log_line);
-    let result = apply_post_install_with_app(app, &outcome);
+    let result = apply_post_install_with_app(app, &outcome).map_err(Into::into);
     // Persist the non-blocking episode key AFTER the capture (its OWN menubar key,
     // never the durable blocking marker), so a persistent installer-unaimed or
     // resolution-shortfall shape reports once per `latest` instead of on every
@@ -3244,7 +3697,8 @@ async fn executed_copy_reaim_and_refinalize(
     already_blocked: bool,
     aim: UserPrefixAim,
     mut base_outcome: PostInstallOutcome,
-) -> Result<HqCliUpdateInfo, String> {
+    retry_attempt: u8,
+) -> Result<HqCliUpdateInfo, HqCliUpdateFailure> {
     let base_path = paths::child_path();
     let (args, path) = executed_copy_reaim_plan(&aim, latest, &base_path);
     log(
@@ -3255,6 +3709,7 @@ async fn executed_copy_reaim_and_refinalize(
         ),
     );
 
+    let mut lease_timed_out = false;
     let reaim = match app_npm_cache(app) {
         Err((category, error)) => {
             report_npm_cache_setup_failure(category);
@@ -3268,10 +3723,21 @@ async fn executed_copy_reaim_and_refinalize(
             ExecutedCopyReaim::PreparationFailed
         }
         Ok(npm_cache) => {
-            match run_npm_install_with_retries(&aim.npm, &path, &npm_cache, Some(&aim.prefix), args)
-                .await
+            match run_npm_install_with_retry_attempt(
+                &aim.npm,
+                &path,
+                &npm_cache,
+                Some(&aim.prefix),
+                args,
+                retry_attempt,
+            )
+            .await
             {
-                Err(error) => {
+                Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+                    lease_timed_out = true;
+                    ExecutedCopyReaim::SpawnFailed
+                }
+                Err(HqCliUpdateFailure::Other(error)) => {
                     log(
                         "hq-cli-update",
                         &format!("re-aim npm install could not run: {}", redact_home(&error)),
@@ -3305,6 +3771,7 @@ async fn executed_copy_reaim_and_refinalize(
                             latest,
                             Some(&aim.prefix),
                             already_blocked,
+                            retry_attempt,
                         ))
                         .await;
                     }
@@ -3347,7 +3814,13 @@ async fn executed_copy_reaim_and_refinalize(
             );
         }
     }
-    result
+    match result {
+        Ok(info) => Ok(info),
+        Err(message) if lease_timed_out => Err(HqCliUpdateFailure::PackageUseLeaseTimeout {
+            display_message: Some(message),
+        }),
+        Err(message) => Err(message.into()),
+    }
 }
 
 /// Map the removal action plus the post-removal convergence into the decision's
@@ -3430,6 +3903,13 @@ async fn repair_managed_shadow_and_refinalize(
 
     let repair_outcome =
         managed_shadow_repair_outcome(action, install_converged(resolved.as_deref(), latest));
+    let executed_copy_aim = executed_copy_aim_for(
+        &post_install_hq,
+        Some(prefix),
+        installer_npm,
+        managed_roots,
+        paths::home_dir().as_deref(),
+    );
 
     let outcome = decide_post_install(
         &PostInstallContext::npm(
@@ -3444,7 +3924,12 @@ async fn repair_managed_shadow_and_refinalize(
             delivered_version.as_deref(),
         )
         .with_managed_roots(managed_roots)
-        .with_managed_shadow_repair(repair_outcome),
+        .with_managed_shadow_repair(repair_outcome)
+        .with_executed_copy_aim(executed_copy_aim)
+        .with_resolution_telemetry(
+            paths::resolution_source_of_bin(&post_install_hq),
+            delivered_prefix_shim_for(Some(prefix), delivered_version.as_deref()),
+        ),
     );
     log("hq-cli-update", &outcome.log_line);
     apply_post_install_with_app(app, &outcome)
@@ -3461,7 +3946,6 @@ async fn repair_managed_shadow_and_refinalize(
 /// function owns the staleness gate, the rewrite, and the re-decide.
 /// Filesystem-only and non-fatal — a write failure never errors the install
 /// command, it just downgrades the outcome.
-#[cfg(not(windows))]
 #[allow(clippy::too_many_arguments)]
 async fn settings_path_repair_and_refinalize(
     app: &AppHandle,
@@ -3484,13 +3968,27 @@ async fn settings_path_repair_and_refinalize(
     );
     let hq_root = paths::resolved_hq_folder();
     let wrote = if gate == SettingsPathRepairGate::Attempt {
-        if let Some(home) = paths::home_dir() {
+        let home = paths::home_dir();
+        let managed_roots_available = !paths::managed_toolchain_roots().is_empty();
+        if paths::settings_path_repair_environment_available(
+            cfg!(windows),
+            home.is_some(),
+            hq_root.is_dir(),
+            managed_roots_available,
+        ) {
+            // Windows' writer ignores home and login_path. Supply an empty
+            // placeholder when that platform has no home/profile variables.
+            let home = home.unwrap_or_default();
             let hq_root = hq_root.clone();
+            #[cfg(not(windows))]
+            let login_path = crate::commands::install_deps::shell_login_path().to_string();
+            #[cfg(windows)]
+            let login_path = String::new();
             let result = tauri::async_runtime::spawn_blocking(move || {
                 crate::commands::install_deps::write_managed_toolchain_settings_path(
                     &hq_root,
                     &home,
-                    crate::commands::install_deps::shell_login_path(),
+                    &login_path,
                 )
             })
             .await
@@ -3588,6 +4086,7 @@ async fn settings_path_repair_and_refinalize(
             &paths::settings_path_dirs_in(&hq_root),
             &managed_bin_dir,
         ),
+        ..SettingsPathTelemetry::default()
     };
 
     let outcome = decide_post_install(
@@ -4048,6 +4547,8 @@ enum ManagedRetryAttempt {
     /// provenance-aware wording that never re-blames the user's runtime. The caller
     /// surfaces this detail without a second capture.
     RanAndReported(String),
+    /// The managed retry could not acquire the package lease.
+    PackageUseLeaseTimeout,
     /// The resolved user-owned CLI has a different or unreadable Node ABI, so
     /// HQ refuses to install a managed-runtime build into it or silently route
     /// around it with a second copy. The caller shows a precise one-time action.
@@ -4092,6 +4593,7 @@ async fn managed_toolchain_retry(
     already_blocked: bool,
     executed_user_aim: Option<&UserPrefixAim>,
     executed_node_abi: Option<u32>,
+    lease_retry_attempt: u8,
 ) -> ManagedRetryAttempt {
     // A known user-owned target with an unknown or different Node ABI cannot be
     // fixed by installing HQ's managed-runtime build elsewhere: that leaves the
@@ -4175,17 +4677,21 @@ async fn managed_toolchain_retry(
     // targets. `retry_prefix` is either HQ's managed prefix or the pre-validated,
     // matching-ABI user prefix above; no raw path is invented here.
     let retry_args = install_argv(Some(retry_prefix.as_str()), Some(latest));
-    let retry_run = match run_npm_install_with_retries(
+    let retry_run = match run_npm_install_with_retry_attempt(
         &managed_npm,
         &retry_path,
         npm_cache,
         Some(retry_prefix.as_str()),
         retry_args,
+        lease_retry_attempt,
     )
     .await
     {
         Ok(run) => run,
-        Err(e) => {
+        Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+            return ManagedRetryAttempt::PackageUseLeaseTimeout;
+        }
+        Err(HqCliUpdateFailure::Other(e)) => {
             log(
                 "hq-cli-update",
                 &format!("managed-toolchain retry could not spawn npm: {e}"),
@@ -4271,6 +4777,13 @@ async fn managed_toolchain_retry(
     // (HQ-DESKTOP-5Q): the retry installs the SAME resolved `latest`, pinned. Tag
     // only, never a grouping component.
     install_env = install_env.with_pinned_target_version(latest);
+    // This failed managed attempt may have replaced the CLI selected by PATH.
+    // Re-resolve after failure so the report describes the CLI now present.
+    let running_version = tauri::async_runtime::spawn_blocking(running_cli_version_after_failure)
+        .await
+        .ok()
+        .flatten();
+    install_env = install_env.with_running_cli_version(running_version.as_deref());
     let reported_episode_keys = install_failure_episode_markers();
     persist_reported_episode(report_install_failure_episode(
         retry_run.output.status.code(),
@@ -4445,6 +4958,9 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
             );
             LaunchCliCheck::Scheduled
         });
+        let mut lease_retries_scheduled = 0;
+        let mut first_scheduled_delay = INITIAL_DELAY;
+        let mut retry_floor_repair = false;
         if let LaunchCliCheck::RepairNow { local } = launch {
             log(
                 "hq-cli-update",
@@ -4455,15 +4971,37 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
                     INITIAL_DELAY.as_secs()
                 ),
             );
-            run_check_cycle(&handle, /* floor_repair */ true).await;
+            if run_check_cycle(&handle, /* floor_repair */ true, 0).await {
+                if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
+                    hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
+                    lease_retries_scheduled,
+                ) {
+                    lease_retries_scheduled += 1;
+                    first_scheduled_delay = delay;
+                    retry_floor_repair = true;
+                }
+            }
         }
-        tokio::time::sleep(INITIAL_DELAY).await;
+        tokio::time::sleep(first_scheduled_delay).await;
         loop {
             // hq daemon's updater keeps the CLI current when it hosts
             // background services; two installers would race on one prefix.
             // The floor repair above still runs.
             if !crate::commands::hq_daemon_host::daemon_mode_active() {
-                run_check_cycle(&handle, /* floor_repair */ false).await;
+                let lease_timed_out =
+                    run_check_cycle(&handle, retry_floor_repair, lease_retries_scheduled).await;
+                if lease_timed_out {
+                    if let Some(delay) = hq_desktop_core::hq_cli_update::auto_update_retry_delay(
+                        hq_desktop_core::hq_cli_update::AutoUpdateFailureKind::PackageUseLeaseTimeout,
+                        lease_retries_scheduled,
+                    ) {
+                        lease_retries_scheduled += 1;
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                }
+                lease_retries_scheduled = 0;
+                retry_floor_repair = false;
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
@@ -4474,7 +5012,8 @@ pub fn setup_hq_cli_update_checker(app: &AppHandle) {
 /// the launch-time pass taken because the installed CLI read below
 /// [`HQ_CLI_MIN_VERSION`]; it is the only pass allowed to install past the
 /// user's `autoUpdate` opt-out (see [`auto_install_allowed`]).
-async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
+async fn run_check_cycle(handle: &AppHandle, floor_repair: bool, lease_retry_attempt: u8) -> bool {
+    let mut lease_timed_out = false;
     match check_once(handle).await {
         Ok(Some(info)) => {
             // Gate on the master `autoUpdate` switch (default ON). The
@@ -4496,7 +5035,12 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
                 }
                 if should_auto_install(&info.latest, non_convergent_cli_version().as_deref()) {
                     log("hq-cli-update", "auto-update enabled — installing");
-                    match install_hq_cli_update(handle.clone()).await {
+                    match install_hq_cli_update_with_retry_attempt(
+                        handle.clone(),
+                        lease_retry_attempt,
+                    )
+                    .await
+                    {
                         Ok(info) if info.local.as_deref() == Some(info.latest.as_str()) => {
                             log("hq-cli-update", "auto-update succeeded")
                         }
@@ -4504,7 +5048,19 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
                             "hq-cli-update",
                             "auto-update did not converge; the scheduled check will retry",
                         ),
-                        Err(e) => log(
+                        Err(HqCliUpdateFailure::PackageUseLeaseTimeout { .. }) => {
+                            lease_timed_out = true;
+                            log(
+                                "hq-cli-update",
+                                &format!(
+                                    "auto-update failed, banner remains: {}",
+                                    HqCliUpdateFailure::PackageUseLeaseTimeout {
+                                        display_message: None,
+                                    }
+                                ),
+                            )
+                        }
+                        Err(HqCliUpdateFailure::Other(e)) => log(
                             "hq-cli-update",
                             &format!("auto-update failed, banner remains: {e}"),
                         ),
@@ -4554,6 +5110,7 @@ async fn run_check_cycle(handle: &AppHandle, floor_repair: bool) {
         Ok(None) => {}
         Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
     }
+    lease_timed_out
 }
 
 #[cfg(test)]
@@ -4562,7 +5119,44 @@ mod tests {
     use std::cell::Cell;
     use std::ffi::{OsStr, OsString};
     #[cfg(unix)]
+    use std::io::BufRead;
+    #[cfg(unix)]
+    use std::process::{Command, Stdio};
+    #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
+
+    #[test]
+    fn remaining_cli_package_use_lease_budget_subtracts_elapsed_and_saturates() {
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(Duration::from_secs(10)),
+            Duration::from_secs(20)
+        );
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(CLI_PACKAGE_USE_LEASE_TIMEOUT),
+            Duration::ZERO
+        );
+        assert_eq!(
+            remaining_cli_package_use_lease_budget(
+                CLI_PACKAGE_USE_LEASE_TIMEOUT + Duration::from_secs(1)
+            ),
+            Duration::ZERO
+        );
+    }
+
+    // Every test that reaches run_npm_install_with_retries closes the
+    // process-global desktop admission gate (close_cli_process_admission_for_update)
+    // while it holds the CLI package lease. Two of them running at once would
+    // see the gate already closed and fail with "another desktop update is
+    // already quiescing HQ processes", so they take this lock first.
+    // Those tests also hold ENV_MUTEX across the install. begin publishes the
+    // HQ CLI update lease under the process home (dirs::home_dir when
+    // XDG_STATE_HOME is unset). A parallel test that points HOME at a
+    // temporary directory and deletes it makes that rename return os-error-2.
+    // Home-swapping tests already take ENV_MUTEX. The mutex is not
+    // re-entrant, so a test that already holds it must not lock it again.
+    #[cfg(unix)]
+    static CLI_PROCESS_ADMISSION_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
 
     // Serialize HOME mutation against every other test that reads or writes
     // the process-global HOME (launch.rs reveal-target tests, telemetry) by
@@ -4583,6 +5177,84 @@ mod tests {
                 std::env::remove_var("HOME");
             }
         }
+    }
+
+    #[cfg(unix)]
+    fn spawn_cli_package_use_lease(prefix: &Path) -> std::process::Child {
+        let script = r#"
+const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+const { createHash } = require('node:crypto'); const { performance } = require('node:perf_hooks');
+let canonical = fs.realpathSync.native(process.argv[1]).replace(/\\/g, '/');
+const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
+const state = process.platform === 'win32'
+  ? path.join(process.env.LOCALAPPDATA, 'hq-cli', 'state', 'package-use')
+  : path.join((process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state')).trim(), 'hq-cli', 'package-use');
+const dir = path.join(state, digest); fs.mkdirSync(dir, { recursive: true });
+const record = { pid: process.pid, start_time_ms: Math.floor(performance.timeOrigin), hq_version: 'test' };
+const target = path.join(dir, `${record.pid}-${record.start_time_ms}.json`);
+const temp = `${target}.${Math.random().toString(36).slice(2)}.tmp`;
+fs.writeFileSync(temp, JSON.stringify(record) + '\n', { flag: 'wx', mode: 0o600 }); fs.renameSync(temp, target);
+console.log('ready'); setInterval(() => {}, 1000);
+"#;
+        let mut child = Command::new("node")
+            .arg("-e")
+            .arg(script)
+            .arg(prefix)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Node lease fixture starts");
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.as_mut().expect("fixture stdout"))
+            .read_line(&mut ready)
+            .expect("lease fixture publishes its record");
+        assert_eq!(ready.trim(), "ready");
+        child
+    }
+
+    #[test]
+    fn managed_retry_failure_environment_includes_running_cli_version() {
+        let version = running_cli_version_after_failure_with(
+            || "resolved-after-managed-retry".to_string(),
+            |resolved| {
+                assert_eq!(resolved, "resolved-after-managed-retry");
+                Some("5.335.0".to_string())
+            },
+        );
+        let env = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::Managed,
+            managed_toolchain_retry: true,
+            managed_retry_outcome: ManagedRetryOutcome::Ran,
+            ..InstallEnvironment::default()
+        }
+        .with_running_cli_version(version.as_deref());
+        let events = sentry::test::with_captured_events(|| {
+            report_install_failure_with_environment(
+                Some(1),
+                "npm error network ETIMEDOUT",
+                None,
+                false,
+                &env,
+            );
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["hq_cli_running_version"], "5.335.0");
+        assert_eq!(events[0].tags["npm_managed_toolchain_retry"], "true");
+        assert_eq!(events[0].tags["npm_managed_retry_outcome"], "ran");
+    }
+
+    #[test]
+    fn failure_time_version_probe_uses_the_re_resolved_hq_path() {
+        let current_hq = "newly-resolved-hq".to_string();
+        let version = running_cli_version_after_failure_with(
+            || current_hq.clone(),
+            |resolved| {
+                assert_eq!(resolved, "newly-resolved-hq");
+                Some("5.335.0".to_string())
+            },
+        );
+        assert_eq!(version.as_deref(), Some("5.335.0"));
     }
 
     #[test]
@@ -5238,7 +5910,206 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn failed_npm_install_restores_the_previous_cli_package_and_shim() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use std::fs;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm prefix with spaces");
+        let package = prefix.join("lib/node_modules/@indigoai-us/hq-cli");
+        let bin = prefix.join("bin");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"@indigoai-us/hq-cli","version":"5.77.8"}"#,
+        )
+        .unwrap();
+        fs::write(package.join("working.js"), "previous package").unwrap();
+        let shim_target = package.join("working.js");
+        symlink(&shim_target, bin.join("hq")).unwrap();
+
+        let npm = temp.path().join("fake-npm");
+        let script = format!(
+            r#"#!/bin/sh
+prefix="{}"
+package="$prefix/lib/node_modules/@indigoai-us/hq-cli"
+rm -rf "$package"
+mkdir -p "$package/dist"
+printf '%s' 'partial package' > "$package/dist/index.js"
+rm -f "$prefix/bin/hq"
+ln -s "$package/missing.js" "$prefix/bin/hq"
+printf '%s\n' 'gyp ERR! build error' >&2
+exit 1
+"#,
+            prefix.display(),
+        );
+        fs::write(&npm, script).unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("app-cache/npm");
+        fs::create_dir_all(&npm_cache).unwrap();
+
+        let run = run_npm_install_with_retries(
+            npm.to_str().unwrap(),
+            &std::env::var("PATH").unwrap(),
+            &npm_cache,
+            Some(prefix.to_str().unwrap()),
+            install_argv(Some(prefix.to_str().unwrap()), Some("5.101.0")),
+        )
+        .await
+        .unwrap();
+
+        assert!(!run.output.status.success(), "fake npm must fail");
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(package.join("package.json")).unwrap()).unwrap();
+        assert_eq!(manifest["version"], "5.77.8");
+        assert_eq!(
+            fs::read_to_string(package.join("working.js")).unwrap(),
+            "previous package"
+        );
+        assert_eq!(fs::read_link(bin.join("hq")).unwrap(), shim_target);
+        assert!(
+            !package.join("dist/index.js").exists(),
+            "partial package was removed"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_package_update_waits_for_shared_cli_lease_before_starting_npm() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        fs::write(
+            &npm,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started >> '{}'\nexit 0\n",
+                attempts.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("npm-cache");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let npm = npm.to_string_lossy().into_owned();
+        let path = std::env::var("PATH").unwrap();
+        let prefix_text = prefix.to_string_lossy().into_owned();
+        let npm_cache_text = npm_cache.to_string_lossy().into_owned();
+        let update = tokio::spawn(async move {
+            run_npm_install_with_retries(
+                &npm,
+                &path,
+                Path::new(&npm_cache_text),
+                Some(&prefix_text),
+                install_argv(Some(&prefix_text), None),
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !attempts.exists(),
+            "npm must not start while a CLI process holds the shared package lease"
+        );
+        cli_lease.kill().expect("release child lease holder");
+        cli_lease.wait().expect("lease holder exits");
+        let run = tokio::time::timeout(Duration::from_secs(5), update)
+            .await
+            .expect("the updater should proceed immediately after the CLI releases its lease")
+            .unwrap()
+            .unwrap();
+        assert!(run.output.status.success());
+        assert_eq!(fs::read_to_string(attempts).unwrap().lines().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_package_lease_timeout_is_actionable_and_does_not_start_npm() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().join("npm-prefix");
+        fs::create_dir_all(&prefix).unwrap();
+        let mut cli_lease = spawn_cli_package_use_lease(&prefix);
+        let npm = temp.path().join("fake-npm");
+        let attempts = temp.path().join("attempts");
+        fs::write(
+            &npm,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started >> '{}'\nexit 0\n",
+                attempts.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&npm, permissions).unwrap();
+        let npm_cache = temp.path().join("npm-cache");
+        fs::create_dir_all(&npm_cache).unwrap();
+        let npm = npm.to_string_lossy().into_owned();
+        let path = std::env::var("PATH").unwrap();
+        let prefix_text = prefix.to_string_lossy().into_owned();
+        let npm_cache_text = npm_cache.to_string_lossy().into_owned();
+        let update = tokio::spawn(async move {
+            run_npm_install_with_retries(
+                &npm,
+                &path,
+                Path::new(&npm_cache_text),
+                Some(&prefix_text),
+                install_argv(Some(&prefix_text), None),
+            )
+            .await
+        });
+        let error = tokio::time::timeout(Duration::from_secs(35), update)
+            .await
+            .expect("the package lease wait must be bounded")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("The HQ CLI is still running"), "{error}");
+        assert!(error.contains("npm was not started"), "{error}");
+        assert!(
+            !attempts.exists(),
+            "npm must not mutate the prefix on timeout"
+        );
+        cli_lease.kill().expect("release child lease holder");
+        cli_lease.wait().expect("lease holder exits");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn app_owned_cache_reaches_every_install_retry_attempt() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5324,6 +6195,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn etarget_retries_once_with_prefer_online() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5385,6 +6260,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn repeated_etarget_uses_public_registry_once_after_prefer_online() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5456,6 +6335,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn prefer_online_output_uses_existing_bin_collision_recovery() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5530,6 +6413,10 @@ exit 2
     #[cfg(unix)]
     #[tokio::test]
     async fn public_registry_output_uses_existing_bin_collision_recovery() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5610,6 +6497,10 @@ exit 2
     #[cfg(unix)]
     #[tokio::test]
     async fn unrelated_npm_failure_does_not_trigger_etarget_retries() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5657,6 +6548,10 @@ exit 1
     #[cfg(unix)]
     #[tokio::test]
     async fn prefix_less_enotempty_cleans_the_npm_reported_scope_and_recovers() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-5B: on a machine whose `hq` is bare or non-npm-shaped the
         // updater resolves NO prefix (npm_prefix_known=false in 61/61 events), so
         // the pre-fix ENOTEMPTY rung took its else arm and left the wedge in place
@@ -5684,6 +6579,10 @@ exit 1
         // Attempt 1 fails ENOTEMPTY naming the planted scope; attempt 2 succeeds.
         let script = format!(
             r#"#!/bin/sh
+if [ "$1" = "prefix" ] && [ "$2" = "-g" ]; then
+  printf '%s\n' '{}'
+  exit 0
+fi
 state="{}"
 attempts="{}"
 count=0
@@ -5697,6 +6596,7 @@ if [ "$count" -eq 1 ]; then
 fi
 exit 0
 "#,
+            temp.path().display(),
             state.display(),
             attempts.display(),
             scope.display(),
@@ -5757,6 +6657,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn bounded_retry_ladder_rearms_force_only_after_cleanup() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5828,6 +6732,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn second_shim_eexist_arms_one_force_retry_and_stays_a_warning() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // HQ-DESKTOP-4Y: the collision npm reported was on the package's SECOND
         // declared shim, `hq-auth-refresh`. It must arm the SAME single `--force`
         // rung the `hq` collision uses — one retry, still within the hard cap,
@@ -5911,6 +6819,10 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn eexist_after_windows_backoff_is_not_silently_forced_or_suppressed() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
@@ -5978,7 +6890,10 @@ exit 0
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _restore_home = HomeEnvRestore(std::env::var_os("HOME"));
 
         let temp = tempfile::tempdir().unwrap();
@@ -6013,13 +6928,17 @@ exit 0
     #[cfg(unix)]
     #[tokio::test]
     async fn app_owned_cache_avoids_a_read_only_home_npm_cache() {
+        let _admission = CLI_PROCESS_ADMISSION_TEST_LOCK.lock().await;
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
         let _env = crate::util::test_support::ENV_MUTEX
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let _home_lock = HOME_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let _home_lock = HOME_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("poisoned-home");
         let poisoned_cache = home.join(".npm/_cacache");

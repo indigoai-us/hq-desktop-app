@@ -18,12 +18,14 @@ import VaultExplorer from "./VaultExplorer.svelte";
 
 let host: HTMLDivElement | null = null;
 let component: ReturnType<typeof mount> | null = null;
+const originalUserAgent = navigator.userAgent;
 
 afterEach(async () => {
   if (component) await unmount(component);
   component = null;
   host?.remove();
   host = null;
+  Object.defineProperty(navigator, "userAgent", { configurable: true, value: originalUserAgent });
 });
 
 const ok = <T,>(value: T) => ({ ok: true as const, value });
@@ -62,7 +64,7 @@ const BACKLINKS: Record<string, string[]> = {
 
 const BIG_NOTE = "companies/acme/knowledge/big.md";
 
-function makeAdapter(calls: string[]) {
+function makeAdapter(calls: string[], failReveal = false, scopeError: Error | null = null) {
   return {
     kind: "tauri",
     capabilities: {},
@@ -70,6 +72,7 @@ function makeAdapter(calls: string[]) {
     appShell: {
       setActiveCompany: vi.fn(async (slug: string) => {
         calls.push(`scope:${slug}`);
+        if (scopeError) throw scopeError;
         return ok(undefined);
       }),
     },
@@ -85,7 +88,7 @@ function makeAdapter(calls: string[]) {
       }),
       revealInFinder: vi.fn(async (p: string) => {
         calls.push(`reveal:${p}`);
-        return ok(undefined);
+        return failReveal ? { ok: false as const, message: "" } : ok(undefined);
       }),
       vault: {
         summary: vi.fn(async (root: string) => {
@@ -120,6 +123,7 @@ function makeAdapter(calls: string[]) {
           const text = FILES[p] ?? "";
           return ok({ text, size: text.length, truncated: false });
         }),
+        readFrontmatter: vi.fn(async (p: string) => ok(FILES[p] ?? "")),
       },
     },
   } as unknown as PlatformAdapter;
@@ -150,9 +154,13 @@ async function settle(times = 6) {
   }
 }
 
-async function render(props: Record<string, unknown> = {}) {
+async function render(
+  props: Record<string, unknown> = {},
+  failReveal = false,
+  scopeError: Error | null = null,
+) {
   const calls: string[] = [];
-  const adapter = makeAdapter(calls);
+  const adapter = makeAdapter(calls, failReveal, scopeError);
   const onlocationchange = vi.fn();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -168,12 +176,41 @@ const rowNames = (el: HTMLElement) =>
   [...el.querySelectorAll('[data-testid="vault-tree-row"]')].map((r) => r.textContent?.trim());
 
 describe("VaultExplorer", () => {
+  it("uses Windows file-manager labels in the explorer and preview", async () => {
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" });
+    const { host } = await render({ path: "companies/acme/knowledge/pricing.md" }, true);
+    expect(host.querySelector('[data-testid="vault-search"] kbd')?.textContent).toBe("Ctrl+O");
+    expect(host.querySelector(".vx-actions button:last-of-type")?.textContent).toContain("Show in file manager");
+    host.querySelector<HTMLButtonElement>(".vx-actions button:last-of-type")!.click();
+    await settle();
+    expect(host.querySelector(".vx-actions button:last-of-type")?.getAttribute("title")).toBe("Could not open file manager.");
+  });
+
+  it("keeps Finder labels on macOS", async () => {
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)" });
+    const { host } = await render({ path: "companies/acme/knowledge/pricing.md" });
+    expect(host.querySelector('[data-testid="vault-search"] kbd')?.textContent).toBe("⌘O");
+    expect(host.querySelector(".vx-actions button:last-of-type")?.textContent).toContain("Show in Finder");
+  });
+
   it("binds the company read scope before listing or asking the vault index", async () => {
     const { calls } = await render();
     const scopeAt = calls.indexOf("scope:acme");
     expect(scopeAt).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("list:companies/acme")).toBeGreaterThan(scopeAt);
     expect(calls.indexOf("summary:companies/acme")).toBeGreaterThan(scopeAt);
+  });
+
+  it("logs a failed company scope and still lists the vault", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { calls, host } = await render({}, false, new Error("scope down"));
+      expect(calls).toContain("list:companies/acme");
+      expect(rowNames(host)).toEqual(["knowledge", "README"]);
+      expect(warn).toHaveBeenCalledWith("vault-explorer: company scope failed", "scope down");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("never shows settings folders or credential files", async () => {

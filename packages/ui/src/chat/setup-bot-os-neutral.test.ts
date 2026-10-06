@@ -26,7 +26,6 @@ import {
   SETUP_BOT_ALREADY_ELSEWHERE,
   SETUP_BOT_GENERIC_FAILURE,
   SETUP_BOT_UNAVAILABLE,
-  SETUP_ELSEWHERE_COPY,
 } from "./setup-bot";
 import { setupRunPermission } from "./setup-run";
 import { setupHeroReturning } from "./setup-channel";
@@ -90,11 +89,6 @@ describe("setup copy is OS-aware (US-006 regression, extended for OS-specific wo
   }
 
   it("static copy that has no OS-dependent word stays platform-neutral", () => {
-    for (const [key, value] of Object.entries(SETUP_ELSEWHERE_COPY)) {
-      if (typeof value !== "string") continue;
-      expect(value, `SETUP_ELSEWHERE_COPY.${key}`).not.toMatch(MAC_NAMED);
-      expect(value, `SETUP_ELSEWHERE_COPY.${key}`).not.toMatch(PC_NAMED);
-    }
     for (const [label, value] of [
       ["SETUP_BOT_ALREADY_ELSEWHERE", SETUP_BOT_ALREADY_ELSEWHERE],
       ["SETUP_BOT_GENERIC_FAILURE", SETUP_BOT_GENERIC_FAILURE],

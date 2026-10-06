@@ -2910,6 +2910,7 @@ dependencies = [
  "minisign-verify",
  "reqwest 0.12.28",
  "rustix",
+ "same-file",
  "semver",
  "sentry",
  "serde",
@@ -2947,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.10.371"
+version = "0.10.397"
 dependencies = [
  "aws-config",
  "aws-credential-types",

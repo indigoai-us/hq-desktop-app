@@ -1,7 +1,7 @@
 # Root Cargo workspace for hq-desktop-app (single app: install-then-sync).
 #
-# `apps/sync` is the base of the one shipped app. Its crate and the two port-source
-# imports are intentionally EXCLUDED for now — `apps/sync` and `imports/hq-sync-win`
+# `apps/sync` is the base of the one shipped app. Its crate and the remaining
+# port-source import are intentionally EXCLUDED for now — `apps/sync` and `imports/hq-sync-win`
 # both still define the crate name `hq-sync-menubar`, so they cannot co-exist in one
 # workspace until the Windows fork is folded in. The app builds standalone from its own
 # src-tauri directory exactly as imported. Adding `apps/sync/src-tauri` as a member and
@@ -17,7 +17,6 @@ exclude = [
   # Mobile shell for HQ Work (iOS + Android). Standalone for the same reason
   # apps/sync/src-tauri is: it pins its own Tauri dependency graph.
   "apps/work/src-tauri",
-  "imports/hq-installer-react/src-tauri",
   "imports/hq-sync-win/src-tauri",
 ]
 
