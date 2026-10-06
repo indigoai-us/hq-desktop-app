@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.397] — 2026-10-06
+
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
