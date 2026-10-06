@@ -350,7 +350,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+            hq_desktop_core::lifecycle::require_local_toolchain_for_startup(
                 classified,
                 tools_present,
                 from_updater_restart,

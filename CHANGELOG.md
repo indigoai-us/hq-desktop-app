@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
+
 ## [0.10.397] — 2026-10-06
 
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.

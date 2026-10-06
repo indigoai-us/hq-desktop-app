@@ -111,7 +111,7 @@ fn consume_at(path: &Path, running_version: &str, now_secs: u64) -> io::Result<b
 mod tests {
     use super::{consume_at, persist_at, startup_is_updater_restart};
     use hq_desktop_core::lifecycle::{
-        classify_lifecycle, require_local_toolchain_after_updater_restart, LifecycleInputs,
+        classify_lifecycle, require_local_toolchain_for_startup, LifecycleInputs,
         LifecycleState,
     };
     use std::fs;
@@ -155,7 +155,7 @@ mod tests {
         let updater_restart = startup_is_updater_restart(false, marker_matches);
         let classified = classify_lifecycle(previously_setup_inputs());
         let verdict =
-            require_local_toolchain_after_updater_restart(classified, false, updater_restart);
+            require_local_toolchain_for_startup(classified, false, updater_restart);
         assert!(
             updater_restart,
             "the GUI fallback marker is updater evidence"
@@ -184,7 +184,7 @@ mod tests {
         let updater_restart = startup_is_updater_restart(false, marker_matches);
         let classified = classify_lifecycle(previously_setup_inputs());
         let verdict =
-            require_local_toolchain_after_updater_restart(classified, false, updater_restart);
+            require_local_toolchain_for_startup(classified, false, updater_restart);
         assert!(!updater_restart);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
