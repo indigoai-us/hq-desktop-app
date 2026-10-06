@@ -90,6 +90,7 @@ export const ERROR_CATEGORIES = [
   'cancel-cleanup-failed',
   'unsupported-platform',
   'disk',
+  'disk-full',
   'unknown',
 ] as const;
 
