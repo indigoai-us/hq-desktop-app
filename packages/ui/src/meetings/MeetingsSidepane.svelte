@@ -297,7 +297,10 @@
   }
 
   /* Ended meetings inside Today read quieter than the ones still ahead. */
-  .row.is-past .time,
+  .row.is-past .time {
+    color: var(--t3);
+  }
+
   .row.is-past .t {
     color: var(--t2);
   }
