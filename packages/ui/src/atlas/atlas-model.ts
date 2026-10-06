@@ -43,6 +43,8 @@ export type AtlasNode = {
   parentId?: string;
   depth?: number;
   stories?: AtlasStories;
+  /** For a folder: the file inside it that Open files shows (README, PRD, SKILL...). */
+  file?: string;
 };
 
 export type AtlasRefEdge = {
@@ -77,6 +79,14 @@ export type AtlasPresence = {
   name: string;
   bot: boolean;
   signal?: string;
+  /** Online with no session in progress; listed apart from Working now. */
+  idle?: boolean;
+  /** Name of the object on the map they are working on, when there is one. */
+  place?: string;
+  /** Not on the map: plain words for why (the dock's hover card shows it). */
+  unplaced?: string;
+  /** Profile or bot picture the app already shows elsewhere; initials when absent. */
+  avatarUrl?: string;
 };
 
 const DISTRICT_TYPES = new Set<string>(ATLAS_DISTRICTS.map((d) => d.type));
@@ -121,6 +131,7 @@ export function parseAtlasGraph(raw: unknown): AtlasGraph | null {
       count: num(n.count) ?? 1,
       parentId: typeof n.parentId === "string" ? n.parentId : undefined,
       depth: num(n.depth),
+      ...(typeof n.file === "string" && n.file ? { file: n.file } : {}),
       stories:
         stories && num(stories.total) != null
           ? { done: num(stories.done) ?? 0, total: num(stories.total) as number }

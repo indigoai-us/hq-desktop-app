@@ -4,7 +4,10 @@ import {
   ATLAS_LIVE_WINDOW_MS,
   ATLAS_TIMELINE_DAYS,
   ATLAS_TOUCH_FADED,
+  ATLAS_AGE_FLOOR,
+  atlasAgeFade,
   atlasDailyCounts,
+  atlasDayEnd,
   atlasDayIndex,
   atlasHistogramHeights,
   atlasScrubLabel,
@@ -62,7 +65,7 @@ describe("atlas timeline (US-014)", () => {
     expect(born.has("bare")).toBe(false);
     const touched = atlasTimeOpacity(nodes, "touched", tenDaysAgo, NOW)!;
     expect(touched.has("busy")).toBe(false);
-    expect(touched.get("old")).toBe(ATLAS_TOUCH_FADED);
+    expect(touched.get("old")).toBe(atlasAgeFade(NOW - 20 * DAY, atlasDayEnd(tenDaysAgo, NOW)));
     expect(touched.get("new")).toBe(ATLAS_BORN_HIDDEN);
   });
 
@@ -79,9 +82,12 @@ describe("atlas timeline (US-014)", () => {
         const now = atlasTimeOpacity(nodes, mode, index, NOW, new Set(["live"]));
         expect(now.has("live")).toBe(false);
         expect(now.has("edited")).toBe(false);
-        expect(now.get("today")).toBe(ATLAS_TOUCH_FADED);
-        expect(now.get("old")).toBe(ATLAS_TOUCH_FADED);
-        expect(now.get("bare")).toBe(ATLAS_TOUCH_FADED);
+        // Owner, 2026-10-04: the rest fade by age, oldest the most.
+        expect(now.get("today")).toBe(atlasAgeFade(NOW - ATLAS_LIVE_WINDOW_MS - 1, NOW));
+        expect(now.get("old")).toBe(atlasAgeFade(NOW - 20 * DAY, NOW));
+        expect(now.get("bare")).toBe(ATLAS_AGE_FLOOR);
+        expect(now.get("today")!).toBeGreaterThan(now.get("old")!);
+        expect(now.get("old")!).toBeGreaterThan(now.get("bare")!);
       }
     }
   });
@@ -93,12 +99,21 @@ describe("atlas timeline (US-014)", () => {
       { id: "c" },
     ];
     const now = atlasTimeOpacity(nodes, "touched", null, NOW);
-    expect([...now.values()]).toEqual([ATLAS_TOUCH_FADED, ATLAS_TOUCH_FADED, ATLAS_TOUCH_FADED]);
+    expect([...now.values()]).toEqual([atlasAgeFade(NOW - DAY, NOW), atlasAgeFade(NOW - 3 * DAY, NOW), ATLAS_AGE_FLOOR]);
+    for (const v of now.values()) expect(v).toBeLessThanOrEqual(ATLAS_TOUCH_FADED);
   });
 
   it("OWNER-009: past days ignore the live set", () => {
     const nodes = [{ id: "old", created: NOW - 60 * DAY, touched: NOW - 20 * DAY }];
     const back = atlasTimeOpacity(nodes, "touched", ATLAS_TIMELINE_DAYS - 11, NOW, new Set(["old"]));
-    expect(back.get("old")).toBe(ATLAS_TOUCH_FADED);
+    expect(back.get("old")).toBe(atlasAgeFade(NOW - 20 * DAY, atlasDayEnd(ATLAS_TIMELINE_DAYS - 11, NOW)));
+  });
+
+  it("fades by age: just touched sits at the baseline, the oldest near the floor", () => {
+    expect(atlasAgeFade(NOW, NOW)).toBe(ATLAS_TOUCH_FADED);
+    const steps = [0, 3, 14, 45, 180].map((d) => atlasAgeFade(NOW - d * DAY, NOW));
+    for (let i = 1; i < steps.length; i++) expect(steps[i]!).toBeLessThan(steps[i - 1]!);
+    expect(steps.at(-1)!).toBeLessThan(ATLAS_AGE_FLOOR + 0.01);
+    expect(atlasAgeFade(undefined, NOW)).toBe(ATLAS_AGE_FLOOR);
   });
 });

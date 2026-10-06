@@ -7,13 +7,29 @@
    * cached graph for the company in the first frame, then refreshes from the
    * Console atlas endpoint in the background. Loaded only via dynamic import.
    */
-  import { atlasPeopleFromTelemetry, atlasPersonNodeIds, isForbidden, type AtlasPeopleState } from "./atlas-people.js";
+  import { atlasNamesFromTelemetry, atlasPeopleFromTelemetry, atlasPersonNodeIds, isForbidden, type AtlasPeopleState } from "./atlas-people.js";
+  import { isRawPersonId } from "../common/people/people.js";
   import { onMount, untrack } from "svelte";
   import AtlasMap from "./AtlasMap.svelte";
   import AtlasInspector from "./AtlasInspector.svelte";
   import AtlasScrubber from "./AtlasScrubber.svelte";
+  import { atlasFocusOrbit } from "./atlas-focus.js";
+  import { atlasTodayChanges } from "./atlas-today.js";
   import {
+    ATLAS_PULSE_MS,
+    atlasMotionAllowed,
+    atlasPulseIds,
+    atlasTouchedIndex,
+    atlasTrails,
+    atlasWorkState,
+    type AtlasWorkState,
+  } from "./atlas-motion.js";
+  import {
+    atlasBiggestChanges,
     atlasDailyCounts,
+    atlasDayStart,
+    atlasPlaybackCaption,
+    atlasScrubLabel,
     atlasTimeOpacity,
     type AtlasTimeMode,
   } from "./atlas-timeline.js";
@@ -69,6 +85,8 @@
      * resolving to the raw body. Runs only after the map has painted.
      */
     loadPeople?: (() => Promise<unknown>) | null;
+    /** Animate camera moves (frame all, jump to an item). Off snaps. */
+    motion?: boolean;
   }
 
   let {
@@ -88,6 +106,7 @@
     onopenpage,
     projectsInProgress: boardInProgress = null,
     loadPeople = null,
+    motion = true,
   }: Props = $props();
 
   let people = $state<AtlasPeopleState>({ status: "idle" });
@@ -102,13 +121,18 @@
   let selected = $state<string | null>(null);
   let view = $state<AtlasViewBox>({ x: 400, y: 280, k: 0.5 });
   let framedFor = "";
+  // True once the person pans or zooms; the map then stops re-framing itself.
+  let userMoved = false;
   let size = { width: 800, height: 560 };
   let mapHost = $state<HTMLDivElement | null>(null);
   let detail = $state<AtlasDetail | undefined>(undefined);
   let detailLoading = $state(false);
   const details = new Map<string, AtlasDetail | undefined>();
 
-  const layout = $derived(layoutAtlas(graph?.nodes ?? []));
+  // Project dots are sized by recent activity. The layout keys on the day,
+  // not the minute, so a ticking clock never re-lays out the map.
+  const layoutDay = $derived(atlasDayStart(nowMs));
+  const layout = $derived(layoutAtlas(graph?.nodes ?? [], { nowMs: layoutDay, edges: graph?.edges }));
   const edges = $derived(atlasEdges(graph?.edges, graph?.nodes ?? []));
   const byId = $derived(new Map((graph?.nodes ?? []).map((n) => [n.id, n])));
   const selectedNode = $derived(selected ? (byId.get(selected) ?? null) : null);
@@ -117,10 +141,36 @@
       .map((id) => byId.get(id))
       .filter((n): n is AtlasNode => Boolean(n)),
   );
-  const presence = $derived(
-    actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp,
+  // Focus mode: a selected project gathers its repos, knowledge and policies
+  // around it. Computed once per selection (and per layout), never per frame.
+  const placedById = $derived(new Map(layout.placed.map((n) => [n.id, n])));
+  const focus = $derived.by(() => {
+    const center = selected ? placedById.get(selected) : undefined;
+    if (!center || center.type !== "project") return null;
+    const near = [...atlasRelatedIds(selected, edges)].map((id) => placedById.get(id)).filter((n) => n !== undefined);
+    const orbit = atlasFocusOrbit(center, near);
+    return orbit.size ? orbit : null;
+  });
+  // Presence sometimes carries only an id for a name. An id never reaches the
+  // screen: the activity read's names fill in, then a plain fallback.
+  const presence = $derived.by(() => {
+    const raw = actors ? atlasPresenceFromActors(actors, graph?.nodes ?? []) : presenceProp;
+    const names = people.status === "ok" ? people.names : undefined;
+    return raw.map((p) => {
+      const place = byId.get(p.nodeId)?.label;
+      const name = isRawPersonId(p.name)
+        ? (p.actorUid && names?.get(p.actorUid)) || (p.bot ? "Unnamed bot" : "Unnamed member")
+        : p.name;
+      return { ...p, name, ...(place ? { place } : {}) };
+    });
+  });
+  // People first, then bots; "working" means a session in progress. Actors
+  // who are only online are counted apart so they do not bury the list.
+  const everyone = $derived(
+    atlasDistinctActors(presence).sort((a, b) => Number(a.bot) - Number(b.bot) || a.name.localeCompare(b.name)),
   );
-  const working = $derived(atlasDistinctActors(presence));
+  const working = $derived(everyone.filter((p) => !p.idle));
+  const online = $derived(everyone.filter((p) => p.idle));
   const live = $derived(new Set(presence.map((p) => p.nodeId)));
   const actorFilterIds = $derived(atlasActorNodeIds(presence, filterActor));
   const selectedPerson = $derived(
@@ -148,7 +198,7 @@
     requestAnimationFrame(() => {
       read()
         .then((body) => {
-          if (alive()) people = { status: "ok", people: atlasPeopleFromTelemetry(body) };
+          if (alive()) people = { status: "ok", people: atlasPeopleFromTelemetry(body), names: atlasNamesFromTelemetry(body) };
         })
         .catch((err: unknown) => {
           console.error("atlas people read failed:", err);
@@ -156,6 +206,51 @@
         });
     });
   });
+  // Work motion: one pulse where work advanced since the last read, trails
+  // from projects active now. The previous read is kept outside reactivity.
+  let prevTouched: Map<string, number> | null = null;
+  let prevWork: AtlasWorkState | null = null;
+  let motionFor = "";
+  let pulseSeq = 0;
+  let pulses = $state<Map<string, number>>(new Map());
+  const pulseTimers = new Set<ReturnType<typeof setTimeout>>();
+  $effect(() => {
+    const nodes = graph?.nodes;
+    const now = presence;
+    const uid = companyUid;
+    untrack(() => {
+      if (!nodes) return;
+      if (motionFor !== uid) {
+        motionFor = uid;
+        prevTouched = null;
+        prevWork = null;
+      }
+      const ids = atlasMotionAllowed(motion) ? atlasPulseIds({ nodes, prevTouched, presence: now, prevWork }) : [];
+      prevTouched = atlasTouchedIndex(nodes);
+      prevWork = atlasWorkState(now);
+      if (!ids.length) return;
+      const seq = ++pulseSeq;
+      const next = new Map(pulses);
+      for (const id of ids) next.set(id, seq);
+      pulses = next;
+      const timer = setTimeout(() => {
+        pulseTimers.delete(timer);
+        const left = new Map(pulses);
+        for (const [id, s] of left) if (s === seq) left.delete(id);
+        pulses = left;
+      }, ATLAS_PULSE_MS + 100);
+      pulseTimers.add(timer);
+    });
+  });
+  const trails = $derived(
+    atlasTrails({
+      nodes: graph?.nodes ?? [],
+      edges: graph?.edges,
+      live,
+      nowMs,
+      drawn: placedById,
+    }),
+  );
   const filterName = $derived(
     filterActor ? (presence.find((p) => p.actorUid === filterActor)?.name ?? null) : null,
   );
@@ -164,10 +259,21 @@
   let scrubIndex = $state<number | null>(null);
   const dailyCounts = $derived(atlasDailyCounts(graph?.nodes ?? [], timeMode, nowMs));
   const timeOpacity = $derived(atlasTimeOpacity(graph?.nodes ?? [], timeMode, scrubIndex, nowMs, live));
+  // Playback: the day in large quiet type on the map, and while playing the
+  // day's biggest changes by name.
+  let playing = $state(false);
+  const playback = $derived.by(() => {
+    if (scrubIndex == null || !graph) return null;
+    return {
+      date: atlasScrubLabel(scrubIndex, nowMs),
+      caption: playing ? atlasPlaybackCaption(atlasBiggestChanges(graph.nodes, timeMode, scrubIndex, nowMs), timeMode) : "",
+    };
+  });
   const nothingActive = $derived(
     scrubIndex == null && (graph?.nodes ?? []).every((n) => timeOpacity.has(n.id)),
   );
   const empty = $derived(graph !== null && graph.nodes.length === 0);
+  const today = $derived(graph ? atlasTodayChanges(graph.nodes, nowMs) : null);
   const emptyLabels = ATLAS_RING_ORDER.map((type, i) => {
     const a = -Math.PI / 2 + (i / ATLAS_RING_ORDER.length) * Math.PI * 2;
     return { type, label: districtLabel(type), x: 450 + Math.cos(a) * 290, y: 320 + Math.sin(a) * 250 };
@@ -185,10 +291,120 @@
     if (box && box.width > 0 && box.height > 0) size = { width: box.width, height: box.height };
   }
 
-  function frame(): void {
+  // Camera moves ease instead of snapping, and stop the moment the person
+  // pans or zooms. Zoom is interpolated geometrically around the map centre so
+  // the path reads as one move, not a slide plus a scale.
+  let flight = 0;
+  function stopFlight(): void {
+    if (flight) cancelAnimationFrame(flight);
+    flight = 0;
+  }
+  function flyTo(target: AtlasViewBox, ms = 320): void {
+    stopFlight();
+    const calm =
+      !motion ||
+      typeof requestAnimationFrame !== "function" ||
+      (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    // A view that is not a finite number yet (nothing measured) cannot be eased from.
+    const finite = [view.x, view.y, view.k, target.x, target.y, target.k].every(Number.isFinite) && view.k > 0 && target.k > 0;
+    if (calm || ms <= 0 || !finite) {
+      view = target;
+      return;
+    }
     measure();
-    // OWNER-R4: frame the shaded sections, not just the dots, so no section is cut off.
-    view = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
+    const from = view;
+    const cx = size.width / 2;
+    const cy = size.height / 2;
+    const fromC = { x: (cx - from.x) / from.k, y: (cy - from.y) / from.k };
+    const toC = { x: (cx - target.x) / target.k, y: (cy - target.y) / target.k };
+    const start = performance.now();
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / ms);
+      const e = 1 - (1 - t) ** 3;
+      const k = from.k * (target.k / from.k) ** e;
+      const wx = fromC.x + (toC.x - fromC.x) * e;
+      const wy = fromC.y + (toC.y - fromC.y) * e;
+      view = t >= 1 ? target : { k, x: cx - wx * k, y: cy - wy * k };
+      flight = t < 1 ? requestAnimationFrame(step) : 0;
+    };
+    flight = requestAnimationFrame(step);
+  }
+
+  function frame(animate = false): void {
+    measure();
+    userMoved = false;
+    // OWNER-R4: frame the sections' full reach, not just the dots, so no section is cut off.
+    const target = frameAll([...layout.placed, ...atlasDistrictShapes(layout.placed, layout.regions)], size.width, size.height);
+    if (animate) flyTo(target);
+    else {
+      stopFlight();
+      view = target;
+    }
+  }
+
+  /**
+   * Bring one object to the middle of the map, zooming in if it is small on
+   * screen. A focused project frames itself with its gathered ring.
+   */
+  function flyToNode(id: string): void {
+    const node = placedById.get(id);
+    if (!node) return;
+    measure();
+    const orbit = id === selected ? focus : null;
+    if (orbit) {
+      const ring = [node, ...[...orbit.entries()].map(([oid, at]) => ({ x: at.x, y: at.y, r: placedById.get(oid)?.r ?? 2 }))];
+      const fit = frameAll(ring, size.width, size.height, 72);
+      const k = Math.min(fit.k, Math.max(view.k, 2.4));
+      flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    } else {
+      const k = Math.max(view.k, 1.6);
+      flyTo({ k, x: size.width / 2 - node.x * k, y: size.height / 2 - node.y * k });
+    }
+    userMoved = true;
+  }
+
+  /** A click on the map: select it, and glide to a project so focus mode is in view. */
+  function selectFromMap(id: string | null): void {
+    selected = id;
+    if (id && placedById.get(id)?.type === "project") flyToNode(id);
+  }
+
+  // Find: type a name, jump to the object.
+  let query = $state("");
+  let findOpen = $state(false);
+  let findEl = $state<HTMLInputElement | null>(null);
+  const FIND_PAGE = 8;
+  // The query whose full match list is showing; a new query starts paged again.
+  let findExpandedFor = $state<string | null>(null);
+  const matches = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return (graph?.nodes ?? [])
+      .filter((n) => n.label.toLowerCase().includes(q))
+      .sort(
+        (a, b) =>
+          Number(b.label.toLowerCase().startsWith(q)) - Number(a.label.toLowerCase().startsWith(q)) ||
+          (b.touched ?? 0) - (a.touched ?? 0) ||
+          a.label.localeCompare(b.label),
+      );
+  });
+  const found = $derived(findExpandedFor === query ? matches : matches.slice(0, FIND_PAGE));
+  function pickFound(id: string): void {
+    query = "";
+    findOpen = false;
+    findEl?.blur();
+    selected = id;
+    flyToNode(id);
+  }
+  function onfindkey(event: KeyboardEvent): void {
+    if (event.key === "Enter" && found[0]) {
+      pickFound(found[0].id);
+      event.preventDefault();
+    } else if (event.key === "Escape") {
+      query = "";
+      findEl?.blur();
+      event.stopPropagation();
+    }
   }
 
   // Company switch: show that company's cache immediately, refresh behind it.
@@ -248,11 +464,15 @@
     loadGraph(companyUid);
   }
 
-  // Frame once per company when nodes first arrive.
+  // Frame when a company's nodes first arrive, and again when the map grows
+  // (the first page, then the full load), so nothing sits cut off at an edge.
+  // Once the person has moved the map it is left where they put it.
   $effect(() => {
     const key = `${companyUid}:${layout.placed.length}`;
-    if (!layout.placed.length || framedFor.startsWith(`${companyUid}:`)) return;
+    if (!layout.placed.length || framedFor === key) return;
+    const sameCompany = framedFor.startsWith(`${companyUid}:`);
     framedFor = key;
+    if (sameCompany && userMoved) return;
     untrack(frame);
   });
 
@@ -285,7 +505,11 @@
 
   function selectId(id: string): void {
     if (id.startsWith("person:")) onopenperson?.(id.slice("person:".length));
-    else selected = id;
+    else {
+      // From a list (Working now, Related): go to it on the map as well.
+      selected = id;
+      flyToNode(id);
+    }
   }
 
   function onkeydown(event: KeyboardEvent): void {
@@ -295,14 +519,22 @@
       selected = null;
       event.preventDefault();
     } else if (event.key === "0" && !event.metaKey && !event.ctrlKey) {
-      frame();
+      frame(true);
+      event.preventDefault();
+    } else if (event.key === "/" && !event.metaKey && !event.ctrlKey && findEl) {
+      findEl.focus();
       event.preventDefault();
     }
   }
 
   onMount(() => {
     window.addEventListener("keydown", onkeydown);
-    return () => window.removeEventListener("keydown", onkeydown);
+    return () => {
+      window.removeEventListener("keydown", onkeydown);
+      stopFlight();
+      for (const timer of pulseTimers) clearTimeout(timer);
+      pulseTimers.clear();
+    };
   });
 </script>
 
@@ -328,10 +560,44 @@
       </span>
     {/if}
     <div class="grow"></div>
+    {#if graph && !empty}
+      <div class="find">
+        <input
+          bind:this={findEl}
+          bind:value={query}
+          type="search"
+          placeholder="Find on the map"
+          aria-label="Find on the map"
+          data-testid="atlas-find"
+          autocomplete="off"
+          spellcheck="false"
+          onfocus={() => (findOpen = true)}
+          onblur={() => setTimeout(() => (findOpen = false), 120)}
+          onkeydown={onfindkey}
+        />
+        {#if findOpen && query.trim()}
+          <div class="find-list" data-testid="atlas-find-results" role="listbox" aria-label="Matches">
+            {#each found as hit (hit.id)}
+              <button type="button" class="find-row" role="option" aria-selected="false" onmousedown={(e) => e.preventDefault()} onclick={() => pickFound(hit.id)}>
+                <span class="find-name">{hit.label}</span>
+                <span class="find-kind">{districtLabel(hit.type).replace(/s$/, "")}</span>
+              </button>
+            {:else}
+              <div class="find-none">Nothing on the map by that name.</div>
+            {/each}
+            {#if matches.length > found.length}
+              <button type="button" class="find-row find-more" data-testid="atlas-find-show-more" onmousedown={(e) => e.preventDefault()} onclick={() => (findExpandedFor = query)}>
+                <span class="find-name">Show {matches.length - found.length} more</span>
+              </button>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/if}
     <RailButton icon="eye"
       data-testid="atlas-frame-all"
       disabled={!graph || empty}
-      onclick={frame}
+      onclick={() => frame(true)}
     >Frame all</RailButton>
   </div>
   <div class="atlas">
@@ -378,8 +644,21 @@
           {nothingActive}
           {nowMs}
           {view}
-          onselect={(id) => (selected = id)}
-          onview={(next) => (view = next)}
+          {focus}
+          {motion}
+          {pulses}
+          {trails}
+          {playback}
+          onselect={selectFromMap}
+          onview={(next) => {
+            stopFlight();
+            view = next;
+            userMoved = true;
+          }}
+          onfly={(next) => {
+            flyTo(next);
+            userMoved = true;
+          }}
         />
       {:else if loadFailed}
         <div class="empty" data-testid="atlas-error" role="alert">
@@ -402,6 +681,7 @@
       disabled={!graph || empty}
       onmode={(m) => (timeMode = m)}
       onindex={(i) => (scrubIndex = i)}
+      onplaying={(p) => (playing = p)}
     />
     </div>
     <AtlasInspector
@@ -410,14 +690,16 @@
       {detailLoading}
       {related}
       presence={selectedNode ? presence : working}
+      {online}
       {people}
       selectedPersonId={personFilter}
       onperson={(id) => (personFilter = personFilter === id ? null : id)}
       onpeopleretry={() => (peopleNonce += 1)}
       personMatches={personIds?.size ?? 0}
+      {today}
       company={companyName ?? graph?.company ?? ""}
       objectCount={loadFailed ? null : (graph?.nodes.length ?? 0)}
-      projectsInProgress={loadFailed && boardInProgress == null ? null : projectsInProgress}
+      projectsInProgress={(loadFailed && boardInProgress == null) || projectsInProgress === 0 ? null : projectsInProgress}
       mapFailed={loadFailed}
       {nowMs}
       onselect={selectId}
@@ -457,6 +739,80 @@
   }
   .grow {
     flex: 1;
+  }
+  .find {
+    position: relative;
+  }
+  .find input {
+    width: 200px;
+    height: 28px;
+    box-sizing: border-box;
+    padding: 0 10px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: var(--v4-radius-button, 6px);
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+  .find input::placeholder {
+    color: var(--v4-text-3);
+  }
+  .find input:focus {
+    border-color: var(--v4-text-3);
+  }
+  .find-list {
+    position: absolute;
+    right: 0;
+    top: 34px;
+    z-index: 5;
+    width: 300px;
+    padding: 4px;
+    border: 1px solid var(--v4-control-border);
+    background: var(--v4-ground);
+    background:
+      linear-gradient(var(--v4-control-bg), var(--v4-control-bg)),
+      rgb(from var(--v4-ground) r g b);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .find-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    background: none;
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .find-row:first-child,
+  .find-row:hover {
+    background: var(--v4-active-row);
+  }
+  .find-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .find-more {
+    color: var(--v4-text-3);
+  }
+  .find-kind {
+    color: var(--v4-text-3);
+    flex: none;
+  }
+  .find-none {
+    padding: 6px 8px;
+    color: var(--v4-text-3);
   }
   .chip {
     display: inline-flex;

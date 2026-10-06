@@ -37,6 +37,13 @@ export interface LiveSession {
   contextStatus: LiveContextStatus | string;
   projectId?: string;
   taskId?: string;
+  /**
+   * Where the session runs, when the server sends it (not part of contract v1
+   * today). Atlas places an actor with no project by these.
+   */
+  repo?: string;
+  cwd?: string;
+  workerId?: string;
   status: LiveSessionStatus | string;
   startedAt: string;
   lastTurnAt: string;
@@ -118,6 +125,9 @@ function parseSession(raw: unknown): LiveSession | null {
       ? { projectId: optionalTrimmed(row.projectId) }
       : {}),
     ...(optionalTrimmed(row.taskId) ? { taskId: optionalTrimmed(row.taskId) } : {}),
+    ...(optionalTrimmed(row.repo) ? { repo: optionalTrimmed(row.repo) } : {}),
+    ...(optionalTrimmed(row.cwd) ? { cwd: optionalTrimmed(row.cwd) } : {}),
+    ...(optionalTrimmed(row.workerId) ? { workerId: optionalTrimmed(row.workerId) } : {}),
     status,
     startedAt,
     lastTurnAt,

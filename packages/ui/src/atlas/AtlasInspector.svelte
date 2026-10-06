@@ -4,6 +4,7 @@
   import CompanyLabel from "../company/CompanyLabel.svelte";
   import RailButton from "../common/button/RailButton.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
+  import AtlasFace from "./AtlasFace.svelte";
   /**
    * Atlas inspector (340 px). With a selection: kind, title, vault path,
    * chips, Here now, PRD goal, stories, related, actions, Born/Touched/Inside.
@@ -18,6 +19,7 @@
     type AtlasPresence,
   } from "./atlas-model.js";
   import { ATLAS_PEOPLE_DAYS, type AtlasPeopleState } from "./atlas-people.js";
+  import { ATLAS_TODAY_PAGE, atlasAgo } from "./atlas-today.js";
 
   interface Props {
     node: AtlasNode | null;
@@ -25,6 +27,8 @@
     detailLoading: boolean;
     related: AtlasNode[];
     presence: AtlasPresence[];
+    /** Online with no session in progress; summarised under Working now. */
+    online?: AtlasPresence[];
     company: string;
     /** Null hides the objects chip (the US-009 landing has no map yet). */
     objectCount: number | null;
@@ -44,6 +48,8 @@
     onpeopleretry?: () => void;
     /** Map objects lit for the picked person; 0 means none of their skills are on the map. */
     personMatches?: number;
+    /** Today panel: objects changed today, busiest first; null hides the panel (no map). */
+    today?: AtlasNode[] | null;
   }
 
   let {
@@ -52,6 +58,7 @@
     detailLoading,
     related,
     presence,
+    online = [],
     company,
     objectCount,
     projectsInProgress,
@@ -66,7 +73,11 @@
     onperson,
     onpeopleretry,
     personMatches = 0,
+    today = null,
   }: Props = $props();
+
+  let todayOpen = $state(false);
+  const todayShown = $derived(today ? (todayOpen ? today : today.slice(0, ATLAS_TODAY_PAGE)) : []);
 
   function sparkPath(values: number[]): string {
     if (values.length < 2) return "";
@@ -100,7 +111,7 @@
       <div class="list">
         {#each here as who (who.actorUid ?? who.name)}
           <div class="li">
-            <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
+            <span class="mini" class:sq={who.bot}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={22} fallback={who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()} /><span class="ld"></span></span>
             <div>
               <div class="tt">{who.name}</div>
               {#if who.signal}<div class="mm">{who.signal}</div>{/if}
@@ -161,7 +172,29 @@
       {#if objectCount !== null}<span class="chip">{objectCount} objects</span>{/if}
       {#if projectsInProgress !== null}<span class="chip">{projectsInProgress} projects in progress</span>{/if}
     </div>
-    {#if !mapFailed || presence.length}
+    {#if today && !mapFailed}
+      <div class="hr"></div>
+      <div class="section" data-testid="atlas-today-title">Today at {company || "this company"}</div>
+      {#if today.length}
+        <div class="kind sub">Changed today</div>
+        <div class="list" data-testid="atlas-today-changed">
+          {#each todayShown as item (item.id)}
+            <button type="button" class="li rowbtn card" data-testid="atlas-today-row" onclick={() => onselect(item.id)}>
+              <span class="r">{ATLAS_KIND_TAG[item.type]}</span>
+              <div><div class="tt">{item.label}</div><div class="mm">{atlasAgo(item.touched ?? nowMs, nowMs)}{item.stories ? ` · ${item.stories.done} of ${item.stories.total} stories` : ""}</div></div>
+            </button>
+          {/each}
+          {#if today.length > todayShown.length}
+            <button type="button" class="li rowbtn card more" data-testid="atlas-today-more" onclick={() => (todayOpen = true)}>
+              <span class="r"></span><div class="tt mm">Show {today.length - todayShown.length} more</div>
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <p class="goal" data-testid="atlas-today-empty">Nothing on the map changed today.</p>
+      {/if}
+    {/if}
+    {#if !mapFailed || presence.length || online.length}
     <div class="hr"></div>
     <div class="kind">Working now</div>
     {/if}
@@ -170,14 +203,23 @@
     {:else if presence.length}
       <div class="list" data-testid="atlas-inspector-working-now">
         {#each presence as who (`${who.name}:${who.nodeId}`)}
-          <button type="button" class="li rowbtn" onclick={() => onselect(who.nodeId)}>
-            <span class="mini" class:sq={who.bot}>{who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()}<span class="ld"></span></span>
-            <div><div class="tt">{who.name}</div>{#if who.signal}<div class="mm">{who.signal}</div>{/if}</div>
+          <button type="button" class="li rowbtn card" onclick={() => onselect(who.nodeId)}>
+            <span class="mini" class:sq={who.bot}><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={22} fallback={who.bot ? "⌁" : who.name.slice(0, 2).toUpperCase()} /><span class="ld"></span></span>
+            <div>
+              <div class="tt">{who.name}</div>
+              {#if who.place || who.signal}<div class="mm">{[who.place, who.signal].filter(Boolean).join(" · ")}</div>{/if}
+            </div>
           </button>
         {/each}
       </div>
     {:else}
       <p class="goal">Nobody is working in this company right now.</p>
+    {/if}
+    {#if online.length}
+      <details class="online" data-testid="atlas-inspector-online">
+        <summary>{online.length} more online, not in a session</summary>
+        <div class="online-names">{online.map((who) => who.name).join(", ")}</div>
+      </details>
     {/if}
     {#if people.status !== "idle"}
       <div class="hr"></div>
@@ -196,13 +238,13 @@
           {#each people.people as person (person.id)}
             <button
               type="button"
-              class="li rowbtn person"
+              class="li rowbtn card person"
               data-testid="atlas-person"
               aria-pressed={selectedPersonId === person.id}
               onclick={() => onperson?.(person.id)}
             >
-              <div class="pmain">
-                <div class="tt"><PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
+              <div class="pmain" style:--share={`${Math.round((person.tokens / Math.max(1, people.people[0]?.tokens ?? 1)) * 100)}%`}>
+                <div class="tt">{#if person.bot}<i class="boticon" aria-hidden="true"></i>{/if}<PersonName person={identityFromTelemetry(person)} /><span class="grow"></span><span class="mm tok">{person.tokens > 0 ? compactNumber(person.tokens) : "—"}</span></div>
                 <div class="mm prow">
                   {#if !person.bot && person.trend.length > 1}<svg class="spark" width="48" height="12" viewBox="0 0 48 12" aria-hidden="true"><path d={sparkPath(person.trend)} /></svg>{/if}
                   <span>{person.sessions} sess · {person.stories} stories</span>
@@ -224,13 +266,32 @@
 
 <style>
   .people-head { display: flex; gap: 8px; align-items: baseline; }
-  .li.person { display: block; width: 100%; text-align: left; padding: 6px 0; }
+  /* Section title: small, uppercase, muted (owner rule for section titles). */
+  .section { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--v4-text-3); }
+  .kind.sub { margin-top: 8px; }
+  .more .tt { margin-top: 0; }
+  .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }
+  .online summary { cursor: pointer; }
+  .online-names { margin-top: 4px; line-height: 1.5; }
+  /* Card rows: 10px inner padding, offset by a matching negative margin so text
+     stays on the section's column and the hover/selected fill reaches past it. */
+  .li.card { padding: 8px 10px; margin: 0 -10px; }
+  .li.card + .li.card { margin-top: 3px; }
+  .li.person { display: block; width: calc(100% + 20px); text-align: left; }
+  .pmain .prow { margin-top: 4px; }
   .li.person[aria-pressed="true"] { background: var(--v4-active-row); }
   .pmain { width: 100%; min-width: 0; }
   .pmain .tt { display: flex; align-items: baseline; gap: 6px; }
   .pmain .grow { flex: 1; }
-  .prow { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .prow .sk { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+  .prow .spark { flex: none; }
+  .prow span { flex: none; }
+  .prow .sk { flex: 1 1 0; min-width: 0; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tok { font-variant-numeric: tabular-nums; }
+  /* Bots carry the same square mark as on the map. */
+  .boticon { width: 8px; height: 8px; flex: none; align-self: center; border: 1.25px solid var(--v4-text-3); border-radius: 2px; box-sizing: border-box; }
+  /* Share of the top person's tokens: one quiet rule under the row. */
+  .pmain::after { content: ""; display: block; height: 2px; margin-top: 6px; width: var(--share, 0%); min-width: 2px; background: var(--v4-text-3); opacity: 0.35; }
   .spark path { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: 0.7; }
   .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
   .inspector {

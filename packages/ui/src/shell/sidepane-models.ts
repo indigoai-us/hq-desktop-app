@@ -183,26 +183,16 @@ export interface SidepaneRosterEntry {
 export const INVITE_TEAMMATE_ROW: SidepaneRow = { id: "invite-teammate", label: "Invite a teammate" };
 
 /**
- * Atlas keeps the company sections with Atlas selected, then the company's
- * Live now and Idle rosters. Live count derives from the roster, so the chip
- * and the Live now section never disagree.
+ * Atlas keeps the company sections with Atlas selected. People and bots are
+ * shown on the Atlas page itself, so the sidepane lists no roster; the roster
+ * only drives the live count chip and the invite row.
  */
 export function atlasSidepaneModel(
   company: SidepaneCompany,
   roster: readonly SidepaneRosterEntry[],
 ): SidepaneListModel {
-  const toRow = (p: SidepaneRosterEntry): SidepaneRow => ({
-    id: `person:${p.uid}`,
-    label: p.name || p.uid,
-    mark: p.kind === "bot" ? "square" : "circle",
-    live: p.live,
-  });
-  const live = roster.filter((p) => p.live).map(toRow);
-  const idle = roster.filter((p) => !p.live).map(toRow);
   const sections = cloneSections();
-  if (live.length) sections.push({ id: "live-now", label: "Live now", rows: live });
-  if (idle.length) sections.push({ id: "idle", label: "Idle", rows: idle });
-  // US-014: a company with no teammates yet gets an invite row in the roster.
+  // US-014: a company with no teammates yet gets an invite row.
   if (roster.filter((p) => p.kind === "human").length <= 1) {
     sections.push({ id: "invite", rows: [{ ...INVITE_TEAMMATE_ROW }] });
   }
@@ -210,7 +200,7 @@ export function atlasSidepaneModel(
     kind: "atlas",
     key: `atlas:${company.uid}`,
     title: company.label || company.uid,
-    liveCount: live.length,
+    liveCount: roster.filter((p) => p.live).length,
     sections,
     footerRow: null,
     selectedId: "atlas",

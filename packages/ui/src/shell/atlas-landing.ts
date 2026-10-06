@@ -14,6 +14,7 @@
 import type { PresenceSnapshot } from "@hq/core";
 import type { SidepaneRosterEntry } from "./sidepane-models.js";
 import type { NavigationDestination } from "./navigation-history.js";
+import { agentAvatarFor, authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
 
 /**
  * Vault access the Atlas graph builder needs in the native app (QA-016). The
@@ -96,17 +97,33 @@ export function atlasWorkingNow(roster: readonly SidepaneRosterEntry[]): AtlasWo
 }
 
 /**
- * One live actor on the Atlas map (US-013), one row per project they have an
- * open Work Mesh session on. Actors with no project-bound session appear once
- * with no `projectId`; they stay in Working now but dock nowhere.
+ * One live actor on the Atlas map (US-013), one row per place they have an
+ * open Work Mesh session on. A place is the session's project id, or, when
+ * there is none, any repo, working directory or worker the session names.
+ * Actors with no such session appear once with no place; the map lists them
+ * in its Not on the map dock.
  */
 export interface AtlasLiveActor {
   actorUid: string;
   name: string;
   bot: boolean;
   projectId?: string;
+  repo?: string;
+  cwd?: string;
+  workerId?: string;
+  taskId?: string;
   signal?: string;
+  /** Online, but none of their sessions is in progress. */
+  idle?: boolean;
+  /**
+   * Picture the rest of the app shows for this actor: the roster or profile
+   * photo, else a bot's generated avatar. Absent for a person with no photo.
+   */
+  avatarUrl?: string;
 }
+
+/** Session states that mean work is in progress right now. */
+const WORKING_STATUSES = new Set(["active", "open", "running"]);
 
 type LiveReadLike = {
   participants: readonly {
@@ -114,7 +131,14 @@ type LiveReadLike = {
     actorType: string;
     displayName: string;
     presence: string;
-    sessions: readonly { projectId?: string; taskId?: string; status: string }[];
+    sessions: readonly {
+      projectId?: string;
+      taskId?: string;
+      repo?: string;
+      cwd?: string;
+      workerId?: string;
+      status: string;
+    }[];
   }[];
 };
 
@@ -130,6 +154,7 @@ export function atlasLiveActors(
   companyUid: string,
   names: RosterNames,
   selfUid: string | null = null,
+  avatars: Readonly<Record<string, string>> | null = null,
 ): AtlasLiveActor[] {
   if (!live) return [];
   const actors = snapshot.get(companyUid);
@@ -143,25 +168,45 @@ export function atlasLiveActors(
       p.displayName?.trim() ||
       (p.actorUid === selfUid ? "You" : p.actorUid);
     const bot = (known?.actorType ?? p.actorType) === "agent";
-    const projects = new Map<string, string | undefined>();
+    const idle = !p.sessions.some((s) => WORKING_STATUSES.has(s.status));
+    // Same order as IdentityMark: a photo the CSP can paint, then a bot's
+    // generated avatar, then nothing (the chip draws initials).
+    const picture = authorAvatarUrl(p.actorUid, avatars) ?? (bot ? agentAvatarFor(p.actorUid) : null);
+    const flag = { ...(idle ? { idle: true } : {}), ...(picture ? { avatarUrl: picture } : {}) };
+    // One row per place. A session with no project still says where it is
+    // when it names a repo, a working directory, a worker or a task.
+    const places = new Map<string, Omit<AtlasLiveActor, "actorUid" | "name" | "bot" | "idle">>();
     for (const s of p.sessions) {
-      const project = s.projectId?.trim().toLowerCase();
-      if (!project || s.status === "ended" || projects.has(project)) continue;
-      projects.set(project, s.taskId?.trim() || undefined);
+      if (s.status === "ended") continue;
+      const projectId = s.projectId?.trim().toLowerCase() || undefined;
+      const taskId = s.taskId?.trim() || undefined;
+      const hints = projectId
+        ? { projectId }
+        : {
+            ...(s.repo?.trim() ? { repo: s.repo.trim() } : {}),
+            ...(s.cwd?.trim() ? { cwd: s.cwd.trim() } : {}),
+            ...(s.workerId?.trim() ? { workerId: s.workerId.trim() } : {}),
+            ...(taskId ? { taskId } : {}),
+          };
+      const key = projectId ? `project:${projectId}` : Object.values(hints).join("|");
+      if (!Object.keys(hints).length || places.has(key)) continue;
+      places.set(key, { ...hints, signal: taskId });
     }
-    if (!projects.size) {
-      out.push({ actorUid: p.actorUid, name, bot });
+    if (!places.size) {
+      out.push({ actorUid: p.actorUid, name, bot, ...flag });
       continue;
     }
-    for (const [projectId, taskId] of projects) {
-      out.push({ actorUid: p.actorUid, name, bot, projectId, signal: taskId });
+    for (const place of places.values()) {
+      out.push({ actorUid: p.actorUid, name, bot, ...place, ...flag });
     }
   }
   return out.sort(
     (a, b) =>
       a.name.localeCompare(b.name) ||
       a.actorUid.localeCompare(b.actorUid) ||
-      (a.projectId ?? "").localeCompare(b.projectId ?? ""),
+      (a.projectId ?? a.repo ?? a.cwd ?? a.workerId ?? a.taskId ?? "").localeCompare(
+        b.projectId ?? b.repo ?? b.cwd ?? b.workerId ?? b.taskId ?? "",
+      ),
   );
 }
 
@@ -170,13 +215,17 @@ export interface AtlasActionNode {
   type: string;
   path: string;
   folder: boolean;
+  /** For a folder: the file inside it to open (company-relative). */
+  file?: string;
 }
 
 /**
  * Where the Atlas inspector's Open files / Open board buttons go (QA-066).
- * A project opens on the Projects page, on its Files or Tasks tab, the same
- * place Projects > project > Files reaches. Any other file opens in the Files
- * explorer; a folder opens the company vault. Null when there is no company.
+ * Open files shows a file, not a tree (owner, 2026-10-04): a file opens in
+ * the Files explorer, and a folder opens on its main file (README, PRD, SKILL
+ * and so on) there. A project with no such file falls back to the Projects
+ * page Files tab, and any other folder to the company vault. Open board goes
+ * to the project's Tasks tab. Null when there is no company.
  */
 export function atlasNodeDestination(
   node: AtlasActionNode,
@@ -187,11 +236,15 @@ export function atlasNodeDestination(
   if (!slug) return null;
   const path = node.path.replace(/^\/+|\/+$/g, "");
   const project = node.type === "project" ? /^projects\/([^/]+)/.exec(path)?.[1] : undefined;
+  const vault = `company:${slug}`;
+  const file = node.file?.replace(/^\/+/, "");
+  if (action === "files" && node.folder && file) {
+    return { kind: "explorer", vault, path: `companies/${slug}/${file}` };
+  }
   if (project) {
     return { kind: "projects", company: slug, project, tab: action === "files" ? "files" : "tasks" };
   }
   if (action === "board") return { kind: "projects", company: slug };
-  const vault = `company:${slug}`;
   if (node.folder || !path) return { kind: "explorer", vault, path: null };
   return { kind: "explorer", vault, path: `companies/${slug}/${path}` };
 }

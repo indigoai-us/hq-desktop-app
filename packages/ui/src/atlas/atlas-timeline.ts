@@ -17,7 +17,24 @@ const DAY = 86_400_000;
 export const ATLAS_TOUCH_WINDOW_DAYS = 7;
 /** Opacity for objects outside the scrubbed moment. */
 export const ATLAS_BORN_HIDDEN = 0.06;
-export const ATLAS_TOUCH_FADED = 0.25;
+/** A faded object touched at the scrubbed moment; older ones fall below it. */
+export const ATLAS_TOUCH_FADED = 0.42;
+/** Where the oldest and undated objects settle. */
+export const ATLAS_AGE_FLOOR = 0.12;
+/** Days for a faded object to lose about two thirds of its way to the floor. */
+export const ATLAS_AGE_FADE_DAYS = 21;
+
+/**
+ * Opacity of an object outside the scrubbed moment, by how long before `ref`
+ * it was last touched: ATLAS_TOUCH_FADED when just touched, easing down to
+ * ATLAS_AGE_FLOOR for the oldest. Undated objects sit at the floor.
+ */
+export function atlasAgeFade(touched: number | undefined, ref: number): number {
+  if (touched == null) return ATLAS_AGE_FLOOR;
+  const days = Math.max(0, (ref - touched) / DAY);
+  const value = ATLAS_AGE_FLOOR + (ATLAS_TOUCH_FADED - ATLAS_AGE_FLOOR) * Math.exp(-days / ATLAS_AGE_FADE_DAYS);
+  return Math.round(value * 1000) / 1000;
+}
 /** At the live edge an object counts as active if touched this recently. */
 export const ATLAS_LIVE_WINDOW_MS = 10 * 60_000;
 
@@ -96,7 +113,7 @@ export function atlasTimeOpacity(
   const out = new Map<string, number>();
   if (index == null || index >= ATLAS_TIMELINE_DAYS - 1) {
     for (const n of nodes) {
-      if (!atlasActiveNow(n, nowMs, live)) out.set(n.id, ATLAS_TOUCH_FADED);
+      if (!atlasActiveNow(n, nowMs, live)) out.set(n.id, atlasAgeFade(n.touched, nowMs));
     }
     return out;
   }
@@ -112,7 +129,7 @@ export function atlasTimeOpacity(
     }
     const t = n.touched;
     const fresh = t != null && t <= cutoff && t > cutoff - ATLAS_TOUCH_WINDOW_DAYS * DAY;
-    if (!fresh) out.set(n.id, ATLAS_TOUCH_FADED);
+    if (!fresh) out.set(n.id, atlasAgeFade(t != null && t <= cutoff ? t : undefined, cutoff));
   }
   return out;
 }
@@ -126,4 +143,59 @@ export function atlasActiveNow(
   if (live.has(n.id)) return true;
   const t = n.touched;
   return t != null && t <= nowMs && nowMs - t <= ATLAS_LIVE_WINDOW_MS;
+}
+
+/** Playback covers the whole timeline in about this long. */
+export const ATLAS_PLAYBACK_TOTAL_MS = 25_000;
+const PLAYBACK_MIN_STEP_MS = 120;
+const PLAYBACK_MAX_STEP_MS = 1_200;
+
+/** Milliseconds per day so `days` play in about ATLAS_PLAYBACK_TOTAL_MS. */
+export function atlasPlaybackStepMs(days = ATLAS_TIMELINE_DAYS): number {
+  const raw = Math.round(ATLAS_PLAYBACK_TOTAL_MS / Math.max(1, days));
+  return Math.min(PLAYBACK_MAX_STEP_MS, Math.max(PLAYBACK_MIN_STEP_MS, raw));
+}
+
+/** Where play starts: the scrubbed day, or the first day when at (or past) the live edge. */
+export function atlasPlaybackStart(index: number | null): number {
+  return index == null || index >= ATLAS_TIMELINE_DAYS - 1 ? 0 : Math.max(0, index);
+}
+
+/** Day shown `elapsedMs` into playback from `from`; null once it reaches the live edge (playback ends). */
+export function atlasPlaybackIndex(from: number, elapsedMs: number, stepMs: number): number | null {
+  const next = from + Math.floor(Math.max(0, elapsedMs) / Math.max(1, stepMs));
+  return next >= ATLAS_TIMELINE_DAYS - 1 ? null : next;
+}
+
+/**
+ * The day's biggest changes for the playback caption: objects born (Born
+ * mode) or last touched (Touched mode) on that day, largest first (story
+ * total, else item count), then by name. The graph keeps one timestamp per
+ * object, so an object counts on the day of its latest touch only.
+ */
+export function atlasBiggestChanges(
+  nodes: readonly Pick<AtlasNode, "id" | "label" | "created" | "touched" | "count" | "stories">[],
+  mode: AtlasTimeMode,
+  index: number,
+  nowMs: number,
+  max = 3,
+): string[] {
+  const end = atlasDayEnd(index, nowMs);
+  const start = end - DAY + 1;
+  const size = (n: (typeof nodes)[number]) => n.stories?.total || n.count || 1;
+  return nodes
+    .filter((n) => {
+      const t = stamp(n, mode);
+      return t != null && t >= start && t <= end;
+    })
+    .sort((a, b) => size(b) - size(a) || a.label.localeCompare(b.label) || a.id.localeCompare(b.id))
+    .slice(0, Math.max(0, Math.min(3, max)))
+    .map((n) => n.label);
+}
+
+/** Caption under the playback date: "New: a, b and c" or "Changed: a". Empty when nothing happened. */
+export function atlasPlaybackCaption(names: readonly string[], mode: AtlasTimeMode): string {
+  if (!names.length) return "";
+  const list = names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${mode === "born" ? "New" : "Changed"}: ${list}`;
 }
