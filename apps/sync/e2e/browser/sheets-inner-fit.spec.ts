@@ -59,13 +59,17 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
       // New bot asks "Cloud or Local?" first; Local opens the step flow.
       await page.getByTestId('new-bot-choice-local').click();
     },
-    // Local was already picked, so Next skips "Where does it run?" and goes
-    // from "What kind of bot?" straight to Details.
+    // The local steps open on the name; Continue walks blank or a template,
+    // then the coding tool.
     next: [
       async (page) => {
         await page.getByTestId('create-bot-next').click();
-        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'details');
-        await expect(page.getByTestId('chat-bot-name')).toBeVisible();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'kind');
+      },
+      async (page) => {
+        await page.getByTestId('create-bot-next').click();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
+        await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
       },
     ],
   },

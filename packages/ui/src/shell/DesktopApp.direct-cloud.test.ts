@@ -215,16 +215,13 @@ async function createPolar(): Promise<void> {
   clickAnywhere('[data-testid="chat-create-menu-agent"]');
   await settle(10);
   // "New bot" asks "Cloud or Local?" first. This host makes no local bots:
-  // Cloud opens the "+" window's bot flow with Home on Cloud.
+  // Cloud opens the "+" window's cloud bot steps. With one company there is
+  // no company picker, so the flow opens straight on the cloud details step.
   expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
   clickAnywhere('[data-testid="new-bot-choice-cloud"]');
   await settle(10);
-  clickAnywhere('[data-testid="create-bot-next"]');
-  await settle(10);
-  clickAnywhere('[data-testid="chat-bot-where-cloud"]');
-  await settle(10);
-  clickAnywhere('[data-testid="create-bot-next"]');
-  await settle(10);
+  expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
+  expect(document.querySelector('[data-testid="chat-bot-where-cloud"]')).toBeNull();
   const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
   nameField.value = "Polar";
   nameField.dispatchEvent(new Event("input", { bubbles: true }));

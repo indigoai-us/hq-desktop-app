@@ -10,13 +10,13 @@ import { describe, expect, it } from "vitest";
  */
 const FILES = [
   "./create-bot.css",
+  "./NewBotSunriseShell.svelte",
   "./CreateBotFlow.svelte",
   "./KindStep.svelte",
   "./DetailsStep.svelte",
   "./CloudDetailsStep.svelte",
   "./HomeStep.svelte",
   "./RuntimeSignIn.svelte",
-  "./BotPreviewCard.svelte",
   "./BotProgressCard.svelte",
 ];
 
@@ -90,10 +90,13 @@ describe("create-bot wizard type contract", () => {
     });
   }
 
-  it("sizes the wizard buttons and fields at the Messages 28px", () => {
-    const flow = declarations(cssOf("./CreateBotFlow.svelte"));
-    expect(flow).toMatch(/\.flow-primary\s*\{[^}]*height:\s*28px/);
-    expect(flow).toMatch(/\.flow-back\s*\{[^}]*height:\s*28px/);
+  it("uses the takeover's own buttons and sizes the fields at the Messages 28px", () => {
+    // The flow is the takeover's step screens everywhere: its Continue/Create
+    // and Back are the takeover's buttons, not a wizard footer of its own.
+    const flow = read("./CreateBotFlow.svelte");
+    expect(flow).toContain('class="new-bot-create-submit"');
+    expect(flow).toContain("<NewBotStepHead");
+    expect(declarations(cssOf("./CreateBotFlow.svelte"))).toBe("");
     const shared = declarations(cssOf("./create-bot.css"));
     expect(shared).toMatch(/\.cb-search\s*\{[^}]*height:\s*28px/);
     expect(shared).toMatch(/\.cb-pill\s*\{[^}]*border:\s*0;/);
