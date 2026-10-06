@@ -430,9 +430,13 @@ pub(crate) fn diagnostics_sync_snapshot() -> Result<
 }
 
 /// Current updater state, for the `updater` probe.
-pub(crate) fn diagnostics_updater_snapshot() -> Result<ClientHealthUpdaterState, String> {
+pub(crate) async fn diagnostics_updater_snapshot() -> Result<ClientHealthUpdaterState, String> {
     let state = with_state(|state| state.clone())?;
-    Ok(reported_updater_state(&state))
+    let versions = collect_versions().await;
+    Ok(reported_updater_state(
+        &state,
+        versions.sync_runner.as_deref(),
+    ))
 }
 
 // ─── Snapshot derivation (pure) ──────────────────────────────────────────────
@@ -537,7 +541,7 @@ fn derive_failure_reason(
                 .unwrap_or(ClientHealthFailureReason::RunnerFailed),
         ),
         _ => {
-            if reported_updater_state(state) == ClientHealthUpdaterState::UpdateFailed {
+            if reported_updater_state(state, None) == ClientHealthUpdaterState::UpdateFailed {
                 Some(ClientHealthFailureReason::UpdateFailed)
             } else {
                 None
@@ -1343,7 +1347,7 @@ mod tests {
         let failed = with_state(|s| s.clone()).unwrap();
         assert_eq!(failed.updater_state.as_deref(), Some("update_failed"));
         assert_eq!(
-            reported_updater_state(&failed),
+            reported_updater_state(&failed, None),
             ClientHealthUpdaterState::UpdateFailed
         );
 

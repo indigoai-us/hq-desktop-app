@@ -361,7 +361,7 @@ async fn probe_core() -> ClientHealthCheckResult {
 
 async fn probe_updater() -> ClientHealthCheckResult {
     use hq_desktop_core::client_health::ClientHealthUpdaterState;
-    match crate::commands::client_health::diagnostics_updater_snapshot() {
+    match crate::commands::client_health::diagnostics_updater_snapshot().await {
         Ok(ClientHealthUpdaterState::UpdateFailed) => {
             fail(ClientHealthDiagnosticCheck::Updater, ClientHealthFailureReason::UpdateFailed)
         }
