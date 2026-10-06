@@ -271,7 +271,7 @@ describe('hq-CLI updater self-provisions HQ-managed Node before blaming the user
     expect(occurrences(cli, 'repair_managed_node(')).toBe(1);
     // The failure path classifies WITH the probed environment (so the new kind is
     // reachable) and shows the environment-aware copy, never the raw parse error.
-    expect(cli).toContain('classify_install_failure_with_environment(');
+    expect(cli).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(cli).toContain('install_failure_detail_with_environment(');
     // The Sync-lane preflight and the CLI-updater classifier share ONE floor,
     // sourced from hq-desktop-core, so they can never drift apart.
