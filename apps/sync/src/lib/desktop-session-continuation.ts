@@ -365,7 +365,6 @@ export function launchReceipt(
     path: '/v1/desktop/onboarding/launch',
     body,
   };
-  };
 }
 
 /** CI launches must not inflate the production install denominator. */
