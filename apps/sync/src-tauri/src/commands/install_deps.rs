@@ -12023,6 +12023,54 @@ mod cli_install_lock_skip_tests {
     }
 
     #[test]
+    fn preflight_disk_space_refusal_emits_disk_full_category_tag() {
+        let error = hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at_with(
+            Path::new("/tmp/hq-setup-prefix-not-created"),
+            |_| Ok(0),
+        )
+        .expect_err("preflight must refuse a disk below the free-space minimum");
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert("hq-cli", hq_cli_result(&error));
+
+        let events = capture_reporting_loop(&results, &HashMap::new());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_error"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("1 GiB")
+        ));
+    }
+
+    #[test]
+    fn npm_enospc_with_exit_code_emits_disk_full_category_tag() {
+        let stderr = "npm error code ENOSPC: no space left on device (os error 28)";
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert(
+            "hq-cli",
+            hq_cli_result("Process exited with code 1: npm error code ENOSPC"),
+        );
+        let mut diagnostics: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+        diagnostics.insert(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: stderr.to_string(),
+                error: "Process exited with code 1".to_string(),
+            },
+        );
+
+        let events = capture_reporting_loop(&results, &diagnostics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_stderr_tail"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("ENOSPC")
+        ));
+    }
+
+    #[test]
     fn a_concurrent_cli_install_skip_is_not_a_reportable_setup_failure() {
         // Reproduces HQ-DESKTOP-6J: on the base, hq-cli is a reportable root and
         // the reporting loop fires one Level::Error event; with the fix it is
