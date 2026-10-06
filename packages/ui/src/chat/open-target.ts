@@ -116,7 +116,8 @@ export function requestChannelOpen(
         },
       }),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/open-target.ts:119", error);
     // Non-browser (unit tests) — stash alone is enough.
   }
 }
@@ -179,7 +180,8 @@ export function requestDmRequestsOpen(pairKey?: string | null): void {
         detail: { pairKey: pendingDmRequestPairKey },
       }),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/open-target.ts:182", error);
     // Non-browser (unit tests) — stash alone is enough.
   }
 }

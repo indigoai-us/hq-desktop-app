@@ -252,7 +252,8 @@ export function loadConnectionRecords(storage: RecordStorage | null | undefined)
 export function saveConnectionRecords(storage: RecordStorage | null | undefined, records: BotConnectionRecords): void {
   try {
     storage?.setItem(BOT_CONNECTION_CARDS_STORAGE_KEY, JSON.stringify(records));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/messaging/connection-card-model.ts:255", error);
     // best-effort
   }
 }
