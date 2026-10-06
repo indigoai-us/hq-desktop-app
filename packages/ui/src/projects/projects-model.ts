@@ -108,6 +108,8 @@ export interface Project {
    * absent. Kept separate so cloud owner/creator metadata can still outrank it.
    */
   creatorFallback?: string | null;
+  /** Last write of the project's prd.json on this computer (activity only). */
+  prdModifiedAt?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +911,7 @@ export function matchesPortfolioStateFilter(
 export function groupProjectsByPortfolioColumn(
   projects: Project[],
   sessions: readonly PortfolioSessionRef[],
+  columnFor?: (project: Project) => PortfolioColumn,
 ): Record<PortfolioColumn, Project[]> {
   const groups: Record<PortfolioColumn, Project[]> = {
     "not-started": [],
@@ -917,8 +920,9 @@ export function groupProjectsByPortfolioColumn(
     complete: [],
   };
   for (const project of projects) {
-    const hasLive = projectHasLiveSignal(project, sessions);
-    const column = portfolioColumn(project, hasLive);
+    const column =
+      columnFor?.(project) ??
+      portfolioColumn(project, projectHasLiveSignal(project, sessions));
     groups[column].push(project);
   }
   for (const column of PORTFOLIO_COLUMNS) {
