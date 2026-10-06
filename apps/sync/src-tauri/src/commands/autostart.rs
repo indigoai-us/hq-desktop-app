@@ -68,6 +68,20 @@ pub fn autostart_state_event_after_reconciliation() -> (&'static str, Value) {
     build_autostart_state_event(prefs.as_ref(), std::env::consts::OS, registered)
 }
 
+/// Closed, launch-time registration state for operational liveness telemetry.
+/// This reports the platform registration itself, not the settings preference.
+pub fn desktop_start_at_login_status() -> &'static str {
+    let prefs = read_menubar_prefs();
+    let preference = prefs
+        .as_ref()
+        .map(|prefs| effective_start_at_login(Some(prefs)));
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let registered = hq_platform::autostart::is_enabled().ok();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let registered = None;
+    crate::commands::telemetry::classify_start_at_login(preference, registered)
+}
+
 /// Read `startAtLogin` from ~/.hq/menubar.json (best-effort), applying the
 /// default-on semantics of `effective_start_at_login`.
 fn start_at_login_pref() -> bool {
@@ -146,6 +160,11 @@ fn restart_preferring_launch_agent_with_update_version(
         );
         crate::updater::defer_restart_until_safe(app.clone(), update_version.map(str::to_owned));
         return false;
+    }
+    if update_version.is_some() {
+        crate::commands::telemetry::note_desktop_quit_reason(
+            crate::commands::telemetry::DesktopQuitReason::UpdateRestart,
+        );
     }
     #[cfg(target_os = "macos")]
     {
