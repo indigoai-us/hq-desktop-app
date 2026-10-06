@@ -451,9 +451,9 @@ describe('master automatic-updates switch', () => {
     // Classification is now environment-aware (so an unsupported user Node is
     // recognised), but still receives the final-attempt context that lets the
     // classifier tell a post-force collision from an initial EEXIST.
-    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdate).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(normalize(cliUpdate)).toContain(
-      'install_run.final_attempt_forced, &install_env,',
+      '&raw_stderr, prefix.as_deref(), install_run.final_attempt_forced, &install_env,',
     );
     // Failures now report through the repeat-guarded episode entrypoint, which
     // still receives the final-attempt context — so the classifier can tell a
@@ -521,7 +521,7 @@ describe('master automatic-updates switch', () => {
 
     // The app classifies WITH the probed environment, arms the SAME one-shot
     // managed-Node retry for the new kind, and shows the environment-aware copy.
-    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdate).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(cliUpdate).toContain('kind == InstallFailureKind::UnsupportedNode');
     expect(cliUpdate).toContain('install_failure_detail_with_environment(');
   });
