@@ -1584,6 +1584,10 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer test-token");
+        assert_eq!(requests[0].url.path(), "/v1/bot/auto-schedule");
+        assert_eq!(requests[0].url.query(), Some("setting=hq-anywhere"));
+        assert_eq!(requests[1].url.path(), "/v1/bot/auto-schedule");
+        assert_eq!(requests[1].url.query(), Some("setting=hq-anywhere"));
         let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert_eq!(body, json!({ "value": true }));
     }
