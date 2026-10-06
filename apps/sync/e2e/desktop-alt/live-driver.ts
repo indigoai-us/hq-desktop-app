@@ -57,6 +57,80 @@ const MAIN_WINDOW_PREDICATE = `
 // absent. The window must still appear — this only gives it a deadline instead
 // of one instant.
 const MAIN_WINDOW_READY_TIMEOUT_MS = 30_000;
+
+interface BestEffortFailure {
+  label: string;
+  errorName: string;
+  firstLine: string;
+}
+
+const BEST_EFFORT_FAILURE_LIMIT = 50;
+const BEST_EFFORT_DIAGNOSTIC_LIMIT = 10;
+const bestEffortFailures: BestEffortFailure[] = [];
+let bestEffortFailureTotal = 0;
+
+/** Snapshot bounded best-effort failure evidence for diagnostics and tests. */
+export function getBestEffortFailures(): {
+  entries: BestEffortFailure[];
+  total: number;
+  dropped: number;
+} {
+  const entries = bestEffortFailures.map((entry) => ({ ...entry }));
+  return { entries, total: bestEffortFailureTotal, dropped: bestEffortFailureTotal - entries.length };
+}
+
+/** Record and settle one best-effort probe without making failure noisy. */
+export function bestEffort<T>(promise: Promise<T>, fallback: T, label: string): Promise<T> {
+  return promise.catch((error: unknown) => {
+    const rawName = error instanceof Error ? error.name : 'UnknownError';
+    const errorName = rawName.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 80) || 'Error';
+    const rawMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : 'non-Error rejection';
+    const firstLine = (rawMessage.split(/\r\n|\r|\n/, 1)[0] ?? '')
+      .replace(/https?:\/\/[^\s"<>]+/gi, '[URL]')
+      .replace(/\b(Bearer|Basic)\s+\S+/gi, '$1 [REDACTED]')
+      .replace(
+        /\b((?:access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|secret|authorization|token|api[_-]?key)\s*[:=]\s*)[^\s,;&]+/gi,
+        '$1[REDACTED]',
+      )
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 160) || '[empty]';
+    const safeLabel = label.replace(/[\r\n\t]+/g, ' ').slice(0, 100);
+
+    if (bestEffortFailures.length === BEST_EFFORT_FAILURE_LIMIT) bestEffortFailures.shift();
+    bestEffortFailures.push({ label: safeLabel, errorName, firstLine });
+    bestEffortFailureTotal += 1;
+    return fallback;
+  });
+}
+
+/** Format recent probe failures with an explicit count for evidence not shown. */
+export function formatRecentBestEffortFailures(): string {
+  const { entries, total, dropped } = getBestEffortFailures();
+  if (total === 0) return '';
+
+  const recent = entries.slice(-BEST_EFFORT_DIAGNOSTIC_LIMIT);
+  const omitted = total - recent.length;
+  const details = recent.map(
+    ({ label, errorName, firstLine }) => `- ${label} [${errorName}]: ${firstLine}`,
+  );
+  return [
+    `Recent best-effort failures (${recent.length} shown of ${total}; ${omitted} omitted; ${entries.length} retained, ${dropped} evicted):`,
+    ...details,
+  ].join('\n');
+}
+
+function withRecentBestEffortFailures(message: string): string {
+  const report = formatRecentBestEffortFailures();
+  return report ? `${message}\n\n${report}` : message;
+}
+
+function appendBestEffortFailuresToError(error: unknown): Error {
+  if (!(error instanceof Error)) return new Error(withRecentBestEffortFailures('non-Error rejection'));
+  error.message = withRecentBestEffortFailures(error.message);
+  return error;
+}
 const ERROR_CAPTURE_SCRIPT = `
   if (!window.__desktopAltE2eErrors) {
     window.__desktopAltE2eErrors = [];
@@ -174,8 +248,8 @@ async function startLiveHarness(config: LiveConfig): Promise<LiveDesktopAltHarne
   } catch (error) {
     // Release the session so the next spec can create one against the shared
     // driver; the driver process itself outlives individual harnesses.
-    await start.client.deleteSession().catch(() => undefined);
-    throw error;
+    await bestEffort(start.client.deleteSession(), undefined, 'deleteSession after harness create failure');
+    throw appendBestEffortFailuresToError(error);
   }
 }
 
@@ -305,18 +379,20 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     // claim is unchanged — a real popover window must show up — so a genuinely
     // missing one still fails, just after the deadline instead of instantly.
     let main: string | null = null;
-    await this.driver
-      .waitUntil(async () => {
+    await bestEffort(
+      this.driver.waitUntil(async () => {
         main = await this.findWindowWithPredicate(MAIN_WINDOW_PREDICATE);
         return Boolean(main);
-      }, MAIN_WINDOW_READY_TIMEOUT_MS)
-      .catch(() => undefined);
+      }, MAIN_WINDOW_READY_TIMEOUT_MS),
+      undefined,
+      'switchToMainWindow readiness wait',
+    );
     if (!main) {
       const handles = await this.driver.getWindowHandles();
-      throw new Error(
+      throw new Error(withRecentBestEffortFailures(
         `The app exposed ${handles.length} webview(s) to WebDriver but none of them is the ` +
           `classic popover (html[data-window="main"]) within ${MAIN_WINDOW_READY_TIMEOUT_MS}ms.`,
-      );
+      ));
     }
     await this.driver.switchToWindow(main);
     await this.installErrorCapture();
@@ -338,9 +414,9 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
         return pattern.test(seen);
       }, timeoutMs)
       .catch(() => {
-        throw new Error(
+        throw new Error(withRecentBestEffortFailures(
           `The window never rendered text matching ${pattern}. Last rendered text was:\n${seen}`,
-        );
+        ));
       });
     return seen;
   }
@@ -373,7 +449,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     try {
       await this.switchToMainWindow();
     } catch {
-      if (desktop) await this.driver.switchToWindow(desktop).catch(() => undefined);
+      if (desktop) await bestEffort(this.driver.switchToWindow(desktop), undefined, 'restore desktop window after main switch failure');
     }
     return Boolean(desktop);
   }
@@ -407,7 +483,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     await waitForProcessIdsToExit(processIds, deadline);
     const deleteBudgetMs = deadline - Date.now();
     if (deleteBudgetMs <= 0) {
-      throw new Error(`The app exited but exhausted the ${timeoutMs}ms teardown deadline.`);
+      throw new Error(withRecentBestEffortFailures(`The app exited but exhausted the ${timeoutMs}ms teardown deadline.`));
     }
     // Keep this strict: a delete-session failure means the real WebDriver
     // lifecycle did not close cleanly, even if the native PID disappeared.
@@ -448,10 +524,16 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
   }
 
   private async collectConsoleErrors(): Promise<string[]> {
-    const pageErrors = await this.driver
-      .execute<unknown[]>('return window.__desktopAltE2eErrors || [];')
-      .catch(() => []);
-    const browserLogs = await this.driver.browserLogs().catch(() => []);
+    const pageErrors = await bestEffort(
+      this.driver.execute<unknown[]>('return window.__desktopAltE2eErrors || [];'),
+      [],
+      'read page-captured errors',
+    );
+    const browserLogs = await bestEffort(
+      this.driver.browserLogs(),
+      [],
+      'read WebDriver browser logs',
+    );
     const logErrors = browserLogs
       .filter((entry) => !entry.level || /error|severe/i.test(entry.level))
       .map((entry) => entry.message)
@@ -463,8 +545,16 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
   private async installErrorCaptureForAllWindows(): Promise<void> {
     const handles = await this.driver.getWindowHandles();
     for (const handle of handles) {
-      await this.driver.switchToWindow(handle).catch(() => undefined);
-      await this.installErrorCapture().catch(() => undefined);
+      await bestEffort(
+        this.driver.switchToWindow(handle),
+        undefined,
+        'switch window before installing error capture',
+      );
+      await bestEffort(
+        this.installErrorCapture(),
+        undefined,
+        'install error capture in window',
+      );
     }
   }
 
@@ -491,7 +581,7 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
       desktop = await this.findDesktopAltWindow();
       return Boolean(desktop);
     }, 8_000);
-    if (!desktop) throw new Error('Timed out waiting for the desktop-alt window.');
+    if (!desktop) throw new Error(withRecentBestEffortFailures('Timed out waiting for the desktop-alt window.'));
     return desktop;
   }
 
@@ -499,10 +589,13 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
     const handles = await this.driver.getWindowHandles();
     for (const handle of handles) {
       if (handle === desktop) continue;
-      const responsive = await this.driver
-        .switchToWindow(handle)
-        .then(() => this.driver.execute<boolean>('return document.readyState !== "loading";'))
-        .catch(() => false);
+      const responsive = await bestEffort(
+        this.driver
+          .switchToWindow(handle)
+          .then(() => this.driver.execute<boolean>('return document.readyState !== "loading";')),
+        false,
+        'findResponsiveNonDesktopWindow switch/execute',
+      );
       if (responsive) return handle;
     }
     return null;
@@ -511,10 +604,11 @@ export class LiveDesktopAltHarness implements DesktopAltTestHarness, LiveDesktop
   private async findWindowWithPredicate(script: string, args: unknown[] = []): Promise<string | null> {
     const handles = await this.driver.getWindowHandles();
     for (const handle of handles) {
-      const matches = await this.driver
-        .switchToWindow(handle)
-        .then(() => this.driver.execute<boolean>(script, args))
-        .catch(() => false);
+      const matches = await bestEffort(
+        this.driver.switchToWindow(handle).then(() => this.driver.execute<boolean>(script, args)),
+        false,
+        'findWindowWithPredicate switch/execute',
+      );
       if (matches) return handle;
     }
     return null;
@@ -641,11 +735,11 @@ class WebDriverClient {
       await sleep(100);
     }
 
-    throw new Error(
+    throw new Error(withRecentBestEffortFailures(
       lastError instanceof Error
         ? `Timed out waiting for WebDriver condition: ${lastError.message}`
         : 'Timed out waiting for WebDriver condition.',
-    );
+    ));
   }
 
   private async send<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -733,7 +827,7 @@ async function waitForProcessIdsToExit(processIds: number[], deadline: number): 
   }
 
   const alive = processIds.filter(isProcessAlive);
-  throw new Error(`Application process did not exit before the deadline; still alive: ${alive.join(',')}`);
+  throw new Error(withRecentBestEffortFailures(`Application process did not exit before the deadline; still alive: ${alive.join(',')}`));
 }
 
 function isProcessAlive(processId: number): boolean {
@@ -774,7 +868,7 @@ async function resolveLiveConfig(): Promise<{ config: LiveConfig | null; reason:
   }
 
   const reusableClient = new WebDriverClient(webdriverUrl);
-  const reusableDriverRunning = await reusableClient.status().catch(() => false);
+  const reusableDriverRunning = await bestEffort(reusableClient.status(), false, 'resolveLiveConfig WebDriver status');
 
   if (reusableDriverRunning) {
     return { config: { appPath, webdriverUrl }, reason: '' };
@@ -906,18 +1000,18 @@ async function assertWebviewAutomationSwitches(config: LiveConfig, logDir: strin
 
   if (browserProcesses.length === 0) {
     throw new Error(
-      'No WebView2 browser process was found after the WebDriver session was created. ' +
-        `Captured process tree:\n${snapshot}`,
+      withRecentBestEffortFailures('No WebView2 browser process was found after the WebDriver session was created. ' +
+        `Captured process tree:\n${snapshot}`),
     );
   }
 
   if (!browserProcesses.some((line) => line.includes('--remote-debugging-port'))) {
     throw new Error(
-      'The WebView2 browser process started without --remote-debugging-port, so WebDriver ' +
+      withRecentBestEffortFailures('The WebView2 browser process started without --remote-debugging-port, so WebDriver ' +
         'cannot attach to it. msedgedriver injects that switch via ' +
         'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS, which the WebView2 Runtime ignores unless the ' +
         'app forwards it through additionalBrowserArgs — see ' +
-        `src-tauri/src/util/webview2_automation.rs. Captured process tree:\n${snapshot}`,
+        `src-tauri/src/util/webview2_automation.rs. Captured process tree:\n${snapshot}`),
     );
   }
 
@@ -965,7 +1059,7 @@ function describeDriverFailure(
 
 async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   const client = new WebDriverClient(config.webdriverUrl);
-  const driverRunning = await client.status().catch(() => false);
+  const driverRunning = await bestEffort(client.status(), false, 'startOrReuseDriver WebDriver status');
 
   if (driverRunning) {
     // Reusing a driver this process did not spawn, so there is no
@@ -1021,7 +1115,7 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
   process.once('exit', reapSharedDriver);
 
   try {
-    await client.waitUntil(() => client.status().catch(() => false), 30_000);
+    await client.waitUntil(() => bestEffort(client.status(), false, 'wait for tauri-driver WebDriver status'), 30_000);
     // msedgedriver waits ~60s for the app's DevToolsActivePort file and kills
     // the app on the way out, so snapshot the process tree mid-flight while the
     // WebView2 browser process is still up.
@@ -1041,10 +1135,10 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
     reapSharedDriver();
     const [spawnError] = spawnErrors;
     if (spawnError) {
-      throw new Error(
+      throw new Error(withRecentBestEffortFailures(
         `Failed to launch tauri-driver: ${spawnError.message}. ` +
           `Install it with \`cargo install tauri-driver --locked\`.${report}`,
-      );
+      ));
     }
     throw withDriverDiagnostics(report, error);
   }
@@ -1055,11 +1149,12 @@ async function startOrReuseDriver(config: LiveConfig): Promise<DriverStart> {
  * original error's type or stack.
  */
 function withDriverDiagnostics(report: string, error: unknown): Error {
+  const diagnosticReport = withRecentBestEffortFailures(report);
   if (error instanceof Error) {
-    error.message = `${error.message}${report}`;
+    error.message = `${error.message}${diagnosticReport}`;
     return error;
   }
-  return new Error(`${String(error)}${report}`);
+  return new Error(`${String(error)}${diagnosticReport}`);
 }
 
 function isTruthy(value: string | undefined): boolean {
