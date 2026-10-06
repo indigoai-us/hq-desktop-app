@@ -58,7 +58,7 @@
     onsignal,
   }: Props = $props();
 
-  let tab = $state<"notes" | "transcript">("notes");
+  let tab = $state<"notes" | "transcript" | "live">("notes");
   // Local item state per meeting: dismissed / parked hide, confirmed marks.
   let hidden = $state(new Set<string>());
   let confirmed = $state(new Set<string>());
@@ -177,12 +177,13 @@
         <span class="grow"></span>
         <button type="button" class="tab" aria-pressed={tab === "notes"} onclick={() => (tab = "notes")}>Notes</button>
         <button type="button" class="tab" aria-pressed={tab === "transcript"} onclick={() => (tab = "transcript")}>Transcript</button>
+        {#if bot}
+          <button type="button" class="tab" aria-pressed={tab === "live"} onclick={() => (tab = "live")}>Live</button>
+        {/if}
       </div>
-      {#if tab === "transcript"}
-        {#if !bot}
-          <p class="empty" data-testid="live-transcript-no-bot">No notetaker in this meeting.</p>
-        {:else if bot.sourceLanded}
-          <p class="empty">The transcript is saved to the company vault under sources/meetings.</p>
+      {#if tab === "live" && bot}
+        {#if bot.sourceLanded}
+          <p class="empty" data-testid="live-transcript-final">The saved transcript is ready in the Transcript tab.</p>
         {:else}
           <LiveTranscriptDoor
             recallBotId={bot.botId}
@@ -191,6 +192,12 @@
             botStatus={bot.status}
           />
         {/if}
+      {:else if tab === "transcript"}
+        <p class="empty" data-testid="meeting-saved-transcript">
+          {bot?.sourceLanded
+            ? "The saved transcript is ready in the company vault."
+            : "The saved transcript appears here after the notetaker finishes."}
+        </p>
       {:else if notes.length}
         <div class="notes">
           {#each notes as n (n.id)}

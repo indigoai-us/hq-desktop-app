@@ -33,12 +33,14 @@
     void recallBotId;
     return new LiveTranscriptState();
   });
+  let retryAttempt = $state(0);
 
   $effect(() => {
     const s = transcript;
     const bot = recallBotId;
     const company = companyId;
     const run = transport;
+    void retryAttempt;
     if (!run || !company) {
       s.status = "unavailable";
       return;
@@ -59,20 +61,27 @@
   const partial = $derived(partialLine(transcript.partial, transcript.segments));
   const inCall = $derived(notetakerInCall(botStatus));
   const statusText = $derived(
-    !live ? "Notetaker has left the meeting" : inCall ? "Notetaker is in the meeting" : "Notetaker is joining",
+    !live
+      ? "Notetaker ended - the saved transcript will be in Transcript shortly"
+      : inCall
+        ? "Live"
+        : "Waiting for the first words",
   );
   const emptyText = $derived(
     transcript.status === "unavailable"
       ? "Live transcript isn't available here. The full transcript appears once the notetaker saves it."
       : transcript.status === "off"
         ? "Live transcript is off for this meeting. The full transcript appears here once the notetaker saves it."
+        : transcript.status === "retry"
+          ? "We could not reach the live transcript."
         : transcript.status === "connecting"
           ? "Connecting to the notetaker…"
-          : "Listening. Lines appear here as people talk.",
+          : "Waiting for the first words",
   );
 
   let root = $state<HTMLElement | null>(null);
-  let follow = true;
+  let follow = $state(true);
+  let scroller = $state<HTMLElement | null>(null);
 
   function scrollParent(el: HTMLElement | null): HTMLElement | null {
     let node = el?.parentElement ?? null;
@@ -85,21 +94,34 @@
   }
 
   $effect(() => {
-    const scroller = scrollParent(root);
-    if (!scroller) return;
+    const nextScroller = scrollParent(root);
+    scroller = nextScroller;
+    if (!nextScroller) return;
     const onScroll = () => {
-      follow = isAtBottom(scroller);
+      follow = isAtBottom(nextScroller);
     };
-    scroller.addEventListener("scroll", onScroll, { passive: true });
-    return () => scroller.removeEventListener("scroll", onScroll);
+    nextScroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => nextScroller.removeEventListener("scroll", onScroll);
   });
 
   $effect(() => {
     void turns;
     void partial;
-    const scroller = untrack(() => scrollParent(root));
-    if (scroller && follow) scroller.scrollTop = scroller.scrollHeight;
+    const parent = untrack(() => scrollParent(root));
+    if (parent && follow) parent.scrollTop = parent.scrollHeight;
   });
+
+  function jumpToLatest(): void {
+    if (!scroller) return;
+    follow = true;
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+
+  function retry(): void {
+    transcript.failures = 0;
+    transcript.status = "connecting";
+    retryAttempt += 1;
+  }
 </script>
 
 <div class="lt" bind:this={root} data-testid="live-transcript" data-status={transcript.status}>
@@ -123,6 +145,12 @@
     </div>
   {:else}
     <p class="empty" data-testid="live-transcript-empty">{emptyText}</p>
+  {/if}
+  {#if transcript.status === "retry"}
+    <button type="button" class="retry" onclick={retry}>Retry</button>
+  {/if}
+  {#if !follow && (turns.length || partial)}
+    <button type="button" class="jump" onclick={jumpToLatest}>Jump to latest</button>
   {/if}
 </div>
 
@@ -190,5 +218,24 @@
     margin: 0;
     color: var(--t2);
     font-size: 13px;
+  }
+
+  .jump,
+  .retry {
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .jump {
+    position: sticky;
+    bottom: 0;
+    padding: 4px 0;
+    background: var(--surface);
   }
 </style>

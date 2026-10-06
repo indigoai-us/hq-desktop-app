@@ -21,7 +21,7 @@ import {
 import { filterCompanies, meetingsRailSections } from "./meetings-rail-model";
 import { isListableMeeting } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
-import type { MeetingEvent } from "./meetings-model";
+import type { MeetingEvent, ScheduledBot } from "./meetings-model";
 
 const now = new Date(2026, 9, 2, 8, 30);
 const standup: MeetingEvent = {
@@ -99,6 +99,46 @@ describe("meeting details mapping", () => {
     expect(people[0]).toContain("Organizer");
     expect(el.querySelector('[data-testid="meeting-organizer"]')?.textContent).toContain("Ada");
     expect(el.querySelector('[data-testid="meeting-location"]')?.textContent).toContain("Room 2");
+  });
+});
+
+describe("Live meeting tab", () => {
+  it("adds Live beside the saved tabs only when a notetaker exists, and points to Transcript after landing", () => {
+    const event: MeetingEvent = {
+      ...standup,
+      start: { dateTime: new Date(2026, 9, 1, 9).toISOString() },
+      end: { dateTime: new Date(2026, 9, 1, 9, 30).toISOString() },
+      notes: [{ id: "recap", text: "Saved notes" }],
+    };
+    const bot: ScheduledBot = {
+      botId: "bot_1",
+      meetingUrl: "https://zoom.us/j/99",
+      platform: "zoom",
+      status: "completed",
+      autoScheduled: false,
+      companyId: "cmp_1",
+      sourceLanded: true,
+    };
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(mount(MeetingsStatesBody, { target, props: { mode: "recap", event, bot, now } }));
+    flushSync();
+
+    const labels = [...target.querySelectorAll("button.tab")].map((button) => button.textContent);
+    expect(labels).toEqual(["Recap", "Transcript", "Notes", "Live"]);
+    (target.querySelectorAll("button.tab")[3] as HTMLButtonElement).click();
+    flushSync();
+    expect(target.querySelector('[data-testid="live-transcript-final"]')?.textContent).toBe(
+      "The saved transcript is ready in the Transcript tab.",
+    );
+  });
+
+  it("does not render Live for a meeting without a notetaker", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(mount(MeetingsStatesBody, { target, props: { mode: "recap", event: { ...standup, notes: [{ text: "Saved notes" }] }, now } }));
+    flushSync();
+    expect([...target.querySelectorAll("button.tab")].map((button) => button.textContent)).not.toContain("Live");
   });
 });
 
