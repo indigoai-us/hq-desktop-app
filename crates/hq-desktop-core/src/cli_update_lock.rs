@@ -159,8 +159,7 @@ pub fn acquire_cli_update_lock_in(
     tool: &str,
     version: &str,
 ) -> Result<CliUpdateLockAttempt, String> {
-    fs::create_dir_all(dir)
-        .map_err(|e| format!("could not create lock dir {}: {e}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|error| lock_dir_creation_error(dir, &error))?;
     let path = dir.join(CLI_UPDATE_LOCK_FILE);
     // At most two create attempts: the initial one, plus one retry after a
     // stale takeover. Losing the post-takeover race to another acquirer is a
@@ -216,6 +215,32 @@ pub fn acquire_cli_update_lock_in(
         }
     }
     unreachable!("the second create attempt always returns");
+}
+
+fn is_disk_full_error(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::StorageFull {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(28) // ENOSPC
+    }
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(39 | 112)) // ERROR_HANDLE_DISK_FULL / ERROR_DISK_FULL
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+fn lock_dir_creation_error(dir: &Path, error: &std::io::Error) -> String {
+    if is_disk_full_error(error) {
+        "HQ could not create its install lock because the disk that stores your home folder is full. Keep at least 1 GiB free on that disk. Empty Trash or move/delete large files, then retry setup.".to_string()
+    } else {
+        format!("could not create lock dir {}: {error}", dir.display())
+    }
 }
 
 /// Bounded, caller-side WAITING acquire for the setup deps path.
@@ -405,6 +430,25 @@ fn pid_is_dead(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_full_lock_directory_error_has_actionable_guidance() {
+        let error = std::io::Error::from_raw_os_error(28);
+        let message = lock_dir_creation_error(Path::new("/unused"), &error);
+        assert!(message.contains("1 GiB"));
+        assert!(message.contains("home folder"));
+        assert!(message.contains("Empty Trash"));
+        assert!(!message.contains("os error 28"));
+    }
+
+    #[test]
+    fn non_disk_full_lock_directory_error_keeps_its_diagnostic() {
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let message = lock_dir_creation_error(Path::new("/unused"), &error);
+        assert!(message.contains("could not create lock dir /unused"));
+        assert!(!message.contains("1 GiB"));
+    }
 
     fn temp_lock_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

@@ -2828,6 +2828,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -2836,10 +2839,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 
@@ -3965,6 +3968,12 @@ async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
     retry_public_registry: bool,
     cancellation: &InstallCancellationRegistration,
 ) -> Result<String, String> {
+    let app_cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("resolve app cache directory: {e}"))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(Path::new(prefix))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(&app_cache_dir)?;
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -5522,6 +5531,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -5530,10 +5542,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 

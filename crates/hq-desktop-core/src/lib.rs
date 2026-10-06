@@ -48,6 +48,7 @@ pub mod cdp_mirror;
 pub mod claude_launch;
 pub mod cli_update_lock;
 pub mod client_diagnostics;
+pub mod installer_disk_space;
 pub mod client_health;
 pub mod client_info;
 pub mod coalesced_poll;
