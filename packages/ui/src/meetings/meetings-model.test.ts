@@ -28,6 +28,7 @@ import {
   rowButtonKind,
   totalSignalCounts,
   urlInviteDestinationLabel,
+  withDetectedRecordingEvents,
   type MeetingEvent,
   type ScheduledBot,
 } from "./meetings-model";
@@ -64,6 +65,51 @@ describe("resolveInviteCompanyId", () => {
 });
 
 describe("meetings-model", () => {
+  it("adds a production-shaped desktop recording row and deduplicates its calendar event", () => {
+    const recording: ActiveMeeting = {
+      windowId: "recall-window-42",
+      recordingId: "rec_desktop_42",
+      platform: "Zoom",
+      meetingUrl: "https://zoom.us/j/123456789?pwd=private",
+      summary: "Weekly product sync",
+      detectedAt: "2026-10-05T16:30:00.000Z",
+      state: "recording",
+      companyUid: "cmp_indigo",
+    };
+    const rows = withDetectedRecordingEvents([], [recording]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "desktop-recording:rec_desktop_42",
+      summary: "Weekly product sync",
+      sourceCompanyUid: "cmp_indigo",
+      recorded: { meetingId: "rec_desktop_42" },
+    });
+
+    const calendar: MeetingEvent = {
+      id: "calendar-42",
+      summary: "Weekly product sync",
+      start: { dateTime: "2026-10-05T16:30:00.000Z" },
+      end: { dateTime: "2026-10-05T17:00:00.000Z" },
+      status: "confirmed",
+      meetingUrl: "https://zoom.us/j/123456789",
+    };
+    expect(withDetectedRecordingEvents([calendar], [recording])).toEqual([calendar]);
+  });
+
+  it("uses a sensible platform fallback and excludes non-recording detections", () => {
+    const detected: ActiveMeeting = {
+      windowId: "recall-window-43",
+      platform: "Zoom",
+      meetingUrl: "",
+      detectedAt: "2026-10-05T16:30:00.000Z",
+      state: "detected",
+      companyUid: null,
+    };
+    expect(withDetectedRecordingEvents([], [detected])).toEqual([]);
+    const recording = { ...detected, state: "recording" as const };
+    expect(withDetectedRecordingEvents([], [recording])[0]?.summary).toBe("Zoom meeting");
+  });
+
   it("prioritizes recording meetings over newer detections", () => {
     const rows: ActiveMeeting[] = [
       {

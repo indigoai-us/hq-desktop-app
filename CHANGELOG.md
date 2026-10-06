@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- A meeting recorded directly from HQ Desktop now appears in the Meetings list while it records, even when it was not on your calendar. If that meeting is already on your calendar, HQ keeps one row for it instead of showing a duplicate. Once processing finishes, the saved recording continues to appear with the other past meetings.
 - Meetings with a notetaker now have a Live tab beside Recap, Transcript, and Notes. It shows the notetaker's live transcript while the call is in progress. When the saved transcript is ready, the Live tab points you to Transcript.
 
 - Removing a bot in Settings > Bots now opens a branded confirmation dialog that shows progress or a retryable error in place. A bot on its own cloud machine keeps the dialog open for one more confirmation before the machine is deleted.
