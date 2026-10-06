@@ -19,6 +19,22 @@ import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { RuntimeStatus } from "./runtime-status.js";
 import { NO_AI_TOOLS, type AiTools } from "../../settings/setup-launch.js";
 
+/** details (name) → kind → home: the coding-tool screen is the third local step. */
+async function walkToHome(root: HTMLElement, settleFn: () => Promise<void>): Promise<void> {
+  const name = root.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]');
+  if (!name) throw new Error("missing chat-bot-name");
+  name.value = "Dr Love";
+  name.dispatchEvent(new Event("input", { bubbles: true }));
+  await settleFn();
+  for (const expected of ["kind", "home"]) {
+    const next = root.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]');
+    if (!next) throw new Error("missing create-bot-next");
+    next.click();
+    await settleFn();
+    if (!root.querySelector(`[data-testid="create-bot-sunrise-${expected}"]`)) throw new Error(`not on ${expected}`);
+  }
+}
+
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
@@ -70,7 +86,6 @@ async function openWizardHome(props: Record<string, unknown> = {}): Promise<{
       botWorkers: [],
       existingNames: [],
       botCompanies: [{ slug: "indigo", label: "Indigo" }],
-      previewPlacement: "top",
       oncreate: async () => undefined,
       onsignin: () => undefined,
       onrecheckruntimes,
@@ -80,9 +95,8 @@ async function openWizardHome(props: Record<string, unknown> = {}): Promise<{
     },
   });
   await settle();
-  click('[data-testid="create-bot-next"]');
-  await settle();
-  expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
+  await walkToHome(host, () => settle());
+  expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
   return { onopenassistant, onassistedinstall, onrecheckruntimes };
 }
 

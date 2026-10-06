@@ -166,21 +166,15 @@ async function openCommandPalette(): Promise<void> {
 }
 
 /**
- * Company channels are not Home rows (US-008). The owner still reaches a
- * channel that arrived ahead of the roster from the command palette, which
- * is what used to trip "no longer available".
+ * In All, company channels sit in the date buckets with DMs. The owner
+ * opens a channel that arrived ahead of the roster from the command
+ * palette, which is what used to trip "no longer available".
  */
 async function clickNewCompanyRow(): Promise<void> {
-  // All scope groups company channels by company; they stay out of the
-  // Home day buckets.
-  const homeTitle = Array.from(
+  const allTitles = Array.from(
     host!.querySelectorAll<HTMLElement>(".chat-row-title"),
-  ).find(
-    (el) =>
-      el.textContent?.trim().includes(NEW_CHANNEL) &&
-      !el.closest('[data-testid="company-channel-group-rows"]'),
-  );
-  expect(homeTitle, "the company channel stays off the Home day buckets").toBeUndefined();
+  ).filter((el) => el.textContent?.trim().includes(NEW_CHANNEL));
+  expect(allTitles, "the company channel is listed once in All").toHaveLength(1);
   await openCommandPalette();
   const palette = document.querySelector('[data-testid="command-palette"]');
   expect(palette, "command palette opens").toBeTruthy();

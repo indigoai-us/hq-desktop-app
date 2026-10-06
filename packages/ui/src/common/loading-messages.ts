@@ -32,11 +32,15 @@ export const LOADING_MESSAGES: readonly string[] = [
 export const SURFACE_LOADING_MESSAGES: Record<LoadingSurface, readonly string[]> = {
   atlas: ["Unfolding the map.", "Drawing the roads.", "Finding north."],
   team: ["Saying hello to everyone.", "Gathering the crew.", "Taking attendance."],
-  meetings: ["Checking the calendar.", "Finding a free chair.", "Setting the table."],
+  meetings: ["Loading"],
 };
+
+/** Surfaces that show only their own plain line, never the general pool. */
+const PLAIN_SURFACES: ReadonlySet<LoadingSurface> = new Set(["meetings"]);
 
 /** Surface lines first, then the general pool, without repeats. */
 export function loadingMessages(surface?: LoadingSurface | null): string[] {
   const own = surface ? SURFACE_LOADING_MESSAGES[surface] : [];
+  if (surface && PLAIN_SURFACES.has(surface)) return [...own];
   return [...own, ...LOADING_MESSAGES.filter((line) => !own.includes(line))];
 }

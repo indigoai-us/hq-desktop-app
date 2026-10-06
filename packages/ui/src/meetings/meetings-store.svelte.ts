@@ -233,6 +233,9 @@ let loading = $state(false);
 // an empty list is a real answer, not "still loading".
 let hydratedFromCache = $state(false);
 let firstRefreshSettled = $state(false);
+// Cold start only: the agenda rows painted from the first calendar answer
+// while bot status, calendars and history are still loading.
+let agendaPainted = $state(false);
 // True once at least one network refresh has fully succeeded — the only state
 // in which "no accounts, no meetings" is trustworthy enough to lead with the
 // connect-a-calendar empty state (a failed first fetch must not).
@@ -281,10 +284,12 @@ function hydrateFromCache() {
   if (!snapshot) return;
   hydratedFromCache = true;
   events = (snapshot.events ?? []).filter(isListableMeeting);
-  botsByEventId = new Map(snapshot.botsByEventId ?? []);
   allBots =
     snapshot.scheduledBots ??
     (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
+  botsByEventId = snapshot.botsByEventId?.length
+    ? new Map(snapshot.botsByEventId)
+    : buildBotMap(allBots);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
   // Older caches stored every readable meeting; re-apply the attendee rule.
   recorded = onlyOwnMeetings(parseRecordedMeetings(snapshot.recorded ?? []), allBots, events);
@@ -366,6 +371,19 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
           return null;
         }),
     ]);
+    // Cold start (no cache): paint the agenda as soon as it arrives instead
+    // of holding it behind the bot, calendar and history reads below.
+    if (
+      !hydratedFromCache &&
+      !agendaPainted &&
+      events.length === 0 &&
+      (evts?.length ?? 0) > 0 &&
+      epoch === sessionEpoch &&
+      refreshRevision === mutationRevision
+    ) {
+      events = takeAgendaWindow(evts ?? []);
+      agendaPainted = true;
+    }
     const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
     // The adapter exposes a single full-list bot lookup (no per-event filter
     // arg on the wire). Fetch once, then derive the per-event slice locally so
@@ -751,7 +769,9 @@ function persistSnapshot(): void {
   saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
     events,
     scheduledBots: allBots,
-    botsByEventId: Array.from(botsByEventId.entries()),
+    // Rebuilt from scheduledBots on hydrate; storing both doubled the
+    // snapshot and pushed the webview's storage quota over its limit.
+    botsByEventId: [],
     companyNamesByUid: Array.from(companyNamesByUid.entries()),
     accounts,
     accountEmailById: Array.from(accountEmailById.entries()),
@@ -1380,6 +1400,7 @@ export function stopMeetingsStore(): void {
   viewActive = false;
   hydratedFromCache = false;
   firstRefreshSettled = false;
+  agendaPainted = false;
   hasLiveSnapshot = false;
   calendarReadFailed = false;
   lastSyncedAt = 0;
@@ -1503,7 +1524,7 @@ export const meetingsStore = {
   },
   /** US-010: true only before the first cache paint or settled refresh. */
   get initialLoadPending() {
-    return !hydratedFromCache && !firstRefreshSettled;
+    return !hydratedFromCache && !firstRefreshSettled && !agendaPainted;
   },
   /** US-010: a network refresh has fully succeeded at least once. */
   get hasLiveSnapshot() {

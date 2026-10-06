@@ -56,6 +56,7 @@
   } from "../chat/bot-restore.js";
   import { botNeedsSignIn, expiredRuntimeOf } from "../chat/runtime-sign-in-again.js";
   import CreateBotFlow, { type CreateBotExtras } from "../chat/create-bot/CreateBotFlow.svelte";
+  import NewBotSunriseShell from "../chat/create-bot/NewBotSunriseShell.svelte";
   import CardModal from "../chat/messaging/CardModal.svelte";
   import CardModalStatus from "../chat/messaging/CardModalStatus.svelte";
   import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
@@ -1070,81 +1071,28 @@
 {/if}
 
 {#if createOpen}
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div
-    class="create-overlay"
-    data-testid="settings-bots-create-dialog"
-    onkeydown={(event) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        closeCreate();
-      }
-    }}
-  >
-    <div class="create-card" role="dialog" aria-modal="true" aria-label="New bot" tabindex="-1">
-      <div class="create-card-head">
-        <span class="create-card-title">New bot</span>
-        <button type="button" class="quiet create-close" aria-label="Close" disabled={Boolean(createBusy)} onclick={closeCreate}>×</button>
-      </div>
-      <CreateBotFlow
-        botRuntimeReady={runtimeReadyById}
-        botRuntimeStatus={runtimeStatuses}
-        onrecheckruntimes={recheckRuntimes}
-        botWorkers={workers}
-        existingNames={bots.map((b) => b.name)}
-        botCompanies={localBotCompanies(companies)}
-        agentTargets={[]}
-        oncreate={create}
-        onback={closeCreate}
-        entryBusy={createBusy}
-        entryError={createError}
-        signInApi={botSignIn}
-        onsignedin={() => loadPreflight()}
-      />
-    </div>
-  </div>
+  <!-- New bot: the takeover's shell and step screens, the same flow every
+       entry point uses. -->
+  <NewBotSunriseShell testId="settings-bots-create-dialog" cancelDisabled={Boolean(createBusy)} oncancel={closeCreate}>
+    <CreateBotFlow
+      botRuntimeReady={runtimeReadyById}
+      botRuntimeStatus={runtimeStatuses}
+      onrecheckruntimes={recheckRuntimes}
+      botWorkers={workers}
+      existingNames={bots.map((b) => b.name)}
+      botCompanies={localBotCompanies(companies)}
+      agentTargets={[]}
+      oncreate={create}
+      onback={closeCreate}
+      entryBusy={createBusy}
+      entryError={createError}
+      signInApi={botSignIn}
+      onsignedin={() => loadPreflight()}
+    />
+  </NewBotSunriseShell>
 {/if}
 
 <style>
-  .create-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
-    background: rgba(0, 0, 0, 0.45);
-  }
-  .create-card {
-    display: flex;
-    flex-direction: column;
-    width: min(880px, 100%);
-    max-height: min(88vh, 720px);
-    overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
-    outline: none;
-  }
-  .create-card-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--v4-hairline);
-  }
-  .create-card-title {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--t1);
-  }
-  .create-close {
-    font-size: 16px;
-    line-height: 1;
-    padding: 2px 8px;
-  }
   .bots-pane { display: grid; gap: 16px; }
   .group { display: grid; gap: 10px; }
   .group-head { display: flex; align-items: center; gap: 8px; }

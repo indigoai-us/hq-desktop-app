@@ -102,6 +102,11 @@ pub struct LocalProject {
     /// local/cloud attribution has had a chance to win.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_fallback: Option<String>,
+    /// Last write time of the linked `prd.json` on this computer (RFC 3339).
+    /// An activity signal for the board's Active column, never a status: a
+    /// story edit or move by any local session or lane rewrites the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prd_modified_at: Option<String>,
 }
 
 /// A single user story, mirroring the prd.json story shape the Kanban + detail
@@ -676,6 +681,18 @@ pub fn metadata_timestamp(metadata: &serde_json::Value, keys: &[&str]) -> Option
 
 pub fn prd_created_at(prd: &PrdFile) -> Option<String> {
     metadata_timestamp(&prd.metadata, &["createdAt", "created_at"])
+}
+
+/// Last-modified time of an HQ-relative file as RFC 3339 UTC, when readable.
+pub fn file_modified_at(hq_root: &Path, rel_path: &str) -> Option<String> {
+    let modified = std::fs::metadata(hq_root.join(rel_path))
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(
+        chrono::DateTime::<chrono::Utc>::from(modified)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
 }
 
 pub fn prd_updated_at(prd: &PrdFile) -> Option<String> {
@@ -1420,6 +1437,7 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
                     board_rel,
                 ),
                 creator_fallback: None,
+                prd_modified_at: None,
             });
         }
     }
@@ -1472,6 +1490,7 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
             stories_complete,
             provenance,
             creator_fallback: None,
+            prd_modified_at: None,
         });
     }
     out
@@ -1583,6 +1602,7 @@ fn scan_local_projects_scoped(
                         &board_source,
                     ),
                     creator_fallback: None,
+                    prd_modified_at: None,
                 });
             }
         }
@@ -1636,6 +1656,7 @@ fn scan_local_projects_scoped(
                 stories_complete,
                 provenance,
                 creator_fallback: None,
+                prd_modified_at: None,
             });
         }
     }
@@ -1644,6 +1665,12 @@ fn scan_local_projects_scoped(
         out.extend(scan_personal_projects(hq_root));
     }
 
+    for project in &mut out {
+        project.prd_modified_at = project
+            .prd_path
+            .as_deref()
+            .and_then(|rel| file_modified_at(hq_root, rel));
+    }
     apply_git_creator_fallbacks(hq_root, &mut out);
     out
 }
@@ -2911,7 +2938,8 @@ mod tests {
         assert_eq!(
             projects
                 .iter()
-                .filter(|project| project.prd_path.as_deref() == Some("personal/projects/my-project/prd.json"))
+                .filter(|project| project.prd_path.as_deref()
+                    == Some("personal/projects/my-project/prd.json"))
                 .count(),
             1,
             "board-linked Personal PRDs are not duplicated",
@@ -3075,6 +3103,17 @@ mod tests {
         assert_eq!(project.provenance.creator.as_deref(), Some("Corey"));
         assert_eq!(project.provenance.origin.as_deref(), Some("HQ plan"));
         assert!(project.provenance.assignee.is_none());
+        // The board's Active column reads the prd.json write time on this computer.
+        let modified = project
+            .prd_modified_at
+            .as_deref()
+            .expect("linked prd reports its modified time");
+        let modified = chrono::DateTime::parse_from_rfc3339(modified).expect("rfc3339");
+        let age = chrono::Utc::now().signed_duration_since(modified);
+        assert!(
+            age.num_minutes().abs() < 5,
+            "fresh prd write reads as recent: {age}"
+        );
 
         let prd = read_project_prd(&root, "companies/indigo/projects/launch/prd.json")
             .expect("provenance PRD parses");
@@ -3168,6 +3207,7 @@ mod tests {
             stories_complete: 0,
             provenance,
             creator_fallback: None,
+            prd_modified_at: None,
         };
         let mut projects = vec![
             project(
@@ -4732,7 +4772,9 @@ mod tests {
     fn create_project_text_file_refuses_missing_folder_dotfile_and_escape() {
         let root = make_fixture_tree();
         assert!(create_project_text_file(&root, "companies/indigo/nope/a.md", "").is_err());
-        assert!(create_project_text_file(&root, "companies/indigo/projects/flagship/.env", "").is_err());
+        assert!(
+            create_project_text_file(&root, "companies/indigo/projects/flagship/.env", "").is_err()
+        );
         assert!(create_project_text_file(&root, "companies/indigo/../x.md", "").is_err());
         assert!(create_project_text_file(&root, "a.md", "").is_err());
         let _ = fs::remove_dir_all(&root);

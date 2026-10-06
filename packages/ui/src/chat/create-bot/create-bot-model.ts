@@ -521,22 +521,55 @@ export function templateBringsLine(card: TemplateCard | null): string {
 // ── steps ──────────────────────────────────────────────────────────────────
 
 /**
- * The steps this draft walks. Both homes walk all three: a cloud bot's name
- * and @handle are chosen here, in front of the person, because the company
- * channel's card that used to ask for them is no longer shown.
+ * The steps this draft walks, one question per screen. A local bot is named
+ * first, then starts blank or from a template, then picks its coding tool. A
+ * cloud bot picks its company first when there is a choice (the price is that
+ * company's), then is named and sized on one screen.
  */
 export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
-  if (opts.skipHome && draft.home === "local") return ["kind", "details"];
-  return ["kind", "home", "details"];
+  if (draft.home === "local") return LOCAL_STEPS;
+  return opts.pickCompany ? ["home", "details"] : ["details"];
 }
 
 /**
- * `skipHome`: Local was already picked on the New bot choice screen, so the
- * "Where does it run?" step is left out. Its coding-tool check moves onto the
- * Details step, which then shows the sign-in and install controls.
+ * `pickCompany`: a cloud bot gets a "Pick the company" step. Off when there is
+ * one company and it is already selected.
  */
 export interface StepOptions {
-  skipHome?: boolean;
+  pickCompany?: boolean;
+}
+
+/** Local steps, in the order the cloud flow asks: name first. */
+export const LOCAL_STEPS: CreateBotStep[] = ["details", "kind", "home"];
+
+export interface StepTitle {
+  kicker: string;
+  lead: string;
+  em: string;
+  tail?: string;
+  copy: string;
+}
+
+/**
+ * Each step's heading: a plain lead and the word that matters set apart
+ * ("Enter a <name.>"). The copy names "this computer"; the flow swaps in
+ * the host's own noun.
+ */
+export const LOCAL_STEP_TITLES: Record<CreateBotStep, StepTitle> = {
+  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "This is how your new teammate will appear in HQ." },
+  kind: { kicker: "Where it starts", lead: "Start", em: "blank", tail: "or from a template.", copy: "A blank bot is a general helper. A template starts from a worker your company already has." },
+  home: { kicker: "How it thinks", lead: "Pick the", em: "coding tool.", copy: "Your bot thinks with a coding tool signed in on this computer." },
+};
+
+export const CLOUD_STEP_TITLES: Record<"home" | "details", StepTitle> = {
+  home: { kicker: "Where it lives", lead: "Pick the", em: "company.", copy: "The bot runs in that company's cloud and is billed to its plan." },
+  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "It runs in your company's cloud and stays on when this computer is asleep." },
+};
+
+/** Headings for the step on screen. */
+export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"]): StepTitle {
+  if (home === "cloud" && step !== "kind") return CLOUD_STEP_TITLES[step];
+  return LOCAL_STEP_TITLES[step];
 }
 
 export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
@@ -553,10 +586,6 @@ export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home"
 
 /** Why this step cannot advance yet; null when it can. */
 export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): string | null {
-  if (step === "details" && opts.skipHome && draft.home === "local") {
-    const homeIssue = stepIssue("home", draft, ctx);
-    if (homeIssue) return homeIssue;
-  }
   switch (step) {
     case "kind":
       if (draft.kind === "template" && !draft.templateId) return "Pick a template.";
@@ -699,11 +728,6 @@ export function thinksWithLine(draft: CreateBotDraft, ctx: Pick<CreateBotContext
   return model ? `thinks with ${runtime} · ${model}` : `thinks with ${runtime}`;
 }
 
-export const STEP_TITLES: Record<CreateBotStep, string> = {
-  kind: "What kind of bot?",
-  home: "Where does it run?",
-  details: "Details",
-};
 
 // ── Why the New Bot flow cannot price a company ────────────────────────────
 

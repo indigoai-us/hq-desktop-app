@@ -182,12 +182,14 @@ async function createBot(): Promise<void> {
   // "New bot" asks "Cloud or Local?" first.
   click('[data-testid="new-bot-choice-local"]');
   await settle();
-  // Local was picked already, so Kind goes straight to Details.
-  click('[data-testid="create-bot-next"]');
-  await settle();
+  // The local steps: name, then blank or a template, then the coding tool.
   const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
   name.value = "scout";
   name.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle();
+  click('[data-testid="create-bot-next"]');
+  await settle();
+  click('[data-testid="create-bot-next"]');
   await settle();
   click('[data-testid="chat-bot-create"]');
   await settle(20);

@@ -91,18 +91,23 @@ test.describe('console rail: full user path', () => {
     // New bot asks "Cloud or Local?" first, in the full-window takeover.
     await expect(page.getByTestId('new-bot-kind-choice')).toBeVisible();
     await page.getByTestId('new-bot-choice-local').click();
-    // The one bot-creation flow: the same three-step flow as Messages +, in the takeover shell.
+    // The local flow is the cloud flow's step screens: name, then blank or
+    // a template, then the coding tool.
     const flow = page.getByTestId('chat-create-bot-step');
     await expect(flow).toBeVisible();
+    // One layout: the takeover's step screens (step dots), no wizard crumbs.
+    await expect(flow.getByTestId('new-bot-progress')).toBeVisible();
+    await expect(page.locator('[data-testid^="create-bot-crumb-"]')).toHaveCount(0);
     await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);
-    await expect(page.getByTestId('create-bot-crumb-kind')).toBeVisible();
-    await page.getByTestId('create-bot-next').click();
-    // Local was already picked, so "Where does it run?" is skipped: the flow
-    // goes straight to Details, which carries the coding-tool picker.
     await expect(flow).toHaveAttribute('data-step', 'details');
+    await page.getByTestId('chat-bot-name').fill('Scout');
+    await page.getByTestId('create-bot-next').click();
+    await expect(flow).toHaveAttribute('data-step', 'kind');
+    await page.getByTestId('create-bot-next').click();
+    // Local was already picked, so "Where does it run?" is not asked again.
+    await expect(flow).toHaveAttribute('data-step', 'home');
     await expect(page.getByTestId('chat-bot-where')).toHaveCount(0);
     await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
-    await page.getByTestId('chat-bot-name').fill('Scout');
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });
     await page.getByTestId('chat-bot-create').click();
     // Lands in the new bot's DM, where the bot asks for the rest of setup.

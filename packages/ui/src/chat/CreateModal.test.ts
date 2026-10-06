@@ -2029,7 +2029,10 @@ describe("New bot step Escape", () => {
     const onclose = vi.fn();
     openBot("bot", onclose);
     await tick();
-    $<HTMLButtonElement>('[data-testid="chat-create-back"]')!.click();
+    // The bot step renders in the takeover shell; its first screen's Back
+    // (the step head's Back) is the way back to search.
+    expect($('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    $<HTMLButtonElement>('[data-testid="create-bot-back"]')!.click();
     await tick();
     expect(onFind()).toBe(true);
     expect(onclose).not.toHaveBeenCalled();
@@ -2040,6 +2043,42 @@ describe("New bot step Escape", () => {
     press(window, "Escape");
     await tick();
     expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("New bot from the window's own search opens the shared step flow in the takeover shell", async () => {
+    const onclose = vi.fn();
+    openBot("find", onclose);
+    await tick();
+    expect(onFind()).toBe(true);
+    // Not opened from the "Cloud or Local?" choice: the window's own row.
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    const shell = $('[data-testid="chat-create-modal"]');
+    expect(shell?.getAttribute("data-sunrise")).toBe("true");
+    expect(shell?.classList.contains("new-bot-takeover")).toBe(true);
+    expect($('[data-testid="new-bot-takeover-cancel"]')).toBeTruthy();
+    const card = $('[data-testid="new-bot-sunrise-flow"]');
+    expect(card).toBeTruthy();
+    const flow = card!.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
+    expect(flow).toBeTruthy();
+    // Local only here: the flow opens on the local name step.
+    expect(flow!.getAttribute("data-home")).toBe("local");
+    expect(flow!.getAttribute("data-step")).toBe("details");
+    // The step head: dots (name, kind, coding tool) and Back.
+    const dots = card!.querySelector('[data-testid="new-bot-progress"]');
+    expect(dots?.querySelectorAll("span").length).toBe(3);
+    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 3");
+    expect(card!.querySelector('[data-testid="create-bot-back"]')?.textContent).toContain("Back");
+    expect(card!.querySelector('[data-testid="create-bot-next"]')?.textContent).toContain("Continue");
+    // None of the old wizard's chrome: no step crumbs, no plain modal card.
+    expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
+    expect(document.querySelector(".create-card")).toBeNull();
+    // Continue moves to the next dot.
+    $<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    await tick();
+    expect(flow!.getAttribute("data-step")).toBe("kind");
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
     expect(onclose).not.toHaveBeenCalled();
   });
 

@@ -27,6 +27,10 @@ import {
   scopeLine,
   stepIssue,
   stepsFor,
+  stepTitle,
+  LOCAL_STEPS,
+  LOCAL_STEP_TITLES,
+  CLOUD_STEP_TITLES,
   titleIssue,
   suggestBotName,
   templateBringsLine,
@@ -367,22 +371,35 @@ describe("templates", () => {
 });
 
 describe("steps", () => {
-  it("both homes walk kind → home → details", () => {
+  it("local walks details → kind → home; cloud picks a company only when there is a choice", () => {
     // A Cloud bot is named HERE: the company channel's card that used to ask
     // for its name and handle is no longer shown to anyone.
-    expect(stepsFor({ home: "cloud" })).toEqual(["kind", "home", "details"]);
-    expect(stepsFor({ home: "local" })).toEqual(["kind", "home", "details"]);
+    expect(stepsFor({ home: "local" })).toEqual(["details", "kind", "home"]);
+    expect(LOCAL_STEPS).toEqual(["details", "kind", "home"]);
+    expect(nextStep("details", { home: "local" })).toBe("kind");
     expect(nextStep("kind", { home: "local" })).toBe("home");
-    expect(nextStep("home", { home: "cloud" })).toBe("details");
-    expect(nextStep("details", { home: "cloud" })).toBeNull();
-    // Local already picked on the choice screen: no "Where does it run?".
-    expect(stepsFor({ home: "local" }, { skipHome: true })).toEqual(["kind", "details"]);
-    expect(nextStep("kind", { home: "local" }, { skipHome: true })).toBe("details");
-    expect(prevStep("details", { home: "local" }, { skipHome: true })).toBe("kind");
-    expect(stepsFor({ home: "cloud" }, { skipHome: true })).toEqual(["kind", "home", "details"]);
-    expect(nextStep("home", { home: "local" })).toBe("details");
-    expect(prevStep("kind", { home: "local" })).toBeNull();
-    expect(prevStep("details", { home: "cloud" })).toBe("home");
+    expect(nextStep("home", { home: "local" })).toBeNull();
+    expect(prevStep("details", { home: "local" })).toBeNull();
+    expect(prevStep("home", { home: "local" })).toBe("kind");
+    // Cloud: no kind step (the cloud create never used a template).
+    expect(stepsFor({ home: "cloud" })).toEqual(["details"]);
+    expect(stepsFor({ home: "cloud" }, { pickCompany: true })).toEqual(["home", "details"]);
+    expect(nextStep("home", { home: "cloud" }, { pickCompany: true })).toBe("details");
+    expect(nextStep("details", { home: "cloud" }, { pickCompany: true })).toBeNull();
+    expect(prevStep("details", { home: "cloud" }, { pickCompany: true })).toBe("home");
+    expect(prevStep("details", { home: "cloud" })).toBeNull();
+    // The pick-company option never changes the local walk.
+    expect(stepsFor({ home: "local" }, { pickCompany: true })).toEqual(["details", "kind", "home"]);
+  });
+
+  it("titles each step for its home", () => {
+    expect(stepTitle("details", "local")).toBe(LOCAL_STEP_TITLES.details);
+    expect(stepTitle("kind", "local")).toBe(LOCAL_STEP_TITLES.kind);
+    expect(stepTitle("home", "local")).toBe(LOCAL_STEP_TITLES.home);
+    expect(stepTitle("home", "cloud")).toBe(CLOUD_STEP_TITLES.home);
+    expect(stepTitle("details", "cloud")).toBe(CLOUD_STEP_TITLES.details);
+    expect(stepTitle("home", "local").em).toBe("coding tool.");
+    expect(stepTitle("home", "cloud").em).toBe("company.");
   });
 
   it("kind needs a template pick when From a template is chosen", () => {
@@ -400,10 +417,12 @@ describe("steps", () => {
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBeNull();
     expect(stepIssue("home", draft({ home: "cloud", companyUid: "cmp_nope" }), c)).toBe("Pick a company.");
     expect(stepIssue("home", draft({ home: "cloud" }), ctx({ canCloud: false }))).toContain("No company");
-    // The last step never "advances"; home is no longer the last one.
-    expect(canAdvance("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe(true);
-    expect(canAdvance("details", draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe(false);
-    expect(canAdvance("home", draft({ home: "local" }), c)).toBe(true);
+    // The last step never "advances": cloud home (company pick) moves on to
+    // details; local home (coding tool) is the last local step.
+    expect(canAdvance("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c, { pickCompany: true })).toBe(true);
+    expect(canAdvance("details", draft({ home: "cloud", companyUid: "cmp_acme" }), c, { pickCompany: true })).toBe(false);
+    expect(canAdvance("kind", draft({ home: "local" }), c)).toBe(true);
+    expect(canAdvance("home", draft({ home: "local" }), c)).toBe(false);
   });
 
   it("details needs at least one of the owner's companies for a company bot (bot-kinds)", () => {

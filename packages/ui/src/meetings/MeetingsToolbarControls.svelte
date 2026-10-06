@@ -22,9 +22,11 @@
   let failed = $state(false);
   let ticket = 0;
 
-  // BLANK-2: a failed calendar read is not "No calendar".
+  // BLANK-2: a failed calendar read is not "No calendar", and neither is a
+  // first read that has not answered yet.
   const chip = $derived(
-    meetingsStore.calendarReadFailed && meetingsStore.accounts.length === 0
+    meetingsStore.accounts.length === 0 &&
+      (meetingsStore.calendarReadFailed || !meetingsStore.hasLiveSnapshot)
       ? { connected: false, provider: "Calendar", count: "" }
       : calendarChipLabel(meetingsStore.accounts),
   );

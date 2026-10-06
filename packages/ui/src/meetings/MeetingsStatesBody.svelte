@@ -108,6 +108,10 @@
   // US-042: a read that succeeded, no error, and no linked account → connect-first canvas.
   // AUDIT-3-16: a failed calendar read is not "no calendar"; it gets the
   // failed-read line and Try again instead.
+  // Before the first cache paint or settled fetch nothing is known yet: the
+  // pane must not claim "Nothing live" or "Nothing scheduled".
+  // Rows handed in by the host are known data, whatever the store says.
+  const pending = $derived(meetingsStore.initialLoadPending && sections.every((s) => s.rows.length === 0));
   const calendarFailed = $derived(
     !meetingsStore.initialLoadPending && meetingsStore.calendarReadFailed && meetingsStore.accounts.length === 0,
   );
@@ -159,7 +163,7 @@
   {#if mode === "empty"}
     <div class="toolbar">
       <h1>Meetings</h1>
-      {#if !calendarFailed}<span class="sub">Nothing live</span>{/if}
+      {#if !calendarFailed && !pending}<span class="sub" data-testid="meetings-live-chip">Nothing live</span>{/if}
       <span class="grow"></span>
       <MeetingsToolbarControls {openExternal} />
     </div>
@@ -188,6 +192,11 @@
             <button type="button" class="btn" data-testid="no-calendar-paste-join" disabled={!firstRunProvider || firstRunJoining} aria-busy={firstRunJoining} onclick={() => void joinFirstRun()}><RailIcon name="arrow-right" />Join</button>
           </div>
           <div class="subline">Joining from a link sends the notetaker. The meeting appears under Today until it ends.</div>
+        </div>
+      {:else if pending}
+        <!-- The shared loader (OWNER-R26, BLANK-3), never an empty claim. -->
+        <div class="next" aria-busy="true" data-testid="meetings-next-pending">
+          <ReadLoader testid="meetings-next-loader" surface="meetings" onretry={() => void meetingsStore.refresh()} />
         </div>
       {:else if nextRow}
         <div class="next">

@@ -19,9 +19,15 @@
     onpatch: (patch: Partial<CreateBotDraft>) => void;
     /** Blank advances on pick; a template advances on Enter or double-click. */
     onadvance?: () => void;
+    /**
+     * The takeover's local step (the cloud flow's look): the two choices are
+     * plain rows, the flow says the lede, and picking Blank does not move on
+     * by itself; Continue does, as on every other step.
+     */
+    sunrise?: boolean;
   }
 
-  let { draft, templates, disabled = false, onpatch, onadvance }: Props = $props();
+  let { draft, templates, disabled = false, onpatch, onadvance, sunrise = false }: Props = $props();
 
   let query = $state("");
   const groups = $derived(groupTemplates(templates, query));
@@ -48,7 +54,7 @@
     if (!kindEnabled(id)) return;
     if (id === "blank") {
       onpatch({ kind: "blank", templateId: undefined });
-      onadvance?.();
+      if (!sunrise) onadvance?.();
       return;
     }
     onpatch({ kind: id });
@@ -83,8 +89,8 @@
   }
 </script>
 
-<div class="cb-step" data-testid="create-bot-kind-step">
-  <p class="cb-lede">Every AI teammate is a bot. Start blank, or from one of your company's workers.</p>
+<div class="cb-step" class:cb-step--sunrise={sunrise} data-testid="create-bot-kind-step">
+  {#if !sunrise}<p class="cb-lede">Every AI teammate is a bot. Start blank, or from one of your company's workers.</p>{/if}
   <div class="cb-cards" role="radiogroup" aria-label="What kind of bot?" data-testid="create-bot-kinds" tabindex="-1" onkeydown={onRadioKey}>
     {#each KINDS as kind (kind.id)}
       <button
@@ -98,13 +104,13 @@
         tabindex={draft.kind === kind.id ? 0 : -1}
         onclick={() => chooseKind(kind.id)}
       >
-        <span class="cb-card-ic" aria-hidden="true">
+        {#if !sunrise}<span class="cb-card-ic" aria-hidden="true">
           {#if kind.id === "blank"}
             <svg viewBox="0 0 16 16" fill="none"><rect x="3" y="3" width="10" height="10" rx="2" stroke="currentColor" stroke-width="1.3" /><path d="M8 6v4M6 8h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
           {:else}
             <svg viewBox="0 0 16 16" fill="none"><path d="M3 4.5h10M3 8h10M3 11.5h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
           {/if}
-        </span>
+        </span>{/if}
         <span class="cb-card-title">{kind.title}</span>
         <span class="cb-card-sub">
           {kind.id === "template" && !hasTemplates ? "Your companies have no workers to start from yet." : kind.sub}

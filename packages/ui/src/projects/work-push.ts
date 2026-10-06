@@ -93,7 +93,8 @@ export function sessionRefFromSessionEvent(
         : "running";
   const storyId = push.storyId;
   return {
-    project: storyId || push.projectId,
+    // Keyed by the project so the board can match it; the story id rides in cwd.
+    project: push.projectId || storyId,
     company: push.companyUid,
     cwd: storyId,
     status,
