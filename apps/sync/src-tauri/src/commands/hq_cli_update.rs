@@ -5251,7 +5251,8 @@ mod tests {
         );
         let cmd = paths::tokio_spawn_command(fake.to_str().unwrap(), &["bin", "-g"]);
 
-        let output = run_bounded_pnpm_probe(cmd, Duration::from_millis(800)).await;
+        // Long enough for several levels to start even on a loaded CI runner.
+        let output = run_bounded_pnpm_probe(cmd, Duration::from_secs(3)).await;
         assert!(
             output.is_none(),
             "a probe that never finishes must time out"
