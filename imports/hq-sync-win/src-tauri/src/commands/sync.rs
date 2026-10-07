@@ -1125,10 +1125,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // the frontend already knows. A non-zero exit means the runner
                 // bailed before emitting a useful protocol stream.
                 if !success {
-                    let error_class = runner_exit_error
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .copied();
+                    let error_class = *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner());
                     let _ = report_runner_exit_error(
                         &app_bg,
                         crate::events::SyncErrorEvent {

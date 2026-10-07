@@ -3344,10 +3344,8 @@ async fn start_sync_inner(
                             runner_stdout_sequence,
                             runner_node_major,
                         );
-                        exit_context.runner_error_class = runner_exit_error
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .copied();
+                        exit_context.runner_error_class =
+                            *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner());
                         // Additive per-run diagnostic, set after the content
                         // snapshot and consulted by no capture policy — mirrors
                         // daemon.rs. `None` when nothing unmatched was recorded, so
