@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 - The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
+- The bot panel now loads a bot owner's whole profile in one call and adds Channels, Apps, Routines, Brain and Persona sections. Owners can pause, resume, run, edit, create and delete routines, and edit the bot's title. When the profile is not available the panel loads as before.
 - Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
 - Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
 

@@ -1219,7 +1219,20 @@ export interface AgencyApi {
  */
 export interface AgentProfilePatch {
   displayName?: string;
+  title?: string;
   description?: string;
+}
+
+/**
+ * POST /v1/agents/{uid}/runtime/actions body. Routine changes use the
+ * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
+ * names the routine and `body` carries the create/update fields.
+ */
+export interface AgentRuntimeActionInput {
+  actionId: string;
+  idempotencyKey: string;
+  params?: Record<string, string>;
+  body?: Record<string, unknown>;
 }
 
 /**
@@ -1243,6 +1256,8 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
   profile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  runtimeActions: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/runtime/actions`,
   stop: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
@@ -1346,6 +1361,17 @@ export interface AgentsApi {
   listJobs(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
   pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /**
+   * GET /v1/agents/{uid}/profile: the owner's whole bot profile in one
+   * call. Anyone else gets 404, and so does a server that has not shipped
+   * the route; callers fall back to the individual reads.
+   */
+  getProfile?(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/runtime/actions: owner relay to the bot's box. */
+  runtimeAction?(
+    agentUid: string,
+    input: AgentRuntimeActionInput,
+  ): AdapterPromise<Json>;
   /** PATCH /v1/agents/{uid}/profile — owner/admin. */
   updateProfile(
     agentUid: string,
