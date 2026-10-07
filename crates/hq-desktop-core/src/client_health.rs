@@ -309,6 +309,28 @@ closed_wire_enum!(
 );
 
 closed_wire_enum!(
+    /// Existing hq-pro reasons for holding a staged automatic install.
+    ClientHealthUpdateDeferReason {
+        BusySync => "busy_sync",
+        BusyActivity => "busy_activity",
+        PendingRestart => "pending_restart",
+        Other => "other",
+    }
+);
+
+closed_wire_enum!(
+    /// Existing hq-pro updater install outcome values.
+    ClientHealthInstallOutcome {
+        Staged => "staged",
+        HandoffFailed => "handoff_failed",
+        DownloadFailed => "download_failed",
+        InstallerFailed => "installer_failed",
+        RolledBack => "rolled_back",
+        Ok => "ok",
+    }
+);
+
+closed_wire_enum!(
     /// Outcome of one diagnostic check.
     ClientHealthCheckStatus {
         Pass => "pass",
@@ -375,6 +397,10 @@ pub struct ClientHealthHeartbeat {
     /// updater exists but has not run. The two are distinct on the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updater_state: Option<ClientHealthUpdaterState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_defer_reason: Option<ClientHealthUpdateDeferReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_outcome: Option<ClientHealthInstallOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<ClientHealthFailureReason>,
 }
@@ -838,6 +864,8 @@ pub fn parse_client_health_heartbeat(
         )?,
         conflict_count: None,
         updater_state: None,
+        update_defer_reason: None,
+        install_outcome: None,
         failure_reason: None,
     };
     if let Some(entry) = raw.get("lastSyncAttemptAt") {
@@ -860,6 +888,18 @@ pub fn parse_client_health_heartbeat(
     if let Some(entry) = raw.get("updaterState") {
         heartbeat.updater_state = Some(ClientHealthUpdaterState::parse_field(
             "updaterState",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("updateDeferReason") {
+        heartbeat.update_defer_reason = Some(ClientHealthUpdateDeferReason::parse_field(
+            "updateDeferReason",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("installOutcome") {
+        heartbeat.install_outcome = Some(ClientHealthInstallOutcome::parse_field(
+            "installOutcome",
             Some(entry),
         )?);
     }
@@ -1397,6 +1437,20 @@ mod tests {
             reserialized, input,
             "wire field names/values must survive round-trip"
         );
+    }
+
+    #[test]
+    fn staged_deferred_update_fields_round_trip_with_existing_values() {
+        let mut value: Value = serde_json::from_str(HEARTBEAT_HEALTHY).unwrap();
+        value["updaterState"] = json!("update_ready");
+        value["updateDeferReason"] = json!("busy_sync");
+        value["installOutcome"] = json!("staged");
+
+        let parsed = parse_client_health_heartbeat(&value).expect("existing updater fields parse");
+        let round_trip = serde_json::to_value(parsed).expect("heartbeat serializes");
+        assert_eq!(round_trip["updaterState"], json!("update_ready"));
+        assert_eq!(round_trip["updateDeferReason"], json!("busy_sync"));
+        assert_eq!(round_trip["installOutcome"], json!("staged"));
     }
 
     #[test]
