@@ -156,6 +156,24 @@ fn with_state<T>(mutate: impl FnOnce(&mut ClientHealthState) -> T) -> Result<T, 
     Ok(out)
 }
 
+/// Like `with_state`, but skip the disk write when the mutation reports that
+/// the persisted client-health state is already current.
+fn with_state_if_changed(
+    mutate: impl FnOnce(&mut ClientHealthState) -> bool,
+) -> Result<bool, String> {
+    let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let path = state_file_path().ok_or_else(|| "home dir unavailable".to_string())?;
+    let mut state = load_state(&path);
+    if !mutate(&mut state) {
+        return Ok(false);
+    }
+    if state.installation_id.is_empty() {
+        state.installation_id = new_installation_id();
+    }
+    save_state(&path, &state)?;
+    Ok(true)
+}
+
 /// `^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$` — the contract's installation-identity
 /// shape (mirrors the private validator in `hq_desktop_core::client_health`;
 /// the pre-send contract self-check re-verifies it).
@@ -399,7 +417,15 @@ pub(crate) fn record_updater_status(status: &PendingUpdateStatus) {
 /// A verified package is staged and its automatic install is being held.
 /// Preserve the staged state even if a later updater check reports no update.
 pub(crate) fn record_staged_update_deferred(reason: ClientHealthUpdateDeferReason) {
-    if let Err(e) = with_state(|state| {
+    match with_state_if_changed(|state| {
+        if !hq_desktop_core::client_health::staged_update_deferred_state_changed(
+            state.updater_state.as_deref(),
+            state.update_defer_reason.as_deref(),
+            state.install_outcome.as_deref(),
+            reason,
+        ) {
+            return false;
+        }
         state.updater_state = Some(
             ClientHealthUpdaterState::UpdateReady
                 .wire_value()
@@ -407,10 +433,12 @@ pub(crate) fn record_staged_update_deferred(reason: ClientHealthUpdateDeferReaso
         );
         state.update_defer_reason = Some(reason.wire_value().to_string());
         state.install_outcome = Some(ClientHealthInstallOutcome::Staged.wire_value().to_string());
+        true
     }) {
-        eprintln!("[client-health] record-staged-update-deferred failed: {e}");
+        Ok(true) => notify_client_health_state_changed(),
+        Ok(false) => {}
+        Err(error) => eprintln!("[client-health] record-staged-update-deferred failed: {error}"),
     }
-    notify_client_health_state_changed();
 }
 
 /// A desktop update install failed.

@@ -318,6 +318,19 @@ closed_wire_enum!(
     }
 );
 
+/// Whether persisting and notifying a staged/deferred update changes the
+/// client-health ledger.
+pub fn staged_update_deferred_state_changed(
+    updater_state: Option<&str>,
+    update_defer_reason: Option<&str>,
+    install_outcome: Option<&str>,
+    reason: ClientHealthUpdateDeferReason,
+) -> bool {
+    updater_state != Some(ClientHealthUpdaterState::UpdateReady.wire_value())
+        || update_defer_reason != Some(reason.wire_value())
+        || install_outcome != Some(ClientHealthInstallOutcome::Staged.wire_value())
+}
+
 closed_wire_enum!(
     /// Existing hq-pro updater install outcome values.
     ClientHealthInstallOutcome {
@@ -1442,6 +1455,73 @@ mod tests {
         );
         assert_eq!(heartbeat.update_defer_reason, None);
         assert_eq!(heartbeat.install_outcome, None);
+    }
+
+    #[test]
+    fn staged_defer_recording_writes_and_notifies_only_when_state_changes() {
+        fn record(
+            updater_state: &mut Option<&'static str>,
+            update_defer_reason: &mut Option<&'static str>,
+            install_outcome: &mut Option<&'static str>,
+            reason: ClientHealthUpdateDeferReason,
+            writes: &mut usize,
+            notifications: &mut usize,
+        ) {
+            if staged_update_deferred_state_changed(
+                *updater_state,
+                *update_defer_reason,
+                *install_outcome,
+                reason,
+            ) {
+                *updater_state = Some(ClientHealthUpdaterState::UpdateReady.wire_value());
+                *update_defer_reason = Some(reason.wire_value());
+                *install_outcome = Some(ClientHealthInstallOutcome::Staged.wire_value());
+                *writes += 1;
+                *notifications += 1;
+            }
+        }
+
+        let mut updater_state = None;
+        let mut update_defer_reason = None;
+        let mut install_outcome = None;
+        let mut writes = 0;
+        let mut notifications = 0;
+
+        record(
+            &mut updater_state,
+            &mut update_defer_reason,
+            &mut install_outcome,
+            ClientHealthUpdateDeferReason::BusySync,
+            &mut writes,
+            &mut notifications,
+        );
+        record(
+            &mut updater_state,
+            &mut update_defer_reason,
+            &mut install_outcome,
+            ClientHealthUpdateDeferReason::BusySync,
+            &mut writes,
+            &mut notifications,
+        );
+        record(
+            &mut updater_state,
+            &mut update_defer_reason,
+            &mut install_outcome,
+            ClientHealthUpdateDeferReason::BusySync,
+            &mut writes,
+            &mut notifications,
+        );
+        assert_eq!((writes, notifications), (1, 1));
+
+        record(
+            &mut updater_state,
+            &mut update_defer_reason,
+            &mut install_outcome,
+            ClientHealthUpdateDeferReason::BusyActivity,
+            &mut writes,
+            &mut notifications,
+        );
+        assert_eq!((writes, notifications), (2, 2));
     }
 
     #[test]
