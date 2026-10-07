@@ -1586,6 +1586,7 @@ export function createSyncPlatformAdapter(
         call('take_pending_messages_target'),
       setActiveCompany: (slug) =>
         call('set_desktop_active_company', { companySlug: slug }),
+      getActiveCompany: () => call<string | null>('get_desktop_active_company'),
       openDriftDetail: (report) => call('open_drift_detail', { report }),
       openMeetingPermissionsWindow: () =>
         call('open_meeting_permissions_window'),
