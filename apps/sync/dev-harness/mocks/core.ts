@@ -496,6 +496,42 @@ const COMPANY_PRDS: Record<string, unknown> = {
 
 type Handler = (args?: Record<string, unknown>) => unknown;
 
+/**
+ * GET /files/{companyUid}/members/{personUid}/access, shaped like hq-pro.
+ * The owner reaches everything by role and also holds dozens of grants on the
+ * bots they created (the case that used to list every one of them); anyone
+ * else gets a mix of company-wide, group and direct grants.
+ */
+function harnessMemberAccess(url: string): unknown {
+  const personUid = decodeURIComponent(url.split('/')[4] ?? '');
+  const owner = personUid === 'prs_corey';
+  const created = ['a bot', 'Linus', 'Izzy', 'Scout', 'Ranger', 'Ace', 'Big Nuts', 'Botly', 'buddy']
+    .concat(Array.from({ length: 37 }, (_, i) => `helper-${i + 1}`))
+    .map((name) => ({ path: `agents/${name}/*`, permission: 'admin', sources: [{ via: 'creator', permission: 'admin' }] }));
+  const identity = { primaryEmail: `${personUid}@example.com`, secondaryEmails: [], groups: [{ groupId: 'grp_core', name: 'core' }, { groupId: 'grp_dev', name: 'Dev Test' }], isActiveMember: true };
+  if (owner) {
+    return {
+      identity,
+      files: { roleBypass: true, grants: [{ path: '*', permission: 'admin', sources: [{ via: 'person', permission: 'admin' }, { via: 'group', groupName: 'core', permission: 'admin' }] }, ...created] },
+      secrets: { roleBypass: true, grants: [] },
+    };
+  }
+  return {
+    identity,
+    files: {
+      roleBypass: false,
+      grants: [
+        { path: 'knowledge/', permission: 'read', sources: [{ via: 'company-wide', permission: 'read' }] },
+        { path: 'knowledge/public/', permission: 'read', sources: [{ via: 'company-wide', permission: 'read' }] },
+        ...Array.from({ length: 12 }, (_, i) => ({ path: `projects/project-${i + 1}/`, permission: i % 3 === 0 ? 'write' : 'read', sources: [{ via: 'group', groupName: 'Dev Test', permission: 'read' }] })),
+        { path: 'reports/q3.md', permission: 'read', sources: [{ via: 'person', permission: 'read' }] },
+        ...created.slice(0, 3),
+      ],
+    },
+    secrets: { roleBypass: false, grants: [{ path: 'stripe/', permission: 'read', sources: [{ via: 'group', groupName: 'core', permission: 'read' }] }] },
+  };
+}
+
 function minutesAgo(mins: number): string {
   return new Date(Date.now() - mins * 60 * 1000).toISOString();
 }
@@ -1708,7 +1744,10 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+  hq_pro_fetch: (args) => /^\/files\/[^/]+\/members\/[^/]+\/access$/.test(String(args?.url ?? '')) ? ({
+    status: 200,
+    body: JSON.stringify(harnessMemberAccess(String(args?.url ?? ''))),
+  }) : String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
     status: 200,
     // Two cloud bots, neither local nor live, so Bots' Local and Live filters
     // have nothing to show (QA-106 guard).

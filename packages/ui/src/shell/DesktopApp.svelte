@@ -13120,6 +13120,7 @@
               },
               selfUid: self?.uid ?? null,
               selfEmail: self?.email ?? null,
+              companyLabel: companyPaneCompany.label,
             }}
           >
             {#snippet skeleton()}

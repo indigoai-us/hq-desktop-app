@@ -58,6 +58,8 @@
     /** OWNER-R9: the signed-in person, to read their own role here. */
     selfUid?: string | null;
     selfEmail?: string | null;
+    /** Company display name, for the access summary. */
+    companyLabel?: string;
   }
 
   let {
@@ -72,6 +74,7 @@
     onmessage,
     selfUid = null,
     selfEmail = null,
+    companyLabel = "",
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -499,6 +502,7 @@
             joined: openMember.joined ?? "",
             role: openMember.role ?? "",
             badge: openMember.badge ?? "",
+            companyLabel: companyLabel || slug,
             botName: botNameFor,
           }}
         />
@@ -762,7 +766,12 @@
   }
   .body { flex: 1; min-height: 0; display: flex; }
   .canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 12px 24px; }
-  .profile { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  /* One scroller for the whole pane. The profile header and the access summary
+     keep their natural heights, so a long access list can never squeeze the
+     header and paint over the name. */
+  .profile { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
+  .profile > :global(*) { flex: none; }
+  .profile :global([data-testid="profile-pane-host"]) { height: auto; }
   .profile-loading { height: 100%; }
   .cols, .row-main {
     display: grid;
