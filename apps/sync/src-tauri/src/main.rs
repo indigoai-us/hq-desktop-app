@@ -782,6 +782,7 @@ fn main() {
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
+            commands::personal::get_hq_anywhere_person_setting,
             commands::personal::put_hq_anywhere_person_setting,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
