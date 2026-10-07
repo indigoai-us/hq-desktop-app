@@ -40,7 +40,8 @@ use std::time::Duration;
 
 use chrono::SecondsFormat;
 use hq_desktop_core::sync_outcome::{
-    classify_runner_error_class, sentry_path_tag, termination_fingerprint_token, RunnerErrorRollup,
+    classify_runner_error_class, remember_runner_exit_error, sentry_path_tag,
+    termination_fingerprint_token, RunnerErrorRollup,
 };
 use tauri::{AppHandle, Emitter};
 
@@ -314,17 +315,6 @@ fn runner_exit_error_class(error_class: Option<&'static str>, totals: &RunTotals
     match totals.runner_error_rollup.fingerprint_token() {
         "none" | "other" => "unknown",
         stable_class => stable_class,
-    }
-}
-
-fn remember_runner_exit_error(
-    current: &Mutex<Option<&'static str>>,
-    candidate: Option<&'static str>,
-) {
-    let Some(candidate) = candidate else { return };
-    let mut current = current.lock().unwrap_or_else(|error| error.into_inner());
-    if candidate != "unknown" || current.is_none() {
-        *current = Some(candidate);
     }
 }
 

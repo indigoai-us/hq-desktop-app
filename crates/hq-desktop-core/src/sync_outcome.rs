@@ -210,7 +210,8 @@ pub struct RunTotals {
 
 #[cfg(test)]
 mod sentry_path_tag_tests {
-    use super::sentry_path_tag;
+    use super::{remember_runner_exit_error, sentry_path_tag};
+    use std::sync::Mutex;
 
     #[test]
     fn sentry_path_tags_keep_only_lowercase_sentinel_tokens() {
@@ -227,6 +228,24 @@ mod sentry_path_tag_tests {
         for invalid in ["(Runner)", "()", "(bad_value)", "(runner/path)"] {
             assert_eq!(sentry_path_tag(invalid), "[Filtered]", "{invalid}");
         }
+    }
+
+    #[test]
+    fn runner_exit_error_keeps_recognized_class_after_unknown_candidate() {
+        let current = Mutex::new(None);
+        remember_runner_exit_error(&current, Some("journal-invalid-payload"));
+        remember_runner_exit_error(&current, Some("unknown"));
+        assert_eq!(
+            *current.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("journal-invalid-payload")
+        );
+
+        let empty = Mutex::new(None);
+        remember_runner_exit_error(&empty, Some("unknown"));
+        assert_eq!(
+            *empty.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("unknown")
+        );
     }
 }
 
@@ -2299,6 +2318,20 @@ pub fn sentry_path_tag(path: &str) -> String {
         path.to_string()
     } else {
         "[Filtered]".to_string()
+    }
+}
+
+/// Retain the most informative recognized runner error class seen in a run.
+/// An `unknown` candidate only fills an empty slot, so a later generic error
+/// cannot erase an earlier fixed-vocabulary class.
+pub fn remember_runner_exit_error(
+    current: &std::sync::Mutex<Option<&'static str>>,
+    candidate: Option<&'static str>,
+) {
+    let Some(candidate) = candidate else { return };
+    let mut current = current.lock().unwrap_or_else(|error| error.into_inner());
+    if candidate != "unknown" || current.is_none() {
+        *current = Some(candidate);
     }
 }
 

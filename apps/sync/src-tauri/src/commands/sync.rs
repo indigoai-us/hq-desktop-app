@@ -320,6 +320,13 @@ fn runner_exit_error_from_line(line: &str) -> Option<&'static str> {
     }
 }
 
+fn remember_runner_exit_error_for_line(current: &Mutex<Option<&'static str>>, line: &str) {
+    hq_desktop_core::sync_outcome::remember_runner_exit_error(
+        current,
+        runner_exit_error_from_line(line),
+    );
+}
+
 #[cfg(test)]
 fn runner_exit_error_payload(
     error_class: Option<&'static str>,
@@ -3245,9 +3252,7 @@ async fn start_sync_inner(
                     log("runner.stdout", &line);
                     #[cfg(debug_assertions)]
                     eprintln!("[sync stdout] {}", line);
-                    if let Some(error) = runner_exit_error_from_line(&line) {
-                        *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-                    }
+                    remember_runner_exit_error_for_line(&runner_exit_error, &line);
                     if handle_sync_line(
                         &app_bg,
                         &hq_folder_for_handler,
@@ -3267,9 +3272,7 @@ async fn start_sync_inner(
                     // most likely place the cause shows up (npx download retry,
                     // node uncaught exception, runner panic, etc.).
                     log("runner.stderr", &line);
-                    if let Some(error) = runner_exit_error_from_line(&line) {
-                        *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-                    }
+                    remember_runner_exit_error_for_line(&runner_exit_error, &line);
                     // Preserve temporal shape in Sentry without copying untrusted
                     // process output. Raw lines stay local in hq-sync.log; Sentry
                     // receives only a monotonic sequence and fixed error class.
@@ -3584,6 +3587,24 @@ mod tests {
             runner_exit_error_class(None, &RunTotals::default()),
             "unknown"
         );
+    }
+
+    #[test]
+    fn runner_exit_preserves_journal_class_after_generic_structured_sync_failure() {
+        let journal = r#"{"type":"error","path":"(runner)","message":"HQSNAP4 has an invalid journal payload"}"#;
+        let generic = r#"{"type":"error","path":"(runner)","message":"sync failed"}"#;
+        let current = Mutex::new(None);
+        let mut totals = RunTotals::default();
+        for line in [journal, generic] {
+            remember_runner_exit_error_for_line(&current, line);
+            if let Some(event) = crate::events::parse_sync_line(line) {
+                totals.accumulate(&event);
+            }
+        }
+
+        let error_class =
+            runner_exit_error_class(*current.lock().unwrap_or_else(|e| e.into_inner()), &totals);
+        assert_eq!(error_class, "journal-invalid-payload");
     }
 
     #[test]
