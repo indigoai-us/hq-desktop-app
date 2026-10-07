@@ -1040,7 +1040,7 @@ pub fn note_sync_started(trigger: SyncTrigger, flow: &'static str) {
         *sync_in_flight() = Some(SyncInFlight {
             trigger,
             file_count: None,
-            first_sync_company_uid: selected_company_uid,
+            first_sync_company_uid: initial_first_sync_company_uid(trigger, selected_company_uid),
         });
     }
     emit_operational(
@@ -1083,9 +1083,11 @@ pub fn sync_end_event(
 
 fn attach_first_sync_company_uid(company_uid: &str) {
     if let Some(in_flight) = sync_in_flight().as_mut() {
-        if in_flight.trigger == SyncTrigger::First && in_flight.first_sync_company_uid.is_none() {
-            in_flight.first_sync_company_uid = Some(company_uid.to_string());
-        }
+        in_flight.first_sync_company_uid = next_first_sync_company_uid(
+            in_flight.trigger,
+            in_flight.first_sync_company_uid.as_deref(),
+            company_uid,
+        );
     }
 }
 
@@ -1102,6 +1104,28 @@ fn onboarding_selected_company_uid() -> Option<String> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
+}
+
+fn initial_first_sync_company_uid(
+    trigger: SyncTrigger,
+    selected_company_uid: Option<String>,
+) -> Option<String> {
+    (trigger == SyncTrigger::First)
+        .then_some(selected_company_uid)
+        .flatten()
+}
+
+fn next_first_sync_company_uid(
+    trigger: SyncTrigger,
+    current_company_uid: Option<&str>,
+    candidate_company_uid: &str,
+) -> Option<String> {
+    if trigger != SyncTrigger::First {
+        return current_company_uid.map(str::to_owned);
+    }
+    current_company_uid
+        .map(str::to_owned)
+        .or_else(|| Some(candidate_company_uid.to_owned()))
 }
 
 /// Hook for the runner's terminal seam (`record_sync_run_ended` call sites).
@@ -1661,31 +1685,14 @@ mod tests {
 
     #[test]
     fn first_sync_company_is_attached_only_to_a_first_trigger() {
-        *sync_in_flight() = Some(SyncInFlight {
-            trigger: SyncTrigger::First,
-            file_count: None,
-            first_sync_company_uid: None,
-        });
-        attach_first_sync_company_uid("cmp_first");
         assert_eq!(
-            sync_in_flight()
-                .as_ref()
-                .and_then(|pass| pass.first_sync_company_uid.as_deref()),
+            next_first_sync_company_uid(SyncTrigger::First, None, "cmp_first").as_deref(),
             Some("cmp_first")
         );
-
-        *sync_in_flight() = Some(SyncInFlight {
-            trigger: SyncTrigger::Manual,
-            file_count: None,
-            first_sync_company_uid: None,
-        });
-        attach_first_sync_company_uid("cmp_manual");
-        assert!(sync_in_flight()
-            .as_ref()
-            .unwrap()
-            .first_sync_company_uid
-            .is_none());
-        sync_in_flight().take();
+        assert_eq!(
+            next_first_sync_company_uid(SyncTrigger::Manual, None, "cmp_manual"),
+            None
+        );
     }
 
     #[test]
@@ -1694,32 +1701,28 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         note_onboarding_company_selected("cmp_selected");
-        note_sync_started(SyncTrigger::First, "runner");
-        attach_first_sync_company_uid("cmp_later");
         assert_eq!(
-            sync_in_flight()
-                .as_ref()
-                .and_then(|pass| pass.first_sync_company_uid.as_deref()),
+            initial_first_sync_company_uid(SyncTrigger::First, onboarding_selected_company_uid())
+                .as_deref(),
             Some("cmp_selected")
         );
-        sync_in_flight().take();
+        assert_eq!(
+            initial_first_sync_company_uid(SyncTrigger::Manual, Some("cmp_selected".to_string())),
+            None
+        );
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 
     #[test]
     fn first_sync_keeps_first_company_when_onboarding_selection_is_unavailable() {
-        *ONBOARDING_SELECTED_COMPANY_UID
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        note_sync_started(SyncTrigger::First, "runner");
-        attach_first_sync_company_uid("cmp_first");
-        attach_first_sync_company_uid("cmp_second");
+        let first = next_first_sync_company_uid(SyncTrigger::First, None, "cmp_first");
         assert_eq!(
-            sync_in_flight()
-                .as_ref()
-                .and_then(|pass| pass.first_sync_company_uid.as_deref()),
+            next_first_sync_company_uid(SyncTrigger::First, first.as_deref(), "cmp_second")
+                .as_deref(),
             Some("cmp_first")
         );
-        sync_in_flight().take();
     }
 
     #[test]
