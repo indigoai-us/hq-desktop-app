@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.403] - 2026-10-08
+
 ### Fixed
 
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
