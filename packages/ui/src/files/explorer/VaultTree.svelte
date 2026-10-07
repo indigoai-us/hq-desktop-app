@@ -12,6 +12,8 @@
    */
   import { untrack } from "svelte";
   import RailButton from "../../common/button/RailButton.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
+  import type { RailIconName } from "../../common/button/rail-icons.js";
   import type { Vault, TreeEntry } from "./vault-model.js";
   import { toTreeEntry, visibleEntries } from "./vault-model.js";
 
@@ -33,9 +35,15 @@
     noteFor?: (entry: TreeEntry) => string | null;
     /** OWNER-R17: a folder row was selected (it also opens or closes). */
     onfocusdir?: (path: string) => void;
+    /** Display name for a row (e.g. a note's frontmatter title); null keeps the file name. */
+    labelFor?: (entry: TreeEntry) => string | null;
+    /** Count shown at the end of a folder row (e.g. files inside). */
+    countFor?: (entry: TreeEntry) => number | null;
+    /** Small kind icon before a file row's name. */
+    iconFor?: (entry: TreeEntry) => RailIconName | null;
   }
 
-  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor, onfocusdir }: Props = $props();
+  let { vault, listDir, activePath, showSystem, reloadKey, onopen, retryHere = true, onretry, revealAll = false, noteFor, onfocusdir, labelFor, countFor, iconFor }: Props = $props();
 
   let children = $state<Record<string, TreeEntry[]>>({});
   let expanded = $state<Record<string, boolean>>({});
@@ -246,6 +254,8 @@
   }
 
   function displayName(entry: TreeEntry): string {
+    const label = labelFor?.(entry);
+    if (label) return label;
     if (entry.isDir) return entry.name;
     return entry.name.replace(/\.(md|markdown)$/i, "");
   }
@@ -304,10 +314,16 @@
             {:else}
               <span class="vt-chevron-spacer" aria-hidden="true"></span>
             {/if}
+            {#if !entry.isDir && iconFor?.(entry)}
+              <span class="vt-kind" aria-hidden="true"><RailIcon name={iconFor(entry)!} size={13} /></span>
+            {/if}
             <span class="vt-name">{displayName(entry)}</span>
             {#if noteFor?.(entry)}<span class="vt-note-inline">{noteFor(entry)}</span>{/if}
             {#if !entry.isDir && ext && ext !== "md" && ext !== "markdown"}
               <span class="vt-ext">{ext}</span>
+            {/if}
+            {#if entry.isDir && countFor?.(entry) != null}
+              <span class="vt-count" data-testid="vault-tree-count">{countFor(entry)}</span>
             {/if}
             {#if entry.isDir && loading[entry.path]}
               <span class="vt-spinner" aria-label="Loading"></span>
@@ -320,6 +336,19 @@
 </div>
 
 <style>
+  .vt-kind {
+    display: inline-flex;
+    flex: none;
+    margin-right: 2px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+  }
+  .vt-count {
+    flex: none;
+    margin-left: auto;
+    padding-left: 8px;
+    color: var(--text-3, var(--v4-text-3, currentColor));
+    font-variant-numeric: tabular-nums;
+  }
   .vt-note-inline {
     flex: none;
     margin-left: 6px;
