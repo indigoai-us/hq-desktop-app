@@ -12,6 +12,10 @@ The release moves it under the version it ships in.
 - The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
 - When the app updates a pnpm-installed HQ CLI, it no longer changes your default pnpm version through Corepack, and its pnpm checks stop every process they started when they time out. Before this, a failed update could leave Corepack on pnpm 12 and start thousands of `pnpm dlx` processes.
 
+### Fixed
+
+- The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
+
 ## [0.10.401] — 2026-10-07
 
 - First sync attribution now includes the company selected or joined during setup, including existing companies.
