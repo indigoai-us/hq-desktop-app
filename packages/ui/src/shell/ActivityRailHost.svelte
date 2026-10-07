@@ -11,10 +11,12 @@
     slug: string;
     companyLabel: string;
     adapter?: Pick<PlatformAdapter, "company"> | null;
+    companyUid?: string | null;
+    avatarByUid?: Readonly<Record<string, string>>;
     onsignin?: () => void | Promise<void>;
   }
 
-  let { slug, companyLabel, adapter = null, onsignin }: Props = $props();
+  let { slug, companyLabel, adapter = null, companyUid = null, avatarByUid = {}, onsignin }: Props = $props();
 
   let View = $state<typeof import("../activity/ActivityView.svelte").default | null>(null);
 
@@ -27,7 +29,7 @@
 
 <div class="host" data-testid="activity-host">
   {#if View}
-    <View {slug} {companyLabel} {adapter} {onsignin} />
+    <View {slug} {companyLabel} {adapter} {companyUid} {avatarByUid} {onsignin} />
   {:else}
     <div class="loading">
       <ReadLoader testid="activity-loading" />

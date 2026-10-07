@@ -241,6 +241,8 @@
   // readable size at every zoom. Each stack starts just off the node rim and
   // overlaps to the right.
   const CHIP_PX = 20;
+  /** Dock chips: one circle size for people, bots and the +N overflow. */
+  const DOCK_CHIP_PX = 22;
   const CHIP_STEP = 15;
   const half = CHIP_PX / 2;
   const chips = $derived(
@@ -260,7 +262,7 @@
   const dockMore = $derived(unplaced.length - dockShown.length);
   /** Dock chip under the pointer and its centre in map screen space. */
   let dockHover = $state<{ key: string; x: number; y: number } | null>(null);
-  function hoverDock(key: string, event: PointerEvent): void {
+  function hoverDock(key: string, event: Event): void {
     const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const origin = svgEl?.getBoundingClientRect();
     dockHover = {
@@ -654,23 +656,27 @@
   </svg>
   {#if unplaced.length}
     <div class="unplaced" data-testid="atlas-unplaced" bind:this={dockEl}>
-      <div class="unplaced-cap">Not on the map <span data-testid="atlas-unplaced-count">{unplaced.length}</span></div>
+      <div class="unplaced-cap">Not on the map <span class="unplaced-count" data-testid="atlas-unplaced-count">{unplaced.length}</span></div>
       <div class="unplaced-chips">
         {#each dockShown as who (who.actorUid ?? who.name)}
           <span
             class="away"
-            class:bot={who.bot}
             class:idle={who.idle ?? false}
             class:dim={filterActor ? who.actorUid !== filterActor : false}
             data-testid={`atlas-unplaced-${who.actorUid ?? who.name}`}
             data-kind={who.bot ? "bot" : "human"}
             role="img"
-            aria-label={`${who.name}: ${who.unplaced ?? "not on the map"}`}
+            tabindex="0"
+            aria-label={`${who.name}, ${who.bot ? "bot" : "person"}: ${who.unplaced ?? "not on the map"}`}
             onpointerenter={(event) => hoverDock(who.actorUid ?? who.name, event)}
             onpointerleave={() => {
               if (dockHover?.key === (who.actorUid ?? who.name)) dockHover = null;
             }}
-          ><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={20} /></span>
+            onfocus={(event) => hoverDock(who.actorUid ?? who.name, event)}
+            onblur={() => {
+              if (dockHover?.key === (who.actorUid ?? who.name)) dockHover = null;
+            }}
+          ><AtlasFace name={who.name} bot={who.bot} avatarUrl={who.avatarUrl} size={DOCK_CHIP_PX} /></span>
         {/each}
         {#if dockMore > 0}
           <button
@@ -1273,58 +1279,69 @@
     background: var(--v4-ground);
     background: rgb(from var(--v4-ground) r g b);
   }
+  /* Sentence-case header like the inspector's sections; the count is a quiet number. */
   .unplaced-cap {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--v4-text-3);
+    color: var(--v4-text-2, var(--v4-text-3));
     margin-bottom: 6px;
+  }
+  .unplaced-count {
+    margin-left: 4px;
+    font-weight: 400;
+    color: var(--v4-text-3);
+    font-variant-numeric: tabular-nums;
   }
   .unplaced-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
+    /* Room for the presence ring, which sits outside the chip. */
+    padding: 3px;
   }
+  /* One shape for everyone: people, bots and the overflow are the same circle
+     with one hairline. Bot mascots are clipped to the circle, not boxed. A
+     share-the-avatar swap: the shared Avatar component can replace the inner
+     AtlasFace without touching this frame. */
   .away {
     box-sizing: border-box;
-    width: 20px;
-    height: 20px;
+    width: 22px;
+    height: 22px;
+    flex: none;
     display: inline-grid;
     place-items: center;
     border-radius: 50%;
-    border: 1.5px solid var(--v4-ok);
-    background: var(--v4-ground);
-    background: rgb(from var(--v4-ground) r g b);
-    color: var(--v4-text-1);
+    border: 1px solid var(--v4-control-border);
+    background: var(--v4-control-faint, var(--v4-ground));
+    color: var(--v4-text-2);
     font-family: var(--font-sans, "Geist", sans-serif);
     font-size: 9px;
     font-weight: 500;
     line-height: 1;
     padding: 0;
-    cursor: default;
-  }
-  .away {
     overflow: hidden;
+    cursor: default;
+    outline: none;
   }
-  .away.bot {
-    border-radius: 3px;
-  }
-  .away.idle {
-    border-color: var(--v4-text-3);
-    color: var(--v4-text-3);
+  /* Live presence only: a thin 2px ring with a 1px gap on the dock surface,
+     the same treatment as the Projects live indicator. */
+  .away:not(.idle):not(.more) {
+    box-shadow: 0 0 0 1px var(--v4-ground), 0 0 0 3px var(--v4-ok);
   }
   .away.dim {
     opacity: 0.35;
   }
   .away.more {
-    width: auto;
-    min-width: 20px;
-    padding: 0 5px;
-    border-radius: 10px;
-    border-color: var(--v4-control-border);
-    color: var(--v4-text-2);
+    color: var(--v4-text-3);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
     cursor: pointer;
+  }
+  .away.more:hover {
+    color: var(--v4-text-1);
+  }
+  .away:focus-visible {
+    box-shadow: 0 0 0 1px var(--v4-ground), 0 0 0 3px var(--v4-focus-ring, var(--v4-control-border));
   }
   /* Playback date: the canvas title size, quiet; the caption is body size. */
   .day {

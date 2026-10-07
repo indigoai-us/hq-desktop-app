@@ -107,6 +107,13 @@ pub struct LocalProject {
     /// story edit or move by any local session or lane rewrites the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prd_modified_at: Option<String>,
+    /// Repositories the PRD declares it touches (`metadata.repoPath`,
+    /// `metadata.repoPaths`, `metadata.repos`), as short names. Display only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
+    /// The PRD's working branch (`branchName`), when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_name: Option<String>,
 }
 
 /// A single user story, mirroring the prd.json story shape the Kanban + detail
@@ -693,6 +700,48 @@ pub fn file_modified_at(hq_root: &Path, rel_path: &str) -> Option<String> {
         chrono::DateTime::<chrono::Utc>::from(modified)
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     )
+}
+
+/// Short repo names the PRD declares in its metadata. Paths collapse to their
+/// last segment (`repos/private/hq-desktop-app` -> `hq-desktop-app`), in
+/// declaration order, without duplicates.
+pub fn prd_repos(prd: &PrdFile) -> Vec<String> {
+    let mut raw: Vec<&str> = Vec::new();
+    for key in ["repoPath", "repo_path", "repo", "repoPaths", "repos"] {
+        match prd.metadata.get(key) {
+            Some(serde_json::Value::String(value)) => raw.push(value),
+            Some(serde_json::Value::Array(values)) => {
+                raw.extend(values.iter().filter_map(serde_json::Value::as_str))
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    for value in raw {
+        let name = value
+            .trim()
+            .trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        if name.is_empty() || name == "." || name == ".." {
+            continue;
+        }
+        if !out.iter().any(|seen| seen == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// The PRD's declared working branch, trimmed; `None` when blank.
+pub fn prd_branch(prd: &PrdFile) -> Option<String> {
+    prd.branch_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
 }
 
 pub fn prd_updated_at(prd: &PrdFile) -> Option<String> {
@@ -1405,12 +1454,29 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
                             prd_created_at(&prd),
                             prd_updated_at(&prd),
                             prd_provenance(&prd),
+                            prd_repos(&prd),
+                            prd_branch(&prd),
                         )
                     })
                 });
             linked_prds.insert(prd_path.clone());
-            let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
-                details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+            let (
+                story_count,
+                stories_complete,
+                prd_created,
+                prd_updated,
+                prd_provenance,
+                repos,
+                branch_name,
+            ) = details.unwrap_or((
+                0,
+                0,
+                None,
+                None,
+                WorkProvenance::default(),
+                Vec::new(),
+                None,
+            ));
             let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
             let id = if id.trim().is_empty() {
                 title.clone()
@@ -1438,6 +1504,8 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
                 ),
                 creator_fallback: None,
                 prd_modified_at: None,
+                repos,
+                branch_name,
             });
         }
     }
@@ -1463,6 +1531,8 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
             continue;
         };
         let (story_count, stories_complete) = story_counts(&prd);
+        let repos = prd_repos(&prd);
+        let branch_name = prd_branch(&prd);
         let id = prd_path
             .parent()
             .and_then(Path::file_name)
@@ -1491,6 +1561,8 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
             provenance,
             creator_fallback: None,
             prd_modified_at: None,
+            repos,
+            branch_name,
         });
     }
     out
@@ -1570,12 +1642,29 @@ fn scan_local_projects_scoped(
                                 prd_created_at(&prd),
                                 prd_updated_at(&prd),
                                 prd_provenance(&prd),
+                                prd_repos(&prd),
+                                prd_branch(&prd),
                             )
                         })
                     });
                 linked_prds.insert(prd_path.clone());
-                let (story_count, stories_complete, prd_created, prd_updated, prd_provenance) =
-                    prd_details.unwrap_or((0, 0, None, None, WorkProvenance::default()));
+                let (
+                    story_count,
+                    stories_complete,
+                    prd_created,
+                    prd_updated,
+                    prd_provenance,
+                    repos,
+                    branch_name,
+                ) = prd_details.unwrap_or((
+                    0,
+                    0,
+                    None,
+                    None,
+                    WorkProvenance::default(),
+                    Vec::new(),
+                    None,
+                ));
                 let board_provenance = normalize_work_provenance(&[(&attribution, &provenance)]);
                 let id = if id.trim().is_empty() {
                     title.clone()
@@ -1603,6 +1692,8 @@ fn scan_local_projects_scoped(
                     ),
                     creator_fallback: None,
                     prd_modified_at: None,
+                    repos,
+                    branch_name,
                 });
             }
         }
@@ -1628,6 +1719,8 @@ fn scan_local_projects_scoped(
                 continue;
             };
             let (story_count, stories_complete) = story_counts(&prd);
+            let repos = prd_repos(&prd);
+            let branch_name = prd_branch(&prd);
             let created_at = prd_created_at(&prd);
             let updated_at = prd_updated_at(&prd);
             let provenance = with_origin_fallback(prd_provenance(&prd), &rel);
@@ -1657,6 +1750,8 @@ fn scan_local_projects_scoped(
                 provenance,
                 creator_fallback: None,
                 prd_modified_at: None,
+                repos,
+                branch_name,
             });
         }
     }
@@ -3208,6 +3303,8 @@ mod tests {
             provenance,
             creator_fallback: None,
             prd_modified_at: None,
+            repos: Vec::new(),
+            branch_name: None,
         };
         let mut projects = vec![
             project(
@@ -3496,6 +3593,23 @@ mod tests {
             .expect("schema-variant PRD remains in project scan");
         assert_eq!((project.story_count, project.stories_complete), (4, 1));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prd_repos_and_branch_come_from_prd_metadata() {
+        let prd: PrdFile = serde_json::from_str(
+            r#"{"name":"Repos","branchName":"  corey/feature  ","metadata":{
+                "repoPath":"repos/private/hq-desktop-app/",
+                "repos":["repos/public/hq-core","hq-desktop-app","", "."]
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(prd_repos(&prd), vec!["hq-desktop-app", "hq-core"]);
+        assert_eq!(prd_branch(&prd).as_deref(), Some("corey/feature"));
+
+        let bare: PrdFile = serde_json::from_str(r#"{"name":"Bare","branchName":" "}"#).unwrap();
+        assert!(prd_repos(&bare).is_empty());
+        assert_eq!(prd_branch(&bare), None);
     }
 
     #[test]

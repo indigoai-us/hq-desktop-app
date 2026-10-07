@@ -4,7 +4,7 @@
  * Active used to need a live MQTT session push that matched the project while
  * the page was open. The page started with no sessions, pushes were keyed by
  * story id, and pushes for other projects were dropped while one was open, so
- * Active stayed empty. Active now means real activity now or very recently,
+ * Active stayed empty. Active now means real activity now or very recly,
  * from any one of these signals:
  *
  * - presence: a work-mesh session bound to the project with a turn in the last
@@ -20,6 +20,7 @@
 import type { LiveReadResponse } from "@hq/core";
 import type { PortfolioSessionRef, Project } from "./projects-model.js";
 import { isPortfolioLiveStatus } from "./projects-model.js";
+import { isRawPersonId } from "../common/people/people.js";
 
 export const ACTIVE_PRESENCE_WINDOW_MS = 30 * 60 * 1000;
 export const ACTIVE_RECENT_WORK_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -57,6 +58,20 @@ export interface ProjectActivitySignals {
   commits?: readonly ProjectCommit[];
   presenceWindowMs?: number;
   recentWindowMs?: number;
+  /** Resolve an actor uid to a person's name (company roster), when known. */
+  nameFor?: (actorUid: string) => string | null | undefined;
+}
+
+/** A participant's readable name, or null when only a raw id is known. */
+function participantName(
+  participant: { actorUid: string; displayName?: string | null },
+  nameFor: ProjectActivitySignals["nameFor"],
+): string | null {
+  const shown = participant.displayName?.trim() ?? "";
+  if (shown && !isRawPersonId(shown)) return shown;
+  const resolved = nameFor?.(participant.actorUid)?.trim() ?? "";
+  if (resolved && !isRawPersonId(resolved)) return resolved;
+  return null;
 }
 
 type ProjectRef = Pick<Project, "id" | "prdPath"> &
@@ -129,11 +144,17 @@ export function projectActivity(
       if (norm(session.status) === "ended") continue;
       const at = ms(session.lastTurnAt) || ms(session.startedAt);
       if (!within(at, now, presenceWindow)) continue;
-      const who = participant.displayName?.trim() || "someone";
+      const who = participantName(participant, signals.nameFor);
       found.push(
         participant.actorType === "agent"
-          ? { kind: "lane", at, label: `active · lane ${who}` }
-          : { kind: "presence", at, label: `active · ${who}, ${agoLabel(at, now)}` },
+          ? { kind: "lane", at, label: who ? `active · lane ${who}` : "active · 1 live session" }
+          : {
+              kind: "presence",
+              at,
+              label: who
+                ? `active · ${who}, ${agoLabel(at, now)}`
+                : `active · 1 live session, ${agoLabel(at, now)}`,
+            },
       );
     }
   }
@@ -144,7 +165,8 @@ export function projectActivity(
     if (!isPortfolioLiveStatus(session.status) || !within(at, now, presenceWindow)) {
       continue;
     }
-    const agent = session.agent?.trim();
+    const named = session.agent?.trim();
+    const agent = named && !isRawPersonId(named) ? named : undefined;
     found.push(
       agent
         ? { kind: "lane", at, label: `active · lane ${agent}` }
