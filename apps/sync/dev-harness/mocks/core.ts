@@ -668,7 +668,25 @@ function tourPreviewEnabled(): boolean {
  * the New bot modal can finish and land in the new bot's DM (console-rail
  * e2e "Add agent"). Nothing is listed until something is created.
  */
-const previewLocalBots: Array<Record<string, unknown>> = [];
+function botsTablePreviewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('bots') === 'table';
+}
+
+const minutesAgoIso = (n: number) => new Date(Date.now() - n * 60000).toISOString();
+
+// `?bots=table` fills the Bots table: local bots in every status-ladder step
+// plus cloud bots with runtime, role and last activity. Off by default so the
+// QA-106 guard (no local, no live bots) still holds.
+const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled()
+  ? [
+      { name: 'scout', displayName: 'Scout', agentUid: 'agt_preview_local_scout', ownerUid: 'prs_corey', runtime: 'claude', model: 'opus', state: 'running', online: true, busy: true, busySince: minutesAgoIso(2), lastHeartbeatAt: minutesAgoIso(0), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'ledger', displayName: 'Ledger', agentUid: 'agt_preview_local_ledger', ownerUid: 'prs_corey', runtime: 'codex', model: 'gpt-5', state: 'running', online: true, lastHeartbeatAt: minutesAgoIso(1), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'mover', displayName: 'Mover', agentUid: 'agt_preview_local_mover', ownerUid: 'prs_corey', runtime: 'claude', state: 'running', promotionHold: { companyUid: 'cmp_preview' }, lastHeartbeatAt: minutesAgoIso(6), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'nightly', displayName: 'Nightly', agentUid: 'agt_preview_local_nightly', ownerUid: 'prs_corey', runtime: 'grok', state: 'failed', lastHeartbeatAt: minutesAgoIso(95), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'archivist', agentUid: 'agt_preview_local_archivist', ownerUid: 'prs_corey', runtime: 'claude', state: 'stopped', online: false, lastHeartbeatAt: minutesAgoIso(60 * 30), hosting: 'local', kind: 'company', companies: ['indigo'] },
+    ]
+  : [];
 
 const handlers: Record<string, Handler> = {
   local_bots_list: () => ({ bots: previewLocalBots }),
@@ -1712,7 +1730,12 @@ This final paragraph verifies spacing after a thematic break.
     status: 200,
     // Two cloud bots, neither local nor live, so Bots' Local and Live filters
     // have nothing to show (QA-106 guard).
-    body: JSON.stringify({ agents: [
+    body: JSON.stringify({ agents: botsTablePreviewEnabled() ? [
+      { agentUid: 'agt_preview_atlas', displayName: 'Atlas', slug: 'atlas', setupPhase: 'ready', status: 'ready', runtimeKind: 'hermes', membershipRole: 'member', lastActiveAt: minutesAgoIso(3) },
+      { agentUid: 'agt_preview_ranger', displayName: 'Ranger', slug: 'ranger', setupPhase: 'ready', status: 'ready', runtimeKind: 'openclaw', membershipRole: 'admin', lastActiveAt: minutesAgoIso(60 * 5) },
+      { agentUid: 'agt_preview_herald', displayName: 'Herald', slug: 'herald', setupPhase: 'provisioning', status: 'provisioning', runtimeKind: 'hermes', membershipRole: 'member', lastActiveAt: null },
+      { agentUid: 'agt_preview_relay', displayName: 'Relay', slug: 'relay-bot', setupPhase: 'ready', status: 'ready', runtimeKind: 'claude', membershipRole: 'member', lastActiveAt: minutesAgoIso(12), external: { lastHeartbeatAt: minutesAgoIso(12) } },
+    ] : [
       { agentUid: 'agt_preview_scout', displayName: 'Scout', setupPhase: 'ready' },
       { agentUid: 'agt_preview_ranger', displayName: 'Ranger', setupPhase: 'ready' },
     ] }),

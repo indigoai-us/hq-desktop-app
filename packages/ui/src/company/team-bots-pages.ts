@@ -175,7 +175,7 @@ export interface BotListRow {
   canPause: boolean;
 }
 
-export function filterBots(rows: readonly BotListRow[], filter: BotFilter): BotListRow[] {
+export function filterBots<T extends Pick<BotListRow, "kind" | "live">>(rows: readonly T[], filter: BotFilter): T[] {
   if (filter === "local") return rows.filter((row) => row.kind === "local");
   if (filter === "cloud") return rows.filter((row) => row.kind === "cloud");
   if (filter === "live") return rows.filter((row) => row.live);
