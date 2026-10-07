@@ -1,14 +1,12 @@
 <script lang="ts">
-  import RailIcon from "../common/button/RailIcon.svelte";
-  import CompanyLabel from "../company/CompanyLabel.svelte";
-  import PeoplePicker from "./PeoplePicker.svelte";
+  import RecipientPicker from "./recipient-picker/RecipientPicker.svelte";
+  import { recipientItemsFromDirectory } from "./recipient-picker/candidates.js";
   import {
-    entriesFromDirectory,
-    loadPickerRoster,
-    readPickerRoster,
-    togglePickerId,
-    type PeoplePickerEntry,
-  } from "./people-picker.js";
+    inRecipientScope,
+    type RecipientItem,
+    type RecipientScopeOption,
+  } from "./recipient-picker/recipient-picker-model.js";
+  import { loadPickerRoster, readPickerRoster } from "./people-picker.js";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type { ConversationRow, DmContactInput, ScopeCompany } from "./sidebar-model.js";
 
@@ -36,7 +34,7 @@
   // activeCompanyUid is the scope at open; later prop updates should not
   // yank a company the person already picked.
   let query = $state("");
-  let selected = $state<string[]>([]);
+  let selectedIds = $state<string[]>([]);
   let firstLine = $state("");
   let sending = $state(false);
   let error = $state<string | null>(null);
@@ -55,29 +53,32 @@
       cancelled = true;
     };
   });
-  const entries = $derived(entriesFromDirectory({ rows, contacts, roster }));
-  const companyLabel = $derived(
-    companies.find((company) => company.companyUid === companyUid)?.label ??
-      scopeLabel ??
-      "Personal",
+  const allItems = $derived(recipientItemsFromDirectory({ rows, contacts, roster, includeChannels: true }));
+  const items = $derived(allItems.filter((item) => inRecipientScope(item, companyUid)));
+  const selected = $derived(
+    selectedIds
+      .map((id) => allItems.find((item) => item.id === id))
+      .filter((item): item is RecipientItem => !!item),
   );
+  // Personal ("") carries no company context and shows everyone, as before.
+  const scopes = $derived<RecipientScopeOption[]>([
+    { id: "", label: "Personal" },
+    ...companies.map((company) => ({ id: company.companyUid, label: company.label })),
+  ]);
 
-  function entryById(id: string): PeoplePickerEntry | undefined {
-    return entries.find((entry) => entry.id === id);
-  }
-
-  function dmRow(entry: PeoplePickerEntry): ConversationRow {
-    const existing = rows.find((row) => row.kind === "dm" && row.personUid === entry.id);
+  function dmRow(entry: RecipientItem): ConversationRow {
+    const uid = entry.principalUid ?? entry.id;
+    const existing = rows.find((row) => row.kind === "dm" && row.personUid === uid);
     if (existing) return existing;
     return {
-      id: `dm:${entry.id}`,
+      id: `dm:${uid}`,
       kind: "dm",
       title: entry.name,
-      companyUid: companyUid || entry.companyUid,
+      companyUid: companyUid || entry.companyUids?.[0] || null,
       unreadDot: false,
       lastActivityAt: Date.now(),
       pinned: false,
-      personUid: entry.id,
+      personUid: uid,
     };
   }
 
@@ -87,10 +88,17 @@
     error = null;
     const body = firstLine.trim();
     try {
+      const channel = selected.find((entry) => entry.kind === "channel" || entry.kind === "group");
+      if (channel) {
+        const row = rows.find((candidate) => candidate.id === channel.id);
+        if (!row?.channelId) return;
+        if (body) await api.sendChannelMessage({ channelId: row.channelId, body });
+        onopen(row);
+        return;
+      }
       if (selected.length === 1) {
-        const entry = entryById(selected[0]);
-        if (!entry) return;
-        if (body) await api.sendDm({ toPersonUid: entry.id, body });
+        const entry = selected[0];
+        if (body) await api.sendDm({ toPersonUid: entry.principalUid ?? entry.id, body });
         onopen(dmRow(entry));
         return;
       }
@@ -100,7 +108,7 @@
         return;
       }
       const name = selected
-        .map((id) => entryById(id)?.name ?? id)
+        .map((entry) => entry.name)
         .slice(0, 3)
         .join(", ");
       const created = await create({
@@ -111,7 +119,7 @@
       });
       const add = api.addChannelMember;
       if (add) {
-        for (const id of selected) await add(created.channelId, id);
+        for (const entry of selected) await add(created.channelId, entry.principalUid ?? entry.id);
       }
       if (body) await api.sendChannelMessage({ channelId: created.channelId, body });
       onopen({
@@ -134,11 +142,11 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") {
+    if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       onclose();
     }
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.defaultPrevented) {
       event.preventDefault();
       void send();
     }
@@ -156,73 +164,39 @@
 >
   <header class="sh">
     New message
-    <span class="sub"
-      >{#if companyUid}<CompanyLabel name={companyLabel} {companyUid} />{:else}Personal{/if}</span
-    >
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={onclose}>
       <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
     </button>
   </header>
   <div class="sb">
-    <div class="fr">
-      <div class="lb">To</div>
-      <PeoplePicker
-        {entries}
-        {selected}
-        companyUid={companyUid || null}
-        bind:query
-        onToggle={(entry) => (selected = togglePickerId(selected, entry.id))}
-      />
-    </div>
-    <div class="fr">
-      <div class="lb">Company</div>
-      <div>
-        <div class="tabs" role="tablist" data-testid="new-message-companies">
-          <button
-            type="button"
-            class="tab"
-            role="tab"
-            aria-selected={companyUid === ""}
-            onclick={() => (companyUid = "")}
-          >Personal</button>
-          {#each companies as company (company.companyUid)}
-            <button
-              type="button"
-              class="tab"
-              role="tab"
-              aria-selected={companyUid === company.companyUid}
-              onclick={() => (companyUid = company.companyUid)}
-            ><CompanyLabel name={company.label} companyUid={company.companyUid} /></button>
-          {/each}
-        </div>
-        <p class="hint">Bots and channels from other companies stay hidden. Personal DMs carry no company context.</p>
-      </div>
-    </div>
-    <div class="fr">
-      <div class="lb">First line</div>
+    <RecipientPicker
+      mode="message"
+      {items}
+      {scopes}
+      channelOpens
+      bind:scope={companyUid}
+      bind:selectedIds
+      bind:query
+      label={null}
+      autofocus
+      busy={sending}
+      status={error ?? (selected.length > 1 ? "Two or more people start a group · ⌘↵ sends" : "⌘↵ sends")}
+      onsubmit={() => void send()}
+      oncancel={onclose}
+      testid="new-message-picker"
+      submitTestid="new-message-send"
+    >
       <textarea
         class="ta"
-        rows="3"
+        rows="2"
         bind:value={firstLine}
         data-testid="new-message-body"
-        placeholder="Write the first line"
+        aria-label="First line"
+        placeholder={selected.length === 1 ? `Message ${selected[0].name}` : "Write the first line (optional)"}
       ></textarea>
-    </div>
+    </RecipientPicker>
   </div>
-  <footer class="sf">
-    <span class="hint">
-      {#if error}{error}{:else if selected.length > 1}Two or more recipients create a group · ⌘↵ sends{:else}⌘↵ sends{/if}
-    </span>
-    <button type="button" class="btn" onclick={onclose}><RailIcon name="x" />Cancel</button>
-    <button
-      type="button"
-      class="btn primary"
-      data-testid="new-message-send"
-      disabled={sending || selected.length === 0}
-      onclick={() => void send()}
-    ><RailIcon name="send" />{sending ? "Sending…" : "Send"}</button>
-  </footer>
 </div>
 
 <style>
@@ -232,105 +206,51 @@
     left: 50%;
     top: 50%;
     transform: translate(-50%, -50%);
-    width: min(480px, calc(100vw - 32px));
+    width: min(520px, calc(100vw - 24px));
     max-height: calc(100% - 40px);
     display: flex;
     flex-direction: column;
     background: var(--overlay-bg);
     border: 1px solid var(--overlay-border);
-    border-radius: 8px;
+    box-shadow: var(--overlay-shadow);
+    border-radius: 10px;
     z-index: 71;
     color: var(--t1, var(--v4-text-1));
     overflow: hidden;
   }
   .sh {
-    height: 52px;
+    height: 48px;
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 10px 0 20px;
-    border-bottom: 1px solid var(--overlay-border);
+    padding: 0 10px 0 16px;
     font-size: 13px;
     font-weight: 500;
   }
-  .sub { font-size: 13px; font-weight: 400; color: var(--t3, var(--v4-text-3)); }
   .grow { flex: 1; }
   .icon {
     width: 24px; height: 24px; padding: 0; display: grid; place-items: center;
     border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3));
   }
   .icon:hover { background: var(--hover); color: var(--t1, var(--v4-text-1)); }
+  .icon:focus-visible { outline: 2px solid var(--t2, var(--v4-text-2)); outline-offset: 1px; }
   .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
-  .sb { overflow-x: hidden; overflow-y: auto; min-height: 0; }
-  .fr {
-    display: grid;
-    grid-template-columns: 120px minmax(0, 1fr);
-    gap: 12px;
-    align-items: start;
-    padding: 10px 20px;
-    border-bottom: 1px solid var(--panel-border, var(--v4-rowline));
-  }
-  .lb { font-size: 13px; color: var(--t3, var(--v4-text-3)); padding-top: 6px; }
-  .tabs {
-    display: flex;
-    gap: 2px;
-    width: max-content;
-    max-width: 100%;
-    padding: 2px;
-    border-radius: 6px;
-    border: 1px solid var(--overlay-field-border);
-    background: var(--hover, var(--v4-control-faint));
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-  }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tab {
-    border: 0;
-    background: transparent;
-    color: var(--t2, var(--v4-text-2));
-    font: inherit;
-    font-size: 13px;
-    padding: 4px 8px;
-    border-radius: 4px;
-    flex: 0 0 auto;
-    white-space: nowrap;
-  }
-  .tab[aria-selected="true"] {
-    background: var(--v4-active-row, var(--hover));
-    color: var(--t1, var(--v4-text-1));
-  }
-  .hint { font-size: 13px; color: var(--t3, var(--v4-text-3)); line-height: 1.4; margin: 6px 0 0; }
+  .sb { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0 16px 14px; }
   .ta {
     box-sizing: border-box;
+    display: block;
     width: 100%;
-    min-height: 60px;
+    min-height: 52px;
     border: 1px solid var(--overlay-field-border);
-    border-radius: 6px;
+    border-radius: 8px;
     background: transparent;
     color: inherit;
     font: inherit;
     font-size: 13px;
-    padding: 6px 10px;
+    padding: 7px 10px;
     resize: vertical;
   }
-  .sf {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--overlay-border);
-  }
-  .sf .hint { flex: 1; margin: 0; }
-  .btn {
-    border: 1px solid var(--overlay-field-border);
-    background: transparent;
-    color: inherit;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font: inherit;
-    font-size: 13px;
-  }
-  .btn.primary { background: var(--t1, var(--v4-text-1)); color: var(--overlay-bg); }
-  .btn:disabled { opacity: 0.45; }
+  .ta::placeholder { color: var(--t3, var(--v4-text-3)); }
+  .ta:focus-visible { outline: none; border-color: var(--t3, var(--v4-text-3)); }
 </style>

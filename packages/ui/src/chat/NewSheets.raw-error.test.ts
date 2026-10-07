@@ -101,7 +101,7 @@ describe("NewMessageSheet raw errors", () => {
       onopen,
     });
     await tick();
-    host.querySelector<HTMLButtonElement>('[data-testid="people-picker-row"][data-id="prs_ada"]')!.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="recipient-row"][data-id="dm:prs_ada"]')!.click();
     flushSync();
     const body = host.querySelector<HTMLTextAreaElement>('[data-testid="new-message-body"]')!;
     body.value = "hi";
@@ -109,7 +109,7 @@ describe("NewMessageSheet raw errors", () => {
     flushSync();
     host.querySelector<HTMLButtonElement>('[data-testid="new-message-send"]')!.click();
     await vi.waitFor(() => {
-      expect(host.querySelector(".sf .hint")?.textContent).toContain("Could not send. Try again.");
+      expect(host.querySelector(".rp-foot-status")?.textContent).toContain("Could not send. Try again.");
     });
     assertNoRaw();
     expect(onopen).not.toHaveBeenCalled();

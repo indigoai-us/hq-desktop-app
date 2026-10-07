@@ -20,6 +20,7 @@ const OVERLAYS = [
   "chat/CreateModal.svelte",
   "chat/NewChannelSheet.svelte",
   "chat/NewMessageSheet.svelte",
+  "chat/recipient-picker/RecipientPicker.svelte",
   "chat/PeoplePicker.svelte",
   "chat/ProjectAboutDialog.svelte",
   "chat/create-bot/CreateBotFlow.svelte",

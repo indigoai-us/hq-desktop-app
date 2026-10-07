@@ -24,6 +24,9 @@ export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 // leaf components — RunCompleteCard, ReactionBar, IdentityMark, SystemEventLine
 // — composed as a fixture-driven, ZERO-NETWORK ChannelConversation).
 export * from "./chat/messaging/index.js";
+export { default as RecipientPicker } from "./chat/recipient-picker/RecipientPicker.svelte";
+export * from "./chat/recipient-picker/recipient-picker-model.js";
+export { recipientItemsFromDirectory } from "./chat/recipient-picker/candidates.js";
 export * from "./chat/chat-api.js";
 export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
