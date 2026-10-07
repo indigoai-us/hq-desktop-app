@@ -1114,6 +1114,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
         },
         activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
+        outcomes: { byType: { storyCompleted: 14, prMerged: 9, deploySucceeded: 3 }, total: 26 },
+        trend: [4, 6, 0, 0, 8, 9, 7, 5, 6, 0, 0, 9, 12, 10, 8, 7, 0, 0, 11, 13, 9, 8, 10, 0, 0, 12, 14, 11, 9, 15],
       },
       {
         personUid: 'agt_izzy',
@@ -1127,6 +1129,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
         },
         activeProjects: ['Instant DM delivery'],
+        outcomes: { byType: { storyCompleted: 6, prMerged: 4, deploySucceeded: 0 }, total: 10 },
+        trend: [3, 3, 2, 3, 4, 3, 2, 3, 3, 2, 3, 4, 3, 3, 2, 3, 4, 3, 2, 3, 3, 4, 3, 2, 3, 3, 4, 3, 2, 0],
       },
       {
         personUid: 'prs_maya',
@@ -1140,6 +1144,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
         },
         activeProjects: ['S3-versioned conflict handling'],
+        outcomes: { byType: { storyCompleted: 5, prMerged: 3, deploySucceeded: 1 }, total: 9 },
+        trend: [0, 0, 0, 2, 3, 0, 0, 4, 5, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 3, 2, 5, 0, 0, 0, 0, 0, 0, 0, 0],
       },
       {
         personUid: 'agt_lin',
