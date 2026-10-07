@@ -20,6 +20,7 @@
  */
 
 import type { BrandMark } from "./app-brand-marks.js";
+import { integrationDisplayName } from "../../common/integration-display.js";
 import type { ConnectItem, ConnectItemState, ConnectTarget } from "./richMessageContent.js";
 import {
   slackCapabilityFromStatus,
@@ -491,12 +492,6 @@ function providerSlug(provider: string): string {
   return provider.replace(/^factory:/i, "").trim();
 }
 
-function connectionName(raw: Record<string, unknown>, slug: string): string {
-  const installed = isRecord(raw.installation) ? text(raw.installation.displayName) : "";
-  if (installed) return installed;
-  return slug ? slug.charAt(0).toUpperCase() + slug.slice(1) : "App";
-}
-
 /**
  * Read the company's connections (`GET /v1/integrations/admin?companyUid=`)
  * for one bot. A connection open to everyone is usable as it is; a private or
@@ -533,7 +528,7 @@ export function toolFacts(json: unknown, record: BotConnectionRecord | null | un
     const createdBy = text(raw.createdBy);
     const connection: ToolConnection = {
       id,
-      name: connectionName(raw, provider),
+      name: integrationDisplayName(raw),
       provider,
       createdAt: text(raw.createdAt),
       isNew: baseline ? !baseline.includes(id) : false,
