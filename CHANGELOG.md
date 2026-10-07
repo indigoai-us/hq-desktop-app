@@ -46,6 +46,8 @@ The release moves it under the version it ships in.
 - A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
 - The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
 
+- Desktop Core baseline writes now accept an identical baseline left by a concurrent writer and separately report a lost write or invalid target.
+
 ## [0.10.397] — 2026-10-06
 
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
