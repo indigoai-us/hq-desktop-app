@@ -18,7 +18,7 @@ export interface HqAnywhereRetryOptions {
 const pauseFor = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
-/** The feature is available only for an explicitly configured hq-flags value. */
+/** Missing, discovered, archived, disabled, or unreadable flags fail closed and hide the setting. */
 export async function hqAnywhereRuntimeEnabled(
   identity: IdentityApi,
 ): Promise<boolean> {
