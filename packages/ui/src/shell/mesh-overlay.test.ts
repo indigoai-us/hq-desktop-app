@@ -4,6 +4,7 @@ import type { ConversationRow } from "../chat/sidebar-model.js";
 import { buildChannelStatusModel } from "../chat/channel-status-model.js";
 import {
   applyChannelRoster,
+  applyAuthoritativePresence,
   createCacheSidebarApi,
   createHybridSidebarApi,
   dmBundleFromRawSnapshot,
@@ -830,5 +831,28 @@ describe("applyChannelRoster presence projection", () => {
     expect(withRoster.agents.map((agent) => agent.personUid)).not.toContain(
       "agt_offline",
     );
+  });
+});
+
+describe("applyAuthoritativePresence", () => {
+  it("drops cached presence-only rows once authoritative presence marks them offline", () => {
+    const model = buildChannelStatusModel({
+      project: { id: "work-mesh-testing", title: "Work Mesh Testing" },
+      members: [{ personUid: "prs_member", displayName: "Member", role: "member" }],
+      presence: [
+        { actorUid: "prs_member", status: "online", actorType: "human" },
+        { actorUid: "prs_guest", status: "online", actorType: "human", displayName: "Guest" },
+        { actorUid: "agt_guest", status: "online", actorType: "agent", displayName: "Guest Agent" },
+      ],
+    });
+
+    const updated = applyAuthoritativePresence(
+      model,
+      (uid) => uid !== "prs_guest" && uid !== "agt_guest",
+    );
+
+    expect(updated.members.map((member) => member.personUid)).toEqual(["prs_member"]);
+    expect(updated.members[0]?.online).toBe(true);
+    expect(updated.agents).toEqual([]);
   });
 });

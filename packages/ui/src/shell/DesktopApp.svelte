@@ -448,7 +448,11 @@
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
-  import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
+  import {
+    applyAuthoritativePresence,
+    applyChannelRoster,
+    parseChannelMembers,
+  } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
     projectIdForRow,
@@ -7311,20 +7315,12 @@
     const withPresence = (uid: string): boolean =>
       Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
     return {
-      ...withRoster,
+      ...applyAuthoritativePresence(withRoster, withPresence),
       activeSessions:
         fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
       liveAgents: fromLive?.liveAgents?.length
         ? fromLive.liveAgents
         : withRoster.liveAgents,
-      members: withRoster.members.map((m) => ({
-        ...m,
-        online: withPresence(m.personUid),
-      })),
-      agents: withRoster.agents.map((a) => ({
-        ...a,
-        online: withPresence(a.personUid),
-      })),
     };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */

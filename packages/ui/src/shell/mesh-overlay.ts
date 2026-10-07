@@ -702,6 +702,21 @@ export function applyChannelRoster(
   };
 }
 
+export function applyAuthoritativePresence(
+  model: ChannelStatusModel,
+  isOnline: (actorUid: string) => boolean,
+): ChannelStatusModel {
+  const currentRows = (rows: ChannelStatusModel["members"]) =>
+    rows
+      .filter((row) => row.isChannelMember !== false || isOnline(row.personUid))
+      .map((row) => ({ ...row, online: isOnline(row.personUid) }));
+  return {
+    ...model,
+    members: currentRows(model.members),
+    agents: currentRows(model.agents),
+  };
+}
+
 /** Unique posters from the cached channel window — the live roster we have. */
 export function membersFromMeshMessages(
   messages: readonly MeshCachedMessage[] | null | undefined,

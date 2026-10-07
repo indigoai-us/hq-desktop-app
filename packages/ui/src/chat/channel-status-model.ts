@@ -201,6 +201,8 @@ export interface ProjectStatusBlock {
 
 export interface StatusPersonRow {
   personUid: string;
+  /** True only when this actor appears in the selected channel's member roster. */
+  isChannelMember?: boolean;
   displayName: string;
   /** Account email, when the roster carried one — shown under the name. */
   email: string | null;
@@ -216,6 +218,13 @@ export interface StatusPersonRow {
    * from last-activity timestamps.
    */
   online: boolean;
+}
+
+/** Presence rows remain visible but do not offer channel membership actions. */
+export function canOfferMembershipActions(
+  row: Pick<StatusPersonRow, "isChannelMember">,
+): boolean {
+  return row.isChannelMember !== false;
 }
 
 /**
@@ -753,6 +762,7 @@ export function buildChannelStatusModel(
     const online = presenceOnlineFor(presence, m.personUid);
     const row: StatusPersonRow = {
       personUid: m.personUid,
+      isChannelMember: true,
       displayName: memberDisplayName(m),
       email: m.email?.trim() || null,
       avatarUrl: m.avatarUrl?.trim() || null,
@@ -785,6 +795,7 @@ export function buildChannelStatusModel(
     const isAgent = participant.actorType === "agent";
     (isAgent ? agents : humans).push({
       personUid: uid,
+      isChannelMember: false,
       displayName: optionalString(participant.displayName) || uid,
       email: null,
       avatarUrl: null,
@@ -805,6 +816,7 @@ export function buildChannelStatusModel(
     const online = presenceOnlineFor(presence, uid);
     list.push({
       personUid: uid,
+      isChannelMember: false,
       displayName:
         optionalString(session.displayName) ||
         optionalString(session.harness) ||
