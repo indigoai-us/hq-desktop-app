@@ -39,6 +39,9 @@ export interface ForwardSource {
   body: string;
   artifactKind?: ArtifactKind;
   artifactTitle?: string;
+  /** Files hung off the source message (US-010). */
+  attachmentCount: number;
+  attachmentNames: string[];
 }
 
 export interface ForwardCompany {
@@ -227,6 +230,12 @@ export function showCompanyControl(
   return !source || adminCompanies.some((c) => c.uid === source);
 }
 
+const UNTITLED_FILE = "Untitled file";
+
+function plural(n: number): string {
+  return `${n} ${n === 1 ? "file" : "files"}`;
+}
+
 /** Build the picker source from a timeline message. */
 export function forwardSourceFrom(
   msg: ConversationMessageWire,
@@ -238,12 +247,18 @@ export function forwardSourceFrom(
   const prompt = clean(msg.prompt);
   const kind: ArtifactKind | undefined = details ? "details" : prompt ? "prompt" : undefined;
   const text = details || prompt;
+  const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+  const attachmentNames = attachments
+    .filter((a) => a && typeof a === "object")
+    .map((a) => clean(a.name) || UNTITLED_FILE);
   return {
     conversationId,
     eventId: msg.eventId,
     companyUid: clean(companyUid) || null,
     senderName: clean(senderName) || "Someone",
     body: typeof msg.body === "string" ? msg.body : "",
+    attachmentCount: attachmentNames.length,
+    attachmentNames,
     ...(kind ? { artifactKind: kind, artifactTitle: artifactTitle(text, kind) } : {}),
   };
 }
@@ -353,8 +368,8 @@ export function parseForwardResponse(status: number | null, text: string): Forwa
 }
 
 /**
- * A plain sentence and a next action for every code. Never the server's
- * `error` text or any JSON.
+ * A plain sentence for every code. Never the server's `error` text or any
+ * JSON. Prefer `forwardErrorView`, which also names the next action.
  */
 export function forwardErrorMessage(
   result: Extract<ForwardResult, { ok: false }>,
@@ -386,6 +401,10 @@ export function forwardErrorMessage(
       return `Some files in this message are not shared with ${name}. Share them, or send without files.`;
     case "CROSS_COMPANY_ACK_REQUIRED":
       return "This goes to another company. Confirm to send it.";
+    case "INVALID_FORWARD_OF":
+      return "Couldn't tell which message to forward. Try again.";
+    case "INVALID_FILE_ACCESS":
+      return "Couldn't apply your file choice. Try again.";
     case "NETWORK":
       return "Couldn't reach HQ. Check your connection and try again.";
     default:
@@ -397,4 +416,88 @@ export function forwardConfirmation(destinationName: string, omittedAttachments:
   const base = `Forwarded to ${destinationName}.`;
   if (omittedAttachments <= 0) return base;
   return `${base} ${omittedAttachments} ${omittedAttachments === 1 ? "file" : "files"} not included.`;
+}
+
+export type ForwardErrorAction = "retry" | "pick" | "omit" | "close";
+
+export interface ForwardErrorView {
+  text: string;
+  action: ForwardErrorAction;
+  /** Second action offered next to `retry` (file grant failures). */
+  alsoOmit?: boolean;
+}
+
+/** Plain sentence plus the next action the picker offers for it (US-010). */
+export function forwardErrorView(
+  result: Extract<ForwardResult, { ok: false }>,
+  ctx: { destinationName: string; sourceCompanyName?: string },
+): ForwardErrorView {
+  const text = forwardErrorMessage(result, ctx);
+  switch (result.code) {
+    case "CROSS_COMPANY_FORBIDDEN":
+    case "FORWARD_NOT_CONNECTED":
+      return { text, action: "pick" };
+    case "FORWARD_FILES_NOT_ALLOWED":
+    case "FORWARD_FILE_SHARE_FORBIDDEN":
+      return { text, action: "omit" };
+    case "FORWARD_SOURCE_NOT_FOUND":
+    case "FORWARD_NOT_SCHEDULABLE":
+    case "FORWARD_BODY_TOO_LARGE":
+    case "FORWARD_DETAILS_TOO_LARGE":
+    case "FORWARD_PROMPT_TOO_LARGE":
+      return { text, action: "close" };
+    case "FORWARD_FILE_GRANT_FAILED":
+      return { text, action: "retry", alsoOmit: true };
+    default:
+      return { text, action: "retry" };
+  }
+}
+
+export const FORWARD_ERROR_ACTION_LABEL: Record<ForwardErrorAction, string> = {
+  retry: "Try again",
+  pick: "Pick another destination",
+  omit: "Send without files",
+  close: "Close",
+};
+
+/** `This shares 1 file with Ana` / `This shares 2 files with Ana`. */
+export function filesPromptTitle(count: number, destinationName: string): string {
+  return `This shares ${plural(count)} with ${destinationName || "them"}`;
+}
+
+export function crossCompanyText(from: string | null | undefined, to: string | null | undefined): string {
+  return `This sends the message from ${from || "this company"} to ${to || "another company"}. Files are not included.`;
+}
+
+export type ForwardNotice =
+  | { kind: "channel-files"; text: string }
+  | { kind: "cross-company"; text: string; from: string; to: string };
+
+/** Notices shown before sending, derived from the source and destination. */
+export function forwardNotices(args: {
+  source: ForwardSource;
+  destination: ForwardCandidate | null;
+  sourceCompanyName: string | null;
+  destinationCompanyName: string | null;
+}): ForwardNotice[] {
+  const { source, destination } = args;
+  if (!destination) return [];
+  const out: ForwardNotice[] = [];
+  const count = source.attachmentCount ?? 0;
+  if ((destination.kind === "channel" || destination.kind === "group") && count > 0) {
+    out.push({
+      kind: "channel-files",
+      text: `Files are not included in forwards to channels. ${plural(count)} will be left out.`,
+    });
+  }
+  if (source.companyUid && destination.companyUid && source.companyUid !== destination.companyUid) {
+    const from = args.sourceCompanyName || "this company";
+    const to = args.destinationCompanyName || "another company";
+    out.push({ kind: "cross-company", text: crossCompanyText(from, to), from, to });
+  }
+  return out;
+}
+
+export function forwardFileNames(files: readonly ForwardFileRef[]): string[] {
+  return files.map((f) => f.name || UNTITLED_FILE);
 }

@@ -8,6 +8,9 @@ import {
   filterForwardCandidates,
   forwardConfirmation,
   forwardErrorMessage,
+  forwardErrorView,
+  forwardNotices,
+  filesPromptTitle,
   forwardPreview,
   forwardSourceFrom,
   parseForwardResponse,
@@ -217,3 +220,66 @@ describe("forwardConfirmation", () => {
     expect(forwardConfirmation("#team", 1)).toBe("Forwarded to #team. 1 file not included.");
   });
 });
+
+describe("US-010 model", () => {
+  const base = {
+    conversationId: "c",
+    eventId: "e",
+    companyUid: "cmp_a",
+    senderName: "Bo",
+    body: "",
+    attachmentCount: 1,
+    attachmentNames: ["a.pdf"],
+  };
+  const dm = { id: "dm:p", kind: "person" as const, name: "Ana", companyUid: "cmp_a", principalUid: "p" };
+  const ch = { id: "ch:x", kind: "channel" as const, name: "x", companyUid: "cmp_a", channelId: "x" };
+
+  it("coerces attachments at the parse boundary", () => {
+    const withFiles = forwardSourceFrom(
+      { eventId: "e1", createdAt: "", body: "b", attachments: [{ vaultPath: "p", name: "a.pdf" }, { vaultPath: "q", name: " " }] },
+      "c", null, "",
+    );
+    expect(withFiles.attachmentCount).toBe(2);
+    expect(withFiles.attachmentNames).toEqual(["a.pdf", "Untitled file"]);
+    const bad = forwardSourceFrom(
+      { eventId: "e1", createdAt: "", body: "b", attachments: "nope" as never },
+      "c", null, "",
+    );
+    expect(bad.attachmentCount).toBe(0);
+    expect(bad.attachmentNames).toEqual([]);
+  });
+
+  it("titles the files prompt with singular and plural", () => {
+    expect(filesPromptTitle(1, "Ana")).toBe("This shares 1 file with Ana");
+    expect(filesPromptTitle(3, "Ana")).toBe("This shares 3 files with Ana");
+  });
+
+  it("notices: channel with files, cross-company, and none", () => {
+    const args = { sourceCompanyName: "Acme", destinationCompanyName: "Beta" };
+    expect(forwardNotices({ ...args, source: base, destination: ch }).map((n) => n.kind)).toEqual(["channel-files"]);
+    expect(forwardNotices({ ...args, source: { ...base, attachmentCount: 0 }, destination: ch })).toEqual([]);
+    expect(forwardNotices({ ...args, source: base, destination: dm })).toEqual([]);
+    const cross = forwardNotices({ ...args, source: base, destination: { ...dm, companyUid: "cmp_b" } });
+    expect(cross).toEqual([
+      { kind: "cross-company", from: "Acme", to: "Beta", text: "This sends the message from Acme to Beta. Files are not included." },
+    ]);
+    expect(forwardNotices({ ...args, source: base, destination: null })).toEqual([]);
+  });
+
+  it("every code maps to a next action", () => {
+    const view = (code: string) =>
+      forwardErrorView({ ok: false, code: code as never, status: 400, files: [], notShareable: [] }, { destinationName: "Ana" });
+    expect(view("NETWORK").action).toBe("retry");
+    expect(view("INVALID_FORWARD_OF").action).toBe("retry");
+    expect(view("INVALID_FILE_ACCESS").action).toBe("retry");
+    expect(view("CROSS_COMPANY_FORBIDDEN").action).toBe("pick");
+    expect(view("FORWARD_NOT_CONNECTED").action).toBe("pick");
+    expect(view("FORWARD_FILES_NOT_ALLOWED").action).toBe("omit");
+    expect(view("FORWARD_FILE_SHARE_FORBIDDEN").action).toBe("omit");
+    expect(view("FORWARD_SOURCE_NOT_FOUND").action).toBe("close");
+    expect(view("FORWARD_PROMPT_TOO_LARGE").action).toBe("close");
+    expect(view("FORWARD_FILE_GRANT_FAILED")).toMatchObject({ action: "retry", alsoOmit: true });
+    expect(view("INVALID_FORWARD_OF").text).not.toBe(view("UNKNOWN").text);
+  });
+});
+

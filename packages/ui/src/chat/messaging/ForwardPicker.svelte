@@ -11,11 +11,17 @@
   import {
     buildForwardCandidates,
     filterForwardCandidates,
-    forwardErrorMessage,
+    crossCompanyText,
+    filesPromptTitle,
+    forwardErrorView,
+    forwardFileNames,
+    forwardNotices,
     forwardPreview,
+    FORWARD_ERROR_ACTION_LABEL,
     showCompanyControl,
     type ForwardCandidate,
     type ForwardCompany,
+    type ForwardErrorView,
     type ForwardRequest,
     type ForwardResult,
     type ForwardSource,
@@ -39,8 +45,17 @@
   let selectedId = $state<string | null>(null);
   let note = $state("");
   let sending = $state(false);
-  let errorText = $state<string | null>(null);
-  let pending = $state<null | { kind: "ack" | "files"; message: string; request: ForwardRequest }>(null);
+  let errorView = $state<ForwardErrorView | null>(null);
+  let lastRequest = $state<ForwardRequest | null>(null);
+  let pending = $state<
+    null | {
+      kind: "ack" | "files";
+      message: string;
+      request: ForwardRequest;
+      files: string[];
+      notIncluded: string[];
+    }
+  >(null);
   let searchEl = $state<HTMLInputElement | null>(null);
 
   const companyControl = $derived(showCompanyControl(adminCompanies, source.companyUid));
@@ -52,6 +67,17 @@
     candidates.find((c) => c.id === selectedId) ?? null,
   );
   const preview = $derived(forwardPreview(source));
+  const companyName = (uid: string | null | undefined): string | null =>
+    (uid && adminCompanies.find((c) => c.uid === uid)?.name) || null;
+  const notices = $derived(
+    forwardNotices({
+      source,
+      destination: selected,
+      sourceCompanyName: companyName(source.companyUid),
+      destinationCompanyName: companyName(selected?.companyUid),
+    }),
+  );
+  const crossCompany = $derived(notices.some((n) => n.kind === "cross-company"));
 
   const KIND_LABEL: Record<ForwardCandidate["kind"], string> = {
     person: "Person",
@@ -66,7 +92,7 @@
 
   function pick(id: string): void {
     selectedId = id;
-    errorText = null;
+    errorView = null;
     pending = null;
   }
 
@@ -74,7 +100,31 @@
     companyChoice = uid;
     selectedId = null;
     pending = null;
-    errorText = null;
+    errorView = null;
+  }
+
+  function pickAnother(): void {
+    selectedId = null;
+    errorView = null;
+    pending = null;
+    void tick().then(() => searchEl?.focus());
+  }
+
+  /** Repeat the failed request, keeping any file or company choice already made. */
+  function retry(extra: Partial<ForwardRequest> = {}): void {
+    const prev = lastRequest;
+    void submit({
+      ...(prev?.fileAccess ? { fileAccess: prev.fileAccess } : {}),
+      ...(prev?.acknowledgeCrossCompany ? { acknowledgeCrossCompany: true } : {}),
+      ...extra,
+    });
+  }
+
+  function runErrorAction(action: ForwardErrorView["action"]): void {
+    if (action === "pick") pickAnother();
+    else if (action === "close") onclose();
+    else if (action === "omit") retry({ fileAccess: "omit" });
+    else retry();
   }
 
   async function submit(extra: Partial<ForwardRequest> = {}): Promise<void> {
@@ -89,7 +139,8 @@
       ...extra,
     };
     sending = true;
-    errorText = null;
+    errorView = null;
+    lastRequest = request;
     let result: ForwardResult;
     try {
       result = await onsend(request);
@@ -104,26 +155,35 @@
       ondone(dest.name, result);
       return;
     }
-    const message = forwardErrorMessage(result, {
+    const view = forwardErrorView(result, {
       destinationName: dest.name,
-      sourceCompanyName: adminCompanies.find((c) => c.uid === source.companyUid)?.name,
+      sourceCompanyName: companyName(source.companyUid) ?? undefined,
     });
     if (result.code === "CROSS_COMPANY_ACK_REQUIRED") {
-      const from = result.sourceCompany?.name ?? "this company";
-      const to = result.destinationCompany?.name ?? "another company";
       pending = {
         kind: "ack",
-        message: `This sends the message from ${from} to ${to}. Files are not carried across companies.`,
+        message: crossCompanyText(
+          result.sourceCompany?.name ?? companyName(source.companyUid),
+          result.destinationCompany?.name ?? companyName(dest.companyUid),
+        ),
         request,
+        files: [],
+        notIncluded: [],
       };
       return;
     }
     if (result.code === "FORWARD_FILE_ACCESS_REQUIRED") {
-      pending = { kind: "files", message, request };
+      pending = {
+        kind: "files",
+        message: result.files.length > 0 ? filesPromptTitle(result.files.length, dest.name) : view.text,
+        request,
+        files: forwardFileNames(result.files),
+        notIncluded: forwardFileNames(result.notShareable),
+      };
       return;
     }
     pending = null;
-    errorText = message;
+    errorView = view;
   }
 
   function onKey(e: KeyboardEvent): void {
@@ -138,7 +198,7 @@
       if (target?.tagName === "BUTTON" || target?.tagName === "SELECT") return;
       if (pending) return;
       e.preventDefault();
-      if (selected) void submit();
+      if (selected) void submit(crossCompany ? { acknowledgeCrossCompany: true } : {});
       return;
     }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -245,9 +305,32 @@
       ></textarea>
     </label>
 
+    {#each notices as notice (notice.kind)}
+      <div
+        class="forward-prompt"
+        role="status"
+        data-testid={notice.kind === "channel-files" ? "forward-notice-channel" : "forward-notice-cross-company"}
+      >
+        <p>{notice.text}</p>
+      </div>
+    {/each}
+
     {#if pending}
       <div class="forward-prompt" role="status" data-testid={pending.kind === "ack" ? "forward-ack" : "forward-files"}>
-        <p>{pending.message}</p>
+        <p data-testid={pending.kind === "files" ? "forward-files-title" : undefined}>{pending.message}</p>
+        {#if pending.files.length > 0}
+          <ul class="forward-file-list" data-testid="forward-files-list">
+            {#each pending.files as name, i (i)}<li>{name}</li>{/each}
+          </ul>
+        {/if}
+        {#if pending.notIncluded.length > 0}
+          <div class="forward-file-group" data-testid="forward-files-not-included">
+            <span class="forward-label">Not included</span>
+            <ul class="forward-file-list">
+              {#each pending.notIncluded as name, i (i)}<li>{name}</li>{/each}
+            </ul>
+          </div>
+        {/if}
         <div class="forward-actions">
           <button type="button" class="forward-btn ghost" onclick={() => (pending = null)}>Cancel</button>
           {#if pending.kind === "ack"}
@@ -257,7 +340,7 @@
               data-testid="forward-ack-confirm"
               disabled={sending}
               onclick={() => void submit({ acknowledgeCrossCompany: true })}
-            >Send anyway</button>
+            >Confirm and forward</button>
           {:else}
             <button
               type="button"
@@ -266,20 +349,43 @@
               disabled={sending}
               onclick={() => void submit({ fileAccess: "omit" })}
             >Send without files</button>
-            <button
-              type="button"
-              class="forward-btn"
-              data-testid="forward-files-grant"
-              disabled={sending}
-              onclick={() => void submit({ fileAccess: "grant" })}
-            >Share files</button>
+            {#if pending.files.length > 0}
+              <button
+                type="button"
+                class="forward-btn"
+                data-testid="forward-files-grant"
+                disabled={sending}
+                onclick={() => void submit({ fileAccess: "grant" })}
+              >Share and send</button>
+            {/if}
           {/if}
         </div>
       </div>
     {/if}
 
-    {#if errorText}
-      <p class="forward-error" role="alert" data-testid="forward-error">{errorText}</p>
+    {#if errorView}
+      <div class="forward-prompt" role="alert" data-testid="forward-error">
+        <p class="forward-error" data-testid="forward-error-text">{errorView.text}</p>
+        <div class="forward-actions">
+          {#if errorView.alsoOmit}
+            <button
+              type="button"
+              class="forward-btn ghost"
+              data-testid="forward-error-omit"
+              disabled={sending}
+              onclick={() => retry({ fileAccess: "omit" })}
+            >{FORWARD_ERROR_ACTION_LABEL.omit}</button>
+          {/if}
+          <button
+            type="button"
+            class="forward-btn"
+            data-testid="forward-error-action"
+            data-action={errorView.action}
+            disabled={sending}
+            onclick={() => runErrorAction(errorView!.action)}
+          >{FORWARD_ERROR_ACTION_LABEL[errorView.action]}</button>
+        </div>
+      </div>
     {/if}
 
     <div class="forward-actions">
@@ -290,8 +396,8 @@
         data-testid="forward-send"
         disabled={!selected || sending}
         aria-busy={sending}
-        onclick={() => void submit()}
-      >{sending ? "Sending…" : "Forward"}</button>
+        onclick={() => void submit(crossCompany ? { acknowledgeCrossCompany: true } : {})}
+      >{sending ? "Sending…" : crossCompany ? "Confirm and forward" : "Forward"}</button>
     </div>
   </div>
 </div>
@@ -422,6 +528,25 @@
   .forward-error {
     margin: 0;
     color: var(--t2);
+  }
+
+  .forward-prompt {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .forward-file-list {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--t1);
+    overflow-wrap: anywhere;
+  }
+
+  .forward-file-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
 
   .forward-actions {
