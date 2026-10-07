@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- "Check for Updates…" opens Settings → Updates when it finds an update. The Recovery window opens only when the desktop window timed out, crashed, or started in safe mode.
+- The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
+
 ## [0.10.401] — 2026-10-07
 
 - First sync attribution now includes the company selected or joined during setup, including existing companies.

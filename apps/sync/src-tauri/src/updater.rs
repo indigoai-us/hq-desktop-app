@@ -2423,10 +2423,11 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
             match check_for_updates(handle.clone()).await {
                 // Update found: `check_for_updates` already emitted
                 // `update:available`, which every existing surface (Settings
-                // row, banner, version pop-out) listens for. Also raise the
-                // native recovery window so a stuck UI still has a path.
+                // row, banner, version pop-out) listens for. Bring up the
+                // normal Settings → Updates prompt; only a desktop shell the
+                // watchdog judged broken gets the native recovery window.
                 Ok(Some(_)) => {
-                    crate::recovery::spawn_tray_open_recovery(handle);
+                    crate::recovery::present_manual_update_found(handle).await;
                 }
                 Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
                 Err(e) => {
