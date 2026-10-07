@@ -145,7 +145,7 @@ describe("DesktopApp company sidepane (console-rail US-007)", () => {
       (el) => el.getAttribute("data-row-id"),
     );
     expect(rows).toEqual([
-      "atlas", "projects", "activity", "goals", "team", "bots", "groups",
+      "atlas", "projects", "activity", "team", "bots", "groups",
       "knowledge", "policies", "skills", "workers",
       "vault", "integrations", "secrets", "deployments",
       // Grants and Billing are hidden: the member role is not owner or admin.

@@ -82,7 +82,6 @@
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
-  import GoalsRailHost from "./GoalsRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -11675,14 +11674,6 @@
     }
   });
 
-  /**
-   * OWNER-R8: viewers and guests see the objective pane read-only. A role the
-   * roster has not answered yet adds no restriction.
-   */
-  function canEditGoals(role: string | null | undefined): boolean {
-    return !/^(viewer|guest|read[-_ ]?only)$/i.test((role ?? "").trim());
-  }
-
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
     atlasFilterActor = null;
@@ -13178,15 +13169,6 @@
             companyUid={companyPaneCompany.uid ?? null}
             {avatarByUid}
             onsignin={onsignin ? startReauth : undefined}
-          />
-        {:else if railPlaceholder?.id === "goals" && companyPaneCompany}
-          <GoalsRailHost
-            {adapter}
-            slug={companyPaneCompany.slug ?? ""}
-            canEdit={canEditGoals(companyPaneRole)}
-            onopenproject={(project) => {
-              void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
-            }}
           />
         {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
           <LazyDoor

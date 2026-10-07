@@ -34,7 +34,6 @@ const PAGE_INFO: Record<string, { story: string; summary: string }> = {
   atlas: { story: "US-009", summary: "Who is live in this company and what they are working on." },
   projects: { story: "US-023", summary: "The company's projects and their stories." },
   activity: { story: "US-026", summary: "Recent work across the company." },
-  goals: { story: "US-026", summary: "The company's goals and progress." },
   team: { story: "US-027", summary: "People in this company and their access." },
   bots: { story: "US-027", summary: "Bots and agents in this company." },
   knowledge: { story: "US-028", summary: "The company's knowledge base." },
@@ -63,6 +62,8 @@ const ROW_LABELS: ReadonlyMap<string, string> = new Map(
 export const LEGACY_COMPANY_ROWS: Readonly<Record<string, string>> = {
   [COMPANY_SETTINGS_ROW.id]: "general",
   workforce: "billing",
+  // Goals left the sidebar; saved links to it open Atlas.
+  goals: "atlas",
 };
 
 /** Every row id the company pane routes. */
