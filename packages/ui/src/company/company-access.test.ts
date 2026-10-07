@@ -188,6 +188,7 @@ describe("top folders", () => {
     expect(topFoldersFromListing([
       { name: "projects", path: "companies/x/projects", isDir: true, hasChildren: true },
       { name: ".obsidian", path: "companies/x/.obsidian", isDir: true, hasChildren: true },
+      { name: "companies", path: "companies/x/companies", isDir: true, hasChildren: true },
       { name: "README.md", path: "companies/x/README.md", isDir: false, hasChildren: false },
       { name: "agents", path: "companies/x/agents", isDir: true, hasChildren: false },
     ])).toEqual(["agents", "projects"]);

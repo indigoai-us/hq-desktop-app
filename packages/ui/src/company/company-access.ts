@@ -387,7 +387,8 @@ export function topFoldersFromListing(entries: unknown): string[] {
   for (const e of entries) {
     if (!e || typeof e !== "object") continue;
     const { name, isDir } = e as { name?: unknown; isDir?: unknown };
-    if (isDir !== true || typeof name !== "string" || !name || name.startsWith(".")) continue;
+    // hq-pro's validatePrefix refuses a `companies/` prefix inside a company vault.
+    if (isDir !== true || typeof name !== "string" || !name || name.startsWith(".") || name === "companies") continue;
     out.push(name);
   }
   return out.sort();
