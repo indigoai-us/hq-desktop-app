@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
 
 import ChatSidebar from "./ChatSidebar.svelte";
@@ -42,6 +42,13 @@ const ACME: Workspace = {
 };
 
 const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
+
+// The date buckets split at local midnight, and the project channel sits at
+// "2 days + 30 min ago": run near midnight it fell into the day before. Pin
+// the clock to local noon so every fixture time lands in its intended day.
+const FIXED_NOW = new Date(2026, 9, 7, 12, 0, 0);
+vi.useFakeTimers({ toFake: ["Date"] });
+vi.setSystemTime(FIXED_NOW);
 
 // Two companies' channels, a project channel, a DM, and an empty channel,
 // spread over today, two days ago, and four days ago.
@@ -117,6 +124,10 @@ afterEach(async () => {
   component = null;
   host?.remove();
   memoryStorage.clear();
+});
+
+afterAll(() => {
+  vi.useRealTimers();
 });
 
 describe("ChatSidebar All scope — channels in the date buckets", () => {
