@@ -432,8 +432,8 @@
     flex: none;
     padding: 0 8px;
     color: var(--t3);
-    font-size: 11px;
-    line-height: 14px;
+    font-size: 13px;
+    line-height: 17px;
   }
   .th { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
   .th.sort {
@@ -473,7 +473,7 @@
   .av { display: grid; place-items: center; overflow: visible; }
   .who { display: flex; align-items: baseline; gap: 6px; }
   .nm { color: var(--t1); overflow: hidden; text-overflow: ellipsis; }
-  .handle { color: var(--t3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  .handle { color: var(--t3); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
   .num { font-variant-numeric: tabular-nums; }
   .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); }
 </style>
