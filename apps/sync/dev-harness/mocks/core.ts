@@ -668,6 +668,30 @@ function tourPreviewEnabled(): boolean {
  * the New bot modal can finish and land in the new bot's DM (console-rail
  * e2e "Add agent"). Nothing is listed until something is created.
  */
+function previewBotJobs(): Array<Record<string, unknown>> {
+  const at = (min: number) => new Date(Date.now() + min * 60000).toISOString();
+  const tz = 'America/Denver';
+  // Next occurrence of a UTC wall time (9:00 AM MDT is 15:00 UTC), optionally weekdays only,
+  // so next and last runs agree with the schedule the row shows.
+  const nextUtc = (hour: number, weekdays = false): Date => {
+    const d = new Date();
+    d.setUTCHours(hour, 0, 0, 0);
+    if (d.getTime() <= Date.now()) d.setUTCDate(d.getUTCDate() + 1);
+    while (weekdays && (d.getUTCDay() === 0 || d.getUTCDay() === 6)) d.setUTCDate(d.getUTCDate() + 1);
+    return d;
+  };
+  const dayBefore = (d: Date) => new Date(d.getTime() - 86_400_000).toISOString();
+  const inbox = nextUtc(14);
+  const standup = nextUtc(15, true);
+  return [
+    { jobId: 'job_01PREVIEWINBOX', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0 8 * * ? *)', schedule: { kind: 'recurring', cron: '0 8 * * ? *', timezone: tz }, nextRunAt: inbox.toISOString(), lastRunAt: dayBefore(inbox), lastRunOutcome: 'succeeded', prompt: 'Summarize my inbox from the last 24 hours. Group by sender, flag anything that needs a reply today, and DM me the list.' },
+    { jobId: 'job_01PREVIEWSTANDUP', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0 9 ? * MON-FRI *)', schedule: { kind: 'recurring', cron: '0 9 ? * MON-FRI *', timezone: tz }, nextRunAt: standup.toISOString(), lastRunAt: dayBefore(standup), lastRunOutcome: 'failed', prompt: 'Please post the standup notes to #team.\nPull blockers from yesterday\'s threads and list open PRs that are waiting on review.' },
+    { jobId: 'job_01PREVIEWDEPLOYS', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0/30 * * * ? *)', schedule: { kind: 'recurring', cron: '0/30 * * * ? *', timezone: tz }, nextRunAt: at(12), lastRunAt: at(-18), lastRunOutcome: 'succeeded', prompt: 'Check the deploy dashboard for failed builds and post a short note in #ops if anything is red.' },
+    { jobId: 'job_01PREVIEWREVIEW', scheduleState: 'ENABLED', status: 'active', rate: 'at(2026-10-20T16:00:00)', schedule: { kind: 'once', at: '2026-10-20T16:00:00Z', timezone: tz }, nextRunAt: '2026-10-20T16:00:00Z', lastRunAt: null, lastRunOutcome: null, prompt: '/indigo:launch-review for the October release' },
+    { jobId: 'job_01PREVIEWWEEKLY', scheduleState: 'DISABLED', status: 'paused', rate: 'cron(30 16 ? * FRI *)', schedule: { kind: 'recurring', cron: '30 16 ? * FRI *', timezone: tz }, nextRunAt: null, lastRunAt: at(-60 * 24 * 6), lastRunOutcome: 'succeeded', prompt: 'Write the weekly metrics recap: signups, active companies, and revenue, compared with last week.' },
+  ];
+}
+
 const previewLocalBots: Array<Record<string, unknown>> = [];
 
 const handlers: Record<string, Handler> = {
@@ -1708,7 +1732,12 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+  hq_pro_fetch: (args) => /^\/v1\/agents\/[^/]+\/jobs$/.test(String(args?.url ?? '')) ? ({
+    status: 200,
+    // A bot's scheduled jobs, shaped like hq-pro-agents JobControlListRow:
+    // one failing, one paused, one one-off, two healthy recurring.
+    body: JSON.stringify({ jobs: previewBotJobs() }),
+  }) : String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
     status: 200,
     // Two cloud bots, neither local nor live, so Bots' Local and Live filters
     // have nothing to show (QA-106 guard).
