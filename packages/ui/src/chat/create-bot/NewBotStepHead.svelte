@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
-   * The head of a New bot step in the takeover: the step dots, Back, the
-   * small kicker, and the title with its key word set apart ("Enter a
-   * <name.>"). The cloud create screen and the local steps both use it, so
+   * The head of a New bot step in the takeover: Back and the step bars on
+   * one line, then the small kicker and the title with its key word set
+   * apart ("Enter a <name.>"). The cloud create screen and the local steps both use it, so
    * the two flows read as one.
    */
   import type { Snippet } from "svelte";
@@ -40,8 +40,11 @@
 </script>
 
 <div class="new-bot-create-head">
-  <div class="new-bot-progress" data-testid="new-bot-progress" aria-label={`Step ${current} of ${total}`}>{#each Array(total) as _, index}<span class:active={index + 1 === current}></span>{/each}</div>
-  {#if onback}<button type="button" class="new-bot-back" data-testid={backTestId} disabled={backDisabled} onclick={onback}><RailIcon name="arrow-left" />Back</button>{/if}
+  <!-- One line: Back on the left, the step bars on the right. -->
+  <div class="new-bot-step-top">
+    {#if onback}<button type="button" class="new-bot-back" data-testid={backTestId} disabled={backDisabled} onclick={onback}><RailIcon name="arrow-left" />Back</button>{/if}
+    <div class="new-bot-progress" data-testid="new-bot-progress" role="img" aria-label={`Step ${current} of ${total}`}>{#each Array(total) as _, index}<span class:done={index + 1 < current} class:active={index + 1 === current}></span>{/each}</div>
+  </div>
   <p class="new-bot-takeover-kicker">{kicker}</p>
   <h1 id="new-bot-takeover-title">{lead} <em>{em}</em>{#if tail}{" "}{tail}{/if}</h1>
   {@render children?.()}

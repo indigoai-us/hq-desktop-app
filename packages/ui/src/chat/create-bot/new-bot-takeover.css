@@ -91,15 +91,10 @@
 
 .new-bot-takeover-card {
   width: min(480px, 100%);
-  border: 1px solid var(--new-bot-line);
-  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
   padding: clamp(30px, 7vw, 42px);
-  /* A static fill, no backdrop-filter: the dawn behind this card redraws on
-     every animation frame (NewBotDawn.svelte), so a blur here would be
-     computed again for the whole card on every one of them
-     (scripts/perf-budget-contract.test.ts). The extra alpha carries the
-     frost instead. */
-  background: rgba(17, 17, 19, 0.8);
+  background: rgba(14, 14, 18, 0.78);
   box-shadow:
     0 30px 80px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -169,23 +164,42 @@
   animation: new-bot-step-arrive 180ms ease-out both;
 }
 
-.new-bot-progress {
+/* Back on the left, the step bars on the right, on one line. */
+.new-bot-step-top {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 22px;
   margin-bottom: 4px;
 }
 
+.new-bot-progress {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  margin-left: auto;
+}
+
 .new-bot-progress span {
-  width: 6px;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.24);
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.new-bot-progress span.done {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .new-bot-progress span.active {
-  background: rgba(255, 255, 255, 0.88);
+  background: #ffb580;
 }
 
 .new-bot-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   justify-self: start;
   border: 0;
   padding: 0;
@@ -194,6 +208,10 @@
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+
+.new-bot-back:hover:not(:disabled) {
+  color: var(--new-bot-ink);
 }
 
 .new-bot-create h1 {
@@ -485,6 +503,24 @@
 
   .new-bot-step {
     animation: none;
+  }
+}
+
+/* Frosted glass over the still room illustration on the step screens. The
+   takeover is a transient full-window dialog, so the blur is in the perf
+   budget's allowlist (scripts/perf-budget-contract.test.ts). The creating
+   and waking screens draw the dawn on every animation frame (NewBotDawn),
+   so the card drops the blur there and keeps the plain fill. */
+.new-bot-takeover-card:not(:has(.new-bot-dawn)) {
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .new-bot-takeover-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: rgba(14, 14, 18, 0.96);
   }
 }
 
@@ -937,69 +973,106 @@
   background: rgba(254, 202, 202, 0.1);
 }
 
-/* Where the bot lives: Cloud or Local, two hero tiles side by side. Hover,
-   focus and press change the background only (no edge stripes); the focused
-   tile also takes a warm tint on its border. */
+/* Where the bot lives: Cloud or Local, two equal glass tiles side by side.
+   Each tile has a soft glow at its top behind the orb (warm for Cloud, cool
+   for Local). Hover and focus lift the tile, brighten its fill and warm its
+   border; there are no edge stripes. */
+.new-bot-takeover-card:has(.new-bot-choice) {
+  width: min(560px, 100%);
+}
 /* "Where should <Name> live?" reads on one line for most names. */
 .new-bot-choice h1 {
   max-width: none;
 }
+.new-bot-choice-sub {
+  margin: 2px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
 .new-bot-choice-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 22px;
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 24px;
 }
-@media (max-width: 420px) {
+@media (max-width: 460px) {
   .new-bot-choice-options {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 .new-bot-choice-option {
+  --choice-glow: rgba(255, 170, 140, 0.16);
+  --choice-edge: rgba(255, 181, 128, 0.55);
+  --choice-ring: rgba(255, 181, 128, 0.75);
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
   min-width: 0;
-  min-height: 130px;
+  height: 100%;
   width: 100%;
-  padding: 18px;
-  border: 1px solid var(--new-bot-line);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.04);
+  padding: 18px 18px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background:
+    radial-gradient(120px 90px at 45px 30px, var(--choice-glow), transparent 70%),
+    rgba(255, 255, 255, 0.04);
   color: var(--new-bot-ink);
   font: inherit;
   font-weight: 400;
   text-align: left;
   cursor: pointer;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease;
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms ease,
+    border-color 160ms ease;
 }
-.new-bot-choice-option > .rail-icon {
+.new-bot-choice-option[data-kind="local"] {
+  --choice-glow: rgba(150, 170, 255, 0.16);
+  --choice-edge: rgba(170, 190, 255, 0.5);
+  --choice-ring: rgba(170, 190, 255, 0.75);
+}
+.new-bot-choice-option > .new-bot-orb {
   flex: none;
-  margin-bottom: 4px;
-  color: var(--new-bot-ink);
+  margin-bottom: 8px;
 }
 .new-bot-choice-option:hover:not(:disabled),
 .new-bot-choice-option:focus-visible {
-  background: rgba(255, 181, 128, 0.08);
-  border-color: rgba(255, 181, 128, 0.42);
+  background:
+    radial-gradient(130px 100px at 45px 30px, var(--choice-glow), transparent 72%),
+    rgba(255, 255, 255, 0.07);
+  border-color: var(--choice-edge);
+  transform: translateY(-2px);
 }
 .new-bot-choice-option:active:not(:disabled) {
-  background: rgba(255, 181, 128, 0.14);
+  background:
+    radial-gradient(130px 100px at 45px 30px, var(--choice-glow), transparent 72%),
+    rgba(255, 255, 255, 0.09);
+  transform: translateY(0);
 }
 .new-bot-choice-option:focus-visible {
-  outline: 2px solid rgba(255, 181, 128, 0.5);
-  outline-offset: 2px;
+  outline: 2px solid var(--choice-ring);
+  outline-offset: 3px;
 }
 .new-bot-choice-option:disabled {
   cursor: default;
   opacity: 0.5;
 }
+@media (prefers-reduced-motion: reduce) {
+  .new-bot-choice-option,
+  .new-bot-choice-option:hover:not(:disabled),
+  .new-bot-choice-option:focus-visible,
+  .new-bot-choice-option:active:not(:disabled) {
+    transform: none;
+    transition: none;
+  }
+}
 .new-bot-choice-title {
   font-family: "New Bot Fraunces", Fraunces, Georgia, serif;
-  font-size: 20px;
+  font-size: 22px;
   font-style: italic;
   font-weight: 400;
   line-height: 1.15;
@@ -1008,24 +1081,36 @@
   color: var(--new-bot-muted);
   font-size: 13px;
   line-height: 1.45;
+  text-wrap: pretty;
 }
 .new-bot-choice-tags {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+  max-width: 100%;
+  min-width: 0;
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: 12px;
 }
 .new-bot-choice-tag {
-  border: 1px solid var(--new-bot-line);
+  flex: none;
+  min-width: 0;
+  overflow: hidden;
   border-radius: 999px;
-  padding: 2px 7px;
-  color: var(--new-bot-muted);
+  padding: 3px 9px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(250, 250, 250, 0.78);
   font-family: "Geist Mono", ui-monospace, Menlo, monospace;
-  font-size: 10px;
-  letter-spacing: 0.1em;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-overflow: ellipsis;
   text-transform: uppercase;
   white-space: nowrap;
+}
+/* The last tag (the tool name on Local) gives way first. */
+.new-bot-choice-tag:last-child {
+  flex: 0 1 auto;
 }
 
 /* The "+" window's bot step worn inside the takeover shell (opened from the

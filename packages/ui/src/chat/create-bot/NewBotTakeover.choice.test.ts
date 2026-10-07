@@ -121,17 +121,26 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
     expect(q("#new-bot-takeover-title em")?.textContent).toBe("Nova");
     expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
-    // The misleading line about changing it later is gone.
+    // The misleading line about changing it later is gone; the subline says
+    // the other kind can be added any time.
     expect(document.body.textContent).not.toContain("change it on the next step");
+    expect(q('[data-testid="new-bot-choice-sub"]')?.textContent).toBe(
+      "Pick one. You can add the other kind of bot any time.",
+    );
     const cloud = q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!;
     const local = q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')!;
     expect(cloud.querySelector(".new-bot-choice-title")?.textContent).toBe("Cloud");
-    expect(cloud.textContent).toContain("Works while your Mac is off.");
+    expect(cloud.querySelector(".new-bot-choice-body")?.textContent?.trim()).toBe("Always on. Access anywhere.");
     expect([...cloud.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["Always on", "Slack"]);
     expect(local.querySelector(".new-bot-choice-title")?.textContent).toBe("Local");
-    expect(local.textContent).toContain("Uses your files and tools here.");
+    expect(local.querySelector(".new-bot-choice-body")?.textContent?.trim()).toBe("Runs on this machine.");
     // Codex is the tool signed in here, so the Local tile names it.
-    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["On this Mac", "Codex"]);
+    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["This Mac", "Codex"]);
+    // Each tile wears its own glass orb, not a rail glyph.
+    expect(cloud.querySelector('[data-testid="new-bot-orb-cloud"]')).toBeTruthy();
+    expect(local.querySelector('[data-testid="new-bot-orb-local"]')).toBeTruthy();
+    expect(cloud.querySelector(".rail-icon")).toBeNull();
+    expect(local.querySelector(".rail-icon")).toBeNull();
   });
 
   it("names no tool on the Local tile when none is known to be signed in", async () => {
@@ -139,7 +148,7 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     await settle();
     await nameIt();
     const local = q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')!;
-    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["On this Mac", "Your tools"]);
+    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["This Mac", "Your tools"]);
   });
 
   it("holds the name step on an empty name or one no handle can be made from", async () => {
@@ -243,7 +252,7 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(cloud.disabled).toBe(true);
     expect(cloud.textContent).toContain("Cloud bots run in a company. Join or create one first.");
     expect(cloud.textContent).not.toContain("Always on");
-    expect(cloud.textContent).not.toContain("Works while");
+    expect(cloud.textContent).not.toContain("Access anywhere");
     // No warning glyphs: the reason is plain text.
     expect(cloud.textContent).not.toMatch(/[⚠!]/u);
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')!.disabled).toBe(false);
@@ -331,5 +340,20 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
       expect(selector, selector).not.toMatch(/::before|::after/u);
     }
     expect(css).toMatch(/\.new-bot-choice-option:hover:not\(:disabled\),\s*\.new-bot-choice-option:focus-visible\s*\{\s*background:/u);
+  });
+
+  it("lifts a tile on hover only when motion is allowed, and keeps the tags on one line", () => {
+    const css = readFileSync(resolve(process.cwd(), "src/chat/create-bot/new-bot-takeover.css"), "utf8");
+    const hover = css.match(/\.new-bot-choice-option:hover:not\(:disabled\),\s*\.new-bot-choice-option:focus-visible\s*\{([^}]*)\}/u)?.[1] ?? "";
+    expect(hover).toMatch(/transform:\s*translateY\(-2px\)/u);
+    const reduced = css.match(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.new-bot-choice-option,[^{]*\{([^}]*)\}/u)?.[1] ?? "";
+    expect(reduced).toMatch(/transform:\s*none/u);
+    const tags = css.match(/\.new-bot-choice-tags\s*\{([^}]*)\}/u)?.[1] ?? "";
+    expect(tags).toMatch(/flex-wrap:\s*nowrap/u);
+    const tag = css.match(/\.new-bot-choice-tag\s*\{([^}]*)\}/u)?.[1] ?? "";
+    expect(tag).toMatch(/text-overflow:\s*ellipsis/u);
+    expect(tag).toMatch(/white-space:\s*nowrap/u);
+    // A keyboard focus ring stays visible on top of the lift.
+    expect(css).toMatch(/\.new-bot-choice-option:focus-visible\s*\{\s*outline:\s*2px solid/u);
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { hostComputerNoun } from "@hq/platform";
-  import RailIcon from "../../common/button/RailIcon.svelte";
+  import NewBotOrbIcon from "./NewBotOrbIcon.svelte";
   import NewBotStepHead from "./NewBotStepHead.svelte";
 
   export type NewBotKind = "cloud" | "local";
@@ -38,9 +38,10 @@
     onpick,
   }: Props = $props();
 
-  /** "Mac", "PC" or "computer", read once. */
+  /** "Mac", "PC" or "computer", read once, for the Local tag. */
   const hostNoun = hostComputerNoun();
   const shownName = $derived(name.trim() || "your bot");
+  const SUBLINE = "Pick one. You can add the other kind of bot any time.";
 
   const options = $derived<
     ReadonlyArray<{
@@ -48,24 +49,22 @@
       title: string;
       body: string;
       tags: readonly string[];
-      icon: "cloud" | "laptop";
       reason: string | null;
     }>
   >([
     {
       kind: "cloud",
       title: "Cloud",
-      body: `Works while your ${hostNoun} is off.`,
+      body: "Always on. Access anywhere.",
       tags: ["Always on", "Slack"],
-      icon: "cloud",
       reason: cloudReason,
     },
     {
       kind: "local",
       title: "Local",
-      body: "Uses your files and tools here.",
-      tags: [`On this ${hostNoun}`, localTool?.trim() || "Your tools"],
-      icon: "laptop",
+      body: "Runs on this machine.",
+      // Short, so both tags sit on one line; a long tool name truncates.
+      tags: [`This ${hostNoun}`, localTool?.trim() || "Your tools"],
       reason: localReason,
     },
   ]);
@@ -112,10 +111,13 @@
       lead="Where should"
       em={shownName}
       tail="live?"
-    />
+    >
+      <p class="new-bot-choice-sub" data-testid="new-bot-choice-sub">{SUBLINE}</p>
+    </NewBotStepHead>
   {:else}
     <p class="new-bot-takeover-kicker">A new teammate</p>
     <h1 id="new-bot-takeover-title">Where should <em>{shownName}</em> live?</h1>
+    <p class="new-bot-choice-sub" data-testid="new-bot-choice-sub">{SUBLINE}</p>
   {/if}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
@@ -129,19 +131,20 @@
       <button
         type="button"
         class="new-bot-choice-option"
+        data-kind={option.kind}
         data-testid={`new-bot-choice-${option.kind}`}
         disabled={option.reason !== null}
         aria-describedby={`new-bot-choice-${option.kind}-body`}
         onclick={() => onpick(option.kind)}
       >
-        <RailIcon name={option.icon} size={24} />
+        <NewBotOrbIcon kind={option.kind} />
         <span class="new-bot-choice-title">{option.title}</span>
         <span class="new-bot-choice-body" id={`new-bot-choice-${option.kind}-body`}>
           {option.reason ?? option.body}
         </span>
         {#if option.reason === null}
           <span class="new-bot-choice-tags" data-testid={`new-bot-choice-${option.kind}-tags`}>
-            {#each option.tags as tag (tag)}<span class="new-bot-choice-tag">{tag}</span>{/each}
+            {#each option.tags as tag (tag)}<span class="new-bot-choice-tag" title={tag}>{tag}</span>{/each}
           </span>
         {/if}
       </button>
