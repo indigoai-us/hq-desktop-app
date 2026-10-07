@@ -52,6 +52,8 @@ The release moves it under the version it ships in.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
 
+- HQ Desktop no longer emits a warning after it stops an orphaned sync runner during a watch-owner takeover; it continues reporting other watch-owner exits.
+
 ## [0.10.396] — 2026-10-05
 
 - People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
