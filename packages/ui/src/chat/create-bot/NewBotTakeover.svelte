@@ -3,7 +3,6 @@
   import { newBotWallpaper } from "./new-bot-wallpapers.js";
   import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
   import NewBotNameStep from "./NewBotNameStep.svelte";
-  import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import { onDestroy, onMount, untrack } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
@@ -190,10 +189,6 @@
   let botName = $state(untrack(() => initialName.trim()));
   /** The where question is part of this New bot's steps (and its dots). */
   const asksWhere = $derived(choose || !hasCloudScreen);
-  /** The coding tool signed in on this computer, named on the Local tile. */
-  const signedInTool = $derived(
-    LOCAL_BOT_RUNTIMES.find((runtime) => runtimeReady?.[runtime.id] === true)?.label ?? null,
-  );
   /**
    * Step dots for the screens the takeover shows: the name, the where
    * question, then the steps after it. Local continues on one coding tool
@@ -581,7 +576,6 @@
           name={botName}
           {cloudReason}
           {localReason}
-          localTool={signedInTool}
           total={totalSteps}
           current={2}
           onback={() => (phase = "name")}

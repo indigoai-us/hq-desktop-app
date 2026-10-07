@@ -346,10 +346,6 @@
   const chosenTemplateCard = $derived(chosenTemplate ? templateCard(chosenTemplate) : null);
   const scopeText = $derived(scopeLine(draft, ctx));
   const runtimeLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
-  /** The coding tool signed in on this computer, named on the Local tile. */
-  const signedInTool = $derived(
-    LOCAL_BOT_RUNTIMES.find((runtime) => botRuntimeReady?.[runtime.id] === true)?.label ?? null,
-  );
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
@@ -677,7 +673,6 @@
   <NewBotKindChoice
     name={draft.name}
     {cloudReason}
-    localTool={signedInTool}
     total={totalSteps}
     current={2}
     onback={() => (phase = "name")}

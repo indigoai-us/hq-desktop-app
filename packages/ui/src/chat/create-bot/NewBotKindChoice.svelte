@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { hostComputerNoun } from "@hq/platform";
   import NewBotOrbIcon from "./NewBotOrbIcon.svelte";
   import NewBotStepHead from "./NewBotStepHead.svelte";
 
@@ -13,8 +12,6 @@
     cloudReason?: string | null;
     /** Why Local cannot be picked. Null when it can. */
     localReason?: string | null;
-    /** The coding tool signed in on this computer ("Claude Code"), when one is known. */
-    localTool?: string | null;
     /** Step dots: how many steps the whole flow has, and this one's place. */
     total?: number;
     current?: number;
@@ -29,7 +26,6 @@
     name = "",
     cloudReason = null,
     localReason = null,
-    localTool = null,
     total = 0,
     current = 2,
     onback = null,
@@ -38,8 +34,6 @@
     onpick,
   }: Props = $props();
 
-  /** "Mac", "PC" or "computer", read once, for the Local tag. */
-  const hostNoun = hostComputerNoun();
   const shownName = $derived(name.trim() || "your bot");
   const SUBLINE = "Pick one. You can add the other kind of bot any time.";
 
@@ -48,7 +42,6 @@
       kind: NewBotKind;
       title: string;
       body: string;
-      tags: readonly string[];
       reason: string | null;
     }>
   >([
@@ -56,15 +49,12 @@
       kind: "cloud",
       title: "Cloud",
       body: "Always on. Access anywhere.",
-      tags: ["Always on", "Slack"],
       reason: cloudReason,
     },
     {
       kind: "local",
       title: "Local",
       body: "Runs on this machine.",
-      // Short, so both tags sit on one line; a long tool name truncates.
-      tags: [`This ${hostNoun}`, localTool?.trim() || "Your tools"],
       reason: localReason,
     },
   ]);
@@ -142,11 +132,6 @@
         <span class="new-bot-choice-body" id={`new-bot-choice-${option.kind}-body`}>
           {option.reason ?? option.body}
         </span>
-        {#if option.reason === null}
-          <span class="new-bot-choice-tags" data-testid={`new-bot-choice-${option.kind}-tags`}>
-            {#each option.tags as tag (tag)}<span class="new-bot-choice-tag" title={tag}>{tag}</span>{/each}
-          </span>
-        {/if}
       </button>
     {/each}
   </div>

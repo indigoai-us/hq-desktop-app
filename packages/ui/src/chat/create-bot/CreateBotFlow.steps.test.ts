@@ -414,8 +414,9 @@ describe("The flow's own Cloud or Local question", () => {
     expect(q("#new-bot-takeover-title em")?.textContent).toBe("Nova");
     expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(false);
-    // The signed-in coding tool is named on the Local tile.
-    expect(q('[data-testid="new-bot-choice-local-tags"]')?.textContent).toContain("Claude Code");
+    // The tiles carry no tags: no tool is named on the Local tile.
+    expect(q('[data-testid="new-bot-choice-local-tags"]')).toBeNull();
+    expect(q('[data-testid="new-bot-choice-local"]')?.textContent).not.toContain("Claude Code");
 
     click('[data-testid="new-bot-choice-local"]');
     await settle();

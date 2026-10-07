@@ -131,11 +131,16 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     const local = q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')!;
     expect(cloud.querySelector(".new-bot-choice-title")?.textContent).toBe("Cloud");
     expect(cloud.querySelector(".new-bot-choice-body")?.textContent?.trim()).toBe("Always on. Access anywhere.");
-    expect([...cloud.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["Always on", "Slack"]);
     expect(local.querySelector(".new-bot-choice-title")?.textContent).toBe("Local");
     expect(local.querySelector(".new-bot-choice-body")?.textContent?.trim()).toBe("Runs on this machine.");
-    // Codex is the tool signed in here, so the Local tile names it.
-    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["This Mac", "Codex"]);
+    // No tags on either tile: they named one comms option and one tool
+    // where there are several of each.
+    for (const tile of [cloud, local]) {
+      expect(tile.querySelector(".new-bot-choice-tags, .new-bot-choice-tag")).toBeNull();
+      expect(tile.querySelector('[data-testid$="-tags"]')).toBeNull();
+    }
+    expect(local.textContent).not.toContain("Codex");
+    expect(cloud.textContent).not.toContain("Slack");
     // Each tile wears its own glass orb, not a rail glyph.
     expect(cloud.querySelector('[data-testid="new-bot-orb-cloud"]')).toBeTruthy();
     expect(local.querySelector('[data-testid="new-bot-orb-local"]')).toBeTruthy();
@@ -143,12 +148,13 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(local.querySelector(".rail-icon")).toBeNull();
   });
 
-  it("names no tool on the Local tile when none is known to be signed in", async () => {
+  it("shows no tags on the Local tile whichever tool is signed in", async () => {
     render({ choose: true, ...CLOUD_SCREEN, runtimeReady: null, onchooselocal: vi.fn() });
     await settle();
     await nameIt();
     const local = q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')!;
-    expect([...local.querySelectorAll(".new-bot-choice-tag")].map((t) => t.textContent)).toEqual(["This Mac", "Your tools"]);
+    expect(local.querySelector(".new-bot-choice-tag")).toBeNull();
+    expect(local.textContent).not.toContain("Your tools");
   });
 
   it("holds the name step on an empty name or one no handle can be made from", async () => {
@@ -342,17 +348,13 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(css).toMatch(/\.new-bot-choice-option:hover:not\(:disabled\),\s*\.new-bot-choice-option:focus-visible\s*\{\s*background:/u);
   });
 
-  it("lifts a tile on hover only when motion is allowed, and keeps the tags on one line", () => {
+  it("lifts a tile on hover only when motion is allowed, and has no tag styles left", () => {
     const css = readFileSync(resolve(process.cwd(), "src/chat/create-bot/new-bot-takeover.css"), "utf8");
     const hover = css.match(/\.new-bot-choice-option:hover:not\(:disabled\),\s*\.new-bot-choice-option:focus-visible\s*\{([^}]*)\}/u)?.[1] ?? "";
     expect(hover).toMatch(/transform:\s*translateY\(-2px\)/u);
     const reduced = css.match(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.new-bot-choice-option,[^{]*\{([^}]*)\}/u)?.[1] ?? "";
     expect(reduced).toMatch(/transform:\s*none/u);
-    const tags = css.match(/\.new-bot-choice-tags\s*\{([^}]*)\}/u)?.[1] ?? "";
-    expect(tags).toMatch(/flex-wrap:\s*nowrap/u);
-    const tag = css.match(/\.new-bot-choice-tag\s*\{([^}]*)\}/u)?.[1] ?? "";
-    expect(tag).toMatch(/text-overflow:\s*ellipsis/u);
-    expect(tag).toMatch(/white-space:\s*nowrap/u);
+    expect(css).not.toContain(".new-bot-choice-tag");
     // A keyboard focus ring stays visible on top of the lift.
     expect(css).toMatch(/\.new-bot-choice-option:focus-visible\s*\{\s*outline:\s*2px solid/u);
   });

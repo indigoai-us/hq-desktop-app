@@ -974,8 +974,8 @@
 }
 
 /* Where the bot lives: Cloud or Local, two equal glass tiles side by side.
-   Each tile has a soft glow at its top behind the orb (warm for Cloud, cool
-   for Local). Hover and focus lift the tile, brighten its fill and warm its
+   Each tile is an orb, a title and one line, with a soft glow at its top
+   behind the orb (warm for Cloud, cool for Local). Hover and focus lift the tile, brighten its fill and warm its
    border; there are no edge stripes. */
 .new-bot-takeover-card:has(.new-bot-choice) {
   width: min(560px, 100%);
@@ -1014,7 +1014,7 @@
   min-width: 0;
   height: 100%;
   width: 100%;
-  padding: 18px 18px 16px;
+  padding: 20px 20px 22px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   background:
@@ -1037,7 +1037,7 @@
 }
 .new-bot-choice-option > .new-bot-orb {
   flex: none;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .new-bot-choice-option:hover:not(:disabled),
 .new-bot-choice-option:focus-visible {
@@ -1082,35 +1082,6 @@
   font-size: 13px;
   line-height: 1.45;
   text-wrap: pretty;
-}
-.new-bot-choice-tags {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
-  max-width: 100%;
-  min-width: 0;
-  margin-top: auto;
-  padding-top: 12px;
-}
-.new-bot-choice-tag {
-  flex: none;
-  min-width: 0;
-  overflow: hidden;
-  border-radius: 999px;
-  padding: 3px 9px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(250, 250, 250, 0.78);
-  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  line-height: 1.4;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-/* The last tag (the tool name on Local) gives way first. */
-.new-bot-choice-tag:last-child {
-  flex: 0 1 auto;
 }
 
 /* The "+" window's bot step worn inside the takeover shell (opened from the
