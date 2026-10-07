@@ -54,7 +54,7 @@ fn first_launch_sync_start_error_category(error: &str) -> &'static str {
 fn report_first_launch_sync_start_failure(error: &str) {
     crate::commands::sync::capture_sync_error_with_fingerprint_and_context(
         None,
-        "first-launch",
+        "(first-launch)",
         FIRST_LAUNCH_SYNC_START_FAILURE_MESSAGE,
         &["sync", FIRST_LAUNCH_SYNC_START_FAILURE_FINGERPRINT],
         &[(
@@ -350,7 +350,7 @@ mod first_launch_sync_start_capture_tests {
         );
         assert_eq!(
             event.tags.get("path").map(String::as_str),
-            Some("first-launch")
+            Some("(first-launch)")
         );
         assert_eq!(
             event.tags.get("failure_category").map(String::as_str),
