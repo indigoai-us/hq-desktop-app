@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- First sync attribution now includes the company selected or joined during setup, including existing companies.
 - Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
 - Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
 
