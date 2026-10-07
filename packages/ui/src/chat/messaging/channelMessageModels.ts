@@ -764,3 +764,52 @@ export function isIsoTimestampValue(value: string | null | undefined): boolean {
   const raw = (value ?? "").trim();
   return ISO_TIMESTAMP_RE.test(raw) && Number.isFinite(Date.parse(raw));
 }
+
+// ── Forwarded messages (US-008) ─────────────────────────────────────────────
+
+/** The server's `forwardedFrom` stamp on a forwarded row. */
+export interface ForwardedFromModel {
+  senderUid: string;
+  senderName: string;
+  sourceKind: "dm" | "group" | "channel";
+  originalCreatedAt: string;
+}
+
+const FORWARD_SOURCE_KINDS = new Set(["dm", "group", "channel"]);
+
+/**
+ * The forwarded-from header model, or null. Only the server's structured
+ * `forwardedFrom` field produces it; body text is never parsed for it.
+ */
+export function parseForwardedFrom(raw: unknown): ForwardedFromModel | null {
+  if (!isRecord(raw)) return null;
+  const senderName =
+    typeof raw.senderName === "string" ? raw.senderName.trim() : "";
+  if (!senderName) return null;
+  const kind = typeof raw.sourceKind === "string" ? raw.sourceKind : "";
+  return {
+    senderUid: typeof raw.senderUid === "string" ? raw.senderUid : "",
+    senderName,
+    sourceKind: FORWARD_SOURCE_KINDS.has(kind)
+      ? (kind as ForwardedFromModel["sourceKind"])
+      : "dm",
+    originalCreatedAt:
+      typeof raw.originalCreatedAt === "string" ? raw.originalCreatedAt : "",
+  };
+}
+
+/** Count of files the forwarder left out: a non-negative integer, else 0. */
+export function parseOmittedAttachments(raw: unknown): number {
+  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : 0;
+}
+
+/** "1 file not included" / "3 files not included"; null when nothing was left out. */
+export function omittedAttachmentsLabel(n: number): string | null {
+  if (!Number.isInteger(n) || n <= 0) return null;
+  return `${n} ${n === 1 ? "file" : "files"} not included`;
+}
+
+/** The forwarder's own note, trimmed, or "" when absent. */
+export function forwardNoteText(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim() : "";
+}

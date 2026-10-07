@@ -173,6 +173,12 @@ export interface ChannelMessage {
   systemEvent?: Record<string, unknown> | null;
   /** Optional file attachment card payload. */
   attachment?: ChannelMessageAttachment | null;
+  /** Forwarded-message stamp (US-008); parse via `parseForwardedFrom`. */
+  forwardedFrom?: unknown;
+  /** The forwarder's own note on a forwarded row. */
+  forwardNote?: string | null;
+  /** Files the forwarder left out; parse via `parseOmittedAttachments`. */
+  omittedAttachments?: unknown;
 }
 
 /** A group of channels under one header (Personal, or a company name). */
