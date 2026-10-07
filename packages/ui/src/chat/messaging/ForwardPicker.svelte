@@ -890,6 +890,23 @@
     margin: 0 -6px;
     padding: 0 6px;
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--t1) 18%, transparent) transparent;
+  }
+
+  .forward-list::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .forward-list::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--t1) 18%, transparent);
+    background-clip: padding-box;
+  }
+
+  .forward-list::-webkit-scrollbar-track {
+    background: transparent;
   }
 
   .forward-section {
