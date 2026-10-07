@@ -373,9 +373,11 @@ fn lease_record_is_live(record: &LeaseRecord) -> bool {
         .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
 }
 
-fn lease_record_exceeds_maximum_hold(record: &LeaseRecord, now_ms: u64) -> bool {
-    now_ms
-        .checked_sub(record.start_time_ms)
+fn lease_file_exceeds_maximum_hold(modified_at: Option<std::time::SystemTime>, now_ms: u64) -> bool {
+    modified_at
+        .and_then(|modified_at| modified_at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|modified_at| u64::try_from(modified_at.as_millis()).ok())
+        .and_then(|modified_at_ms| now_ms.checked_sub(modified_at_ms))
         .is_some_and(|age_ms| age_ms > MAX_PACKAGE_USE_HOLDER_AGE_MS)
 }
 
@@ -701,6 +703,10 @@ impl PackageUseUpdateRequest {
             {
                 continue;
             }
+            let lease_modified_at = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok());
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -719,7 +725,9 @@ impl PackageUseUpdateRequest {
             // 24 hours. Preserve every young live holder (including daemon and
             // MCP purposes); reclaim an over-ceiling holder regardless of its
             // optional purpose field while this caller owns the updater lock.
-            if lease_record_is_live(&record) && !lease_record_exceeds_maximum_hold(&record, now_ms) {
+            if lease_record_is_live(&record)
+                && !lease_file_exceeds_maximum_hold(lease_modified_at, now_ms)
+            {
                 live_records.push(record);
             } else {
                 match fs::remove_file(&path) {
@@ -1010,6 +1018,8 @@ fn process_start_tolerance_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::time::UNIX_EPOCH;
     use tempfile::tempdir;
 
     fn fixture() -> (tempfile::TempDir, PackageUseLeasePaths) {
@@ -1045,6 +1055,16 @@ mod tests {
             root_id: root_id.map(str::to_string),
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn set_file_modified_time_ms(path: &Path, modified_at_ms: u64) {
+        let modified_at = UNIX_EPOCH + Duration::from_millis(modified_at_ms);
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified_at))
+            .unwrap();
     }
 
     fn record_with_version(path: &Path, pid: u32, start_time_ms: u64, hq_version: &str) {
@@ -1462,10 +1482,12 @@ mod tests {
         let start = process_start_time_ms(pid).unwrap();
         let lease_path = paths.lease_directory.join(format!("{pid}-{start}.json"));
         record_with_details(&lease_path, pid, start, "5.304.0", None, None);
+        let now_ms = start + MAX_PACKAGE_USE_HOLDER_AGE_MS + 1;
+        set_file_modified_time_ms(&lease_path, start);
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
 
         let (guard, live_records) = request
-            .try_acquire_with_live_records_at(start + MAX_PACKAGE_USE_HOLDER_AGE_MS + 1)
+            .try_acquire_with_live_records_at(now_ms)
             .unwrap();
 
         assert!(
@@ -1477,6 +1499,35 @@ mod tests {
             !lease_path.exists(),
             "the stale live-holder record is removed"
         );
+    }
+
+    #[test]
+    fn keeps_a_recent_lease_from_a_long_running_live_process() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let process_start_ms = process_start_time_ms(pid).unwrap();
+        let now_ms = process_start_ms + MAX_PACKAGE_USE_HOLDER_AGE_MS + 60_000;
+        let lease_path = paths
+            .lease_directory
+            .join(format!("{pid}-{process_start_ms}.json"));
+        record_with_details(
+            &lease_path,
+            pid,
+            process_start_ms,
+            "5.342.4",
+            Some("daemon"),
+            None,
+        );
+        set_file_modified_time_ms(&lease_path, now_ms - 60_000);
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let (guard, live_records) = request
+            .try_acquire_with_live_records_at(now_ms)
+            .unwrap();
+
+        assert!(guard.is_none(), "a recent lease must keep blocking the updater");
+        assert_eq!(live_records.len(), 1, "the live lease stays in the scan");
+        assert!(lease_path.exists(), "a recent live lease must not be removed");
     }
 
     #[tokio::test]
