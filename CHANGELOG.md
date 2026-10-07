@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.401] — 2026-10-07
+
 - First sync attribution now includes the company selected or joined during setup, including existing companies.
 
 ## [0.10.400] — 2026-10-07
