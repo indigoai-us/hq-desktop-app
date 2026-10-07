@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::SecondsFormat;
+use hq_desktop_core::sync_outcome::termination_fingerprint_token;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
@@ -297,6 +298,37 @@ fn classify_runner_exit_error(message: &str) -> &'static str {
     }
 }
 
+fn runner_error_message_template(error_class: &str) -> Option<&'static str> {
+    match error_class {
+        "journal-invalid-payload" => Some("journal snapshot payload invalid"),
+        "state-store-lock" => Some("journal state store lock unavailable"),
+        "targeted-pull-failed" => Some("targeted pull failed"),
+        "eperm" => Some("runner operation not permitted"),
+        "eacces" => Some("runner access denied"),
+        "enospc" => Some("runner disk full"),
+        "ebusy" => Some("runner resource busy"),
+        "enoent" => Some("runner file not found"),
+        "eexist" => Some("runner file already exists"),
+        "enotempty" => Some("runner directory not empty"),
+        "exdev" => Some("runner cross-device operation failed"),
+        "network" => Some("runner network error"),
+        "auth" => Some("runner identity error"),
+        _ => None,
+    }
+}
+
+fn runner_exit_fingerprint(
+    code: Option<i32>,
+    signal: Option<i32>,
+    error_class: &str,
+) -> Vec<String> {
+    vec![
+        "sync-runner-exit".to_string(),
+        termination_fingerprint_token(code, signal),
+        error_class.to_string(),
+    ]
+}
+
 fn scrub_runner_error_message(message: &str) -> String {
     let mut scrubbed = String::new();
     for (index, token) in message.split_whitespace().enumerate() {
@@ -390,23 +422,23 @@ fn report_runner_exit_error(
     app: &AppHandle,
     payload: SyncErrorEvent,
     code: Option<i32>,
+    signal: Option<i32>,
     runner_error_message: Option<&str>,
 ) -> tauri::Result<()> {
     let error_class = runner_error_message
         .map(classify_runner_exit_error)
         .unwrap_or("unknown");
-    let exit_code = code
-        .map(|code| code.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let fingerprint = runner_exit_fingerprint(code, signal, error_class);
+    let fingerprint_refs = fingerprint.iter().map(String::as_str).collect::<Vec<_>>();
     sentry::with_scope(
         |scope| {
             scope.set_tag("error_class", error_class);
-            scope.set_fingerprint(Some(&["sync-runner-exit", &exit_code, error_class]));
+            scope.set_fingerprint(Some(&fingerprint_refs));
             scope.set_extra(
                 "runner.error_class",
                 sentry::protocol::Value::String(error_class.to_string()),
             );
-            if let Some(message) = runner_error_message {
+            if let Some(message) = runner_error_message_template(error_class) {
                 scope.set_extra(
                     "runner.error_message",
                     sentry::protocol::Value::String(message.to_string()),
@@ -1197,6 +1229,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                             message: format!("hq-sync-runner exited {}", exit_desc),
                         },
                         code,
+                        signal,
                         last_error.as_deref(),
                     );
                 } else {
@@ -1278,6 +1311,51 @@ pub fn cancel_sync() -> bool {
 mod tests {
     use super::*;
     use crate::commands::cognito::CognitoTokens;
+
+    #[test]
+    fn runner_exit_error_message_uses_only_fixed_templates() {
+        let untrusted_details = [
+            "journal state store is unreadable at cmp_SECRET",
+            "password: hunter2",
+            "private_customer_notes.txt",
+            "/Users/Ada/Library/Application Support/HQ/private.json",
+            "ops@example.com",
+            "token=sk-live_1234567890",
+        ];
+        for detail in untrusted_details {
+            let input = format!("HQSNAP4 has an invalid journal payload: {detail}");
+            let error_class = classify_runner_exit_error(&input);
+            let mut payload = serde_json::json!({"runner.error_class": error_class});
+            if let Some(message) = runner_error_message_template(error_class) {
+                payload["runner.error_message"] = serde_json::Value::String(message.to_string());
+            }
+            let serialized = payload.to_string();
+            assert!(
+                !serialized.contains(detail),
+                "runner text reached telemetry payload: {detail}"
+            );
+            assert_eq!(
+                payload["runner.error_message"],
+                "journal snapshot payload invalid"
+            );
+        }
+
+        let unknown_class = classify_runner_exit_error("sync failed");
+        assert_eq!(unknown_class, "unknown");
+        assert!(runner_error_message_template(unknown_class).is_none());
+    }
+
+    #[test]
+    fn runner_exit_fingerprint_matches_primary_for_journal_exit() {
+        assert_eq!(
+            runner_exit_fingerprint(Some(2), None, "journal-invalid-payload"),
+            vec![
+                "sync-runner-exit".to_string(),
+                "exit:2".to_string(),
+                "journal-invalid-payload".to_string(),
+            ]
+        );
+    }
 
     // ── describe_exit ────────────────────────────────────────────────────────────
 

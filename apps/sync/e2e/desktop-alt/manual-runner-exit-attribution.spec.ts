@@ -528,12 +528,23 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
   it('groups every manual runner exit by termination and stable error class', () => {
     const exitFingerprint = sliceBetween(
       syncSource,
-      'let termination = termination_fingerprint_token(code, signal);',
-      'let (tags, extras)',
+      'fn runner_exit_fingerprint(',
+      'fn scrub_runner_error_message(',
       'manual runner-termination fingerprint',
     );
-    expect(exitFingerprint).toContain(
-      'vec!["sync-runner-exit", termination.as_str(), error_class]',
+    expect(exitFingerprint).toContain('termination_fingerprint_token(code, signal)');
+    expect(syncSource).toContain(
+      'let fingerprint = runner_exit_fingerprint(code, signal, error_class);',
+    );
+    const windowsFingerprint = sliceBetween(
+      windowsSyncSource,
+      'fn runner_exit_fingerprint(',
+      'fn scrub_runner_error_message(',
+      'Windows manual runner-termination fingerprint',
+    );
+    expect(windowsFingerprint).toContain('termination_fingerprint_token(code, signal)');
+    expect(windowsSyncSource).toContain(
+      'let fingerprint = runner_exit_fingerprint(code, signal, error_class);',
     );
     expect(exitFingerprint).not.toContain('runner_error_causes.fingerprint_token()');
     expect(exitFingerprint).not.toContain('runner_error_sites.fingerprint_token()');
@@ -546,7 +557,7 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(daemonSource).toContain('tags.push(("runner_error_causes", causes.clone()))');
   });
 
-  it('adds only the last structured error message after scrubbing and tags the class', () => {
+  it('sends fixed error-class messages and never forwards runner prose', () => {
     const telemetryContext = sliceBetween(
       syncSource,
       'fn runner_exit_telemetry_context(',
@@ -563,10 +574,13 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(telemetryContext).toContain('(\"error_class\", runner_error_class.to_string())');
     expect(telemetryContext).toContain('"runner.error_class"');
     expect(telemetryContext).toContain('"runner.error_message"');
+    expect(telemetryContext).toContain('runner_error_message_template(runner_error_class)');
+    expect(telemetryContext).not.toContain('context.runner_error_message');
     expect(telemetryContext).not.toContain('payload.path');
     expect(windowsSyncSource).toContain('runner_exit_error_from_line(&line)');
     expect(windowsSyncSource).toContain('"runner.error_class"');
-    expect(windowsSyncSource).toContain('"runner.error_message"');
+    expect(windowsSyncSource).toContain('runner_error_message_template(error_class)');
+    expect(windowsSyncSource).not.toContain('sentry::protocol::Value::String(message.to_string())');
     expect(windowsSyncSource).toContain('message: Some("runner stderr received".into())');
     expect(windowsSyncSource).not.toContain('message: Some(line.clone())');
   });
