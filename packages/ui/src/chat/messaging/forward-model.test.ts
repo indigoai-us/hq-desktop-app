@@ -71,6 +71,13 @@ describe("buildForwardCandidates", () => {
     expect(byId).toMatchObject({ "dm:prs_ana": "person", "dm:agt_bot": "bot", "ch:ch_a": "channel", "ch:ch_g": "group" });
   });
 
+  it("keeps contacts to the source company when no company is chosen", () => {
+    const ids = buildForwardCandidates(rows, contacts, null, "cmp_a").map((c) => c.id);
+    expect(ids).toContain("dm:prs_cy");
+    expect(ids).not.toContain("dm:prs_di");
+    expect(ids).not.toContain("ch:ch_b");
+  });
+
   it("returns nothing from nothing (no other source)", () => {
     expect(buildForwardCandidates([], [], "cmp_a", "cmp_a")).toEqual([]);
   });
