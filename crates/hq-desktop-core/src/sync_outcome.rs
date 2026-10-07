@@ -1452,6 +1452,12 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::ObjectLockChecksumRequired
         | RunnerErrorCause::ObjectBodyIdleTimeout
         | RunnerErrorCause::SyncDeviceLimit
+        // … the ~6.18.51 pin's additions — a tombstone full-reconcile refusal
+        // is a server-state fault and a refused pull symlink target is a
+        // per-file policy refusal; neither maps unambiguously to a class, so
+        // the keyword fallback stays authoritative …
+        | RunnerErrorCause::TombstoneFullReconcileRequired
+        | RunnerErrorCause::UnsafeSymlinkTarget
         // … AWS S3/STS names with no class analogue …
         | RunnerErrorCause::NoSuchKey
         | RunnerErrorCause::NoSuchBucket
