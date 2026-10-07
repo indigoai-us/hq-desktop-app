@@ -155,6 +155,12 @@ function segmentsFromUrl(url: URL): string[] {
   return segs;
 }
 
+function conversationRoute(conversationId: string, eventId: string): string | null {
+  if (!isIdToken(conversationId) || !isIdToken(eventId)) return null;
+  const kind = conversationId.startsWith('chn_') ? 'channel' : 'dm';
+  return `conversation:${kind}:${conversationId}:${eventId}`;
+}
+
 function mapSegments(segs: readonly string[]): string | null {
   if (segs.length === 1 && segs[0]!.toLowerCase() === 'meetings') {
     return 'meetings';
@@ -176,6 +182,17 @@ function mapSegments(segs: readonly string[]): string | null {
       return `inbox:channel:${segs[2]}:${segs[3]}`;
     }
     return null;
+  }
+  if (
+    head === 'conversation' &&
+    segs.length === 5 &&
+    segs[3] === 'message' &&
+    isIdToken(segs[1]!)
+  ) {
+    return conversationRoute(segs[2]!, segs[4]!);
+  }
+  if (head === 'c' && segs.length === 3) {
+    return conversationRoute(segs[1]!, segs[2]!);
   }
   if (head === 'files') {
     const slug = segs[1] ?? '';
