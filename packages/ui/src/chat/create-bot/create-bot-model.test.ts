@@ -15,7 +15,10 @@ import {
   groupTemplates,
   handleIssue,
   initialDraft,
-  introIssue,
+  localSettingsIssue,
+  newBotKickoff,
+  newBotNameIssue,
+  NAME_STEP_TITLE,
   displayNameIssue,
   localHandleIssue,
   botDisplayName,
@@ -290,20 +293,49 @@ describe("title", () => {
     expect(titleIssue("ad\u001banalyst")).toContain("control characters");
   });
 
-  it("never reaches the CLI input — `hq bot create` has no --title flag", () => {
+  it("never reaches the CLI input: `hq bot create` has no --title flag", () => {
     const input = toCreateInput(draft({ title: "Ad account analyst" }));
     expect(input).not.toHaveProperty("title");
-    expect(input).toEqual({ name: "assistant", runtime: "claude", autoApprove: true });
+    expect(input).toEqual({ name: "assistant", runtime: "claude", autoApprove: true, kickoff: newBotKickoff() });
   });
 });
 
-describe("intro", () => {
-  it("caps at 500 characters and rejects control characters", () => {
-    expect(introIssue("")).toBeNull();
-    expect(introIssue("Hi, I'm Scout. Ask me anything.")).toBeNull();
-    expect(introIssue("x".repeat(500))).toBeNull();
-    expect(introIssue("x".repeat(501))).toContain("500");
-    expect(introIssue("hi[31m")).toContain("control characters");
+describe("kickoff", () => {
+  it("has the new bot ask for its title, avatar and model in its first message", () => {
+    const kickoff = newBotKickoff();
+    expect(kickoff).toMatch(/^Kickoff:/);
+    expect(kickoff).toContain("job title");
+    expect(kickoff).toContain("avatar");
+    expect(kickoff).toContain("model preference");
+    // The CLI's bounds: one line, at most 2000 characters, no control characters.
+    expect(kickoff.length).toBeLessThanOrEqual(2000);
+    // eslint-disable-next-line no-control-regex
+    expect(kickoff).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(kickoff).not.toContain("\u2014");
+  });
+
+  it("asks a template bot whether its role fits instead of what it is", () => {
+    const kickoff = newBotKickoff({ template: true });
+    expect(kickoff).toContain("role your template gives you");
+    expect(kickoff).not.toContain("job title");
+    expect(toCreateInput(draft({ kind: "template", templateId: "iris-cx" })).kickoff).toBe(kickoff);
+  });
+});
+
+describe("the name step", () => {
+  it("accepts any readable name a handle can be made from", () => {
+    expect(NAME_STEP_TITLE.em).toBe("name.");
+    expect(newBotNameIssue("Dr Love")).toBeNull();
+    expect(newBotNameIssue("  ")).toBe("Give your bot a name.");
+    expect(newBotNameIssue("!!!")).toBe("That name can't be used for a bot. Try letters and numbers.");
+    expect(newBotNameIssue("x".repeat(61))).toContain("under 60");
+  });
+
+  it("seeds the draft with a name given earlier, else a free suggestion", () => {
+    const c = ctx({ existingNames: ["assistant"] });
+    expect(initialDraft(c, null, null, "local", " Nova ").name).toBe("Nova");
+    expect(initialDraft(c, null, null, "local", "").name).toBe("scout");
+    expect(initialDraft(c).name).toBe("scout");
   });
 });
 
@@ -371,16 +403,14 @@ describe("templates", () => {
 });
 
 describe("steps", () => {
-  it("local walks details → kind → home; cloud picks a company only when there is a choice", () => {
-    // A Cloud bot is named HERE: the company channel's card that used to ask
-    // for its name and handle is no longer shown to anyone.
-    expect(stepsFor({ home: "local" })).toEqual(["details", "kind", "home"]);
-    expect(LOCAL_STEPS).toEqual(["details", "kind", "home"]);
-    expect(nextStep("details", { home: "local" })).toBe("kind");
-    expect(nextStep("kind", { home: "local" })).toBe("home");
+  it("local has one step after the name and where (the coding tool); cloud picks a company only when there is a choice", () => {
+    // The name and "Where should it live?" come first and are not steps of a
+    // home. A local bot then picks its coding tool; templates and the
+    // advanced settings sit on that screen.
+    expect(stepsFor({ home: "local" })).toEqual(["home"]);
+    expect(LOCAL_STEPS).toEqual(["home"]);
     expect(nextStep("home", { home: "local" })).toBeNull();
-    expect(prevStep("details", { home: "local" })).toBeNull();
-    expect(prevStep("home", { home: "local" })).toBe("kind");
+    expect(prevStep("home", { home: "local" })).toBeNull();
     // Cloud: no kind step (the cloud create never used a template).
     expect(stepsFor({ home: "cloud" })).toEqual(["details"]);
     expect(stepsFor({ home: "cloud" }, { pickCompany: true })).toEqual(["home", "details"]);
@@ -389,12 +419,10 @@ describe("steps", () => {
     expect(prevStep("details", { home: "cloud" }, { pickCompany: true })).toBe("home");
     expect(prevStep("details", { home: "cloud" })).toBeNull();
     // The pick-company option never changes the local walk.
-    expect(stepsFor({ home: "local" }, { pickCompany: true })).toEqual(["details", "kind", "home"]);
+    expect(stepsFor({ home: "local" }, { pickCompany: true })).toEqual(["home"]);
   });
 
   it("titles each step for its home", () => {
-    expect(stepTitle("details", "local")).toBe(LOCAL_STEP_TITLES.details);
-    expect(stepTitle("kind", "local")).toBe(LOCAL_STEP_TITLES.kind);
     expect(stepTitle("home", "local")).toBe(LOCAL_STEP_TITLES.home);
     expect(stepTitle("home", "cloud")).toBe(CLOUD_STEP_TITLES.home);
     expect(stepTitle("details", "cloud")).toBe(CLOUD_STEP_TITLES.details);
@@ -402,11 +430,11 @@ describe("steps", () => {
     expect(stepTitle("home", "cloud").em).toBe("company.");
   });
 
-  it("kind needs a template pick when From a template is chosen", () => {
+  it("the coding tool step needs a template pick when From a template is chosen", () => {
     const c = ctx();
-    expect(stepIssue("kind", draft({ kind: "blank" }), c)).toBeNull();
-    expect(stepIssue("kind", draft({ kind: "template" }), c)).toBe("Pick a template.");
-    expect(stepIssue("kind", draft({ kind: "template", templateId: "iris-cx" }), c)).toBeNull();
+    expect(stepIssue("home", draft({ kind: "blank" }), c)).toBeNull();
+    expect(stepIssue("home", draft({ kind: "template" }), c)).toBe("Pick a template.");
+    expect(stepIssue("home", draft({ kind: "template", templateId: "iris-cx" }), c)).toBeNull();
   });
 
   it("home needs a signed-in runtime (Local) or a company (Cloud)", () => {
@@ -421,14 +449,15 @@ describe("steps", () => {
     // details; local home (coding tool) is the last local step.
     expect(canAdvance("home", draft({ home: "cloud", companyUid: "cmp_acme" }), c, { pickCompany: true })).toBe(true);
     expect(canAdvance("details", draft({ home: "cloud", companyUid: "cmp_acme" }), c, { pickCompany: true })).toBe(false);
-    expect(canAdvance("kind", draft({ home: "local" }), c)).toBe(true);
     expect(canAdvance("home", draft({ home: "local" }), c)).toBe(false);
   });
 
-  it("details needs at least one of the owner's companies for a company bot (bot-kinds)", () => {
+  it("a company bot needs at least one of the owner's companies (bot-kinds)", () => {
     const c = ctx();
-    // "Who is it for?" moved off the home step, so home no longer blocks on it.
-    expect(stepIssue("home", draft({ scope: "company" }), c)).toBeNull();
+    // "Who is it for?" sits in Advanced on the coding tool step, the only
+    // local step, so that step blocks on it.
+    expect(stepIssue("home", draft({ scope: "company" }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("home", draft({ scope: "company", companySlugs: ["indigo"] }), c)).toBeNull();
     expect(stepIssue("details", draft({ scope: "personal" }), c)).toBeNull();
     expect(stepIssue("details", draft({ scope: "company" }), c)).toBe("Pick at least one company.");
     expect(stepIssue("details", draft({ scope: "company", companySlugs: ["nope"] }), c)).toBe("Pick at least one company.");
@@ -437,7 +466,7 @@ describe("steps", () => {
     // Not in any company yet: the answer is personal, not a dead end.
     expect(scopeIssue({ scope: "company", companySlugs: [] }, { ownerCompanies: [] })).toContain("personal");
     expect(canCreate(draft({ scope: "company" }), c)).toBe(false);
-    expect(firstBlockingStep(draft({ scope: "company" }), c)).toBe("details");
+    expect(firstBlockingStep(draft({ scope: "company" }), c)).toBe("home");
     // Cloud drafts never ask.
     expect(stepIssue("details", draft({ home: "cloud", companyUid: "cmp_acme", name: "Polar", scope: "company" }), c)).toBeNull();
   });
@@ -485,19 +514,25 @@ describe("steps", () => {
     expect(handleIssue({ name: "", handle: "" })).toContain("Give your bot a handle");
   });
 
-  it("details validates name, then handle, then title, then who it is for", () => {
+  it("the local step validates name, then handle, then template, then who it is for, then the coding tool", () => {
     const c = ctx({ existingNames: ["scout"] });
-    expect(stepIssue("details", draft({ name: "scout" }), c)).toBe("You already have a bot with the handle @scout.");
+    expect(stepIssue("home", draft({ name: "scout" }), c)).toBe("You already have a bot with the handle @scout.");
+    expect(localSettingsIssue(draft({ name: "scout" }), c)).toBe("You already have a bot with the handle @scout.");
     // The display name is free-form: only its derived handle collides.
-    expect(stepIssue("details", draft({ name: "Scout Two" }), c)).toBeNull();
-    expect(stepIssue("details", draft({ name: "buddy", title: "x".repeat(61) }), c)).toContain("60");
-    expect(stepIssue("details", draft({ name: "buddy", intro: "x".repeat(501) }), c)).toContain("500");
-    expect(stepIssue("details", draft({ name: "buddy", title: "Ad account analyst" }), c)).toBeNull();
+    expect(stepIssue("home", draft({ name: "Scout Two" }), c)).toBeNull();
     // A display name with spaces and capitals is accepted and slugified.
-    expect(stepIssue("details", draft({ name: "Dr Love" }), c)).toBeNull();
-    // The name is reported before the company choice.
-    expect(stepIssue("details", draft({ name: "scout", scope: "company" }), c)).toBe(
+    expect(stepIssue("home", draft({ name: "Dr Love" }), c)).toBeNull();
+    // The handle is reported before the template and the company choice.
+    expect(stepIssue("home", draft({ name: "scout", kind: "template", scope: "company" }), c)).toBe(
       "You already have a bot with the handle @scout.",
+    );
+    expect(stepIssue("home", draft({ name: "buddy", kind: "template", scope: "company" }), c)).toBe("Pick a template.");
+    // Settings before the coding tool: the tool is judged once they are fine.
+    expect(stepIssue("home", draft({ name: "buddy", scope: "company", runtime: "codex" }), c)).toBe("Pick at least one company.");
+    expect(stepIssue("home", draft({ name: "buddy", runtime: "codex" }), c)).toBe("Codex is not signed in on this computer.");
+    // Handle copy uses periods and commas, never a dash.
+    expect(stepIssue("home", draft({ name: "!!!" }), c)).toBe(
+      "That name has no letters or digits. Give the bot a handle, for example \u201cscout-2\u201d.",
     );
   });
 
@@ -507,9 +542,9 @@ describe("steps", () => {
     expect(canCreate(draft({ runtime: "codex" }), c)).toBe(false);
     expect(firstBlockingStep(draft({ runtime: "codex" }), c)).toBe("home");
     expect(canCreate(draft({ kind: "template" }), c)).toBe(false);
-    expect(firstBlockingStep(draft({ kind: "template" }), c)).toBe("kind");
+    expect(firstBlockingStep(draft({ kind: "template" }), c)).toBe("home");
     expect(canCreate(draft({ name: "" }), c)).toBe(false);
-    expect(firstBlockingStep(draft({ name: "" }), c)).toBe("details");
+    expect(firstBlockingStep(draft({ name: "" }), c)).toBe("home");
     // A cloud bot is never created under a name nobody chose.
     expect(canCreate(draft({ home: "cloud", name: "", companyUid: "cmp_indigo" }), c)).toBe(false);
     expect(firstBlockingStep(draft({ home: "cloud", name: "", companyUid: "cmp_indigo" }), c)).toBe("details");
@@ -519,8 +554,13 @@ describe("steps", () => {
 });
 
 describe("toCreateInput", () => {
-  it("maps the draft to the CLI input and omits defaults", () => {
-    expect(toCreateInput(draft({ name: " Scout " }))).toEqual({ name: "scout", runtime: "claude", autoApprove: true });
+  it("maps the draft to the CLI input, omits defaults, and carries the kickoff", () => {
+    expect(toCreateInput(draft({ name: " Scout " }))).toEqual({
+      name: "scout",
+      runtime: "claude",
+      autoApprove: true,
+      kickoff: newBotKickoff(),
+    });
     // A free-form name reaches the CLI as its slug; the label is stored apart.
     expect(toCreateInput(draft({ name: "Dr Love" })).name).toBe("dr-love");
     expect(toCreateInput(draft({ name: "Dr Love", handle: "@love-doc" })).name).toBe("love-doc");
@@ -531,9 +571,7 @@ describe("toCreateInput", () => {
           templateId: "iris-cx",
           name: "iris",
           runtime: "grok",
-          model: " grok-4 ",
           autoApprove: false,
-          intro: " Hi there. ",
           memory: "local",
         }),
       ),
@@ -541,9 +579,8 @@ describe("toCreateInput", () => {
       name: "iris",
       runtime: "grok",
       autoApprove: false,
-      model: "grok-4",
       worker: "iris-cx",
-      intro: "Hi there.",
+      kickoff: newBotKickoff({ template: true }),
       memory: "local"
     });
     // A blank bot never carries a worker even if a stale templateId lingers.
@@ -555,6 +592,7 @@ describe("toCreateInput", () => {
       name: "assistant",
       runtime: "claude",
       autoApprove: true,
+      kickoff: newBotKickoff(),
       kind: "company",
       companies: ["indigo", "acme"],
     });
@@ -572,7 +610,7 @@ describe("toCreateInput", () => {
   it("describes what the bot thinks with", () => {
     const c = ctx();
     expect(thinksWithLine(draft(), c)).toBe("thinks with Claude Code");
-    expect(thinksWithLine(draft({ runtime: "grok", model: "grok-4" }), c)).toBe("thinks with Grok · grok-4");
+    expect(thinksWithLine(draft({ runtime: "grok" }), c)).toBe("thinks with Grok");
     expect(thinksWithLine(draft({ home: "cloud", companyUid: "cmp_acme" }), c)).toBe("hosted by Acme");
   });
 });
