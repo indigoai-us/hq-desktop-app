@@ -7,7 +7,10 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+
 - First sync attribution now includes the company selected or joined during setup, including existing companies.
+
+## [0.10.400] — 2026-10-07
 
 - Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
 
