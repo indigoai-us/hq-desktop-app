@@ -3431,7 +3431,7 @@
             : entry,
         );
       } catch {
-        /* best effort — the row still lists, titled by email or "Unknown person" */
+        /* best effort: the row still lists, titled by email or "Unknown person" */
       }
     }
     // A pair where only you have written has no message from them to name
@@ -3480,7 +3480,7 @@
             }));
           if (named.length > 0) rosterPeers = [...rosterPeers, ...named];
         } catch {
-          /* best effort — a company we cannot read leaves the row unnamed */
+          /* best effort: a company we cannot read leaves the row unnamed */
         }
       }
     };
