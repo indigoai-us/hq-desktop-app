@@ -5,6 +5,7 @@
    * General, Brand, Groups, Grants, HQ Workforce, and Billing.
    * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
    * Manage payment opens the Stripe portal. Delete group asks first.
+   * New group is an inline row at the top of the Groups pane.
    */
   import {
     GRANT_FILTERS,
@@ -32,9 +33,13 @@
     cacheGroups,
     cachedGrants,
     cachedGroups,
+    createGroupFailureMessage,
+    createdGroupFromBody,
     grantSections,
     groupGrantSummaries,
+    groupIdFromName,
     groupsFromBody,
+    newGroupNameProblem,
     readCompanyGrants,
     topFoldersFromListing,
     type FolderRead,
@@ -238,6 +243,89 @@
     if (!liveGroups.some((g) => g.id === selectedGroup)) selectedGroup = liveGroups[0]?.id ?? null;
   });
 
+  // New group: an inline row at the top of the Groups pane, not a new screen.
+  // hq-pro lets the owner create groups, and an admin only when the owner
+  // turned on manageGroups; members never see the button. An admin without
+  // that permission gets the server's 403 as a plain sentence.
+  const canCreateGroup = $derived(
+    (role === "Owner" || role === "Admin") && Boolean(companyUid && files?.createAccessGroup) && groupsState === "ready",
+  );
+  let creatingGroup = $state(false);
+  let newGroupName = $state("");
+  let newGroupDescription = $state("");
+  let createPending = $state(false);
+  let createError = $state<string | null>(null);
+  let newGroupInput = $state<HTMLInputElement | null>(null);
+
+  $effect(() => {
+    if (creatingGroup) newGroupInput?.focus();
+  });
+
+  function openCreateGroup(): void {
+    creatingGroup = true;
+    createError = null;
+  }
+
+  function cancelCreateGroup(): void {
+    if (createPending) return;
+    creatingGroup = false;
+    newGroupName = "";
+    newGroupDescription = "";
+    createError = null;
+  }
+
+  async function submitCreateGroup(): Promise<void> {
+    if (createPending) return;
+    const uid = companyUid;
+    const api = files;
+    if (!uid || !api?.createAccessGroup) return;
+    const name = newGroupName.trim();
+    const problem = newGroupNameProblem(name, liveGroups);
+    if (problem) {
+      createError = problem;
+      return;
+    }
+    const description = newGroupDescription.trim();
+    const sent = { groupId: groupIdFromName(name), name, ...(description ? { description } : {}) };
+    createPending = true;
+    createError = null;
+    try {
+      const res = await api.createAccessGroup(uid, sent);
+      if (!res.ok) {
+        console.warn("[settings] group create failed", res.code, res.status);
+        createError = createGroupFailureMessage(res);
+        return;
+      }
+      const created = createdGroupFromBody(res.value, sent);
+      const next = [...liveGroups.filter((g) => g.id !== created.id), created].sort((a, b) => a.name.localeCompare(b.name));
+      liveGroups = next;
+      cacheGroups(uid, next);
+      selectedGroup = created.id;
+      creatingGroup = false;
+      newGroupName = "";
+      newGroupDescription = "";
+    } catch (err) {
+      console.warn("[settings] group create threw", err);
+      createError = createGroupFailureMessage({});
+    } finally {
+      createPending = false;
+    }
+  }
+
+  // Enter in either field submits; Escape cancels. Handled here so an IME
+  // composition's Enter does not submit and the shell never sees the Escape.
+  function createGroupKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" && !event.isComposing && event.target instanceof HTMLInputElement) {
+      event.preventDefault();
+      void submitCreateGroup();
+      return;
+    }
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelCreateGroup();
+  }
+
   const visibleGrants = $derived(filterGrants(liveGrants, grantFilter));
   const sections = $derived(grantSections(visibleGrants));
   const groupSummaries = $derived(groupGrantSummaries(liveGrants));
@@ -318,7 +406,56 @@
           <h2>Groups</h2>
           <p class="sub" data-testid="groups-sub">{groupsState === "ready" ? `${n(liveGroups.length)} groups · ` : ""}share file and secret access with people and agents</p>
         </div>
+        <span class="grow"></span>
+        {#if canCreateGroup && !creatingGroup}
+          <RailButton icon="plus" variant="primary" type="button" data-testid="new-group" onclick={openCreateGroup}>New group</RailButton>
+        {/if}
       </div>
+      {#if canCreateGroup && creatingGroup}
+        <form
+          class="create"
+          data-testid="group-create-row"
+          aria-label="New group"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void submitCreateGroup();
+          }}
+          onkeydown={createGroupKeydown}
+        >
+          <input
+            class="in"
+            data-testid="group-create-name"
+            aria-label="Group name"
+            placeholder="Group name"
+            autocomplete="off"
+            maxlength="120"
+            readonly={createPending}
+            bind:this={newGroupInput}
+            bind:value={newGroupName}
+            oninput={() => (createError = null)}
+          />
+          <input
+            class="in"
+            data-testid="group-create-description"
+            aria-label="Description"
+            placeholder="Description (optional)"
+            autocomplete="off"
+            maxlength="280"
+            readonly={createPending}
+            bind:value={newGroupDescription}
+          />
+          <RailButton icon="x" type="button" data-testid="group-create-cancel" disabled={createPending} onclick={cancelCreateGroup}>Cancel</RailButton>
+          <RailButton
+            icon="check"
+            variant="primary"
+            type="submit"
+            data-testid="group-create-submit"
+            disabled={createPending || !newGroupName.trim()}
+            aria-busy={createPending}
+          >{createPending ? "Creating…" : "Create"}</RailButton>
+        </form>
+        {#if createError}<p class="note" role="alert" data-testid="group-create-error">{createError}</p>{/if}
+      {/if}
       {#if groupsState === "loading"}
         <ReadLoader testid="groups-loading" onretry={() => (accessNonce += 1)} />
       {:else if groupsState === "failed"}
@@ -570,6 +707,9 @@
   .tab[aria-selected="true"] { background: var(--sel); color: var(--t1); border-radius: 4px; }
   .sw { cursor: pointer; }
   .sw.on { color: var(--t1); }
+  .create { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .create .in { width: 220px; box-sizing: border-box; }
+  .create .in + .in { width: 280px; }
   .split { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
   .line, .gt {
     display: grid;

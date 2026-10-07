@@ -1425,6 +1425,8 @@ export function createSyncPlatformAdapter(
         ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
+      createAccessGroup: (companyUid, input) =>
+        hqProPostWithStatus(`/secrets/${encodeURIComponent(companyUid)}/groups`, input),
       atlasLocal: {
         firstPage: (companySlug) => call('atlas_local_first_page', { companySlug }),
         listing: (companySlug) => call('atlas_local_listing', { companySlug }),

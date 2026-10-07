@@ -52,8 +52,9 @@ export interface AdapterFailure {
   instanceId?: string;
   /**
    * The HTTP status of the refused request. Set only by the two Slack channel
-   * calls (`AgentsApi.attachSlack`, `AgentsApi.submitSlackAppToken`), whose
-   * callers tell a 403 or 404 from a refusal that carries a server code.
+   * calls (`AgentsApi.attachSlack`, `AgentsApi.submitSlackAppToken`) and
+   * `FilesApi.createAccessGroup`, whose callers tell a 403, 404 or 409 from a
+   * refusal that carries a server code.
    * Absent on every other failure, and on a request that never got an answer.
    */
   status?: number;
@@ -1306,6 +1307,13 @@ export interface AtlasLocalApi {
   readText(companySlug: string, key: string): AdapterPromise<string | null>;
 }
 
+/** Body of `FilesApi.createAccessGroup`; groupId carries the `grp_` prefix. */
+export interface CreateAccessGroupInput {
+  groupId: string;
+  name: string;
+  description?: string;
+}
+
 /** Result of `FilesApi.createFile`. */
 export interface CreatedFile {
   path: string;
@@ -1340,6 +1348,14 @@ export interface FilesApi {
   getAccessTree?(companyUid: string, prefix: string, page?: { limit: number; cursor?: string }): AdapterPromise<Json>;
   /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
   listAccessGroups?(companyUid: string): AdapterPromise<Json>;
+  /**
+   * Create a company group (hq-pro POST /secrets/{companyUid}/groups, body
+   * `{ groupId, name, description? }`, answers 201 `{ group }`). The server
+   * lets the owner create, and an admin only when the owner turned on the
+   * manageGroups permission; others get 403. An existing groupId is a 409.
+   * Failures carry the HTTP status. Hosts without it omit it.
+   */
+  createAccessGroup?(companyUid: string, input: CreateAccessGroupInput): AdapterPromise<Json>;
   /**
    * Atlas map listing from the company folder synced to this machine
    * (QA-016). Desktop only. Each call resolves null when the company folder is
