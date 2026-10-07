@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Messages can now be forwarded. Every message in a DM, group DM, or channel has a Forward action that opens a picker of the people, bots, and channels you can already message, with an optional note and a preview of what will be sent. Forwarded messages show a "Forwarded from {name}" header and keep their Details and Prompt cards and files. Before files are shared with someone who cannot open them, the picker asks; forwards to channels and to another company send text and cards only, and say so. Every forward error shows a plain next step.
 - Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
 - People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
 - CLI update timeout messages stay actionable when lease-holder details cannot be read.
