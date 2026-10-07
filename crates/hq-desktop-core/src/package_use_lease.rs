@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
+const MAX_PACKAGE_USE_HOLDER_AGE_MS: u64 = 3 * 60 * 60 * 1000;
 // The Node writer and macOS kernel reader derive process-start timestamps from
 // separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
@@ -372,6 +373,12 @@ fn lease_record_is_live(record: &LeaseRecord) -> bool {
         .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
 }
 
+fn lease_record_exceeds_maximum_hold(record: &LeaseRecord, now_ms: u64) -> bool {
+    now_ms
+        .checked_sub(record.start_time_ms)
+        .is_some_and(|age_ms| age_ms > MAX_PACKAGE_USE_HOLDER_AGE_MS)
+}
+
 fn scan_live_lease_records(paths: &PackageUseLeasePaths) -> Result<Vec<LeaseRecord>, String> {
     let entries = fs::read_dir(&paths.lease_directory).map_err(|error| {
         format!(
@@ -667,6 +674,13 @@ impl PackageUseUpdateRequest {
     fn try_acquire_with_live_records(
         &mut self,
     ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
+        self.try_acquire_with_live_records_at(now_epoch_ms())
+    }
+
+    fn try_acquire_with_live_records_at(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
         let entries = fs::read_dir(&self.paths.lease_directory).map_err(|error| {
             format!(
                 "Could not inspect HQ CLI package-use leases ({})",
@@ -700,7 +714,12 @@ impl PackageUseUpdateRequest {
             let record = serde_json::from_slice::<LeaseRecord>(&bytes).map_err(|error| {
                 format!("Could not decode an HQ CLI package-use lease ({error})")
             })?;
-            if lease_record_is_live(&record) {
+            // Three hours is far above normal npm package operations, while
+            // the observed incident distribution is dominated by holders over
+            // 24 hours. Preserve every young live holder (including daemon and
+            // MCP purposes); reclaim an over-ceiling holder regardless of its
+            // optional purpose field while this caller owns the updater lock.
+            if lease_record_is_live(&record) && !lease_record_exceeds_maximum_hold(&record, now_ms) {
                 live_records.push(record);
             } else {
                 match fs::remove_file(&path) {
@@ -1436,6 +1455,57 @@ mod tests {
         assert!(prefix_wide.try_acquire().unwrap().is_none());
     }
 
+    #[test]
+    fn reclaims_a_live_over_ceiling_legacy_holder_with_absent_purpose() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let lease_path = paths.lease_directory.join(format!("{pid}-{start}.json"));
+        record_with_details(&lease_path, pid, start, "5.304.0", None, None);
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let (guard, live_records) = request
+            .try_acquire_with_live_records_at(start + MAX_PACKAGE_USE_HOLDER_AGE_MS + 1)
+            .unwrap();
+
+        assert!(
+            guard.is_some(),
+            "an over-ceiling live holder must be reclaimed"
+        );
+        assert!(live_records.is_empty());
+        assert!(
+            !lease_path.exists(),
+            "the stale live-holder record is removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn waits_for_a_young_live_daemon_and_keeps_its_age_bucket() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_details(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            "5.342.4",
+            Some("daemon"),
+            None,
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let error = match request.wait_with_summary(Duration::ZERO).await {
+            Err(error) => error,
+            Ok(_guard) => panic!("a young live daemon must preserve the timeout report"),
+        };
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("a young live daemon must preserve the timeout report");
+        };
+
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+        assert_eq!(summary.oldest_holder_age, HolderAgeBucket::Under10m);
+        assert_eq!(summary.oldest_holder_purpose, HolderPurposeBucket::Daemon);
+    }
 
     #[test]
     fn update_request_keeps_pid_and_records_legacy_root_id() {
