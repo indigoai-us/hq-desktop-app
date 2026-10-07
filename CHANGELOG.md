@@ -8,6 +8,7 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
 - People can turn HQ Anywhere on or off in Settings after onboarding.
 
 ## [0.10.399] — 2026-10-07
