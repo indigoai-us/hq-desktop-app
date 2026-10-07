@@ -1463,6 +1463,9 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "expired_identity",
     "invalid_identity",
     "unknown_error",
+    // Added at the 6.18.48 pin and mirrored from RunnerErrorCause::as_str.
+    "tombstone_full_reconcile_required",
+    "unsafe_symlink_target",
     // ECMAScript / Node built-in error identities (r2).
     "range_error",
     "type_error",

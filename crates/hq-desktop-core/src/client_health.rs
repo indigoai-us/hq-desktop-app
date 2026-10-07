@@ -218,6 +218,34 @@ closed_wire_enum!(
     }
 );
 
+/// Report a runner update when the installed hq-cloud does not satisfy the
+/// desktop's requested package pin. npm's npx cache is keyed by that pin and
+/// may otherwise keep using an older satisfying copy indefinitely.
+pub fn updater_state_with_runner_pin(
+    state: ClientHealthUpdaterState,
+    sync_runner_version: Option<&str>,
+    requested_pin: &str,
+) -> ClientHealthUpdaterState {
+    if state == ClientHealthUpdaterState::UpdateFailed {
+        return state;
+    }
+    let Some(version) = sync_runner_version.and_then(|raw| semver::Version::parse(raw).ok()) else {
+        return if state == ClientHealthUpdaterState::UpToDate {
+            ClientHealthUpdaterState::Unchecked
+        } else {
+            state
+        };
+    };
+    let Ok(requirement) = semver::VersionReq::parse(requested_pin) else {
+        return state;
+    };
+    if requirement.matches(&version) {
+        state
+    } else {
+        ClientHealthUpdaterState::UpdateAvailable
+    }
+}
+
 closed_wire_enum!(
     /// Closed failure/blocker reason codes — the ONLY reasons that cross the
     /// wire.
@@ -961,6 +989,38 @@ pub fn should_apply_heartbeat(stored_sequence: Option<u64>, incoming_sequence: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_runner_below_the_requested_pin_is_reported_as_update_available() {
+        assert_eq!(
+            updater_state_with_runner_pin(
+                ClientHealthUpdaterState::UpToDate,
+                Some("6.18.34"),
+                "~6.18.48",
+            ),
+            ClientHealthUpdaterState::UpdateAvailable
+        );
+        assert_eq!(
+            updater_state_with_runner_pin(
+                ClientHealthUpdaterState::UpToDate,
+                Some("6.18.48"),
+                "~6.18.48",
+            ),
+            ClientHealthUpdaterState::UpToDate
+        );
+        assert_eq!(
+            updater_state_with_runner_pin(
+                ClientHealthUpdaterState::UpdateFailed,
+                Some("6.18.34"),
+                "~6.18.48",
+            ),
+            ClientHealthUpdaterState::UpdateFailed
+        );
+        assert_eq!(
+            updater_state_with_runner_pin(ClientHealthUpdaterState::UpToDate, None, "~6.18.48",),
+            ClientHealthUpdaterState::Unchecked
+        );
+    }
     use serde_json::json;
 
     // Byte-equivalent copies of hq-pro's test/fixtures/client-health.ts — the
