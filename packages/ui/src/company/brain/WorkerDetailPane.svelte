@@ -270,7 +270,7 @@
 <style>
   .wd { display: grid; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
   .detail-head, .actions, .sec-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .detail-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 500; }
+  .detail-head h2 { flex: 1; min-width: 0; margin: 0; font-size: var(--type-title, 20px); line-height: 1.25; font-weight: 500; }
   .icon-btn { font: inherit; font-size: 13px; height: 26px; padding: 0 10px; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; background: transparent; color: var(--t1, var(--v4-text-1)); cursor: pointer; }
   .labels { display: flex; gap: 12px; margin: 0; color: var(--t2, var(--v4-text-2)); }
   .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok, var(--v4-ok)); vertical-align: 1px; }
