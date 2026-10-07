@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- "Check for Updates…" opens Settings → Updates when it finds an update. The Recovery window opens only when the desktop window timed out, crashed, or started in safe mode.
+- The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
 - When the app updates a pnpm-installed HQ CLI, it no longer changes your default pnpm version through Corepack, and its pnpm checks stop every process they started when they time out. Before this, a failed update could leave Corepack on pnpm 12 and start thousands of `pnpm dlx` processes.
 
 ## [0.10.401] — 2026-10-07
