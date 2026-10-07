@@ -50,24 +50,15 @@ function render(overrides: Record<string, unknown> = {}) {
       loadProvisionOptions: async () => ({ ok: true as const, value: options }),
       oncreate,
       oncomplete,
+      // The name is the takeover's first step; this screen opens on the brain.
+      name: "Polar",
       ...overrides,
     },
   });
   return { oncreate, oncomplete };
 }
-function typeName(value: string): void {
-  const input = document.querySelector<HTMLInputElement>(
-    "[data-testid='new-bot-name']",
-  )!;
-  input.value = value;
-  input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-}
+/** The name was given on the takeover's first step: the screen opens on the brain. */
 async function advanceName(): Promise<void> {
-  typeName("Polar");
-  await settle();
-  document
-    .querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!
-    .click();
   await settle();
 }
 afterEach(async () => {
@@ -77,31 +68,36 @@ afterEach(async () => {
 });
 
 describe("NewBotCreateScreen", () => {
-  it("keeps the name input alone and never renders the derived handle", async () => {
+  it("never asks for the name again: it opens on the brain, names the bot in the identity line, and never renders the handle", async () => {
     render();
     await settle();
+    expect(document.querySelector("[data-testid='new-bot-name']")).toBeNull();
+    expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='bot-identity-name']")?.textContent).toBe("Polar");
+    expect(document.querySelector("[data-testid='bot-identity-meta']")?.textContent).toBe("Cloud");
     expect(
       document.querySelector("[data-testid='new-bot-derived-handle']"),
     ).toBeNull();
     expect(document.querySelector(".new-bot-name-row")).toBeNull();
     expect(document.querySelector("#new-bot-handle")).toBeNull();
+    // The dots count the takeover's name and where steps too.
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 3 of 4");
   });
-  it("advances with Enter and preselects the signed-in brain", async () => {
+  it("preselects the signed-in brain, and Enter moves on to the company", async () => {
     render();
     await settle();
-    typeName("Polar");
-    document
-      .querySelector<HTMLInputElement>("[data-testid='new-bot-name']")!
-      .dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
+    const codex = document.querySelector<HTMLInputElement>("input[value='codex']")!;
+    expect(codex.checked).toBe(true);
+    codex.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await settle();
-    expect(
-      document.querySelector("[data-testid='new-bot-step-2']"),
-    ).toBeTruthy();
-    expect(
-      document.querySelector<HTMLInputElement>("input[value='codex']")?.checked,
-    ).toBe(true);
+    expect(document.querySelector("[data-testid='new-bot-step-3']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 4 of 4");
+    expect(document.querySelector("[data-testid='bot-identity-meta']")?.textContent).toBe("Cloud · Current company");
+  });
+  it("counts one step before it when the where question was not asked", async () => {
+    render({ leadSteps: 1, companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" });
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 2 of 2");
   });
   describe("Claude is offered only when the company has it (review A-C1)", () => {
     function brains(): string[] {
@@ -364,26 +360,18 @@ describe("NewBotCreateScreen", () => {
       expect(price()).toBe("$90.00/month for Power.");
     });
 
-    it("A-I6: stops a name that makes no handle at the name step, before anything is sent", async () => {
+    it("A-I6: holds Create bot for a name that makes no handle, before anything is sent", async () => {
       // A name with no ASCII letter or digit makes an empty handle. The
-      // server refused it only after the create had begun.
-      const { oncreate } = render(ONE_COMPANY);
+      // server refused it only after the create had begun. The takeover's
+      // name step refuses it; this screen holds Create if one arrives anyway.
+      const { oncreate } = render({ ...ONE_COMPANY, name: "日本語" });
       await settle();
-      typeName("日本語");
+      createButton().click();
       await settle();
-      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
-      await settle();
-      expect(document.querySelector("[data-testid='new-bot-step-1']")).toBeTruthy();
-      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeNull();
-      expect(document.querySelector("[role='alert']")?.textContent).toBe("That name can't be used for a bot. Try letters and numbers.");
+      expect(document.querySelector("[data-testid='new-bot-name-unusable']")?.textContent).toBe(
+        "That name can't be used for a bot. Try letters and numbers.",
+      );
       expect(oncreate).not.toHaveBeenCalled();
-
-      // A name the handle can be made from goes through.
-      typeName("日本語 Bot 2");
-      await settle();
-      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
-      await settle();
-      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
     });
 
     it("A-I10: shows the whole reason for a refusal, not only its first sentence", async () => {
@@ -510,12 +498,19 @@ describe("NewBotCreateScreen", () => {
     document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
     await settle();
     document.querySelector<HTMLInputElement>("input[value='claude']")!.click();
-    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    document
+      .querySelector<HTMLButtonElement>(
+        "[data-testid='new-bot-continue-brain']",
+      )!
+      .click();
     await settle();
     expect(
-      document.querySelector<HTMLInputElement>("[data-testid='new-bot-name']")
-        ?.value,
-    ).toBe("Polar");
+      document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")?.getAttribute("aria-checked"),
+    ).toBe("true");
+    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    expect(document.querySelector<HTMLInputElement>("input[value='claude']")?.checked).toBe(true);
   });
   it("shows a final-step failure and permits a retry", async () => {
     const oncreate = vi

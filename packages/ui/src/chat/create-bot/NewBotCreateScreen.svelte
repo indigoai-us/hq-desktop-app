@@ -27,11 +27,20 @@
   } from "./create-bot-model.js";
   import NewBotDawn from "./NewBotDawn.svelte";
   import NewBotStepHead from "./NewBotStepHead.svelte";
+  import IdentityMark from "../messaging/IdentityMark.svelte";
 
   type Company = { companyUid: string; label: string };
   export interface NewBotCreated { name: string; companyUid: string; brain: BotRuntime; target: EntryPointTarget; }
   export interface NewBotUpgradeTarget { companyUid: string; channelId: string; cardId: string; }
   interface Props {
+    /** The bot's name, given on the takeover's first step. */
+    name: string;
+    /**
+     * How many New bot steps came before this screen (the name, and the
+     * Cloud or Local question when it was asked), so the dots count the
+     * whole flow.
+     */
+    leadSteps?: number;
     companies: readonly Company[];
     currentCompanyUid?: string | null;
     runtimeReady?: Record<string, boolean> | null;
@@ -64,10 +73,12 @@
     nameCompany?: boolean;
     /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
-    /** Back from the first step: the "Cloud or Local?" question. Without it the first step has no Back. */
+    /** Back from the first step: the "Cloud or Local?" question, or the name. Without it the first step has no Back. */
     onback?: (() => void) | null;
   }
   let {
+    name: givenName,
+    leadSteps = 2,
     companies,
     currentCompanyUid = null,
     runtimeReady = null,
@@ -96,7 +107,8 @@
   const upgradeCompany = $derived(companies.find((company) => company.companyUid === upgrade?.companyUid)?.label ?? "This company");
   const initialCompany = (companies.find((company) => company.companyUid === currentCompanyUid) ?? companies[0])?.companyUid ?? "";
   let companyUid = $state(initialCompany);
-  let name = $state("");
+  /** Read once: the name was given on the step before and is not changed here. */
+  const name = untrack(() => givenName.trim());
   /** The brains this screen shows. A brain that is not here is never selected. */
   const brainChoices = $derived(cloudBrainChoices(claudeEnabled));
   let runtime = $state<BotRuntime>(firstSignedInCloudRuntime(runtimeReady, cloudBrainChoices(claudeEnabled)));
@@ -109,10 +121,10 @@
   let selectedSize = $state<"basic" | "power" | "dev" | "">("");
   let runtimeChosen = $state(false);
   let moreOptions = $state(false);
-  let attempted = $state(false);
   let busy = $state(false);
   let refusal = $state<string | null>(null);
-  let step = $state<1 | 2 | 3>(1);
+  /** 2: the brain. 3: the company, when there is more than one. (The name, step 1, is the takeover's.) */
+  let step = $state<2 | 3>(2);
   let quoteGeneration = 0;
   let companyFilter = $state("");
   let companyFocusUid = $state(initialCompany);
@@ -120,9 +132,9 @@
   const finalStep = $derived(singleCompany ? 2 : 3);
   const filteredCompanies = $derived(companies.filter((company) => company.label.toLocaleLowerCase().includes(companyFilter.trim().toLocaleLowerCase())));
   const derivedHandle = $derived(botHandle({ name, handle: "" }));
-  // The handle is made from the name and never shown. A name with no letter
-  // or digit the handle can use makes an empty handle, which the server
-  // refuses only after the create has begun. Catch it here, at the name step.
+  // The handle is made from the name and never shown. The name step already
+  // refused a name with no letter or digit the handle can use; this holds
+  // Create bot if one ever arrives anyway.
   const nameIssue = $derived(
     cloudNameIssue(name) ?? (handleIssue({ name, handle: "" }) ? CLOUD_BOT_NAME_INVALID_REASON : null),
   );
@@ -147,8 +159,7 @@
   function optionPrice(option: AgentProvisionOptionsView["options"][number]): string { return option.notBilled || option.netMonthlyCents === 0 ? "Included for your company" : option.netMonthlyCents === null ? "Price unavailable" : `${monthly(option.netMonthlyCents)}/month`; }
   function brainLabel(choice: BotRuntime): string { return choice === "codex" ? "Codex" : choice === "claude" ? "Claude" : "Grok"; }
   function focusStep(): void { void tick().then(() => document.querySelector<HTMLElement>(`[data-testid="new-bot-step-${step}"] input:not([disabled]), [data-testid="new-bot-step-${step}"] button:not([disabled])`)?.focus()); }
-  function go(next: 1 | 2 | 3): void { refusal = null; step = next; focusStep(); }
-  function continueName(): void { attempted = true; if (!nameIssue) go(2); }
+  function go(next: 2 | 3): void { refusal = null; step = next; focusStep(); }
   function chooseSizeAfterLoad(value: AgentProvisionOptionsView): void { const preferred = value.options.find((option) => option.default && option.selectable && option.netMonthlyCents !== null) ?? value.options.find((option) => option.selectable && option.netMonthlyCents !== null); selectedSize = preferred?.key ?? ""; }
   function selectCompany(next: string): void { if (busy) return; companyUid = next; companyFocusUid = next; }
   function leaveUpgrade(): void { upgrade = null; refusal = null; focusStep(); }
@@ -243,7 +254,6 @@
   $effect(() => { creatingProgress = busy ? CREATING_TO : CREATING_FROM; });
 
   async function submit(): Promise<void> {
-    attempted = true;
     refusal = null;
     if (!canCreate || busy) return;
     busy = true;
@@ -283,8 +293,7 @@
       if (filteredCompanies.length === 1) selectCompany(filteredCompanies[0]!.companyUid);
       return;
     }
-    if (step === 1) continueName();
-    else if (step < finalStep) go((step + 1) as 2 | 3);
+    if (step < finalStep) go(3);
     else void submit();
   }
 </script>
@@ -321,20 +330,25 @@
        well clear of the title bar, so it is a plain div and its step control
        does not go through the shared page header. -->
   <NewBotStepHead
-    total={finalStep}
-    current={step}
-    onback={step > 1 ? () => go((step - 1) as 1 | 2) : onback}
-    backTestId={step > 1 ? undefined : "new-bot-back-to-choice"}
-    backDisabled={step === 1 && busy}
-    kicker={step === 1 ? "A new teammate" : step === 2 ? "Choose a brain" : "Your workspace"}
-    lead={step === 1 ? "Enter a" : step === 2 ? "Pick the" : "Choose a"}
-    em={step === 1 ? "name." : step === 2 ? "brain." : "company."}
-  />
+    total={leadSteps + finalStep - 1}
+    current={leadSteps + step - 1}
+    onback={step > 2 ? () => go(2) : onback}
+    backTestId={step > 2 ? undefined : "new-bot-back-to-choice"}
+    backDisabled={step === 2 && busy}
+    kicker={step === 2 ? "Choose a brain" : "Your workspace"}
+    lead={step === 2 ? "Pick the" : "Choose a"}
+    em={step === 2 ? "brain." : "company."}
+  >
+    <!-- Who is being made, as one line, on every step after the name. -->
+    <p class="new-bot-identity" data-testid="bot-identity-line">
+      <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={name || "bot"} agentUid={`agt_preview_${derivedHandle || "bot"}`} /></span>
+      <span class="new-bot-identity-name" data-testid="bot-identity-name">{name || "your bot"}</span>
+      <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Cloud{selectedCompanyLabel && (step === 3 || singleCompany) ? ` · ${selectedCompanyLabel}` : ""}</span>
+    </p>
+  </NewBotStepHead>
 
   <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
-    {#if step === 1}
-      <section class="new-bot-step" data-testid="new-bot-step-1"><p class="new-bot-create-copy">This is how your new teammate will appear in HQ.</p><label class="new-bot-create-label" for="new-bot-name">Name</label><input id="new-bot-name" class="new-bot-create-input" data-testid="new-bot-name" value={name} aria-invalid={attempted && nameIssue ? "true" : undefined} aria-describedby="new-bot-create-issue" autocomplete="off" oninput={(event) => { name = (event.currentTarget as HTMLInputElement).value; }} /></section>
-    {:else if step === 2}
+    {#if step === 2}
       <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each brainChoices as choice (choice)}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{brainLabel(choice)}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this {hostNoun}</small>{/if}</label>{/each}</fieldset></section>
     {:else}
       <section class="new-bot-step" data-testid="new-bot-step-3"><p class="new-bot-create-copy">Your bot will work with this company from the start.</p>{#if companies.length > 12}<label class="new-bot-filter-label" for="new-bot-company-filter">Find a company</label><input id="new-bot-company-filter" class="new-bot-create-input" data-testid="new-bot-company-filter" value={companyFilter} autocomplete="off" oninput={(event) => { companyFilter = (event.currentTarget as HTMLInputElement).value; }} />{/if}<div class="new-bot-companies" data-testid="new-bot-company-grid" role="radiogroup" aria-label="Company" onkeydown={onCompanyKeydown}>{#each filteredCompanies as company (company.companyUid)}<button type="button" class:selected={companyUid === company.companyUid} class="new-bot-company" role="radio" aria-checked={companyUid === company.companyUid} aria-label={company.label} title={company.label} data-company-uid={company.companyUid} tabindex={companyFocusUid === company.companyUid ? 0 : -1} disabled={busy} onclick={() => selectCompany(company.companyUid)} onfocus={() => (companyFocusUid = company.companyUid)}><span class="new-bot-company-monogram" aria-hidden="true">{company.label.trim().slice(0, 1).toLocaleUpperCase()}</span><span class="new-bot-company-label">{company.label}</span>{#if companyUid === company.companyUid}<svg class="new-bot-company-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>{/if}</button>{:else}<p class="new-bot-company-empty">No company matches that.</p>{/each}</div>{#if moreOptions}<fieldset class="new-bot-sizes" disabled={busy || quoteStatus !== "ready"}><legend class="new-bot-create-label">Machine size</legend>{#each options?.options ?? [] as option (option.key)}<label class:selected={selectedSize === option.key} class="new-bot-size"><input type="radio" name="new-bot-size" value={option.key} checked={selectedSize === option.key} disabled={!option.selectable || option.netMonthlyCents === null} onchange={() => (selectedSize = option.key)} /><span>{option.productName} · {optionPrice(option)}</span></label>{:else}<span class="new-bot-muted">{quoteStatus === "loading" ? "Loading server options..." : "Server options could not be loaded."}</span>{/each}</fieldset>{/if}</section>
@@ -342,7 +356,7 @@
   </div>
 
   <footer class="new-bot-create-foot">
-    {#if attempted && nameIssue && step === 1}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{nameIssue}</p>{/if}
+    {#if nameIssue && step === finalStep}<p class="new-bot-create-error" role="alert" data-testid="new-bot-name-unusable">{nameIssue}</p>{/if}
     {#if refusal && step === finalStep}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
     {#if companyGone && step >= finalStep}
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-company-gone">{NEW_BOT_COMPANY_GONE_REASON}</p>
@@ -352,7 +366,8 @@
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}><RailIcon name="refresh" />Try again</button>
     {/if}
-    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}><RailIcon name="arrow-right" />Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}><RailIcon name="arrow-right" />Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}><RailIcon name="plus" />{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
+    {#if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}><RailIcon name="arrow-right" />Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}><RailIcon name="plus" />{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
+    {#if step === 2 && onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}
   </footer>
 </div>
 {/if}

@@ -2,18 +2,20 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * The New bot flow, as one question per screen in the New bot takeover's
-   * card: Cloud or Local (unless the host already asked), then the steps for
-   * that home. Every entry point (the takeover, the "+" window, Settings →
-   * Bots) uses it. Owns the draft; the host owns the busy/error state because
-   * it runs the create and navigates.
+   * card: the name first (unless the host already asked it), then Cloud or
+   * Local (unless the host already asked, or Cloud is not shown), then the
+   * steps for that home. Every entry point (the takeover, the "+" window,
+   * Settings > Bots) uses it. Owns the draft; the host owns the busy/error
+   * state because it runs the create and navigates.
    *
-   * Local: name → blank or template → coding tool. Cloud: company (when there
-   * is a choice) → name, brain and size. A cloud draft hands `onCloudCreate`
-   * the name, @handle and title; a local draft hands `oncreate` the CLI input
-   * plus the avatar pick and title. Neither create path takes a title, so the
-   * host saves it onto the agent profile once the bot exists.
+   * Local: the coding tool, with a template and the advanced settings folded
+   * away on the same screen. The bot asks for its title, avatar and model in
+   * its first message (a kickoff on the CLI input). Cloud: company (when
+   * there is a choice), then name, brain and size. A cloud draft hands
+   * `onCloudCreate` the name, @handle and title; a local draft hands
+   * `oncreate` the CLI input plus the display name.
    *
-   * Cmd-Enter creates from any step once every walked step is valid — except
+   * Cmd-Enter creates from any step once every walked step is valid, except
    * on a Cloud draft, where it moves to the next step until the details step
    * is reached, so a company bot is never made under a name nobody has seen.
    */
@@ -26,13 +28,14 @@
     LocalBotCreateInput,
     LocalBotWorkerOption,
   } from "@hq/platform";
-  import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
+  import type { AvatarSelection } from "../../avatars/types.js";
   import type { LocalBotEntryResult } from "../local-bots.js";
   import CloudDetailsStep from "./CloudDetailsStep.svelte";
-  import DetailsStep from "./DetailsStep.svelte";
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
+  import LocalBotAdvanced from "./LocalBotAdvanced.svelte";
   import NewBotStepHead from "./NewBotStepHead.svelte";
+  import NewBotNameStep from "./NewBotNameStep.svelte";
   import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
   import IdentityMark from "../messaging/IdentityMark.svelte";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
@@ -52,8 +55,10 @@
     defaultCloudRuntime,
     firstBlockingStep,
     initialDraft,
+    localHandleIssue,
     nextStep,
     prevStep,
+    scopeIssue,
     scopeLine,
     stepIssue,
     stepsFor,
@@ -99,7 +104,7 @@
     botCompanies?: ReadonlyArray<{ slug: string; label: string }> | null;
     /**
      * Cloud: the host runs the company team action and navigates. `title` is
-     * present only when the person typed one — it is not part of the server's
+     * present only when the person typed one. It is not part of the server's
      * card sequence, so the host PATCHes it onto the agent profile after.
      */
     onCloudCreate?: ((companyUid: string, draft: CloudBotDraft) => void | Promise<void>) | null;
@@ -107,8 +112,11 @@
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
     /** Local: the host creates through the CLI and opens the DM. */
     oncreate?: ((input: LocalBotCreateInput, extras: CreateBotExtras) => void | Promise<LocalBotEntryResult | void>) | null;
-    /** Back from the first step (the host returns to its previous view). */
-    onback?: (() => void) | null;
+    /**
+     * Back from the first screen (the host returns to its previous view),
+     * with the name as it stands so the host can carry it.
+     */
+    onback?: ((name: string) => void) | null;
     entryBusy?: "bot" | "agent" | string | null;
     entryError?: string | null;
     /** The action that fixes `entryError` (direct cloud create only). */
@@ -117,7 +125,7 @@
      * `agents.desktop-agent-creation`: when the flag is on, Cloud is always
      * shown (disabled with the reason and the fix when it cannot be used) and
      * the cloud draft carries a per-session idempotency key and the quote.
-     * Absent or flag off → the older behaviour, unchanged.
+     * Absent or flag off: the older behaviour, unchanged.
      */
     directCloud?: DirectCloudFlowSeam | null;
     signInApi?: RuntimeSignInApi | null;
@@ -145,15 +153,13 @@
     /**
      * HQ's own one-click installer for a coding tool (fallback when no
      * assistant app is available). Kept separate from the wizard's own
-     * `oncreate` — this only runs the installer, never creates a bot.
+     * `oncreate`: this only runs the installer, never creates a bot.
      */
     onassistedinstall?: (
       tool: import("../../install-choice/install-choice.js").CodingTool,
     ) => Promise<import("../../install-choice/install-choice.js").InstallOutcome>;
     /** Ask the host to (re-)probe `detect_ai_tools` lazily on wizard open. */
     onrequestaitools?: () => void;
-    avatarPacks?: AvatarPack[] | null;
-    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
     pollMs?: number;
     /** Company the flow was opened from (Team page Add agent); Cloud starts on it. */
@@ -161,17 +167,17 @@
     /** Slug of that company; a Local bot starts as its company bot (QA-043). */
     initialCompanySlug?: string | null;
     /**
-     * The home picked on the New bot choice screen ("Cloud or Local?"). The
-     * flow opens on that home's first step; without it the flow asks first.
+     * The home picked on the New bot "Where should it live?" screen. The
+     * flow opens on that home's first step; without it the flow asks.
      */
     initialHome?: "local" | "cloud" | null;
     /**
-     * What the first step's back button says. "Cancel" by default; "Back"
-     * when `onback` returns to an earlier screen (the Cloud or Local choice).
+     * The name given on the New bot takeover's first step. With it the flow
+     * does not ask for the name again.
      */
-    firstBackLabel?: string;
-    /** Local name step: "Create a cloud bot instead". Without it the flow offers it only after its own Cloud or Local question. */
-    onswitchcloud?: (() => void) | null;
+    initialName?: string | null;
+    /** Local coding tool step: "Create a cloud bot instead", with the name. Without it the flow offers it only after its own Cloud or Local question. */
+    onswitchcloud?: ((name: string) => void) | null;
   }
 
   let {
@@ -194,13 +200,11 @@
     onsignin = null,
     onsignedin = null,
     onrecheckruntimes = null,
-    avatarPacks = null,
-    loadAvatarPacks = null,
     pollMs = 1500,
     initialCompanyUid = null,
     initialCompanySlug = null,
     initialHome = null,
-    firstBackLabel = "Cancel",
+    initialName = null,
     onswitchcloud = null,
     aiTools = null,
     hqFolderPath = "",
@@ -288,31 +292,44 @@
     hostNoun,
   });
 
+  /** The name the host already asked for, if it did. Read once. */
+  const givenName = untrack(() => (initialName ?? "").trim());
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
-  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome)));
+  let draft = $state<CreateBotDraft>(
+    untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome, givenName || null)),
+  );
   /**
    * The flow asks "Cloud or Local?" itself when the host has not and Cloud is
    * shown: it can be used, or the direct-create flag shows it disabled with
    * its reason. Otherwise (no company, or a host without a cloud create, like
-   * Settings) Cloud stays hidden and the flow opens on the local steps.
+   * Settings) Cloud stays hidden and the flow goes from the name to the local
+   * steps.
    */
   const homeGiven = untrack(() => (initialHome === "local" ? canLocal : initialHome === "cloud" ? canCloud : false));
   const asksHome = $derived(!homeGiven && canLocal && !!onCloudCreate && (canCloud || directCloudOn));
-  /** The name the draft opened with (may be a default); unchanged means the person has not started. */
-  const openingName = untrack(() => draft.name.trim());
   /** The person answered the flow's own "Cloud or Local?". */
   let homeAnswered = false;
-  let choosing = $state(untrack(() => asksHome));
+  /** The person changed something on the home's steps. */
+  let stepsTouched = false;
+  /**
+   * Which screen is on: the name, "Where should it live?", or the home's
+   * steps. A name the host already asked for skips the name screen.
+   */
+  type Phase = "name" | "where" | "steps";
+  let phase = $state<Phase>(untrack(() => (givenName ? (asksHome ? "where" : "steps") : "name")));
   /** A cloud bot gets a "Pick the company" step only when there is a choice. */
   const pickCompany = untrack(() => companies.length > 1);
   const stepOpts = { pickCompany };
   let step = $state<CreateBotStep>(untrack(() => stepsFor(draft, stepOpts)[0] ?? "details"));
-  let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
   /** The user picked a brain themselves; the Cloud default no longer changes it. */
   let runtimeAnswered = false;
+
+  /** The local step's folded parts. */
+  let templatesOpen = $state(untrack(() => draft.kind === "template"));
+  let advancedOpen = $state(false);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft, stepOpts));
@@ -328,12 +345,29 @@
   );
   const chosenTemplateCard = $derived(chosenTemplate ? templateCard(chosenTemplate) : null);
   const scopeText = $derived(scopeLine(draft, ctx));
-  const previewAvatar = $derived(pickedAvatarSrc);
   const runtimeLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
+  /** The coding tool signed in on this computer, named on the Local tile. */
+  const signedInTool = $derived(
+    LOCAL_BOT_RUNTIMES.find((runtime) => botRuntimeReady?.[runtime.id] === true)?.label ?? null,
+  );
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
   );
+  /**
+   * Step dots for the whole New bot: the name, the where question when it
+   * is part of this New bot (asked here or by the host), then the home's
+   * steps.
+   */
+  const leadSteps = $derived(1 + (homeGiven || asksHome ? 1 : 0));
+  const totalSteps = $derived(leadSteps + steps.length);
+
+  // A handle that cannot be used, or a company bot with no company, is fixed
+  // in Advanced: open it so the field that says so is on screen.
+  $effect(() => {
+    if (draft.home !== "local") return;
+    if (localHandleIssue(draft, names) || scopeIssue(draft, ctx)) advancedOpen = true;
+  });
 
   onMount(() => {
     const seam = directCloud;
@@ -447,6 +481,7 @@
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
     draft = { ...draft, ...p };
+    if (phase === "steps") stepsTouched = true;
     if (p.runtime !== undefined) runtimeAnswered = true;
     if (p.home === "cloud" && !runtimeAnswered) {
       draft = { ...draft, runtime: defaultCloudRuntime(ctx) };
@@ -464,6 +499,7 @@
   }
 
   function goTo(next: CreateBotStep): void {
+    phase = "steps";
     step = next;
   }
 
@@ -472,9 +508,20 @@
   $effect(() => {
     if (!asksHome || homeAnswered) return;
     untrack(() => {
-      if (step === steps[0] && draft.name.trim() === openingName) choosing = true;
+      if (phase === "steps" && step === steps[0] && !stepsTouched) phase = "where";
     });
   });
+
+  /** The name is in: on to "Where should it live?", or the home's first step. */
+  function continueName(name: string): void {
+    if (busy) return;
+    draft = { ...draft, name };
+    if (asksHome) {
+      phase = "where";
+      return;
+    }
+    goTo(stepsFor(draft, stepOpts)[0] ?? "details");
+  }
 
   /** The flow's own "Cloud or Local?": that home's first step. */
   function pickHome(kind: NewBotKind): void {
@@ -486,12 +533,17 @@
         : { home: "cloud" });
       if (kind === "local") runtimeAnswered = false;
     }
-    step = stepsFor(draft, stepOpts)[0] ?? "details";
-    choosing = false;
+    goTo(stepsFor(draft, stepOpts)[0] ?? "details");
   }
 
   /** "Create a cloud bot instead": the host's cloud screen, or this flow's cloud steps. */
-  const switchCloud = $derived(onswitchcloud ?? (asksHome && canCloud ? () => pickHome("cloud") : null));
+  const switchCloud = $derived(
+    onswitchcloud
+      ? () => onswitchcloud?.(draft.name.trim())
+      : asksHome && canCloud
+        ? () => pickHome("cloud")
+        : null,
+  );
 
   function advance(): void {
     if (!advanceOk) return;
@@ -499,12 +551,17 @@
     if (next) goTo(next);
   }
 
+  /**
+   * Back from a step: the step before it, then the flow's own where
+   * question, then the name. A name the host asked for goes back to the host.
+   */
   function back(): void {
     if (busy) return;
     const prev = prevStep(step, draft, stepOpts);
     if (prev) goTo(prev);
-    else if (asksHome) choosing = true;
-    else onback?.();
+    else if (asksHome) phase = "where";
+    else if (givenName) onback?.(draft.name.trim());
+    else phase = "name";
   }
 
   async function submit(): Promise<void> {
@@ -514,9 +571,9 @@
       if (blocking) goTo(blocking);
       return;
     }
-    const title = draft.title.trim();
     const displayName = botDisplayName(draft);
     if (draft.home === "cloud") {
+      const title = draft.title.trim();
       const quotedSize = cloudProvisionOptions?.options.find(
         (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
       );
@@ -545,11 +602,9 @@
       }
       return;
     }
-    await oncreate?.(toCreateInput(draft), {
-      ...(draft.avatar ? { avatar: draft.avatar } : {}),
-      ...(title ? { title } : {}),
-      ...(displayName ? { displayName } : {}),
-    });
+    // The title, avatar and model are asked by the bot itself: the CLI input
+    // carries the kickoff that has it ask (see `toCreateInput`).
+    await oncreate?.(toCreateInput(draft), displayName ? { displayName } : {});
   }
 
   /** Primary action: Next until the last step, then Create. */
@@ -564,7 +619,7 @@
       event.stopPropagation();
       if (busy) return;
       // A cloud bot is named on the details step, and nothing is created
-      // until the person has seen that name — so from an earlier step the
+      // until the person has seen that name, so from an earlier step the
       // shortcut takes them there rather than creating under the suggestion.
       if (draft.home === "cloud" && !isLast && advanceOk) {
         advance();
@@ -606,14 +661,30 @@
 
 <!-- One question per screen, in the New bot takeover's card. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="new-bot-create" data-testid="chat-create-bot-step" data-step={choosing ? "where" : step} data-home={draft.home} role="group" onkeydown={choosing ? undefined : onKey}>
-{#if choosing}
-  {#if onback}
-    <div class="new-bot-create-head">
-      <button type="button" class="new-bot-back" data-testid="create-bot-back" disabled={busy} onclick={() => onback?.()}><RailIcon name="arrow-left" />{firstBackLabel}</button>
-    </div>
-  {/if}
-  <NewBotKindChoice {cloudReason} onpick={pickHome} />
+<div class="new-bot-create" data-testid="chat-create-bot-step" data-step={phase === "steps" ? step : phase} data-home={draft.home} role="group" onkeydown={phase === "steps" ? onKey : undefined}>
+{#if phase === "name"}
+  <NewBotNameStep
+    name={draft.name}
+    total={totalSteps}
+    current={1}
+    onback={onback ? () => onback?.(draft.name.trim()) : null}
+    backTestId="create-bot-back"
+    disabled={busy}
+    oninput={(name) => { if (!busy) draft = { ...draft, name }; }}
+    oncontinue={continueName}
+  />
+{:else if phase === "where"}
+  <NewBotKindChoice
+    name={draft.name}
+    {cloudReason}
+    localTool={signedInTool}
+    total={totalSteps}
+    current={2}
+    onback={() => (phase = "name")}
+    backTestId="create-bot-back"
+    backDisabled={busy}
+    onpick={pickHome}
+  />
   {#if entryError}
     <p class="new-bot-create-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
   {/if}
@@ -625,8 +696,8 @@
 {:else}
   {@const head = stepTitle(step, draft.home)}
   <NewBotStepHead
-    total={steps.length}
-    current={stepIndex + 1}
+    total={totalSteps}
+    current={leadSteps + stepIndex + 1}
     onback={back}
     backTestId="create-bot-back"
     backDisabled={busy}
@@ -635,15 +706,16 @@
     em={head.em}
     tail={head.tail ?? ""}
   >
-    {#if step !== "details" && draft.home === "local"}
-      <!-- Who is being made, and how, as one line. -->
-      <p class="new-bot-identity" data-testid="bot-identity-line">
-        <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${botHandle(draft) || "bot"}`} /></span>
-        <span class="new-bot-identity-name" data-testid="bot-identity-name">{draft.name.trim() || "your bot"}</span>
-        {#if draft.title.trim()}<span class="new-bot-identity-meta" data-testid="bot-identity-title">{draft.title.trim()}</span>{/if}
+    <!-- Who is being made, and how, as one line, on every step after the name. -->
+    <p class="new-bot-identity" data-testid="bot-identity-line">
+      <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={draft.name || "bot"} agentUid={`agt_preview_${botHandle(draft) || "bot"}`} /></span>
+      <span class="new-bot-identity-name" data-testid="bot-identity-name">{draft.name.trim() || "your bot"}</span>
+      {#if draft.home === "local"}
         <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Local · {runtimeLabel}{chosenTemplateCard ? ` · from ${chosenTemplateCard.name}` : ""}{scopeText ? ` · ${scopeText}` : ""}</span>
-      </p>
-    {/if}
+      {:else}
+        <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Cloud{cloudCompany ? ` · ${cloudCompany.label}` : ""}</span>
+      {/if}
+    </p>
   </NewBotStepHead>
 
   <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
@@ -677,26 +749,6 @@
             onpatch={patch}
           />
         {/if}
-      {:else if step === "details"}
-        <DetailsStep
-          sunrise
-          {draft}
-          existingNames={names}
-          template={chosenTemplateCard}
-          {ownerCompanies}
-          {avatarPacks}
-          {loadAvatarPacks}
-          avatarSrc={pickedAvatarSrc}
-          disabled={busy}
-          onpatch={patch}
-          onavatar={(_selection, src) => (pickedAvatarSrc = src)}
-        />
-      {:else if step === "kind"}
-        <KindStep sunrise {draft} {templates} disabled={busy} onpatch={patch} onadvance={advance} />
-        {#if chosenTemplateCard && templateBringsLine(chosenTemplateCard)}
-          <!-- What the template brings, where it is picked. -->
-          <p class="cb-help brings" data-testid="chat-bot-template-brings">{templateBringsLine(chosenTemplateCard)}</p>
-        {/if}
       {:else}
         <HomeStep
           runtimeOnly
@@ -722,6 +774,37 @@
           {onassistedinstall}
           {onrequestaitools}
         />
+        <!-- A template and the advanced settings: one click away, never a step. -->
+        <div class="new-bot-local-more" data-testid="create-bot-local-more">
+          {#if templates.length > 0}
+            <button
+              type="button"
+              class="new-bot-more"
+              aria-expanded={templatesOpen}
+              data-testid="create-bot-templates-toggle"
+              disabled={busy}
+              onclick={() => (templatesOpen = !templatesOpen)}
+            ><RailIcon name="folder" />{chosenTemplateCard ? `From ${chosenTemplateCard.name}` : "Start from a template"}</button>
+          {/if}
+          <button
+            type="button"
+            class="new-bot-more"
+            aria-expanded={advancedOpen}
+            data-testid="chat-bot-advanced-toggle"
+            disabled={busy}
+            onclick={() => (advancedOpen = !advancedOpen)}
+          ><RailIcon name="sliders" />Advanced</button>
+        </div>
+        {#if templatesOpen && templates.length > 0}
+          <KindStep sunrise {draft} {templates} disabled={busy} onpatch={patch} onadvance={() => (templatesOpen = false)} />
+          {#if chosenTemplateCard && templateBringsLine(chosenTemplateCard)}
+            <!-- What the template brings, where it is picked. -->
+            <p class="cb-help brings" data-testid="chat-bot-template-brings">{templateBringsLine(chosenTemplateCard)}</p>
+          {/if}
+        {/if}
+        {#if advancedOpen}
+          <LocalBotAdvanced {draft} existingNames={names} {ownerCompanies} disabled={busy} onpatch={patch} />
+        {/if}
       {/if}
     </section>
   </div>
@@ -734,7 +817,7 @@
           <a class="new-bot-takeover-local" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
         {:else if entryFix?.kind === "reload_quote"}
           <button type="button" class="new-bot-takeover-local" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}><RailIcon name="refresh" />Get the new price</button>
-        {:else if entryFix?.kind === "edit_handle" && step !== "details"}
+        {:else if entryFix?.kind === "edit_handle" && draft.home === "cloud" && step !== "details"}
           <button type="button" class="new-bot-takeover-local" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}><RailIcon name="pencil" />Change handle</button>
         {/if}
       </p>
@@ -749,7 +832,7 @@
       onclick={primary}
     ><RailIcon name={isLast ? "plus" : "arrow-right"} />{primaryLabel}</button>
     {#if isLast}<p class="new-bot-price new-bot-chord-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="new-bot-chord">{primaryEnterHint}</kbd> to create</p>{/if}
-    {#if step === "details" && draft.home === "local" && switchCloud}
+    {#if step === steps[0] && draft.home === "local" && switchCloud}
       <button type="button" class="new-bot-takeover-local" data-testid="create-bot-switch-cloud" disabled={busy} onclick={switchCloud}>Create a cloud bot instead</button>
     {/if}
   </footer>

@@ -2,36 +2,69 @@
   import { onMount, tick } from "svelte";
   import { hostComputerNoun } from "@hq/platform";
   import RailIcon from "../../common/button/RailIcon.svelte";
+  import NewBotStepHead from "./NewBotStepHead.svelte";
 
   export type NewBotKind = "cloud" | "local";
 
   interface Props {
+    /** The name given on the step before. The heading asks where it should live. */
+    name?: string;
     /** Why Cloud cannot be picked. Null when it can. */
     cloudReason?: string | null;
     /** Why Local cannot be picked. Null when it can. */
     localReason?: string | null;
+    /** The coding tool signed in on this computer ("Claude Code"), when one is known. */
+    localTool?: string | null;
+    /** Step dots: how many steps the whole flow has, and this one's place. */
+    total?: number;
+    current?: number;
+    /** Back to the name. Without it the step has no Back. */
+    onback?: (() => void) | null;
+    backTestId?: string;
+    backDisabled?: boolean;
     onpick: (kind: NewBotKind) => void;
   }
 
-  let { cloudReason = null, localReason = null, onpick }: Props = $props();
+  let {
+    name = "",
+    cloudReason = null,
+    localReason = null,
+    localTool = null,
+    total = 0,
+    current = 2,
+    onback = null,
+    backTestId = "new-bot-back-to-name",
+    backDisabled = false,
+    onpick,
+  }: Props = $props();
 
   /** "Mac", "PC" or "computer", read once. */
   const hostNoun = hostComputerNoun();
+  const shownName = $derived(name.trim() || "your bot");
 
   const options = $derived<
-    ReadonlyArray<{ kind: NewBotKind; title: string; body: string; icon: "cloud" | "laptop"; reason: string | null }>
+    ReadonlyArray<{
+      kind: NewBotKind;
+      title: string;
+      body: string;
+      tags: readonly string[];
+      icon: "cloud" | "laptop";
+      reason: string | null;
+    }>
   >([
     {
       kind: "cloud",
       title: "Cloud",
-      body: `Runs in your company's cloud. Always on, even when this ${hostNoun} is asleep.`,
+      body: `Works while your ${hostNoun} is off.`,
+      tags: ["Always on", "Slack"],
       icon: "cloud",
       reason: cloudReason,
     },
     {
       kind: "local",
       title: "Local",
-      body: `Runs on this ${hostNoun} with your coding tool.`,
+      body: "Uses your files and tools here.",
+      tags: [`On this ${hostNoun}`, localTool?.trim() || "Your tools"],
       icon: "laptop",
       reason: localReason,
     },
@@ -68,15 +101,28 @@
 </script>
 
 <div class="new-bot-choice" data-testid="new-bot-kind-choice">
-  <p class="new-bot-takeover-kicker">A new teammate</p>
-  <h1 id="new-bot-takeover-title">Where should it run?</h1>
-  <p class="new-bot-takeover-copy">Pick Cloud or Local. You can change it on the next step.</p>
+  {#if total > 0}
+    <NewBotStepHead
+      {total}
+      {current}
+      {onback}
+      {backTestId}
+      {backDisabled}
+      kicker="A new teammate"
+      lead="Where should"
+      em={shownName}
+      tail="live?"
+    />
+  {:else}
+    <p class="new-bot-takeover-kicker">A new teammate</p>
+    <h1 id="new-bot-takeover-title">Where should <em>{shownName}</em> live?</h1>
+  {/if}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     bind:this={listEl}
     class="new-bot-choice-options"
     role="group"
-    aria-label="Where the bot runs"
+    aria-label={`Where ${shownName} runs`}
     onkeydown={onKeydown}
   >
     {#each options as option (option.kind)}
@@ -88,13 +134,16 @@
         aria-describedby={`new-bot-choice-${option.kind}-body`}
         onclick={() => onpick(option.kind)}
       >
-        <RailIcon name={option.icon} size={20} />
-        <span class="new-bot-choice-text">
-          <span class="new-bot-choice-title">{option.title}</span>
-          <span class="new-bot-choice-body" id={`new-bot-choice-${option.kind}-body`}>
-            {option.reason ?? option.body}
-          </span>
+        <RailIcon name={option.icon} size={24} />
+        <span class="new-bot-choice-title">{option.title}</span>
+        <span class="new-bot-choice-body" id={`new-bot-choice-${option.kind}-body`}>
+          {option.reason ?? option.body}
         </span>
+        {#if option.reason === null}
+          <span class="new-bot-choice-tags" data-testid={`new-bot-choice-${option.kind}-tags`}>
+            {#each option.tags as tag (tag)}<span class="new-bot-choice-tag">{tag}</span>{/each}
+          </span>
+        {/if}
       </button>
     {/each}
   </div>

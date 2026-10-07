@@ -13,7 +13,7 @@ const FILES = [
   "./NewBotSunriseShell.svelte",
   "./CreateBotFlow.svelte",
   "./KindStep.svelte",
-  "./DetailsStep.svelte",
+  "./LocalBotAdvanced.svelte",
   "./CloudDetailsStep.svelte",
   "./HomeStep.svelte",
   "./RuntimeSignIn.svelte",

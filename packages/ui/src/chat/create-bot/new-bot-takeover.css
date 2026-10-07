@@ -937,61 +937,95 @@
   background: rgba(254, 202, 202, 0.1);
 }
 
-/* The first New bot screen: Cloud or Local. Two large options; hover, focus
-   and press change the background only (no edge stripes). */
+/* Where the bot lives: Cloud or Local, two hero tiles side by side. Hover,
+   focus and press change the background only (no edge stripes); the focused
+   tile also takes a warm tint on its border. */
+/* "Where should <Name> live?" reads on one line for most names. */
+.new-bot-choice h1 {
+  max-width: none;
+}
 .new-bot-choice-options {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 22px;
 }
+@media (max-width: 420px) {
+  .new-bot-choice-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .new-bot-choice-option {
   display: flex;
+  flex-direction: column;
   align-items: flex-start;
   gap: 6px;
+  min-width: 0;
+  min-height: 130px;
   width: 100%;
-  padding: 16px 18px;
+  padding: 18px;
   border: 1px solid var(--new-bot-line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--new-bot-ink);
   font: inherit;
-  font-weight: 500;
+  font-weight: 400;
   text-align: left;
   cursor: pointer;
-  transition: background-color 140ms ease;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
 }
 .new-bot-choice-option > .rail-icon {
   flex: none;
-  margin-top: 1px;
-  margin-inline-end: 8px;
+  margin-bottom: 4px;
+  color: var(--new-bot-ink);
 }
 .new-bot-choice-option:hover:not(:disabled),
 .new-bot-choice-option:focus-visible {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 181, 128, 0.08);
+  border-color: rgba(255, 181, 128, 0.42);
 }
 .new-bot-choice-option:active:not(:disabled) {
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 181, 128, 0.14);
 }
 .new-bot-choice-option:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline: 2px solid rgba(255, 181, 128, 0.5);
   outline-offset: 2px;
 }
 .new-bot-choice-option:disabled {
   cursor: default;
   opacity: 0.5;
 }
-.new-bot-choice-text {
-  display: grid;
-  gap: 4px;
-}
 .new-bot-choice-title {
-  font-size: 15px;
+  font-family: "New Bot Fraunces", Fraunces, Georgia, serif;
+  font-size: 20px;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.15;
 }
 .new-bot-choice-body {
   color: var(--new-bot-muted);
   font-size: 13px;
-  font-weight: 400;
   line-height: 1.45;
+}
+.new-bot-choice-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.new-bot-choice-tag {
+  border: 1px solid var(--new-bot-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--new-bot-muted);
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 /* The "+" window's bot step worn inside the takeover shell (opened from the
@@ -1119,4 +1153,12 @@
 
 .new-bot-takeover-card--steps .cb-linkish {
   color: var(--new-bot-muted);
+}
+
+/* The local coding tool step's folded parts: a template and Advanced. */
+.new-bot-local-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 4px;
 }

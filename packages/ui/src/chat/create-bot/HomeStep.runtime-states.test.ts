@@ -15,20 +15,18 @@ import { mount, tick, unmount } from "svelte";
 import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { RuntimeStatus } from "./runtime-status.js";
 
-/** details (name) → kind → home: the coding-tool screen is the third local step. */
+/** name → coding tool: the coding-tool screen is the only local step after the name. */
 async function walkToHome(root: HTMLElement, settleFn: () => Promise<void>): Promise<void> {
-  const name = root.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]');
-  if (!name) throw new Error("missing chat-bot-name");
+  const name = root.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]');
+  if (!name) throw new Error("missing new-bot-name");
   name.value = "Dr Love";
   name.dispatchEvent(new Event("input", { bubbles: true }));
   await settleFn();
-  for (const expected of ["kind", "home"]) {
-    const next = root.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]');
-    if (!next) throw new Error("missing create-bot-next");
-    next.click();
-    await settleFn();
-    if (!root.querySelector(`[data-testid="create-bot-sunrise-${expected}"]`)) throw new Error(`not on ${expected}`);
-  }
+  const next = root.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]');
+  if (!next) throw new Error("missing new-bot-continue-name");
+  next.click();
+  await settleFn();
+  if (!root.querySelector('[data-testid="create-bot-sunrise-home"]')) throw new Error("not on home");
 }
 
 let host: HTMLDivElement;

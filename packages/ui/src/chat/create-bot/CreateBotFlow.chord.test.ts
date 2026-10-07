@@ -35,11 +35,9 @@ async function renderOn(platform: keyof typeof UA): Promise<HTMLElement> {
     } as never,
   });
   await tick();
-  // The hint sits beside Create, on the last step: walk name → kind → coding tool.
-  for (let i = 0; i < 2; i += 1) {
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await tick();
-  }
+  // The hint sits beside Create, on the last step: walk name → coding tool.
+  host.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+  await tick();
   expect(host.querySelector('[data-testid="chat-bot-create"]')).toBeTruthy();
   return host;
 }

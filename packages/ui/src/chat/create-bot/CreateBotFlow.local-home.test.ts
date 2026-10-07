@@ -5,10 +5,10 @@
  * was picked on the New bot choice screen: "Skip it".
  *
  * Opened with Local already chosen, the flow never asks Cloud or Local
- * again: it walks name → blank or template → coding tool. The coding tool
- * picker, its sign-in and its install help live on that last step, so
- * nothing the old "Where does it run?" step offered is lost, and Create
- * stays off until the coding tool is ready. (Renamed from
+ * again: it walks name → coding tool (a template is a link on that step).
+ * The coding tool picker, its sign-in and its install help live on that
+ * last step, so nothing the old "Where does it run?" step offered is lost,
+ * and Create stays off until the coding tool is ready. (Renamed from
  * CreateBotFlow.skip-home.test.ts when the skipHome layout was removed.)
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,11 +41,9 @@ function step(): string | null {
   return q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step") ?? null;
 }
 
-/** Name → kind → coding tool: the last local step. */
+/** Name → coding tool: the only local step after the name. */
 async function toCodingTool(): Promise<void> {
-  click('[data-testid="create-bot-next"]');
-  await settle();
-  click('[data-testid="create-bot-next"]');
+  click('[data-testid="new-bot-continue-name"]');
   await settle();
 }
 
@@ -78,38 +76,32 @@ function open(props: Record<string, unknown> = {}) {
 }
 
 describe("New bot flow with Local already picked", () => {
-  it("never asks Where does it run?: name → kind → coding tool", async () => {
+  it("never asks Where does it run?: name → coding tool", async () => {
     open();
     await settle();
-    expect(step()).toBe("details");
+    expect(step()).toBe("name");
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    expect(step()).toBe("kind");
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
-    click('[data-testid="create-bot-next"]');
+    expect(q('[data-testid="new-bot-name"]')).toBeTruthy();
+    click('[data-testid="new-bot-continue-name"]');
     await settle();
     expect(step()).toBe("home");
+    expect(q('[data-testid="create-bot-kind-step"]')).toBeNull();
     expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
     expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
     expect(q('[data-testid="chat-bot-where"]')).toBeNull();
     expect(q('[data-testid="chat-bot-where-local"]')).toBeNull();
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
-    expect(host.textContent).not.toContain("Where should it run?");
+    expect(host.textContent).not.toContain("live?");
   });
 
-  it("Back from the coding tool returns to Kind, then to the name", async () => {
+  it("Back from the coding tool returns to the name", async () => {
     const onback = vi.fn();
     open({ onback });
     await settle();
     await toCodingTool();
     click('[data-testid="create-bot-back"]');
     await settle();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
-    click('[data-testid="create-bot-back"]');
-    await settle();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-name"]')).toBeTruthy();
     // The host already asked Cloud or Local, so Back from the name is the host's.
     click('[data-testid="create-bot-back"]');
     await settle();
@@ -160,13 +152,15 @@ describe("New bot flow with Local already picked", () => {
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
   });
 
-  it("without a preset home and with Cloud offered, the flow asks Cloud or Local first", async () => {
+  it("without a preset home and with Cloud offered, the flow asks Cloud or Local right after the name", async () => {
     open({
       initialHome: null,
       onCloudCreate: vi.fn(),
       agentTargets: [{ companyUid: "cmp_indigo", label: "Indigo" }],
     });
     await settle();
+    expect(step()).toBe("name");
+    await toCodingTool();
     expect(step()).toBe("where");
     expect(q('[data-testid="new-bot-choice-local"]')).toBeTruthy();
     expect(q('[data-testid="new-bot-choice-cloud"]')).toBeTruthy();
