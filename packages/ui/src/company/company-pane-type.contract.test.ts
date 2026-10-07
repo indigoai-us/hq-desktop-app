@@ -58,8 +58,10 @@ describe("company pane type scale contract", () => {
     }
   });
 
-  it("keeps Team and Bots rows at the 31px Messages row height", () => {
-    expect(styleOf("company/TeamPage.svelte")).toMatch(/\.row-main \{[^}]*height: 31px/);
+  // Team member rows carry the name over the handle (owner, 2026-10-06:
+  // "smaller text"), so they hold two lines at 44px; Bots stay at 31px.
+  it("keeps Bots rows at the 31px Messages row height and Team rows at two lines", () => {
+    expect(styleOf("company/TeamPage.svelte")).toMatch(/\.row-main \{[^}]*min-height: 44px/);
     expect(styleOf("company/BotsPage.svelte")).toMatch(/\.bot-row \{[^}]*height: 31px/);
   });
 });
