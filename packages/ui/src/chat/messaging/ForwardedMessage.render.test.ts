@@ -215,6 +215,23 @@ describe("forwarded message in the reply panel", () => {
     expect(row.querySelector('[data-testid="message-details"]')).not.toBeNull();
   });
 
+  it("AC2: the forwarder's note renders above the block, outside it, for the root and a reply", async () => {
+    const h = await mountPanel(
+      { ...forwarded, eventId: "evt_root" },
+      [{ ...forwarded, eventId: "evt_reply_fwd", rootEventId: "evt_root", forwardNote: "Reply note" }],
+    );
+    for (const [sel, note] of [
+      ['[data-testid="reply-panel-root"]', "Look at this"],
+      ['[data-testid="reply-panel-message"]', "Reply note"],
+    ] as const) {
+      const el = h.querySelector(sel)!;
+      const block = el.querySelector('[data-testid="forwarded-block"]')!;
+      expect(el.textContent).toContain(note);
+      expect(block.textContent).not.toContain(note);
+      expect(el.textContent!.indexOf(note)).toBeLessThan(el.textContent!.indexOf("Forwarded from"));
+    }
+  });
+
   it("AC1/AC7: a plain root whose body starts with 'Forwarded from' gets no header", async () => {
     const h = await mountPanel({ ...plain, eventId: "evt_root" });
     expect(h.querySelector('[data-testid="forwarded-header"]')).toBeNull();
