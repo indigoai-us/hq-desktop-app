@@ -8954,6 +8954,13 @@ pub fn report_package_use_lease_timeout(
                 "oldest_holder_purpose",
                 summary.oldest_holder_purpose.as_tag(),
             );
+            scope.set_tag(
+                "oldest_holder_preload_release_behavior",
+                summary.oldest_holder_preload_release_behavior.as_tag(),
+            );
+            if let Some(version) = summary.oldest_holder_version.as_deref() {
+                scope.set_extra("oldest_holder_version", version.into());
+            }
             // This updater currently mutates only the legacy npm-installed root.
             scope.set_tag(
                 "holder_root_relation",
@@ -9923,8 +9930,8 @@ mod tests {
     #[test]
     fn package_use_lease_timeout_report_has_fixed_tag_and_no_paths() {
         use crate::package_use_lease::{
-            HolderAgeBucket, HolderPurposeBucket, HolderVersionBucket, LiveHolderCountBucket,
-            PackageUseLeaseTimeoutSummary,
+            HolderAgeBucket, HolderPreloadReleaseBehavior, HolderPurposeBucket,
+            HolderVersionBucket, LiveHolderCountBucket, PackageUseLeaseTimeoutSummary,
         };
 
         let summary = PackageUseLeaseTimeoutSummary {
@@ -9934,6 +9941,8 @@ mod tests {
             holder_version: HolderVersionBucket::Pre53424,
             oldest_holder_age: HolderAgeBucket::From1hTo24h,
             oldest_holder_purpose: HolderPurposeBucket::Daemon,
+            oldest_holder_version: Some("5.342.3".to_string()),
+            oldest_holder_preload_release_behavior: HolderPreloadReleaseBehavior::Legacy,
         };
         let events =
             sentry::test::with_captured_events(|| report_package_use_lease_timeout(&summary, 0));
@@ -9956,6 +9965,17 @@ mod tests {
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
         assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
+        assert_eq!(
+            event.tags["oldest_holder_preload_release_behavior"],
+            "legacy"
+        );
+        assert_eq!(
+            event
+                .extra
+                .get("oldest_holder_version")
+                .and_then(serde_json::Value::as_str),
+            Some("5.342.3")
+        );
         assert_eq!(event.tags["holder_root_relation"], "legacy");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
         assert_eq!(
@@ -9972,7 +9992,7 @@ mod tests {
             "[hq-cli-update] timed out waiting for active HQ CLI package use"
         );
         assert!(!message.contains('/') && !message.contains('\\'));
-        assert!(event.extra.is_empty());
+        assert_eq!(event.extra.len(), 1);
     }
 
     #[test]
@@ -10036,6 +10056,9 @@ mod tests {
             holder_version: crate::package_use_lease::HolderVersionBucket::Current,
             oldest_holder_age: crate::package_use_lease::HolderAgeBucket::Under10m,
             oldest_holder_purpose: crate::package_use_lease::HolderPurposeBucket::Command,
+            oldest_holder_version: None,
+            oldest_holder_preload_release_behavior:
+                crate::package_use_lease::HolderPreloadReleaseBehavior::Unknown,
         };
         let events = sentry::test::with_captured_events(|| {
             report_package_use_lease_timeout(&summary, 0)

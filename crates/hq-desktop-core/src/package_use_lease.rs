@@ -120,6 +120,23 @@ impl HolderVersionBucket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderPreloadReleaseBehavior {
+    Legacy,
+    Current,
+    Unknown,
+}
+
+impl HolderPreloadReleaseBehavior {
+    pub fn as_tag(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Current => "current",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HolderAgeBucket {
     Under10m,
     From10mTo1h,
@@ -165,7 +182,7 @@ impl HolderPurposeBucket {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageUseLeaseTimeoutSummary {
     pub live_holder_count: LiveHolderCountBucket,
     pub same_root_live_holder_count: LiveHolderCountBucket,
@@ -173,9 +190,30 @@ pub struct PackageUseLeaseTimeoutSummary {
     pub holder_version: HolderVersionBucket,
     pub oldest_holder_age: HolderAgeBucket,
     pub oldest_holder_purpose: HolderPurposeBucket,
+    pub oldest_holder_version: Option<String>,
+    pub oldest_holder_preload_release_behavior: HolderPreloadReleaseBehavior,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+impl PackageUseLeaseTimeoutSummary {
+    fn user_message(&self) -> String {
+        let Some(version) = self.oldest_holder_version.as_deref() else {
+            return PACKAGE_USE_LEASE_TIMEOUT_ERROR.to_string();
+        };
+        match self.oldest_holder_preload_release_behavior {
+            HolderPreloadReleaseBehavior::Legacy => format!(
+                "Older HQ CLI {version} is still holding its install. Quit that CLI session or daemon, then retry the update; npm was not started."
+            ),
+            HolderPreloadReleaseBehavior::Current => format!(
+                "HQ CLI {version} is still holding its install. Close that active CLI work, then retry the update; npm was not started."
+            ),
+            HolderPreloadReleaseBehavior::Unknown => format!(
+                "HQ CLI {version} is still holding its install. Close that CLI work, then retry the update; npm was not started."
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageUseLeaseRootSummary {
     pub same_root: PackageUseLeaseTimeoutSummary,
     pub other_root: PackageUseLeaseTimeoutSummary,
@@ -190,7 +228,7 @@ pub enum PackageUseLeaseWaitError {
 impl std::fmt::Display for PackageUseLeaseWaitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Timeout(_) => f.write_str(PACKAGE_USE_LEASE_TIMEOUT_ERROR),
+            Self::Timeout(summary) => f.write_str(&summary.user_message()),
             Self::Other(error) => f.write_str(error),
         }
     }
@@ -320,6 +358,23 @@ fn now_epoch_ms() -> u64 {
         .as_millis() as u64
 }
 
+fn bounded_holder_version(version: &str) -> Option<String> {
+    let normalized = semver::Version::parse(version).ok()?.to_string();
+    let normalized = normalized.split('+').next()?.to_string();
+    (normalized.len() <= 64).then_some(normalized)
+}
+
+fn holder_preload_release_behavior(version: Option<&str>) -> HolderPreloadReleaseBehavior {
+    let Some(version) = version.and_then(|value| semver::Version::parse(value).ok()) else {
+        return HolderPreloadReleaseBehavior::Unknown;
+    };
+    if version < semver::Version::new(5, 342, 4) {
+        HolderPreloadReleaseBehavior::Legacy
+    } else {
+        HolderPreloadReleaseBehavior::Current
+    }
+}
+
 fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeoutSummary {
     let versions = records
         .iter()
@@ -334,9 +389,8 @@ fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeo
             None => age_unknown = true,
         }
     }
-    let oldest_holder_purpose = records
-        .iter()
-        .min_by_key(|record| record.start_time_ms)
+    let oldest_holder = records.iter().min_by_key(|record| record.start_time_ms);
+    let oldest_holder_purpose = oldest_holder
         .map(|record| holder_purpose_bucket(record.purpose.as_deref()))
         .unwrap_or(HolderPurposeBucket::Absent);
     PackageUseLeaseTimeoutSummary {
@@ -350,6 +404,11 @@ fn timeout_summary(records: &[LeaseRecord], now_ms: u64) -> PackageUseLeaseTimeo
             holder_age_bucket(oldest_age_ms)
         },
         oldest_holder_purpose,
+        oldest_holder_version: oldest_holder
+            .and_then(|record| bounded_holder_version(&record.hq_version)),
+        oldest_holder_preload_release_behavior: oldest_holder
+            .map(|record| holder_preload_release_behavior(Some(&record.hq_version)))
+            .unwrap_or(HolderPreloadReleaseBehavior::Unknown),
     }
 }
 
@@ -1676,10 +1735,13 @@ mod tests {
 
         let result = request.wait(Duration::from_millis(200)).await;
 
-        assert_eq!(
-            result.as_ref().err().map(String::as_str),
-            Some(PACKAGE_USE_LEASE_TIMEOUT_ERROR)
-        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_guard) => panic!("expected a package-use lease timeout"),
+        };
+        assert!(error.contains("5.304.0"), "{error}");
+        assert!(error.contains("Older HQ CLI"), "{error}");
+        assert!(error.contains("Quit that CLI session or daemon"), "{error}");
     }
 
     #[test]
@@ -1742,6 +1804,76 @@ mod tests {
                 target_root_id: LEGACY_ROOT_ID.to_owned(),
             })
         }
+    }
+
+    async fn timeout_summary_for_live_holder_version(
+        version: &str,
+    ) -> PackageUseLeaseTimeoutSummary {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_version(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            version,
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+        match request.wait_with_summary(Duration::ZERO).await {
+            Err(PackageUseLeaseWaitError::Timeout(summary)) => summary,
+            Err(error) => panic!("expected a package-use timeout, got {error}"),
+            Ok(_guard) => panic!("expected the live holder to block package mutation"),
+        }
+    }
+
+    #[tokio::test]
+    async fn live_legacy_holder_timeout_names_version_and_preload_release_behavior() {
+        let summary = timeout_summary_for_live_holder_version("5.342.3").await;
+        let error = PackageUseLeaseWaitError::Timeout(summary.clone()).to_string();
+        assert!(error.contains("5.342.3"), "{error}");
+        assert!(error.contains("Quit that CLI session or daemon"), "{error}");
+        assert!(error.contains("Older HQ CLI"), "{error}");
+
+        let events = sentry::test::with_captured_events(|| {
+            crate::hq_cli_update::report_package_use_lease_timeout(&summary, 0)
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].tags["oldest_holder_preload_release_behavior"],
+            "legacy"
+        );
+        assert_eq!(
+            events[0]
+                .extra
+                .get("oldest_holder_version")
+                .and_then(serde_json::Value::as_str),
+            Some("5.342.3")
+        );
+    }
+
+    #[tokio::test]
+    async fn live_current_holder_timeout_is_not_labelled_legacy() {
+        let summary = timeout_summary_for_live_holder_version("5.342.4").await;
+        let error = PackageUseLeaseWaitError::Timeout(summary.clone()).to_string();
+        assert!(error.contains("5.342.4"), "{error}");
+        assert!(error.contains("Close that active CLI work"), "{error}");
+        assert!(!error.contains("legacy"), "{error}");
+
+        let events = sentry::test::with_captured_events(|| {
+            crate::hq_cli_update::report_package_use_lease_timeout(&summary, 0)
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].tags["oldest_holder_preload_release_behavior"],
+            "current"
+        );
+        assert_eq!(
+            events[0]
+                .extra
+                .get("oldest_holder_version")
+                .and_then(serde_json::Value::as_str),
+            Some("5.342.4")
+        );
     }
 
     #[test]

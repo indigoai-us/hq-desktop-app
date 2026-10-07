@@ -22,6 +22,7 @@ The release moves it under the version it ships in.
 
 - First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
 
+- Package-use update timeouts now name the blocking HQ CLI version and tell people how to release its lease.
 - Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
