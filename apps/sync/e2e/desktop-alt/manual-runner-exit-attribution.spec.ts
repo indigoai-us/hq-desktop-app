@@ -529,7 +529,7 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     const exitFingerprint = sliceBetween(
       syncSource,
       'fn runner_exit_fingerprint(',
-      'fn scrub_runner_error_message(',
+      'fn runner_exit_error_from_line(',
       'manual runner-termination fingerprint',
     );
     expect(exitFingerprint).toContain('termination_fingerprint_token(code, signal)');
@@ -539,7 +539,7 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     const windowsFingerprint = sliceBetween(
       windowsSyncSource,
       'fn runner_exit_fingerprint(',
-      'fn scrub_runner_error_message(',
+      'fn runner_exit_error_from_line(',
       'Windows manual runner-termination fingerprint',
     );
     expect(windowsFingerprint).toContain('termination_fingerprint_token(code, signal)');
@@ -557,7 +557,7 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(daemonSource).toContain('tags.push(("runner_error_causes", causes.clone()))');
   });
 
-  it('sends fixed error-class messages and never forwards runner prose', () => {
+  it('sends only the fixed error class and never forwards runner prose', () => {
     const telemetryContext = sliceBetween(
       syncSource,
       'fn runner_exit_telemetry_context(',
@@ -565,7 +565,6 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
       'runner_exit_telemetry_context',
     );
     expect(syncSource).toContain('runner_exit_error_from_line(&line)');
-    expect(syncSource).toContain('scrub_runner_error_message(&error.message)');
     expect(syncSource).toContain('"receiver.sync.failed"');
     expect(syncSource).toContain('"journal-invalid-payload"');
     expect(syncSource).toContain('"state-store-lock"');
@@ -573,14 +572,20 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
     expect(syncSource).toContain('"unknown"');
     expect(telemetryContext).toContain('(\"error_class\", runner_error_class.to_string())');
     expect(telemetryContext).toContain('"runner.error_class"');
-    expect(telemetryContext).toContain('"runner.error_message"');
-    expect(telemetryContext).toContain('runner_error_message_template(runner_error_class)');
+    expect(telemetryContext).not.toContain('"runner.error_message"');
+    expect(telemetryContext).not.toContain('runner_error_message_template');
+    // Keep the existing guard that prevents runner text from entering this seam.
     expect(telemetryContext).not.toContain('context.runner_error_message');
     expect(telemetryContext).not.toContain('payload.path');
     expect(windowsSyncSource).toContain('runner_exit_error_from_line(&line)');
-    expect(windowsSyncSource).toContain('"runner.error_class"');
-    expect(windowsSyncSource).toContain('runner_error_message_template(error_class)');
-    expect(windowsSyncSource).not.toContain('sentry::protocol::Value::String(message.to_string())');
+    const windowsCapture = sliceBetween(
+      windowsSyncSource,
+      'fn report_runner_exit_error(',
+      '/// Emit a `sync:error` Tauri event',
+      'Windows runner exit capture',
+    );
+    expect(windowsCapture).toContain('"runner.error_class"');
+    expect(windowsCapture).not.toContain('"runner.error_message"');
     expect(windowsSyncSource).toContain('message: Some("runner stderr received".into())');
     expect(windowsSyncSource).not.toContain('message: Some(line.clone())');
   });
@@ -714,11 +719,12 @@ describe('runner-error SITE attribution — sixth axis + both-seams parity (HQ-D
     // Site remains available for diagnosis as a tag, but never splits exit issues.
     const exitFingerprint = sliceBetween(
       syncSource,
-      'let termination = termination_fingerprint_token(code, signal);',
-      'let (tags, extras)',
+      'fn runner_exit_fingerprint(',
+      'fn runner_exit_error_from_line(',
       'manual runner-termination fingerprint',
     );
     expect(exitFingerprint).toContain('"sync-runner-exit"');
+    expect(exitFingerprint).toContain('termination_fingerprint_token(code, signal)');
     expect(exitFingerprint).not.toContain('runner_error_causes.fingerprint_token()');
     expect(exitFingerprint).not.toContain('runner_error_sites.fingerprint_token()');
   });

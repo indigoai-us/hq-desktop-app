@@ -274,34 +274,15 @@ fn classify_runner_exit_error(message: &str) -> &'static str {
     }
 }
 
-fn runner_exit_error_class(message: Option<&str>, totals: &RunTotals) -> &'static str {
-    if let Some(message_class) = message.map(classify_runner_exit_error) {
-        if message_class != "unknown" {
-            return message_class;
+fn runner_exit_error_class(error_class: Option<&'static str>, totals: &RunTotals) -> &'static str {
+    if let Some(error_class) = error_class {
+        if error_class != "unknown" {
+            return error_class;
         }
     }
     match totals.runner_error_rollup.fingerprint_token() {
         "none" | "other" => "unknown",
         stable_class => stable_class,
-    }
-}
-
-fn runner_error_message_template(error_class: &str) -> Option<&'static str> {
-    match error_class {
-        "journal-invalid-payload" => Some("journal snapshot payload invalid"),
-        "state-store-lock" => Some("journal state store lock unavailable"),
-        "targeted-pull-failed" => Some("targeted pull failed"),
-        "eperm" => Some("runner operation not permitted"),
-        "eacces" => Some("runner access denied"),
-        "enospc" => Some("runner disk full"),
-        "ebusy" => Some("runner resource busy"),
-        "enoent" => Some("runner file not found"),
-        "eexist" => Some("runner file already exists"),
-        "enotempty" => Some("runner directory not empty"),
-        "exdev" => Some("runner cross-device operation failed"),
-        "network" => Some("runner network error"),
-        "auth" => Some("runner identity error"),
-        _ => None,
     }
 }
 
@@ -317,98 +298,35 @@ fn runner_exit_fingerprint(
     ]
 }
 
-fn scrub_runner_error_message(message: &str) -> String {
-    let mut scrubbed = String::new();
-    for (index, token) in message.split_whitespace().enumerate() {
-        if index > 0 {
-            scrubbed.push(' ');
-        }
-        let candidate = token.trim_matches(|c: char| {
-            !c.is_alphanumeric()
-                && c != '/'
-                && c != '\\'
-                && c != '.'
-                && c != '@'
-                && c != '_'
-                && c != '-'
-        });
-        let lower = candidate.to_ascii_lowercase();
-        let email = candidate.contains('@') && candidate.rsplit_once('.').is_some();
-        let path = candidate.contains('/')
-            || candidate.contains('\\')
-            || candidate.starts_with("~")
-            || candidate.starts_with("./")
-            || candidate.starts_with("../")
-            || candidate.starts_with('.')
-            || [".json", ".md", ".ts", ".js", ".rs", ".db", ".log"]
-                .iter()
-                .any(|extension| lower.ends_with(extension));
-        let key_like = lower.starts_with("bearer")
-            || lower.starts_with("token=")
-            || lower.starts_with("token:")
-            || lower.starts_with("access_token=")
-            || lower.starts_with("refresh_token=")
-            || lower.starts_with("authorization=")
-            || lower.starts_with("api_key=")
-            || lower.starts_with("api-key=")
-            || lower.starts_with("key=")
-            || lower.starts_with("secret=")
-            || lower.starts_with("password=")
-            || lower.starts_with("cookie=")
-            || lower.starts_with("auth=")
-            || lower.starts_with("sk-")
-            || lower.starts_with("ghp_")
-            || lower.starts_with("github_pat_")
-            || lower.starts_with("akia")
-            || lower.starts_with("f_")
-            || lower.starts_with("folder_")
-            || lower.starts_with("file_")
-            || candidate.starts_with("eyJ")
-            || (candidate.len() >= 24
-                && candidate.chars().any(|c| c.is_ascii_alphabetic())
-                && candidate.chars().any(|c| c.is_ascii_digit()));
-        if email {
-            scrubbed.push_str("[email]");
-        } else if path {
-            scrubbed.push_str("[path]");
-        } else if key_like {
-            scrubbed.push_str("[redacted]");
-        } else {
-            scrubbed.push_str(token);
-        }
-    }
-    scrubbed.chars().take(300).collect()
-}
-
-fn runner_exit_error_from_line(line: &str) -> Option<String> {
+fn runner_exit_error_from_line(line: &str) -> Option<&'static str> {
     if runner_error_is_diagnostic(line) {
         return None;
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
         if value.get("event").and_then(serde_json::Value::as_str) == Some("receiver.sync.failed") {
-            let message = value
+            let _message = value
                 .get("err")
                 .and_then(|error| error.get("message"))
                 .and_then(serde_json::Value::as_str)?;
-            return Some(scrub_runner_error_message(&format!(
-                "targeted pull failed: {message}"
-            )));
+            return Some("targeted-pull-failed");
         }
     }
     match crate::events::parse_sync_line(line)? {
-        SyncEvent::Error(error) => Some(scrub_runner_error_message(&error.message)),
+        SyncEvent::Error(error) => Some(classify_runner_exit_error(&error.message)),
         _ => None,
     }
 }
 
 #[cfg(test)]
-fn runner_exit_error_payload(message: &str, totals: &RunTotals) -> serde_json::Value {
-    let error_class = runner_exit_error_class(Some(message), totals);
-    let mut payload = serde_json::json!({"runner.error_class": error_class});
-    if let Some(message) = runner_error_message_template(error_class) {
-        payload["runner.error_message"] = serde_json::Value::String(message.to_string());
-    }
-    payload
+fn runner_exit_error_payload(
+    error_class: Option<&'static str>,
+    totals: &RunTotals,
+) -> serde_json::Value {
+    let error_class = runner_exit_error_class(error_class, totals);
+    serde_json::json!({
+        "tags": {"error_class": error_class},
+        "extra": {"runner.error_class": error_class}
+    })
 }
 
 fn push_runner_stderr_tail(tail: &mut VecDeque<String>, line: String) {
@@ -472,9 +390,8 @@ struct ManualRunnerExitContext {
     /// Windows-fault case). `None` when no report was read; a report that named no
     /// cause never overrides the stderr attribution.
     runner_report: Option<hq_desktop_core::runner_diagnostic_report::RunnerDiagnosticReport>,
-    /// Last structured runner error, retained without its file path and scrubbed
-    /// before it can reach Sentry.
-    runner_error_message: Option<String>,
+    /// Closed-vocabulary class parsed from the last structured runner error.
+    runner_error_class: Option<&'static str>,
 }
 
 impl Default for ManualRunnerExitContext {
@@ -493,7 +410,7 @@ impl Default for ManualRunnerExitContext {
             runner_report_read: "report_not_requested".to_string(),
             runner_report_dir_delivery: "not_requested".to_string(),
             runner_report: None,
-            runner_error_message: None,
+            runner_error_class: None,
         }
     }
 }
@@ -541,7 +458,7 @@ fn manual_runner_exit_context(
         runner_report_read: "report_not_requested".to_string(),
         runner_report_dir_delivery: "not_requested".to_string(),
         runner_report: None,
-        runner_error_message: None,
+        runner_error_class: None,
     }
 }
 
@@ -584,8 +501,7 @@ fn runner_exit_telemetry_context(
             stderr_stack,
         ),
     };
-    let runner_error_class =
-        runner_exit_error_class(context.runner_error_message.as_deref(), totals);
+    let runner_error_class = runner_exit_error_class(context.runner_error_class, totals);
     let mut tags = vec![
         ("sync_route", "manual".to_string()),
         ("sync_scope", context.sync_scope.clone()),
@@ -808,12 +724,6 @@ fn runner_exit_telemetry_context(
             },
         ),
     ];
-    if let Some(message) = runner_error_message_template(runner_error_class) {
-        extras.push((
-            "runner.error_message",
-            sentry::protocol::Value::String(message.to_string()),
-        ));
-    }
     // The observed terminal (code, signal) rendered through the SAME closed
     // vocabulary the fingerprint's third element uses (`exit:N` / `signal:N` /
     // the windows:* family / `unknown`) — never a runner byte. It is the third
@@ -899,7 +809,7 @@ fn capture_runner_exit_error_with_termination_reason(
     context: &ManualRunnerExitContext,
     sync_termination_reason: &'static str,
 ) {
-    let error_class = runner_exit_error_class(context.runner_error_message.as_deref(), totals);
+    let error_class = runner_exit_error_class(context.runner_error_class, totals);
     // Keep incidents grouped only by the process exit and stable error class.
     // Producer details, company, paths, and message text remain outside grouping.
     let fingerprint = runner_exit_fingerprint(code, signal, error_class);
@@ -3313,7 +3223,7 @@ async fn start_sync_inner(
     // the only evidence that existed instead of reaching Sentry with every axis
     // empty.
     let mut runner_unmatched_stderr = UnmatchedStderrShapeRollup::default();
-    let runner_exit_error = Mutex::new(None::<String>);
+    let runner_exit_error = Mutex::new(None::<&'static str>);
     #[cfg(test)]
     crate::commands::process::record_sync_runner_spawn_attempt();
     tauri::async_runtime::spawn_blocking(move || {
@@ -3434,10 +3344,10 @@ async fn start_sync_inner(
                             runner_stdout_sequence,
                             runner_node_major,
                         );
-                        exit_context.runner_error_message = runner_exit_error
+                        exit_context.runner_error_class = runner_exit_error
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .clone();
+                            .copied();
                         // Additive per-run diagnostic, set after the content
                         // snapshot and consulted by no capture policy — mirrors
                         // daemon.rs. `None` when nothing unmatched was recorded, so
@@ -3652,7 +3562,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn runner_exit_error_classifier_and_scrubber_use_fixed_safe_vocabulary() {
+    fn runner_exit_error_classifier_uses_fixed_safe_vocabulary() {
         assert_eq!(
             classify_runner_exit_error("HQSNAP4 has an invalid journal payload"),
             "journal-invalid-payload"
@@ -3673,31 +3583,10 @@ mod tests {
             runner_exit_error_class(None, &RunTotals::default()),
             "unknown"
         );
-
-        let scrubbed = scrub_runner_error_message(
-            "HQSNAP4 has an invalid journal payload at /var/lib/hq/vault/object-key for alice@example.com token=sk-live_1234567890",
-        );
-        assert!(scrubbed.contains("HQSNAP4 has an invalid journal payload"));
-        assert!(scrubbed.contains("[path]"));
-        assert!(scrubbed.contains("[email]"));
-        assert!(scrubbed.contains("[redacted]"));
-        assert!(!scrubbed.contains("/var/lib"));
-        assert!(!scrubbed.contains("object-key"));
-        assert!(!scrubbed.contains("alice@example.com"));
-        assert!(!scrubbed.contains("sk-live"));
-        let relative = scrub_runner_error_message("failed reading state/store/journal.json");
-        assert!(!relative.contains("state/store"));
-        assert!(!relative.contains("journal.json"));
-        assert!(
-            scrub_runner_error_message(&"safe ".repeat(100))
-                .chars()
-                .count()
-                <= 300
-        );
     }
 
     #[test]
-    fn runner_exit_payload_never_forwards_runner_text() {
+    fn runner_exit_payload_has_no_message_field_for_untrusted_runner_text() {
         let untrusted_details = [
             "journal state store is unreadable at cmp_SECRET",
             "password: hunter2",
@@ -3707,21 +3596,28 @@ mod tests {
             "token=sk-live_1234567890",
         ];
         for detail in untrusted_details {
-            let input = format!("HQSNAP4 has an invalid journal payload: {detail}");
-            let payload = runner_exit_error_payload(&input, &RunTotals::default());
+            let line = serde_json::json!({
+                "type": "error",
+                "message": format!("HQSNAP4 has an invalid journal payload: {detail}")
+            })
+            .to_string();
+            let error_class = runner_exit_error_from_line(&line).expect("structured error");
+            let payload = runner_exit_error_payload(Some(error_class), &RunTotals::default());
             let serialized = payload.to_string();
             assert!(
                 !serialized.contains(detail),
                 "runner text reached telemetry payload: {detail}"
             );
+            assert_eq!(payload["tags"]["error_class"], "journal-invalid-payload");
             assert_eq!(
-                payload["runner.error_message"],
-                "journal snapshot payload invalid"
+                payload["extra"]["runner.error_class"],
+                "journal-invalid-payload"
             );
+            assert!(payload["extra"].get("runner.error_message").is_none());
         }
 
-        let unknown = runner_exit_error_payload("sync failed", &RunTotals::default());
-        assert!(unknown.get("runner.error_message").is_none());
+        let unknown = runner_exit_error_payload(Some("unknown"), &RunTotals::default());
+        assert!(unknown["extra"].get("runner.error_message").is_none());
     }
 
     #[test]
@@ -3733,13 +3629,10 @@ mod tests {
             message: "ENOSPC: no space left on device".to_string(),
         });
 
+        assert_eq!(runner_exit_error_class(Some("unknown"), &totals), "enospc");
         assert_eq!(
-            runner_exit_error_class(Some("sync failed"), &totals),
+            runner_exit_error_payload(Some("unknown"), &totals)["extra"]["runner.error_class"],
             "enospc"
-        );
-        assert_eq!(
-            runner_exit_error_payload("sync failed", &totals)["runner.error_message"],
-            "runner disk full"
         );
     }
 
@@ -3756,7 +3649,7 @@ mod tests {
     }
 
     #[test]
-    fn hqsnap4_stderr_tail_builds_fixed_message_exit_event_payload() {
+    fn hqsnap4_stderr_tail_builds_class_only_exit_event_payload() {
         let line = serde_json::json!({
             "type": "error",
             "company": "cmp_example",
@@ -3764,17 +3657,20 @@ mod tests {
             "message": "HQSNAP4 has an invalid journal payload at /srv/hq/vault/object-key for ops@example.com token=sk-live_1234567890"
         })
         .to_string();
-        let error_message = runner_exit_error_from_line(&line).expect("structured error line");
+        let error_class = runner_exit_error_from_line(&line).expect("structured error line");
         let totals = RunTotals::default();
-        let sample = runner_exit_error_payload(&error_message, &totals);
-        assert_eq!(sample["runner.error_class"], "journal-invalid-payload");
+        let sample = runner_exit_error_payload(Some(error_class), &totals);
+        assert_eq!(
+            sample["extra"]["runner.error_class"],
+            "journal-invalid-payload"
+        );
         let payload = SyncErrorEvent {
             company: None,
             path: "(runner)".to_string(),
             message: "hq-sync-runner exited with code 2".to_string(),
         };
         let mut context = ManualRunnerExitContext::default();
-        context.runner_error_message = Some(error_message);
+        context.runner_error_class = Some(error_class);
         let other_root_line = serde_json::json!({
             "type": "error",
             "path": r"C:\Users\Ada\hq\.hq-sync-journal.json",
@@ -3782,7 +3678,7 @@ mod tests {
         })
         .to_string();
         let mut other_root_context = ManualRunnerExitContext::default();
-        other_root_context.runner_error_message = Some(
+        other_root_context.runner_error_class = Some(
             runner_exit_error_from_line(&other_root_line).expect("second structured error line"),
         );
         let captures = sentry::test::with_captured_events(|| {
@@ -3805,14 +3701,9 @@ mod tests {
         );
         assert_eq!(event.fingerprint, other_root_event.fingerprint);
         let serialized = serde_json::to_string(&event).expect("serialize event");
-        assert_eq!(
-            sample["runner.error_message"],
-            "journal snapshot payload invalid"
-        );
-        assert_eq!(
-            event.extra["runner.error_message"],
-            sentry::protocol::Value::String("journal snapshot payload invalid".to_string())
-        );
+        assert_eq!(sample["tags"]["error_class"], "journal-invalid-payload");
+        assert!(!event.extra.contains_key("runner.error_message"));
+        assert!(sample["extra"].get("runner.error_message").is_none());
         assert!(!serialized.contains("HQSNAP4 has an invalid journal payload"));
         assert!(!serialized.contains("[path]"));
         assert!(!serialized.contains("[email]"));
@@ -3832,13 +3723,7 @@ mod tests {
             r#"{"event":"receiver.sync.failed","relativePath":"companies/indigo/private.md","err":{"message":"EIO while reading /srv/hq/vault/object-key for ops@example.com"}}"#,
         )
         .expect("receiver failure line");
-        assert_eq!(
-            classify_runner_exit_error(&receiver_error),
-            "targeted-pull-failed"
-        );
-        assert!(!receiver_error.contains("relativePath"));
-        assert!(!receiver_error.contains("object-key"));
-        assert!(!receiver_error.contains("ops@example.com"));
+        assert_eq!(receiver_error, "targeted-pull-failed");
     }
 
     #[test]
