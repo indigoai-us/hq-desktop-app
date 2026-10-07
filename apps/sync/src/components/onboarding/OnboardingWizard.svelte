@@ -195,7 +195,6 @@
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
   import {
-    resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
   import { resolveFirstLaunchPublicFlag } from '../../lib/first-launch-public-flag';
@@ -314,8 +313,8 @@
   const manualOAuthReceiptTails = new Map<string, Promise<void>>();
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyArm: 'on' | 'off' | 'unknown' = 'unknown';
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
-  let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
@@ -381,6 +380,10 @@
   // answer was dropped. Consent is now its own step after setup.)
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
+  let hqAnywhereEnabled = $state(false);
+  let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingError = $state(false);
+  let hqAnywhereRetryValue = $state<boolean | null>(null);
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
   let readyConsentShown = false;
@@ -1201,16 +1204,17 @@
           console.warn('onboarding: installer visitor key unavailable; launch receipt unchanged');
         }
       }
-      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+      void recordReceipt(deps, launchReceipt(deps, firstLaunchJoinKeyArm)).catch(() => undefined);
     }
   }
 
   function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
     if (!firstLaunchDownloadJoinFlagPromise) {
-      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
-        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
-        2_000,
-      );
+      const downloadJoinFlag = resolveFirstLaunchPublicFlag(
+        FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
+        installAttemptId,
+      ).then((enabled) => enabled === true);
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(downloadJoinFlag, 2_000);
     }
     return firstLaunchDownloadJoinFlagPromise;
   }
@@ -1219,9 +1223,15 @@
     if (!firstLaunchJoinKeyFlagPromise) {
       const flag = visitorId
         ? resolveFirstLaunchPublicFlag(FIRST_LAUNCH_JOIN_KEY_FLAG, visitorId)
-        : Promise.resolve(false);
-      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
-        (enabled) => {
+        : Promise.resolve(null);
+      firstLaunchJoinKeyFlagPromise = resolveFlagStatusWithTimeout(flag, 2_000).then(
+        (status) => {
+          const enabled = status === 'enabled';
+          firstLaunchJoinKeyArm = status === 'enabled'
+            ? 'on'
+            : status === 'disabled'
+              ? 'off'
+              : 'unknown';
           firstLaunchJoinKeyEnabled = enabled;
           if (!enabled) flushQueuedOnboardingStepRecords();
           return enabled;
@@ -1232,25 +1242,13 @@
             error,
           );
           firstLaunchJoinKeyEnabled = false;
+          firstLaunchJoinKeyArm = 'unknown';
           flushQueuedOnboardingStepRecords();
           return false;
         },
       );
     }
     return firstLaunchJoinKeyFlagPromise;
-  }
-
-  function resolveFirstLaunchSignInReachEnabled(visitorId: string): Promise<boolean> {
-    if (!firstLaunchSignInReachFlagPromise) {
-      const flag = resolveFirstLaunchSignInReachFlag(visitorId);
-      firstLaunchSignInReachFlagPromise = resolveFlagWithTimeout(flag, 2_000)
-        .then((enabled) => enabled)
-        .catch((error) => {
-          console.warn('onboarding: sign-in reach flag resolution failed; leaving telemetry off', error);
-          return false;
-        });
-    }
-    return firstLaunchSignInReachFlagPromise;
   }
 
   function prepareOnboardingTelemetryIdentity(): Promise<{
@@ -1277,14 +1275,10 @@
         ]).then(([firstLaunch, visitorId]) =>
           firstLaunch ? resolveFirstLaunchJoinKeyEnabled(visitorId) : false,
         );
-        const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
-          visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,
-        );
-        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled, reachVisitorId] = await Promise.all([
+        const [firstLaunch, context, joinKeyEnabled, reachVisitorId] = await Promise.all([
           firstLaunchPromise,
           contextPromise,
           firstLaunchJoinKeyEnabledPromise,
-          firstLaunchSignInReachEnabledPromise,
           reachVisitorIdPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
@@ -1302,19 +1296,17 @@
           | 'missing-root-recovery-skip'
           | 'consent-only-skip'
           | undefined;
-        if (signInReachEnabled) {
-          reachInstallAttemptId = installAttemptId ?? reachVisitorId;
-          if (reachInstallAttemptId) {
-            signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
-              ? 'reached-signin'
-              : mode === 'consent'
-                ? 'consent-only-skip'
-                : recoveringMissingRoot
-                  ? 'missing-root-recovery-skip'
-                  : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
-                    ? 'setup-resume-skip'
-                    : 'existing-session-skip';
-          }
+        reachInstallAttemptId = installAttemptId ?? reachVisitorId;
+        if (reachInstallAttemptId) {
+          signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
+            ? 'reached-signin'
+            : mode === 'consent'
+              ? 'consent-only-skip'
+              : recoveringMissingRoot
+                ? 'missing-root-recovery-skip'
+                : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
+                  ? 'setup-resume-skip'
+                  : 'existing-session-skip';
         }
         const receiptReachOutcome = signInReachOutcome;
         const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined;
@@ -3028,6 +3020,27 @@
       return true;
     } finally {
       consentSubmitting = false;
+    }
+  }
+
+  async function saveHqAnywhereSetting(value: boolean): Promise<void> {
+    if (hqAnywhereSaving) return;
+    const previous = hqAnywhereEnabled;
+    hqAnywhereEnabled = value;
+    hqAnywhereSaving = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    try {
+      await invokeCommand<void>('put_hq_anywhere_person_setting', { value });
+    } catch (error) {
+      // The raw transport detail stays in diagnostics; setup always shows the
+      // same plain message and leaves a retry path the person can use.
+      console.warn('[onboarding-hq-anywhere] setting write failed:', error);
+      hqAnywhereEnabled = previous;
+      hqAnywhereRetryValue = value;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSaving = false;
     }
   }
 
@@ -4754,10 +4767,40 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
+          <span class="rc-sep" aria-hidden="true">·</span>
+          <label class="rc-check">
+            <input
+              type="checkbox"
+              data-testid="ready-hq-anywhere"
+              checked={hqAnywhereEnabled}
+              disabled={hqAnywhereSaving || finishing}
+              aria-busy={hqAnywhereSaving}
+              onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+            />
+            <span>Enable HQ Anywhere</span>
+          </label>
+          {#if hqAnywhereSaving}
+            <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+          {/if}
           {#if privacyOpenError}
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
+        {#if hqAnywhereSettingError}
+          <div class="ready-setting-error" role="alert" data-testid="hq-anywhere-setting-error">
+            <span>Couldn't save this setting. Try again.</span>
+            <button
+              type="button"
+              class="consent-link"
+              data-testid="hq-anywhere-setting-retry"
+              disabled={hqAnywhereSaving || finishing}
+              aria-busy={hqAnywhereSaving}
+              onclick={() => {
+                if (hqAnywhereRetryValue !== null) void saveHqAnywhereSetting(hqAnywhereRetryValue);
+              }}
+            >{hqAnywhereSaving ? 'Saving…' : 'Retry'}</button>
+          </div>
+        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"

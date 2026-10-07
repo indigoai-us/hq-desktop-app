@@ -49,7 +49,6 @@ vi.mock('@hq/platform', () => ({
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
   FIRST_LAUNCH_JOIN_KEY_FLAG: 'desktop.first-launch-join-key-v1',
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG: 'desktop.first-launch-signin-reach-telemetry-v1',
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG: 'desktop.company-route-lookup-retry-v1',
   SETUP_DEPS_TIMEOUT_RETRY_FLAG: 'desktop.setup-deps-timeout-retry-v1',
   retryThrottled: async <T>(
@@ -74,7 +73,6 @@ vi.mock('@hq/platform', () => ({
         }
         if (
           flag === 'desktop.first-launch-join-key-v1' ||
-          flag === 'desktop.first-launch-signin-reach-telemetry-v1' ||
           flag === 'desktop.company-route-lookup-retry-v1' ||
           flag === 'desktop.company-name-prefill-v1'
         ) {
@@ -796,6 +794,27 @@ describe('first-run sign-in screen', () => {
     expect(deliveredLaunches[0].anonId).toBe('download-key');
   });
 
+  it('omits the installer visitor key when its public flag is unavailable', async () => {
+    const deliveredLaunches: Array<Record<string, string | number>> = [];
+    httpFetch.mockImplementation(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+      text: async () => '',
+    }));
+    stubContinuationInvoke({
+      downloadAnonId: 'download-key',
+      deliver: ({ path, body }) => {
+        if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+        return 200;
+      },
+    });
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+
+    await flushUntil(() => deliveredLaunches.length === 1);
+    expect(Object.prototype.hasOwnProperty.call(deliveredLaunches[0], 'anonId')).toBe(false);
+  });
+
   it('omits the installer visitor key when the flag is off or the tag is missing', async () => {
     const deliveredLaunches: Array<Record<string, string | number>> = [];
     httpFetch.mockImplementation(async (input) => {
@@ -875,6 +894,63 @@ describe('first-run sign-in screen', () => {
     expect(deliveredLaunches[1]).toEqual(deliveredLaunches[0]);
     expect(localStorage.getItem(__INTERNALS__.STORAGE_KEY)).toContain('"firstLaunchRecorded":true');
   });
+
+  it.each([
+    ['enabled', 'on'],
+    ['disabled', 'off'],
+    ['error', 'unknown'],
+    ['timeout', 'unknown'],
+  ] as const)(
+    'records the first-launch join-key arm as %s',
+    async (resolution, expectedArm) => {
+      const deliveredLaunches: Array<Record<string, string | number>> = [];
+      httpFetch.mockImplementation(async (input) => {
+        const key = new URL(String(input)).searchParams.get('key');
+        if (key === 'desktop.first-launch-join-key-v1') {
+          if (resolution === 'error') throw new Error('public resolver unavailable');
+          if (resolution === 'timeout') return new Promise<never>(() => {});
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              key,
+              enabled: resolution === 'enabled',
+            }),
+            text: async () => '',
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ key, enabled: false }),
+          text: async () => '',
+        };
+      });
+      stubContinuationInvoke({
+        deliver: ({ path, body }) => {
+          if (path === '/v1/desktop/onboarding/launch') deliveredLaunches.push(body);
+          return 200;
+        },
+      });
+      const continuationInvoke = tauri.invoke.getMockImplementation();
+      if (!continuationInvoke) throw new Error('Expected the continuation invoke stub.');
+      tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'desktop_install_attempt_id') {
+          return '22222222-2222-4222-8222-222222222222';
+        }
+        return continuationInvoke(command, args);
+      });
+
+      component = mount(OnboardingWizard, { target: host, props: { initialStep: 0 } });
+      if (resolution === 'timeout') {
+        await flush();
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      await flushUntil(() => deliveredLaunches.length === 1);
+
+      expect(deliveredLaunches[0]?.joinKeyArm).toBe(expectedArm);
+    },
+  );
 
   it("says who is already signed in on this machine before anything is created, and can switch", async () => {
     stubContinuationInvoke({ config: { ...CONTINUATION_CONFIG, variant: 'control' } });
@@ -1821,6 +1897,64 @@ describe('onboarding launch handoff', () => {
     expect(primaryButton().disabled).toBe(false);
   });
 
+  it('keeps HQ Anywhere off by default on the existing ready step', async () => {
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]');
+    expect(choice?.checked).toBe(false);
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'put_hq_anywhere_person_setting')).toBe(false);
+  });
+
+  it('writes the HQ Anywhere choice for the signed-in person when enabled', async () => {
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!;
+    choice.click();
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: true });
+    expect(choice.checked).toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
+
+    choice.click();
+    await flush();
+
+    expect(tauri.invoke).toHaveBeenLastCalledWith('put_hq_anywhere_person_setting', { value: false });
+    expect(choice.checked).toBe(false);
+  });
+
+  it('shows a plain retry path when the HQ Anywhere setting write fails', async () => {
+    let attempts = 0;
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'put_hq_anywhere_person_setting') {
+        attempts += 1;
+        if (attempts === 1) throw new Error('403 upstream detail must stay private');
+        return args;
+      }
+      return undefined;
+    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!.click();
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="hq-anywhere-setting-error"]')));
+
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')?.textContent)
+      .toContain("Couldn't save this setting. Try again.");
+    expect(host.textContent).not.toContain('403 upstream detail must stay private');
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled)
+      .toBe(false);
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await flush();
+
+    expect(attempts).toBe(2);
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
+      .toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
+  });
+
   it('renders the same seamless completion screen after a failed required stage as after a clean run', async () => {
     const claudeDesktopOnly = {
       ...NO_AI_TOOLS,
@@ -2317,23 +2451,15 @@ describe('anonymous installer step pings', () => {
     expect(welcomeEntries).toHaveLength(1);
     expect((welcomeEntries[0]![1] as { properties: { outcome?: string } }).properties.outcome)
       .toBe('reached-signin');
-    const publicFlagRequest = httpFetch.mock.calls.find((call) =>
-      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
-    );
-    expect(publicFlagRequest).toBeDefined();
-    const publicFlagUrl = new URL(
-      String((publicFlagRequest as unknown as [string, RequestInit])[0]),
-    );
-    expect(publicFlagUrl.searchParams.get('key')).toBe(
-      'desktop.first-launch-signin-reach-telemetry-v1',
-    );
-    expect(publicFlagUrl.searchParams.get('visitorId')).toBe(installAttemptId);
     const joinKeyFlagRequest = httpFetch.mock.calls.find((call) => {
       const [url] = call as unknown as [string, RequestInit];
       return String(url).includes('/v1/flags/resolve-public') &&
         new URL(String(url)).searchParams.get('key') === 'desktop.first-launch-join-key-v1';
     });
     expect(joinKeyFlagRequest).toBeDefined();
+    expect(httpFetch.mock.calls.filter((call) =>
+      String((call as unknown as [string, RequestInit])[0]).includes('/v1/flags/resolve-public'),
+    )).toHaveLength(1);
     const joinKeyFlagUrl = new URL(
       String((joinKeyFlagRequest as unknown as [string, RequestInit])[0]),
     );
@@ -5232,10 +5358,12 @@ describe('first-launch sign-in reach stays independent from the join-key rollout
   it('does not seed shared onboarding telemetry identity from the reach-only flag', () => {
     const source = readFileSync(join(__dirname, 'OnboardingWizard.svelte'), 'utf8');
     const reachBlock = source.slice(
-      source.indexOf('if (signInReachEnabled)'),
+      source.indexOf('reachInstallAttemptId = installAttemptId ?? reachVisitorId;'),
       source.indexOf('const firstLaunchReceiptRecorded'),
     );
 
+    expect(source).not.toContain('signInReachEnabled');
+    expect(source).not.toContain('resolveFirstLaunchSignInReachEnabled');
     expect(reachBlock).not.toContain('onboardingTelemetry.setInstallAttemptId(');
     expect(reachBlock).toContain('receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined');
   });

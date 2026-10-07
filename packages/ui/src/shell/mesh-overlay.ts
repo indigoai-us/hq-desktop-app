@@ -303,7 +303,8 @@ export function createHybridSidebarApi(
         const feed = await live.fetchChannelDirectory(cursor);
         const count = (feed.rows?.length ?? 0) + (feed.changed?.length ?? 0);
         if (count > 0 || Boolean(cursor)) return feed;
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] live channel directory read failed; using cached overlay:", error);
         /* use cache */
       }
       return cacheDirectoryFeed(getOverlay());
@@ -312,7 +313,8 @@ export function createHybridSidebarApi(
       try {
         const res = await live.listContacts();
         if ((res.contacts?.length ?? 0) > 0) return res;
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:315", error);
         /* use cache */
       }
       return { contacts: [...(getContacts?.() ?? [])] };
@@ -837,7 +839,8 @@ export function clearFixtureSidebarState(): void {
     window.localStorage.removeItem(PINS_KEY);
     window.localStorage.removeItem(CONVERSATION_CACHE_KEY);
     window.localStorage.removeItem(DIRECTORY_CURSOR_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:840", error);
     /* private mode */
   }
 }
@@ -850,7 +853,8 @@ export function seedMeshPins(channelIds: string[]): void {
       PINS_KEY,
       JSON.stringify(channelIds.map((id) => `ch:${id}`)),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:853", error);
     /* private mode */
   }
 }

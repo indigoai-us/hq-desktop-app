@@ -181,12 +181,24 @@ describe("subscribeRosterRefreshEvents", () => {
   });
 
   it("survives a listen seam that rejects", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = new Error("Tauri event listener is unavailable");
     const listen = vi.fn(async () => {
-      throw new Error("Tauri event listener is unavailable");
+      throw error;
     });
     const teardown = subscribeRosterRefreshEvents(listen, vi.fn());
     await Promise.resolve();
-    expect(() => teardown()).not.toThrow();
+    await Promise.resolve();
+    try {
+      expect(warning).toHaveBeenCalledTimes(ROSTER_REFRESH_EVENTS.length);
+      expect(warning).toHaveBeenCalledWith(
+        "[hq-ui-roster-refresh] event listener registration failed",
+        error,
+      );
+      expect(() => teardown()).not.toThrow();
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("logs listener teardown failures and keeps teardown non-throwing", async () => {

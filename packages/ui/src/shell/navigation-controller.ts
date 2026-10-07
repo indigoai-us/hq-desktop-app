@@ -167,7 +167,8 @@ export function createNavigationController(
     try {
       const scroll = deps.captureScroll?.() ?? null;
       if (scroll) history.recordScroll(scroll);
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/navigation-controller.ts:170", error);
       /* capture is best-effort; leaving a destination must still proceed */
     }
   };

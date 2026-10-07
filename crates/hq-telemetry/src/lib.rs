@@ -1874,6 +1874,7 @@ fn valid_runner_diagnostic_field(key: &str, value: &str) -> Option<bool> {
                 | "sigterm"
                 | "sigkill"
                 | "already_owned"
+                | "disk_full"
                 | "node_fatal"
                 | "other"
         )),
@@ -4105,6 +4106,7 @@ mod tests {
             "sigterm",
             "sigkill",
             "already_owned",
+            "disk_full",
             "node_fatal",
             "other",
         ] {

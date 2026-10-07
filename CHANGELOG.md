@@ -9,8 +9,25 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
+- Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+- CLI update timeout messages stay actionable when lease-holder details cannot be read.
+
+- Runner exit reports now include a bounded reason when the runner provides one.
+
+## [0.10.398] — 2026-10-06
+
+- First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
+
+- Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
+- Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+- A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
+- A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
+- The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
 
 ## [0.10.397] — 2026-10-06
 
