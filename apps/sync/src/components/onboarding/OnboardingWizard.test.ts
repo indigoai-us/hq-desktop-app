@@ -1986,6 +1986,8 @@ describe('onboarding launch handoff', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="hq-anywhere-setting-error"]')));
 
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
+      .toBe(false);
     expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')?.textContent)
       .toContain('Tap to retry');
     expect(host.textContent).not.toContain('403 upstream detail must stay private');
