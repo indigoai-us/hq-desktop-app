@@ -292,6 +292,16 @@ export interface SetupBotLauncher {
   start(): Promise<SetupBotStart>;
 }
 
+/**
+ * True when a Local bot create is the setup bot (the `setup` handle). The
+ * setup bot runs onboarding itself, from its own intro and kickoff, so it
+ * never gets the generic new-bot thread (greeting, access request, "Pick my
+ * skills", "Verified") that the New bot modal adds to other bots.
+ */
+export function isSetupBotCreate(input: { name?: string | null } | null | undefined): boolean {
+  return (input?.name ?? "").trim().toLowerCase() === SETUP_BOT_NAME;
+}
+
 /** The setup bot among this Mac's local bots, if it exists. */
 export function findSetupBot(bots: readonly LocalBotRow[] | null | undefined): SetupBotRef | null {
   const bot = (bots ?? []).find((candidate) => candidate.name.trim().toLowerCase() === SETUP_BOT_NAME);

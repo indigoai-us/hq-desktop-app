@@ -191,6 +191,10 @@ describe("DesktopApp sidebar '+' → New bot", () => {
           host.textContent,
       ).toContain("scout"),
     );
+    // A bot from the modal finishes its setup in the thread: the generic
+    // greeting and skills prompt are there (the setup bot never gets these).
+    await vi.waitFor(() => expect(host.textContent).toContain("Pick my skills"));
+    expect(host.textContent).toContain("Two things before I start");
   });
 
   it("surfaces the CLI's reason and keeps the modal open when creation fails", async () => {

@@ -270,6 +270,7 @@
   import {
     findSetupBot,
     findSetupBotContact,
+    isSetupBotCreate,
     firstSignedInRuntime,
     setupFinaleDue,
     setupFinaleOffersSlack,
@@ -2765,21 +2766,25 @@
       pinned: false,
       personUid: agentUid,
     };
-    botSetupByUid = {
-      ...botSetupByUid,
-      [agentUid]: {
-        agentUid,
-        name: label,
-        email: null,
-        companySlug: input.companies?.[0] ?? null,
-        companyUid: null,
-        rowId: row.id,
-        channelId: null,
-        createdAt: Date.now(),
-        online: false,
-        access: { state: "pending", level: "read" },
-      },
-    };
+    // The setup bot onboards the person itself; the generic new-bot thread
+    // (access request, "Pick my skills", "Verified") would talk over it.
+    if (!isSetupBotCreate(input)) {
+      botSetupByUid = {
+        ...botSetupByUid,
+        [agentUid]: {
+          agentUid,
+          name: label,
+          email: null,
+          companySlug: input.companies?.[0] ?? null,
+          companyUid: null,
+          rowId: row.id,
+          channelId: null,
+          createdAt: Date.now(),
+          online: false,
+          access: { state: "pending", level: "read" },
+        },
+      };
+    }
     handleSelect(row);
     void saveNewBotProfile(agentUid, extras);
     return { ok: true, agentUid, name: input.name };

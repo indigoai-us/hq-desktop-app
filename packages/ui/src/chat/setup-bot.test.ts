@@ -10,6 +10,7 @@ import { messageMarksSetupDone, richContentForMessage } from "./messaging/richMe
 import {
   findSetupBot,
   findSetupBotContact,
+  isSetupBotCreate,
   firstSignedInRuntime,
   singleFlightStart,
   setupBotActionLabel,
@@ -54,6 +55,20 @@ describe("findSetupBot", () => {
 
   it("ignores a row with no uid — there is no DM to open", () => {
     expect(findSetupBot([bot("setup", "  ")])).toBeNull();
+  });
+});
+
+describe("isSetupBotCreate", () => {
+  it("is true for the setup handle, whatever the casing or padding", () => {
+    expect(isSetupBotCreate({ name: "setup" })).toBe(true);
+    expect(isSetupBotCreate({ name: " Setup " })).toBe(true);
+  });
+
+  it("is false for any other bot, so those keep the generic new-bot thread", () => {
+    expect(isSetupBotCreate({ name: "scout" })).toBe(false);
+    expect(isSetupBotCreate({ name: "setup-helper" })).toBe(false);
+    expect(isSetupBotCreate({ name: "" })).toBe(false);
+    expect(isSetupBotCreate(null)).toBe(false);
   });
 });
 

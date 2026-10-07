@@ -223,6 +223,35 @@ describe("#welcome Run Setup creates the setup bot", () => {
     expect(window.localStorage.getItem(WELCOME_SETUP_RUN_KEY)).toBe("1");
   });
 
+  it("the setup bot's DM has only its own messages: no generic new-bot greeting, access request or skills prompt", async () => {
+    // Regression: since the New bot modal's in-thread setup (acf10e805), every
+    // Local create added "Hi, I'm setup. Two things before I start…", an
+    // access request for knowledge/, "Pick my skills" and "Verified, I'm
+    // ready" under the setup bot's own intro, from a sender named "setup".
+    const dm: Array<Record<string, unknown>> = [];
+    const wakes = createChatWakeBus();
+    await mountWelcome(adapter({ dm }), fakeSetupRun(), wakes);
+    q<HTMLButtonElement>('[data-testid="setup-run"]')!.click();
+    await vi.waitFor(() => expect(q('[data-testid="channel-name"]')?.textContent).toContain("setup"));
+    dm.push({
+      eventId: "evt_intro",
+      body: SETUP_BOT_INTRO,
+      fromPersonUid: SETUP_BOT_UID,
+      fromDisplayName: "setup",
+      createdAt: new Date().toISOString(),
+      direction: "in",
+    });
+    wakes.emit("mesh:catchup", { reason: "focus" });
+    await vi.waitFor(() => expect(q('[data-testid="agent-thinking-row"]')).toBeTruthy());
+    await settle(20);
+
+    const text = host.textContent ?? "";
+    expect(text).not.toContain("Two things before I start");
+    expect(text).not.toContain("Pick my skills");
+    expect(text).not.toContain("Verified, I'm ready");
+    expect(text).not.toContain("Access request");
+  });
+
   it("#welcome is just the banner: the setup button and the Learn HQ resources, no messages, no composer", async () => {
     // Setup already ran here, so nothing navigates away from #welcome.
     window.localStorage.setItem(WELCOME_SETUP_RUN_KEY, "1");
