@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::SecondsFormat;
-use hq_desktop_core::sync_outcome::termination_fingerprint_token;
+use hq_desktop_core::sync_outcome::{
+    classify_runner_error_class, sentry_path_tag, termination_fingerprint_token, RunnerErrorRollup,
+};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
@@ -79,6 +81,7 @@ pub struct RunTotals {
     /// can emit a synthetic AllComplete and unblock the UI from a stuck
     /// "syncing" state.
     pub all_complete_seen: bool,
+    pub runner_error_rollup: RunnerErrorRollup,
 }
 
 impl RunTotals {
@@ -92,6 +95,7 @@ impl RunTotals {
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
             }
+            SyncEvent::Error(error) => self.runner_error_rollup.record_message(&error.message),
             _ => {}
         }
     }
@@ -294,7 +298,33 @@ fn classify_runner_exit_error(message: &str) -> &'static str {
     {
         "targeted-pull-failed"
     } else {
-        "unknown"
+        match classify_runner_error_class(message).fingerprint_token() {
+            "other" => "unknown",
+            stable_class => stable_class,
+        }
+    }
+}
+
+fn runner_exit_error_class(error_class: Option<&'static str>, totals: &RunTotals) -> &'static str {
+    if let Some(error_class) = error_class {
+        if error_class != "unknown" {
+            return error_class;
+        }
+    }
+    match totals.runner_error_rollup.fingerprint_token() {
+        "none" | "other" => "unknown",
+        stable_class => stable_class,
+    }
+}
+
+fn remember_runner_exit_error(
+    current: &Mutex<Option<&'static str>>,
+    candidate: Option<&'static str>,
+) {
+    let Some(candidate) = candidate else { return };
+    let mut current = current.lock().unwrap_or_else(|error| error.into_inner());
+    if candidate != "unknown" || current.is_none() {
+        *current = Some(candidate);
     }
 }
 
@@ -340,8 +370,9 @@ fn report_runner_exit_error(
     code: Option<i32>,
     signal: Option<i32>,
     runner_error_class: Option<&'static str>,
+    totals: &RunTotals,
 ) -> tauri::Result<()> {
-    let error_class = runner_error_class.unwrap_or("unknown");
+    let error_class = runner_exit_error_class(runner_error_class, totals);
     let fingerprint = runner_exit_fingerprint(code, signal, error_class);
     let fingerprint_refs = fingerprint.iter().map(String::as_str).collect::<Vec<_>>();
     sentry::with_scope(
@@ -352,6 +383,7 @@ fn report_runner_exit_error(
                 "runner.error_class",
                 sentry::protocol::Value::String(error_class.to_string()),
             );
+            scope.set_tag("path", sentry_path_tag(&payload.path));
         },
         || sentry::capture_message(&format!("[sync] {}", payload.message), sentry::Level::Error),
     );
@@ -1075,9 +1107,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 log("runner.stdout", &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                if let Some(error) = runner_exit_error_from_line(&line) {
-                    *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
-                }
+                remember_runner_exit_error(&runner_exit_error, runner_exit_error_from_line(&line));
                 handle_sync_line(
                     &app_bg,
                     &hq_folder_for_handler,
@@ -1091,8 +1121,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // most likely place the cause shows up (npx download retry,
                 // node uncaught exception, runner panic, etc.).
                 log("runner.stderr", &line);
-                if let Some(error) = runner_exit_error_from_line(&line) {
-                    *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                remember_runner_exit_error(&runner_exit_error, runner_exit_error_from_line(&line));
+                if let Some(SyncEvent::Error(error)) = crate::events::parse_sync_line(&line) {
+                    totals
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .runner_error_rollup
+                        .record_message(&error.message);
                 }
                 // Keep only a fixed Sentry breadcrumb marker for each stderr
                 // line. Raw output remains in the local sync log; the last
@@ -1126,6 +1161,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // bailed before emitting a useful protocol stream.
                 if !success {
                     let error_class = *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner());
+                    let totals_snapshot = totals.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     let _ = report_runner_exit_error(
                         &app_bg,
                         crate::events::SyncErrorEvent {
@@ -1136,6 +1172,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                         code,
                         signal,
                         error_class,
+                        &totals_snapshot,
                     );
                 } else {
                     // Successful exit but no AllComplete observed (e.g.
@@ -1249,6 +1286,7 @@ mod tests {
                 payload["extra"]["runner.error_class"],
                 "journal-invalid-payload"
             );
+            assert!(payload.get("message").is_none());
             assert!(payload["extra"].get("runner.error_message").is_none());
         }
 
@@ -1261,6 +1299,7 @@ mod tests {
         assert!(unknown_payload["extra"]
             .get("runner.error_message")
             .is_none());
+        assert!(unknown_payload.get("message").is_none());
     }
 
     #[test]
@@ -1272,6 +1311,74 @@ mod tests {
                 "exit:2".to_string(),
                 "journal-invalid-payload".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn runner_exit_keeps_last_recognized_class_and_rolls_up_unknown() {
+        let journal = r#"{"type":"error","path":"(runner)","message":"HQSNAP4 has an invalid journal payload"}"#;
+        let generic = r#"{"type":"error","path":"(runner)","message":"a generic runner error"}"#;
+        let mut totals = RunTotals::default();
+        let current = Mutex::new(None);
+        for line in [journal, generic] {
+            remember_runner_exit_error(&current, runner_exit_error_from_line(line));
+            if let Some(event) = crate::events::parse_sync_line(line) {
+                totals.accumulate(&event);
+            }
+        }
+        let class = *current.lock().unwrap_or_else(|error| error.into_inner());
+        assert_eq!(class, Some("journal-invalid-payload"));
+        assert_eq!(
+            runner_exit_error_class(class, &totals),
+            "journal-invalid-payload"
+        );
+        assert_eq!(
+            runner_exit_fingerprint(Some(2), None, runner_exit_error_class(class, &totals)),
+            vec![
+                "sync-runner-exit".to_string(),
+                "exit:2".to_string(),
+                "journal-invalid-payload".to_string()
+            ]
+        );
+
+        let mut fallback = RunTotals::default();
+        fallback
+            .runner_error_rollup
+            .record_message("ENOSPC: no space left on device");
+        assert_eq!(
+            runner_exit_error_class(Some("unknown"), &fallback),
+            "enospc"
+        );
+    }
+
+    #[test]
+    fn windows_classifier_matches_shared_fixed_vocabulary_samples() {
+        for message in [
+            "ENOSPC: no space left on device",
+            "EACCES: permission denied",
+            "EPERM: operation not permitted",
+            "EBUSY: resource busy",
+            "ENOENT: no such file or directory",
+            "EEXIST: file already exists",
+            "ENOTEMPTY: directory not empty",
+            "EXDEV: cross-device link not permitted",
+            "upload failed: socket hang up",
+            "Unauthorized: request rejected",
+            "unclassified failure",
+        ] {
+            let expected = match classify_runner_error_class(message).fingerprint_token() {
+                "other" => "unknown",
+                class => class,
+            };
+            assert_eq!(classify_runner_exit_error(message), expected, "{message}");
+        }
+        assert_eq!(
+            classify_runner_exit_error("HQSNAP4 has an invalid journal payload"),
+            "journal-invalid-payload"
+        );
+        assert_eq!(
+            classify_runner_exit_error("state-store lock is held"),
+            "state-store-lock"
         );
     }
 

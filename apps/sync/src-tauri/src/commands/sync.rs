@@ -188,7 +188,10 @@ fn capture_sync_error_impl(
             if let Some(c) = company {
                 scope.set_tag("company", c);
             }
-            scope.set_tag("path", path);
+            scope.set_tag(
+                "path",
+                &hq_desktop_core::sync_outcome::sentry_path_tag(path),
+            );
             if let Some(fingerprint) = fingerprint {
                 scope.set_fingerprint(Some(fingerprint));
             }
@@ -3612,11 +3615,13 @@ mod tests {
                 payload["extra"]["runner.error_class"],
                 "journal-invalid-payload"
             );
+            assert!(payload.get("message").is_none());
             assert!(payload["extra"].get("runner.error_message").is_none());
         }
 
         let unknown = runner_exit_error_payload(Some("unknown"), &RunTotals::default());
         assert!(unknown["extra"].get("runner.error_message").is_none());
+        assert!(unknown.get("message").is_none());
     }
 
     #[test]
@@ -3690,6 +3695,7 @@ mod tests {
         let event = events.next().expect("first event");
         let other_root_event = events.next().expect("second event");
         assert_eq!(event.tags["error_class"], "journal-invalid-payload");
+        assert_eq!(event.tags["path"], "(runner)");
         assert_eq!(
             event.extra["runner.error_class"],
             sentry::protocol::Value::String("journal-invalid-payload".to_string())
