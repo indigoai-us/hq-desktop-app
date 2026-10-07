@@ -53,6 +53,11 @@ pub const CACHE_CAP_BYTES: u64 = 40 * 1024 * 1024;
 
 static NEXT_LABEL: AtomicU64 = AtomicU64::new(0);
 
+/// Label prefix of the hidden snapshot windows. The app-wide external-links
+/// hook skips these so a capture load is not handed to the system browser;
+/// the window's own `on_navigation` below is the gate for them.
+pub const SNAPSHOT_LABEL_PREFIX: &str = "deploy-snapshot-";
+
 /// Custom scheme the hidden window uses for protected pages.
 pub const PREVIEW_SCHEME: &str = "hqpreview";
 /// Request header hq-deploy's gate accepts in place of the access cookie.
@@ -377,7 +382,7 @@ pub async fn capture_page<R: Runtime>(
     allow_http_loopback: bool,
 ) -> Result<Vec<u8>, String> {
     let label = format!(
-        "deploy-snapshot-{}",
+        "{SNAPSHOT_LABEL_PREFIX}{}",
         NEXT_LABEL.fetch_add(1, Ordering::Relaxed)
     );
     let window = open_hidden(app, &label, url, allow_http_loopback)?;

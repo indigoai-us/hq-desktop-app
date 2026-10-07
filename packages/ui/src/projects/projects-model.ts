@@ -110,6 +110,10 @@ export interface Project {
   creatorFallback?: string | null;
   /** Last write of the project's prd.json on this computer (activity only). */
   prdModifiedAt?: string | null;
+  /** Short repo names the PRD declares in its metadata (display only). */
+  repos?: string[];
+  /** The PRD's working branch (`branchName`), when declared. */
+  branchName?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +900,40 @@ export function portfolioColumn(
   }
 
   return "not-started";
+}
+
+/** Per-machine view setting: whether the Complete column/group is shown. */
+export const SHOW_COMPLETE_STORAGE_KEY = "hq.projects.showComplete";
+
+type ViewStorage = Pick<Storage, "getItem" | "setItem"> | null | undefined;
+
+/** Complete projects are hidden unless this machine chose to show them. */
+export function readShowComplete(storage: ViewStorage): boolean {
+  try {
+    return storage?.getItem(SHOW_COMPLETE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writeShowComplete(storage: ViewStorage, show: boolean): void {
+  try {
+    storage?.setItem(SHOW_COMPLETE_STORAGE_KEY, show ? "1" : "0");
+  } catch (err) {
+    console.warn("could not save the show-complete view setting:", err);
+  }
+}
+
+/**
+ * Columns the board and list render. Complete is left out by default; it comes
+ * back when this machine chose to show it or the state filter asks for it.
+ */
+export function visiblePortfolioColumns(
+  filter: PortfolioStateFilter,
+  showComplete: boolean,
+): readonly PortfolioColumn[] {
+  if (showComplete || filter === "complete") return PORTFOLIO_COLUMNS;
+  return PORTFOLIO_COLUMNS.filter((column) => column !== "complete");
 }
 
 /** Whether a portfolio column passes the toolbar state filter. */
