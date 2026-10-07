@@ -42,11 +42,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use hq_desktop_core::client_health::{
-    parse_client_health_heartbeat, ClientHealthArch, ClientHealthFailureReason,
-    ClientHealthHeartbeat, ClientHealthInstallOutcome, ClientHealthPlatform, ClientHealthSource,
-    ClientHealthSyncState, ClientHealthUpdateDeferReason, ClientHealthUpdaterState,
-    ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION, CLIENT_HEALTH_MAX_CONFLICT_COUNT,
-    CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
+    clear_staged_update_signal_at_process_start, parse_client_health_heartbeat, ClientHealthArch,
+    ClientHealthFailureReason, ClientHealthHeartbeat, ClientHealthInstallOutcome,
+    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState, ClientHealthUpdateDeferReason,
+    ClientHealthUpdaterState, ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION,
+    CLIENT_HEALTH_MAX_CONFLICT_COUNT, CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
 };
 use hq_desktop_core::sync_outcome::RunTotals;
 
@@ -521,38 +521,15 @@ fn failure_reason_from_wire(value: &str) -> Option<ClientHealthFailureReason> {
     })
 }
 
-fn updater_state_from_wire(value: &str) -> Option<ClientHealthUpdaterState> {
-    use ClientHealthUpdaterState as U;
-    Some(match value {
-        "unchecked" => U::Unchecked,
-        "up_to_date" => U::UpToDate,
-        "update_available" => U::UpdateAvailable,
-        "update_downloading" => U::UpdateDownloading,
-        "update_ready" => U::UpdateReady,
-        "update_failed" => U::UpdateFailed,
-        "unsupported" => U::Unsupported,
-        _ => return None,
-    })
-}
-
 /// The desktop always ships an updater, so a never-observed ledger reports
 /// the closed value `unchecked` — never field absence (absence means "a
 /// client too old to report it", which this client is not).
 fn reported_updater_state(state: &ClientHealthState) -> ClientHealthUpdaterState {
-    if state.install_outcome.as_deref() == Some("staged")
-        && state
-            .update_defer_reason
-            .as_deref()
-            .and_then(update_defer_reason_from_wire)
-            .is_some()
-    {
-        return ClientHealthUpdaterState::UpdateReady;
-    }
-    state
-        .updater_state
-        .as_deref()
-        .and_then(updater_state_from_wire)
-        .unwrap_or(ClientHealthUpdaterState::Unchecked)
+    hq_desktop_core::client_health::reported_updater_state(
+        state.updater_state.as_deref(),
+        state.update_defer_reason.as_deref(),
+        state.install_outcome.as_deref(),
+    )
 }
 
 fn derive_failure_reason(
@@ -856,6 +833,17 @@ pub async fn emit_client_health_after_update(installed_version: &str) {
 /// Fire-and-forget startup + 5-minute health heartbeat loop. State-change
 /// triggers (`notify_client_health_state_changed`) wake it immediately, with
 /// a short debounce so a burst of related changes sends one heartbeat.
+pub(crate) fn clear_staged_update_signal_at_startup() {
+    if let Err(error) = with_state(|state| {
+        clear_staged_update_signal_at_process_start(
+            &mut state.update_defer_reason,
+            &mut state.install_outcome,
+        );
+    }) {
+        eprintln!("[client-health] startup staged-signal clear failed: {error}");
+    }
+}
+
 pub fn setup_client_health_heartbeat() {
     tauri::async_runtime::spawn(async move {
         loop {

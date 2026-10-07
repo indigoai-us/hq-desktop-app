@@ -330,6 +330,47 @@ closed_wire_enum!(
     }
 );
 
+/// Clear the persisted signal for a staged automatic update at process start.
+/// Staged packages are process-owned; a restarted client must not keep
+/// reporting a package that is no longer staged in memory.
+pub fn clear_staged_update_signal_at_process_start(
+    update_defer_reason: &mut Option<String>,
+    install_outcome: &mut Option<String>,
+) {
+    *update_defer_reason = None;
+    *install_outcome = None;
+}
+
+/// Derive the updater state sent on the heartbeat from the persisted ledger.
+/// A valid staged/deferred pair overrides the last observed updater state.
+pub fn reported_updater_state(
+    updater_state: Option<&str>,
+    update_defer_reason: Option<&str>,
+    install_outcome: Option<&str>,
+) -> ClientHealthUpdaterState {
+    if install_outcome == Some(ClientHealthInstallOutcome::Staged.wire_value())
+        && matches!(
+            update_defer_reason,
+            Some("busy_sync" | "busy_activity" | "pending_restart" | "other")
+        )
+    {
+        return ClientHealthUpdaterState::UpdateReady;
+    }
+
+    updater_state
+        .and_then(|value| match value {
+            "unchecked" => Some(ClientHealthUpdaterState::Unchecked),
+            "up_to_date" => Some(ClientHealthUpdaterState::UpToDate),
+            "update_available" => Some(ClientHealthUpdaterState::UpdateAvailable),
+            "update_downloading" => Some(ClientHealthUpdaterState::UpdateDownloading),
+            "update_ready" => Some(ClientHealthUpdaterState::UpdateReady),
+            "update_failed" => Some(ClientHealthUpdaterState::UpdateFailed),
+            "unsupported" => Some(ClientHealthUpdaterState::Unsupported),
+            _ => None,
+        })
+        .unwrap_or(ClientHealthUpdaterState::Unchecked)
+}
+
 closed_wire_enum!(
     /// Outcome of one diagnostic check.
     ClientHealthCheckStatus {
@@ -1364,6 +1405,43 @@ mod tests {
 
     fn value(raw: &str) -> Value {
         serde_json::from_str(raw).expect("fixture must be valid JSON")
+    }
+
+    #[test]
+    fn startup_clears_stale_staged_signal_before_heartbeat() {
+        let mut update_defer_reason = Some("busy_sync".to_string());
+        let mut install_outcome = Some("staged".to_string());
+
+        clear_staged_update_signal_at_process_start(&mut update_defer_reason, &mut install_outcome);
+
+        let updater_state = reported_updater_state(
+            Some("up_to_date"),
+            update_defer_reason.as_deref(),
+            install_outcome.as_deref(),
+        );
+        let mut persisted = value(HEARTBEAT_HEALTHY);
+        persisted["updaterState"] = serde_json::json!(updater_state.wire_value());
+        if let Some(reason) = update_defer_reason {
+            persisted["updateDeferReason"] = serde_json::json!(reason);
+        } else {
+            persisted
+                .as_object_mut()
+                .unwrap()
+                .remove("updateDeferReason");
+        }
+        if let Some(outcome) = install_outcome {
+            persisted["installOutcome"] = serde_json::json!(outcome);
+        } else {
+            persisted.as_object_mut().unwrap().remove("installOutcome");
+        }
+
+        let heartbeat = parse_client_health_heartbeat(&persisted).expect("heartbeat parses");
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpToDate)
+        );
+        assert_eq!(heartbeat.update_defer_reason, None);
+        assert_eq!(heartbeat.install_outcome, None);
     }
 
     #[test]

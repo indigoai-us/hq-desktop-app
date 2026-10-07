@@ -1375,6 +1375,11 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
 
+            // A staged updater package is owned by the current process. Clear
+            // persisted deferral markers before the updater can stage a new
+            // package or the first client-health heartbeat can run.
+            commands::client_health::clear_staged_update_signal_at_startup();
+
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the
             // user touches anything sensitive. Server-side source of truth is
