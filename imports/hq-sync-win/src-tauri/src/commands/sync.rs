@@ -1230,6 +1230,7 @@ mod tests {
         for detail in untrusted_details {
             let line = serde_json::json!({
                 "type": "error",
+                "path": "(runner)",
                 "message": format!("HQSNAP4 has an invalid journal payload: {detail}")
             })
             .to_string();
