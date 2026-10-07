@@ -9,9 +9,10 @@
    *
    * Design source: hq-desktop-preview-v2 ?view=v2 members popover.
    */
-  import type {
-    ChannelStatusModel,
-    StatusPersonRow,
+  import {
+    canOfferMembershipActions,
+    type ChannelStatusModel,
+    type StatusPersonRow,
   } from "./channel-status-model.js";
   import type { LocalBotRow } from "@hq/platform";
   import BotKindChip from "./BotKindChip.svelte";
@@ -82,6 +83,7 @@
 
   function canRemove(row: StatusPersonRow): boolean {
     if (!onremovemember) return false;
+    if (!canOfferMembershipActions(row)) return false;
     // The roster is asynchronous. Only offer self-leave once the caller is
     // explicitly known to be a member; unknown/stale role data must fail
     // closed because the server rejects owner self-leave.

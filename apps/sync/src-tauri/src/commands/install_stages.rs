@@ -53,6 +53,7 @@ pub(crate) enum OnboardingErrorCategory {
     CancelCleanupFailed,
     UnsupportedPlatform,
     Disk,
+    DiskFull,
     Unknown,
 }
 
@@ -71,6 +72,7 @@ impl OnboardingErrorCategory {
             Self::CancelCleanupFailed => "cancel-cleanup-failed",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
+            Self::DiskFull => "disk-full",
             Self::Unknown => "unknown",
         }
     }

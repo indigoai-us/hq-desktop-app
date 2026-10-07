@@ -78,6 +78,7 @@ pub mod hq_context;
 pub mod hq_resolver;
 pub mod hq_version;
 pub mod ignore;
+pub mod installer_disk_space;
 pub mod journal;
 pub mod library_local;
 pub mod lifecycle;

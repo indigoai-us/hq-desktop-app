@@ -1191,6 +1191,9 @@ export function createSyncPlatformAdapter(
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),
       pauseJob: (agentUid, jobId) =>
         hqProJson('POST', AGENT_PATHS.pauseJob(agentUid, jobId)),
+      getProfile: (agentUid) => hqProJson('GET', AGENT_PATHS.profile(agentUid)),
+      runtimeAction: (agentUid, input) =>
+        hqProJson('POST', AGENT_PATHS.runtimeActions(agentUid), input),
       updateProfile: (agentUid, patch) =>
         hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
       stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
@@ -1583,6 +1586,9 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      getHqAnywherePersonSetting: () => call('get_hq_anywhere_person_setting'),
+      putHqAnywherePersonSetting: (value) =>
+        call('put_hq_anywhere_person_setting', { value }),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

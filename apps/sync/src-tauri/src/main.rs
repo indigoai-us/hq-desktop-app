@@ -782,6 +782,7 @@ fn main() {
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
+            commands::personal::get_hq_anywhere_person_setting,
             commands::personal::put_hq_anywhere_person_setting,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
@@ -1374,6 +1375,11 @@ fn main() {
 
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
+
+            // A staged updater package is owned by the current process. Clear
+            // persisted deferral markers before the updater can stage a new
+            // package or the first client-health heartbeat can run.
+            commands::client_health::clear_staged_update_signal_at_startup();
 
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the

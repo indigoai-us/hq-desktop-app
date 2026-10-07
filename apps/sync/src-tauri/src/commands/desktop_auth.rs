@@ -1364,6 +1364,7 @@ async fn record_desktop_login_completed_inner<R: tauri::Runtime>(
 /// than guessing that it belongs to the manual-control arm.
 #[tauri::command]
 pub async fn record_onboarding_workspace_selected(app: AppHandle, company_uid: String) {
+    crate::commands::cdp_mirror::note_onboarding_company_selected(&company_uid);
     let authorizer = workspace_receipt_authorization_for_current_session().await;
     record_desktop_workspace_selected(&app, company_uid, authorizer);
 }
