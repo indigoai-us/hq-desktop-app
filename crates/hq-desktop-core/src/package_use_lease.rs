@@ -16,7 +16,8 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
-const MAX_PACKAGE_USE_HOLDER_AGE_MS: u64 = 3 * 60 * 60 * 1000;
+const DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS: u64 = 3 * 60 * 60 * 1000;
+const MAX_PACKAGE_USE_HOLDER_AGE_ENV: &str = "HQ_CLI_PACKAGE_USE_MAX_HOLDER_AGE_MS";
 // The Node writer and macOS kernel reader derive process-start timestamps from
 // separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
@@ -373,12 +374,31 @@ fn lease_record_is_live(record: &LeaseRecord) -> bool {
         .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
 }
 
-fn lease_file_exceeds_maximum_hold(modified_at: Option<std::time::SystemTime>, now_ms: u64) -> bool {
+fn maximum_package_use_holder_age_ms_from(value: Option<&str>) -> u64 {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS)
+}
+
+fn maximum_package_use_holder_age_ms() -> u64 {
+    maximum_package_use_holder_age_ms_from(
+        std::env::var(MAX_PACKAGE_USE_HOLDER_AGE_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn lease_file_exceeds_maximum_hold(
+    modified_at: Option<std::time::SystemTime>,
+    now_ms: u64,
+    maximum_age_ms: u64,
+) -> bool {
     modified_at
         .and_then(|modified_at| modified_at.duration_since(std::time::UNIX_EPOCH).ok())
         .and_then(|modified_at| u64::try_from(modified_at.as_millis()).ok())
         .and_then(|modified_at_ms| now_ms.checked_sub(modified_at_ms))
-        .is_some_and(|age_ms| age_ms > MAX_PACKAGE_USE_HOLDER_AGE_MS)
+        .is_some_and(|age_ms| age_ms > maximum_age_ms)
 }
 
 fn scan_live_lease_records(paths: &PackageUseLeasePaths) -> Result<Vec<LeaseRecord>, String> {
@@ -690,6 +710,7 @@ impl PackageUseUpdateRequest {
             )
         })?;
         let mut live_records = Vec::new();
+        let maximum_hold_age_ms = maximum_package_use_holder_age_ms();
         for entry in entries {
             let entry = entry.map_err(|error| {
                 format!(
@@ -726,7 +747,7 @@ impl PackageUseUpdateRequest {
             // MCP purposes); reclaim an over-ceiling holder regardless of its
             // optional purpose field while this caller owns the updater lock.
             if lease_record_is_live(&record)
-                && !lease_file_exceeds_maximum_hold(lease_modified_at, now_ms)
+                && !lease_file_exceeds_maximum_hold(lease_modified_at, now_ms, maximum_hold_age_ms)
             {
                 live_records.push(record);
             } else {
@@ -1065,6 +1086,23 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified_at))
             .unwrap();
+    }
+
+    #[test]
+    fn package_use_holder_age_override_is_positive_and_falls_back_to_default() {
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(None),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(Some("invalid")),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(Some("0")),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(maximum_package_use_holder_age_ms_from(Some("1200")), 1200);
     }
 
     fn record_with_version(path: &Path, pid: u32, start_time_ms: u64, hq_version: &str) {
@@ -1482,7 +1520,7 @@ mod tests {
         let start = process_start_time_ms(pid).unwrap();
         let lease_path = paths.lease_directory.join(format!("{pid}-{start}.json"));
         record_with_details(&lease_path, pid, start, "5.304.0", None, None);
-        let now_ms = start + MAX_PACKAGE_USE_HOLDER_AGE_MS + 1;
+        let now_ms = start + DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS + 1;
         set_file_modified_time_ms(&lease_path, start);
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
 
@@ -1506,7 +1544,7 @@ mod tests {
         let (_temp, paths) = fixture();
         let pid = std::process::id();
         let process_start_ms = process_start_time_ms(pid).unwrap();
-        let now_ms = process_start_ms + MAX_PACKAGE_USE_HOLDER_AGE_MS + 60_000;
+        let now_ms = process_start_ms + DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS + 60_000;
         let lease_path = paths
             .lease_directory
             .join(format!("{pid}-{process_start_ms}.json"));
