@@ -12308,6 +12308,7 @@
                   composerLocked={composerLocked}
                   {onopenurl}
                   channelId={selectedRow.channelId}
+                  peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
@@ -12470,6 +12471,7 @@
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
+                    companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}
