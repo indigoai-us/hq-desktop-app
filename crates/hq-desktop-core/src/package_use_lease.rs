@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 const STATE_SUBDIR: &str = "hq-cli/package-use";
 const WINDOWS_STATE_SUBDIR: &str = "hq-cli/state/package-use";
 const UPDATE_REQUEST_NAME: &str = "update.pending.json";
+const DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS: u64 = 3 * 60 * 60 * 1000;
+const MAX_PACKAGE_USE_HOLDER_AGE_ENV: &str = "HQ_CLI_PACKAGE_USE_MAX_HOLDER_AGE_MS";
 // The Node writer and macOS kernel reader derive process-start timestamps from
 // separate sources. Keep this bounded allowance specific to macOS.
 #[cfg(any(target_os = "macos", test))]
@@ -372,6 +374,33 @@ fn lease_record_is_live(record: &LeaseRecord) -> bool {
         .is_some_and(|actual| same_process_start(actual, record.start_time_ms))
 }
 
+fn maximum_package_use_holder_age_ms_from(value: Option<&str>) -> u64 {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS)
+}
+
+fn maximum_package_use_holder_age_ms() -> u64 {
+    maximum_package_use_holder_age_ms_from(
+        std::env::var(MAX_PACKAGE_USE_HOLDER_AGE_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn lease_file_exceeds_maximum_hold(
+    modified_at: Option<std::time::SystemTime>,
+    now_ms: u64,
+    maximum_age_ms: u64,
+) -> bool {
+    modified_at
+        .and_then(|modified_at| modified_at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|modified_at| u64::try_from(modified_at.as_millis()).ok())
+        .and_then(|modified_at_ms| now_ms.checked_sub(modified_at_ms))
+        .is_some_and(|age_ms| age_ms > maximum_age_ms)
+}
+
 fn scan_live_lease_records(paths: &PackageUseLeasePaths) -> Result<Vec<LeaseRecord>, String> {
     let entries = fs::read_dir(&paths.lease_directory).map_err(|error| {
         format!(
@@ -667,6 +696,24 @@ impl PackageUseUpdateRequest {
     fn try_acquire_with_live_records(
         &mut self,
     ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
+        self.try_acquire_with_live_records_at(now_epoch_ms())
+    }
+
+    fn try_acquire_with_live_records_at(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
+        self.try_acquire_with_live_records_at_and_maximum_age(
+            now_ms,
+            maximum_package_use_holder_age_ms(),
+        )
+    }
+
+    fn try_acquire_with_live_records_at_and_maximum_age(
+        &mut self,
+        now_ms: u64,
+        maximum_hold_age_ms: u64,
+    ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
         let entries = fs::read_dir(&self.paths.lease_directory).map_err(|error| {
             format!(
                 "Could not inspect HQ CLI package-use leases ({})",
@@ -687,6 +734,10 @@ impl PackageUseUpdateRequest {
             {
                 continue;
             }
+            let lease_modified_at = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok());
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -700,7 +751,13 @@ impl PackageUseUpdateRequest {
             let record = serde_json::from_slice::<LeaseRecord>(&bytes).map_err(|error| {
                 format!("Could not decode an HQ CLI package-use lease ({error})")
             })?;
-            if lease_record_is_live(&record) {
+            // CLI holders refresh their lease-file mtime every five minutes.
+            // Reclaim only when that liveness signal exceeds the configurable
+            // ceiling, regardless of optional purpose, while this caller owns
+            // the updater lock.
+            if lease_record_is_live(&record)
+                && !lease_file_exceeds_maximum_hold(lease_modified_at, now_ms, maximum_hold_age_ms)
+            {
                 live_records.push(record);
             } else {
                 match fs::remove_file(&path) {
@@ -991,6 +1048,8 @@ fn process_start_tolerance_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::time::UNIX_EPOCH;
     use tempfile::tempdir;
 
     fn fixture() -> (tempfile::TempDir, PackageUseLeasePaths) {
@@ -1026,6 +1085,33 @@ mod tests {
             root_id: root_id.map(str::to_string),
         };
         fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    fn set_file_modified_time_ms(path: &Path, modified_at_ms: u64) {
+        let modified_at = UNIX_EPOCH + Duration::from_millis(modified_at_ms);
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified_at))
+            .unwrap();
+    }
+
+    #[test]
+    fn package_use_holder_age_override_is_positive_and_falls_back_to_default() {
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(None),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(Some("invalid")),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(
+            maximum_package_use_holder_age_ms_from(Some("0")),
+            DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS
+        );
+        assert_eq!(maximum_package_use_holder_age_ms_from(Some("1200")), 1200);
     }
 
     fn record_with_version(path: &Path, pid: u32, start_time_ms: u64, hq_version: &str) {
@@ -1436,6 +1522,101 @@ mod tests {
         assert!(prefix_wide.try_acquire().unwrap().is_none());
     }
 
+    #[test]
+    fn reclaims_a_live_over_ceiling_legacy_holder_with_absent_purpose() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        let lease_path = paths.lease_directory.join(format!("{pid}-{start}.json"));
+        record_with_details(&lease_path, pid, start, "5.304.0", None, None);
+        let now_ms = start + DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS + 1;
+        set_file_modified_time_ms(&lease_path, start);
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let (guard, live_records) = request
+            .try_acquire_with_live_records_at(now_ms)
+            .unwrap();
+
+        assert!(
+            guard.is_some(),
+            "an over-ceiling live holder must be reclaimed"
+        );
+        assert!(live_records.is_empty());
+        assert!(
+            !lease_path.exists(),
+            "the stale live-holder record is removed"
+        );
+    }
+
+    #[test]
+    fn keeps_a_recent_heartbeat_from_a_long_running_live_process() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let process_start_ms = process_start_time_ms(pid).unwrap();
+        let maximum_hold_age_ms = 100;
+        std::thread::sleep(Duration::from_millis(maximum_hold_age_ms + 10));
+        let lease_path = paths
+            .lease_directory
+            .join(format!("{pid}-{process_start_ms}.json"));
+        record_with_details(
+            &lease_path,
+            pid,
+            process_start_ms,
+            "5.342.4",
+            Some("daemon"),
+            None,
+        );
+        std::thread::sleep(Duration::from_millis(10));
+        let heartbeat_ms = lease_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(heartbeat_ms.saturating_sub(process_start_ms) > maximum_hold_age_ms);
+        let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let (guard, live_records) = request
+            .try_acquire_with_live_records_at_and_maximum_age(
+                heartbeat_ms + 1,
+                maximum_hold_age_ms,
+            )
+            .unwrap();
+
+        assert!(guard.is_none(), "a recent lease must keep blocking the updater");
+        assert_eq!(live_records.len(), 1, "the live lease stays in the scan");
+        assert!(lease_path.exists(), "a recent live lease must not be removed");
+    }
+
+    #[tokio::test]
+    async fn waits_for_a_young_live_daemon_and_keeps_its_age_bucket() {
+        let (_temp, paths) = fixture();
+        let pid = std::process::id();
+        let start = process_start_time_ms(pid).unwrap();
+        record_with_details(
+            &paths.lease_directory.join(format!("{pid}-{start}.json")),
+            pid,
+            start,
+            "5.342.4",
+            Some("daemon"),
+            None,
+        );
+        let request = PackageUseUpdateRequest::begin_at(paths).unwrap();
+
+        let error = match request.wait_with_summary(Duration::ZERO).await {
+            Err(error) => error,
+            Ok(_guard) => panic!("a young live daemon must preserve the timeout report"),
+        };
+        let PackageUseLeaseWaitError::Timeout(summary) = error else {
+            panic!("a young live daemon must preserve the timeout report");
+        };
+
+        assert_eq!(summary.live_holder_count, LiveHolderCountBucket::One);
+        assert_eq!(summary.oldest_holder_age, HolderAgeBucket::Under10m);
+        assert_eq!(summary.oldest_holder_purpose, HolderPurposeBucket::Daemon);
+    }
 
     #[test]
     fn update_request_keeps_pid_and_records_legacy_root_id() {

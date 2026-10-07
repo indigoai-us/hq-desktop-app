@@ -14,6 +14,7 @@ The release moves it under the version it ships in.
 - App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
 - Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
 - People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+- Desktop updates reclaim stale HQ CLI package-use leases while preserving live long-running CLI holders through their periodic heartbeat.
 - CLI update timeout messages stay actionable when lease-holder details cannot be read.
 
 - Runner exit reports now include a bounded reason when the runner provides one.
