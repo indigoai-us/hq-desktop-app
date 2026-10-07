@@ -7,6 +7,8 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
+- Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
 
 - Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
 - App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
