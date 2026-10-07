@@ -13077,6 +13077,8 @@
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
+            companyUid={companyPaneCompany.uid ?? null}
+            {avatarByUid}
             onsignin={onsignin ? startReauth : undefined}
           />
         {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
@@ -13173,6 +13175,8 @@
             {adapter}
             slug={companyPaneCompany.slug ?? ""}
             companyLabel={companyPaneCompany.label}
+            companyUid={companyPaneCompany.uid ?? null}
+            {avatarByUid}
             onsignin={onsignin ? startReauth : undefined}
           />
         {:else if railPlaceholder?.id === "goals" && companyPaneCompany}

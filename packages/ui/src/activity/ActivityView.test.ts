@@ -15,8 +15,8 @@ afterEach(async () => {
   localStorage.clear();
 });
 
-describe("ActivityView tokens", () => {
-  it("shows 30 day bars with weekends dimmed on the Tokens tab", async () => {
+describe("ActivityView without a telemetry read", () => {
+  it("opens on the team list with the range control and no view switch", () => {
     host = document.createElement("div");
     document.body.append(host);
     component = mount(ActivityView, {
@@ -24,16 +24,10 @@ describe("ActivityView tokens", () => {
       props: { slug: "indigo", companyLabel: "Indigo" },
     });
     flushSync();
-    const tokens = [...host.querySelectorAll("button")].find((button) => button.textContent === "Tokens");
-    tokens?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    flushSync();
-    await expect
-      .poll(() => host?.querySelector("[data-testid='token-day-strip']")?.getAttribute("data-days"))
-      .toBe("30");
-    const strip = host?.querySelector("[data-testid='token-day-strip']");
-    const bars = [...(strip?.querySelectorAll("i") ?? [])];
-    expect(bars).toHaveLength(30);
-    expect(bars.some((bar) => bar.getAttribute("data-weekend") === "true")).toBe(true);
-    expect(bars.filter((bar) => bar.getAttribute("data-weekend") === "true").length).toBeLessThan(30);
+    expect(host.querySelector("[aria-label='Activity views']")).toBeNull();
+    expect(host.querySelector("[aria-label='Range']")).not.toBeNull();
+    expect(host.querySelector("[data-testid='activity-empty']")?.textContent).toContain(
+      "No team activity in this range yet.",
+    );
   });
 });
