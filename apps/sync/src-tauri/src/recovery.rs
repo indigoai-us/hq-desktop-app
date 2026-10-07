@@ -3,6 +3,7 @@
 //! tray/app menu.
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -360,6 +361,11 @@ pub async fn open_recovery_window(
 pub fn shell_ready(app: AppHandle) -> Result<(), String> {
     boot_log("shell_ready from UI");
     handle_event(&app, apply_watchdog(&app, |dog| dog.on_shell_ready()));
+    if UPDATES_ROUTE_AFTER_READY.swap(false, Ordering::AcqRel) {
+        boot_log("shell ready — opening deferred Settings → Updates");
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { open_updates_settings(app).await });
+    }
     Ok(())
 }
 
@@ -423,18 +429,17 @@ pub async fn present_manual_update_found(app: AppHandle) {
             boot_log(&format!(
                 "manual update check: opening Settings → Updates (phase={phase:?})"
             ));
-            if let Err(error) = crate::commands::desktop_alt::open_desktop_alt_window_inner(
-                app.clone(),
-                Some(UPDATES_SETTINGS_ROUTE),
-            )
-            .await
-            {
-                boot_log(&format!(
-                    "opening Settings → Updates failed: {error}; opening recovery"
-                ));
-                if let Err(error) = open_recovery_from_menu(app).await {
-                    boot_log(&format!("recovery open failed: {error}"));
-                }
+            open_updates_settings(app).await;
+        }
+        ManualUpdateSurface::UpdatesSettingsAfterReady => {
+            boot_log("manual update check: shell still loading — opening Settings → Updates after shell_ready");
+            UPDATES_ROUTE_AFTER_READY.store(true, Ordering::Release);
+            // shell_ready may have landed while the phase was being read.
+            let ready = app
+                .try_state::<WatchdogRuntime>()
+                .is_some_and(|runtime| runtime.phase() == WatchdogPhase::Ready);
+            if ready && UPDATES_ROUTE_AFTER_READY.swap(false, Ordering::AcqRel) {
+                open_updates_settings(app).await;
             }
         }
         ManualUpdateSurface::Recovery => {
@@ -450,6 +455,26 @@ pub async fn present_manual_update_found(app: AppHandle) {
 
 /// Desktop route for the Settings → Updates pane (`parseDesktopRoute`).
 const UPDATES_SETTINGS_ROUTE: &str = "settings:updates";
+
+/// Set when a manual check found an update while the shell was still loading;
+/// `shell_ready` consumes it and opens Settings → Updates.
+static UPDATES_ROUTE_AFTER_READY: AtomicBool = AtomicBool::new(false);
+
+async fn open_updates_settings(app: AppHandle) {
+    if let Err(error) = crate::commands::desktop_alt::open_desktop_alt_window_inner(
+        app.clone(),
+        Some(UPDATES_SETTINGS_ROUTE),
+    )
+    .await
+    {
+        boot_log(&format!(
+            "opening Settings → Updates failed: {error}; opening recovery"
+        ));
+        if let Err(error) = open_recovery_from_menu(app).await {
+            boot_log(&format!("recovery open failed: {error}"));
+        }
+    }
+}
 
 pub fn spawn_tray_open_recovery(app: AppHandle) {
     tauri::async_runtime::spawn(async move {

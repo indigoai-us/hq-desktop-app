@@ -100,24 +100,27 @@ pub fn should_skip_recovery_open(phase: WatchdogPhase, trigger: RecoveryTrigger)
 pub enum ManualUpdateSurface {
     /// The normal update prompt: the desktop window's Settings → Updates pane.
     UpdatesSettings,
+    /// The same prompt, held until the loading shell reports `shell_ready`:
+    /// a navigation sent before then can arrive before the shell listens.
+    UpdatesSettingsAfterReady,
     /// The native recovery window, for a desktop shell that cannot show it.
     Recovery,
 }
 
 /// Pure decision for a manual update check that found an update. The recovery
 /// window is only for a desktop shell the watchdog has judged broken (timed
-/// out, crashed, or safe mode). A healthy, closed, idle, or still-loading
-/// shell gets the normal prompt; a slow load is still covered by the watchdog
-/// timer, which opens recovery on its own if the shell never reports ready.
+/// out, crashed, or safe mode). A healthy, closed, or idle shell gets the
+/// normal prompt now. A still-loading shell gets it once it reports ready; if
+/// it never does, the watchdog timer opens recovery on its own.
 pub fn manual_update_found_surface(phase: WatchdogPhase) -> ManualUpdateSurface {
     match phase {
         WatchdogPhase::TimedOut | WatchdogPhase::Crashed | WatchdogPhase::SafeMode => {
             ManualUpdateSurface::Recovery
         }
-        WatchdogPhase::Idle
-        | WatchdogPhase::Waiting
-        | WatchdogPhase::Ready
-        | WatchdogPhase::UserClosed => ManualUpdateSurface::UpdatesSettings,
+        WatchdogPhase::Waiting => ManualUpdateSurface::UpdatesSettingsAfterReady,
+        WatchdogPhase::Idle | WatchdogPhase::Ready | WatchdogPhase::UserClosed => {
+            ManualUpdateSurface::UpdatesSettings
+        }
     }
 }
 
@@ -466,7 +469,6 @@ mod tests {
         // falls back to the native recovery window.
         for phase in [
             WatchdogPhase::Idle,
-            WatchdogPhase::Waiting,
             WatchdogPhase::Ready,
             WatchdogPhase::UserClosed,
         ] {
@@ -476,6 +478,12 @@ mod tests {
                 "{phase:?}"
             );
         }
+        // A still-loading shell may not be listening for navigation yet, so
+        // the Updates route waits for shell_ready instead of being dropped.
+        assert_eq!(
+            manual_update_found_surface(WatchdogPhase::Waiting),
+            ManualUpdateSurface::UpdatesSettingsAfterReady
+        );
         for phase in [
             WatchdogPhase::TimedOut,
             WatchdogPhase::Crashed,
