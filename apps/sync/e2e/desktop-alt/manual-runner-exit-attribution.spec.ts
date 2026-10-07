@@ -547,6 +547,12 @@ describe('runner-termination cause fingerprint — both-seams parity + enum-deri
   });
 
   it('adds only the last structured error message after scrubbing and tags the class', () => {
+    const telemetryContext = sliceBetween(
+      syncSource,
+      'fn runner_exit_telemetry_context(',
+      'fn capture_runner_exit_error(',
+      'runner_exit_telemetry_context',
+    );
     expect(syncSource).toContain('runner_exit_error_from_line(&line)');
     expect(syncSource).toContain('scrub_runner_error_message(&error.message)');
     expect(syncSource).toContain('"receiver.sync.failed"');
