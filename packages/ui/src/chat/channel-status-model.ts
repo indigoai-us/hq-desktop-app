@@ -81,6 +81,7 @@ export interface StatusPresenceInput {
   actorUid: string;
   status: "online" | "offline";
   actorType?: "human" | "agent";
+  displayName?: string | null;
 }
 
 /**
@@ -767,6 +768,31 @@ export function buildChannelStatusModel(
     } else {
       humans.push(row);
     }
+  }
+
+  // The company live read can contain online participants who are not on this
+  // channel's roster. Keep them visible in the presence view while leaving
+  // offline, unrostered company participants out of the project channel.
+  for (const participant of presence) {
+    const uid = (participant.actorUid ?? "").trim();
+    if (!uid || participant.status !== "online") continue;
+    if (
+      humans.some((row) => row.personUid === uid) ||
+      agents.some((row) => row.personUid === uid)
+    ) {
+      continue;
+    }
+    const isAgent = participant.actorType === "agent";
+    (isAgent ? agents : humans).push({
+      personUid: uid,
+      displayName: optionalString(participant.displayName) || uid,
+      email: null,
+      avatarUrl: null,
+      description: null,
+      role: isAgent ? "agent" : "member",
+      statusIcon: isAgent && liveByKey.has(uid) ? "running" : "idle",
+      online: true,
+    });
   }
 
   // Actors present only via live read (not yet in roster) still appear.

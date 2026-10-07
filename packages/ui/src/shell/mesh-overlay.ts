@@ -680,6 +680,20 @@ export function applyChannelRoster(
     members: named,
     companyLabel: model.companyLabel,
   });
+  const visibleUids = new Set([
+    ...rebuilt.members.map((member) => member.personUid),
+    ...rebuilt.agents.map((agent) => agent.personUid),
+  ]);
+  for (const member of model.members) {
+    if (!member.online || visibleUids.has(member.personUid)) continue;
+    rebuilt.members.push(member);
+    visibleUids.add(member.personUid);
+  }
+  for (const agent of model.agents) {
+    if (!agent.online || visibleUids.has(agent.personUid)) continue;
+    rebuilt.agents.push(agent);
+    visibleUids.add(agent.personUid);
+  }
   return {
     ...model,
     members: rebuilt.members,
