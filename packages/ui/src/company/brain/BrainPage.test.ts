@@ -445,9 +445,10 @@ describe("US-028 BrainPage", () => {
       flushSync();
     };
 
+    // Owner ask (2026-10-06): file rows show the note's frontmatter title, not the file stem.
     it("shows a folder tree rooted at the knowledge folder, folders first, without the path prefix", async () => {
       await mountIt();
-      expect(rowNames()).toEqual(["_archive", "gtm", "readme"]);
+      expect(rowNames()).toEqual(["_archive", "gtm", "Readme"]);
       expect(document.querySelector("[data-testid='brain-knowledge-tree']")?.textContent).not.toContain(root);
       expect(document.querySelectorAll("[data-testid='brain-list'] .item")).toHaveLength(0);
     });
@@ -465,14 +466,14 @@ describe("US-028 BrainPage", () => {
       await mountIt();
       const row = (name: string) => Array.from(document.querySelectorAll<HTMLButtonElement>("[data-testid='vault-tree-row']")).find((r) => r.querySelector(".vt-name")?.textContent === name)!;
       row("gtm").click();
-      await vi.waitFor(() => expect(rowNames()).toContain("pricing"));
-      row("pricing").click();
+      await vi.waitFor(() => expect(rowNames()).toContain("Pricing"));
+      row("Pricing").click();
       flushSync();
-      expect(row("pricing").getAttribute("aria-selected")).toBe("true");
+      expect(row("Pricing").getAttribute("aria-selected")).toBe("true");
       expect(document.body.textContent).toContain("price list");
       tab("What's fresh");
       tab("Browse tree");
-      expect(rowNames()).toContain("pricing");
+      expect(rowNames()).toContain("Pricing");
     });
 
     it("search shows matching files with their folders open; a conflict copy is marked", async () => {
@@ -481,7 +482,7 @@ describe("US-028 BrainPage", () => {
       search.value = "archived";
       search.dispatchEvent(new Event("input", { bubbles: true }));
       flushSync();
-      await vi.waitFor(() => expect(rowNames()).toContain("old-note"));
+      await vi.waitFor(() => expect(rowNames()).toContain("Old note"));
       expect(rowNames()).not.toContain("gtm");
       const conflict = Array.from(document.querySelectorAll("[data-testid='vault-tree-row']")).find((r) => r.textContent?.includes(".conflict-"));
       expect(conflict?.querySelector(".vt-note-inline")?.textContent).toBe("conflict copy");

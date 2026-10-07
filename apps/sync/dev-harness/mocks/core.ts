@@ -290,12 +290,12 @@ const COMPANY_GOALS = {
 };
 
 const COMPANY_PROJECTS = [
-  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3, provenance: { owner: 'Corey Epstein', creator: 'Maya Chen', origin: 'Indigo board' } },
-  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2, provenance: { owner: 'Maya Chen', creator: 'Corey Epstein', origin: 'Indigo board' } },
+  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3, provenance: { owner: 'Corey Epstein', creator: 'Maya Chen', origin: 'Indigo board' }, repos: ['hq-pro', 'hq-desktop-app', 'hq-core'], branchName: 'feature/iot-push' },
+  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2, provenance: { owner: 'Maya Chen', creator: 'Corey Epstein', origin: 'Indigo board' }, repos: ['hq-cloud'], branchName: 'feature/s3-versions' },
   { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', createdAt: '2026-06-03T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z', storyCount: 5, storiesComplete: 1, provenance: { creator: 'Jacob Lee', origin: 'Indigo board' } },
   { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', createdAt: '2026-05-30T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z', storyCount: 12, storiesComplete: 12, provenance: { owner: 'Corey Epstein', creator: 'Corey Epstein', origin: 'Indigo board' } },
   { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', createdAt: '2026-06-04T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z', storyCount: 5, storiesComplete: 5, provenance: { owner: 'Izzy', creator: 'Jacob Lee', origin: 'Indigo board' } },
-  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0, provenance: { creator: 'Maya Chen', origin: 'Indigo board' } },
+  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0, provenance: { creator: 'Maya Chen', origin: 'Indigo board' }, repos: ['hq-desktop-app', 'hq-meet'] },
   { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, createdAt: '2026-06-06T00:00:00Z', updatedAt: '2026-06-07T00:00:00Z', storyCount: 0, storiesComplete: 0, provenance: { creator: 'Corey Epstein', origin: 'Idea bank' } },
 ];
 
@@ -1114,6 +1114,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
         },
         activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
+        outcomes: { byType: { storyCompleted: 14, prMerged: 9, deploySucceeded: 3 }, total: 26 },
+        trend: [4, 6, 0, 0, 8, 9, 7, 5, 6, 0, 0, 9, 12, 10, 8, 7, 0, 0, 11, 13, 9, 8, 10, 0, 0, 12, 14, 11, 9, 15],
       },
       {
         personUid: 'agt_izzy',
@@ -1127,6 +1129,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
         },
         activeProjects: ['Instant DM delivery'],
+        outcomes: { byType: { storyCompleted: 6, prMerged: 4, deploySucceeded: 0 }, total: 10 },
+        trend: [3, 3, 2, 3, 4, 3, 2, 3, 3, 2, 3, 4, 3, 3, 2, 3, 4, 3, 2, 3, 3, 4, 3, 2, 3, 3, 4, 3, 2, 0],
       },
       {
         personUid: 'prs_maya',
@@ -1140,6 +1144,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
         },
         activeProjects: ['S3-versioned conflict handling'],
+        outcomes: { byType: { storyCompleted: 5, prMerged: 3, deploySucceeded: 1 }, total: 9 },
+        trend: [0, 0, 0, 2, 3, 0, 0, 4, 5, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 3, 2, 5, 0, 0, 0, 0, 0, 0, 0, 0],
       },
       {
         personUid: 'agt_lin',

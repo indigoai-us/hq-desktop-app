@@ -529,7 +529,11 @@ fn main() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
                 .on_navigation(|webview, url| {
-                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                    crate::util::external_links::allow_webview_navigation(
+                        webview.app_handle(),
+                        webview.label(),
+                        url,
+                    )
                 })
                 .build(),
         )
