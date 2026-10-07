@@ -95,8 +95,8 @@ pub use hq_desktop_core::daemon::{
 /// Singleton handle for daemon process.
 const DAEMON_HANDLE: &str = "hq-sync-daemon";
 
-/// SIGKILL delay after SIGTERM when stopping daemon.
-const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+/// SIGKILL delay after SIGTERM when stopping the watch runner.
+const SIGKILL_DELAY: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 
 /// A healthy watch daemon emits protocol progress or completion records on
 /// every pass. If no record arrives for this interval, terminate the process so
@@ -730,8 +730,8 @@ fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
     terminate_daemon_once_with_delay(category, SIGKILL_DELAY)
 }
 
-/// Testable core of [`terminate_daemon_once`]. Production always supplies the
-/// five-second grace period; native process tests shorten only the wait while
+/// Testable core of [`terminate_daemon_once`]. Production supplies the shared
+/// runner grace period; native process tests shorten only the wait while
 /// exercising the identical cancellation and lifecycle path.
 fn terminate_daemon_once_with_delay(
     category: DaemonFailureCategory,
@@ -2155,6 +2155,8 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// Snapshot of the existing auth-error signal for watcher-exit diagnostics.
+    saw_auth_error: bool,
     /// The content half of the shared disk-exhaustion recognizer (gates a/b/c,
     /// signal-independent) computed at the exit boundary from the SAME `RunTotals`
     /// the manual route reads. Combined with the exit signal by
@@ -2345,6 +2347,7 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            saw_auth_error: false,
             runner_disk_exhaustion_content: false,
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
@@ -2603,6 +2606,7 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        saw_auth_error: totals.saw_auth_error,
         // Content half of the shared disk-exhaustion recognizer, from the SAME
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
@@ -5076,7 +5080,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         }
     }
 
-    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen, code);
     if !context.runner_fatal_lines.is_empty() {
         let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
         if !lines.is_empty() {
@@ -5288,6 +5292,7 @@ fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static
 fn watcher_exit_context_extras(
     context: &WatcherExitCaptureContext,
     runner_fatal_class_seen: bool,
+    code: Option<i32>,
 ) -> Vec<(&'static str, sentry::protocol::Value)> {
     let mut extras = vec![
         (
@@ -5319,6 +5324,17 @@ fn watcher_exit_context_extras(
         (
             "runner_fatal_class_seen",
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
+        ),
+        (
+            "runner_identity_error_seen",
+            sentry::protocol::Value::Bool(context.saw_auth_error),
+        ),
+        (
+            "runner_exit_meaning",
+            sentry::protocol::Value::String(
+                hq_desktop_core::sync_outcome::runner_exit_meaning(code, context.saw_auth_error)
+                    .to_string(),
+            ),
         ),
         (
             "runner_error_companies",
@@ -7280,7 +7296,7 @@ fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
 /// `start_daemon` run first) and the interval between checks thereafter.
 const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
-const WATCH_OWNER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const WATCH_OWNER_TERMINATION_GRACE: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 static ORPHAN_TAKEOVER_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
@@ -8784,7 +8800,19 @@ mod tests {
 
     #[test]
     fn test_sigkill_delay_constant() {
-        assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
+        assert_eq!(SIGKILL_DELAY, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn watcher_stop_graces_exceed_runner_shutdown_deadline() {
+        let runner_deadline = Duration::from_millis(7_500);
+        assert!(SIGKILL_DELAY > runner_deadline);
+        assert!(WATCH_OWNER_TERMINATION_GRACE > runner_deadline);
+        assert_eq!(SIGKILL_DELAY, crate::commands::process::SYNC_RUNNER_STOP_GRACE);
+        assert_eq!(
+            WATCH_OWNER_TERMINATION_GRACE,
+            crate::commands::process::SYNC_RUNNER_STOP_GRACE
+        );
     }
 
     // ── Crash-vs-teardown decision (HQ-SYNC-5) ───────────────────────────
