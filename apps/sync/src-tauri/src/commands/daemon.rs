@@ -2042,6 +2042,7 @@ struct WatcherExitCaptureContext {
     heartbeat_stall_termination_in_flight: bool,
     cancelled: bool,
     fatal_runner_signature_seen: bool,
+    saw_genuine_crash_fatal: bool,
     runner_fatal_class: String,
     /// Allow-listed libuv syscall identifier and integer errno for the last
     /// recognised libuv fatal-syscall stderr line, when present. Content-safe:
@@ -2177,6 +2178,7 @@ struct WatcherExitCaptureContext {
     /// runner is distinguishable from a noisy-but-unrecognised one. `None` when no
     /// unmatched line was seen this generation.
     runner_unmatched_stderr_shapes: Option<String>,
+    runner_exit_record: Option<hq_desktop_core::runner_exit_record::RunnerExitRecord>,
     /// Windows Error Reporting fault attribution for this generation. The image
     /// and module are allow-listed tokens (or `unavailable`); provenance is an
     /// honesty token; the code and offset are bare integers. Every field degrades
@@ -2295,6 +2297,7 @@ impl Default for WatcherExitCaptureContext {
             heartbeat_stall_termination_in_flight: false,
             cancelled: false,
             fatal_runner_signature_seen: false,
+            saw_genuine_crash_fatal: false,
             runner_fatal_class: "none".to_string(),
             runner_fatal_syscall: None,
             runner_fatal_errno: None,
@@ -2346,6 +2349,7 @@ impl Default for WatcherExitCaptureContext {
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
+            runner_exit_record: None,
             // No Windows fault read applies by default (non-Windows, or a clean /
             // non-fault exit); the image/module keep the `unavailable` sentinel.
             watcher_fault_provenance: WatcherFaultProvenance::NotApplicable.as_str().to_string(),
@@ -2521,6 +2525,7 @@ fn watcher_exit_capture_context(
             .load(Ordering::Acquire),
         cancelled,
         fatal_runner_signature_seen: totals.saw_fatal_runner_signature,
+        saw_genuine_crash_fatal: totals.saw_genuine_crash_fatal,
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
         runner_fatal_errno: totals.runner_fatal_errno(),
@@ -2558,6 +2563,7 @@ fn watcher_exit_capture_context(
         runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),
         runner_error_sites: totals.runner_error_sites.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
+        runner_exit_record: totals.runner_exit_record(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
         runner_phase_elapsed_bucket: runner_phase_elapsed_bucket(
@@ -4653,11 +4659,39 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 RunnerFatalClass::NodeFatal | RunnerFatalClass::NodeCheckAbort
             )
         });
-    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(
+    // Prefer the last actual stderr line's signature when it recognises a fatal
+    // shape, else fall back to the run's accumulated context. Reuse this chosen
+    // class for grouping, the title, and the event tags.
+    let last_stderr_signature = last_stderr
+        .map(classify_runner_fatal_signature)
+        .filter(|signature| signature.class.seen());
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = if code
+        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        ("none".to_string(), None, None)
+    } else {
+        match last_stderr_signature {
+            Some(signature) => (
+                signature.class.as_str().to_string(),
+                signature.syscall.map(|syscall| syscall.to_string()),
+                signature.errno,
+            ),
+            None => (
+                context.runner_fatal_class.clone(),
+                context.runner_fatal_syscall.clone(),
+                context.runner_fatal_errno,
+            ),
+        }
+    };
+    let runner_fatal_class_seen = runner_fatal_class != "none";
+    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class_with_fatal_cause(
         code,
         signal,
         node_fatal,
         memory_attributed,
+        context.saw_genuine_crash_fatal,
+        &runner_fatal_class,
     );
     let fingerprint = ["sync-watcher-exit", exit_class];
     let windows_termination = code
@@ -4685,6 +4719,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     {
         format!(
             "auto-sync watcher refused: another sync runner owns this HQ root, \
+             consecutive failure #{consecutive}{episode_suffix}{diag}"
+        )
+    } else if exit_class == RunnerFatalClass::DiskFull.as_str() {
+        let exit_description = if code.is_some() && signal.is_some() {
+            format!("code={code:?} signal={signal:?}")
+        } else {
+            normalized_abort
+                .map(str::to_owned)
+                .unwrap_or_else(|| describe_exit(code, signal))
+        };
+        format!(
+            "auto-sync watcher exited because the disk is full ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     } else if let Some(exit_description) = normalized_abort {
@@ -4715,33 +4761,6 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         )
     };
 
-    // Prefer the last actual stderr line's signature (class + libuv syscall +
-    // errno) when it recognises a fatal shape, else fall back to the run's
-    // accumulated context. All three come from one source so they always
-    // describe the same line — the same discipline the manual route uses.
-    let last_stderr_signature = last_stderr
-        .map(classify_runner_fatal_signature)
-        .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = if code
-        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
-        && signal.is_none()
-    {
-        ("none".to_string(), None, None)
-    } else {
-        match last_stderr_signature {
-            Some(signature) => (
-                signature.class.as_str().to_string(),
-                signature.syscall.map(|syscall| syscall.to_string()),
-                signature.errno,
-            ),
-            None => (
-                context.runner_fatal_class.clone(),
-                context.runner_fatal_syscall.clone(),
-                context.runner_fatal_errno,
-            ),
-        }
-    };
-    let runner_fatal_class_seen = runner_fatal_class != "none";
     let (stderr_cause, owner_result, stderr_producer) =
         watcher_exit_stderr_diagnostics(last_stderr);
     let stderr_cause = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
@@ -4996,6 +5015,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     // so "silent" is separable from "noisy but unrecognised". Only when nonempty.
     if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
         tags.push(("runner_unmatched_stderr_shapes", shapes.clone()));
+    }
+    if let Some(record) = context
+        .runner_exit_record
+        .filter(|record| Some(record.code) == code)
+    {
+        tags.push(("runner_exit_reason", record.reason.as_str().to_string()));
     }
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
@@ -9230,6 +9255,7 @@ mod tests {
         let context = WatcherExitCaptureContext {
             runner_phase: "pull".to_string(),
             runner_phase_elapsed_bucket: "5m_to_30m".to_string(),
+            runner_fatal_class: "disk_full".to_string(),
             ..WatcherExitCaptureContext::default()
         };
 
@@ -9252,6 +9278,64 @@ mod tests {
             recorded_tag(capture, "runner_phase_elapsed_bucket"),
             "5m_to_30m"
         );
+        assert_eq!(recorded_tag(capture, "exit_class"), "disk_full");
+        assert!(
+            capture.message.contains("disk is full"),
+            "known disk-full cause should appear in the report title: {}",
+            capture.message
+        );
+    }
+
+    #[test]
+    fn stronger_crash_evidence_keeps_disk_full_stderr_out_of_the_disk_full_bucket() {
+        for (code, saw_genuine_crash_fatal) in [
+            (Some(21), true),
+            (Some(0xC000_001Du32 as i32), false),
+        ] {
+            let mut effects = RecordingWatcherEffects::default();
+            let context = WatcherExitCaptureContext {
+                runner_fatal_class: "disk_full".to_string(),
+                saw_genuine_crash_fatal,
+                ..WatcherExitCaptureContext::default()
+            };
+
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                Some("unrecognised stderr"),
+                current_termination_host(),
+                &context,
+            );
+
+            let capture = &effects.captures[0];
+            assert_eq!(recorded_tag(capture, "exit_class"), "other");
+            assert!(capture.message.contains("exited unexpectedly"));
+            assert!(!capture.message.contains("because the disk is full"));
+        }
+    }
+
+    #[test]
+    fn unknown_watcher_exit_21_remains_in_the_unexpected_bucket() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("unrecognised stderr"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("unknown exit is captured");
+        assert_eq!(recorded_tag(capture, "exit_class"), "other");
+        assert!(capture.message.contains("exited unexpectedly"));
     }
 
     #[test]

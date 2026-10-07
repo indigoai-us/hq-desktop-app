@@ -513,6 +513,45 @@ describe("createHybridSidebarApi optional live capabilities", () => {
     };
   }
 
+  it("logs a failed live directory read and still returns the cached fallback", async () => {
+    const error = new Error("offline");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seeded: MeshShellOverlay = {
+      ...overlay,
+      rows: [
+        {
+          channelId: "cache-after-error",
+          type: "project",
+          scope: "project",
+          companyUid: "cmp_indigo",
+          name: "Cached after error",
+          lastActivityAt: "2026-08-16T00:00:00.000Z",
+          unreadCount: 0,
+          memberCount: 0,
+        },
+      ],
+    };
+    const api = createHybridSidebarApi(
+      liveApi({
+        fetchChannelDirectory: async () => {
+          throw error;
+        },
+      }),
+      () => seeded,
+    );
+
+    try {
+      const feed = await api.fetchChannelDirectory(null);
+      expect(feed.rows?.[0]?.channelId).toBe("cache-after-error");
+      expect(warning).toHaveBeenCalledWith(
+        "[hq-ui] live channel directory read failed; using cached overlay:",
+        error,
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("forwards listCompanyMembers and sendDmToEmail from live", async () => {
     const listCompanyMembers = vi.fn(async () => ({
       contacts: [{ personUid: "prs_kai" }],

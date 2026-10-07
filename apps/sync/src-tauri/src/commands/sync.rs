@@ -438,6 +438,12 @@ fn runner_exit_telemetry_context(
             context.runner_report_dir_delivery.clone(),
         ),
     ];
+    if let Some(record) = totals
+        .runner_exit_record()
+        .filter(|record| Some(record.code) == code)
+    {
+        tags.push(("runner_exit_reason", record.reason.as_str().to_string()));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
     // the SAME RunTotals source the watcher route reads, keeping the routes
@@ -2368,6 +2374,21 @@ fn claim_repair_slot(cooldown: Duration) -> bool {
 /// through `start_daemon_with_origin<R>`, while Connect and Sync Now hold a
 /// concrete `AppHandle`. Generifying is source-compatible for those callers.
 pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> ToolchainRepair {
+    repair_managed_node_with_replacement(app, false).await
+}
+
+/// Force replacement after a native crash of HQ's managed runtime. The same
+/// cooldown still bounds this repair with all other managed Node provisioning.
+pub(crate) async fn repair_managed_node_after_native_crash<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> ToolchainRepair {
+    repair_managed_node_with_replacement(app, true).await
+}
+
+async fn repair_managed_node_with_replacement<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    replace_existing: bool,
+) -> ToolchainRepair {
     if !claim_repair_slot(TOOLCHAIN_REPAIR_COOLDOWN) {
         log(
             "sync",
@@ -2376,7 +2397,9 @@ pub(crate) async fn repair_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -
         return ToolchainRepair::Skipped;
     }
     log("sync", "managed Node runtime unavailable — provisioning");
-    match crate::commands::install_deps::install_node(app.clone()).await {
+    match crate::commands::install_deps::install_node_for_repair(app.clone(), replace_existing)
+        .await
+    {
         Ok(detail) => {
             log("sync", &format!("managed Node provisioning: {detail}"));
             ToolchainRepair::Repaired

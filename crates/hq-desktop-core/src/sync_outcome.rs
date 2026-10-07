@@ -10,6 +10,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
     RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
+use crate::runner_exit_record::{parse_runner_exit_line, RunnerExitRecord};
 use crate::uploads_paused::UploadsPassObservation;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +37,9 @@ pub struct RunTotals {
     /// channel. Auth-required is intentionally exit 0, but must never be
     /// overwritten by the manual exit handler's synthetic AllComplete.
     pub saw_auth_error: bool,
+    /// Latest valid bounded runner-exit diagnostic, when emitted by a newer
+    /// runner. The parser retains only an integer and a closed reason enum.
+    runner_exit_record: Option<RunnerExitRecord>,
     /// What this pass said about uploads per company: plan-limit notices,
     /// per-company completions, and companies that uploaded a file. Settles
     /// the "uploads paused" state at `AllComplete` (hard-stop-readiness
@@ -460,6 +464,9 @@ impl RunTotals {
     /// Node-too-old signature is not a runner protocol error, it is the
     /// interpreter failing before the runner can start.
     pub fn record_stderr_line(&mut self, line: &str) {
+        if let Some(record) = parse_runner_exit_line(line) {
+            self.runner_exit_record = Some(record);
+        }
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
@@ -502,6 +509,12 @@ impl RunTotals {
         // affects capture. Fed the SAME line as the classification above, so both
         // routes (which share this seam) inherit identical heap attribution.
         self.record_heap_oom_stderr_line(line, signature.class);
+    }
+
+    /// The latest parsed runner-exit diagnostic, absent for older runners or
+    /// when no valid record was written.
+    pub fn runner_exit_record(&self) -> Option<RunnerExitRecord> {
+        self.runner_exit_record
     }
 
     /// Single-pass, line-oriented V8 heap-OOM retention. Three transitions, in
@@ -2935,6 +2948,31 @@ pub fn watcher_exit_class(
     }
 }
 
+/// Preserve a recognized environmental runner cause in watcher grouping only
+/// when no stronger OS or sticky crash evidence is present. Unknown fatal classes,
+/// Windows native faults, and runs with any observed genuine crash keep their
+/// existing exit class.
+pub fn watcher_exit_class_with_fatal_cause(
+    code: Option<i32>,
+    signal: Option<i32>,
+    node_fatal: bool,
+    memory_attributed: bool,
+    saw_genuine_crash_fatal: bool,
+    runner_fatal_class: &str,
+) -> &'static str {
+    let exit_class = watcher_exit_class(code, signal, node_fatal, memory_attributed);
+    if exit_class == "other"
+        && signal.is_none()
+        && !is_windows_fault_exit(code)
+        && !saw_genuine_crash_fatal
+        && runner_fatal_class == RunnerFatalClass::DiskFull.as_str()
+    {
+        "disk_full"
+    } else {
+        exit_class
+    }
+}
+
 /// Closed, content-safe vocabulary naming the DISPOSITION of the signal that
 /// terminated an auto-sync watcher, so a signal-only termination is filterable in
 /// Sentry without parsing the message text. Every arm returns a fixed token that
@@ -4913,6 +4951,44 @@ mod tests {
         );
         assert_eq!(watcher_exit_class(Some(1), None, true, false), "node_fatal");
         assert_eq!(watcher_exit_class(Some(127), None, false, false), "other");
+    }
+
+    #[test]
+    fn watcher_exit_class_carries_disk_full_and_preserves_unknown_exits() {
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "disk_full"),
+            "disk_full"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "none"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                None,
+                Some(SIGSEGV_SIGNAL),
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, true, "disk_full"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                Some(0xC000_001Du32 as i32),
+                None,
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
     }
 
     #[test]

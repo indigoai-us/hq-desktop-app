@@ -95,7 +95,7 @@ describe('macOS SIGKILL alerting cap — source contracts', () => {
     // The stable class fingerprint is independent of the episode message and
     // remains SIGKILL-specific when no memory evidence proves a different cause.
     expect(daemonSource).toContain('let fingerprint = ["sync-watcher-exit", exit_class];');
-    expect(daemonSource).toContain('watcher_exit_class(');
+    expect(daemonSource).toContain('watcher_exit_class_with_fatal_cause(');
   });
 
   it('leaves the respawn cadence — consecutive, backoff, supervisor interval — unchanged', () => {

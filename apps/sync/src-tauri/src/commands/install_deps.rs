@@ -7,9 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-#[cfg(unix)]
-use std::io::Read;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(unix)]
@@ -1744,6 +1742,52 @@ where
     F: FnOnce(&Path) -> bool,
 {
     node_exe.is_file() && version_ok(node_exe)
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn managed_node_should_be_reused<F>(
+    replace_existing: bool,
+    node_exe: &Path,
+    version_ok: F,
+) -> bool
+where
+    F: FnOnce(&Path) -> bool,
+{
+    !replace_existing && managed_node_already_usable(node_exe, version_ok)
+}
+
+/// Hash a managed Node executable so a forced repair can distinguish its
+/// original target from a valid replacement installed by another HQ process.
+/// A forced repair must replace the original executable even when it reports
+/// the expected version, but may accept a different, version-verified file
+/// after losing a concurrent swap.
+fn managed_node_sha256(path: &Path) -> Result<Option<String>, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn managed_node_changed_since_repair_started(
+    original_digest: Option<&str>,
+    current_digest: Option<&str>,
+) -> bool {
+    current_digest.is_some() && original_digest != current_digest
 }
 
 /// Name+age predicate for the stale-sibling sweep, split out so it is tested
@@ -4182,7 +4226,25 @@ pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String
     }
     #[cfg(windows)]
     {
-        install_node_windows(app).await
+        install_node_windows(app, false).await
+    }
+}
+
+/// Provision managed Node as part of the bounded repair flow. Native crashes
+/// request replacement of the existing Windows runtime because `--version`
+/// alone does not prove that the ABI and npm probes can run.
+pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = replace_existing;
+        install_node_macos(app).await
+    }
+    #[cfg(windows)]
+    {
+        install_node_windows(app, replace_existing).await
     }
 }
 
@@ -5546,7 +5608,10 @@ async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+async fn install_node_windows<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     // Node is a hard prerequisite for qmd and hq-cli, so its installer must be
     // deterministic. Package-manager exit codes do not prove that node/npm/npx
     // landed or are runnable in this process (and managed enterprise machines
@@ -5555,7 +5620,7 @@ async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<St
     // all three executables, runs `node --version`, then atomically activates
     // the toolchain directory.
     emit_progress(&app, "Installing HQ's verified Node.js runtime...");
-    install_managed_node(&app).await
+    install_managed_node(&app, replace_existing).await
 }
 
 #[cfg(windows)]
@@ -5701,7 +5766,10 @@ fn ensure_node_version(node_exe: &Path, expected_version: &str) -> Result<(), St
 }
 
 #[cfg(windows)]
-async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+async fn install_managed_node<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     let arch = managed_node_arch().ok_or_else(|| {
         format!(
             "Unsupported architecture for managed Node fallback: {}",
@@ -5709,6 +5777,12 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
         )
     })?;
     let version = WINDOWS_MANAGED_NODE_VERSION;
+    let node_dir = managed_node_dir();
+    let node_exe = node_dir.join("node.exe");
+    // Capture the target before any network or extraction work. A forced repair
+    // may accept a valid node.exe after a failed swap only if another process
+    // actually replaced the file while this attempt was in flight.
+    let original_node_digest = managed_node_sha256(&node_exe)?;
     let expected_sha = windows_managed_node_sha256_for(arch)
         .ok_or_else(|| format!("No pinned Node checksum for Windows arch {arch}"))?;
     let url = format!("https://nodejs.org/dist/{version}/node-{version}-win-{arch}.zip");
@@ -5730,7 +5804,6 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     // in-flight tree is never swept.
     sweep_stale_toolchain_siblings(&target, crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN);
 
-    let node_dir = managed_node_dir();
     let staged_node_dir = target.join(format!(".node-install-{}", Uuid::new_v4()));
     emit_progress(app, &format!("Extracting Node into {staged_node_dir:?}..."));
     if let Err(e) = extract_managed_node_zip(&bytes, version, arch, &staged_node_dir) {
@@ -5746,8 +5819,9 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     // won the race while we were downloading (the repair slot cannot serialize
     // two processes). Accept it rather than fight an open-handle swap, but only
     // if it passes the SAME version check the staged tree did.
-    let node_exe = node_dir.join("node.exe");
-    if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+    if managed_node_should_be_reused(replace_existing, &node_exe, |exe| {
+        ensure_node_version(exe, version).is_ok()
+    }) {
         let _ = std::fs::remove_dir_all(&staged_node_dir);
         append_user_path(&node_dir)?;
         append_user_path(&managed_npm_bin())?;
@@ -5756,11 +5830,22 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
 
     if let Err(e) = activate_staged_dir(&staged_node_dir, &node_dir) {
         // Lost an activation race: another HQ process may have activated a valid
-        // managed Node into the target between our probe and our swap, so our
-        // rename collided with a now-present destination. Re-check with the SAME
-        // version validation before reporting failure and paging — a correctly
-        // versioned live Node is success, not a repair failure (Codex review).
-        if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+        // managed Node into the target between our probe and our swap. A forced
+        // repair accepts it only when the executable changed after our snapshot.
+        let current_node_digest = match managed_node_sha256(&node_exe) {
+            Ok(digest) => digest,
+            Err(fingerprint_error) => {
+                return Err(format!(
+                    "{e}; could not verify whether a concurrent Node repair replaced the target: {fingerprint_error}"
+                ));
+            }
+        };
+        if managed_node_changed_since_repair_started(
+            original_node_digest.as_deref(),
+            current_node_digest.as_deref(),
+        ) && managed_node_already_usable(&node_exe, |exe| {
+            ensure_node_version(exe, version).is_ok()
+        }) {
             append_user_path(&node_dir)?;
             append_user_path(&managed_npm_bin())?;
             return Ok(format!("Managed Node already present at {node_dir:?}"));
@@ -10494,6 +10579,39 @@ mod atomic_swap_tests {
         assert!(managed_node_already_usable(&node_exe, |_| true));
         // Present but wrong/corrupt version -> do NOT wave it through.
         assert!(!managed_node_already_usable(&node_exe, |_| false));
+    }
+
+    #[test]
+    fn forced_repair_accepts_only_a_changed_concurrent_node() {
+        assert!(!managed_node_changed_since_repair_started(Some("old"), Some("old")));
+        assert!(managed_node_changed_since_repair_started(Some("old"), Some("new")));
+        assert!(!managed_node_changed_since_repair_started(Some("old"), None));
+        assert!(managed_node_changed_since_repair_started(None, Some("new")));
+    }
+
+    #[test]
+    fn managed_node_sha256_streams_the_target_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        assert_eq!(managed_node_sha256(&node_exe).unwrap(), None);
+        std::fs::write(&node_exe, b"binary").unwrap();
+        let actual = managed_node_sha256(&node_exe).unwrap().unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(actual, format!("{:x}", Sha256::digest(b"binary")));
+    }
+
+    #[test]
+    fn native_crash_repair_replaces_an_existing_versioned_node() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        std::fs::write(&node_exe, b"binary").unwrap();
+
+        assert!(managed_node_should_be_reused(false, &node_exe, |_| true));
+        assert!(!managed_node_should_be_reused(false, &node_exe, |_| false));
+        assert!(
+            !managed_node_should_be_reused(true, &node_exe, |_| true),
+            "native-crash repair must not trust --version alone on the old runtime"
+        );
     }
 
     #[test]

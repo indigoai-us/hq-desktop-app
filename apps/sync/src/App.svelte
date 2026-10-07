@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { fetch as tauriHttpFetch } from '@tauri-apps/plugin-http';
   import {
     createSyncPlatformAdapter,
     POST_READY_ACTION_TELEMETRY_FLAG,
@@ -77,7 +76,6 @@
     createFirstLaunchSignInReachReporter,
     setFirstLaunchSignInReachReporter,
     startupOutcomeForLifecycle,
-    resolveFirstLaunchSignInReachFlag,
   } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
@@ -117,9 +115,6 @@
       return typeof context === 'object' && context !== null &&
         'suppressFirstLaunchTelemetry' in context &&
         context.suppressFirstLaunchTelemetry === true;
-    },
-    isEnabled: async (visitorId) => {
-      return resolveFirstLaunchSignInReachFlag(visitorId, tauriHttpFetch);
     },
     getInstallAttemptId: async () => {
       const value = await invoke<unknown>('desktop_install_attempt_id');

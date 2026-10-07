@@ -43,7 +43,6 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
@@ -237,10 +236,6 @@ export function createSyncPlatformAdapter(
     }
     if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
       // Missing or unreadable registry data leaves the new join-key behavior off.
-      return Promise.resolve(ok(false));
-    }
-    if (flag === FIRST_LAUNCH_SIGNIN_REACH_FLAG) {
-      // Reach measurement is opt-in; missing or unreadable registry data stays off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
