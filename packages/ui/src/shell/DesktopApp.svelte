@@ -112,7 +112,7 @@
     companyRowDestination,
     companyRowForPage,
   } from "./company-pane.js";
-  import { paneForEntry } from "./destination-pane.js";
+  import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
     activeRailItemId,
@@ -9701,6 +9701,49 @@
     return null;
   }
 
+  function rowMatchesDestination(
+    row: ConversationRow,
+    destination: NavigationDestination,
+  ): boolean {
+    if (destination.kind === "channel") {
+      return row.channelId === destination.channelId;
+    }
+    if (destination.kind === "dm") {
+      return row.personUid === destination.personUid && !row.channelId;
+    }
+    return false;
+  }
+
+  /**
+   * Rows this window has opened, newest last. A conversation entry can be
+   * applied after a tenant switch re-keyed the sidebar (a DM a Bots page
+   * synthesized opens in the cross-company list; Back to Bots, then Forward),
+   * and the re-keyed rail may not list that row. Plain map: bookkeeping only.
+   */
+  const openedRows = new Map<string, ConversationRow>();
+  const OPENED_ROWS_CAP = 50;
+  let openedRowsAccount = "";
+
+  /** The remembered rows, dropped whenever the signed-in account changes. */
+  function openedRowsForAccount(): Map<string, ConversationRow> {
+    const account = `${currentNavigationScope().accountId}:${tenantGeneration}`;
+    if (account !== openedRowsAccount) {
+      openedRows.clear();
+      openedRowsAccount = account;
+    }
+    return openedRows;
+  }
+
+  function rememberOpenedRow(row: ConversationRow): void {
+    const openedRows = openedRowsForAccount();
+    openedRows.delete(row.id);
+    openedRows.set(row.id, row);
+    if (openedRows.size > OPENED_ROWS_CAP) {
+      const oldest = openedRows.keys().next().value;
+      if (oldest !== undefined) openedRows.delete(oldest);
+    }
+  }
+
   function rowForDestination(
     destination: NavigationDestination,
   ): ConversationRow | null {
@@ -9708,20 +9751,9 @@
       ...searchRows,
       ...railRows,
       ...(selectedRow ? [selectedRow] : []),
+      ...[...openedRowsForAccount().values()].reverse(),
     ];
-    if (destination.kind === "channel") {
-      return (
-        rows.find((row) => row.channelId === destination.channelId) ?? null
-      );
-    }
-    if (destination.kind === "dm") {
-      return (
-        rows.find(
-          (row) => row.personUid === destination.personUid && !row.channelId,
-        ) ?? null
-      );
-    }
-    return null;
+    return rows.find((row) => rowMatchesDestination(row, destination)) ?? null;
   }
 
   function resolveShellDestination(
@@ -10032,6 +10064,7 @@
   const navigation = createNavigationController({
     history: navigationHistory,
     getScope: () => currentNavigationScope(),
+    entryCompanyUid: entryCompanyUidForCommit,
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
     invalidateScroll: () => navigationScrollTracker.invalidate(),
@@ -10164,6 +10197,7 @@
       selectConversationRow(row, options);
       return;
     }
+    rememberOpenedRow(row);
     if (selectedRow?.id !== row.id) selectedRow = row;
     void navigate(
       destinationFromConversation(row, {

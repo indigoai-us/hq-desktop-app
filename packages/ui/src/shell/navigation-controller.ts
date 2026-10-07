@@ -71,6 +71,16 @@ export type NavigationResolver = (
 export interface NavigationControllerDeps {
   history?: NavigationHistory;
   getScope: () => NavigationScope;
+  /**
+   * Company scope a new entry is recorded under, given the scope in force
+   * and the entry being left (null when history is empty). Defaults to the
+   * scope in force. Destinations that name their own company skip this.
+   */
+  entryCompanyUid?: (
+    destination: NavigationDestination,
+    companyUid: string | null,
+    from: NavigationEntry | null,
+  ) => string | null;
   resolve?: NavigationResolver;
   apply: (applied: AppliedNavigation) => void;
   captureCurrent?: () => NavigationEntry | null;
@@ -236,10 +246,17 @@ export function createNavigationController(
   ): NavigationScope {
     const scope = scopeNow();
     const fromDestination = destinationCompanyKey(destination);
-    return {
-      accountId: scope.accountId,
-      companyUid: fromDestination ?? scope.companyUid,
-    };
+    if (fromDestination) {
+      return { accountId: scope.accountId, companyUid: fromDestination };
+    }
+    const companyUid = deps.entryCompanyUid
+      ? deps.entryCompanyUid(
+          destination,
+          scope.companyUid,
+          history.current() ?? deps.captureCurrent?.() ?? null,
+        )
+      : scope.companyUid;
+    return { accountId: scope.accountId, companyUid };
   }
 
   function commitDestination(
