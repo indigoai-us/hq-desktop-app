@@ -192,7 +192,7 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
         throw new Error(`unexpected ${cmd}`);
       },
-      createFlagClient: () => fakeClient({
+      createFlagClient: () => makeFlagClient({
         ready: async () => {},
         snapshot: () => null,
         isEnabled: () => true,
@@ -205,7 +205,7 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
         throw new Error(`unexpected ${cmd}`);
       },
-      createFlagClient: () => fakeClient({
+      createFlagClient: () => makeFlagClient({
         ready: async () => { throw new Error('offline'); },
         snapshot: () => null,
         isEnabled: () => true,

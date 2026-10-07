@@ -1586,6 +1586,9 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      getHqAnywherePersonSetting: () => call('get_hq_anywhere_person_setting'),
+      putHqAnywherePersonSetting: (value) =>
+        call('put_hq_anywhere_person_setting', { value }),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

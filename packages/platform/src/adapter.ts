@@ -2011,6 +2011,10 @@ export interface SettingsApi {
   getSettings(): AdapterPromise<Json>;
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
+  /** Read the signed-in person's server-backed HQ Anywhere preference. */
+  getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
+  /** Write the signed-in person's server-backed HQ Anywhere preference. */
+  putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:

@@ -3,6 +3,7 @@ import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
 import {
   FIRST_LAUNCH_JOIN_KEY_FLAG as PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG,
+  HQ_ANYWHERE_RUNTIME_FLAG as PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG,
   POST_READY_DROP_REASON_FLAG as PUBLIC_POST_READY_DROP_REASON_FLAG,
 } from "./index.js";
 import {
@@ -12,6 +13,7 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
+  HQ_ANYWHERE_RUNTIME_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
@@ -55,6 +57,12 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
+  it("maps HQ Anywhere availability to the admin rollout flag", () => {
+    expect(HQ_ANYWHERE_RUNTIME_FLAG).toBe("hq-anywhere-runtime");
+    expect(PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+    expect(registryKeyFor(HQ_ANYWHERE_RUNTIME_FLAG)).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+  });
+
   it("exports the first-launch join-key flag through the public platform entrypoint", () => {
     expect(PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG).toBe(FIRST_LAUNCH_JOIN_KEY_FLAG);
   });
