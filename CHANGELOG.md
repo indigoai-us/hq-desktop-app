@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
+
 ## [0.10.399] — 2026-10-07
 
 - The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
