@@ -1709,7 +1709,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      const path = await invokeCommand<string>('resolve_hq_path');
+      // Resolve only. The folder is created by the install step, after the
+      // person has confirmed where HQ lives.
+      const path = await invokeCommand<string>('resolve_hq_path', { create: false });
       if (directoryCancelled) return;
       homeDir = homeDirFromDefaultHqPath(path);
       acceptPath(path);
@@ -1816,8 +1818,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      // The default path is prepared natively before auth exists. Validate it
-      // here, after sign-in, before allowing setup to use it.
+      // The default path is only resolved before auth exists. Validate it
+      // here, after sign-in, before allowing setup to use it; check_writable
+      // creates the folder, so this Install step is where it first appears.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),

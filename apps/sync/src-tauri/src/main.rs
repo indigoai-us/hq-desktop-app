@@ -797,7 +797,7 @@ fn main() {
             commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
             commands::folder_picker::pick_folder,
-            commands::install_directory::resolve_hq_path,
+            commands::install_directory::command::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
             commands::install_directory::create_directory,
             commands::install_directory::check_writable,

@@ -2466,6 +2466,15 @@ pub(crate) fn start_sync_cloud_gate() -> Result<(), String> {
     hq_desktop_core::daemon::ensure_sync_spawn_allowed()
 }
 
+/// Gates every sync pass checks before it resolves a host or a folder: Cloud
+/// Off, the dev kill switch, and unfinished setup. A pass before setup
+/// finishes would write into the default HQ folder before the person chose
+/// where HQ lives.
+pub(crate) fn start_sync_gates() -> Result<(), String> {
+    start_sync_cloud_gate()?;
+    crate::commands::daemon::ensure_setup_allows_sync()
+}
+
 /// Returns the handle string on success (always `"hq-sync"`). Every webview
 /// caller is a person pressing Sync; Rust callers name their own trigger via
 /// [`start_sync_with_trigger`].
@@ -2512,7 +2521,7 @@ async fn start_sync_inner(
     // caller of this command — the V2 window's Sync, the menubar popover's Sync
     // Now, sync-on-launch, and notification retries — at the single Rust choke
     // point so no surface can start a sync while the titlebar says Cloud Off.
-    start_sync_cloud_gate()?;
+    start_sync_gates()?;
     let host_phase = crate::commands::hq_daemon_host::resolved_phase_for_command().await?;
     if let Some(result) = crate::commands::hq_daemon_host::daemon_sync_now_for_phase(
         host_phase,
