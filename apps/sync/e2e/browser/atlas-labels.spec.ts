@@ -7,9 +7,16 @@ import { expect, test } from '@playwright/test';
  * hover.
  */
 const MIN_LABEL_PX = 13;
+// The populated fixture stamps every object 2026-10-01T12:00Z
+// (dev-harness/audit-switches.ts), and project dot size decays with that age
+// over ATLAS_ACTIVITY_DAYS (14), so with the wall clock the layout shifted day
+// by day. Pin the page clock a month later: every project is idle, packed
+// small between section names, on every run.
+const FIXTURE_NOW = new Date('2026-11-01T12:00:00.000Z');
 
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
   test(`Atlas labels at ${width}x${height}: readable, no overlaps`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
     await page.setViewportSize({ width, height });
     await page.goto('/desktop-alt.html?window=desktop-alt&theme=light&persona=member&atlas=populated');
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });

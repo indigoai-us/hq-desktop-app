@@ -119,6 +119,38 @@ describe("atlas layout", () => {
     expect(atlasScreenLabels({ ...args, placed: crowd, hovered: "old", view: { x: 0, y: 100, k: 1 } }).map((l) => l.id)).toEqual(["old"]);
   });
 
+  it("names the hovered object even when section names cover every label spot", () => {
+    // A narrow map with idle projects packed between sections: each of the
+    // hovered dot's four label spots meets a section name, as at 1000x700
+    // with the inspector open.
+    const dot = { id: "p", label: "p", x: 100, y: 100, r: 4 };
+    const w = 40;
+    const names = [
+      { left: 109, top: 92, right: 160, bottom: 104 }, // right
+      { left: 40, top: 102, right: 91, bottom: 114 }, // left
+      { left: 70, top: 80, right: 130, bottom: 92 }, // above
+      { left: 70, top: 112, right: 130, bottom: 124 }, // below
+    ];
+    const args = {
+      placed: [dot],
+      selected: null,
+      related: new Set<string>(),
+      nowMs: NOW,
+      view: { x: 0, y: 0, k: 1 },
+      width: 300,
+      height: 300,
+      measure: () => w,
+    };
+    // Nobody looking: the project keeps clear of section names and stays unnamed.
+    expect(atlasScreenLabels({ ...args, hovered: null, yielding: names })).toEqual([]);
+    // Hovered: its name comes back, on its first in-bounds spot.
+    const hovered = atlasScreenLabels({ ...args, hovered: "p", yielding: names });
+    expect(hovered.map((l) => l.id)).toEqual(["p"]);
+    expect(hovered[0]!.box.left).toBe(109);
+    // Fixed controls still win over the hovered name.
+    expect(atlasScreenLabels({ ...args, hovered: "p", reserved: names })).toEqual([]);
+  });
+
   it("names the hovered object even when every label spot touches a neighbour's dot", () => {
     // A packed section: four neighbours sit right, left, above and below the
     // hovered dot, so each of its label spots covers one of their dots.

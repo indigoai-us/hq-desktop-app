@@ -412,8 +412,14 @@ export function atlasScreenLabels(input: {
   width: number;
   height: number;
   measure: (text: string) => number;
-  /** Boxes item labels must never cover (section names). */
+  /** Boxes item labels must never cover (fixed controls, chips). */
   reserved?: AtlasScreenLabel["box"][];
+  /**
+   * Boxes item labels avoid (section names), except the hovered object's name
+   * when no spot clears them: hover is how hidden names come back, so the
+   * caller hides a section name the hovered label lands on.
+   */
+  yielding?: AtlasScreenLabel["box"][];
 }): AtlasScreenLabel[] {
   const { view, width, height } = input;
   const recent = (n: { touched?: number }) =>
@@ -470,35 +476,58 @@ export function atlasScreenLabels(input: {
       { x: cx - w / 2, y: cy - rr - 6, left: cx - w / 2 },
       { x: cx - w / 2, y: cy + rr + 16, left: cx - w / 2 },
     ];
-    const taken = [...(input.reserved ?? []), ...kept.map((k) => k.box)];
-    for (const spot of spots) {
-      const box = { left: spot.left, top: spot.y - 12, right: spot.left + w, bottom: spot.y - 12 + LABEL_HEIGHT };
-      if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
-      const hit = taken.some(
-        (k) =>
-          box.left < k.right + LABEL_GAP &&
-          k.left < box.right + LABEL_GAP &&
-          box.top < k.bottom + LABEL_GAP &&
-          k.top < box.bottom + LABEL_GAP,
-      );
-      if (hit) continue;
-      // A dot stacked on this object's own dot cannot be avoided, so it does not block.
-      // The hovered object always gets its name: in a packed section every
-      // spot can touch a neighbour's dot, and hover is how hidden names come back.
-      const own = { left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr };
-      const onDot = r > 0 && dots.some(
-        (d) =>
-          d.id !== n.id &&
-          box.left < d.right && d.left < box.right && box.top < d.bottom && d.top < box.bottom &&
-          !(own.left < d.right && d.left < own.right && own.top < d.bottom && d.top < own.bottom),
-      );
-      if (onDot) continue;
-      if (r >= 3) ambient += 1;
-      kept.push({ id: n.id, text, rank: r, x: spot.x, y: spot.y, box });
-      break;
-    }
+    const hard = [...(input.reserved ?? []), ...kept.map((k) => k.box)];
+    const avoid = [...hard, ...(input.yielding ?? [])];
+    // The hovered object always gets its name: in a packed section every
+    // spot can touch a neighbour's dot or a section name, and hover is how
+    // hidden names come back. Section names yield to it only when nothing
+    // else fits.
+    const spot = findLabelSpot(spots, w, avoid, n, r, dots, cx, cy, rr, width, height)
+      ?? (r === 0 ? findLabelSpot(spots, w, hard, n, r, dots, cx, cy, rr, width, height) : null);
+    if (!spot) continue;
+    if (r >= 3) ambient += 1;
+    kept.push({ id: n.id, text, rank: r, x: spot.x, y: spot.y, box: spot.box });
   }
   return kept;
+}
+
+function findLabelSpot(
+  spots: { x: number; y: number; left: number }[],
+  w: number,
+  taken: AtlasScreenLabel["box"][],
+  n: { id: string },
+  r: number,
+  dots: (AtlasScreenLabel["box"] & { id: string })[],
+  cx: number,
+  cy: number,
+  rr: number,
+  width: number,
+  height: number,
+): { x: number; y: number; box: AtlasScreenLabel["box"] } | null {
+  for (const spot of spots) {
+    const box = { left: spot.left, top: spot.y - 12, right: spot.left + w, bottom: spot.y - 12 + LABEL_HEIGHT };
+    if (box.left < 0 || box.top < 0 || box.right > width || box.bottom > height) continue;
+    const hit = taken.some(
+      (k) =>
+        box.left < k.right + LABEL_GAP &&
+        k.left < box.right + LABEL_GAP &&
+        box.top < k.bottom + LABEL_GAP &&
+        k.top < box.bottom + LABEL_GAP,
+    );
+    if (hit) continue;
+    // A dot stacked on this object's own dot cannot be avoided, so it does not
+    // block, and the hovered object (rank 0) ignores dots altogether.
+    const own = { left: cx - rr, top: cy - rr, right: cx + rr, bottom: cy + rr };
+    const onDot = r > 0 && dots.some(
+      (d) =>
+        d.id !== n.id &&
+        box.left < d.right && d.left < box.right && box.top < d.bottom && d.top < box.bottom &&
+        !(own.left < d.right && d.left < own.right && own.top < d.bottom && d.top < own.bottom),
+    );
+    if (onDot) continue;
+    return { x: spot.x, y: spot.y, box };
+  }
+  return null;
 }
 
 export function clampZoom(k: number): number {
