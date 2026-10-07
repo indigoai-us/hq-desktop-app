@@ -8,7 +8,7 @@ import { mount, tick, unmount } from "svelte";
 
 import ChannelConversation from "./ChannelConversation.svelte";
 import ReplyPanel from "./ReplyPanel.svelte";
-import type { ConversationApi } from "../chat-api";
+import type { ConversationApi, ConversationMessageWire } from "../chat-api";
 import type { ChatArtifact } from "./artifact-model";
 
 let host: HTMLDivElement;
@@ -182,10 +182,10 @@ describe("forwarded message in the reply panel", () => {
       target: host,
       props: {
         api: api(rootMsg, replies),
-        rootEventId: rootMsg.eventId,
+        rootEventId: String(rootMsg.eventId),
         scope: "channel",
         channelId: "chn_1",
-        seedRoot: rootMsg,
+        seedRoot: rootMsg as unknown as ConversationMessageWire,
         onclose: () => {},
       },
     });
