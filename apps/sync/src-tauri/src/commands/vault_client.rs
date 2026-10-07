@@ -759,7 +759,7 @@ impl VaultClient {
             ))
             .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
-            .send_retrying()
+            .send()
             .await?;
         self.handle_response(resp).await
     }
@@ -779,7 +779,7 @@ impl VaultClient {
             .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
             .json(&serde_json::json!({ "value": value }))
-            .send_retrying()
+            .send()
             .await?;
         self.handle_response(resp).await
     }
@@ -1590,6 +1590,34 @@ mod tests {
         assert_eq!(requests[1].url.query(), Some("setting=hq-anywhere"));
         let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert_eq!(body, json!({ "value": true }));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_person_setting_returns_transient_responses_after_one_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        assert!(client.get_hq_anywhere_person_setting().await.is_err());
+        assert!(client.put_hq_anywhere_person_setting(true).await.is_err());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "one native request per operation");
     }
 
     #[tokio::test]

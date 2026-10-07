@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- People can turn HQ Anywhere on or off in Settings after onboarding.
+
 ## [0.10.399] — 2026-10-07
 
 - The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.

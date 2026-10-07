@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    HQ_ANYWHERE_RUNTIME_FLAG,
     getHqAnywherePersonSetting,
     hqAnywhereRuntimeEnabled,
     putHqAnywherePersonSetting,
@@ -21,15 +22,40 @@
   let retryValue = $state<boolean | null>(null);
 
   onMount(() => {
-    void initialize();
-  });
-
-  async function initialize(): Promise<void> {
     if (!adapter) return;
-    if (!(await hqAnywhereRuntimeEnabled(adapter.identity))) return;
-    available = true;
-    await loadSetting();
-  }
+    const identity = adapter.identity;
+    if (!identity) return;
+
+    let active = true;
+    let flagRevision = 0;
+    const refreshAvailability = async (): Promise<void> => {
+      const revision = ++flagRevision;
+      const enabled = await hqAnywhereRuntimeEnabled(identity);
+      if (!active || revision !== flagRevision) return;
+
+      const wasAvailable = available;
+      available = enabled;
+      if (!enabled) {
+        loaded = false;
+        retryKind = null;
+        retryValue = null;
+        return;
+      }
+      if (!wasAvailable || !loaded) void loadSetting();
+    };
+
+    const unsubscribe = identity.subscribeFeature?.(
+      HQ_ANYWHERE_RUNTIME_FLAG,
+      () => void refreshAvailability(),
+    ) ?? (() => {});
+    void refreshAvailability();
+
+    return () => {
+      active = false;
+      flagRevision += 1;
+      unsubscribe();
+    };
+  });
 
   async function loadSetting(): Promise<void> {
     if (!adapter || loading || saving) return;

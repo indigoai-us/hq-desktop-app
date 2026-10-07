@@ -2,15 +2,17 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
-import { failure, ok, type PlatformAdapter } from "@hq/platform";
+import { failure, ok, type AdapterResult, type PlatformAdapter } from "@hq/platform";
 import HqAnywhereSettingRow from "./HqAnywhereSettingRow.svelte";
 
 type ResolveFeatureFlag = NonNullable<PlatformAdapter["identity"]["resolveFeatureFlagStatus"]>;
+type SubscribeFeature = NonNullable<PlatformAdapter["identity"]["subscribeFeature"]>;
 
 function createAdapter(options: {
   enabled?: boolean;
   configured?: boolean;
   resolveFlag?: ResolveFeatureFlag;
+  subscribeFeature?: SubscribeFeature;
   initialValue?: boolean;
   getSetting?: PlatformAdapter["settings"]["getHqAnywherePersonSetting"];
   putSetting?: PlatformAdapter["settings"]["putHqAnywherePersonSetting"];
@@ -26,7 +28,7 @@ function createAdapter(options: {
       (async () => ok({ enabled: options.enabled ?? true, configured: options.configured ?? true })),
   );
   const adapter = {
-    identity: { resolveFeatureFlagStatus },
+    identity: { resolveFeatureFlagStatus, subscribeFeature: options.subscribeFeature },
     settings: { getHqAnywherePersonSetting, putHqAnywherePersonSetting },
   } as unknown as PlatformAdapter;
   return {
@@ -34,6 +36,7 @@ function createAdapter(options: {
     getHqAnywherePersonSetting,
     putHqAnywherePersonSetting,
     resolveFeatureFlagStatus,
+    subscribeFeature: options.subscribeFeature,
   };
 }
 
@@ -57,6 +60,14 @@ const toggle = () =>
   host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-toggle"]');
 
 describe("Settings > HQ Anywhere", () => {
+  it("hides the row when the adapter has no identity capability", async () => {
+    const adapterWithoutIdentity = { settings: {} } as unknown as PlatformAdapter;
+    render(adapterWithoutIdentity);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
+  });
+
   it("loads the signed-in person's current setting", async () => {
     const { adapter, getHqAnywherePersonSetting, putHqAnywherePersonSetting } = createAdapter({
       initialValue: true,
@@ -147,5 +158,42 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
     expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+  });
+
+  it("hides the row when the rollout flag turns off while Settings stays open", async () => {
+    let flagState = ok({ enabled: true, configured: true });
+    let onFeatureChange: ((result: AdapterResult<boolean>) => void) | undefined;
+    const unsubscribe = vi.fn();
+    const subscribeFeature: SubscribeFeature = vi.fn((_flag, onChange) => {
+      onFeatureChange = onChange;
+      return unsubscribe;
+    });
+    const resolveFlag: ResolveFeatureFlag = vi.fn(async () => flagState);
+    const {
+      adapter,
+      getHqAnywherePersonSetting,
+      putHqAnywherePersonSetting,
+    } = createAdapter({ resolveFlag, subscribeFeature });
+    render(adapter);
+
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+    expect(subscribeFeature).toHaveBeenCalledWith(
+      "hq-anywhere-runtime",
+      expect.any(Function),
+    );
+
+    flagState = ok({ enabled: false, configured: true });
+    if (!onFeatureChange) throw new Error("runtime flag subscription was not registered");
+    onFeatureChange(ok(false));
+
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull(),
+    );
+    expect(getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
+    expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+
+    if (component) await unmount(component);
+    component = null;
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 });
