@@ -1666,7 +1666,9 @@ fn main() {
                 // Funnel mirror: queue setup_abandoned when quitting before
                 // sign-in/install and give the sender a bounded window.
                 commands::cdp_mirror::on_exit_requested(_app_handle);
-                commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
+                commands::process::terminate_all_for_exit(
+                    commands::process::SYNC_RUNNER_STOP_GRACE,
+                );
             }
 
             if matches!(&event, tauri::RunEvent::Exit) {
