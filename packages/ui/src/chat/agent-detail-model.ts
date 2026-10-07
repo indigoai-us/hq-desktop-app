@@ -10,6 +10,7 @@ export type AgentWorkStatus = "WORKING" | "IDLE" | "PROVISIONING";
 export interface AgentDetailHeader {
   uid: string;
   displayName: string;
+  title: string;
   description: string;
   status: AgentWorkStatus;
   ownerLabel: string | null;
@@ -574,6 +575,7 @@ export function headerFromStatusPayload(
   return {
     uid: str(agent.uid) || seed.uid,
     displayName,
+    title: str(isRecord(agent.profile) ? agent.profile.title : ""),
     description: profile.description || str(seed.description),
     status: deriveAgentWorkStatus({
       setupPhase: str(setup?.phase) || str(agent.setupPhase),
@@ -624,6 +626,7 @@ export function headerFromMobileRoster(
     uid: str(row.agentUid) || str(row.uid) || seed.uid,
     displayName:
       str(row.displayName) || str(row.name) || seed.displayName || seed.uid,
+    title: str(row.title),
     description: str(row.description) || str(seed.description),
     status: deriveAgentWorkStatus({
       setupPhase: str(row.setupPhase) || str(row.status),
@@ -657,6 +660,7 @@ export function seedHeader(seed: {
   return {
     uid: seed.uid,
     displayName: seed.displayName.trim() || seed.uid,
+    title: "",
     description: str(seed.description),
     status: "IDLE",
     ownerLabel: null,
@@ -666,5 +670,470 @@ export function seedHeader(seed: {
     provider: null,
     runtimeStatus: null,
     canManage: false,
+  };
+}
+
+export type AgentBoxSource = "live" | "cache" | "unavailable";
+
+export interface AgentChannelRow {
+  name: string;
+  state: string;
+}
+
+export interface AgentAppReady {
+  provider: string;
+  name: string;
+  tools: number | null;
+  featured: boolean;
+}
+
+export interface AgentAppAttention {
+  provider: string;
+  name: string;
+  reason: string;
+  fix: string | null;
+}
+
+export interface AgentAppsView {
+  probed: boolean;
+  featured: AgentAppReady[];
+  ready: AgentAppReady[];
+  attention: AgentAppAttention[];
+}
+
+export type RoutineCadence = "daily" | "weekly" | "interval" | "once" | "custom";
+
+export const ROUTINE_CADENCE_ORDER: readonly RoutineCadence[] = [
+  "daily",
+  "weekly",
+  "interval",
+  "once",
+  "custom",
+];
+
+export const ROUTINE_CADENCE_LABEL: Record<RoutineCadence, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  interval: "Every few minutes or hours",
+  once: "One time",
+  custom: "Custom schedule",
+};
+
+export interface AgentRoutineRow {
+  id: string;
+  name: string;
+  prompt: string;
+  cadence: RoutineCadence;
+  schedule: string;
+  expr: string;
+  enabled: boolean;
+  nextRun: string | null;
+  lastRan: string | null;
+  lastStatus: string | null;
+  deliverTo: string | null;
+  skills: string[];
+}
+
+export interface AgentRoutineGroup {
+  cadence: RoutineCadence;
+  label: string;
+  routines: AgentRoutineRow[];
+}
+
+export interface AgentDeliverOption {
+  value: string;
+  label: string;
+}
+
+export interface AgentBrainLogin {
+  provider: string;
+  status: string;
+  mode: string | null;
+}
+
+export interface AgentProfileView {
+  header: AgentDetailHeader;
+  role: string | null;
+  brain: {
+    model: string | null;
+    provider: string | null;
+    reasoningEffort: string | null;
+    logins: AgentBrainLogin[];
+  };
+  editable: { title: boolean; description: boolean };
+  freshness: { source: AgentBoxSource; fetchedAt: string | null };
+  hasBox: boolean;
+  channels: AgentChannelRow[];
+  apps: AgentAppsView;
+  routines: AgentRoutineRow[];
+  deliverOptions: AgentDeliverOption[];
+  persona: { instructions: string; customized: boolean };
+  skills: string[];
+}
+
+function ownerNameFrom(owner: unknown): string | null {
+  if (!isRecord(owner)) return null;
+  return str(owner.name) || str(owner.displayName) || str(owner.uid) || null;
+}
+
+function listOf(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function cadenceFrom(value: unknown): RoutineCadence {
+  const raw = str(value).toLowerCase();
+  return (ROUTINE_CADENCE_ORDER as readonly string[]).includes(raw)
+    ? (raw as RoutineCadence)
+    : "custom";
+}
+
+function deliverLabel(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const platform = str(value.platform);
+  const chat = str(value.chatName);
+  if (platform && chat) return `${platform} · ${chat}`;
+  return platform || chat || null;
+}
+
+export function routinesFromBox(
+  value: unknown,
+  now: Date = new Date(),
+): AgentRoutineRow[] {
+  const rows: AgentRoutineRow[] = [];
+  for (const item of listOf(value)) {
+    const id = str(item.id);
+    if (!id) continue;
+    const schedule = isRecord(item.schedule) ? item.schedule : {};
+    const enabled = item.enabled !== false && str(item.state) !== "paused";
+    const lastRunAt = str(item.lastRunAt);
+    const nextRunAt = str(item.nextRunAt);
+    rows.push({
+      id,
+      name: str(item.name) || jobTitleFromPrompt(str(item.prompt)),
+      prompt: str(item.prompt),
+      cadence: cadenceFrom(schedule.cadence),
+      schedule: str(schedule.display) || str(schedule.expr) || "Scheduled",
+      expr: str(schedule.expr),
+      enabled,
+      nextRun: enabled && nextRunAt ? formatRelativeFuture(nextRunAt, now) : null,
+      lastRan: lastRunAt ? formatRelativeAgo(lastRunAt, now) : null,
+      lastStatus: str(item.lastStatus) || null,
+      deliverTo: deliverLabel(item.deliverTo),
+      skills: Array.isArray(item.skills)
+        ? item.skills.map((s) => str(s)).filter(Boolean)
+        : [],
+    });
+  }
+  return rows;
+}
+
+function formatRelativeFuture(iso: string, now: Date): string | null {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return null;
+  const mins = Math.round((then - now.getTime()) / 60_000);
+  if (mins <= 0) return "due now";
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `in ${hrs}h`;
+  return `in ${Math.round(hrs / 24)}d`;
+}
+
+export function groupRoutines(rows: AgentRoutineRow[]): AgentRoutineGroup[] {
+  return ROUTINE_CADENCE_ORDER.map((cadence) => ({
+    cadence,
+    label: ROUTINE_CADENCE_LABEL[cadence],
+    routines: rows.filter((r) => r.cadence === cadence),
+  })).filter((g) => g.routines.length > 0);
+}
+
+export function appsFromBox(value: unknown): AgentAppsView {
+  const rec = isRecord(value) ? value : {};
+  const featuredSlugs = new Set(
+    (Array.isArray(rec.featured) ? rec.featured : [])
+      .map((s) => str(s).toLowerCase())
+      .filter(Boolean),
+  );
+  const ready: AgentAppReady[] = listOf(rec.ready)
+    .map((row) => {
+      const provider = str(row.provider);
+      return {
+        provider,
+        name: str(row.name) || provider,
+        tools: finiteNumber(row.tools),
+        featured: featuredSlugs.has(provider.toLowerCase()),
+      };
+    })
+    .filter((row) => row.provider || row.name);
+  const attention: AgentAppAttention[] = listOf(rec.attention)
+    .map((row) => {
+      const provider = str(row.provider);
+      return {
+        provider,
+        name: str(row.name) || provider,
+        reason: str(row.reason) || "needs attention",
+        fix: str(row.fix) || null,
+      };
+    })
+    .filter((row) => row.provider || row.name);
+  return {
+    probed: str(rec.probedAt) !== "",
+    featured: ready.filter((r) => r.featured),
+    ready,
+    attention,
+  };
+}
+
+function deliverOptionsFrom(channels: unknown): AgentDeliverOption[] {
+  const options: AgentDeliverOption[] = [];
+  if (!isRecord(channels)) return options;
+  for (const [platform, rooms] of Object.entries(channels)) {
+    for (const room of listOf(rooms)) {
+      const id = str(room.id);
+      if (!id) continue;
+      options.push({
+        value: `platform:${id}`,
+        label: `${platform} · ${str(room.name) || id}`,
+      });
+    }
+  }
+  return options;
+}
+
+/**
+ * Builds the owner's panel view from the `GET /v1/agents/{uid}/profile` body.
+ * Returns null when the body is not a profile, so the caller falls back to
+ * the individual reads.
+ */
+export function profileFromPayload(
+  payload: unknown,
+  seed: {
+    uid: string;
+    displayName: string;
+    description?: string | null;
+    avatarUrl?: string | null;
+    companyUid?: string | null;
+    companyNames?: Map<string, string> | Record<string, string>;
+  },
+  now: Date = new Date(),
+): AgentProfileView | null {
+  if (!isRecord(payload) || !isRecord(payload.agent)) return null;
+  const agent = payload.agent;
+  const brain = isRecord(payload.brain) ? payload.brain : {};
+  const box = isRecord(payload.box) ? payload.box : null;
+  const freshness = isRecord(payload.boxFreshness) ? payload.boxFreshness : {};
+  const editable = isRecord(payload.editable) ? payload.editable : {};
+  const rawSource = str(freshness.source);
+  const source: AgentBoxSource =
+    box == null
+      ? "unavailable"
+      : rawSource === "cache" || rawSource === "unavailable"
+        ? rawSource
+        : "live";
+  const companyUid = str(agent.companyUid) || str(seed.companyUid);
+  const names = seed.companyNames;
+  const companyLabel = companyUid
+    ? names instanceof Map
+      ? names.get(companyUid) ?? companyUid
+      : names?.[companyUid] ?? companyUid
+    : null;
+  const model = str(brain.model) || null;
+  const provider = str(brain.provider) || null;
+  const header: AgentDetailHeader = {
+    uid: str(agent.uid) || seed.uid,
+    displayName: str(agent.displayName) || seed.displayName.trim() || seed.uid,
+    title: str(agent.title),
+    description: str(agent.description) || str(seed.description),
+    status: agent.connected === true ? "WORKING" : "IDLE",
+    ownerLabel: ownerNameFrom(agent.owner),
+    companies: companyLabel ? [companyLabel] : [],
+    avatarUrl: str(agent.avatarUrl) || seed.avatarUrl || null,
+    modelLabel: model,
+    provider,
+    runtimeStatus: null,
+    canManage: true,
+  };
+  const persona = box && isRecord(box.persona) ? box.persona : {};
+  return {
+    header,
+    role: str(agent.role) || null,
+    brain: {
+      model,
+      provider,
+      reasoningEffort: str(brain.reasoningEffort) || null,
+      logins: listOf(brain.logins)
+        .map((row) => ({
+          provider: str(row.provider),
+          status: str(row.status) || "unknown",
+          mode: str(row.mode) || null,
+        }))
+        .filter((row) => row.provider),
+    },
+    editable: {
+      title: editable.title !== false,
+      description: editable.description !== false,
+    },
+    freshness: { source, fetchedAt: str(freshness.fetchedAt) || null },
+    hasBox: box != null,
+    channels: listOf(box?.platforms)
+      .map((row) => ({ name: str(row.name), state: str(row.state) || "unknown" }))
+      .filter((row) => row.name),
+    apps: appsFromBox(box?.integrations),
+    routines: routinesFromBox(box?.routines, now),
+    deliverOptions: deliverOptionsFrom(box?.channels),
+    persona: {
+      instructions: typeof persona.soul === "string" ? persona.soul.trim() : "",
+      customized: persona.customized === true,
+    },
+    skills: listOf(box?.skills)
+      .map((row) => str(row.name))
+      .filter(Boolean),
+  };
+}
+
+export function freshnessNote(
+  freshness: { source: AgentBoxSource; fetchedAt: string | null },
+  now: Date = new Date(),
+): string | null {
+  if (freshness.source === "live") return null;
+  if (freshness.source === "unavailable") {
+    return "Live bot details are not reachable right now.";
+  }
+  const ago = formatRelativeAgo(freshness.fetchedAt, now);
+  return ago
+    ? `Showing a saved copy from ${ago}.`
+    : "Showing a saved copy of the bot's details.";
+}
+
+export interface RoutineDraft {
+  name: string;
+  prompt: string;
+  cadence: RoutineCadence;
+  /** HH:MM in the bot's timezone. Used by daily and weekly. */
+  time: string;
+  /** 0 (Sunday) to 6. Used by weekly. */
+  weekday: number;
+  intervalMinutes: number;
+  /** Local date-time (YYYY-MM-DDTHH:MM). Used by once. */
+  onceAt: string;
+  custom: string;
+  /** "origin", "local", "platform:<roomId>", or "" to leave unchanged. */
+  deliver: string;
+  skills: string[];
+}
+
+export function emptyRoutineDraft(): RoutineDraft {
+  return {
+    name: "",
+    prompt: "",
+    cadence: "daily",
+    time: "09:00",
+    weekday: 1,
+    intervalMinutes: 60,
+    onceAt: "",
+    custom: "",
+    deliver: "origin",
+    skills: [],
+  };
+}
+
+/** Starts an edit from an existing routine; delivery stays unchanged until picked. */
+export function draftFromRoutine(row: AgentRoutineRow): RoutineDraft {
+  const draft: RoutineDraft = {
+    ...emptyRoutineDraft(),
+    name: row.name,
+    prompt: row.prompt,
+    cadence: "custom",
+    custom: row.expr,
+    deliver: "",
+    skills: row.skills,
+  };
+  const parts = row.expr.split(/\s+/);
+  const minute = Number(parts[0]);
+  const hour = Number(parts[1]);
+  const simple =
+    parts.length === 5 &&
+    Number.isInteger(minute) &&
+    Number.isInteger(hour) &&
+    parts[2] === "*" &&
+    parts[3] === "*";
+  if (simple && row.cadence === "daily" && parts[4] === "*") {
+    draft.cadence = "daily";
+    draft.time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  } else if (simple && row.cadence === "weekly" && /^[0-6]$/.test(parts[4] ?? "")) {
+    draft.cadence = "weekly";
+    draft.time = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    draft.weekday = Number(parts[4]);
+  }
+  return draft;
+}
+
+export function scheduleFromDraft(draft: RoutineDraft): string | null {
+  switch (draft.cadence) {
+    case "daily":
+    case "weekly": {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(draft.time.trim());
+      if (!m) return null;
+      const hour = Number(m[1]);
+      const minute = Number(m[2]);
+      if (hour > 23 || minute > 59) return null;
+      const dow = draft.cadence === "weekly" ? String(draft.weekday) : "*";
+      return `${minute} ${hour} * * ${dow}`;
+    }
+    case "interval": {
+      const n = Math.floor(draft.intervalMinutes);
+      if (!Number.isFinite(n) || n < 1) return null;
+      return `every ${n}m`;
+    }
+    case "once": {
+      const d = new Date(draft.onceAt);
+      return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    case "custom":
+      return draft.custom.trim() || null;
+  }
+}
+
+/** The `body` for `cron.create` and `cron.update`. Null when the draft is incomplete. */
+export function routineBodyFromDraft(
+  draft: RoutineDraft,
+): Record<string, unknown> | null {
+  const name = draft.name.trim();
+  const prompt = draft.prompt.trim();
+  const schedule = scheduleFromDraft(draft);
+  if (!name || !prompt || !schedule) return null;
+  const body: Record<string, unknown> = {
+    name,
+    prompt,
+    schedule,
+    skills: draft.skills,
+  };
+  if (draft.deliver) body.deliver = draft.deliver;
+  return body;
+}
+
+export type RoutineActionId =
+  | "cron.create"
+  | "cron.update"
+  | "cron.pause"
+  | "cron.resume"
+  | "cron.trigger"
+  | "cron.delete";
+
+export function routineActionRequest(
+  actionId: RoutineActionId,
+  idempotencyKey: string,
+  jobId?: string,
+  body?: Record<string, unknown>,
+): {
+  actionId: RoutineActionId;
+  idempotencyKey: string;
+  params: Record<string, string>;
+  body?: Record<string, unknown>;
+} {
+  return {
+    actionId,
+    idempotencyKey,
+    params: jobId ? { jobId } : {},
+    ...(body ? { body } : {}),
   };
 }
