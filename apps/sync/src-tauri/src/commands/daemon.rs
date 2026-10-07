@@ -34,6 +34,7 @@ use crate::commands::windows_teardown_probe::{
 };
 use crate::events::{
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_PLAN_LIMIT,
+    EVENT_SYNC_REALTIME_MODE,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -386,6 +387,11 @@ pub(crate) fn handle_watch_stdout_line<R: tauri::Runtime>(
                 "daemon",
                 &format!("failed to emit plan-limit notice: {error}"),
             );
+        }
+    }
+    if let SyncEvent::RealtimeMode(payload) = &event {
+        if let Err(error) = app.emit_to("main", EVENT_SYNC_REALTIME_MODE, payload.clone()) {
+            log("daemon", &format!("failed to emit realtime-mode status: {error}"));
         }
     }
     if let SyncEvent::AllComplete(payload) = &event {
@@ -8354,6 +8360,56 @@ mod tests {
             .unwrap()
             .iter()
             .any(|row| row["company"] == company && row["upgradeUrl"] == upgrade_url));
+    }
+
+    /// The watch daemon is the normal auto-sync path, so it must forward the
+    /// runner's realtime-mode status to the main window just like manual sync.
+    #[test]
+    fn handle_watch_stdout_line_emits_realtime_mode_to_main_window() {
+        use std::sync::Arc;
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let main_window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "main",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .build()
+        .unwrap();
+        let handle = app.handle().clone();
+        let hq_folder = TempDir::new().unwrap();
+        let totals = Mutex::new(RunTotals::default());
+        let phase = Mutex::new(WatcherPhaseContext::default());
+
+        let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let seen_w = seen.clone();
+        main_window.listen(EVENT_SYNC_REALTIME_MODE, move |event| {
+            seen_w
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(event.payload()).unwrap());
+        });
+
+        let line = r#"{"type":"realtime-mode","mode":"poll-only","minPollMs":60000,"maxPollMs":60000}"#;
+        assert!(handle_watch_stdout_line(
+            &handle,
+            hq_folder.path().to_str().unwrap(),
+            &totals,
+            &phase,
+            line,
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.as_slice(),
+            &[serde_json::json!({
+                "mode": "poll-only",
+                "minPollMs": 60000,
+                "maxPollMs": 60000,
+            })],
+        );
     }
 
     // ── Double-start prevention ──────────────────────────────────────────

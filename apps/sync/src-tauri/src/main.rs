@@ -739,6 +739,7 @@ fn main() {
             commands::git_mirror::unregister_mirror_quarantine_move_not_deletion_generation,
             commands::git_mirror::set_mirror_quarantine_move_not_deletion,
             commands::sync::start_sync,
+            commands::sync::poll_only_status_enabled,
             commands::sync::cancel_sync,
             commands::first_run::is_first_run,
             commands::first_run::desktop_install_attempt_id,

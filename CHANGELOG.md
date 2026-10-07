@@ -27,6 +27,8 @@ The release moves it under the version it ships in.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
 - Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
 
+- When live sync updates are unavailable, the tray shows the last completed sync and polling interval.
+
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
 - A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
 - A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
@@ -357,6 +359,8 @@ The release moves it under the version it ships in.
 - Internal: removed two unused packages/ui helpers and made three module-only helpers private (TD-60, #1198). No user-visible change.
 
 - Internal: unused exports in the shared UI package are now module-private. No behaviour change.
+- Automatic sync now forwards live-update availability to the tray, so poll-only status appears without starting a manual sync.
+- When live sync updates are unavailable, the tray shows the last completed sync and polling cadence. It no longer says Syncing when no files are moving.
 
 - Internal: unused exports in the work shell and installer are now module-private. No behaviour change.
 
