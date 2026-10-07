@@ -156,12 +156,13 @@
     outline-offset: 2px;
   }
 
+  /* One page title for every page: the canvas title token (20px/500). */
   .page-header h1 {
     margin: 0;
     color: var(--t1);
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.2;
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
     white-space: nowrap;
   }
 
@@ -169,9 +170,9 @@
     min-width: 0;
     overflow: hidden;
     color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.45;
+    font-size: var(--type-ui, 13px);
+    font-weight: var(--type-ui-weight, 400);
+    line-height: var(--type-ui-line, 1.45);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

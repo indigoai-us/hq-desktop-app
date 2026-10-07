@@ -79,7 +79,7 @@
 <Sidepane modelKey="meetings" {memory} label="Meetings">
   {#snippet header()}
     <div class="pane-head" data-testid="meetings-sidepane-header">
-      <span class="title">Your meetings</span>
+      <span class="title">Meetings</span>
       <button
         type="button"
         class="icon-btn"
@@ -219,14 +219,19 @@
     display: flex;
     align-items: center;
     gap: 2px;
-    height: 30px;
-    padding: 0 4px 0 8px;
+    min-height: 30px;
+    /* sidepane-header 8px + 12px = --page-edge-inset, the page title edge. */
+    padding: 0 4px 0 12px;
   }
 
+  /* Same title as every page header: the canvas title token (20px/500). */
   .title {
     flex: 1 1 auto;
-    font-size: 13px;
-    font-weight: 500;
+    color: var(--t1);
+    font-size: var(--type-title, 20px);
+    font-weight: var(--type-title-weight, 500);
+    line-height: var(--type-title-line, 1.25);
+    white-space: nowrap;
   }
 
   .icon-btn {
