@@ -1332,9 +1332,12 @@ export interface FilesApi {
   /**
    * OWNER-R17: who can open one vault path, with inherited grants and display
    * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
-   * access panel uses). Read-only. Hosts without it omit it.
+   * access panel uses). Read-only. Hosts without it omit it. Pass `page`
+   * to read a large folder in pages (`limit` up to 200, `cursor` from the
+   * previous page's `nextCursor`); the server refuses it with
+   * ACL_TREE_PAGINATION_DISABLED where paging is not on.
    */
-  getAccessTree?(companyUid: string, prefix: string): AdapterPromise<Json>;
+  getAccessTree?(companyUid: string, prefix: string, page?: { limit: number; cursor?: string }): AdapterPromise<Json>;
   /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
   listAccessGroups?(companyUid: string): AdapterPromise<Json>;
   /**

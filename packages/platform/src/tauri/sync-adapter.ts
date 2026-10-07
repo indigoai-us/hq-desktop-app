@@ -1414,8 +1414,15 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
-      getAccessTree: (companyUid, prefix) =>
-        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      getAccessTree: (companyUid, prefix, page) =>
+        hqProJson(
+          'GET',
+          withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, {
+            prefix,
+            limit: page?.limit,
+            cursor: page?.cursor,
+          }),
+        ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
       atlasLocal: {
