@@ -1,3 +1,5 @@
+import { safeUnlisten } from './listener-registry';
+
 type Unlisten = () => void;
 
 export type ListenPayload = (
@@ -56,14 +58,22 @@ export async function registerChannelUnreadListeners({
     applyChannelUnread(update.channelId, update.unread);
   });
 
-  const channelUpdated = await listen('channel:updated', (payload) => {
-    const update = parseChannelUnreadUpdate(payload);
-    if (update === null) {
-      refreshSnapshot();
-      return;
-    }
-    applyChannelUnread(update.channelId, update.unread);
-  });
+  let channelUpdated: Unlisten;
+  try {
+    channelUpdated = await listen('channel:updated', (payload) => {
+      const update = parseChannelUnreadUpdate(payload);
+      if (update === null) {
+        refreshSnapshot();
+        return;
+      }
+      applyChannelUnread(update.channelId, update.unread);
+    });
+  } catch (error) {
+    // Do not leave a half-registered listener behind if the second registration
+    // fails while the webview is shutting down.
+    safeUnlisten(unreadChanged)();
+    throw error;
+  }
 
   return [unreadChanged, channelUpdated];
 }

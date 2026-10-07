@@ -21,6 +21,23 @@ describe('channel unread event listeners', () => {
     expect(appSource).not.toContain('applyChannelUnread(e.payload.channelId, e.payload.unread)');
   });
 
+  it('unlistens the unread handler if channel:updated registration fails', async () => {
+    const deps = setup();
+    const unlistenUnreadChanged = vi.fn();
+    deps.listen = async (eventName, handler) => {
+      if (eventName === 'channel:updated') {
+        throw new Error('channel:updated registration failed');
+      }
+      deps.handlers.set(eventName, handler);
+      return unlistenUnreadChanged;
+    };
+
+    await expect(registerChannelUnreadListeners(deps)).rejects.toThrow(
+      'channel:updated registration failed',
+    );
+    expect(unlistenUnreadChanged).toHaveBeenCalledTimes(1);
+  });
+
   it('refetches the unread snapshot for a payload-less invalidation instead of leaving a stale badge', async () => {
     const deps = setup();
     await registerChannelUnreadListeners(deps);
