@@ -109,6 +109,7 @@ pub mod request_policy;
 pub mod run_cli_provision;
 pub mod runner_diagnostic_report;
 pub mod runner_error_shape;
+pub mod runner_exit_record;
 pub mod runner_target;
 pub mod runtime_diagnosis;
 pub mod runtime_version;

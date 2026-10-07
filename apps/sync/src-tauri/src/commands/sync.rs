@@ -438,6 +438,12 @@ fn runner_exit_telemetry_context(
             context.runner_report_dir_delivery.clone(),
         ),
     ];
+    if let Some(record) = totals
+        .runner_exit_record()
+        .filter(|record| Some(record.code) == code)
+    {
+        tags.push(("runner_exit_reason", record.reason.as_str().to_string()));
+    }
     // V8 heap-OOM banner (HQ-DESKTOP-55), only when this run retained one. A fixed
     // constant; absent otherwise so absence never renders as evidence. Read from
     // the SAME RunTotals source the watcher route reads, keeping the routes
