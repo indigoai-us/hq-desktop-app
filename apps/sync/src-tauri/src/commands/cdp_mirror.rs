@@ -1013,6 +1013,7 @@ impl SyncTrigger {
 struct SyncInFlight {
     trigger: SyncTrigger,
     file_count: Option<u64>,
+    first_sync_company_uid: Option<String>,
 }
 
 static SYNC_IN_FLIGHT: Mutex<Option<SyncInFlight>> = Mutex::new(None);
@@ -1030,6 +1031,7 @@ pub fn note_sync_started(trigger: SyncTrigger, flow: &'static str) {
         *sync_in_flight() = Some(SyncInFlight {
             trigger,
             file_count: None,
+            first_sync_company_uid: None,
         });
     }
     emit_operational(
@@ -1048,15 +1050,18 @@ pub fn note_sync_files(files_downloaded: u32) {
 /// End row for a runner pass: `sync_completed` when `error_class` is `None`,
 /// else `sync_failed`. `None` when no pass was in flight.
 pub fn sync_end_event(
-    in_flight: Option<(SyncTrigger, Option<u64>)>,
+    in_flight: Option<(SyncTrigger, Option<u64>, Option<String>)>,
     error_class: Option<&str>,
 ) -> Option<(&'static str, Value)> {
-    let (trigger, file_count) = in_flight?;
+    let (trigger, file_count, first_sync_company_uid) = in_flight?;
     let mut props = json!({ "trigger": trigger.as_str(), "flow": "runner" });
     match error_class {
         None => {
             if let Some(count) = file_count {
                 props["downloadedCount"] = json!(count);
+            }
+            if let Some(company_uid) = first_sync_company_uid {
+                props["companyUid"] = json!(company_uid);
             }
             Some((OP_SYNC_COMPLETED, props))
         }
@@ -1067,9 +1072,19 @@ pub fn sync_end_event(
     }
 }
 
+fn attach_first_sync_company_uid(company_uid: &str) {
+    if let Some(in_flight) = sync_in_flight().as_mut() {
+        if in_flight.trigger == SyncTrigger::First {
+            in_flight.first_sync_company_uid = Some(company_uid.to_string());
+        }
+    }
+}
+
 /// Hook for the runner's terminal seam (`record_sync_run_ended` call sites).
 pub fn note_sync_ended(error_class: Option<&str>) {
-    let in_flight = sync_in_flight().take().map(|f| (f.trigger, f.file_count));
+    let in_flight = sync_in_flight()
+        .take()
+        .map(|f| (f.trigger, f.file_count, f.first_sync_company_uid));
     let links_account = sync_end_links_account(in_flight.map(|f| f.0), error_class);
     if let Some((name, props)) = sync_end_event(in_flight, error_class) {
         emit_operational(name, props);
@@ -1127,6 +1142,7 @@ pub fn note_signin_link_visitor(anon_id: &str) {
 /// company's hash.
 pub fn note_first_sync_completed(company_uid: &str) {
     record(EVENT_FIRST_SYNC_COMPLETED, Map::new());
+    attach_first_sync_company_uid(company_uid);
     note_account_linked_for(Some(company_uid.to_string()));
 }
 
@@ -1592,20 +1608,60 @@ mod tests {
     #[test]
     fn sync_end_rows_follow_the_in_flight_pass() {
         assert!(sync_end_event(None, None).is_none(), "no pass in flight");
-        let (name, props) = sync_end_event(Some((SyncTrigger::Manual, Some(12))), None).unwrap();
+        let (name, props) = sync_end_event(Some((SyncTrigger::Manual, Some(12), None)), None).unwrap();
         assert_eq!(name, OP_SYNC_COMPLETED);
         assert_eq!(
             props,
             json!({"trigger": "manual", "flow": "runner", "downloadedCount": 12})
         );
-        let (name, props) =
-            sync_end_event(Some((SyncTrigger::First, None)), Some("auth_expired")).unwrap();
+        let (name, props) = sync_end_event(
+            Some((SyncTrigger::First, None, Some("cmp_first".to_string()))),
+            Some("auth_expired"),
+        )
+        .unwrap();
         assert_eq!(name, OP_SYNC_FAILED);
         assert_eq!(
             props,
             json!({"trigger": "first", "flow": "runner", "errorClass": "auth_expired"})
         );
+        let (name, props) = sync_end_event(
+            Some((SyncTrigger::First, None, Some("cmp_first".to_string()))),
+            None,
+        )
+        .unwrap();
+        assert_eq!(name, OP_SYNC_COMPLETED);
+        assert_eq!(props["companyUid"], "cmp_first");
+        assert_eq!(props["trigger"], "first");
         assert_eq!(SyncTrigger::Auto.as_str(), "auto");
+    }
+
+    #[test]
+    fn first_sync_company_is_attached_only_to_a_first_trigger() {
+        *sync_in_flight() = Some(SyncInFlight {
+            trigger: SyncTrigger::First,
+            file_count: None,
+            first_sync_company_uid: None,
+        });
+        attach_first_sync_company_uid("cmp_first");
+        assert_eq!(
+            sync_in_flight()
+                .as_ref()
+                .and_then(|pass| pass.first_sync_company_uid.as_deref()),
+            Some("cmp_first")
+        );
+
+        *sync_in_flight() = Some(SyncInFlight {
+            trigger: SyncTrigger::Manual,
+            file_count: None,
+            first_sync_company_uid: None,
+        });
+        attach_first_sync_company_uid("cmp_manual");
+        assert!(sync_in_flight()
+            .as_ref()
+            .unwrap()
+            .first_sync_company_uid
+            .is_none());
+        sync_in_flight().take();
     }
 
     #[test]
@@ -1613,6 +1669,7 @@ mod tests {
         *sync_in_flight() = Some(SyncInFlight {
             trigger: SyncTrigger::Auto,
             file_count: None,
+            first_sync_company_uid: None,
         });
         note_sync_files(4);
         let taken = sync_in_flight().take();

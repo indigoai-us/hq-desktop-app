@@ -1301,7 +1301,14 @@ fn build_desktop_telemetry_event(
             .and_then(Value::as_str)
             .filter(|value| value.starts_with("cmp_") && value.len() <= 128)
             .map(str::to_string)
-    } else if company_scoped_onboarding_row {
+    } else if company_scoped_onboarding_row
+        || (event_name == crate::commands::cdp_mirror::OP_SYNC_COMPLETED
+            && raw_company_scope
+                .as_ref()
+                .and_then(|input| input.get("trigger"))
+                .and_then(Value::as_str)
+                == Some("first"))
+    {
         raw_company_scope
             .as_ref()
             .and_then(|input| input.get("companyUid"))
@@ -3502,6 +3509,36 @@ mod codex_telemetry_tests {
             let sanitized = sanitize_post_ready_action_dropped_properties(Some(properties));
             assert_eq!(sanitized, expected);
         }
+    }
+
+    #[test]
+    fn first_sync_completion_lifts_company_uid_without_exposing_it_as_a_property() {
+        let event = build_desktop_telemetry_event(
+            crate::commands::cdp_mirror::OP_SYNC_COMPLETED.to_string(),
+            Some(json!({
+                "trigger": "first",
+                "flow": "runner",
+                "companyUid": "cmp_first-sync",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert_eq!(event.company_uid.as_deref(), Some("cmp_first-sync"));
+        assert!(event.properties.get("companyUid").is_none());
+
+        let unrelated = build_desktop_telemetry_event(
+            crate::commands::cdp_mirror::OP_SYNC_STARTED.to_string(),
+            Some(json!({
+                "trigger": "first",
+                "flow": "runner",
+                "companyUid": "cmp_first-sync",
+            })),
+            None,
+            None,
+            "no-consent",
+        );
+        assert!(unrelated.company_uid.is_none());
     }
 
     #[test]
