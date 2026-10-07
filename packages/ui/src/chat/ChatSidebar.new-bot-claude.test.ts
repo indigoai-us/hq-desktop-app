@@ -5,7 +5,7 @@
  * provider flag is on (review A-C1). The sidebar hands the takeover the same
  * flag reader it hands the "+" modal's create, so the two flows agree.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -13,6 +13,13 @@ import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// The create window loads its bot flow on demand on the rail; load it first
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -88,7 +95,7 @@ async function openBrainStep(props: Record<string, unknown>): Promise<void> {
   await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+  q<HTMLButtonElement>('[data-testid="chat-create-menu-agent"]')!.click();
   await settle();
   const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
   name.value = "Nova";

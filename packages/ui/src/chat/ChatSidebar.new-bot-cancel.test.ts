@@ -7,7 +7,7 @@
  * work, so it keeps going when the takeover closes, and an answer that arrives
  * after Cancel still gets its bot removed. Every server call here is a fake.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -25,6 +25,13 @@ import { tenantStorageKey } from "../identity/tenant-storage.js";
 import { resetWakingSessionStores, WAKING_BOTS_STORAGE_KEY } from "./create-bot/waking-sessions.js";
 import { registerShortcuts, runShortcut, shortcutsSuspended } from "../common/keyboard-shortcuts.js";
 import { isMac } from "../common/platform.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// The create window loads its bot flow on demand on the rail; load it first
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -131,7 +138,7 @@ function mountSidebar(props: Record<string, unknown>): void {
 async function openTakeover(): Promise<void> {
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  click('[data-testid="chat-create-new-bot"]');
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
 }
 
@@ -1462,7 +1469,10 @@ describe("Cancel for a bot that is starting", () => {
 
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    // On the rail, New bot is on the "+" menu, which closes after each pick.
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
+    await settle();
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="new-bot-cancel-notice"]')).toBeNull();

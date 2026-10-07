@@ -202,7 +202,31 @@ describe("DesktopApp conflict resolution", () => {
 
     const row = host.querySelector('[data-testid="core-popover-conflict-row"]');
     expect(row, "the unresolved file stays on the list").toBeTruthy();
-    expect(row?.textContent).toContain("hq sync resolve exited 1");
+    // The command's own text is logged, not shown (AUDIT-3c).
+    expect(row?.textContent).not.toContain("hq sync resolve exited 1");
+    expect(row?.textContent).toContain("Could not resolve this file. Try again.");
+  });
+
+  it("never shows raw transport error text on a conflict row", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const events = await mountShell(buildAdapter(async () => failure("resolve-failed", RAW)));
+    await openConflictRow(events);
+
+    host
+      .querySelector<HTMLButtonElement>('[data-testid="core-popover-keep-local"]')!
+      .click();
+    await settle();
+
+    const row = host.querySelector('[data-testid="core-popover-conflict-row"]');
+    expect(row?.textContent).toContain("Could not resolve this file. Try again.");
+    expect(row?.textContent).not.toContain("boom");
+    expect(row?.textContent).not.toContain("HTTP 500");
+    for (const el of Array.from(row?.querySelectorAll("[title]") ?? [])) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(error.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    error.mockRestore();
   });
 
   it("routes Open in editor to open_in_editor", async () => {

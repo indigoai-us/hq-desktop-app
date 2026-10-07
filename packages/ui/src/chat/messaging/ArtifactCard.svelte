@@ -169,7 +169,7 @@
     padding: 8px 10px 8px 8px;
     border: 1px solid var(--line, rgba(255, 255, 255, 0.07));
     border-radius: 12px;
-    background: var(--elevated, #1e1e24);
+    background: var(--elevated, #242424);
     font-size: 13px;
     cursor: pointer;
     text-align: left;

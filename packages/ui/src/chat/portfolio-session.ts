@@ -22,6 +22,8 @@ export interface PortfolioSessionRef {
   serverSessionId?: string | null;
   /** Bound task id from the server when known. */
   taskId?: string | null;
+  /** Bot (agent) display name running the session, when known. */
+  agent?: string;
 }
 
 /** Minimal project shape needed for session display. */

@@ -380,9 +380,10 @@
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
+    /* No color transition: it keeps the old theme's text after a live theme
+       switch in WebKit (QA-103). */
     transition:
       background 140ms ease,
-      color 140ms ease,
       border-color 140ms ease;
   }
 

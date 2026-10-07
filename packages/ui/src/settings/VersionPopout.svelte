@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismissable } from "../common/dismissable.js";
   import type { SettingsApi, UpdatesApi } from "@hq/platform";
   import type { SettingsUpdater } from "../common/settings-write";
   import UnavailableNote from "../common/UnavailableNote.svelte";
@@ -383,6 +384,7 @@
 
 <div
   class="version-popout"
+  use:dismissable={{ onclose, trap: false, autofocus: false }}
   class:below={placement === "below"}
   data-testid="version-popout"
   role="dialog"
@@ -595,14 +597,10 @@
     border-radius: var(--v4-radius-popover);
     opacity: 1;
     background: var(
-      --v4-popover-strong,
+      --overlay-bg,
+      var(--v4-popover-strong,
       var(--v4-popover, var(--pop-bg, rgba(42, 42, 42, 0.82)))
-    );
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
+    ));
     box-shadow:
       var(--v4-shadow-popover, var(--pop-shadow)),
       inset 0 1px 0 var(--v4-glass-highlight);

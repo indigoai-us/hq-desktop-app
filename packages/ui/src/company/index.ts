@@ -1,8 +1,6 @@
 /** Company area barrel — desktop-alt company surface, platform-pure. */
-export { default as CompanyPage } from "./CompanyPage.svelte";
 export { default as CompanyBoardPanel } from "./CompanyBoardPanel.svelte";
 export { default as CompanyOperationsPanel } from "./CompanyOperationsPanel.svelte";
-export { default as CompanyKnowledgePanel } from "./CompanyKnowledgePanel.svelte";
 export { default as CompanyLibraryPanel } from "./CompanyLibraryPanel.svelte";
 export { default as DeploymentsPanel } from "./DeploymentsPanel.svelte";
 export { default as SecretsPanel } from "./SecretsPanel.svelte";
@@ -54,3 +52,6 @@ export {
   membershipRowsFrom,
   workspacesFromMembershipRows,
 } from "./company-display-map";
+export { default as CompanyLabel } from "./CompanyLabel.svelte";
+export { default as CompanyIcon } from "./CompanyIcon.svelte";
+export { setCompanyIconRegistry, companyIconFor } from "./company-icon-registry.svelte";

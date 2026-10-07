@@ -15,7 +15,7 @@
  * company (`newBotCompanyUids`), and it lists only those companies. Local
  * creation keeps the create-bot flow and is linked from the takeover.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -23,8 +23,23 @@ import ChatSidebar from "./ChatSidebar.svelte";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
 import { takePendingChannelOpen } from "./open-target.js";
 import { takePendingConversation } from "./pending-conversation.js";
+
+// These flows press ⌘↵: run them as the Mac host the app ships on, so the
+// platform's own create chord (OWNER-D 8) is Command, not Control.
+const MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15";
+const priorUserAgent = navigator.userAgent;
+beforeAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: MAC_UA }));
+afterAll(() => Object.defineProperty(navigator, "userAgent", { configurable: true, value: priorUserAgent }));
+
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -137,9 +152,7 @@ function mountSidebar(props: Record<string, unknown>): void {
 }
 
 async function openModal(): Promise<void> {
-  host
-    .querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!
-    .click();
+  (component as unknown as { openCreateChannel: () => void }).openCreateChannel();
   await settle();
 }
 
@@ -228,7 +241,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
@@ -256,7 +268,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       title: "Ad account analyst",
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
   });
 
@@ -299,7 +310,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
   });
 
@@ -328,9 +338,17 @@ describe("ChatSidebar lifecycle entry points", () => {
       ),
     );
     expect(options.map((o) => o.dataset.company)).toEqual(["cmp_indigo", "cmp_acme"]);
-    // Company tiles use the app-wide monogram helper (`initialsFor`), the same
-    // two-letter mark the sidebar rows and scope switcher show.
-    expect(options.map((o) => o.textContent?.replace(/\s+/g, " ").trim())).toEqual(["IN Indigo", "AC Acme"]);
+    // Company rows go through CompanyLabel: with no favicon, a two-letter
+    // initials badge sits before the name.
+    expect(
+      options.map((o) => [
+        o.querySelector('[data-testid="company-label-initials"]')?.textContent,
+        o.querySelector(".company-label-name")?.textContent,
+      ]),
+    ).toEqual([
+      ["IN", "Indigo"],
+      ["AC", "Acme"],
+    ]);
     // First company is preselected.
     expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["true", "false"]);
 
@@ -353,7 +371,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(oncreatebot).not.toHaveBeenCalled();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -384,7 +401,6 @@ describe("ChatSidebar lifecycle entry points", () => {
       handle: expect.stringMatching(/\S/),
       runtime: "codex",
       size: "basic",
-      authMode: "subscription",
     });
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-bot-step"]')).toBeTruthy();
@@ -695,6 +711,26 @@ describe("ChatSidebar lifecycle entry points", () => {
     ).toContain("Cloud is unreachable");
   });
 
+  it("the switcher row shows plain copy, not raw text, when the callback throws", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
+    const oncreatecompany = vi.fn(async (): Promise<EntryPointResult> => {
+      throw raw;
+    });
+    mountSidebar({ companies: [INDIGO], oncreatecompany });
+    await settle();
+    host.querySelector<HTMLButtonElement>('[data-testid="chat-scope-pill"]')!.click();
+    await settle();
+    q<HTMLButtonElement>('[data-testid="chat-scope-new-company"]')!.click();
+    await settle(10);
+    const error = q('[data-testid="chat-scope-new-company-error"]');
+    expect(error?.textContent).toContain("Could not start a new company. Try again.");
+    expect(document.body.textContent).not.toContain("boom");
+    expect(error?.getAttribute("title") ?? "").not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[chat-sidebar] new company failed", raw);
+    warn.mockRestore();
+  });
+
   it("omits the switcher row without a host callback", async () => {
     mountSidebar({ companies: [INDIGO] });
     await settle();
@@ -940,9 +976,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     await openModal();
     const plus = q<HTMLButtonElement>('[data-testid="chat-new-message"]');
-    expect(plus?.getAttribute("aria-label")).toBe(
-      "New message, channel, company, or bot",
-    );
+    expect(plus?.getAttribute("aria-label")).toBe("New message, channel, or agent");
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");

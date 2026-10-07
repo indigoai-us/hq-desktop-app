@@ -89,7 +89,7 @@ describe("bundleAgentJoinNotifications", () => {
       viewerOwnsAgents: true,
     });
     expect(result.items).toHaveLength(2);
-    expect(result.items[0]?.verbText).toBe("3 agents joined Indigo");
+    expect(result.items[0]?.verbText).toBe("3 bots joined Indigo");
     expect(result.items[1]?.id).toBe("human");
     expect(result.collapsedUnread).toBe(2);
   });
@@ -103,11 +103,11 @@ describe("bundleAgentJoinNotifications", () => {
       viewerOwnsAgents: true,
     });
     expect(result.items).toHaveLength(2);
-    expect(result.items[0]?.verbText).toBe("2 agents joined Indigo");
+    expect(result.items[0]?.verbText).toBe("2 bots joined Indigo");
     expect(result.items[1]?.id).toBe("far");
   });
 
-  it("never reads '1 agents joined'", () => {
+  it("never reads '1 bots joined'", () => {
     const result = bundleAgentJoinNotifications([joinRow(1)], {
       viewerOwnsAgents: true,
     });
@@ -124,8 +124,8 @@ describe("bundleAgentJoinNotifications", () => {
       { viewerOwnsAgents: true },
     );
     const verbs = result.items.map((item) => item.verbText);
-    expect(verbs).toContain("2 agents joined Indigo");
-    expect(verbs).toContain("2 agents joined Amass");
+    expect(verbs).toContain("2 bots joined Indigo");
+    expect(verbs).toContain("2 bots joined Amass");
   });
 });
 

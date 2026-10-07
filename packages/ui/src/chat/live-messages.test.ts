@@ -31,6 +31,16 @@ describe("normalizeConversationMessages", () => {
     expect(normalizeConversationMessages([wire])[0]?.eventId).toBe("e1");
   });
 
+  it("keeps a row's richContent as sent, and adds none to a row without it", () => {
+    const richContent = { v: 1, blocks: [{ kind: "connect", items: [{ app: "slack", slack: { installed: "absent" } }] }] };
+    const [withCards, plain] = normalizeConversationMessages([
+      { eventId: "e1", body: "Apps: Slack (not added yet)", createdAt: "2026-10-05T00:00:00.000Z", richContent },
+      { eventId: "e2", body: "hello", createdAt: "2026-10-05T00:00:01.000Z", richContent: null },
+    ]);
+    expect(withCards?.richContent).toEqual(richContent);
+    expect(plain && "richContent" in plain).toBe(false);
+  });
+
   it("keeps structured mentions on the wire message", () => {
     const [row] = normalizeConversationMessages([
       {

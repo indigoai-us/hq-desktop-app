@@ -263,6 +263,89 @@ first pushed, so a `workflow_dispatch` retry of an existing tag is never
 re-gated. Never move a pushed tag after a failed release; fix the release path
 and cut a fresh SemVer tag.
 
+## Console rail beta checklist (US-041)
+
+This is the owner checklist for the first console-rail beta. Following it
+produces a tag `release.yml` classifies as `channel=beta` (see
+`Validate tag format and classify channel`: a tag matching
+`vX.Y.Z-beta.N` sets `CHANNEL=beta`).
+
+This document does not create the release branch and does not push the tag.
+Those two steps are owner actions, and creating `release/*` is restricted to
+the Release Managers team.
+
+Performance is a precondition, not a step in this story. US-040 records the
+rail gate in `docs/performance-before-after.md` ("Console rail beta gate").
+Do not cut the beta while that gate is still a fail, unless the owner has
+explicitly accepted the remaining command-palette line.
+
+1. Rebase the feature branch onto current `main`:
+
+   ```bash
+   git fetch origin main
+   git rebase origin/main
+   ```
+
+   Work on `feat/console-rail`. Resolve conflicts on that branch before
+   anything below.
+
+2. Local CI is green:
+
+   ```bash
+   pnpm ci:local
+   ```
+
+3. Version bump. Pick the beta version (example `0.14.0-beta.1`; use the next
+   real product version). `pnpm version:app` stamps `versions.toml` and the
+   generated app files:
+
+   ```bash
+   pnpm version:app --set-version X.Y.Z-beta.1
+   ```
+
+   Commit that stamp on `feat/console-rail`. The workflow also stamps the tag
+   version at build time; the local bump is so the branch you tag already
+   shows the beta version.
+
+4. CHANGELOG entry. Move the console-rail notes from `## [Unreleased]` in
+   `CHANGELOG.md` under a heading `## [X.Y.Z-beta.1]`, in the same commit as
+   the version bump. Plain language, what changes for people who use the app.
+
+5. Owner action — release branch. From the rebased, green `feat/console-rail`
+   commit, a Release Manager creates and pushes:
+
+   ```bash
+   git checkout -b release/console-rail-beta
+   git push origin release/console-rail-beta
+   ```
+
+   `release.yml` ("Enforce release branch policy") requires a beta tag's
+   commit to be contained in an `origin/release/*` branch and **not**
+   contained in `origin/main`. A beta tag pushed from `main`, or from a
+   branch that is not `release/*`, fails that job. `release/console-rail-beta`
+   is the branch for this cut.
+
+6. Owner action — tag on that branch, not on `main` and not on
+   `feat/console-rail` alone:
+
+   ```bash
+   git checkout release/console-rail-beta
+   git tag -a vX.Y.Z-beta.1 -m "HQ vX.Y.Z-beta.1"
+   git push origin vX.Y.Z-beta.1
+   ```
+
+   Pushing the tag starts the release. The tag must match
+   `vX.Y.Z-beta.N` exactly (`vX.Y.Z-beta.1` for this first cut) or
+   classification rejects it. The usual tag cooldown in `.githooks/pre-push`
+   still applies.
+
+7. Post-release check, after the workflow publishes the beta feed:
+
+   - A machine already on the beta channel receives the update.
+   - A clean install of that build shows the console rail (Home through You,
+     company marks as circles) on first launch, with no blank window before
+     the shell.
+
 ## Desktop shell guard
 
 The V2 chat shell was developed in this repo and now lives in
@@ -400,6 +483,12 @@ public key. Both `apps/sync/src-tauri/tauri.conf.json` (macOS) and
 - Beta and alpha resolve the highest eligible public release for their channel,
   then read that tag's
   `https://github.com/indigoai-us/hq-desktop-app/releases/download/<tag>/latest.json`.
+- Local builds never self-update in the background. `tauri dev`, any build
+  with debug assertions (`tauri build --debug`, `pnpm --dir apps/sync
+  bundle:debug`) and any run with `HQ_DEV_NO_AUTO_UPDATE=1` skip the background
+  checker, so a debug bundle keeps the version stamped from `versions.toml`.
+  Set `HQ_DEV_ALLOW_AUTO_UPDATE=1` on a debug build to exercise the updater on
+  purpose. Manual "Check for updates" is unchanged.
 
 - `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the single private key matching that pubkey (the `hq-sync` macOS updater key — set it once; the macOS and Windows jobs both use it).
 

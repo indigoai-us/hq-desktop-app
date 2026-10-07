@@ -11,7 +11,7 @@ use hq_desktop_core::desktop_alt::{
     workspace_grants_company_file_access,
 };
 use hq_desktop_core::projects_local::{
-    read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
+    create_project_text_file, read_company_goals, read_crm_projection, read_project_prd, read_project_readme,
     resolve_project_path, resolve_project_write_path, scan_local_projects_for_companies,
     write_project_status, write_story_passes,
 };
@@ -148,6 +148,36 @@ pub async fn get_local_projects() -> Result<Vec<LocalProject>, String> {
     .map_err(|error| format!("projects scan task join: {error}"))
 }
 
+/// OWNER-R27: My Telemetry session history from the HQ workspace folder on
+/// this Mac (`workspace/sessions` + `workspace/threads`). Read-only; no
+/// transcript text leaves Rust. Company-tagged sessions are limited to the
+/// companies this person belongs to.
+#[tauri::command]
+pub async fn list_local_sessions(
+    from: String,
+    to: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<hq_desktop_core::local_sessions::LocalSessionsPage, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("session history requires a signed-in user".to_string());
+    }
+    let is_day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
+    if !is_day(&from) || !is_day(&to) {
+        return Err("session range must be YYYY-MM-DD".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let mut allowed = authorized_company_slugs(&workspaces);
+    allowed.insert("personal".to_string());
+    let offset = offset.unwrap_or(0);
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::local_sessions::scan_local_sessions(&hq, &from, &to, Some(&allowed), offset, limit)
+    })
+    .await
+    .map_err(|error| format!("session history task join: {error}"))
+}
+
 #[tauri::command]
 pub async fn get_local_project_prd(prd_path: String) -> Result<LocalProjectPrd, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
@@ -233,6 +263,51 @@ pub async fn set_local_story_passes(
     write_story_passes(&hq, &target.relative_path, &story_id, passes)
 }
 
+/// Result of the Project Files New file form (QA-072).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedProjectFile {
+    pub path: String,
+    /// True when the company is cloud-backed and syncing on this machine, so
+    /// HQ Sync carries the new file to the company vault.
+    pub cloud_sync: bool,
+}
+
+fn company_cloud_sync(workspaces: &[Workspace], slug: Option<&str>) -> bool {
+    let Some(slug) = slug else { return false };
+    workspaces
+        .iter()
+        .any(|w| w.slug == slug && w.cloud_uid.is_some() && w.sync_enabled)
+}
+
+/// Create a new text file in the synced HQ folder (QA-072). The company must
+/// be authorized and match the window's active company; the core writer
+/// refuses existing files, symlinked folders, and cross-company resolution.
+#[tauri::command]
+pub async fn create_project_file(
+    path: String,
+    contents: String,
+    scope: tauri::State<'_, crate::commands::desktop_alt::DesktopSessionScope>,
+) -> Result<CreatedProjectFile, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects writer requires a signed-in user".to_string());
+    }
+    let normalized = validate_hq_relative_path(&path, false)?;
+    let slug = company_slug_for_hq_path(&normalized)?;
+    let (hq, workspaces) = hydrated_project_context().await?;
+    if let Some(slug) = slug.as_deref() {
+        if !workspace_grants_company_file_access(&workspaces, slug) {
+            return Err(format!("company projects are not authorized: {slug:?}"));
+        }
+    }
+    crate::commands::desktop_alt::enforce_desktop_read_scope(&normalized, &scope)?;
+    let written = create_project_text_file(&hq, &normalized, &contents)?;
+    Ok(CreatedProjectFile {
+        path: written,
+        cloud_sync: company_cloud_sync(&workspaces, slug.as_deref()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,7 +338,21 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
+    }
+
+    #[test]
+    fn new_file_cloud_sync_needs_a_cloud_backed_syncing_company() {
+        let cloud = project_workspace("indigo", WorkspaceState::Synced, Some("active"), Some("cmp_1"));
+        let local = project_workspace("solo", WorkspaceState::Synced, Some("active"), None);
+        let mut paused = project_workspace("paused", WorkspaceState::Synced, Some("active"), Some("cmp_2"));
+        paused.sync_enabled = false;
+        let all = [cloud, local, paused];
+        assert!(company_cloud_sync(&all, Some("indigo")));
+        assert!(!company_cloud_sync(&all, Some("solo")));
+        assert!(!company_cloud_sync(&all, Some("paused")));
+        assert!(!company_cloud_sync(&all, None));
     }
 
     #[test]
@@ -552,4 +641,109 @@ mod tests {
             "an active lexical path must not resolve into another company",
         );
     }
+}
+
+/// Atlas map listing from the synced company folder (QA-016). The cloud vault
+/// listing took ~42 s cold for Indigo; these read the local mirror instead.
+async fn atlas_company_dir(company_slug: &str) -> Result<Option<(PathBuf, String, String)>, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("atlas reader requires a signed-in user".to_string());
+    }
+    let (hq, workspaces) = hydrated_project_context().await?;
+    let Some(slug) = authorize_company_slug(&hq, company_slug, &workspaces)? else {
+        return Ok(None);
+    };
+    let stamp = atlas_sync_stamp(&hq);
+    Ok(Some((hq.join("companies").join(&slug), slug, stamp)))
+}
+
+/// Last sync time from the HQ sync journal; empty when unreadable, which only
+/// means the revision falls back to folder mtimes.
+fn atlas_sync_stamp(hq: &Path) -> String {
+    let path = hq.join(".hq-sync-journal.json");
+    let raw = match std::fs::read(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("[atlas] sync journal unreadable: {err}");
+            }
+            return String::new();
+        }
+    };
+    match serde_json::from_slice::<serde_json::Value>(&raw) {
+        Ok(value) => value
+            .get("lastSyncAt")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(err) => {
+            eprintln!("[atlas] sync journal did not parse: {err}");
+            String::new()
+        }
+    }
+}
+
+/// Districts and their direct children only; `null` when the company folder
+/// has not synced to this machine (the UI then uses the cloud listing).
+#[tauri::command]
+pub async fn atlas_local_first_page(
+    company_slug: String,
+) -> Result<Option<hq_desktop_core::atlas_index::AtlasListing>, String> {
+    let Some((dir, _slug, stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::atlas_index::atlas_first_page(&dir, &stamp)
+    })
+    .await
+    .map(Some)
+    .map_err(|error| format!("atlas first page task join: {error}"))
+}
+
+/// Every object under the Atlas districts, cached on disk by folder revision.
+#[tauri::command]
+pub async fn atlas_local_listing(
+    company_slug: String,
+) -> Result<Option<hq_desktop_core::atlas_index::AtlasListing>, String> {
+    let Some((dir, slug, stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    let cache_dir = hq_desktop_core::paths::hq_config_dir()?.join("cache").join("atlas");
+    tauri::async_runtime::spawn_blocking(move || {
+        hq_desktop_core::atlas_index::atlas_full_listing(
+            &dir,
+            &stamp,
+            &cache_dir,
+            &slug,
+            hq_desktop_core::atlas_index::ATLAS_MAX_PER_PREFIX,
+        )
+    })
+    .await
+    .map(Some)
+    .map_err(|error| format!("atlas listing task join: {error}"))
+}
+
+/// Text of one object under the Atlas districts (project PRDs), capped at 2 MB.
+#[tauri::command]
+pub async fn atlas_local_read_text(company_slug: String, key: String) -> Result<Option<String>, String> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    let Some((dir, _slug, _stamp)) = atlas_company_dir(&company_slug).await? else {
+        return Ok(None);
+    };
+    let path = hq_desktop_core::atlas_index::atlas_object_path(&dir, &key)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("atlas read {key}: {err}")),
+        };
+        if !meta.is_file() || meta.len() > MAX_BYTES {
+            return Ok(None);
+        }
+        std::fs::read_to_string(&path)
+            .map(Some)
+            .map_err(|err| format!("atlas read {key}: {err}"))
+    })
+    .await
+    .map_err(|error| format!("atlas read task join: {error}"))?
 }

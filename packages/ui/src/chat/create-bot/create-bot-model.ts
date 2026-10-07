@@ -27,7 +27,6 @@ export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
-export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -39,8 +38,6 @@ export interface CreateBotDraft {
   runtime: BotRuntime;
   /** Cloud-only size rung, chosen from the current company quote. */
   size: "basic" | "power" | "dev" | "";
-  /** Cloud-only provider credential mode. */
-  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -91,10 +88,15 @@ export interface CreateBotContext {
   templates: readonly LocalBotWorkerOption[];
   /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
   claudeProviderEnabled?: boolean;
+  /**
+   * `agents.desktop-agent-creation` is on for a company in this modal. Cloud
+   * bots then default to Claude, with Codex and Grok offered, and Claude needs
+   * no second flag.
+   */
+  directCloudOn?: boolean;
   /** Tenant-specific options from GET /v1/agents/provision-options. */
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
   cloudQuoteStatus?: "loading" | "ready" | "error";
-  cloudApiKeyPresent?: boolean;
   /**
    * Plain-language name for the host machine ("Mac", "PC", or "computer")
    * from `hostComputerNoun`. Absent means "not ready"; the copy stays neutral.
@@ -111,8 +113,8 @@ export function botScopeCopy(opts: { noun?: string } = {}): Record<BotScope, { t
   const noun = opts.noun?.trim() || "computer";
   return {
     personal: {
-      title: "Personal - acts as you",
-      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it - make it a company bot to share it.`,
+      title: "Personal · acts as you",
+      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it. Make it a company bot to share it.`,
     },
     company: {
       title: "For a company",
@@ -142,16 +144,28 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
   "orbit",
 ];
 
-export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">): CreateBotDraft {
+export function initialDraft(
+  ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady"> &
+    Partial<Pick<CreateBotContext, "ownerCompanies" | "claudeProviderEnabled" | "directCloudOn">>,
+  preferredCompanyUid: string | null = null,
+  preferredCompanySlug: string | null = null,
+): CreateBotDraft {
+  // Opened from a company's page: start on that company, not the first one.
+  const preferred = preferredCompanyUid
+    ? ctx.companies.find((c) => c.companyUid === preferredCompanyUid)
+    : undefined;
+  // QA-043: a Local bot opened from a company starts as that company's bot.
+  const ownerSlug = preferredCompanySlug?.trim()
+    ? (ctx.ownerCompanies ?? []).find((c) => c.slug === preferredCompanySlug.trim())?.slug
+    : undefined;
   return {
     kind: "blank",
     home: ctx.canLocal ? "local" : "cloud",
-    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
+    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
     size: "",
-    authMode: "subscription",
-    companyUid: ctx.companies[0]?.companyUid,
-    scope: "personal",
-    companySlugs: [],
+    companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
+    scope: ownerSlug ? "company" : "personal",
+    companySlugs: ownerSlug ? [ownerSlug] : [],
     name: suggestBotName(ctx.existingNames),
     title: "",
     handle: "",
@@ -160,6 +174,20 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     model: "",
     memory: "synced",
   };
+}
+
+/** Claude can run a Cloud bot: the direct-create flag is on, or the Claude provider flag is. */
+export function claudeAllowedForCloud(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): boolean {
+  return ctx.directCloudOn === true || ctx.claudeProviderEnabled === true;
+}
+
+/** The brain a new Cloud bot starts on: Claude when allowed, otherwise Codex. */
+export function defaultCloudRuntime(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): "claude" | "codex" {
+  return claudeAllowedForCloud(ctx) ? "claude" : "codex";
 }
 
 /** The first signed-in runtime in picker order; claude when nothing is known. */
@@ -346,14 +374,47 @@ export function firstSentence(text: string | null | undefined): string {
   return (m?.[1] ?? t).slice(0, 160);
 }
 
+/** `{product}`-style scaffold placeholders a worker.yaml never filled in. */
+const PLACEHOLDER = /\{[A-Za-z_][\w-]*\}/g;
+
+function cleanText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * The company slug a template belongs to. `hq bot workers` passes through
+ * whatever worker.yaml says, which can be a stringified object
+ * ("[object Object]") or an unfilled "{product}"; the worker's folder
+ * (`companies/<slug>/workers/...`) is the reliable answer then.
+ */
+export function templateCompany(option: LocalBotWorkerOption): string | null {
+  const declared = cleanText(option.company);
+  if (declared && !declared.includes("[object") && !declared.includes("{")) return declared;
+  const fromPath = /^companies\/([^/]+)\//.exec(cleanText(option.path))?.[1] ?? null;
+  return fromPath && !fromPath.includes("{") ? fromPath : null;
+}
+
+/** Fill `{product}` placeholders with the company name, or drop them. */
+function fillPlaceholders(text: string, company: string | null): string {
+  if (!text.includes("{")) return text;
+  const label = company ? companyLabelFor(company) : "";
+  return text
+    .replace(PLACEHOLDER, label)
+    .replace(/\s*-\s*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function templateSummary(option: LocalBotWorkerOption): string {
-  return (option.summary ?? "").trim() || firstSentence(option.description);
+  const text = cleanText(option.summary) || firstSentence(cleanText(option.description));
+  return fillPlaceholders(text, templateCompany(option));
 }
 
 export function templateName(option: LocalBotWorkerOption): string {
-  const explicit = (option.name ?? "").trim();
+  const explicit = fillPlaceholders(cleanText(option.name), templateCompany(option));
   if (explicit) return explicit;
   return option.id
+    .replace(PLACEHOLDER, "")
     .split(/[-_]/)
     .filter(Boolean)
     .map((w) => w[0]!.toUpperCase() + w.slice(1))
@@ -361,7 +422,7 @@ export function templateName(option: LocalBotWorkerOption): string {
 }
 
 export function templateCard(option: LocalBotWorkerOption): TemplateCard {
-  const company = (option.company ?? "").trim() || null;
+  const company = templateCompany(option);
   return {
     id: option.id,
     name: templateName(option),
@@ -502,7 +563,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         const fieldsIssue =
           cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
         if (fieldsIssue) return fieldsIssue;
-        if (draft.runtime === "claude" && ctx.claudeProviderEnabled !== true) {
+        if (draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
           return "Claude isn’t available for this account.";
         }
         if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
@@ -515,9 +576,6 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         );
         if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
           return "Choose an available size.";
-        }
-        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
-          return "Enter an API key to continue.";
         }
         return null;
       }

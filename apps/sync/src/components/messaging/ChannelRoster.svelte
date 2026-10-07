@@ -268,7 +268,7 @@
     padding: 1.125rem 1.25rem 1.25rem;
     border-radius: var(--radius-popover);
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     -webkit-backdrop-filter: var(--glass-filter, blur(36px) saturate(118%) contrast(102%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
@@ -511,7 +511,7 @@
     }
 
     .roster-sheet {
-      background: var(--c-bg);
+      background: var(--overlay-bg, var(--c-bg));
     }
   }
 </style>

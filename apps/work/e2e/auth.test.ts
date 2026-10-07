@@ -47,9 +47,9 @@ test.describe("auth: session gate", () => {
     expect(new URL(page.url()).pathname).toBe("/");
     await expect(page.getByTestId("desktop-shell")).toBeVisible();
     await expect(page.getByTestId("chat-sidebar")).toBeVisible();
-    // The hq-pro test origin is intentionally unreachable; the shell mounts
-    // its boot skeleton instead of a live channel row.
-    await expect(page.getByTestId("channel-skeleton")).toBeVisible();
+    // The hq-pro test origin is intentionally unreachable; the shell lands on
+    // the built-in #welcome channel instead of a live channel row.
+    await expect(page.getByRole("heading", { name: "welcome", exact: true })).toBeVisible();
   });
 
   test("responses carry the realtime-capable CSP", async ({

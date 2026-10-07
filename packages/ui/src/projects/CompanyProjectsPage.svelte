@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * Company Projects — portfolio Kanban (DESKTOP-004).
    *
@@ -8,6 +9,8 @@
    * filter share one control row; New project remains the primary action.
    */
   import { onMount } from "svelte";
+  import RailButton from "../common/button/RailButton.svelte";
+  import { publishCompanyPageCount } from "../shell/company-page-counts.svelte.js";
   import type { PlatformAdapter } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../files/claude-code-link.js";
   import {
@@ -17,6 +20,7 @@
     loadCompanyGoals,
     loadCompanyProjectProvenance,
     loadLocalProjects,
+    loadLocalProjectPrd,
     loadLocalProjectStories,
     projectIdentity,
     type ProjectProvenanceIndex,
@@ -61,9 +65,26 @@
   import type { PortfolioSessionRef } from "../chat/portfolio-session.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
   import ProjectRow from "./ProjectRow.svelte";
+  import BoardFaces from "./BoardFaces.svelte";
+  import NewProjectSheet from "./NewProjectSheet.svelte";
+  import { linkedProjectIds, mergeGoalsWithCache, readGoalsCache } from "../goals/goals-model.js";
+  import TaskViewDoor from "./TaskViewDoor.svelte";
+  import { setStoryPasses } from "./projects-store.svelte.js";
+  import { pushToast } from "../shell/toast-stack.svelte.js";
+  import { boardFaces } from "./board-faces.js";
+  import {
+    newProjectCompanies,
+    newProjectDefaultCompany,
+    newProjectPrompt,
+    type NewProjectDraft,
+  } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import { personMatches, uniquePeople } from "../common/people/people.js";
+  import { loadPeople, peopleFor, setActivePeopleCompany } from "../common/people/people-roster.svelte.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
+  import "../common/button/rail-type.css";
 
   interface Props {
     /** Platform seam — projects/settings/shell slices + capability flags. */
@@ -71,13 +92,30 @@
     slug: string;
     /** Cloud company uid for GET ProjectView. Absent for a local-only company. */
     companyUid?: string | null;
+    /**
+     * Company picker targets from the rail roster (QA-050): Personal first,
+     * then member companies. Absent outside the shell (stories, tests).
+     */
+    pickerCompanies?: readonly string[] | null;
     onnewproject?: () => void | Promise<void>;
+    /** Project to open once loaded, by id or folder name (QA-066). */
+    focusProject?: string | null;
+    /** Detail tab the focused project opens on. */
+    focusTab?: "tasks" | "files" | null;
   }
 
   /** Legacy cycle filter kept for needs-link + work-actions contracts. */
   type ProjectFilter = "all" | "active" | "needs-link";
 
-  let { adapter, slug, companyUid = null, onnewproject }: Props = $props();
+  let {
+    adapter,
+    slug,
+    companyUid = null,
+    pickerCompanies = null,
+    onnewproject,
+    focusProject = null,
+    focusTab = null,
+  }: Props = $props();
 
   // Wire the module-level project/session seams to this platform adapter.
   $effect.pre(() => {
@@ -85,6 +123,7 @@
   });
 
   let objectives = $state<Objective[]>([]);
+  const goalsStorage = typeof localStorage === "undefined" ? null : localStorage;
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -109,6 +148,21 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  /**
+   * US-024 task view pane. A board card click opens the 360 px pane beside
+   * the board. Stories are cached per project so a reopen paints in the click
+   * frame; every open refreshes them in the background.
+   */
+  let peek = $state<Project | null>(null);
+  let peekStories = $state<Story[]>([]);
+  let peekBranch = $state<string | null>(null);
+  let peekLoading = $state(false);
+  let peekError = $state<string | null>(null);
+  let peekGeneration = 0;
+  const peekCache = new Map<
+    string,
+    { stories: Story[]; branch: string | null }
+  >();
   /**
    * Project story reads are independent native requests. A user can return to
    * the portfolio and open another project before the first request settles,
@@ -200,14 +254,58 @@
     }
   }
 
+  let newProjectOpen = $state(false);
+
   async function createProject(): Promise<void> {
-    if (!onnewproject || newProjectPending) return;
+    if (newProjectPending) return;
+    // US-023: the New project sheet opens in the same frame; a host override
+    // (legacy onnewproject) still wins when supplied.
+    if (!onnewproject) {
+      newProjectOpen = true;
+      return;
+    }
     newProjectPending = true;
     try {
       await onnewproject();
     } finally {
       newProjectPending = false;
     }
+  }
+
+  /** Hand the new project to Claude Code (no native create call yet). */
+  async function submitNewProject(draft: NewProjectDraft): Promise<void> {
+    const prompt = newProjectPrompt(draft);
+    if (!adapter.isAvailable("canLaunchApps")) {
+      await navigator.clipboard.writeText(prompt);
+      actionMessage = "Prompt copied — paste it into Claude Code.";
+      return;
+    }
+    const configResult = await adapter.settings.getConfig();
+    const folder =
+      configResult.ok && typeof configResult.value?.hqFolderPath === "string"
+        ? configResult.value.hqFolderPath
+        : "";
+    const opened = await adapter.shell.openClaudeCodeLink(
+      buildClaudeCodeUrl({ folder, prompt }),
+    );
+    if (!opened.ok) throw new Error(opened.message ?? "Could not open Claude Code");
+    actionMessage = "Opened in Claude Code.";
+  }
+
+  /** Companies offered in the sheet: the rail's roster, else this one plus any seen in projects. */
+  const sheetCompanies = $derived(
+    newProjectCompanies(
+      slug,
+      pickerCompanies,
+      projects.map((p) => p.company),
+    ),
+  );
+
+  /** Stacked faces for list rows: lead person, then live bots. */
+  function rowFaces(project: Project) {
+    const lead = leadLabel(project);
+    const live = projectLiveRunView(project, sessions, now);
+    return boardFaces(lead ? [lead] : [], live?.bots ?? []);
   }
 
   let pushSessions = $state<PortfolioSessionRef[]>([]);
@@ -252,8 +350,33 @@
       .map((project) => applyProjectProvenance(project, cloudProvenance))
       .sort(compareProjectsByRecency),
   );
+  // BLANK-2: a failed read with nothing loaded shows only the failed line and
+  // Try again; counts and the empty board wait for a read that succeeded.
+  const failedEmpty = $derived(Boolean(error) && companyProjects.length === 0);
+
+  // Open the focused project once it loads (QA-066: Atlas Open files / Open
+  // board). Matches the board id or the project's folder under projects/.
+  let detailTab = $state<"tasks" | "files" | null>(null);
+  let appliedFocus = "";
+  $effect(() => {
+    const want = focusProject?.trim();
+    if (!want || loading) return;
+    const key = `${slug}:${want}:${focusTab ?? ""}`;
+    if (key === appliedFocus) return;
+    const match = companyProjects.find(
+      (p) => p.id === want || p.prdPath.replace(/\\/g, "/").includes(`/projects/${want}/`),
+    );
+    if (!match) return;
+    appliedFocus = key;
+    detailTab = focusTab;
+    void openProject(match);
+  });
 
   const sessions = $derived(pushSessions);
+  // The sidepane Projects row shows this same total (QA-014).
+  $effect(() => {
+    if (!loading && !projectsUnavailable) publishCompanyPageCount(slug, "projects", companyProjects.length);
+  });
 
   function leadLabel(project: Project): string | null {
     const person = responsiblePerson(project.provenance, "project");
@@ -301,7 +424,16 @@
     return projectTokens(project).some((token) => ids.has(token));
   }
 
+  // OWNER-D 9: key-result links the Goals page keeps for this company also
+  // count, so "No goal" lists exactly what Goals used to call unlinked.
+  const goalLinkedIds = $derived.by(() => {
+    void projectFilter;
+    const storage = typeof localStorage === "undefined" ? null : localStorage;
+    return linkedProjectIds(readGoalsCache(storage, slug)?.links ?? []);
+  });
+
   function projectLinkedToAnyGoal(project: Project): boolean {
+    if (goalLinkedIds.has(project.id)) return true;
     return objectives.some((objective) =>
       projectMatchesObjective(project, objective),
     );
@@ -337,7 +469,7 @@
 
   function filterLabel(filter: ProjectFilter): string {
     if (filter === "active") return "Active";
-    if (filter === "needs-link") return "Needs link";
+    if (filter === "needs-link") return "No goal";
     return "All";
   }
 
@@ -359,12 +491,28 @@
     return [...names].sort((a, b) => a.localeCompare(b));
   });
 
+  // OWNER-R5: people resolve through the company roster (Team read), so one
+  // person under several keys (id, email, handle, name) is one filter entry.
+  $effect(() => {
+    setActivePeopleCompany(slug);
+    void loadPeople({ slug, companyUid, company: adapter.company, messaging: adapter.messaging });
+  });
+  const roster = $derived(peopleFor(slug));
+  const personOptions = $derived([
+    { value: "", label: "Anyone", detail: null },
+    ...uniquePeople(roster.index, ownerOptions, { loading: roster.loading }).map((p) => ({
+      value: p.key,
+      label: p.name,
+      detail: p.detail,
+    })),
+  ]);
+
   const filteredCompanyProjects = $derived(
     companyProjects.filter((project) => {
       if (!matchesProjectFilter(project, projectFilter)) return false;
       const col = resolveColumn(project);
       if (!matchesPortfolioStateFilter(col, stateFilter)) return false;
-      if (ownerFilter && leadLabel(project) !== ownerFilter) return false;
+      if (ownerFilter && !personMatches(roster.index, leadLabel(project), ownerFilter, { loading: roster.loading })) return false;
       const q = searchQuery.trim().toLowerCase();
       if (!q) return true;
       const name = projectDisplayName(project).toLowerCase();
@@ -381,6 +529,8 @@
     groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions),
   );
 
+  /** The task view pane sits beside the board view only. */
+  const paneOpen = $derived(peek !== null && viewMode === "board");
   const liveCount = $derived(portfolioGroups.active.length);
 
   $effect(() => {
@@ -403,20 +553,27 @@
       : (stories.find((story) => story.id === selectedStoryId) ?? null),
   );
 
+  // AUDIT-3: Try again after a failed read re-runs the load below.
+  let loadAttempt = $state(0);
+
   $effect(() => {
     const activeSlug = slug;
+    void loadAttempt;
     error = null;
     const companyChanged = loadedSlug !== activeSlug;
     loadedSlug = activeSlug;
 
     if (companyChanged) {
       invalidateStoryLoad();
-      objectives = [];
+      // QA-089: paint the Goals page cache first, then refresh from the board.
+      objectives = readGoalsCache(goalsStorage, activeSlug)?.objectives ?? [];
       projects = [];
       selected = null;
       stories = [];
       storiesError = null;
       selectedStoryId = null;
+      closePeek();
+      peekCache.clear();
       cloudProvenance = emptyProjectProvenanceIndex();
       provenanceUnavailable = false;
     }
@@ -453,13 +610,23 @@
 
     void (async () => {
       try {
-        const [goals, allProjects] = await Promise.all([
-          loadCompanyGoals(activeSlug),
-          loadLocalProjects(),
-        ]);
+        // A goals read failure keeps the cached goals; it never blanks the board.
+        const goalsRead = loadCompanyGoals(activeSlug).catch((err: unknown) => {
+          console.warn(`loadCompanyGoals(${activeSlug}) failed:`, err);
+          return null;
+        });
+        const allProjects = await loadLocalProjects();
         if (cancelled) return;
-        objectives = goals.objectives;
+        const cachedGoals = readGoalsCache(goalsStorage, activeSlug);
+        // BLANK-3: the board shows as soon as the projects answer; a slow goals
+        // read fills its links in afterwards instead of holding the board.
+        objectives = cachedGoals?.objectives ?? objectives;
         projects = allProjects;
+        loading = false;
+        void goalsRead.then((goals) => {
+          if (cancelled || !goals) return;
+          objectives = mergeGoalsWithCache(goals.objectives, readGoalsCache(goalsStorage, activeSlug));
+        });
         if (!companyChanged && selected) {
           const selectedIdentity = projectIdentity(selected);
           const refreshed =
@@ -478,8 +645,8 @@
         }
         console.error("CompanyProjectsPage load failed:", err);
         if (!cancelled) {
-          error = "Projects unavailable. Try again after a sync.";
-          objectives = [];
+          error = "Couldn't read this company's projects.";
+          objectives = readGoalsCache(goalsStorage, activeSlug)?.objectives ?? [];
           projects = [];
         }
       } finally {
@@ -625,15 +792,131 @@
     } catch (err) {
       if (!isCurrentStoryLoad(generation, companySlug, selectedIdentity))
         return;
-      console.error("get_local_project_prd failed:", err);
-      const detail = err instanceof Error ? err.message : String(err);
-      storiesError = `Could not load this project’s stories — ${detail}`;
+      // AUDIT-3c: log the raw failure; show app copy.
+      console.warn("[projects] story load failed", err);
+      storiesError = "Could not load this project’s stories. Try again.";
       stories = [];
     } finally {
       if (isCurrentStoryLoad(generation, companySlug, selectedIdentity)) {
         storiesLoading = false;
       }
     }
+  }
+
+  function openPeek(project: Project): void {
+    const identity = projectIdentity(project);
+    const generation = ++peekGeneration;
+    const cached = peekCache.get(identity);
+    peek = project;
+    peekStories = cached?.stories ?? [];
+    peekBranch = cached?.branch ?? null;
+    peekError = null;
+    if (!project.prdPath) {
+      peekLoading = false;
+      return;
+    }
+    peekLoading = true;
+    void (async () => {
+      try {
+        const [nextStories, prd] = await Promise.all([
+          storiesForSelected(project),
+          loadLocalProjectPrd(project.prdPath).catch((err) => {
+            console.error("get_local_project_prd failed:", err);
+            return null;
+          }),
+        ]);
+        const branch = prd?.branchName ?? null;
+        peekCache.set(identity, { stories: nextStories, branch });
+        if (generation !== peekGeneration) return;
+        peekStories = nextStories;
+        peekBranch = branch;
+      } catch (err) {
+        console.warn("[projects] task load failed", err);
+        if (generation !== peekGeneration) return;
+        peekError = "Could not load this project’s tasks. Try again.";
+      } finally {
+        if (generation === peekGeneration) peekLoading = false;
+      }
+    })();
+  }
+
+  function closePeek(): void {
+    peekGeneration += 1;
+    peek = null;
+    peekStories = [];
+    peekBranch = null;
+    peekLoading = false;
+    peekError = null;
+  }
+
+  function openPeekProject(storyId: string | null): void {
+    const project = peek;
+    if (!project) return;
+    const cached = peekStories;
+    closePeek();
+    const load = openProject(project);
+    // openProject clears stories synchronously; paint the cached ones now.
+    if (cached.length > 0) stories = cached;
+    if (storyId) selectedStoryId = storyId;
+    void load.then(() => {
+      if (storyId) selectStoryById(storyId);
+    });
+  }
+
+  function applyPeekPasses(
+    project: Project,
+    storyId: string,
+    passes: boolean,
+  ): void {
+    const identity = projectIdentity(project);
+    const update = (list: Story[]) =>
+      list.map((story) => (story.id === storyId ? { ...story, passes } : story));
+    const cached = peekCache.get(identity);
+    if (cached) peekCache.set(identity, { ...cached, stories: update(cached.stories) });
+    if (peek && projectIdentity(peek) === identity) {
+      peekStories = update(peekStories);
+    }
+    const complete = (peekCache.get(identity)?.stories ?? peekStories).filter(
+      (story) => story.passes,
+    ).length;
+    projects = projects.map((p) =>
+      projectIdentity(p) === identity ? { ...p, storiesComplete: complete } : p,
+    );
+  }
+
+  async function writePeekPasses(
+    project: Project,
+    story: Story,
+    passes: boolean,
+  ): Promise<boolean> {
+    applyPeekPasses(project, story.id, passes);
+    const result = await setStoryPasses(
+      project.prdPath,
+      story.id,
+      !passes,
+      passes,
+    );
+    if (result.ok) return true;
+    applyPeekPasses(project, story.id, !passes);
+    pushToast({
+      title: passes ? "Could not mark done" : "Could not undo",
+      detail: result.error ?? "",
+      tone: "err",
+    });
+    return false;
+  }
+
+  async function markPeekDone(story: Story): Promise<void> {
+    const project = peek;
+    if (!project?.prdPath || story.passes) return;
+    if (!(await writePeekPasses(project, story, true))) return;
+    pushToast({
+      title: "Marked done",
+      detail: `${story.id} · ${story.title}`,
+      tone: "ok",
+      actionLabel: "Undo",
+      onAction: () => void writePeekPasses(project, story, false),
+    });
   }
 
   function retrySelectedStories(): Promise<void> | void {
@@ -715,24 +998,34 @@
       onselectDependency={selectStoryById}
       {onStoryPassesChange}
       {sessions}
+      initialTab={detailTab}
     />
   {:else}
+    <!-- US-024: the task view pane spans the full content height beside the
+         header, toolbar and board, not just the board below the filters. -->
+    <div class="projects-split" class:has-pane={paneOpen}>
+    <div class="projects-main">
     <header class="projects-header">
       <div class="projects-heading">
         <h2 id="company-projects-title">Projects</h2>
+        {#if !failedEmpty && !loading}
         <span
-          class="projects-count"
-          title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"}`}
+          class="projects-count meta-line"
+          data-meta-line
+          data-testid="projects-count"
+          title={`${filteredCompanyProjects.length} of ${companyProjects.length}${companyProjects.length === 1 ? " project" : " projects"} on this computer`}
         >
           {#if filteredCompanyProjects.length === companyProjects.length}
             {companyProjects.length}
           {:else}
             {filteredCompanyProjects.length} of {companyProjects.length}
           {/if}
+          on this computer
           {#if liveCount > 0}
             <span class="projects-live">· {liveCount} live</span>
           {/if}
         </span>
+        {/if}
       </div>
       <div
         class="project-actions detail-primary-actions"
@@ -741,17 +1034,16 @@
         {#if actionMessage}
           <span class="action-status" role="status">{actionMessage}</span>
         {/if}
-        {#if onnewproject}
-          <button
-            type="button"
-            class="primary-action"
-            onclick={createProject}
-            disabled={newProjectPending}
-            aria-busy={newProjectPending}
-          >
-            {newProjectPending ? "Opening…" : "New project"}
-          </button>
-        {/if}
+        <button
+          type="button"
+          class="primary-action"
+          data-testid="new-project-button"
+          onclick={createProject}
+          disabled={newProjectPending}
+          aria-busy={newProjectPending}
+        >
+          {newProjectPending ? "Opening…" : "New project"}
+        </button>
       </div>
     </header>
 
@@ -770,38 +1062,20 @@
         />
       </label>
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by state</span>
-        <select
-          bind:value={stateFilter}
-          data-testid="portfolio-state-filter"
-          aria-label="Filter by project state"
-        >
-          {#each PORTFOLIO_STATE_FILTER_OPTIONS as option (option.value)}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={stateFilter}
+        options={PORTFOLIO_STATE_FILTER_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        label="Filter by project state"
+        testid="portfolio-state-filter"
+      />
 
-      <label class="tool-select">
-        <span class="visually-hidden">Filter by owner or creator</span>
-        <select
-          bind:value={ownerFilter}
-          data-testid="portfolio-owner-filter"
-          aria-label="Filter by project owner or creator"
-        >
-          <option value="">Person · Anyone</option>
-          {#each ownerOptions as owner (owner)}
-            <option value={owner}>{owner}</option>
-          {/each}
-        </select>
-        <svg class="select-caret" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M4.5 6.5 8 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </label>
+      <Dropdown
+        bind:value={ownerFilter}
+        options={personOptions}
+        label="Filter by project owner or creator"
+        prefix="Person"
+        testid="portfolio-owner-filter"
+      />
 
       <!-- Legacy cycle filter (All / Active / Needs link) for link handoff + contracts. -->
       <button
@@ -809,7 +1083,7 @@
         class="tool-button"
         class:is-set={projectFilter !== "all"}
         data-testid="portfolio-legacy-filter"
-        title="Cycle: All, Active, Needs link"
+        title="Cycle: All, Active, No goal"
         onclick={cycleFilter}
       >
         <span>Filter: {filterLabel(projectFilter)}</span>
@@ -843,7 +1117,10 @@
     </div>
 
     {#if error}
-      <div class="projects-error" role="alert">{error}</div>
+      <div class="projects-error" role="alert" data-testid="projects-load-error">
+        <p>{error}</p>
+        <RailButton icon="refresh" data-testid="projects-retry" onclick={() => (loadAttempt += 1)}>Try again</RailButton>
+      </div>
     {/if}
 
     <div class="portfolio-body" aria-busy={loading}>
@@ -854,25 +1131,54 @@
           testid="projects-unavailable"
         />
       {:else if loading}
+        <ReadLoader testid="projects-loader" onretry={() => (loadAttempt += 1)} />
+      {:else if failedEmpty}
+        <!-- BLANK-2: the failed line above stands in for the empty board. -->
+      {:else if companyProjects.length === 0}
         <div
-          class="board-loading"
-          aria-busy="true"
-          aria-label="Loading projects"
+          class="kanban-board"
+          data-testid="empty-projects-state"
+          aria-label="Projects by operational state"
         >
           {#each PORTFOLIO_COLUMNS as column (column)}
-            <div class="skeleton-column">
-              <div class="skeleton-header"></div>
-              <div class="skeleton-card"></div>
-              <div class="skeleton-card"></div>
-            </div>
+            <section class="kanban-column" aria-labelledby={`portfolio-empty-${column}`}>
+              <header class="kanban-column-head">
+                <span class="kanban-column-title" id={`portfolio-empty-${column}`}>
+                  <span class="column-dot" data-column={column} aria-hidden="true"></span>
+                  {PORTFOLIO_COLUMN_LABEL[column]}
+                  <span class="kanban-column-count">0</span>
+                </span>
+              </header>
+              <div class="kanban-stack">
+                {#if column === "not-started"}
+                  <button
+                    type="button"
+                    class="empty-create"
+                    data-testid="empty-create-project"
+                    onclick={createProject}
+                  >
+                    <span class="empty-create-title">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                      Create project
+                    </span>
+                    <span class="empty-create-sub"
+                      >Blank, from a brainstorm, or from a PRD. Lands here as Not started.</span
+                    >
+                  </button>
+                {:else}
+                  <div class="column-empty">
+                    <span
+                      >{column === "active"
+                        ? "Nothing live"
+                        : column === "complete"
+                          ? "Nothing shipped"
+                          : "Nothing yet"}</span
+                    >
+                  </div>
+                {/if}
+              </div>
+            </section>
           {/each}
-        </div>
-      {:else if companyProjects.length === 0}
-        <div class="empty-state" data-testid="empty-projects-state">
-          <span>No projects yet</span>
-          <p>
-            Projects will appear here after they sync into the local workspace.
-          </p>
         </div>
       {:else if filteredCompanyProjects.length === 0}
         <div class="empty-state" data-testid="filtered-projects-empty-state">
@@ -886,6 +1192,7 @@
           </p>
         </div>
       {:else if viewMode === "board"}
+        <div class="board-split">
         <div
           class="kanban-board"
           data-testid="portfolio-kanban"
@@ -950,7 +1257,7 @@
                       liveRun={column === "active" ? liveRun : null}
                       stateContext={portfolioStateContext(column, project)}
                       {now}
-                      onselect={(p) => void openProject(p)}
+                      onselect={(p) => openPeek(p)}
                       onlinkgoal={!goal ? requestLinkProject : undefined}
                       linkBusy={actionBusy ===
                         `link-${projectIdentity(project)}`}
@@ -973,6 +1280,7 @@
             </section>
           {/each}
         </div>
+        </div>
       {:else}
         <div
           class="project-list-surface"
@@ -984,6 +1292,7 @@
             <span>Goal</span>
             <span>Provenance</span>
             <span>Tasks</span>
+            <span>On it</span>
             <span>Updated</span>
           </div>
           {#each PORTFOLIO_COLUMNS as column (column)}
@@ -1061,6 +1370,9 @@
                       <span style={`width: ${progress.percent}%`}></span>
                     </span>
                   </div>
+                  <div class="list-faces" data-testid="project-list-faces">
+                    <BoardFaces faces={rowFaces(project)} />
+                  </div>
                   <div class="list-updated">{listUpdatedLabel(project)}</div>
                 </div>
               {/each}
@@ -1081,6 +1393,35 @@
         </div>
       {/if}
     </div>
+    </div>
+    {#if peek && paneOpen}
+      <div class="tpane-slot">
+        <TaskViewDoor
+          project={peek}
+          stories={peekStories}
+          loading={peekLoading}
+          error={peekError}
+          branch={peekBranch}
+          {sessions}
+          liveRun={projectLiveRunView(peek, sessions, now)}
+          lead={leadLabel(peek)}
+          onclose={closePeek}
+          onopenproject={openPeekProject}
+          onmarkdone={markPeekDone}
+        />
+      </div>
+    {/if}
+    </div>
+  {/if}
+  {#if newProjectOpen}
+    <NewProjectSheet
+      company={newProjectDefaultCompany(slug, sheetCompanies)}
+      companies={sheetCompanies}
+      owners={personOptions.slice(1).filter((o) => o.label !== "Unknown person" && o.label !== "Unknown bot" && o.label !== "…").map((o) => o.label)}
+      {objectives}
+      onclose={() => (newProjectOpen = false)}
+      oncreate={submitNewProject}
+    />
   {/if}
 </section>
 
@@ -1127,16 +1468,13 @@
     margin: 0;
     color: var(--v4-text-1);
     font-size: 20px;
-    font-weight: 600;
-    letter-spacing: -0.01em;
+    font-weight: 500;
+    letter-spacing: 0;
     line-height: 1.2;
   }
 
   .projects-count {
-    color: var(--v4-text-3);
-    font-size: 13px;
     font-variant-numeric: tabular-nums;
-    line-height: 1.2;
   }
 
   .projects-live {
@@ -1153,7 +1491,7 @@
     max-width: 220px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1167,7 +1505,7 @@
     background: var(--v4-primary-bg);
     color: var(--v4-primary-fg);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: default;
   }
 
@@ -1209,7 +1547,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 26px;
   }
 
@@ -1292,15 +1630,16 @@
   .toggle-segment {
     display: inline-flex;
     align-items: center;
-    height: 22px;
-    padding: 0 10px;
+    height: auto;
+    padding: 4px 8px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 17px;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -1348,6 +1687,47 @@
   /* Naked board canvas — four columns that share the width. No inner
      scrollers: columns take their natural height and the page scrolls, which
      is also what lets the column headers stick. */
+  /* US-024: board plus the 360 px task view pane. */
+  .board-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 12px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .projects-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 12px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .projects-split.has-pane {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+
+  /* The board measures its own width: with the task view pane open it is far
+     narrower than the page. */
+  .projects-main {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+    container: projects-board / inline-size;
+  }
+
+  /* Full content height from the toolbar down; sticks while the board
+     scrolls under it. */
+  .tpane-slot {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: calc(100vh - 72px);
+    min-height: 320px;
+  }
+
   .kanban-board {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1391,7 +1771,7 @@
     min-width: 0;
     color: var(--v4-text-1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.2;
   }
 
@@ -1413,7 +1793,7 @@
   }
 
   .column-dot[data-column="complete"] {
-    background: color-mix(in srgb, var(--v4-ok) 70%, var(--v4-text-3));
+    background: var(--v4-text-1);
   }
 
   .kanban-column-count {
@@ -1425,20 +1805,23 @@
     border-radius: var(--v4-radius-pill);
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
 
-  /* Four columns share the width down to ~640px of canvas; below that the
-     board keeps a minimum width and scrolls sideways on its own (headers stop
-     sticking only in that narrow case). */
-  @container company-projects (max-width: 640px) {
+  /* Four columns while each can hold a card (QA-029). A narrower board wraps
+     to two columns, then one, so cards never clip or scroll sideways. */
+  @container projects-board (max-width: 620px) {
     .kanban-board {
-      grid-template-columns: repeat(4, minmax(150px, 1fr));
-      overflow-x: auto;
-      overflow-y: hidden;
-      padding-bottom: 6px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      row-gap: 16px;
+    }
+  }
+
+  @container projects-board (max-width: 320px) {
+    .kanban-board {
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 
@@ -1461,7 +1844,42 @@
   .column-empty {
     padding: 4px 2px;
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: 13px;
+  }
+
+  /* US-023 empty board: dashed Create project card in Not started. */
+  .empty-create {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+    padding: 14px 12px;
+    border: 1px dashed var(--v4-control-border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--v4-text-3);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: left;
+    cursor: pointer;
+  }
+  .empty-create:hover {
+    background: var(--v4-control-faint);
+  }
+  .empty-create-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--v4-text-1);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .list-faces {
+    display: flex;
+    align-items: center;
+    min-width: 0;
   }
 
   .show-more-projects {
@@ -1473,7 +1891,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     text-align: left;
     cursor: pointer;
   }
@@ -1514,10 +1932,11 @@
       minmax(96px, 0.6fr)
       minmax(220px, 1.1fr)
       105px
+      60px
       74px;
     align-items: center;
     gap: 10px;
-    min-width: 745px;
+    min-width: 815px;
     padding: 0 4px;
   }
 
@@ -1525,9 +1944,8 @@
     min-height: 30px;
     border-bottom: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    letter-spacing: 0;
   }
 
   .project-group-label {
@@ -1538,9 +1956,8 @@
     padding: 0 4px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
+    letter-spacing: 0;
   }
 
   .group-count {
@@ -1558,7 +1975,7 @@
     min-height: 52px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1580,8 +1997,8 @@
   .list-name {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1591,7 +2008,7 @@
   .list-updated {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1606,7 +2023,7 @@
     min-width: 0;
     padding: 7px 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: 13px;
     white-space: normal;
   }
 
@@ -1621,7 +2038,7 @@
     justify-content: space-between;
     color: var(--v4-text-3);
     font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-size: 13px;
   }
 
   .mini-progress {
@@ -1639,28 +2056,39 @@
   }
 
   .link-nudge {
-    height: 18px;
-    padding: 0;
+    height: 24px;
+    padding: 0 6px;
     border: none;
+    border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
-    cursor: default;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .link-nudge:hover:not(:disabled) {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
   }
 
   .link-nudge:disabled {
     opacity: 0.52;
   }
 
+  .projects-error p { margin: 0; }
   .projects-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     padding: 12px 0;
     border: 0;
     border-top: 1px solid var(--v4-hairline);
     border-radius: 0;
     background: transparent;
     color: var(--v4-error);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
   }
 
   .empty-state {
@@ -1669,47 +2097,19 @@
     border-radius: 0;
     background: transparent;
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: 13px;
   }
 
   .empty-state span {
     display: block;
     color: var(--v4-text-1);
-    font-size: var(--type-section, 14px);
+    font-size: 13px;
   }
 
   .empty-state p {
     margin: 4px 0 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
-  }
-
-  .board-loading {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 10px;
-    min-width: 0;
-  }
-
-  .skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .skeleton-header {
-    height: 36px;
-    border-radius: 0;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
-  }
-
-  .skeleton-card {
-    height: 96px;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 8px;
-    background: var(--v4-control-faint);
-    opacity: 0.48;
+    font-size: 13px;
   }
 
   @media (prefers-reduced-motion: reduce) {

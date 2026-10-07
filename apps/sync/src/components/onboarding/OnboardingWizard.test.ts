@@ -44,7 +44,13 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: eventHarness.listen }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
-vi.mock('@hq/platform', () => ({
+vi.mock('@hq/platform', async (importOriginal) => ({
+  // Rail gate keys and defaults that shared shell modules read at import time.
+  ...Object.fromEntries(
+    Object.entries(await importOriginal<typeof import('@hq/platform')>()).filter(
+      ([name]) => name.startsWith('RAIL_'),
+    ),
+  ),
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',

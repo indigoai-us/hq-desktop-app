@@ -1,4 +1,6 @@
 <script lang="ts">
+  import Dropdown from "./LazyDropdown.svelte";
+  import RailButton from "./button/RailButton.svelte";
   import type { ActiveMeeting, RecordingMembership } from "./active-meeting";
   import { humanCompanyLabel } from "../chat/visible-labels";
   import "../chat/tokens.css";
@@ -153,56 +155,44 @@
       {#if showCompanyPicker && oncompany}
         <div class="live-company">
           <label class="lc-label" for="live-company-select">Record as</label>
-          <select
-            id="live-company-select"
-            class="lc-select"
+          <Dropdown
+            testid="live-company-select"
+            label="Record as"
             value={meeting.companyUid ?? ""}
-            onchange={(e) =>
-              oncompany(
-                meeting.windowId,
-                (e.currentTarget as HTMLSelectElement).value || null,
-              )}
+            onchange={(v) => oncompany(meeting.windowId, v || null)}
             disabled={isBusy}
-          >
-            <option value="">Personal</option>
-            {#each memberships as m (m.companyUid)}
-              <option value={m.companyUid}>{humanCompanyLabel(m)}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "Personal" }, ...memberships.map((m) => ({ value: m.companyUid, label: humanCompanyLabel(m) }))]}
+          />
         </div>
       {/if}
 
       <div class="live-actions detail-primary-actions">
         {#if isRecording}
-          <button
+          <RailButton icon="stop"
             type="button"
-            class="btn"
             onclick={() => onstop(meeting.windowId)}
             disabled={isBusy}
           >
             {meeting.state === "stopping" ? "Stopping" : "Stop recording"}
-          </button>
+          </RailButton>
         {:else}
-          <button
+          <RailButton icon="circle-dot" variant="primary"
             type="button"
-            class="btn primary"
             onclick={() => onstart(meeting.windowId)}
             disabled={isBusy}
           >
             {meeting.state === "starting" ? "Starting" : "Start recording"}
-          </button>
+          </RailButton>
         {/if}
         {#if joinUrl}
-          <button
+          <RailButton icon="external"
             type="button"
-            class="btn"
             onclick={join}
             disabled={joining}
             aria-busy={joining}
           >
-            <span class="btn-icon">{@render iconVideo(13)}</span>
             {joining ? "Joining…" : "Join"}
-          </button>
+          </RailButton>
         {/if}
       </div>
       {#if joinError && joinUrl}
@@ -418,61 +408,5 @@
     color: var(--v4-text-3);
     font-size: var(--type-secondary, 11px);
     line-height: 16px;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex: 0 0 auto;
-    padding: 6px 12px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-secondary-bg);
-    color: var(--v4-secondary-fg);
-    font: inherit;
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
-    white-space: nowrap;
-    cursor: pointer;
-    transition:
-      background 140ms cubic-bezier(0.2, 0.7, 0.2, 1),
-      border-color 140ms cubic-bezier(0.2, 0.7, 0.2, 1),
-      opacity 140ms cubic-bezier(0.2, 0.7, 0.2, 1);
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-  }
-  .btn:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
-  }
-  .btn:disabled {
-    opacity: 0.56;
-    cursor: default;
-  }
-  .btn.primary {
-    border-color: transparent;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-  }
-  .btn.primary:hover:not(:disabled) {
-    border-color: transparent;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-  }
-  .btn-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .btn {
-      transition: none;
-    }
   }
 </style>

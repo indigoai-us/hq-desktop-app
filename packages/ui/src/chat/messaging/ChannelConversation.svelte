@@ -11,8 +11,10 @@
    * are optimistic-local and bubble out through `onsend`; reaction toggles bubble
    * through `ontogglereaction`. This is a display component — the host owns data.
    */
+  import ReadLoader from "../../common/ReadLoader.svelte";
   import { onDestroy, tick, untrack, type Snippet } from "svelte";
   import { observeConversationRead } from "./observe-conversation-read";
+  import { RevealTracker, revealLines, smoothFollow } from "./message-reveal";
   import {
     isScrollNearBottom,
     restoreNavigationScroll,
@@ -26,6 +28,8 @@
   import SystemEventLine from "./SystemEventLine.svelte";
   import RunCompleteCard from "./RunCompleteCard.svelte";
   import LifecycleCard from "./LifecycleCard.svelte";
+  import ShareRequestCard from "./ShareRequestCard.svelte";
+  import { parseShareRequestEvent } from "./share-request-card";
   import ReactionBar from "./ReactionBar.svelte";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
@@ -106,6 +110,7 @@
   import { takeNewestWindow, TIMELINE_WINDOW } from "./timeline-window";
   import { coalesceScroll } from "./scroll-coalesce";
   import { formatComposerSendError } from "./composer-send-error";
+  import { isQueuedSendToken } from "./message-outbox.js";
   import { uploadErrorUpgradeUrl } from "./upload-chat-attachments";
   import {
     clearDraft,
@@ -149,6 +154,8 @@
     channelId?: string | null;
     /** Bubbled lifecycle-card action (host posts). */
     oncardaction?: (event: LifecycleCardActionEvent) => void;
+    /** HQ folder for share-card "Open in Claude Code" deep links. */
+    hqFolderPath?: string | null;
     /** Bubbled reaction toggle (host reconciles). */
     ontogglereaction?: (messageId: string, emoji: string) => void;
     /** Bubbled send (host persists). Optional — the composer works standalone. */
@@ -262,13 +269,6 @@
      */
     belowMessages?: Snippet;
     /**
-     * Optional strip across the top of the conversation, directly under the
-     * host's header and above the message scroller (a bot's file sync). It is
-     * not part of the thread: it stays in view while the person scrolls, and
-     * takes its own room, so it never covers a message.
-     */
-    aboveMessages?: Snippet;
-    /**
      * The bot whose suggestions are drawn: its newest message's `suggestions`
      * block becomes a row of buttons under that message's bubble, part of the
      * message, while nothing has been written after it. Older messages draw
@@ -348,6 +348,8 @@
      * then `channelId`.
      */
     conversationKey?: string | null;
+    /** While offline, a successful queue parks the optimistic row instead of failing it. */
+    offline?: boolean;
   }
 
   let {
@@ -359,6 +361,7 @@
     channelId = null,
     landAt = "bottom",
     oncardaction,
+    hqFolderPath = null,
     ontogglereaction,
     onsend,
     previewCache,
@@ -387,7 +390,6 @@
     attachmentValidator = validateChatAttachment,
     header,
     belowMessages,
-    aboveMessages,
     suggestionsFrom = null,
     suggestedReplyText = null,
     connections = null,
@@ -401,6 +403,7 @@
     humanOnly = false,
     serverHumanView = false,
     conversationKey = null,
+    offline = false,
   }: Props = $props();
 
   /** A message's text and blocks, with any blocks the host put on it. */
@@ -479,6 +482,7 @@
 
   // Optimistic local sends appended to the injected timeline (no persistence).
   let localSends = $state<ConversationMessageWire[]>([]);
+  let queuedLocalIds = $state<string[]>([]);
   /** Monotonic so a temp id is never reused after a row is removed. */
   let sendSeq = 1;
   let extraOlder = $state(0);
@@ -716,17 +720,6 @@
   let dragActive = $state(false);
   let dragDepth = 0;
   let pasteCounter = 0;
-  /**
-   * Placeholder rows for a cold open. Widths are irregular on purpose — five
-   * identical bars read as a progress bar, not as a conversation.
-   */
-  const THREAD_SKELETON_ROWS = [
-    { name: 84, lines: [220, 320] },
-    { name: 64, lines: [280] },
-    { name: 96, lines: [180, 340, 240] },
-    { name: 72, lines: [260] },
-    { name: 88, lines: [300, 200] },
-  ];
   let scroller = $state<HTMLDivElement | null>(null);
   /** The single box holding everything that scrolls — see the template note. */
   let threadContent = $state<HTMLDivElement | null>(null);
@@ -785,6 +778,9 @@
 
   function readScrollPosition(): void {
     if (!scroller) return;
+    // A reveal follow owns the scroller until it ends or the reader scrolls
+    // up; mid-glide distances are not the reader's position.
+    if (cancelFollow) return;
     const distance =
       scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const pinned = distance <= STICK_THRESHOLD_PX;
@@ -794,6 +790,27 @@
     if (atTop && !wasAtTop) void showEarlier();
     wasAtTop = atTop;
   }
+
+  /**
+   * A bot reply revealing line by line while the reader is pinned: glide to
+   * the bottom over the reveal with one rAF loop instead of snapping. A reader
+   * who scrolls up mid-glide keeps their place.
+   */
+  let cancelFollow: (() => void) | null = null;
+  function followReveal(totalMs: number): void {
+    const el = scroller;
+    if (!el || !stickToBottom || loadingEarlier || restoreScrollPending) return;
+    cancelFollow?.();
+    const cancel = smoothFollow(el, {
+      durationMs: totalMs,
+      ondone: (scrolledAway) => {
+        if (cancelFollow === cancel) cancelFollow = null;
+        if (scrolledAway) readScrollPosition();
+      },
+    });
+    cancelFollow = cancel;
+  }
+  onDestroy(() => cancelFollow?.());
 
   const threadScroll = coalesceScroll(readScrollPosition);
   const onThreadScroll = threadScroll.onScroll;
@@ -830,6 +847,24 @@
   /** The conversation a run of history requests belongs to. */
   const conversationIdentity = $derived(
     conversationKey ?? draftKey ?? channelId ?? null,
+  );
+
+  /**
+   * Bot replies that arrive while this conversation is open reveal word by
+   * word; history and human messages render instantly (see message-reveal.ts).
+   */
+  const revealTracker = new RevealTracker();
+  const revealIds = $derived(
+    new Set(
+      revealTracker.observe(
+        conversationIdentity,
+        rootMessages.map((msg) => ({
+          id: msg.eventId,
+          bot: msg.direction !== "out" && (isAgent(msg) || !isHumanMessage(msg)),
+        })),
+        loading,
+      ),
+    ),
   );
   async function showEarlier(): Promise<void> {
     if (loadingEarlier || (windowed.hidden === 0 && !hasEarlier)) return;
@@ -1025,7 +1060,9 @@
   const showSuggestionOther = $derived(visibleSuggestions.length >= SUGGESTION_OTHER_MIN);
   let otherForKey = $state<string | null>(null);
   const composerPlaceholder = $derived(
-    otherForKey !== null && otherForKey === suggestionKey && showSuggestionOther
+    offline
+      ? "Queued — sends when you are back online"
+      : otherForKey !== null && otherForKey === suggestionKey && showSuggestionOther
       ? SUGGESTION_OTHER_PLACEHOLDER
       : placeholder,
   );
@@ -1353,6 +1390,7 @@
     msg: ConversationMessageWire;
     systemModel: ReturnType<typeof systemModelForMessage>;
     workActivity: ReturnType<typeof parseWorkSessionEvent>;
+    shareCard: ReturnType<typeof parseShareRequestEvent>;
     groupStart: boolean;
     startsNewDay: boolean;
     timeLabel: string;
@@ -1367,7 +1405,8 @@
       const day = dayKey(msg.createdAt);
       const startsNewDay = prev === undefined || day !== prevDay;
       const systemModel = systemModelForMessage(msg);
-      const special = systemModel !== null;
+      const shareCard = systemModel ? null : parseShareRequestEvent(msg.systemEvent);
+      const special = systemModel !== null || shareCard !== null;
       const workActivity = parseWorkSessionEvent(msg.body ?? "");
       // desktop.human-only-conversations: a message whose body parses as a
       // work-mesh activity event is a mesh row and MUST NOT render, even if
@@ -1377,6 +1416,7 @@
         msg,
         systemModel,
         workActivity,
+        shareCard,
         groupStart:
           prev === undefined ||
           !messagesShareGroup(prev, msg, prevSpecial, special),
@@ -1566,13 +1606,17 @@
       // Hosts that can name the persisted event return its id; that makes the
       // echo match exact instead of content-based.
       const persistedId = await onsend?.(body, mentions, files);
+      if (isQueuedSendToken(persistedId)) {
+        queuedLocalIds = [...queuedLocalIds, eventId];
+      }
       const meta = sendMeta.get(eventId);
-      if (meta && typeof persistedId === "string" && persistedId.trim()) {
+      if (meta && typeof persistedId === "string" && persistedId.trim() && !isQueuedSendToken(persistedId)) {
         meta.echoId = persistedId.trim();
       }
     } catch (err) {
       forgetLocalSends(localSends.filter((row) => row.eventId === eventId));
       localSends = localSends.filter((row) => row.eventId !== eventId);
+      // raw-error-ok: formatComposerSendError maps it to plain copy
       const raw = err instanceof Error ? err.message.trim() : "";
       // The mention names go in so a denial can name who could not be tagged;
       // the server answers with a code and a sentence, never the offending uid.
@@ -1643,7 +1687,10 @@
       if (loadingEarlier) return;
       if (restoreScrollPending) return;
       if (stickToBottom) {
-        el.scrollTop = el.scrollHeight;
+        // A revealing bot reply is followed smoothly by followReveal.
+        if (!revealIds.has(timeline.at(-1)?.eventId ?? "")) {
+          el.scrollTop = el.scrollHeight;
+        }
       } else if (grew && historyPopulated) {
         // Only arrivals AFTER the first populated paint are "unseen"; the
         // initial history landing under a top-anchored pane is not news.
@@ -1673,9 +1720,8 @@
     const content = threadContent;
     if (!el || !content || typeof ResizeObserver === "undefined") return;
     let lastHeight = content.offsetHeight;
-    // The scroller itself changes height when the strip above it or the area
-    // pinned under it does (a sync strip or suggested replies appear or go,
-    // the message box grows).
+    // The scroller itself changes height when the area pinned under it does
+    // (the message box grows).
     // A tall thread's content box does not change then, so it is watched too.
     let lastViewport = el.clientHeight;
     const observer = new ResizeObserver(() => {
@@ -1686,6 +1732,7 @@
       lastViewport = viewport;
       if (!stickToBottom || loadingEarlier || prependAnchorHeight > 0) return;
       if (restoreScrollPending) return;
+      if (cancelFollow) return;
       el.scrollTop = el.scrollHeight;
     });
     observer.observe(content);
@@ -1741,16 +1788,6 @@
       <div class="drop-overlay-card">Drop files to attach</div>
     </div>
   {/if}
-  {#if aboveMessages && !headerOnly}
-    <!--
-      The host's strip (a bot's file sync): directly under the header, full
-      width, above the scroller and outside its scroll flow, so it stays in
-      view. When it appears or goes the scroller changes height; the effect
-      that holds the bottom keeps a reader at the newest message there, and
-      leaves a reader who scrolled up where they are.
-    -->
-    <div class="conversation-strip" data-testid="conversation-strip">{@render aboveMessages()}</div>
-  {/if}
   <div class="conversation-body">
     <div class="dm-thread-wrap">
       <div
@@ -1791,27 +1828,7 @@
           </div>
         {/if}
         {#if timeline.length === 0 && loading}
-          <!--
-            Cold open: this conversation has nothing cached, so the pane would
-            otherwise be blank until the fetch lands. These placeholder rows
-            carry the real row geometry (32px avatar, name line, body lines) and
-            sit at the bottom like real messages, so the switch from placeholder
-            to message moves nothing. Aria-hidden: a reader is told the state by
-            the thread's own busy flag, not by five empty rows.
-          -->
-          <div class="thread-skeleton" data-testid="conversation-skeleton" aria-hidden="true">
-            {#each THREAD_SKELETON_ROWS as row, i (i)}
-              <div class="thread-skeleton-row">
-                <span class="thread-skeleton-avatar"></span>
-                <span class="thread-skeleton-column">
-                  <span class="thread-skeleton-name" style={`width:${row.name}px`}></span>
-                  {#each row.lines as width, j (j)}
-                    <span class="thread-skeleton-line" style={`width:${width}px`}></span>
-                  {/each}
-                </span>
-              </div>
-            {/each}
-          </div>
+          <ReadLoader testid="conversation-loading" />
         {/if}
         {#if loadingEarlier || (serverScanEmpty && !serverViewAutoStarted)}
           <div
@@ -1859,7 +1876,36 @@
               <span>{row.dateLabel}</span>
             </div>
           {/if}
-          {#if systemModel?.kind === "work_session_card"}
+          {#if row.shareCard}
+            <div
+              class="dm-msg dm-msg-in dm-msg-group-start"
+              data-testid="share-request-row"
+              data-event-id={msg.eventId}
+            >
+              <span class="dm-msg-avatar">
+                <IdentityMark
+                  kind="person"
+                  label={messageAuthor(msg)}
+                  avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
+                  agentUid={msg.fromPersonUid}
+                  size="regular"
+                />
+              </span>
+              <div class="dm-msg-column">
+                <div class="dm-msg-meta">
+                  <span class="dm-msg-author">{messageAuthor(msg)}</span>
+                  <span class="dm-msg-header-time">{row.timeLabel}</span>
+                </div>
+                <ShareRequestCard
+                  model={row.shareCard}
+                  channelId={channelId ?? ""}
+                  {hqFolderPath}
+                  {onopenurl}
+                  {oncardaction}
+                />
+              </div>
+            </div>
+          {:else if systemModel?.kind === "work_session_card"}
             <WorkMeshActivityRow
               card={systemModel}
               actorLabel={resolveWorkActor(
@@ -1968,7 +2014,9 @@
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
               class:dm-msg-reply-active={activeRootEventId === msg.eventId}
+              class:queued={queuedLocalIds.includes(msg.eventId)}
               data-testid="conversation-message"
+              data-queued={queuedLocalIds.includes(msg.eventId) ? "true" : undefined}
               data-event-id={msg.eventId}
               data-reply-count={msg.replyCount ?? 0}
             >
@@ -2025,6 +2073,12 @@
                     <div
                       class="dm-bubble-body selectable-text msg-body"
                       class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
+                      data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
+                      use:revealLines={{
+                        active: revealIds.has(msg.eventId),
+                        text: rich.text,
+                        onreveal: followReveal,
+                      }}
                       onclick={(e) => {
                         if (onBodyLinkActivate(e)) return;
                         onMentionActivate(e, e.target);
@@ -2080,6 +2134,9 @@
                     {onreleaseurl}
                   />
                 </div>
+                {#if queuedLocalIds.includes(msg.eventId)}
+                  <span class="queued-mark" data-testid="message-queued">◷ Queued · sends when back online</span>
+                {/if}
                 {#if msg.eventId === suggestionsEventId && visibleSuggestions.length > 0 && !composerLocked}
                   <!--
                     The bot's suggested replies: part of this message, under
@@ -2508,12 +2565,6 @@
     pointer-events: auto;
   }
 
-  /* The host's strip under the header: the pane's full width, above the scroller. */
-  .conversation-strip {
-    flex: 0 0 auto;
-    min-width: 0;
-  }
-
   .conversation-body {
     display: flex;
     flex: 1 1 auto;
@@ -2531,7 +2582,7 @@
     z-index: 40;
     display: grid;
     place-items: center;
-    background: color-mix(in srgb, var(--pop-bg, #101014) 55%, transparent);
+    background: color-mix(in srgb, var(--pop-bg, #121212) 55%, transparent);
     pointer-events: none;
   }
 
@@ -2539,7 +2590,7 @@
     padding: 14px 22px;
     border: 1px dashed var(--c-field-border, var(--pop-border));
     border-radius: 12px;
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     color: var(--t1, var(--pop-text));
     font: 500 13px/1.3 var(--font-ui);
     box-shadow: var(--pop-shadow);
@@ -2610,51 +2661,6 @@
     width: 4px;
   }
 
-  /* ── Cold-open placeholder ───────────────────────────────────────────────
-     Geometry mirrors a real message row so replacing one with the other is a
-     paint, not a relayout: 32px avatar, 12px gutter, name line then body
-     lines on the same rhythm as `.dm-msg`. */
-  .thread-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: 22px;
-    padding: 8px 0 4px;
-  }
-
-  .thread-skeleton-row {
-    display: flex;
-    gap: 12px;
-  }
-
-  .thread-skeleton-avatar,
-  .thread-skeleton-name,
-  .thread-skeleton-line {
-    display: inline-block;
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--t1, #fff) 6%, transparent);
-  }
-
-  .thread-skeleton-avatar {
-    flex: 0 0 auto;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-  }
-
-  .thread-skeleton-column {
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-    padding-top: 2px;
-  }
-
-  .thread-skeleton-name {
-    height: 11px;
-  }
-
-  .thread-skeleton-line {
-    height: 10px;
-  }
   .dm-thread::-webkit-scrollbar-thumb {
     background: var(--line);
     border-radius: 999px;
@@ -2749,6 +2755,24 @@
     border-radius: 6px;
   }
 
+  .dm-msg.queued .dm-msg-avatar,
+  .dm-msg.queued .dm-bubble,
+  .dm-msg.queued .dm-msg-author {
+    opacity: 0.55;
+  }
+
+  .queued-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--v4-text-3);
+  }
+
   .dm-msg:hover,
   .dm-msg:focus-within {
     background: color-mix(in srgb, var(--t1) 4%, transparent);
@@ -2821,8 +2845,12 @@
     white-space: nowrap;
   }
 
+  /* Hit area (AUDIT-2-11): the name clips with an ellipsis, which would clip
+     a pseudo-element pad too, so the clickable box grows with padding that a
+     matching negative margin takes back out of the layout. */
   button.dm-msg-author-btn {
-    padding: 0;
+    padding: 5px 0;
+    margin-block: -5px;
     border: none;
     background: transparent;
     font-family: inherit;
@@ -2836,7 +2864,7 @@
 
   button.dm-msg-author-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
-    outline-offset: 2px;
+    outline-offset: -3px;
     border-radius: 4px;
   }
 
@@ -3447,7 +3475,7 @@
     padding: 4px;
     border-radius: 10px;
     border: 1px solid var(--pop-border);
-    background: var(--pop-bg);
+    background: var(--overlay-bg, var(--pop-bg));
     box-shadow: var(--pop-shadow);
   }
 

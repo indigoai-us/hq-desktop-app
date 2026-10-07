@@ -149,7 +149,7 @@ async function pressCreate(name: string): Promise<void> {
   await vi.waitFor(() => expect(q('[data-testid="chat-new-message"]')).toBeTruthy());
   click('[data-testid="chat-new-message"]');
   await settle();
-  click('[data-testid="chat-create-new-bot"]');
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
   const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
   input.value = name;

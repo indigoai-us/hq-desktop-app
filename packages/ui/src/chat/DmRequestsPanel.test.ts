@@ -137,8 +137,9 @@ describe("DmRequestsPanel", () => {
   });
 
   it("shows an inline error and keeps the card when the respond call fails", async () => {
+    const raw = new Error('[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}');
     const respondDmRequest = vi.fn(async () => {
-      throw new Error("server said no");
+      throw raw;
     });
     const onresolved = vi.fn();
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -155,8 +156,13 @@ describe("DmRequestsPanel", () => {
       expect(host.querySelector('[data-testid="dm-request-error"]')).toBeTruthy(),
     );
     expect(host.querySelector('[data-testid="dm-request-error"]')?.textContent).toContain(
-      "Could not accept this request: server said no",
+      "Could not accept this request. Try again.",
     );
+    expect(host.textContent).not.toContain("boom");
+    for (const el of host.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(consoleError).toHaveBeenCalledWith("dm-requests: respond_dm_request accept failed", raw);
     expect(cards()).toHaveLength(2);
     expect(onresolved).not.toHaveBeenCalled();
     // Buttons are re-enabled for a retry.

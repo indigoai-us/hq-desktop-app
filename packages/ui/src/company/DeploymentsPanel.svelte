@@ -7,6 +7,8 @@
     type DeploymentState,
   } from "./DeploymentRow.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
+  import ListEmptyState from "../common/ListEmptyState.svelte";
 
   interface Props {
     slug: string;
@@ -304,25 +306,23 @@
       </div>
 
       {#if loading}
-        <div class="deployment-skeleton" aria-label="Loading deployments">
-          {#each Array(4) as _, index (index)}
-            <span style={`width: ${92 - index * 9}%`}></span>
-          {/each}
-        </div>
+        <ReadLoader testid="deployments-loading" onretry={retry} />
       {:else if filteredDeployments.length > 0}
         <div class="deployment-list">
           {#each filteredDeployments as deployment, index (`${deployment.url}:${index}`)}
             <DeploymentRow {deployment} {openExternal} />
           {/each}
         </div>
-      {:else if deployments.length > 0}
-        <div class="empty-state" data-testid="filtered-deployments-empty-state">
-          No deployments match that search.
-        </div>
       {:else}
-        <div class="empty-state">
-          No provisioned subdomains for this company.
-        </div>
+        <ListEmptyState
+          total={deployments.length}
+          shown={0}
+          query={deploymentQuery}
+          noun={["deployment", "deployments"]}
+          emptyCopy="No provisioned subdomains for this company."
+          onclear={() => (deploymentQuery = "")}
+          testid={deployments.length > 0 ? "filtered-deployments-empty-state" : "deployments-empty-state"}
+        />
       {/if}
     </div>
   </section>
@@ -545,38 +545,9 @@
     display: grid;
   }
 
-  .deployment-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 14px 13px;
-  }
-
-  .deployment-skeleton span {
-    height: 18px;
-    border-radius: var(--v4-radius-button);
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: skeleton 1.2s ease-in-out infinite;
-  }
-
   .empty-state {
     padding: 26px 13px;
     text-align: center;
-  }
-
-  @keyframes skeleton {
-    from {
-      background-position: 0 0;
-    }
-
-    to {
-      background-position: -200% 0;
-    }
   }
 
   @media (max-width: 760px) {
@@ -604,11 +575,6 @@
     }
   }
 
-  @media (prefers-reduced-motion: reduce) {
-    .deployment-skeleton span {
-      animation: none;
-    }
-  }
 
   @media (prefers-reduced-transparency: reduce) {
     .deployments-panel,

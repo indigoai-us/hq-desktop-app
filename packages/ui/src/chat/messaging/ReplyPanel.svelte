@@ -128,6 +128,8 @@
     withPersonUid?: string | null;
     /** Display name of the DM counterpart (the agent in an agent DM). */
     withPersonName?: string | null;
+    /** Channel display name for the header and the "Also send to #channel" switch. */
+    channelName?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
     seedRoot?: ConversationMessageWire | null;
     /** Host wake bus. Matching `reply:new` re-fetches; other roots are ignored. */
@@ -207,6 +209,7 @@
     channelId = null,
     withPersonUid = null,
     withPersonName = null,
+    channelName = null,
     seedRoot = null,
     wakes = null,
     reactions = {},
@@ -578,12 +581,9 @@
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
       if (generation !== loadGeneration || rootEventId !== requested) return;
-      loadError =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Could not load replies";
+      // Thrown text is transport/server output: log it, show plain copy.
+      console.warn("[reply-panel] load replies failed", err);
+      loadError = "Could not load replies. Try again.";
     } finally {
       if (generation === loadGeneration) loading = false;
     }
@@ -643,6 +643,17 @@
     return onpresign(companyUid, item.vaultPath);
   }
 
+  /**
+   * "Also send to #channel" (scene home-thread). Off by default and reset
+   * after each send, matching Slack: a thread reply is echoed to the channel
+   * only when the sender asks for it on that reply.
+   */
+  let alsoSendToChannel = $state(false);
+  const canAlsoSend = $derived(scope === "channel" && Boolean(channelId?.trim()));
+  const channelLabel = $derived(
+    (channelName?.trim() || "channel").replace(/^#/, ""),
+  );
+
   async function deliver(
     body: string,
     attachments?: ChatAttachmentWire[],
@@ -683,6 +694,7 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
+        // raw-error-ok: formatComposerSendError maps it to plain copy
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
@@ -713,11 +725,26 @@
     pendingFiles = [];
     attachError = null;
     attachUpgradeUrl = null;
+    const echoToChannel = alsoSendToChannel && canAlsoSend;
+    alsoSendToChannel = false;
     try {
       await deliver(text, attachments, mentions);
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
+      if (echoToChannel && channelId && text) {
+        // The reply landed; the channel echo is best-effort and never turns a
+        // delivered reply into a failed row.
+        void api
+          .sendChannelMessage({
+            channelId,
+            body: text,
+            ...(mentions.length > 0 ? { mentions } : {}),
+          })
+          .catch((err) => {
+            console.error("ReplyPanel: also-send to channel failed", err);
+          });
+      }
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
       startThinkingForThreadAgent(mentions);
@@ -744,6 +771,7 @@
     err: unknown,
     mentions: readonly MentionTarget[],
   ): { sendError: string; sendFatal: boolean } {
+    // raw-error-ok: formatComposerSendError maps it to plain copy
     const raw = err instanceof Error ? err.message.trim() : "";
     return {
       sendError: formatComposerSendError(
@@ -923,7 +951,12 @@
   }}
 >
   <header class="reply-header">
-    <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
+    <div class="reply-heading">
+      <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
+      {#if canAlsoSend && channelName?.trim()}
+        <span class="reply-sub" data-testid="reply-panel-sub">#{channelLabel}</span>
+      {/if}
+    </div>
     <button
       class="reply-close"
       type="button"
@@ -1260,6 +1293,19 @@
       <AgentTaskStrip {tasks} />
     </div>
 
+    {#if canAlsoSend}
+      <label class="reply-also" data-testid="reply-panel-also-send">
+        <input
+          type="checkbox"
+          role="switch"
+          class="reply-also-input"
+          aria-checked={alsoSendToChannel}
+          bind:checked={alsoSendToChannel}
+        />
+        <span class="reply-also-switch" aria-hidden="true"></span>
+        Also send to #{channelLabel}
+      </label>
+    {/if}
     <div class="reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -1379,7 +1425,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 12px 16px;
+    height: 52px;
+    box-sizing: border-box;
+    padding: 0 10px 0 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     flex-shrink: 0;
   }
@@ -1392,6 +1440,84 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .reply-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .reply-sub {
+    font-size: 12px;
+    color: var(--t3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .reply-also {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px 8px;
+    font-size: 12px;
+    color: var(--t2);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .reply-also-input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+  }
+
+  .reply-also-switch {
+    position: relative;
+    flex: none;
+    width: 26px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--v4-control-border, var(--line));
+    transition: background-color 0.12s ease;
+  }
+
+  .reply-also-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--t1);
+    opacity: 0.7;
+    transition: transform 0.12s ease;
+  }
+
+  .reply-also-input:checked + .reply-also-switch {
+    background: var(--ice);
+  }
+
+  .reply-also-input:checked + .reply-also-switch::after {
+    transform: translateX(10px);
+    opacity: 1;
+  }
+
+  .reply-also-input:focus-visible + .reply-also-switch {
+    outline: 2px solid var(--ice);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reply-also-switch,
+    .reply-also-switch::after {
+      transition: none;
+    }
   }
 
   .reply-close {

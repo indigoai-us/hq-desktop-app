@@ -7,7 +7,7 @@
  * card: online ticks it off and removes it; a failed process shows the reason
  * with one Retry, which starts the bot again.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type LocalBotRow, type PlatformAdapter } from "@hq/platform";
 
@@ -17,6 +17,13 @@ import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { setJitterRandomForTests } from "@hq/platform";
 import { LOCAL_BOT_BUSY_POLL_MS } from "../chat/local-bots.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { createBotFlowDoor } from "./lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 const BOT_UID = "agt_new";
 
@@ -170,7 +177,7 @@ async function createBot(): Promise<void> {
   for (let i = 0; i < 40 && !host.querySelector('[data-testid="chat-new-message"]'); i += 1) await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await settle();
-  click('[data-testid="chat-create-new-bot"]');
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
   click('[data-testid="create-bot-next"]');
   await settle();

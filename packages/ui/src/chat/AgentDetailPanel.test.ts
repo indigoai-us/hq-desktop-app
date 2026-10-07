@@ -151,7 +151,7 @@ describe("AgentDetailPanel", () => {
     await vi.waitFor(() => {
       expect(
         host.querySelector('[data-testid="agent-detail-status"]')?.textContent,
-      ).toContain("BOT · WORKING");
+      ).toContain("Bot · WORKING");
     });
     expect(
       host.querySelector('[data-testid="agent-detail-description"]')
@@ -172,7 +172,7 @@ describe("AgentDetailPanel", () => {
     expect(
       host.querySelector('[data-testid="agent-detail-usage-tokens"]')
         ?.textContent,
-    ).toBe("1.0k");
+    ).toBe("1K");
     expect(
       host.querySelector('[data-testid="agent-detail-avatar-picker-slot"]'),
     ).not.toBeNull();

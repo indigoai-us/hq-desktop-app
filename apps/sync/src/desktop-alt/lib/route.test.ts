@@ -137,4 +137,15 @@ describe('desktop route grammar', () => {
       'settings:general',
     );
   });
+
+  it('OWNER-R33: marketplace is the route; library still parses as the redirect', () => {
+    expect(parseDesktopRoute('marketplace')).toEqual({ kind: 'library', tab: 'marketplace' });
+    expect(parseDesktopRoute('marketplace:installed')).toEqual({ kind: 'library', tab: 'installed' });
+    expect(parseDesktopRoute('marketplace:submit')).toEqual({ kind: 'library', tab: 'submit' });
+    expect(parseDesktopRoute('marketplace:skills')?.kind).toBe('unsupported');
+    expect(serializeDesktopRoute({ kind: 'library', tab: 'marketplace' })).toBe('marketplace');
+    expect(serializeDesktopRoute({ kind: 'library', tab: 'installed' })).toBe('marketplace:installed');
+    expect(parseDesktopRoute('library')).toEqual({ kind: 'library', tab: 'skills' });
+    expect(parseDesktopRoute('library:marketplace')).toEqual({ kind: 'library', tab: 'marketplace' });
+  });
 });

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import type { Component } from 'svelte';
   import SignInPrompt from '../src/components/SignInPrompt.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import HqWorkWorkShell from '../src/desktop-alt/HqWorkWorkShell.svelte';
@@ -9,6 +11,7 @@
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
+  import LiveTranscriptBody from '../../../packages/ui/src/meetings/LiveTranscriptBody.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
   import CompanyStepPreview from './CompanyStepPreview.svelte';
@@ -21,7 +24,8 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
-  import { TOUR_SEEN_STORAGE_KEY } from '@hq/ui';
+  import { TOUR_SEEN_STORAGE_KEY, pushToast } from '@hq/ui';
+  import { raiseToasts, toastSwitch } from './audit-switches';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -128,6 +132,10 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?state=empty|loading|error (dev-harness/state-flags.ts):
+  //     empty lists, a held skeleton (?loadingMs=N to release), or failed loads
+  //   shell view also takes ?auth=, ?reads=, ?toast=, ?gates=on, ?atlas=populated
+  //     (AUDIT-3 switches, dev-harness/audit-switches.ts)
   //   shell view also takes ?tour=1: a fresh install that has not seen the
   //     first-run guided tour, so the tour starts by itself (clears the
   //     local "seen" key on load)
@@ -138,6 +146,71 @@
   // view is the production HQ Work shell; size that one to ~1180x760.
   const params = new URLSearchParams(window.location.search);
   const view = params.get('view') ?? 'shell';
+  const livePreviewState = params.get('liveState') ?? 'streaming';
+  const liveMeetingPreview = {
+    id: 'preview-live-meeting',
+    summary: 'Live product review',
+    start: { dateTime: new Date(Date.now() - 12 * 60_000).toISOString() },
+    end: { dateTime: new Date(Date.now() + 48 * 60_000).toISOString() },
+    status: 'confirmed',
+    meetingUrl: 'https://meet.google.com/preview-live',
+    sourceCompanyUid: 'cmp_preview',
+  };
+  const liveMeetingBotPreview = {
+    botId: 'preview-notetaker',
+    companyId: 'cmp_preview',
+    status: 'recording',
+    sourceLanded: false,
+  };
+  let LiveMeetingCanvas = $state<Component | null>(null);
+  let liveMeetingPreviewFailed = $state(false);
+
+  // Keep the live-meeting screenshot route out of the default shell bundle.
+  // Its transcript and agent-launch graph is only useful when that route is
+  // active, and the browser suite boots the shell for every spec.
+  onMount(() => {
+    if (view !== 'live-meeting') return;
+    void import('../../../packages/ui/src/meetings/MeetingCanvas.svelte')
+      .then((mod) => {
+        LiveMeetingCanvas = mod.default as Component;
+      })
+      .catch(() => {
+        liveMeetingPreviewFailed = true;
+      });
+  });
+  let livePreviewReads = 0;
+  const previewLiveTranscript = async () => {
+    livePreviewReads += 1;
+    const segments = [
+      { segmentId: 'preview-1', speaker: 'Maya Chen', startSeconds: 0, endSeconds: 2, text: 'Let us start with the rollout.' },
+      { segmentId: 'preview-2', speaker: 'Maya Chen', startSeconds: 3, endSeconds: 5, text: 'The first group is ready.' },
+      { segmentId: 'preview-3', speaker: 'Stefan Johnson', startSeconds: 7, endSeconds: 9, text: 'I will monitor the first hour.' },
+      { segmentId: 'preview-4', speaker: 'Maya Chen', startSeconds: 11, endSeconds: 13, text: 'Great. We can share the update after that.' },
+      { segmentId: 'preview-5', speaker: 'Stefan Johnson', startSeconds: 15, endSeconds: 17, text: 'I will add the rollout notes now.' },
+      { segmentId: 'preview-6', speaker: 'Maya Chen', startSeconds: 19, endSeconds: 21, text: 'Please include the support handoff.' },
+      { segmentId: 'preview-7', speaker: 'Stefan Johnson', startSeconds: 23, endSeconds: 25, text: 'That is already in the draft.' },
+      { segmentId: 'preview-8', speaker: 'Maya Chen', startSeconds: 27, endSeconds: 29, text: 'Then we are ready to proceed.' },
+      { segmentId: 'preview-9', speaker: 'Stefan Johnson', startSeconds: 31, endSeconds: 33, text: 'I will share the final link.' },
+      { segmentId: 'preview-10', speaker: 'Maya Chen', startSeconds: 35, endSeconds: 37, text: 'Thank you. Let us close the loop.' },
+    ];
+    const visible = livePreviewReads === 1
+      ? segments.slice(0, 2)
+      : livePreviewReads === 2
+        ? segments.slice(0, 8)
+        : segments;
+    return {
+      ok: true as const,
+      value: {
+        kind: 'ok' as const,
+        revision: livePreviewReads,
+        etag: `\"preview-${livePreviewReads}\"`,
+        segments: visible,
+        partial: livePreviewReads === 1
+          ? { speaker: 'Stefan Johnson', startSeconds: 7, text: 'I will monitor' }
+          : null,
+      },
+    };
+  };
   if (params.get('tour') === '1') {
     try {
       localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
@@ -175,6 +248,8 @@
         ? 'desktop-alt'
         : view === 'meetings'
           ? 'meetings-window'
+          : view === 'live-transcript' || view === 'live-meeting'
+            ? 'meetings-window'
           : view === 'drift'
             ? 'drift-detail'
             : view === 'activity'
@@ -202,6 +277,11 @@
     setTimeout(() => void emit('banner:event', payload), 50);
   }
 
+  // ?toast=update|info|error|progress|stack (dev-harness/audit-switches.ts).
+  if (view === 'shell') {
+    setTimeout(() => raiseToasts(toastSwitch(), emit, pushToast), 2500);
+  }
+
   if (view === 'drift') {
     setTimeout(() => void emit('drift:report', driftPreviewReport), 75);
   } else if (view === 'new-files') {
@@ -226,6 +306,27 @@
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />
+{:else if view === 'live-transcript'}
+  <main class="live-transcript-preview">
+    <LiveTranscriptBody
+      recallBotId="preview-notetaker"
+      companyId="cmp_preview"
+      live={livePreviewState !== 'ended'}
+      botStatus={livePreviewState === 'ended' ? 'completed' : 'recording'}
+      fetch={previewLiveTranscript}
+    />
+  </main>
+{:else if view === 'live-meeting'}
+  <!-- A live bot fixture for the actual MeetingCanvas Live tab. -->
+  <main class="live-meeting-preview">
+    {#if LiveMeetingCanvas}
+      <LiveMeetingCanvas event={liveMeetingPreview} bot={liveMeetingBotPreview} companyName="Preview company" />
+    {:else if liveMeetingPreviewFailed}
+      <p role="alert">The live meeting preview could not load.</p>
+    {:else}
+      <p aria-busy="true">Loading live meeting preview…</p>
+    {/if}
+  </main>
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />
@@ -302,6 +403,17 @@
 {/if}
 
 <style>
+  .live-transcript-preview {
+    box-sizing: border-box;
+    width: min(720px, 100vw);
+    height: min(180px, 100vh);
+    margin: 24px auto;
+    padding: 24px;
+    overflow-y: auto;
+    background: var(--surface);
+    color: var(--t1);
+  }
+
   .fake-desktop {
     position: fixed;
     inset: 0;

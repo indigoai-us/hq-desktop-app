@@ -75,7 +75,7 @@ function showToast(doc: Document, version: string, onReload: () => void): void {
     'position:fixed', 'right:16px', 'bottom:16px', 'z-index:2147483000',
     'display:flex', 'gap:12px', 'align-items:center', 'padding:10px 14px',
     'border-radius:10px', 'font:13px/1.3 system-ui,sans-serif',
-    'background:rgba(30,30,34,.92)', 'color:#fff', 'box-shadow:0 6px 24px rgba(0,0,0,.25)',
+    'background:rgba(36,36,36,.92)', 'color:#fff', 'box-shadow:0 6px 24px rgba(0,0,0,.25)',
   ].join(';');
   const label = doc.createElement('span');
   label.textContent = 'Interface updated';

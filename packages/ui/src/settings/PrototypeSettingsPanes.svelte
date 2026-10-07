@@ -1,10 +1,13 @@
 <script lang="ts">
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { type AdapterResult } from "./update-orchestration";
   import {
     appRowActions,
     appRowIdleHint,
     appRowStatusLabel,
+    isRecordingRestartDeferral,
   } from "./update-presentation";
+  import { heldRestartTitle, holdReasonText, restartHoldText } from "../shell/update-toast";
   import {
     checkDesktopUpdates,
     downloadDesktopUpdate,
@@ -27,9 +30,9 @@
    * claims to affect the native host is read from and written through it.
    */
   import { onMount } from "svelte";
+  import { platformStrings } from "../common/platform-strings";
   import {
     startJitteredPoll,
-    hostComputerNoun,
     type MeetingPermissionsSnapshot,
   } from "@hq/platform";
   import type { NotifyPrefs, NotifyPrefsPatch, PlatformAdapter } from "@hq/platform";
@@ -63,11 +66,14 @@
   } from "./shell-settings-model.js";
   import {
     readSettingsPrefs,
+    readStoredUiSize,
     writeSettingsPrefs,
+    writeStoredUiSize,
     type SettingsUiSize,
     type ShellSettingsPrefs,
   } from "./settings-prefs.js";
   import { formatHqFolderMeta } from "./settings-sections.js";
+  import { autoUpdateRow } from "../account/account-pages.js";
   import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
@@ -104,6 +110,8 @@
     version?: string;
     adapter?: PlatformAdapter | null;
     storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+    /** Unscoped device storage for device-wide prefs (interface size). */
+    deviceStorage?: Pick<Storage, "getItem" | "setItem"> | null;
     sessionGeneration?: number;
     companies?: Workspace[] | null;
     personalLabel?: string | null;
@@ -122,6 +130,7 @@
     version = "0.0.0",
     adapter = null,
     storage = typeof window !== "undefined" ? window.localStorage : null,
+    deviceStorage = typeof window !== "undefined" ? window.localStorage : null,
     sessionGeneration = 0,
     companies = null,
     personalLabel = null,
@@ -136,11 +145,12 @@
   // applied its persisted transparency to <html>; seed the slider from that
   // instead of the local pref so the two never disagree on first paint.
   const hostOpacity = readHostWindowOpacity();
-  let prefs = $state<ShellSettingsPrefs>(
-    hostOpacity == null
-      ? readSettingsPrefs(storage)
-      : { ...readSettingsPrefs(storage), windowOpacity: hostOpacity },
-  );
+  const osStrings = platformStrings();
+  let prefs = $state<ShellSettingsPrefs>({
+    ...readSettingsPrefs(storage),
+    ...(hostOpacity == null ? {} : { windowOpacity: hostOpacity }),
+    uiSize: readStoredUiSize(deviceStorage, storage),
+  });
   let theme = $state<ColorTheme>(readStoredTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
@@ -256,6 +266,14 @@
   const coreProbeError = $derived(updateStore.coreProbeError);
   const cliProbeError = $derived(updateStore.cliProbeError);
   const versionsRefreshing = $derived(updateStore.checking);
+  // QA-061: the Automatic updates switch reads the same build capability as
+  // the About line, so a build without background updates never shows it on.
+  const autoRow = $derived(
+    autoUpdateRow({
+      autoUpdate: native.autoUpdate,
+      backgroundUpdatesOff: updateStore.backgroundUpdatesOff,
+    }),
+  );
   const appRowLabel = $derived(
     appRowStatusLabel({
       status: appUpdateStatus,
@@ -270,6 +288,33 @@
     }),
   );
   const appIdleHint = $derived(appRowIdleHint(updateStore.idleWaitRemainingSecs));
+  // #1237: the host's deferral sentence names what holds a requested restart
+  // (a recording, a transcript still saving, or an HQ Core update).
+  // Item 8: otherwise, while the native gate holds the update (an upload, a
+  // recording), the same reason sentence the update toast shows, from the same
+  // store value, so the pane and the toast never disagree.
+  const appRestartDeferred = $derived(
+    updateStore.installPhase === "deferred" &&
+      !!updateStore.installError &&
+      isRecordingRestartDeferral(updateStore.installError),
+  );
+  const appDeferralReason = $derived(
+    appRestartDeferred
+      ? updateStore.installError
+      : appRowLabel !== "UP TO DATE" && updateStore.installPhase !== "installing"
+        ? holdReasonText([...updateStore.holdReasons])
+        : null,
+  );
+  // What keeps Restart from working. An upload is named above as the reason
+  // the automatic install waits, and does not stop a restart the person asks
+  // for.
+  const appRestartHold = $derived(
+    appRestartDeferred
+      ? updateStore.installError
+      : appDeferralReason
+        ? restartHoldText([...updateStore.holdReasons])
+        : null,
+  );
   // Release channel (Stable / Beta / Alpha). The native host owns the
   // semantics — this is the persisted `releaseChannel` pref in menubar.json
   // that release_channel.rs `effective_channel` already resolves.
@@ -313,8 +358,15 @@
       })),
   );
 
+  // QA-074: the tenant prefs blob can still hold a stale uiSize from before
+  // the device-wide key existed. Every blob write keeps the device size, so
+  // changing opacity or a toggle never flips Interface size back.
+  function writePrefs(next: Partial<ShellSettingsPrefs>): ShellSettingsPrefs {
+    return { ...writeSettingsPrefs(next, storage), uiSize: prefs.uiSize };
+  }
+
   function patch(next: Partial<ShellSettingsPrefs>): void {
-    prefs = writeSettingsPrefs(next, storage);
+    prefs = writePrefs(next);
   }
 
   function setTheme(next: ColorTheme): void {
@@ -322,7 +374,7 @@
   }
 
   function setUiSize(next: SettingsUiSize): void {
-    patch({ uiSize: applyUiSize(next) });
+    prefs = { ...prefs, uiSize: writeStoredUiSize(applyUiSize(next), deviceStorage) };
   }
 
   function setOpacity(next: number): void {
@@ -423,9 +475,10 @@
         : { kind: "error", message: "Couldn't read notification settings." };
     } catch (err) {
       if (seq !== notifyPrefsLoadSeq) return;
+      console.warn("[settings] notification settings load failed", err);
       notifyPrefsState = {
         kind: "error",
-        message: err instanceof Error ? err.message : String(err),
+        message: "Couldn't load notification settings. Try again.",
       };
     }
   }
@@ -456,7 +509,8 @@
       if (saved) notifyPrefsState = { kind: "ready", prefs: saved };
     } catch (err) {
       notifyPrefsState = { kind: "ready", prefs: previous };
-      notifyPrefsError = err instanceof Error ? err.message : String(err);
+      console.warn("[settings] notification settings save failed", err);
+      notifyPrefsError = "Couldn't save notification settings. Try again.";
     } finally {
       notifyPrefsSaving = false;
     }
@@ -494,7 +548,9 @@
   }
 
   function actionableError(subject: string, detail?: string): string {
-    return `${subject} wasn’t saved${detail ? `: ${detail}` : "."} Try again.`;
+    // The host's failure text is logged, never shown.
+    if (detail) console.warn(`[settings] ${subject} not saved`, detail);
+    return `${subject} wasn’t saved. Try again.`;
   }
 
   function readBoolean(raw: Record<string, unknown>, key: string, fallback: boolean): boolean {
@@ -1007,7 +1063,8 @@
     try {
       await openExternalUrl(HQ_CONSOLE_INTEGRATIONS_URL);
     } catch (error) {
-      setCalendarConnectMessage(`Couldn’t open HQ Console: ${String(error)}`, true);
+      console.warn("[settings] open HQ Console failed", error);
+      setCalendarConnectMessage("Couldn’t open HQ Console. Try again.", true);
     }
   }
 
@@ -1039,10 +1096,8 @@
           await openExternalUrl(result.url);
         } catch (err) {
           meetingsStore.stopCalendarConnectWatch();
-          setCalendarConnectMessage(
-            `Couldn't open the browser: ${String(err)}`,
-            true,
-          );
+          console.warn("[settings] open calendar connect URL failed", err);
+          setCalendarConnectMessage("Couldn't open the browser. Try again.", true);
         }
       }
     } finally {
@@ -1139,7 +1194,7 @@
     const onAppearanceChange = () => {
       const next = readHostWindowOpacity();
       if (next != null && next !== prefs.windowOpacity) {
-        prefs = writeSettingsPrefs({ windowOpacity: next }, storage);
+        prefs = writePrefs({ windowOpacity: next });
       }
     };
     window.addEventListener(APPEARANCE_CHANGE_EVENT, onAppearanceChange);
@@ -1200,24 +1255,23 @@
       <div class="set-row">
         <div>
           <div class="sn">Launch at login</div>
-          <div class="sd">Start HQ when you sign in to {hostComputerNoun() === "Mac" ? "your Mac" : hostComputerNoun() === "PC" ? "your PC" : "your computer"}</div>
+          <div class="sd">Start HQ when you sign in to your {osStrings.computer}</div>
         </div>
         <button type="button" class="toggle" class:on={native.startAtLogin} role="switch" aria-checked={native.startAtLogin} aria-label="Launch at login" aria-busy={pending("launch")} disabled={!nativeLoaded || pending("launch")} onclick={() => void toggleLaunch()}></button>
       </div>
       <div class="set-row">
-        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"}</div><div class="sd">Keep HQ in the {hostComputerNoun() === "Mac" ? "Dock" : "taskbar"} and {hostComputerNoun() === "Mac" ? "⌘-Tab" : "Alt+Tab"} switcher</div></div>
-        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={hostComputerNoun() === "Mac" ? "Show in Dock" : "Show in taskbar"} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
+        <div><div class="sn">{osStrings.dockToggle}</div><div class="sd">{osStrings.dockToggleHint}</div></div>
+        <button type="button" class="toggle" class:on={prefs.showInDock} role="switch" aria-checked={prefs.showInDock} aria-label={osStrings.dockToggle} data-testid="settings-dock-toggle" onclick={() => void toggleDock()}></button>
       </div>
       <div class="set-row unavailable" data-testid="settings-menubar-unavailable">
-        <div><div class="sn">{hostComputerNoun() === "Mac" ? "Menu bar quick access" : "System tray quick access"}</div><div class="sd">Managed by the native HQ popover in this release; this embedded screen cannot change it.</div></div>
-        <span class="mono">HOST-OWNED</span>
+        <div><div class="sn">{osStrings.trayRow}</div><div class="sd">Change this from the HQ menu bar icon.</div></div>
       </div>
     {/if}
 
   {:else if section === "appearance"}
-    <p class="settings-note">These choices apply only to this embedded HQ Work window. They do not change macOS or other HQ surfaces.</p>
+    <p class="settings-note">These choices apply only to this HQ window. They do not change macOS or the HQ menu bar.</p>
     <div class="set-row">
-      <div><div class="sn">Theme</div><div class="sd">Appearance for this embedded Work view</div></div>
+      <div><div class="sn">Theme</div><div class="sd">Light, dark, or match your computer</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Color theme">
         {#each APPEARANCE_THEMES as option (option.id)}
           <button type="button" class="chip" class:on={theme === option.id} role="radio" aria-checked={theme === option.id} data-testid={`settings-theme-${option.id}`} onclick={() => setTheme(option.id)}>{option.label}</button>
@@ -1226,12 +1280,12 @@
     </div>
     {#if canTray}
       <div class="set-row">
-        <div><div class="sn">Window opacity</div><div class="sd">Visual treatment for this embedded Work view</div></div>
-        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="mono range-val">{prefs.windowOpacity}%</span></div>
+        <div><div class="sn">Window opacity</div><div class="sd">How see-through this window is</div></div>
+        <div class="range-wrap"><input type="range" min={MIN_SLIDER_WINDOW_OPACITY} max={MAX_SLIDER_WINDOW_OPACITY} value={prefs.windowOpacity} aria-label="Window opacity" oninput={(event) => setOpacity(Number(event.currentTarget.value))} /><span class="val range-val">{prefs.windowOpacity}%</span></div>
       </div>
     {/if}
     <div class="set-row">
-      <div><div class="sn">Interface size</div><div class="sd">Density in this embedded Work view</div></div>
+      <div><div class="sn">Interface size</div><div class="sd">Text and spacing size in this window</div></div>
       <div class="theme-pills" role="radiogroup" aria-label="Interface size">
         {#each APPEARANCE_SIZES as option (option.id)}
           <button type="button" class="chip" class:on={prefs.uiSize === option.id} role="radio" aria-checked={prefs.uiSize === option.id} onclick={() => setUiSize(option.id)}>{option.label}</button>
@@ -1241,7 +1295,7 @@
     <div class="set-row">
       <div>
         <div class="sn">Show company / email labels in the sidebar</div>
-        <div class="sd">Company names on channels and agents; emails on people when names collide</div>
+        <div class="sd">Company names on channels and bots; emails on people when names collide</div>
       </div>
       <button
         type="button"
@@ -1256,12 +1310,12 @@
     </div>
   {:else if section === "notifications"}
     {#if canSync}
-      <div class="set-row"><div><div class="sn">Meeting notifications</div><div class="sd">Show native alerts for detected and unattributed meetings</div></div><button type="button" class="toggle" class:on={native.notifications} role="switch" aria-checked={native.notifications} aria-label="Meeting notifications" disabled={!nativeLoaded || pending("meeting-notifications")} onclick={() => void toggleNativeBoolean("meeting-notifications", "notifications")}></button></div>
+      <div class="set-row"><div><div class="sn">Meeting notifications</div><div class="sd">Show alerts for meetings HQ detects, including ones not yet linked to a company</div></div><button type="button" class="toggle" class:on={native.notifications} role="switch" aria-checked={native.notifications} aria-label="Meeting notifications" disabled={!nativeLoaded || pending("meeting-notifications")} onclick={() => void toggleNativeBoolean("meeting-notifications", "notifications")}></button></div>
     {/if}
     <div class="set-row"><div><div class="sn">Share notifications</div><div class="sd">Show file-share activity from teammates</div></div><button type="button" class="toggle" class:on={native.shareNotifications} role="switch" aria-checked={native.shareNotifications} aria-label="Share notifications" disabled={!nativeLoaded || pending("share-notifications")} onclick={() => void toggleNativeBoolean("share-notifications", "shareNotifications")}></button></div>
-    <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show direct-message activity in the native HQ surfaces</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
+    <div class="set-row"><div><div class="sn">DM notifications</div><div class="sd">Show alerts when someone sends you a direct message</div></div><button type="button" class="toggle" class:on={native.dmNotifications} role="switch" aria-checked={native.dmNotifications} aria-label="DM notifications" disabled={!nativeLoaded || pending("dm-notifications")} onclick={() => void toggleNativeBoolean("dm-notifications", "dmNotifications")}></button></div>
     {#if native.dmNotifications === false}
-      <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this {hostComputerNoun()}, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
+      <p class="settings-note" data-testid="notify-prefs-master-off">DM notifications are off on this {osStrings.computer}, so HQ shows no message notifications here. The settings below still apply on your other devices.</p>
     {/if}
     <div class="set-subhead" data-testid="notify-prefs-section">
       <div class="sn">Notify me about</div>
@@ -1299,20 +1353,20 @@
     {#if canTray && notifPermission && notifPermission !== "unknown" && notifPermission !== "unsupported"}
       <div class="set-row">
         <div><div class="sn">System permission</div><div class="sd">{notifPermission === "granted" ? "Your system is allowing notifications from HQ" : notifPermission === "denied" ? "Blocked by system settings — open Notification Settings to allow" : "Not enabled yet — allow to see message alerts"}{#if notifPermissionError}<div class="sd" role="alert" data-testid="settings-notification-permission-error">{notifPermissionError}</div>{/if}</div></div>
-        {#if notifPermission === "granted"}<span class="mono ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
+        {#if notifPermission === "granted"}<span class="val ok">Enabled</span>{:else}<button type="button" class="chip" onclick={() => void enableNotifications()} disabled={notifRequesting} aria-busy={notifRequesting}>{notifRequesting ? "Requesting…" : notifPermissionError ? "Try again" : notifPermission === "denied" ? "Open Settings" : "Enable"}</button>{/if}
       </div>
     {/if}
   {:else if section === "sync" && canSync}
     <div class="set-row">
       <div>
         <div class="sn">HQ folder</div>
-        <div class="sd mono-path">{formatHqFolderMeta(hqFolder) || "Not located"}</div>
+        <div class="sd" class:mono-path={!!formatHqFolderMeta(hqFolder)}>{formatHqFolderMeta(hqFolder) || "Not located"}</div>
       </div>
       <button type="button" class="chip quiet" onclick={() => void chooseHqFolder()} disabled={pending("hq-folder")}>{pending("hq-folder") ? "Choosing…" : "Choose…"}</button>
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Sync daemon</div>
+        <div class="sn">Background sync</div>
         <div class="sd">
           {#if liveSync.daemonOwner}
             Sync owner: {liveSync.daemonOwner}
@@ -1324,32 +1378,32 @@
           {/if}
         </div>
       </div>
-      <span class="mono" class:ok={liveSync.daemonRunning}
+      <span class="val" class:ok={liveSync.daemonRunning}
         >{liveSync.daemonRunning ? "RUNNING" : "STOPPED"}</span
       >
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Last sync</div>
+        <div class="sn">Sync history</div>
         <div class="sd">
           {#if liveSync.conflicts > 0}
             {liveSync.conflicts} conflict{liveSync.conflicts === 1 ? "" : "s"} need
             a keep-local / keep-cloud choice
           {:else}
-            From {liveSync.source === "none"
-              ? "no journal yet"
-              : "the v1 journal"}
+            {liveSync.source === "none"
+              ? "Nothing synced on this computer yet"
+              : "Changes synced on this computer"}
           {/if}
         </div>
       </div>
-      <span class="mono">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>
+      <span class="val">{lastSyncLabelFromLive(liveSync) ?? "Never"}</span>
     </div>
     {#if liveSync.daemonErrors.length > 0 || liveSync.daemonLogPath}
       <div class="set-row">
         <div>
           <div class="sn">Sync status</div>
           <div class="sd" role={liveSync.daemonErrors.length > 0 ? "alert" : undefined}>
-            {liveSync.daemonErrors.join(" ") || "No recent daemon errors"}
+            {liveSync.daemonErrors.join(" ") || "No recent sync errors"}
           </div>
           {#if liveSync.daemonLogPath}
             <div class="sd mono-path">Log: {liveSync.daemonLogPath}</div>
@@ -1407,8 +1461,8 @@
     </div>
     <div class="set-row">
       <div>
-        <div class="sn">Sync personal vault</div>
-        <div class="sd">Include personal HQ files in the fanout</div>
+        <div class="sn">Also sync my personal HQ files to the cloud</div>
+        <div class="sd">Your personal folder (notes, knowledge, and settings outside any company) is backed up and kept the same on your other computers.</div>
       </div>
       <button
         type="button"
@@ -1428,7 +1482,7 @@
           {lists.active.length} membership{lists.active.length === 1 ? "" : "s"}
         </div>
       </div>
-      <span class="mono">{lists.active.length} ACTIVE</span>
+      <span class="val">{lists.active.length} ACTIVE</span>
     </div>
   {:else if section === "meetings"}
     {#if canWatchMeetings && meetingPerms}
@@ -1437,9 +1491,9 @@
           <div class="sn">Meeting detection</div>
           <div class="sd">
             {#if meetingPerms.allRequiredGranted}
-              HQ can spot Zoom, Teams, and Meet calls on this {hostComputerNoun()}
+              HQ can spot Zoom, Teams, and Meet calls on this {osStrings.computer}
             {:else}
-              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this {hostComputerNoun()}
+              Off — HQ needs {meetingPermsMissing.join(", ")} to spot meetings on this {osStrings.computer}
             {/if}
             {#if meetingPermsError}
               <div class="sd" role="alert" data-testid="settings-meeting-permissions-error">{meetingPermsError}</div>
@@ -1447,7 +1501,7 @@
           </div>
         </div>
         {#if meetingPerms.allRequiredGranted}
-          <span class="mono ok" data-testid="settings-meeting-permissions-ready">Ready</span>
+          <span class="val ok" data-testid="settings-meeting-permissions-ready">Ready</span>
         {:else}
           <button
             type="button"
@@ -1486,7 +1540,7 @@
         <div>
           <div class="sn">Detected-meeting alerts</div>
           <div class="sd">
-            Show a native alert when a meeting is detected
+            Show an alert when a meeting starts
           </div>
         </div>
         <button
@@ -1503,7 +1557,7 @@
       <div class="set-row">
         <div>
           <div class="sn">Alert sources</div>
-          <div class="sd">Which detected meeting apps may show native alerts</div>
+          <div class="sd">Which meeting apps can show alerts</div>
         </div>
         <div class="theme-pills">
           {#each MEETING_PLATFORMS as platform (platform.id)}
@@ -1529,25 +1583,20 @@
         </div>
       </div>
       {#if !nativeLoaded}
-        <span class="mono" data-testid="recording-company-unavailable">Settings unavailable</span>
+        <span class="val" data-testid="recording-company-unavailable">Settings unavailable</span>
       {:else if companies === null}
-        <span class="mono" data-testid="recording-company-membership-pending">Memberships loading…</span>
+        <span class="val" data-testid="recording-company-membership-pending">Memberships loading…</span>
       {:else if recordingCompanies.length > 0}
-        <label class="sr-only" for="recording-company">Recording company</label>
-        <select
-          id="recording-company"
-          class="mono-select"
+        <Dropdown
+          label="Recording company"
+          testid="recording-company"
           value={native.defaultRecordingCompanyUid ?? ""}
           disabled={!nativeLoaded || pending("recording-company")}
-          onchange={(event) => void setRecordingCompany(event.currentTarget.value)}
-        >
-          <option value="">Personal</option>
-          {#each recordingCompanies as row (row.id)}
-            <option value={row.id}>{row.name}</option>
-          {/each}
-        </select>
+          options={[{ value: "", label: "Personal" }, ...recordingCompanies.map((row) => ({ value: row.id, label: row.name }))]}
+          onchange={(v) => void setRecordingCompany(v)}
+        />
       {:else}
-        <span class="mono" data-testid="recording-company-personal">Personal</span>
+        <span class="val" data-testid="recording-company-personal">Personal</span>
       {/if}
     </div>
     {#if connectedAccounts.length > 0}
@@ -1561,7 +1610,7 @@
             <div class="sd">Connected calendar</div>
           </div>
           <div class="connect-actions">
-            <span class="mono ok">On</span>
+            <span class="val ok">On</span>
             <button
               type="button"
               class="chip quiet"
@@ -1619,18 +1668,21 @@
     <div class="set-row">
       <div>
         <div class="sn">Automatic updates</div>
-        <div class="sd">
-          Allow the native host to install eligible desktop app, HQ Core, and CLI updates in the background
+        <div class="sd" data-testid="settings-auto-update-description">
+          {autoRow.disabled
+            ? autoRow.description
+            : "Install updates to the HQ app, HQ Core, and the command line tool in the background"}
         </div>
       </div>
       <button
         type="button"
         class="toggle"
-        class:on={native.autoUpdate}
+        class:on={autoRow.checked}
         role="switch"
-        aria-checked={native.autoUpdate}
+        aria-checked={autoRow.checked}
         aria-label="Automatic updates"
-        disabled={!nativeLoaded || pending("automatic-updates")}
+        data-testid="settings-auto-update-toggle"
+        disabled={autoRow.disabled || !nativeLoaded || pending("automatic-updates")}
         onclick={() => void toggleNativeBoolean("automatic-updates", "autoUpdate")}
       ></button>
     </div>
@@ -1644,6 +1696,11 @@
         {#if appUpdateStatus === "failed"}
           <div class="sd" data-testid="settings-app-check-failed">
             The update check didn’t finish. Check for updates again.
+          </div>
+        {/if}
+        {#if appDeferralReason}
+          <div class="sd" data-testid="settings-app-deferred-reason">
+            {appDeferralReason}
           </div>
         {/if}
         {#if appIdleHint}
@@ -1666,17 +1723,18 @@
             type="button"
             class="chip"
             data-testid="settings-app-restart"
-            title={updateStore.installError ?? undefined}
+            disabled={!!appRestartHold}
+            title={appRestartHold ? heldRestartTitle(appRestartHold) : (updateStore.installError ?? undefined)}
             onclick={() => void restartDesktopUpdate()}
           >Restart to update</button>
         {/if}
-        <span class="mono" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
+        <span class="val" class:ok={appRowLabel === "UP TO DATE"} data-testid="settings-app-status">{appRowLabel}</span>
       </span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ Core</div>
-        <div class="sd mono-path">
+        <div class="sd" class:mono-path={!!coreVersion}>
           {coreVersion
             ? `v${coreVersion}`
             : coreUpdateStatus === "checking"
@@ -1684,7 +1742,7 @@
               : coreUpdateStatus === "unlocated"
                 ? "HQ root is required"
                 : coreUpdateStatus === "failed"
-                  ? "Version probe failed"
+                  ? "Version check failed"
                   : "Version unavailable"}
         </div>
         {#if coreUpdateStatus === "unlocated"}
@@ -1695,31 +1753,31 @@
           <div class="sd">Core update status could not be checked{coreProbeError ? `: ${coreProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
-      <span class="mono" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="val" class:ok={coreUpdateStatus === "up-to-date"}>{coreUpdateStatus === "checking" ? "CHECKING" : coreUpdateStatus === "available" ? "UPDATE AVAILABLE" : coreUpdateStatus === "up-to-date" ? "UP TO DATE" : coreUpdateStatus === "unlocated" ? "ROOT NEEDED" : coreUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
         <div class="sn">HQ CLI</div>
-        <div class="sd mono-path">
+        <div class="sd" class:mono-path={!!cliVersion}>
           {cliVersion
             ? `v${cliVersion}`
             : cliUpdateStatus === "checking"
               ? "Checking installed location…"
               : cliUpdateStatus === "unlocated"
-                ? "CLI path is required"
+                ? "Command line tool not found"
                 : cliUpdateStatus === "failed"
-                  ? "Version probe failed"
+                  ? "Version check failed"
                   : "Version unavailable"}
         </div>
         {#if cliUpdateStatus === "unlocated"}
-          <div class="sd" data-testid="settings-cli-remediation">Add the CLI directory to this HQ root’s .claude/settings.local.json (or settings.json) env.PATH, then refresh. The host uses that Claude settings PATH before broader PATH locations.</div>
+          <div class="sd" data-testid="settings-cli-remediation">HQ could not find the command line tool. Make sure it is installed on this computer, then refresh.</div>
         {:else if cliUpdateStatus === "failed"}
           <div class="sd">CLI version probe failed: {cliProbeError ?? "The check did not finish. Try again."}</div>
         {:else if cliUpdateStatus === "unchecked"}
           <div class="sd">CLI update status could not be checked{cliProbeError ? `: ${cliProbeError}` : ""}. Refresh and verify your connection.</div>
         {/if}
       </div>
-      <span class="mono" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
+      <span class="val" class:ok={cliUpdateStatus === "up-to-date"}>{cliUpdateStatus === "checking" ? "CHECKING" : cliUpdateStatus === "available" ? "UPDATE AVAILABLE" : cliUpdateStatus === "up-to-date" ? "UP TO DATE" : cliUpdateStatus === "unlocated" ? "CLI NEEDED" : cliUpdateStatus === "failed" ? "CHECK FAILED" : "NOT CHECKED"}</span>
     </div>
     <div class="set-row">
       <div>
@@ -1737,23 +1795,17 @@
           <div class="sd" role="alert" data-testid="settings-channel-error">{channelError}</div>
         {/if}
       </div>
-      <select
-        class="chip"
-        data-testid="settings-release-channel"
-        aria-label="Release channel"
-        aria-busy={channelSaving}
+      <Dropdown
+        testid="settings-release-channel"
+        label="Release channel"
         disabled={channelSaving || versionsRefreshing || releaseChannelOptions.length <= 1}
         value={selectedReleaseChannel}
-        onchange={(e) =>
-          void selectReleaseChannel((e.currentTarget as HTMLSelectElement).value)}
-      >
-        {#each releaseChannelOptions as option (option.id)}
-          <option value={option.id}>{option.label}</option>
-        {/each}
-      </select>
+        options={releaseChannelOptions.map((option) => ({ value: option.id, label: option.label }))}
+        onchange={(v) => void selectReleaseChannel(v)}
+      />
     </div>
     <div class="set-row">
-      <div><div class="sn">Update status</div><div class="sd">Refreshes on window focus and native app, Core, or CLI update events.</div></div>
+      <div><div class="sn">Update status</div><div class="sd">Refreshes when you open this window or an update arrives.</div></div>
       <button
         type="button"
         class="chip"
@@ -1819,19 +1871,19 @@
     line-height: 1.45;
   }
 
+  /* Mono only for paths and versions (AUDIT-2-08). */
   .sd.mono-path {
     font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.02em;
+    font-size: 13px;
   }
 
-  .mono {
+  .val {
     margin-left: auto;
     color: var(--ice-ink, #c9d6e4);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
+    font-size: 13px;
   }
 
-  .mono.ok {
+  .val.ok {
     color: var(--ok);
   }
 
@@ -1844,10 +1896,8 @@
     border-radius: 6px;
     background: transparent;
     color: var(--ice-ink, #c9d6e4);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 11px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font: inherit;
+    font-size: 13px;
     cursor: pointer;
   }
 

@@ -57,13 +57,24 @@ export function externalHref(raw: string | null | undefined): string | null {
   }
 }
 
+// The desktop shell registers its host opener here so panes that are not
+// handed `onopenurl` (rendered Markdown previews) still leave the webview
+// through it rather than through window.open.
+let hostOpenUrl: ((url: string) => void) | null = null;
+
+/** Register (or clear with null) the shell's host URL opener. */
+export function setHostOpenUrl(fn: ((url: string) => void) | null): void {
+  hostOpenUrl = fn;
+}
+
 export function openExternalHref(
   raw: string,
   onopenurl?: (url: string) => void,
 ): boolean {
   const href = externalHref(raw);
   if (!href) return false;
-  if (onopenurl) onopenurl(href);
+  const opener = onopenurl ?? hostOpenUrl;
+  if (opener) opener(href);
   else if (typeof window !== "undefined") {
     window.open(href, "_blank", "noopener,noreferrer");
   }

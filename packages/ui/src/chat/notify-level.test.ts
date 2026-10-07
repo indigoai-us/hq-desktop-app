@@ -61,7 +61,20 @@ describe("notify level parsing", () => {
     expect(notifyLevelErrorMessage({ code: "CHANNEL_NOT_JOINED" })).toMatch(/Join this channel/);
     expect(notifyLevelErrorMessage({ code: "INVALID_NOTIFY_LEVEL" })).toMatch(/isn't supported/);
     expect(notifyLevelErrorMessage({ code: "http-404" })).toMatch(/doesn't support/);
-    expect(notifyLevelErrorMessage({ code: "http-500", message: "boom" })).toBe("boom");
+    // Unknown codes show plain copy; the server text goes to the log (AUDIT-3c).
+    expect(notifyLevelErrorMessage({ code: "http-500", message: "boom" })).toBe(
+      "Couldn't update notifications. Try again.",
+    );
+  });
+
+  it("never returns raw transport error text, and logs it", () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const copy = notifyLevelErrorMessage({ code: "invoke", message: RAW });
+    expect(copy).toBe("Couldn't update notifications. Try again.");
+    expect(copy).not.toContain("boom");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -122,7 +135,7 @@ describe("changeNotifyLevel", () => {
       },
     });
     expect(painted).toEqual(["files", null]);
-    expect(outcome).toEqual({ ok: false, error: "offline" });
+    expect(outcome).toEqual({ ok: false, error: "Couldn't update notifications. Try again." });
   });
 
   it("is a no-op when the level does not change", async () => {

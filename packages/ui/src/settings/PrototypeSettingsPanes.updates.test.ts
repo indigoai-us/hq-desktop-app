@@ -12,8 +12,9 @@ import { mount, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
 import PrototypeSettingsPanes from "./PrototypeSettingsPanes.svelte";
+import { chooseDropdown, dropdownOptions, dropdownValue } from "../test-support/dropdown.js";
 import { installMemoryLocalStorage } from "../test-support/memory-local-storage.js";
-import { resetUpdateStore } from "./update-store.svelte";
+import { resetUpdateStore, setBackgroundUpdatesOff } from "./update-store.svelte";
 
 const memoryStorage = installMemoryLocalStorage();
 
@@ -133,32 +134,22 @@ describe("Updates pane: release channel selector", () => {
   it("renders host-permitted channels with the stored one selected", async () => {
     const { adapter } = updatesAdapter();
     mountUpdates(adapter);
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el).toBeTruthy();
-      expect(el!.options.length).toBe(3);
-      return el!;
-    });
-    await vi.waitFor(() => expect(select.value).toBe("beta"));
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
+    expect(await dropdownOptions(host, "settings-release-channel")).toHaveLength(3);
   });
 
   it("persists a selection and immediately re-checks on the new channel", async () => {
     const { adapter, updateSettings } = updatesAdapter();
     mountUpdates(adapter);
     const updates = adapter.updates as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    const select = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLSelectElement>(
-        '[data-testid="settings-release-channel"]',
-      );
-      expect(el?.value).toBe("beta");
-      return el!;
-    });
+    await vi.waitFor(async () =>
+      expect(await dropdownValue(host, "settings-release-channel")).toBe("beta"),
+    );
     const before = updates.checkForUpdates.mock.calls.length;
 
-    select.value = "alpha";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(host, "settings-release-channel", "alpha");
 
     await vi.waitFor(() => {
       expect(updateSettings).toHaveBeenCalledWith({ releaseChannel: "alpha" });
@@ -247,5 +238,33 @@ describe("Updates pane: versions land before the slow core check", () => {
     expect(text).toMatch(
       /staging index build failed: HTTP 502|could not be checked|did not finish|Try again/,
     );
+  });
+});
+
+// QA-061: Settings → Updates showed Automatic updates on while About said
+// automatic updates are off in this build. Both now read one capability.
+describe("Updates pane: automatic updates follow the build capability", () => {
+  function toggle(): HTMLButtonElement | null {
+    return host.querySelector<HTMLButtonElement>('[data-testid="settings-auto-update-toggle"]');
+  }
+
+  it("shows the switch off and disabled in a build without background updates", async () => {
+    setBackgroundUpdatesOff(true);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()).toBeTruthy());
+    expect(toggle()!.getAttribute("aria-checked")).toBe("false");
+    expect(toggle()!.disabled).toBe(true);
+    expect(
+      host.querySelector('[data-testid="settings-auto-update-description"]')?.textContent,
+    ).toContain("not available in this build");
+  });
+
+  it("keeps the saved preference when background updates are available", async () => {
+    setBackgroundUpdatesOff(false);
+    const { adapter } = updatesAdapter();
+    mountUpdates(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+    expect(toggle()!.getAttribute("aria-checked")).toBe("true");
   });
 });

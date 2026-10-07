@@ -1,38 +1,24 @@
 <script lang="ts">
   /**
-   * Library full-screen overlay (US-017).
+   * Marketplace page (OWNER-R33; was the Library overlay, US-017).
    *
-   * Takeover surface for route.kind === 'library': distinct Skills, Workers,
-   * Installed, Marketplace, Submit, and Profile destinations. Marketplace
-   * reuses the shared v1 panel so web and desktop hit the same listings API.
+   * Route kind 'library' renders this page in the shell's normal body, under
+   * the top bar. The left list is Browse, Installed and Submit; Browse is the
+   * default. Skills and Workers live in each company's Brain panes, and the
+   * personal and core ones in the Files tree. Browse reuses the shared v1
+   * panel so web and desktop hit the same listings API.
    */
   import type { PlatformAdapter } from "@hq/platform";
-  import {
-    loadLibraryRoot,
-    type LibraryItem,
-    type LibraryItems,
-  } from "./library.js";
-  import LibraryDetailPanel from "./LibraryDetailPanel.svelte";
-  import {
-    subscribeLibraryRefresh,
-    type LibraryRefreshHost,
-    type UnlistenFn,
-  } from "./library-refresh.js";
   import MarketplacePanel from "../marketplace/MarketplacePanel.svelte";
   import InstalledPacksPanel from "../marketplace/InstalledPacksPanel.svelte";
   import SubmitPanel from "../marketplace/SubmitPanel.svelte";
-  import ProfilePanel from "../marketplace/ProfilePanel.svelte";
   import type { PackagesEvents } from "./packages-events.js";
   import {
     type LibraryTab,
     buildLibraryNavRows,
-    filterSkillCards,
-    filterWorkerCards,
     libraryOverlayCapabilities,
     overlayTabToLibraryTab,
     resolveOverlayTab,
-    toSkillCards,
-    toWorkerCards,
     type LibraryOverlayTab,
   } from "./library-overlay-model.js";
   import PageHeader from "../shell/PageHeader.svelte";
@@ -40,32 +26,21 @@
   import "../chat/chat-tokens.css";
 
   interface Props {
-    /** Platform seam: `library.*`, `marketplace.*`, and (desktop-only)
+    /** Platform seam: `marketplace.*` and (desktop-only)
      *  `packages.listPackages` for the INSTALLED badge. */
     adapter: PlatformAdapter;
-    /** Optional host refresh signals (window focus / sync-complete). */
-    refreshHost?: LibraryRefreshHost | null;
-    /** Routed library tab — mapped onto overlay Skills/Workers/Marketplace. */
+    /** Routed tab. Legacy `skills` / `workers` resolve to Browse. */
     tab?: LibraryTab;
-    /** Restored library detail identity (skill/worker path). */
-    itemId?: string | null;
-    onback?: () => void;
-    /** Parent navigation when left-nav tab changes. */
+    /** Parent navigation when the left-list tab changes. */
     onnavigatetab?: (tab: LibraryTab) => void;
-    /** Parent navigation when a skill/worker detail opens or closes. */
-    onnavigateitem?: (itemId: string | null) => void;
     /** Optional desktop package-operation stream for the Installed panel. */
     packagesEvents?: PackagesEvents | null;
   }
 
   let {
     adapter,
-    refreshHost = null,
-    tab = "skills",
-    itemId = null,
-    onback,
+    tab = "marketplace",
     onnavigatetab,
-    onnavigateitem,
     packagesEvents = null,
   }: Props = $props();
 
@@ -73,150 +48,37 @@
   $effect(() => {
     currentTab = tab;
   });
-  // Local Workers are meaningful only where the adapter can open their local
-  // detail/session seam; the host capability, not its name, owns that contract.
   const hostCapabilities = $derived(libraryOverlayCapabilities(adapter.capabilities));
-  const showWorkers = $derived(hostCapabilities.workers);
   const showMarketplace = $derived(hostCapabilities.marketplace);
   const activeTab = $derived(
-    resolveOverlayTab(currentTab, {
-      workers: showWorkers,
-      marketplace: showMarketplace,
-    }),
+    resolveOverlayTab(currentTab, { marketplace: showMarketplace }),
   );
-
-  let items = $state<LibraryItems>({ workers: [], skills: [] });
-  let libraryLoading = $state(true);
-  let libraryError = $state<string | null>(null);
-  let refreshNonce = $state(0);
-
-  let query = $state("");
-  let selected = $state<LibraryItem | null>(null);
-
-  const navRows = $derived(
-    buildLibraryNavRows(items, {
-      workers: showWorkers,
-      marketplace: showMarketplace,
-    }),
-  );
-  const skillCards = $derived(
-    filterSkillCards(toSkillCards(items.skills), query),
-  );
-  const workerCards = $derived(
-    filterWorkerCards(toWorkerCards(items.workers), query),
-  );
+  const navRows = $derived(buildLibraryNavRows({ marketplace: showMarketplace }));
 
   function selectTab(next: LibraryOverlayTab): void {
     if (next === activeTab) return;
-    query = "";
-    selected = null;
     currentTab = overlayTabToLibraryTab(next);
     onnavigatetab?.(currentTab);
   }
-
-  function selectSkill(path: string): void {
-    if (onnavigateitem) {
-      onnavigateitem(path);
-      return;
-    }
-    const skill = items.skills.find((row) => row.path === path);
-    selected = skill ? { kind: "skill", skill } : null;
-  }
-
-  function selectWorker(path: string): void {
-    if (onnavigateitem) {
-      onnavigateitem(path);
-      return;
-    }
-    const worker = items.workers.find((row) => row.path === path);
-    selected = worker ? { kind: "worker", worker } : null;
-  }
-
-  function closeDetail(): void {
-    if (onnavigateitem) {
-      onnavigateitem(null);
-      return;
-    }
-    selected = null;
-  }
-
-  $effect(() => {
-    if (onnavigateitem == null) return;
-    const id = itemId?.trim() || null;
-    if (!id) {
-      selected = null;
-      return;
-    }
-    const skill = items.skills.find((row) => row.path === id);
-    if (skill) {
-      selected = { kind: "skill", skill };
-      return;
-    }
-    const worker = items.workers.find((row) => row.path === id);
-    selected = worker ? { kind: "worker", worker } : null;
-  });
-
-  async function loadLibrary(): Promise<void> {
-    libraryLoading = true;
-    libraryError = null;
-    const res = await loadLibraryRoot(adapter.library);
-    if (res.ok) {
-      items = res.value;
-    } else {
-      if (res.reason !== "unavailable") {
-        console.error("library-overlay: loadLibraryRoot failed", res.message);
-      }
-      libraryError =
-        res.reason === "unavailable"
-          ? "Skills are not available here yet."
-          : "Could not load skills.";
-      items = { workers: [], skills: [] };
-    }
-    libraryLoading = false;
-  }
-
-  $effect(() => {
-    refreshNonce;
-    void loadLibrary();
-  });
-
-  $effect(() => {
-    const host = refreshHost;
-    if (!host) return;
-    let unlisten: UnlistenFn | undefined;
-    let disposed = false;
-    void subscribeLibraryRefresh(host, () => {
-      refreshNonce += 1;
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  });
 </script>
 
 <section
-  class="library-overlay chat-shell"
-  aria-label="Library"
+  class="marketplace-page chat-shell"
+  aria-label="Marketplace"
   data-testid="library-overlay"
 >
   <PageHeader
-    title="Library"
+    title="Marketplace"
     subtitle={showMarketplace
-      ? "skills available to you, and packs"
-      : "skills available to you"}
+      ? "Packs from creators, and what you have installed"
+      : "Packs from creators"}
     titleTestId="library-overlay-title"
-    backTestId="library-back"
-    onback={() => onback?.()}
   />
 
   <div class="lo-body">
     <nav
       class="lo-nav"
-      aria-label="Library sections"
+      aria-label="Marketplace sections"
       data-testid="library-overlay-nav"
     >
       {#each navRows as row (row.id)}
@@ -229,53 +91,20 @@
           onclick={() => selectTab(row.id)}
         >
           <span class="lo-nav-ic" aria-hidden="true">
-            {#if row.id === "skills"}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M9 1.5V5.5H13"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            {:else if row.id === "workers"}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <circle
-                  cx="8"
-                  cy="5.25"
-                  r="2.25"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                />
-                <path
-                  d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linecap="round"
-                />
-              </svg>
-            {:else}
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M3 5.5 8 2.5 13 5.5v5L8 13.5 3 10.5v-5Z"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M8 2.5v11M3 5.5l5 3 5-3"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            {/if}
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path
+                d="M3 5.5 8 2.5 13 5.5v5L8 13.5 3 10.5v-5Z"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+              <path
+                d="M8 2.5v11M3 5.5l5 3 5-3"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linejoin="round"
+              />
+            </svg>
           </span>
           <span class="lo-nav-label">{row.label}</span>
           {#if row.count != null}
@@ -286,203 +115,32 @@
     </nav>
 
     <div class="lo-main">
-      {#if activeTab !== "marketplace" && activeTab !== "submit" && activeTab !== "profile"}
-        <div class="lo-search-row">
-          <div class="lo-search-wrap">
-            <span class="lo-search-ic" aria-hidden="true">
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.25"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                />
-                <path
-                  d="M10.4 10.4 13.5 13.5"
-                  stroke="currentColor"
-                  stroke-width="1.3"
-                  stroke-linecap="round"
-                />
-              </svg>
-            </span>
-            <input
-              type="search"
-              class="lo-search"
-              data-testid="library-overlay-search"
-              placeholder="Search library — files, skills, workers…"
-              aria-label="Filter library"
-              bind:value={query}
-            />
-          </div>
-        </div>
-      {/if}
-
-      {#if activeTab === "skills"}
-        <div class="lo-panel" data-testid="library-skills-panel">
-          {#if libraryLoading && items.skills.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-overlay-loading"
-              role="status"
-            >
-              Loading skills…
-            </div>
-          {:else if libraryError && items.skills.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-overlay-error"
-              role="alert"
-            >
-              {libraryError}
-            </div>
-          {:else if skillCards.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-skills-empty"
-              role="status"
-            >
-              {query.trim()
-                ? "No skills match that search."
-                : "No skills shared with you yet."}
-            </div>
-          {:else}
-            <div class="lo-cards" data-testid="library-skills-grid">
-              {#each skillCards as card (card.key)}
-                <button
-                  type="button"
-                  class="lo-card"
-                  data-testid="library-skill-card"
-                  aria-label={`Open ${card.name} skill`}
-                  onclick={() => selectSkill(card.path)}
-                >
-                  <span class="lo-card-ic" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                      <path
-                        d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linejoin="round"
-                      />
-                      <path
-                        d="M9 1.5V5.5H13"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
-                  </span>
-                  <div class="lo-card-title">{card.name}</div>
-                  <div class="lo-card-slug">{card.slug}</div>
-                  <span class="lo-card-tag">{card.tag}</span>
-                  {#if card.description}
-                    <p class="lo-card-desc">{card.description}</p>
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {:else if activeTab === "workers"}
-        <div class="lo-panel" data-testid="library-workers-panel">
-          {#if libraryLoading && items.workers.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-overlay-loading"
-              role="status"
-            >
-              Loading workers…
-            </div>
-          {:else if libraryError && items.workers.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-overlay-error"
-              role="alert"
-            >
-              {libraryError}
-            </div>
-          {:else if workerCards.length === 0}
-            <div
-              class="lo-status"
-              data-testid="library-workers-empty"
-              role="status"
-            >
-              {query.trim()
-                ? "No workers match that search."
-                : "No workers in your HQ yet."}
-            </div>
-          {:else}
-            <div class="lo-cards" data-testid="library-workers-grid">
-              {#each workerCards as card (card.key)}
-                <button
-                  type="button"
-                  class="lo-card"
-                  data-testid="library-worker-card"
-                  aria-label={`Open ${card.name} worker`}
-                  onclick={() => selectWorker(card.path)}
-                >
-                  <span class="lo-card-ic" aria-hidden="true">
-                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-                      <circle
-                        cx="8"
-                        cy="5.25"
-                        r="2.25"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                      />
-                      <path
-                        d="M3.5 13c.4-2.3 2.1-3.5 4.5-3.5s4.1 1.2 4.5 3.5"
-                        stroke="currentColor"
-                        stroke-width="1.3"
-                        stroke-linecap="round"
-                      />
-                    </svg>
-                  </span>
-                  <div class="lo-card-title">{card.name}</div>
-                  <div class="lo-card-slug">{card.type}</div>
-                  {#if card.team}
-                    <span class="lo-card-tag">{card.team}</span>
-                  {/if}
-                  {#if card.description}
-                    <p class="lo-card-desc">{card.description}</p>
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {:else if activeTab === "installed"}
+      {#if activeTab === "installed"}
         <div class="lo-panel" data-testid="library-installed-panel">
           <InstalledPacksPanel {adapter} {packagesEvents} />
-        </div>
-      {:else if activeTab === "marketplace"}
-        <div class="lo-panel lo-market" data-testid="library-marketplace-panel">
-          <MarketplacePanel {adapter} />
         </div>
       {:else if activeTab === "submit"}
         <div class="lo-panel lo-market" data-testid="library-submit-panel">
           <SubmitPanel {adapter} />
         </div>
       {:else}
-        <div class="lo-panel lo-market" data-testid="library-profile-panel">
-          <ProfilePanel {adapter} />
+        <div class="lo-panel lo-market" data-testid="library-marketplace-panel">
+          <MarketplacePanel {adapter} />
         </div>
       {/if}
     </div>
   </div>
-
-  <LibraryDetailPanel
-    library={adapter.library}
-    item={selected}
-    onclose={closeDetail}
-  />
 </section>
 
 <style>
-  .library-overlay {
-    position: absolute;
-    inset: 0;
-    z-index: 40;
+  /* OWNER-R33: an in-flow page under the top bar, like Files and Settings.
+     It used to be an absolute z-index:40 layer over the whole shell, which
+     out-stacked the top bar (z-index:30) and buried its Launch and Core
+     menus, the notification panel and the account menu. No z-index here. */
+  .marketplace-page {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -571,52 +229,6 @@
     overflow: auto;
   }
 
-  .lo-search-row {
-    flex: 0 0 auto;
-    padding: 0 0 4px;
-  }
-
-  .lo-search-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    max-width: none;
-    padding: 7px 10px;
-    border: 1px solid transparent;
-    border-radius: 8px;
-    background: var(--btn-bg);
-    transition: border-color 0.12s;
-  }
-  .lo-search-wrap:hover {
-    border-color: var(--line2);
-  }
-  .lo-search-wrap:focus-within {
-    border-color: var(--border-active);
-  }
-
-  .lo-search-ic {
-    display: inline-flex;
-    color: var(--t3);
-  }
-
-  .lo-search {
-    width: 100%;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--t1);
-    font: 400 12px var(--font-ui);
-  }
-  .lo-search::placeholder {
-    color: var(--t3);
-  }
-  .lo-search:focus {
-    outline: none;
-  }
-
   .lo-panel {
     min-width: 0;
   }
@@ -629,158 +241,6 @@
     min-height: 0;
     overflow: auto;
     padding: 0 2px 24px;
-  }
-
-  .lo-status {
-    padding: 16px 0;
-    color: var(--t3);
-    font-size: 13px;
-    line-height: 18px;
-  }
-  .lo-install-error {
-    color: var(--warn-ink);
-  }
-
-  .lo-cards {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    align-content: start;
-  }
-
-  .lo-card {
-    appearance: none;
-    -webkit-appearance: none;
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px;
-    box-sizing: border-box;
-    width: 100%;
-    min-width: 0;
-    min-height: 40px;
-    padding: 10px 14px;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: var(--raised);
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .lo-card:hover {
-    background: var(--btn-bg);
-    border-color: var(--line2);
-  }
-
-  .lo-card:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 1px;
-  }
-
-  .lo-card-ic {
-    display: inline-flex;
-    flex: 0 0 auto;
-    color: var(--t2);
-  }
-
-  .lo-card-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .lo-card-title {
-    min-width: 0;
-    flex: 1 1 auto;
-    color: var(--t1);
-    font-size: 13px;
-    font-weight: 500;
-    line-height: 1.35;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .lo-card-slug {
-    display: none;
-  }
-
-  .lo-card-tag {
-    margin-left: auto;
-    flex: 0 0 auto;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--t3);
-    font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-    font-size: 10px;
-    font-weight: 400;
-    letter-spacing: 0.04em;
-    line-height: 14px;
-    text-transform: uppercase;
-  }
-
-  .lo-card-desc {
-    display: none;
-  }
-
-  .lo-card-meta {
-    color: var(--t3);
-    font-size: 10px;
-    line-height: 14px;
-  }
-
-  .lo-badge {
-    flex: 0 0 auto;
-    padding: 2px 8px;
-    border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--ok) 10%, transparent);
-    color: var(--ok-ink);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    line-height: 14px;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
-  .lo-badge.update {
-    border-color: color-mix(in srgb, var(--warn) 35%, transparent);
-    background: color-mix(in srgb, var(--warn) 10%, transparent);
-    color: var(--warn-ink);
-  }
-
-  .lo-get {
-    flex: 0 0 auto;
-    padding: 3px 10px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    background: var(--btn-bg);
-    color: var(--t1);
-    font: inherit;
-    font-size: 11px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: border-color 0.12s;
-  }
-  .lo-get:hover:not(:disabled) {
-    border-color: var(--line2);
-  }
-  .lo-get:active:not(:disabled) {
-    border-color: var(--border-active);
-  }
-  .lo-get:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .lo-get:focus-visible {
-    outline: 2px solid var(--v4-text-1);
-    outline-offset: 2px;
   }
 
   @media (max-width: 720px) {

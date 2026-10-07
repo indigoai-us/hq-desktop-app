@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { get } from "svelte/store";
 import {
   activeRecordingsFromScheduledBots,
@@ -28,9 +28,11 @@ import {
   rowButtonKind,
   totalSignalCounts,
   urlInviteDestinationLabel,
+  withDetectedRecordingEvents,
   type MeetingEvent,
   type ScheduledBot,
 } from "./meetings-model";
+import { friendlyError as friendlyErrorAudit } from "./meetings-model";
 import {
   activeMeetings,
   upsertActiveMeeting,
@@ -63,6 +65,51 @@ describe("resolveInviteCompanyId", () => {
 });
 
 describe("meetings-model", () => {
+  it("adds a production-shaped desktop recording row and deduplicates its calendar event", () => {
+    const recording: ActiveMeeting = {
+      windowId: "recall-window-42",
+      recordingId: "rec_desktop_42",
+      platform: "Zoom",
+      meetingUrl: "https://zoom.us/j/123456789?pwd=private",
+      summary: "Weekly product sync",
+      detectedAt: "2026-10-05T16:30:00.000Z",
+      state: "recording",
+      companyUid: "cmp_indigo",
+    };
+    const rows = withDetectedRecordingEvents([], [recording]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: "desktop-recording:rec_desktop_42",
+      summary: "Weekly product sync",
+      sourceCompanyUid: "cmp_indigo",
+      recorded: { meetingId: "rec_desktop_42" },
+    });
+
+    const calendar: MeetingEvent = {
+      id: "calendar-42",
+      summary: "Weekly product sync",
+      start: { dateTime: "2026-10-05T16:30:00.000Z" },
+      end: { dateTime: "2026-10-05T17:00:00.000Z" },
+      status: "confirmed",
+      meetingUrl: "https://zoom.us/j/123456789",
+    };
+    expect(withDetectedRecordingEvents([calendar], [recording])).toEqual([calendar]);
+  });
+
+  it("uses a sensible platform fallback and excludes non-recording detections", () => {
+    const detected: ActiveMeeting = {
+      windowId: "recall-window-43",
+      platform: "Zoom",
+      meetingUrl: "",
+      detectedAt: "2026-10-05T16:30:00.000Z",
+      state: "detected",
+      companyUid: null,
+    };
+    expect(withDetectedRecordingEvents([], [detected])).toEqual([]);
+    const recording = { ...detected, state: "recording" as const };
+    expect(withDetectedRecordingEvents([], [recording])[0]?.summary).toBe("Zoom meeting");
+  });
+
   it("prioritizes recording meetings over newer detections", () => {
     const rows: ActiveMeeting[] = [
       {
@@ -948,4 +995,17 @@ it('does not attach a completed recording to a later occurrence sharing its seri
   expect(botForEvent(event, new Map(), [{ ...bot, calendarSeriesId: null }])).toBeUndefined();
   expect(botForEvent(event, new Map(), [{ ...bot, scheduledStartTime: event.start.dateTime }])?.botId).toBe('old');
   expect(botForEvent(event, new Map([[event.id, { ...bot, calendarEventId: event.id }]]))?.botId).toBe('old');
+});
+
+describe("friendlyError raw errors (AUDIT-3c)", () => {
+  it("never returns the server JSON error/message body and logs the raw text", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const a = '[invoke] x failed: {"error":"boom"}';
+    const b = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    expect(friendlyErrorAudit(a, "Couldn't invite the bot.")).toBe("Couldn't invite the bot.");
+    expect(friendlyErrorAudit(b, "Couldn't invite the bot.")).toBe("Server hiccup — try again in a moment.");
+    expect(warn).toHaveBeenCalledWith("[meetings] request failed", a);
+    expect(warn).toHaveBeenCalledWith("[meetings] request failed", b);
+    warn.mockRestore();
+  });
 });

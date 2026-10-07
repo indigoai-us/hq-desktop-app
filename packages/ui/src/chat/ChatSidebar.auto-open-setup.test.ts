@@ -239,7 +239,7 @@ describe("ChatSidebar boot before setup has run on this machine", () => {
 });
 
 describe("ChatSidebar boot when the roster already has a company", () => {
-  it("opens the company's channel once it hydrates instead of racing into #setup", async () => {
+  it("leaves a hydrated company channel out of Home; Activity shows it in that company", async () => {
     const onselect = vi.fn();
     const wakes = createChatWakeBus();
     component = mount(ChatSidebar, {
@@ -252,8 +252,6 @@ describe("ChatSidebar boot when the roster already has a company", () => {
         bootTimeoutMs: 40,
       },
     });
-    // The directory settled empty; the old behaviour opened #setup here
-    // (well inside the extra 40ms wait the roster company earns).
     await new Promise((resolve) => setTimeout(resolve, 15));
     expect(onselect).not.toHaveBeenCalled();
 
@@ -264,11 +262,48 @@ describe("ChatSidebar boot when the roster already has a company", () => {
       companyUid: "cmp_acme",
       membership: "joined",
     });
-    await vi.waitFor(() => {
-      expect(onselect).toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.querySelector('[data-conversation-id="ch:chn_acme"]')).toBeNull();
+    expect(onselect.mock.calls.some((call) => call[0]?.id === "ch:chn_acme")).toBe(false);
+
+    await unmount(component);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: stubApi({
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_acme",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: [
+              {
+                channelId: "chn_acme",
+                name: "acme",
+                scope: "company",
+                companyUid: "cmp_acme",
+                membership: "joined",
+                lastActivityAt: new Date().toISOString(),
+              },
+            ],
+          }),
+        }),
+        companies: [ACME],
+        scopeUid: "cmp_acme",
+        seedDirectory: [
+          {
+            channelId: "chn_acme",
+            name: "acme",
+            scope: "company",
+            companyUid: "cmp_acme",
+            membership: "joined",
+            lastActivityAt: new Date().toISOString(),
+          },
+        ],
+      },
     });
-    expect(onselect.mock.calls[0]?.[0]?.id).toBe("ch:chn_acme");
-    expect(onselect.mock.calls.some((call) => call[0]?.id === SETUP_ROW_ID)).toBe(false);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="company-activity-channels"] [data-conversation-id="ch:chn_acme"]')).toBeTruthy();
+    });
   });
 
   it("still falls back to #setup after the bounded wait when no company rows arrive", async () => {

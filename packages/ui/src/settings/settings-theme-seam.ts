@@ -18,8 +18,9 @@ import {
 import {
   applyColorTheme,
   applyWindowOpacity,
+  currentColorTheme,
   readHostWindowOpacity,
-  readStoredTheme,
+  THEME_STORAGE_KEY,
 } from "./shell-settings-model.js";
 import { readSettingsPrefs, writeSettingsPrefs } from "./settings-prefs.js";
 
@@ -50,7 +51,7 @@ export function createShellAppearanceSeam(
     readHostWindowOpacity(root) ?? readSettingsPrefs(storage).windowOpacity;
 
   const read = (): AppearancePreferences => ({
-    colorTheme: readStoredTheme(),
+    colorTheme: currentColorTheme(root),
     windowTransparency: normalizeWindowTransparency(100 - readOpacity()),
   });
 
@@ -79,4 +80,30 @@ export function createShellAppearanceSeam(
       return () => target.removeEventListener(APPEARANCE_CHANGE_EVENT, onChange);
     },
   };
+}
+
+/**
+ * Boot-time theme restore. Re-applies only a theme the user explicitly saved.
+ * With nothing stored, the existing `data-force-theme` (set by the harness or
+ * an earlier boot step) or the OS appearance is left alone. The old boot path
+ * called `applyColorTheme(readStoredTheme())`, and `readStoredTheme` defaults
+ * to "dark", so light mode was forced back to dark on every launch.
+ */
+export function restoreStoredColorTheme(
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+  storage:
+    | Pick<Storage, "getItem" | "setItem">
+    | null
+    | undefined = globalThis.localStorage,
+): void {
+  let stored: string | null = null;
+  try {
+    stored = storage?.getItem(THEME_STORAGE_KEY) ?? null;
+  } catch (error) {
+    console.warn("[theme] stored theme unreadable; keeping current", error);
+    return;
+  }
+  if (stored === "light" || stored === "dark" || stored === "system") {
+    applyColorTheme(stored, root, storage);
+  }
 }
