@@ -382,6 +382,9 @@ export function normalizeConversationMessages(
       direction: asString(row.direction) || undefined,
       messageKind: asString(row.messageKind) || null,
       systemEvent: row.systemEvent,
+      // Structured blocks (cards, tables): kept as sent, validated where drawn
+      // (richMessageContent.ts). The body stays the plain-text fallback.
+      ...(row.richContent != null ? { richContent: row.richContent } : {}),
       reactions: parseWireReactions(row.reactions),
       mentions: parseWireMentions(row.mentions),
       attachments: parseWireAttachments(row.attachments ?? row.attachment),

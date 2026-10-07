@@ -22,3 +22,4 @@ src-tauri/gen/schemas/windows-schema.json
 # Browser regression output
 test-results/
 playwright-report/
+dist-preview/

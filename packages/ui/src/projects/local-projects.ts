@@ -76,6 +76,7 @@ export interface LocalProjectWire {
   createdAt?: string | null;
   updatedAt?: string | null;
   creatorFallback?: string | null;
+  prdModifiedAt?: string | null;
   storyCount: number;
   storiesComplete: number;
   provenance?: unknown;
@@ -242,6 +243,7 @@ export function toProject(wire: LocalProjectWire): Project {
     storiesComplete: Math.max(0, wire.storiesComplete ?? 0),
     provenance,
     creatorFallback: usesCreatorFallback ? creatorFallback : null,
+    prdModifiedAt: wire.prdModifiedAt ?? null,
   };
 }
 

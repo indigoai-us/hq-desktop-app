@@ -8,6 +8,8 @@ export * from "./setup-tool-offer-telemetry.js";
 export * from "./library-shelf.js";
 // Plan-limit refusal parsing + upgrade-link allowlist (hard-stop-readiness).
 export * from "./plan-limit.js";
+// Plain-language API error copy (QA-080).
+export * from "./api-error.js";
 export {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
@@ -25,6 +27,13 @@ export {
   POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+  RAIL_ATLAS_FLAG,
+  RAIL_DEPLOYMENTS_ACTIONS_FLAG,
+  RAIL_GATE_EVERYONE_DEFAULT,
+  RAIL_OUTPOST_FLAG,
+  RAIL_SHORTCUT_EDITING_FLAG,
+  RAIL_TELEMETRY_FLAG,
+  RAIL_WORKFORCE_LIMITS_FLAG,
 } from "./flags.js";
 export {
   compareHumanRecency,

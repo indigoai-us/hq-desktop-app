@@ -24,6 +24,9 @@
   import { safeUnlisten, type UnlistenFn } from "../library/library-refresh.js";
   import type { PackagesEvents } from "../library/packages-events.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
+  import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     shortSource,
     packIdentity,
@@ -261,6 +264,9 @@
               if (payload.error || !payload.packs) {
                 // A background network/update probe must never erase a valid
                 // local installed-pack snapshot.
+                if (payload.error) {
+                  console.warn("[installed-packs] update probe failed", payload.error);
+                }
                 updateProbeError = payload.error ?? "Update check failed";
                 return;
               }
@@ -453,13 +459,13 @@
           {/if}
         {/if}
       </p>
-      <button
-        type="button"
-        class="refresh"
+      <RailButton
+        icon="refresh"
+        extraClass="refresh"
         data-testid="installed-refresh"
         onclick={refresh}
         disabled={!!busy || refreshing}
-        aria-busy={refreshing}>{refreshing ? "Refreshing…" : "Refresh"}</button
+        aria-busy={refreshing}>{refreshing ? "Refreshing…" : "Refresh"}</RailButton
       >
     </div>
 
@@ -484,6 +490,7 @@
             aria-busy={repairCommandState === "copying"}
             title={HQ_CLI_INSTALL_COMMAND}
           >
+            <RailIcon name={repairCommandState === "copied" ? "check" : "copy"} size={14} />
             {repairCommandState === "copying"
               ? "Copying…"
               : repairCommandState === "copied"
@@ -498,7 +505,6 @@
             <span
               class="pack-action-error"
               role="alert"
-              title={repairCommandError}
             >
               Couldn’t copy to the clipboard.
               <button
@@ -506,7 +512,7 @@
                 onclick={copyRepairCommand}
                 disabled={repairCommandState === "copying"}
                 aria-busy={repairCommandState === "copying"}
-              >
+              ><RailIcon name="refresh" />
                 {repairCommandState === "copying" ? "Retrying…" : "Retry"}
               </button>
             </span>
@@ -520,7 +526,7 @@
     {/if}
 
     {#if updateProbeError}
-      <p class="probe-note" role="status" title={updateProbeError}>
+      <p class="probe-note" role="status">
         Update availability could not be refreshed. Installed packs remain
         available.
       </p>
@@ -546,10 +552,8 @@
     {/if}
 
     {#if loading}
-      <div class="grid-skeleton" aria-busy="true">
-        {#each [0, 1, 2, 3] as cell (cell)}
-          <div class="card-skeleton"></div>
-        {/each}
+      <div aria-busy="true">
+        <ReadLoader testid="installed-packs-loading" onretry={() => void refresh()} />
       </div>
     {:else if hasPackSnapshot}
       <section class="group" data-testid="installed-group">
@@ -601,6 +605,7 @@
                     aria-label={`Copy "Run ${cmd} to get started"`}
                     title={`Run ${cmd} to get started`}
                   >
+                    <RailIcon name={copiedPack === p.name ? "check" : "copy"} size={14} />
                     {copyingPack === p.name
                       ? "Copying…"
                       : copiedPack === p.name
@@ -616,7 +621,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
@@ -655,6 +659,7 @@
                       aria-label={`Copy ${p.name} setup prompt`}
                       title="Copy the pack author's setup prompt"
                     >
+                      <RailIcon name={copiedPrompt === p.name ? "check" : "copy"} size={14} />
                       {copyingPrompt === p.name
                         ? "Copying…"
                         : copiedPrompt === p.name
@@ -676,7 +681,6 @@
                   <p
                     class="pack-action-error"
                     role="alert"
-                    title={failure.message}
                   >
                     <span>Couldn’t copy to the clipboard.</span>
                     <button
@@ -693,8 +697,10 @@
             </div>
             <div class="row-actions">
               {#if p.updateAvailable}
-                <button
-                  class="action primary"
+                <RailButton
+                  icon="refresh"
+                  variant="primary"
+                  size="compact"
                   onclick={() => update(p.name)}
                   disabled={!!busy}
                   aria-busy={isPackBusy("update", p.name)}
@@ -703,10 +709,12 @@
                     : `Update ${p.name}`}
                 >
                   {isPackBusy("update", p.name) ? "Updating…" : "Update"}
-                </button>
+                </RailButton>
               {/if}
-              <button
-                class="action danger"
+              <RailButton
+                icon="trash"
+                variant="secondary"
+                size="compact"
                 onclick={() => (confirmUninstall = p.name)}
                 disabled={!!busy}
                 aria-busy={isPackBusy("uninstall", p.name)}
@@ -715,14 +723,16 @@
                   : `Uninstall ${p.name}`}
               >
                 {isPackBusy("uninstall", p.name) ? "Removing…" : "Uninstall"}
-              </button>
+              </RailButton>
             </div>
           </div>
           {#if confirmUninstall === p.name}
             <div class="confirm" data-testid="installed-confirm">
               Remove <strong>{p.name}</strong> and its host links?
-              <button
-                class="action danger"
+              <RailButton
+                icon="trash"
+                variant="danger"
+                size="compact"
                 onclick={() => uninstall(p.name)}
                 disabled={!!busy}
                 aria-busy={isPackBusy("uninstall", p.name)}
@@ -731,14 +741,16 @@
                   : `Remove ${p.name}`}
               >
                 {isPackBusy("uninstall", p.name) ? "Removing…" : "Remove"}
-              </button>
-              <button
-                class="action ghost"
+              </RailButton>
+              <RailButton
+                icon="x"
+                variant="ghost"
+                size="compact"
                 onclick={() => (confirmUninstall = null)}
                 disabled={!!busy}
               >
                 Cancel
-              </button>
+              </RailButton>
             </div>
           {/if}
         {/each}
@@ -760,8 +772,10 @@
                   </div>{/if}
               </div>
               <div class="row-actions">
-                <button
-                  class="action primary"
+                <RailButton
+                  icon="download"
+                  variant="primary"
+                  size="compact"
                   onclick={() => install(a.source, false)}
                   disabled={!!busy}
                   aria-busy={isPackBusy("install", a.source)}
@@ -770,7 +784,7 @@
                     : `Install ${shortSource(a.source)}`}
                 >
                   {isPackBusy("install", a.source) ? "Installing…" : "Install"}
-                </button>
+                </RailButton>
               </div>
             </div>
           {/each}
@@ -784,8 +798,10 @@
                 <div class="row-sub">Registry package</div>
               </div>
               <div class="row-actions">
-                <button
-                  class="action primary"
+                <RailButton
+                  icon="download"
+                  variant="primary"
+                  size="compact"
                   onclick={() => install(r.slug, true)}
                   disabled={!!busy}
                   aria-busy={isPackBusy("install", r.slug)}
@@ -794,7 +810,7 @@
                     : `Install ${shortSource(r.slug)}`}
                 >
                   {isPackBusy("install", r.slug) ? "Installing…" : "Install"}
-                </button>
+                </RailButton>
               </div>
             </div>
           {/each}
@@ -845,35 +861,9 @@
     font-weight: 600;
   }
 
-  .refresh {
-    height: 32px;
-    padding: 0 var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--text-base);
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease;
-  }
 
-  .refresh:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-active-row);
-  }
 
-  .refresh:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
-  }
 
-  .refresh:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
 
   /* ---- in-flight op + log ----------------------------------------------- */
   .op {
@@ -1033,13 +1023,16 @@
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-micro);
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: 0.04em;
     cursor: pointer;
     transition:
       background 140ms ease,
       border-color 140ms ease,
       color 140ms ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .get-started-copy:hover:not(:disabled) {
@@ -1078,7 +1071,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-weight: 700;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -1129,13 +1122,16 @@
     font: inherit;
     font-family: var(--font-mono);
     font-size: var(--text-micro);
-    font-weight: 600;
+    font-weight: 500;
     letter-spacing: 0.04em;
     cursor: pointer;
     transition:
       background 140ms ease,
       border-color 140ms ease,
       color 140ms ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .setup-prompt-copy:hover:not(:disabled) {
@@ -1209,62 +1205,14 @@
     color: var(--v4-error);
   }
 
-  .action {
-    height: 28px;
-    padding: 0 var(--v4-space-3);
-    border: 1px solid var(--v4-hairline);
-    border-radius: var(--v4-radius-button);
-    background: var(--v4-active-row);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      border-color 140ms ease,
-      filter 140ms ease;
-  }
 
-  .action:hover:not(:disabled) {
-    border-color: var(--v4-control-border);
-    background: var(--v4-control-faint);
-  }
 
-  .action:focus-visible {
-    outline: 2px solid var(--v4-control-border);
-    outline-offset: 2px;
-  }
 
-  .action:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
 
-  .action.primary {
-    border-color: transparent;
-    background: var(--v4-primary-bg);
-    color: var(--v4-primary-fg);
-  }
 
-  .action.primary:hover:not(:disabled) {
-    filter: brightness(0.92);
-    background: var(--v4-primary-bg);
-  }
 
-  .action.danger {
-    border-color: color-mix(in srgb, var(--v4-error) 45%, transparent);
-    color: var(--v4-error);
-    background: transparent;
-  }
 
-  .action.danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--v4-error) 10%, transparent);
-  }
 
-  .action.ghost {
-    background: transparent;
-  }
 
   .confirm {
     display: flex;
@@ -1318,8 +1266,11 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .repair-link:hover:not(:disabled) {
@@ -1377,45 +1328,13 @@
     font-size: var(--text-micro);
   }
 
-  .grid-skeleton {
-    display: flex;
-    flex-direction: column;
-    gap: var(--v4-space-2);
-  }
-
-  .card-skeleton {
-    height: 56px;
-    border: 0;
-    border-bottom: 1px solid var(--v4-hairline);
-    border-radius: 0;
-    background:
-      linear-gradient(var(--v4-control-faint), var(--v4-control-faint)) 0 13px /
-        36% 10px no-repeat,
-      linear-gradient(var(--v4-control-faint), var(--v4-control-faint)) 0 33px /
-        62% 8px no-repeat;
-    animation: installed-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  @keyframes installed-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
   @media (prefers-reduced-motion: reduce) {
-    .refresh,
-    .action,
     .repair-link,
     .get-started-copy,
     .setup-prompt-copy {
       transition: none;
     }
-    .spinner,
-    .card-skeleton {
+    .spinner {
       animation: none;
     }
   }

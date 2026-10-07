@@ -1,0 +1,117 @@
+/**
+ * Doors into surfaces that are not needed to paint the first frame of Home.
+ * Each door is the only import of its heavy body. The shell imports this file
+ * and LazyDoor.svelte; the bodies load as separate chunks on first open.
+ * The module promise is memoized, and `peek()` returns the loaded module so a
+ * second open paints the body in the same frame instead of the skeleton.
+ * Same pattern as atlas-lazy.ts and telemetry-lazy.ts.
+ */
+import type { Component } from "svelte";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyComponent = Component<any>;
+
+export interface Door {
+  load(): Promise<AnyComponent>;
+  peek(): AnyComponent | null;
+  preload(): void;
+}
+
+function door(importer: () => Promise<{ default: AnyComponent }>): Door {
+  let pending: Promise<AnyComponent> | null = null;
+  let loaded: AnyComponent | null = null;
+  const load = () => {
+    pending ??= importer().then(
+      (mod) => (loaded = mod.default),
+      (err) => {
+        pending = null;
+        throw err;
+      },
+    );
+    return pending;
+  };
+  return {
+    load,
+    peek: () => loaded,
+    preload: () => {
+      load().catch((err) => console.warn("[lazy-door] preload failed", err));
+    },
+  };
+}
+
+export const profilePaneDoor = door(
+  () => import("./profile-panes/ProfilePaneHost.svelte"),
+);
+// OWNER-R5/R6: the shared styled dropdown loads with the first filter that
+// shows it, keeping it out of the start-up bundle.
+export const dropdownDoor = door(() => import("../common/Dropdown.svelte"));
+// OWNER-R9: the Team member pane's access section loads when a pane opens.
+// OWNER-R9: the company Team page loads when Team opens.
+export const teamPageDoor = door(() => import("../company/TeamPage.svelte"));
+export const memberAccessDoor = door(() => import("../company/MemberAccessSection.svelte"));
+/** The Files explorer; fetched right after startup so Files opens in one frame. */
+export const vaultExplorerDoor = door(() => import("../files/explorer/VaultExplorer.svelte"));
+/** OWNER-R17: the Access section of the Files and Vault right pane. */
+export const accessSectionDoor = door(() => import("../files/explorer/AccessSection.svelte"));
+/** OWNER-R13: a selected folder's contents on the Vault page. */
+export const vaultFolderViewDoor = door(() => import("../files/explorer/VaultFolderView.svelte"));
+export const notificationsPopoverDoor = door(
+  () => import("../inbox/NotificationsPopover.svelte"),
+);
+export const moreCompaniesDoor = door(
+  () => import("./MoreCompaniesPopover.svelte"),
+);
+/** The New bot flow inside the create modal; preloaded when the modal opens. */
+export const createBotFlowDoor = door(
+  () => import("../chat/create-bot/CreateBotFlow.svelte"),
+);
+export const newMessageSheetDoor = door(
+  () => import("../chat/NewMessageSheet.svelte"),
+);
+export const newChannelSheetDoor = door(
+  () => import("../chat/NewChannelSheet.svelte"),
+);
+export const brainPageDoor = door(
+  () => import("../company/brain/BrainPage.svelte"),
+);
+export const filesConnectDoor = door(
+  () => import("../company/files-connect/FilesConnectPage.svelte"),
+);
+export const newCompanyDoor = door(
+  () => import("./new-company/NewCompanySheet.svelte"),
+);
+export const meetingsSidepaneDoor = door(
+  () => import("../meetings/MeetingsSidepaneHost.svelte"),
+);
+export const meetingCanvasDoor = door(
+  () => import("../meetings/MeetingCanvasHost.svelte"),
+);
+
+/**
+ * Warm every door once the first frame is up, so later clicks skip the
+ * skeleton. Returns a cancel for unmount, so a torn-down shell never starts
+ * chunk loads.
+ */
+export function preloadDoorsWhenIdle(): () => void {
+  const all = [
+    profilePaneDoor,
+    dropdownDoor,
+    teamPageDoor,
+    notificationsPopoverDoor,
+    moreCompaniesDoor,
+    newMessageSheetDoor,
+    newChannelSheetDoor,
+    brainPageDoor,
+    filesConnectDoor,
+    newCompanyDoor,
+    meetingsSidepaneDoor,
+    meetingCanvasDoor,
+  ];
+  const run = () => all.forEach((d) => d.preload());
+  if (typeof requestIdleCallback === "function") {
+    const id = requestIdleCallback(run, { timeout: 3000 });
+    return () => cancelIdleCallback(id);
+  }
+  const id = setTimeout(run, 1500);
+  return () => clearTimeout(id);
+}

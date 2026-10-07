@@ -8,6 +8,7 @@
   import DriftDetail from '../src/components/DriftDetail.svelte';
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
+  import MeetingsShot from './MeetingsShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -22,7 +23,8 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
-  import { TOUR_SEEN_STORAGE_KEY } from '@hq/ui';
+  import { TOUR_SEEN_STORAGE_KEY, pushToast } from '@hq/ui';
+  import { raiseToasts, toastSwitch } from './audit-switches';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
   // and the copy-prompt button (the last inbound message carries an agent
@@ -129,6 +131,10 @@
   //   ?view=shell|signin|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
   //   shell view takes ?persona=empty-inbox|personal-only|multi-company|indigo
+  //   shell view also takes ?state=empty|loading|error (dev-harness/state-flags.ts):
+  //     empty lists, a held skeleton (?loadingMs=N to release), or failed loads
+  //   shell view also takes ?auth=, ?reads=, ?toast=, ?gates=on, ?atlas=populated
+  //     (AUDIT-3 switches, dev-harness/audit-switches.ts)
   //   shell view also takes ?tour=1: a fresh install that has not seen the
   //     first-run guided tour, so the tour starts by itself (clears the
   //     local "seen" key on load)
@@ -203,6 +209,11 @@
     setTimeout(() => void emit('banner:event', payload), 50);
   }
 
+  // ?toast=update|info|error|progress|stack (dev-harness/audit-switches.ts).
+  if (view === 'shell') {
+    setTimeout(() => raiseToasts(toastSwitch(), emit, pushToast), 2500);
+  }
+
   if (view === 'drift') {
     setTimeout(() => void emit('drift:report', driftPreviewReport), 75);
   } else if (view === 'new-files') {
@@ -230,6 +241,8 @@
 {:else if view === 'meetings'}
   <!-- Upcoming Meetings at its native 460x600 size. -->
   <MeetingsWindow />
+{:else if view === 'meetings-shot'}
+  <MeetingsShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />

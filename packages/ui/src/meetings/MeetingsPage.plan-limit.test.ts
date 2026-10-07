@@ -11,6 +11,7 @@ import {
 } from "@hq/platform";
 
 import MeetingsPage from "./MeetingsPage.svelte";
+import ToastStack from "../shell/ToastStack.svelte";
 import {
   configureMeetingsApi,
   meetingsStore,
@@ -24,6 +25,9 @@ const api = {
   listMemberships: () => call("listMemberships") as never,
   listUpcoming: () => call("listUpcoming") as never,
   listScheduledBots: () => call("listScheduledBots") as never,
+  listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
+  getRecorded: () => Promise.resolve({ ok: true, value: { signals: {} } }) as never,
+  readRecordedBody: () => Promise.resolve({ ok: true, value: "" }) as never,
   inviteBot: (payload: unknown) => call("inviteBot", payload) as never,
   cancelBot: (id: string) => call("cancelBot", id) as never,
   joinBotNow: (payload: unknown) => call("joinBotNow", payload) as never,
@@ -86,11 +90,15 @@ beforeEach(() => {
   });
 });
 
+let layer: ReturnType<typeof mount> | null = null;
+
 afterEach(async () => {
   meetingsStore.stopCalendarConnectWatch();
   stopMeetingsStore();
   if (component) await unmount(component);
   component = null;
+  if (layer) await unmount(layer);
+  layer = null;
   host?.remove();
 });
 
@@ -107,6 +115,7 @@ describe("MeetingsPage plan-required action", () => {
       target: host,
       props: { adapter: fakeAdapter(), openExternal, storage: null },
     });
+    layer = mount(ToastStack, { target: host });
     await tick();
 
     const input = host.querySelector<HTMLInputElement>(
@@ -123,13 +132,14 @@ describe("MeetingsPage plan-required action", () => {
     invite!.click();
 
     const upgrade = await vi.waitFor(() => {
-      const button = host.querySelector<HTMLButtonElement>(
+      const button = document.querySelector<HTMLButtonElement>(
         '[data-testid="meetings-plan-upgrade"]',
       );
       expect(button?.textContent).toBe("Upgrade");
       return button!;
     });
-    expect(host.querySelector('[role="status"]')?.textContent).toContain(
+    // OWNER-003: the notice renders on the shared toast layer.
+    expect(document.querySelector('[data-testid="toast-stack"] .ts-toast')?.textContent).toContain(
       "Meetings need HQ Workforce ($500/mo)",
     );
     upgrade.click();

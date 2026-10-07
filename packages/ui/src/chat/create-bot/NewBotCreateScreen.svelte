@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { onMount, tick, untrack } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun, type AdapterPromise, type AgentProvisionOptionsView } from "@hq/platform";
   import {
@@ -25,6 +26,7 @@
     type ProvisionOptionsProblem,
   } from "./create-bot-model.js";
   import NewBotDawn from "./NewBotDawn.svelte";
+  import NewBotStepHead from "./NewBotStepHead.svelte";
 
   type Company = { companyUid: string; label: string };
   export interface NewBotCreated { name: string; companyUid: string; brain: BotRuntime; target: EntryPointTarget; }
@@ -62,6 +64,8 @@
     nameCompany?: boolean;
     /** Open the company channel on its upgrade card. Without it the plan refusal stays an inline message. */
     onupgrade?: ((target: NewBotUpgradeTarget) => void) | null;
+    /** Back from the first step: the "Cloud or Local?" question. Without it the first step has no Back. */
+    onback?: (() => void) | null;
   }
   let {
     companies,
@@ -72,6 +76,7 @@
     oncreate,
     oncomplete,
     onopenlocal = null,
+    onback = null,
     otherWayLabel = "",
     nameCompany = false,
     checking = false,
@@ -306,8 +311,8 @@
   <h1 id="new-bot-takeover-title">Finish a step <em>first.</em></h1>
   <p class="new-bot-waking-status" data-testid="new-bot-upgrade-copy">{upgradeCompany} has a step to finish before it can add a cloud bot. Open the company's channel to see it, then come back to create {name.trim()}.</p>
   {/if}
-  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}>{upgradeIsPlan ? "See upgrade options" : "Open the channel"}</button>
-  <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}>{singleCompany ? "Back" : "Choose another company"}</button>
+  <button type="button" class="new-bot-create-submit" data-testid="new-bot-upgrade-open" onclick={() => { if (upgrade) onupgrade?.(upgrade); }}><RailIcon name="external" />{upgradeIsPlan ? "See upgrade options" : "Open the channel"}</button>
+  <button type="button" class="new-bot-waking-link" data-testid="new-bot-upgrade-back" onclick={leaveUpgrade}><RailIcon name="folder" />{singleCompany ? "Back" : "Choose another company"}</button>
   {#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-upgrade-local" onclick={onopenlocal}>{otherWay}</button>{/if}
 </section>
 {:else}
@@ -315,11 +320,16 @@
   <!-- The head of the card, not window chrome: it sits in the centered card,
        well clear of the title bar, so it is a plain div and its step control
        does not go through the shared page header. -->
-  <div class="new-bot-create-head">
-    <div class="new-bot-progress" aria-label={`Step ${step} of ${finalStep}`}>{#each Array(finalStep) as _, index}<span class:active={index + 1 === step}></span>{/each}</div>
-    {#if step > 1}<button type="button" class="new-bot-back" onclick={() => go((step - 1) as 1 | 2)}>Back</button>{/if}
-    {#if step === 1}<p class="new-bot-takeover-kicker">A new teammate</p><h1 id="new-bot-takeover-title">Enter a <em>name.</em></h1>{:else if step === 2}<p class="new-bot-takeover-kicker">Choose a brain</p><h1 id="new-bot-takeover-title">Pick the <em>brain.</em></h1>{:else}<p class="new-bot-takeover-kicker">Your workspace</p><h1 id="new-bot-takeover-title">Choose a <em>company.</em></h1>{/if}
-  </div>
+  <NewBotStepHead
+    total={finalStep}
+    current={step}
+    onback={step > 1 ? () => go((step - 1) as 1 | 2) : onback}
+    backTestId={step > 1 ? undefined : "new-bot-back-to-choice"}
+    backDisabled={step === 1 && busy}
+    kicker={step === 1 ? "A new teammate" : step === 2 ? "Choose a brain" : "Your workspace"}
+    lead={step === 1 ? "Enter a" : step === 2 ? "Pick the" : "Choose a"}
+    em={step === 1 ? "name." : step === 2 ? "brain." : "company."}
+  />
 
   <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
     {#if step === 1}
@@ -340,9 +350,9 @@
       <!-- Create bot is off because the company's options did not load. Say
            which of the two reasons it is, and offer another try. -->
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>
-      <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}>Try again</button>
+      <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}><RailIcon name="refresh" />Try again</button>
     {/if}
-    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}>Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}>More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
+    {#if step === 1}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-name" onclick={continueName}><RailIcon name="arrow-right" />Continue</button>{#if onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}{:else if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}><RailIcon name="arrow-right" />Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}><RailIcon name="plus" />{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
   </footer>
 </div>
 {/if}

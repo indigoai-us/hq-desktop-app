@@ -85,7 +85,13 @@
   async function apply(result: SetupProviderLoginState, tool: SetupProviderTool, token: number): Promise<void> {
     if (token !== generation) return;
     loginState = result.state;
-    message = result.message ?? "";
+    if (result.state === "error") {
+      // The host's error text is the CLI's own words; log it, say it plainly.
+      if (result.message) console.warn("[setup-connect] sign-in failed", result.message);
+      message = "Could not connect the coding tool. Please try again.";
+    } else {
+      message = result.message ?? "";
+    }
     if (result.state === "connected") {
       stopPolling();
       await onrefresh();
@@ -102,7 +108,8 @@
   async function poll(tool: SetupProviderTool, token: number): Promise<void> {
     try {
       await apply(await api.providerLoginStatus!(tool), tool, token);
-    } catch {
+    } catch (err) {
+      console.warn("[setup-connect] sign-in status failed", err);
       if (token === generation) {
         loginState = "error";
         message = "Could not check sign-in. Please try again.";
@@ -135,7 +142,8 @@
         installing = false;
       }
       await apply(await (force ? api.providerLoginStart(tool, { force: true }) : api.providerLoginStart(tool)), tool, token);
-    } catch {
+    } catch (err) {
+      console.warn("[setup-connect] connect failed", err);
       if (token === generation) {
         loginState = "error";
         message = installing

@@ -25,6 +25,17 @@ export const PERSONA_IDS = [
 
 export type PersonaId = (typeof PERSONA_IDS)[number];
 
+/**
+ * Harness-only personas (BLANK-1). Not part of the release-gate matrix above;
+ * the preview resolves them from `?persona=` so a walk can run as a teammate
+ * who is not the owner, or as an account that has nothing yet.
+ *
+ *   member       non-owner member of one company, not Indigo, gates off
+ *   new-account  signed in, no companies, no local HQ folder, nothing else
+ */
+export const HARNESS_ONLY_PERSONA_IDS = ['member', 'new-account'] as const;
+export type HarnessOnlyPersonaId = (typeof HARNESS_ONLY_PERSONA_IDS)[number];
+
 export type PersonaPaint = 'setup' | 'conversations';
 
 export interface PersonaWhoami {
@@ -57,7 +68,7 @@ export interface PersonaContact {
 }
 
 export interface ShellPersona {
-  id: PersonaId;
+  id: PersonaId | HarnessOnlyPersonaId;
   /** One-line description used in test titles and harness captions. */
   label: string;
   isIndigo: boolean;
@@ -280,6 +291,77 @@ export const PERSONAS: Record<PersonaId, ShellPersona> = {
   },
 };
 
+const JULES: PersonaWhoami = {
+  personUid: 'prs_jules',
+  email: 'jules@acme.test',
+  displayName: 'Jules Member',
+};
+
+export const HARNESS_ONLY_PERSONAS: Record<HarnessOnlyPersonaId, ShellPersona> = {
+  member: {
+    id: 'member',
+    label: 'non-owner member of one company',
+    isIndigo: false,
+    whoami: JULES,
+    accountId: 'acct_jules',
+    workspaces: [
+      workspace({
+        slug: 'personal',
+        displayName: 'Jules Member',
+        kind: 'personal',
+        state: 'personal',
+        cloudUid: 'prs_jules',
+        bucketName: 'hq-vault-personal-jules',
+        role: null,
+        membershipStatus: null,
+      }),
+      workspace({
+        slug: 'acme',
+        displayName: 'Acme',
+        kind: 'company',
+        state: 'synced',
+        cloudUid: 'cmp_acme',
+        bucketName: 'hq-vault-acme',
+        role: 'member',
+      }),
+    ],
+    channels: [
+      {
+        channelId: 'chn_acme_general',
+        id: 'chn_acme_general',
+        name: 'general',
+        scope: 'company',
+        companyUid: 'cmp_acme',
+        companyName: 'Acme',
+        type: 'chat',
+        visibility: 'company',
+        membership: 'joined',
+        unread: 0,
+        memberCount: 3,
+        lastActivityAt: '2026-09-01T15:00:00.000Z',
+      },
+    ],
+    contacts: [],
+    expectedPaint: 'conversations',
+  },
+  'new-account': {
+    id: 'new-account',
+    label: 'brand-new account with nothing yet',
+    isIndigo: false,
+    whoami: { personUid: 'prs_new', email: 'new@fresh.test', displayName: 'New Person' },
+    accountId: 'acct_new',
+    workspaces: [],
+    channels: [],
+    contacts: [],
+    expectedPaint: 'setup',
+  },
+};
+
+/** The new account has no HQ folder on this computer. */
+export function personaHasLocalHq(persona: ShellPersona | null): boolean {
+  return persona?.id !== 'new-account';
+}
+
 export function isPersonaId(value: string | null | undefined): value is PersonaId {
   return PERSONA_IDS.includes(value as PersonaId);
 }
@@ -292,6 +374,9 @@ export function resolveHarnessPersona(search: string | null | undefined): ShellP
   if (!search) return null;
   const raw = search.startsWith('?') ? search.slice(1) : search;
   const id = new URLSearchParams(raw).get('persona');
+  if ((HARNESS_ONLY_PERSONA_IDS as readonly string[]).includes(id ?? '')) {
+    return HARNESS_ONLY_PERSONAS[id as HarnessOnlyPersonaId];
+  }
   if (!isPersonaId(id)) return null;
   return PERSONAS[id];
 }

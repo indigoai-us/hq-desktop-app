@@ -49,6 +49,11 @@ pub struct Contact {
     /// Absent/null on older servers or people without a photo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Company membership role ("owner" | "admin" | "member" | "guest") on the
+    /// company-scoped roster. Profile and Team both read it (QA-048); without
+    /// this field serde dropped it and both pages had no role to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Clear the conversation preview fields on contacts whose last message is
@@ -1682,7 +1687,7 @@ mod esc_query_tests {
 
 #[cfg(test)]
 mod contact_preview_filter_tests {
-    use super::{apply_contact_preview_filter, Contact};
+    use super::{apply_contact_preview_filter, Contact, ContactsResponse};
 
     fn make_contact(audience: Option<&str>) -> Contact {
         Contact {
@@ -1701,6 +1706,7 @@ mod contact_preview_filter_tests {
             last_message_direction: Some("inbound".into()),
             last_message_audience: audience.map(str::to_string),
             avatar_url: None,
+            role: None,
         }
     }
 
@@ -1771,5 +1777,19 @@ mod contact_preview_filter_tests {
         assert!(out.get("forwardedFrom").is_none());
         assert!(out.get("forwardNote").is_none());
         assert!(out.get("omittedAttachments").is_none());
+    }
+
+    #[test]
+    fn contact_keeps_company_role_qa048() {
+        let raw = serde_json::json!({ "contacts": [
+            { "personUid": "prs_me", "email": "me@x.com", "displayName": "Me", "role": "owner" },
+            { "personUid": "prs_b", "email": "b@x.com", "displayName": "B" }
+        ]});
+        let parsed: ContactsResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.contacts[0].role.as_deref(), Some("owner"));
+        assert_eq!(parsed.contacts[1].role, None);
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(out["contacts"][0]["role"], "owner");
+        assert!(out["contacts"][1].get("role").is_none());
     }
 }

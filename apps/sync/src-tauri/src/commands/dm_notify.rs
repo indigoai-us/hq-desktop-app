@@ -3994,6 +3994,7 @@ mod tests {
             forwarded_from: None,
             forward_note: None,
             omitted_attachments: None,
+            rich_content: None,
         };
 
         let payload = thread_reply_wake_payload(

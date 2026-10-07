@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Connect a key-based app from its card, inside the card modal.
    *
@@ -234,7 +235,7 @@
         <p class="card-modal-copy">{name} needs a key to connect.</p>
         {#if blueprint?.generateUrl}
           <div class="card-modal-action-row">
-            <button type="button" class="card-modal-btn is-small" data-testid="integration-connect-get-key" onclick={getKey}>
+            <button type="button" class="card-modal-btn is-small" data-testid="integration-connect-get-key" onclick={getKey}><RailIcon name="key" />
               Get a key
             </button>
             {#if getKeyHost}
@@ -269,22 +270,22 @@
   {/snippet}
   {#snippet footer()}
     {#if done}
-      <button type="button" class="card-modal-btn is-primary" data-testid="integration-connect-finish" onclick={close} {...autofocus}>
+      <button type="button" class="card-modal-btn is-primary" data-testid="integration-connect-finish" onclick={close} {...autofocus}><RailIcon name="check" />
         Done
       </button>
     {:else if elsewhere}
-      <button type="button" class="card-modal-btn is-quiet" data-testid="integration-connect-close" onclick={close}>Close</button>
+      <button type="button" class="card-modal-btn is-quiet" data-testid="integration-connect-close" onclick={close}><RailIcon name="x" />Close</button>
       <button
         type="button"
         class="card-modal-btn is-primary"
         data-testid="integration-connect-elsewhere-action"
         onclick={() => openUrl(companyIntegrationsUrl(companySlug))}
         {...autofocus}
-      >
+      ><RailIcon name="external" />
         Open {CONNECT_ELSEWHERE_LINK}
       </button>
     {:else}
-      <button type="button" class="card-modal-btn is-quiet" data-testid="integration-connect-close" disabled={inFlight} onclick={close}>
+      <button type="button" class="card-modal-btn is-quiet" data-testid="integration-connect-close" disabled={inFlight} onclick={close}><RailIcon name="x" />
         Close
       </button>
       <button
@@ -293,7 +294,7 @@
         data-testid="integration-connect-submit"
         disabled={inFlight || keyEmpty}
         onclick={() => void submit()}
-      >
+      ><RailIcon name="plug" />
         Connect
       </button>
     {/if}

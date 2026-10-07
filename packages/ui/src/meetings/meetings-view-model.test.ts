@@ -21,6 +21,7 @@ function eventAt(id: string, startLocal: Date, durationMin = 30): MeetingEvent {
     id,
     status: "confirmed",
     summary: id,
+    meetingUrl: `https://zoom.us/j/${id}`,
     start: { dateTime: startLocal.toISOString() },
     end: {
       dateTime: new Date(

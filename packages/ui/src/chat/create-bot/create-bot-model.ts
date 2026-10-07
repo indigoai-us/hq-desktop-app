@@ -27,7 +27,6 @@ export type CreateBotStep = "kind" | "home" | "details";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
-export type CloudBotAuthMode = "subscription" | "apiKey";
 export type BotMemory = "synced" | "local";
 /** Who a Local bot acts as (bot-kinds): the owner, or itself inside its companies. */
 export type BotScope = LocalBotKind;
@@ -39,8 +38,6 @@ export interface CreateBotDraft {
   runtime: BotRuntime;
   /** Cloud-only size rung, chosen from the current company quote. */
   size: "basic" | "power" | "dev" | "";
-  /** Cloud-only provider credential mode. */
-  authMode: CloudBotAuthMode;
   companyUid?: string;
   /** Local only: personal (acts as you) or company (acts as itself). */
   scope: BotScope;
@@ -91,10 +88,15 @@ export interface CreateBotContext {
   templates: readonly LocalBotWorkerOption[];
   /** Server-resolved hq-flags value. Claude stays hidden until this is true. */
   claudeProviderEnabled?: boolean;
+  /**
+   * `agents.desktop-agent-creation` is on for a company in this modal. Cloud
+   * bots then default to Claude, with Codex and Grok offered, and Claude needs
+   * no second flag.
+   */
+  directCloudOn?: boolean;
   /** Tenant-specific options from GET /v1/agents/provision-options. */
   cloudProvisionOptions?: AgentProvisionOptionsView | null;
   cloudQuoteStatus?: "loading" | "ready" | "error";
-  cloudApiKeyPresent?: boolean;
   /**
    * Plain-language name for the host machine ("Mac", "PC", or "computer")
    * from `hostComputerNoun`. Absent means "not ready"; the copy stays neutral.
@@ -111,8 +113,8 @@ export function botScopeCopy(opts: { noun?: string } = {}): Record<BotScope, { t
   const noun = opts.noun?.trim() || "computer";
   return {
     personal: {
-      title: "Personal - acts as you",
-      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it - make it a company bot to share it.`,
+      title: "Personal · acts as you",
+      sub: `Works under your account, with everything you can reach. Stays on this ${noun}. It has no company identity, so teammates can’t find it. Make it a company bot to share it.`,
     },
     company: {
       title: "For a company",
@@ -142,16 +144,39 @@ export const BOT_NAME_SUGGESTIONS: readonly string[] = [
   "orbit",
 ];
 
-export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">): CreateBotDraft {
+export function initialDraft(
+  ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady"> &
+    Partial<Pick<CreateBotContext, "ownerCompanies" | "claudeProviderEnabled" | "directCloudOn">>,
+  preferredCompanyUid: string | null = null,
+  preferredCompanySlug: string | null = null,
+  /**
+   * Where the person said the bot should run, on the New bot choice screen.
+   * Honoured only when that home can be used; otherwise the usual default.
+   */
+  preferredHome: "local" | "cloud" | null = null,
+): CreateBotDraft {
+  // Opened from a company's page: start on that company, not the first one.
+  const preferred = preferredCompanyUid
+    ? ctx.companies.find((c) => c.companyUid === preferredCompanyUid)
+    : undefined;
+  // QA-043: a Local bot opened from a company starts as that company's bot.
+  const ownerSlug = preferredCompanySlug?.trim()
+    ? (ctx.ownerCompanies ?? []).find((c) => c.slug === preferredCompanySlug.trim())?.slug
+    : undefined;
+  const local =
+    preferredHome === "cloud" && ctx.canCloud
+      ? false
+      : preferredHome === "local" && ctx.canLocal
+        ? true
+        : ctx.canLocal;
   return {
     kind: "blank",
-    home: ctx.canLocal ? "local" : "cloud",
-    runtime: ctx.canLocal ? firstReadyRuntime(ctx.runtimeReady) : "codex",
+    home: local ? "local" : "cloud",
+    runtime: local ? firstReadyRuntime(ctx.runtimeReady) : defaultCloudRuntime(ctx),
     size: "",
-    authMode: "subscription",
-    companyUid: ctx.companies[0]?.companyUid,
-    scope: "personal",
-    companySlugs: [],
+    companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
+    scope: ownerSlug ? "company" : "personal",
+    companySlugs: ownerSlug ? [ownerSlug] : [],
     name: suggestBotName(ctx.existingNames),
     title: "",
     handle: "",
@@ -160,6 +185,20 @@ export function initialDraft(ctx: Pick<CreateBotContext, "canLocal" | "canCloud"
     model: "",
     memory: "synced",
   };
+}
+
+/** Claude can run a Cloud bot: the direct-create flag is on, or the Claude provider flag is. */
+export function claudeAllowedForCloud(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): boolean {
+  return ctx.directCloudOn === true || ctx.claudeProviderEnabled === true;
+}
+
+/** The brain a new Cloud bot starts on: Claude when allowed, otherwise Codex. */
+export function defaultCloudRuntime(
+  ctx: Partial<Pick<CreateBotContext, "claudeProviderEnabled" | "directCloudOn">>,
+): "claude" | "codex" {
+  return claudeAllowedForCloud(ctx) ? "claude" : "codex";
 }
 
 /** The first signed-in runtime in picker order; claude when nothing is known. */
@@ -346,14 +385,47 @@ export function firstSentence(text: string | null | undefined): string {
   return (m?.[1] ?? t).slice(0, 160);
 }
 
+/** `{product}`-style scaffold placeholders a worker.yaml never filled in. */
+const PLACEHOLDER = /\{[A-Za-z_][\w-]*\}/g;
+
+function cleanText(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * The company slug a template belongs to. `hq bot workers` passes through
+ * whatever worker.yaml says, which can be a stringified object
+ * ("[object Object]") or an unfilled "{product}"; the worker's folder
+ * (`companies/<slug>/workers/...`) is the reliable answer then.
+ */
+export function templateCompany(option: LocalBotWorkerOption): string | null {
+  const declared = cleanText(option.company);
+  if (declared && !declared.includes("[object") && !declared.includes("{")) return declared;
+  const fromPath = /^companies\/([^/]+)\//.exec(cleanText(option.path))?.[1] ?? null;
+  return fromPath && !fromPath.includes("{") ? fromPath : null;
+}
+
+/** Fill `{product}` placeholders with the company name, or drop them. */
+function fillPlaceholders(text: string, company: string | null): string {
+  if (!text.includes("{")) return text;
+  const label = company ? companyLabelFor(company) : "";
+  return text
+    .replace(PLACEHOLDER, label)
+    .replace(/\s*-\s*$/, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function templateSummary(option: LocalBotWorkerOption): string {
-  return (option.summary ?? "").trim() || firstSentence(option.description);
+  const text = cleanText(option.summary) || firstSentence(cleanText(option.description));
+  return fillPlaceholders(text, templateCompany(option));
 }
 
 export function templateName(option: LocalBotWorkerOption): string {
-  const explicit = (option.name ?? "").trim();
+  const explicit = fillPlaceholders(cleanText(option.name), templateCompany(option));
   if (explicit) return explicit;
   return option.id
+    .replace(PLACEHOLDER, "")
     .split(/[-_]/)
     .filter(Boolean)
     .map((w) => w[0]!.toUpperCase() + w.slice(1))
@@ -361,7 +433,7 @@ export function templateName(option: LocalBotWorkerOption): string {
 }
 
 export function templateCard(option: LocalBotWorkerOption): TemplateCard {
-  const company = (option.company ?? "").trim() || null;
+  const company = templateCompany(option);
   return {
     id: option.id,
     name: templateName(option),
@@ -449,28 +521,71 @@ export function templateBringsLine(card: TemplateCard | null): string {
 // ── steps ──────────────────────────────────────────────────────────────────
 
 /**
- * The steps this draft walks. Both homes walk all three: a cloud bot's name
- * and @handle are chosen here, in front of the person, because the company
- * channel's card that used to ask for them is no longer shown.
+ * The steps this draft walks, one question per screen. A local bot is named
+ * first, then starts blank or from a template, then picks its coding tool. A
+ * cloud bot picks its company first when there is a choice (the price is that
+ * company's), then is named and sized on one screen.
  */
-export function stepsFor(_draft: Pick<CreateBotDraft, "home">): CreateBotStep[] {
-  return ["kind", "home", "details"];
+export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
+  if (draft.home === "local") return LOCAL_STEPS;
+  return opts.pickCompany ? ["home", "details"] : ["details"];
 }
 
-export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">): CreateBotStep | null {
-  const steps = stepsFor(draft);
+/**
+ * `pickCompany`: a cloud bot gets a "Pick the company" step. Off when there is
+ * one company and it is already selected.
+ */
+export interface StepOptions {
+  pickCompany?: boolean;
+}
+
+/** Local steps, in the order the cloud flow asks: name first. */
+export const LOCAL_STEPS: CreateBotStep[] = ["details", "kind", "home"];
+
+export interface StepTitle {
+  kicker: string;
+  lead: string;
+  em: string;
+  tail?: string;
+  copy: string;
+}
+
+/**
+ * Each step's heading: a plain lead and the word that matters set apart
+ * ("Enter a <name.>"). The copy names "this computer"; the flow swaps in
+ * the host's own noun.
+ */
+export const LOCAL_STEP_TITLES: Record<CreateBotStep, StepTitle> = {
+  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "This is how your new teammate will appear in HQ." },
+  kind: { kicker: "Where it starts", lead: "Start", em: "blank", tail: "or from a template.", copy: "A blank bot is a general helper. A template starts from a worker your company already has." },
+  home: { kicker: "How it thinks", lead: "Pick the", em: "coding tool.", copy: "Your bot thinks with a coding tool signed in on this computer." },
+};
+
+export const CLOUD_STEP_TITLES: Record<"home" | "details", StepTitle> = {
+  home: { kicker: "Where it lives", lead: "Pick the", em: "company.", copy: "The bot runs in that company's cloud and is billed to its plan." },
+  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "It runs in your company's cloud and stays on when this computer is asleep." },
+};
+
+/** Headings for the step on screen. */
+export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"]): StepTitle {
+  if (home === "cloud" && step !== "kind") return CLOUD_STEP_TITLES[step];
+  return LOCAL_STEP_TITLES[step];
+}
+
+export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
+  const steps = stepsFor(draft, opts);
   const at = steps.indexOf(step);
   return at >= 0 ? (steps[at + 1] ?? null) : null;
 }
 
-export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">): CreateBotStep | null {
-  const steps = stepsFor(draft);
+export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
+  const steps = stepsFor(draft, opts);
   const at = steps.indexOf(step);
   return at > 0 ? (steps[at - 1] ?? null) : null;
 }
 
 /** Why this step cannot advance yet; null when it can. */
-export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext): string | null {
+export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): string | null {
   switch (step) {
     case "kind":
       if (draft.kind === "template" && !draft.templateId) return "Pick a template.";
@@ -502,7 +617,7 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         const fieldsIssue =
           cloudNameIssue(draft.name) ?? handleIssue(draft) ?? titleIssue(draft.title);
         if (fieldsIssue) return fieldsIssue;
-        if (draft.runtime === "claude" && ctx.claudeProviderEnabled !== true) {
+        if (draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
           return "Claude isn’t available for this account.";
         }
         if (ctx.cloudQuoteStatus !== "ready" || !ctx.cloudProvisionOptions) {
@@ -515,9 +630,6 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         );
         if (!quotedSize?.selectable || quotedSize.netMonthlyCents === null) {
           return "Choose an available size.";
-        }
-        if (draft.authMode === "apiKey" && !ctx.cloudApiKeyPresent) {
-          return "Enter an API key to continue.";
         }
         return null;
       }
@@ -544,19 +656,19 @@ export function scopeIssue(
   return null;
 }
 
-export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext): boolean {
-  if (nextStep(step, draft) === null) return false;
-  return stepIssue(step, draft, ctx) === null;
+export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
+  if (nextStep(step, draft, opts) === null) return false;
+  return stepIssue(step, draft, ctx, opts) === null;
 }
 
 /** Every step the draft walks is valid → Cmd-Enter may create from anywhere. */
-export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext): boolean {
-  return stepsFor(draft).every((step) => stepIssue(step, draft, ctx) === null);
+export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
+  return stepsFor(draft, opts).every((step) => stepIssue(step, draft, ctx, opts) === null);
 }
 
 /** The first step that still needs the user; null when the draft is complete. */
-export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext): CreateBotStep | null {
-  return stepsFor(draft).find((step) => stepIssue(step, draft, ctx) !== null) ?? null;
+export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): CreateBotStep | null {
+  return stepsFor(draft, opts).find((step) => stepIssue(step, draft, ctx, opts) !== null) ?? null;
 }
 
 /**
@@ -616,11 +728,6 @@ export function thinksWithLine(draft: CreateBotDraft, ctx: Pick<CreateBotContext
   return model ? `thinks with ${runtime} · ${model}` : `thinks with ${runtime}`;
 }
 
-export const STEP_TITLES: Record<CreateBotStep, string> = {
-  kind: "What kind of bot?",
-  home: "Where does it run?",
-  details: "Details",
-};
 
 // ── Why the New Bot flow cannot price a company ────────────────────────────
 

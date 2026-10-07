@@ -12,6 +12,7 @@ import {
   BOT_SYNC_STALE_TITLE,
   BOT_SYNC_TITLE,
   advanceBotSync,
+  botSyncHeaderLine,
   botSyncHideDeadline,
   botSyncNeedsClock,
   botSyncView,
@@ -309,6 +310,79 @@ describe("botSyncView", () => {
     expect(botSyncHideDeadline({ ...done, state: "failed" }, NOW)).toBeNull();
     expect(botSyncHideDeadline(syncing(), NOW)).toBeNull();
     expect(botSyncHideDeadline(null, NOW)).toBeNull();
+  });
+});
+
+describe("botSyncHeaderLine: the one line in the conversation header", () => {
+  const headerLine = (facts: BotSyncFacts | null, now = NOW) => botSyncHeaderLine(botSyncView(facts, { now }));
+
+  it("is nothing when there is nothing to show", () => {
+    expect(headerLine(null)).toBeNull();
+    // A sync that was already finished when the app first looked.
+    expect(headerLine({ state: "done", startedAt: null, endedAt: null, filesDone: 5, filesTotal: 5 })).toBeNull();
+    // "Up to date" after it has been shown long enough.
+    const done: BotSyncFacts = { state: "done", startedAt: null, endedAt: NOW, filesDone: 412, filesTotal: 412 };
+    expect(headerLine(done, NOW + BOT_SYNC_DONE_VISIBLE_MS)).toBeNull();
+  });
+
+  it("the live run: the title, then the files so far after a comma, and no percent", () => {
+    // Owner, 2026-10-04: "Syncing your company's files, 10 files so far".
+    expect(headerLine(syncing({ filesDone: 10, filesTotal: 10, phase: "pull" }))).toEqual({
+      text: "Syncing your company's files, 10 files so far",
+      full: "Syncing your company's files. Preparing. 10 files so far",
+    });
+  });
+
+  it("shows the percent when the model has a real one, and keeps the phase and the counts for the title", () => {
+    expect(headerLine(syncing({ filesDone: 128, filesTotal: 412, phase: "pull" }))).toEqual({
+      text: "Syncing your company's files, 31%",
+      full: "Syncing your company's files. Pulling files down. 128 of 412 files (31%)",
+    });
+    expect(headerLine(syncing({ filesDone: 10, filesTotal: 68_322, phase: "pull" }))).toEqual({
+      text: "Syncing your company's files, <1%",
+      full: "Syncing your company's files. Pulling files down. 10 of 68,322 files (<1%)",
+    });
+    // A sync that is not about the company's files.
+    expect(headerLine(syncing({ scope: "other", filesDone: 1, filesTotal: 4, phase: "push" }))).toEqual({
+      text: "Syncing files, 25%",
+      full: "Syncing files. Pushing files up. 1 of 4 files (25%)",
+    });
+  });
+
+  it("is the title alone before any counts, with no number", () => {
+    expect(headerLine(syncing())).toEqual({ text: "Syncing your company's files", full: "Syncing your company's files. Preparing." });
+    expect(headerLine(syncing({ filesDone: 0, filesTotal: 0 }))).toEqual({
+      text: "Syncing your company's files",
+      full: "Syncing your company's files. Preparing.",
+    });
+  });
+
+  it("says the outcomes as they are: stale, up to date, failed, each with no number of its own in the line", () => {
+    expect(headerLine({ ...stale, filesDone: 412, filesTotal: 412 })).toEqual({ text: "Still syncing.", full: "Still syncing." });
+    const done: BotSyncFacts = { state: "done", startedAt: null, endedAt: NOW, filesDone: 412, filesTotal: 412 };
+    expect(headerLine(done, NOW + 1_000)).toEqual({ text: "Files are up to date.", full: "Files are up to date. 412 files synced." });
+    expect(headerLine({ state: "failed", startedAt: null, endedAt: NOW, filesDone: 3, filesTotal: 412 })).toEqual({
+      text: "Sync hit a problem.",
+      full: "Sync hit a problem.",
+    });
+  });
+
+  it("is one line with no long dash and no line break, and never names the bot", () => {
+    for (const facts of [
+      syncing(),
+      syncing({ filesDone: 1, filesTotal: 2, phase: "pull" }),
+      syncing({ filesDone: 2, filesTotal: 2, phase: "pull" }),
+      stale,
+      { state: "done", startedAt: null, endedAt: NOW, filesDone: 1, filesTotal: 1 } as BotSyncFacts,
+      { state: "failed", startedAt: null, endedAt: NOW, filesDone: null, filesTotal: null } as BotSyncFacts,
+    ]) {
+      const line = botSyncHeaderLine(botSyncView(facts, { botName: "Crassly", now: NOW }))!;
+      for (const words of [line.text, line.full]) {
+        expect(words).not.toMatch(/[\u2013\u2014\n]/);
+        expect(words).not.toContain("Crassly");
+        expect(words).not.toMatch(/\.\./);
+      }
+    }
   });
 });
 

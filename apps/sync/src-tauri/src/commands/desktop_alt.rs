@@ -49,7 +49,7 @@ pub use hq_desktop_core::desktop_alt::{
     live_cloud_uid_from_broken_reason, nested_number_field, nested_string_field,
     normalize_deployment_host, normalize_deployment_state, normalize_slug, number_field,
     parse_activity_response, parse_board_response, parse_company_activity, parse_company_board,
-    parse_crm_projection_response, parse_deployment_entries, parse_deployments_response,
+    parse_crm_projection_response, parse_deploy_apps_response, parse_deployment_entries, parse_deployments_response,
     parse_project_creators, parse_project_creators_response, parse_secret_envs,
     parse_secrets_response, prefix_company_resolution_error, read_file_bytes_capped,
     read_file_content, read_file_content_capped, resolve_company_uid_from_workspaces,
@@ -72,7 +72,7 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 
 pub const WINDOW_LABEL: &str = "desktop-alt";
-const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
+pub(crate) const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
 
 /// Desktop session scope — mirrors CLI session `company_slug` binding for read gates.
 pub struct DesktopSessionScope {
@@ -86,7 +86,7 @@ impl DesktopSessionScope {
         }
     }
 
-    fn active_company_slug(&self) -> Option<String> {
+    pub(crate) fn active_company_slug(&self) -> Option<String> {
         self.active_company.lock().ok()?.clone()
     }
 }
@@ -589,6 +589,111 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     );
 
     parse_deployments_response(status, &text, &slug)
+}
+
+/// Every hq-deploy app in one scope, rows passed through for the personal
+/// Deployments page. `scope` is a company slug or `personal`. `callerSub` lets
+/// the page mark the caller's own deploys. Tokens never reach the log.
+#[tauri::command]
+pub async fn list_deploy_apps(scope: String) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let url = deployments_url(HQ_DEPLOY_API_BASE);
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let caller_sub = tokens
+        .id_token
+        .as_deref()
+        .and_then(|t| cognito::decode_id_token_claims(t).ok())
+        .and_then(|c| c.sub);
+
+    let mut req = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy apps fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy apps read: {e}"))?;
+    let apps = parse_deploy_apps_response(status, &text)?;
+    eprintln!(
+        "[desktop-alt] deploy apps scope={scope} -> HTTP {status} ({} apps)",
+        apps.len()
+    );
+    Ok(serde_json::json!({ "scope": scope, "callerSub": caller_sub, "apps": apps }))
+}
+
+/// One hq-deploy access call for the Deployments Access form: read or change
+/// an app's access policy, mode, or email allowlist. `path` is validated by
+/// `deploy_access_url` so only access routes are reachable. The ID token rides
+/// in `x-hq-pro-authorization` because company/selected policies are checked
+/// against hq-pro membership. Bodies (which may carry a new password) and
+/// tokens never reach the log.
+#[tauri::command]
+pub async fn deploy_access_request(
+    scope: String,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let scope = normalize_slug(&scope)?;
+    let method = method.to_ascii_uppercase();
+    let url = hq_desktop_core::desktop_alt::deploy_access_url(HQ_DEPLOY_API_BASE, &method, &path)?;
+    let tokens = cognito::get_valid_tokens()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let verb = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "deploy access: invalid method".to_string())?;
+    let mut req = build_client()
+        .request(verb, &url)
+        .header("authorization", format!("Bearer {}", tokens.access_token));
+    if let Some(id_token) = tokens.id_token.as_deref() {
+        req = req.header("x-hq-pro-authorization", format!("Bearer {id_token}"));
+    }
+    req = if scope == "personal" {
+        req.header("x-hq-deploy-scope", "personal")
+    } else {
+        req.header("x-org-slug", &scope)
+    };
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("deploy access fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deploy access read: {e}"))?;
+    eprintln!("[desktop-alt] deploy access {method} {path} -> HTTP {status}");
+    if !status.is_success() {
+        let detail = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                v.get("message")
+                    .or_else(|| v.get("error"))
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        return Err(format!("deploy access HTTP {}: {detail}", status.as_u16()));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(text).map_err(|e| format!("deploy access parse: {e}"))
 }
 
 #[tauri::command]
@@ -1715,6 +1820,7 @@ mod window_router_tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 

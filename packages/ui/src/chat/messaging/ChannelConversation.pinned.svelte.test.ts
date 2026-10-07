@@ -1,12 +1,19 @@
 // @vitest-environment happy-dom
 
 /**
- * What sits outside the scroll flow: the host's strip across the top (a
- * bot's file sync), and under the thread the message box. Neither scrolls
- * with the messages. A bot's suggested replies are not pinned: they are part
- * of the bot's newest message, in the thread. When the strip or the pinned
- * area grows or shrinks the scroller changes height: a reader at the newest
- * message stays there, and a reader who scrolled up is not moved.
+ * What sits outside the scroll flow: under the thread, the message box. It
+ * does not scroll with the messages. A bot's suggested replies are not
+ * pinned: they are part of the bot's newest message, in the thread. When the
+ * pinned area grows or shrinks the scroller changes height: a reader at the
+ * newest message stays there, and a reader who scrolled up is not moved.
+ *
+ * Rewritten 2026-10-04: the conversation used to take a host strip across
+ * its top (a bot's file sync, with a progress bar), and these tests pinned
+ * where that strip sat. The strip is gone: the sync status is one line in
+ * the host's header (BotSyncStatus.svelte, and its place is pinned in
+ * shell/DesktopApp.cloud-bot-sync.test.ts). What stays true here is the
+ * order of the pane and that the scroller holds its place when it changes
+ * height.
  *
  * happy-dom does no layout, so the scroller's box is stubbed, and a stand-in
  * ResizeObserver lets the test say "the scroller changed height".
@@ -63,7 +70,6 @@ function messages(count: number): ConversationMessageWire[] {
   })) as ConversationMessageWire[];
 }
 
-const probe = createRawSnippet(() => ({ render: () => '<div data-testid="strip-probe">Syncing</div>' }));
 const thinking = createRawSnippet(() => ({ render: () => '<div data-testid="thinking-probe">Nova is thinking</div>' }));
 const intro = createRawSnippet(() => ({ render: () => '<div data-testid="header-probe">About Nova</div>' }));
 
@@ -98,19 +104,12 @@ function resized(): void {
   for (const callback of [...resizeCallbacks]) callback();
 }
 
-describe("ChannelConversation strip and pinned area", () => {
-  it("draws the host's strip above the thread, then the thread with the bot's suggested replies in it, then the message box", async () => {
-    await mountConversation({ aboveMessages: probe, belowMessages: thinking, header: intro, suggestionsFrom: "agt_nova" });
-    const strip = host.querySelector<HTMLElement>('[data-testid="strip-probe"]')!;
-    expect(strip).not.toBeNull();
-    // Not in the scroller: it stays in view while the person scrolls.
-    expect(thread().contains(strip)).toBe(false);
-    expect(strip.closest('[data-testid="conversation-strip"]')).not.toBeNull();
-    // Above the scroller and everything in it, including the thread's own intro.
-    expect(before(strip, thread())).toBe(true);
+describe("ChannelConversation pinned area", () => {
+  it("draws the thread with the bot's suggested replies in it, then the message box, and nothing above the thread", async () => {
+    await mountConversation({ belowMessages: thinking, header: intro, suggestionsFrom: "agt_nova" });
+    // The thread's own intro is in the scroller.
     const headerProbe = host.querySelector<HTMLElement>('[data-testid="header-probe"]')!;
     expect(thread().contains(headerProbe)).toBe(true);
-    expect(before(strip, headerProbe)).toBe(true);
     // The status row (a bot thinking) is still the last row of the thread itself.
     const lastRow = host.querySelector<HTMLElement>('[data-testid="thinking-probe"]')!;
     expect(thread().contains(lastRow)).toBe(true);
@@ -123,37 +122,33 @@ describe("ChannelConversation strip and pinned area", () => {
     expect(before(chips, lastRow)).toBe(true);
     expect(before(thread(), box)).toBe(true);
     expect(host.querySelectorAll('[data-testid="suggested-replies"]')).toHaveLength(1);
-    // The strip is the first thing in the pane, before the scroller's column.
+    // Nothing of the host's sits across the top of the pane: the scroller's
+    // column is the first thing in it.
     const pane = host.querySelector<HTMLElement>('[data-testid="conversation-view"]')!;
-    const stripSlot = host.querySelector<HTMLElement>('[data-testid="conversation-strip"]')!;
-    expect(stripSlot.parentElement).toBe(pane);
-    expect(before(stripSlot, pane.querySelector(".conversation-body")!)).toBe(true);
+    expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
+    expect(pane.querySelector(".conversation-body")!.previousElementSibling).toBeNull();
   });
 
-  it("has no strip when the host gives none, or in a header-only pane", async () => {
-    await mountConversation({});
-    expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
-    await unmount(component!);
-    component = null;
-    host.remove();
-    await mountConversation({ aboveMessages: probe, headerOnly: true });
+  it("takes no strip from the host: a snippet handed in the old way draws nowhere", async () => {
+    const probe = createRawSnippet(() => ({ render: () => '<div data-testid="strip-probe">Syncing</div>' }));
+    await mountConversation({ aboveMessages: probe });
     expect(host.querySelector('[data-testid="strip-probe"]')).toBeNull();
     expect(host.querySelector('[data-testid="conversation-strip"]')).toBeNull();
   });
 
-  it("keeps a reader at the newest message there when the strip takes room", async () => {
-    await mountConversation({ aboveMessages: probe });
+  it("keeps a reader at the newest message there when the scroller changes height", async () => {
+    await mountConversation({});
     const box = { viewport: 600 };
     const el = stubLayout(box);
     await scrollTo(el, 2400);
     resized();
-    // The sync strip appears: the scroller loses 32px. Without a pin the
-    // newest message would sit 32px under the fold.
+    // The message box grows by a line: the scroller loses 32px. Without a
+    // pin the newest message would sit 32px under the fold.
     box.viewport = 568;
     el.scrollTop = 2400;
     resized();
     expect(el.scrollTop).toBe(3000);
-    // The strip goes: the scroller is tall again and still at the bottom.
+    // It shrinks again: the scroller is tall again and still at the bottom.
     box.viewport = 600;
     el.scrollTop = 2400;
     resized();
@@ -161,7 +156,7 @@ describe("ChannelConversation strip and pinned area", () => {
   });
 
   it("leaves a reader who scrolled up where they are", async () => {
-    await mountConversation({ aboveMessages: probe });
+    await mountConversation({});
     const box = { viewport: 600 };
     const el = stubLayout(box);
     await scrollTo(el, 2400);

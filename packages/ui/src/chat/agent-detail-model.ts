@@ -242,13 +242,6 @@ export function formatJobCadence(
   return expression || "Scheduled";
 }
 
-export function formatTokenCount(n: number): string {
-  if (!Number.isFinite(n) || n === 0) return "0";
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
-  if (abs >= 1_000) return `${(n / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(n));
-}
 
 function tokenTotal(row: Record<string, unknown>): number {
   const keys = [
@@ -320,7 +313,11 @@ export function unavailableMessage(
   if (result.reason === "unavailable") {
     return "Not available yet.";
   }
-  return result.message?.trim() || "Not available yet.";
+  if (result.message?.trim()) {
+    console.warn(`[agent-detail] ${surface} load failed`, result.message);
+    return "Couldn't load this. Try again.";
+  }
+  return "Not available yet.";
 }
 
 export function jobsFromPayload(

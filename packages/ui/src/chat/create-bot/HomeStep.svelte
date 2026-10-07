@@ -1,14 +1,16 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Step B — Where does it run? Local (this Mac, free, the user's own
    * runtime login) or Cloud (company-hosted, always on). Local shows runtime
    * pills with sign-in state and an inline Sign in; Cloud shows the company
-   * picker. Cloud is hidden entirely when no company can take a bot.
+   * picker. Cloud is hidden entirely when no company can take a bot — unless
+   * `cloudAlwaysShown` (agents.desktop-agent-creation), where it stays on
+   * screen, disabled, with the reason and the fix.
    *
    * "Who is it for?" used to live here and now sits on the details step, next
    * to the name it affects — see DetailsStep.
    */
-  import { initialsFor } from "../sidebar-model.js";
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import { onMount } from "svelte";
@@ -29,12 +31,20 @@
     CodingTool,
     InstallOutcome,
   } from "../../install-choice/install-choice.js";
+  import type { CloudUnavailableCopy } from "@hq/agents";
   import "./create-bot.css";
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
 
   interface Props {
     draft: CreateBotDraft;
     canLocal: boolean;
     canCloud: boolean;
+    /** Show the Cloud card even when it cannot be used (flag on). */
+    cloudAlwaysShown?: boolean;
+    /** Why Cloud cannot be used, and the fix. Rendered on the disabled card. */
+    cloudBlocked?: CloudUnavailableCopy | null;
+    /** Per-company reasons; those companies are disabled in the picker. */
+    companyBlocks?: Record<string, CloudUnavailableCopy>;
     runtimeReady: Record<string, boolean> | null;
     /**
      * Per-runtime state, when the host has it. `runtimeReady` alone cannot
@@ -93,12 +103,20 @@
      * clickable, so the wizard is never blocked.
      */
     onrequestaitools?: () => void;
+    /**
+     * Show only the "Thinks with" part (coding tool, sign-in, install). Used
+     * on the Details step when Local was already picked on the choice screen.
+     */
+    runtimeOnly?: boolean;
   }
 
   let {
     draft,
     canLocal,
     canCloud,
+    cloudAlwaysShown = false,
+    cloudBlocked = null,
+    companyBlocks = {},
     runtimeReady,
     runtimeStatus = null,
     companies,
@@ -114,6 +132,7 @@
     onopenassistant,
     onassistedinstall,
     onrequestaitools,
+    runtimeOnly = false,
   }: Props = $props();
 
   // Lazy probe: only the wizard's own mount triggers `detect_ai_tools`,
@@ -207,7 +226,8 @@
   }
 </script>
 
-<div class="cb-step" data-testid="create-bot-home-step">
+<div class="cb-step" data-testid={runtimeOnly ? "create-bot-runtime-section" : "create-bot-home-step"}>
+  {#if !runtimeOnly}
   <div class="cb-cards home-cards" role="radiogroup" aria-label="Where does it run?" data-testid="chat-bot-where" tabindex="-1" onkeydown={onHomeKey}>
     <button
       type="button"
@@ -230,7 +250,7 @@
           : `Bots can't run on this ${hostNoun}.`}
       </span>
     </button>
-    {#if canCloud}
+    {#if canCloud || cloudAlwaysShown}
       <button
         type="button"
         class="cb-card home-card"
@@ -238,7 +258,8 @@
         aria-checked={draft.home === "cloud"}
         data-testid="chat-bot-where-cloud"
         data-home="cloud"
-        disabled={disabled}
+        data-unavailable={canCloud ? undefined : "true"}
+        disabled={disabled || !canCloud}
         tabindex={draft.home === "cloud" ? 0 : -1}
         onclick={() => pickHome("cloud")}
       >
@@ -247,11 +268,22 @@
           <span class="cb-card-meta">Company credits</span>
         </span>
         <span class="cb-card-sub">
-          Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {hostNoun} is off.
+          {#if canCloud}
+            Always on, hosted by {companies.length === 1 ? companies[0]?.label : "your company"}. Runs even when this {hostNoun} is off.
+          {:else}
+            <span data-testid="chat-bot-where-cloud-reason">{cloudBlocked?.reason ?? "Cloud bots aren't available right now."}</span>
+          {/if}
         </span>
       </button>
     {/if}
   </div>
+  {/if}
+  {#if !runtimeOnly && cloudAlwaysShown && !canCloud && cloudBlocked?.fix?.kind === "checkout"}
+    <!-- Outside the disabled card so the link stays clickable. -->
+    <p class="cb-help cloud-fix">
+      <a class="cb-pill-link" href={cloudBlocked.fix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-bot-where-cloud-fix">{cloudBlocked.fix.label}</a>
+    </p>
+  {/if}
 
   {#if draft.home === "local" && canLocal}
     <div class="cb-field">
@@ -314,9 +346,9 @@
         >
           {footer.text}
           {#if footer.action === "signin"}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>{footer.actionLabel}</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}><RailIcon name="key" />{footer.actionLabel}</button>
           {:else if footer.action === "retry" && onrecheck}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-recheck" disabled={disabled || rechecking} onclick={() => void recheck()}>{rechecking ? "Checking…" : footer.actionLabel}</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-recheck" disabled={disabled || rechecking} onclick={() => void recheck()}><RailIcon name="refresh" />{rechecking ? "Checking…" : footer.actionLabel}</button>
           {/if}
         </p>
         {#if draftStatus.state === "notInstalled" && draftStatus.searched && draftStatus.searched.length > 0}
@@ -342,13 +374,13 @@
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
           {draftLabel} is not signed in on this {hostNoun}.
           {#if signInApi || onsignin}
-            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}>Sign in</button>
+            <button type="button" class="cb-pill-link" data-testid="chat-bot-runtime-signin" disabled={disabled} onclick={() => void requestSignIn(draft.runtime)}><RailIcon name="key" />Sign in</button>
           {:else}
             Sign in under Settings → AI tools, or pick another.
           {/if}
         </p>
       {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this {hostNoun} - the bot uses your own {draftLabel} plan.</p>
+        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this {hostNoun}. The bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 
@@ -366,6 +398,7 @@
           onkeydown={onCompanyKey}
         >
           {#each companies as company (company.companyUid)}
+            {@const block = companyBlocks[company.companyUid]}
             <button
               type="button"
               class="cb-card company-row"
@@ -373,17 +406,18 @@
               aria-selected={draft.companyUid === company.companyUid}
               data-testid="chat-create-agent-company"
               data-company={company.companyUid}
-              disabled={disabled}
+              title={block?.reason}
+              disabled={disabled || !!block}
               onclick={() => onpatch({ home: "cloud", companyUid: company.companyUid })}
             >
-              <span class="company-tile" aria-hidden="true">
-                {#if company.iconUrl}
-                  <img src={company.iconUrl} alt="" />
-                {:else}
-                  {initialsFor(company.label)}
-                {/if}
-              </span>
-              <span class="cb-card-title">{company.label}</span>
+              <CompanyLabel
+                name={company.label}
+                iconUrl={company.iconUrl}
+                companyUid={company.companyUid}
+              />
+              {#if block}
+                <span class="cb-card-sub" data-testid="chat-create-agent-company-reason">{block.reason}</span>
+              {/if}
             </button>
           {/each}
         </div>
@@ -391,6 +425,13 @@
     {/if}
     <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. You name it on the next step; it gets its own channel once it is set up.</p>
   {/if}
+  <!-- External: a bot that runs somewhere else enrolls itself with a one-time
+       code. The code is minted by the CLI on the machine that runs the bot,
+       so this step only shows its shape, never a value. -->
+  <details class="cb-help external" data-testid="chat-bot-where-external">
+    <summary>Runs somewhere else? Enroll an external bot <span class="ext-chip" data-testid="chat-bot-external-paid">Paid plans</span></summary>
+    <p>On the machine that runs it: <code>hq agent enroll</code>. It prints a one-time code, shown here as <span class="mono" data-testid="chat-bot-external-enroll-mask">••••-••••</span>; paste it there, not here. The bot joins this company as a member and its DM opens when it checks in.</p>
+  </details>
 </div>
 
 <style>
@@ -408,6 +449,30 @@
     padding-left: 18px;
     line-height: 1.5;
   }
+  .external {
+    margin-top: 10px;
+  }
+  .external summary {
+    cursor: pointer;
+  }
+  .external p {
+    margin: 4px 0 0;
+  }
+  .external code,
+  .external .mono {
+    font-family: var(--font-mono);
+  }
+  /* Plain meta text after the summary, not a bordered chip. */
+  .ext-chip {
+    margin-left: 6px;
+    color: var(--t3);
+  }
+  .ext-chip::before {
+    content: "· ";
+  }
+  .cloud-fix {
+    text-align: right;
+  }
   .home-cards {
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   }
@@ -424,23 +489,5 @@
     align-items: center;
     gap: 10px;
     padding: 8px 10px;
-  }
-  .company-tile {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    border-radius: 6px;
-    background: var(--v4-control-faint, rgba(127, 127, 127, 0.12));
-    color: var(--t2);
-    font-size: 10px;
-    font-weight: 600;
-    overflow: hidden;
-    flex: 0 0 auto;
-  }
-  .company-tile img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
   }
 </style>

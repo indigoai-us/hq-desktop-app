@@ -149,7 +149,7 @@
     width: min(620px, calc(100% - 48px));
     border: 1px solid var(--v4-hairline);
     border-radius: 14px;
-    background: var(--v4-popover-strong);
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-popover);
     overflow: hidden;
   }

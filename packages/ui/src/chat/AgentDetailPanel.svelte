@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
    * 30-day usage, and owner/admin settings. Data comes from adapter.agents
@@ -14,7 +16,6 @@
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
     defaultTelemetryRange,
-    formatTokenCount,
     headerFromMobileRoster,
     headerFromStatusPayload,
     jobsFromPayload,
@@ -265,7 +266,8 @@
     const res = await adapter.agents.updateProfile(agentUid, patch);
     saveBusy = false;
     if (!res.ok) {
-      saveError = res.message ?? "Could not save profile.";
+      console.warn("[agent-detail] save profile failed", res.message);
+      saveError = "Could not save profile. Try again.";
       return;
     }
     header = {
@@ -279,7 +281,8 @@
   async function pauseJob(jobId: string): Promise<void> {
     const res = await adapter.agents.pauseJob(agentUid, jobId);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the job.";
+      console.warn("[agent-detail] pause the job failed", res.message);
+      actionError = "Could not pause the job. Try again.";
       return;
     }
     if (jobsState.status === "ready") {
@@ -297,7 +300,8 @@
   async function pauseAgent(): Promise<void> {
     const res = await adapter.agents.stop(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the bot.";
+      console.warn("[agent-detail] pause the bot failed", res.message);
+      actionError = "Could not pause the bot. Try again.";
       return;
     }
     header = { ...header, status: "IDLE", runtimeStatus: "stopped" };
@@ -306,7 +310,8 @@
   async function removeAgent(): Promise<void> {
     const res = await adapter.agents.deprovision(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not remove the bot.";
+      console.warn("[agent-detail] remove the bot failed", res.message);
+      actionError = "Could not remove the bot. Try again.";
       return;
     }
     onclose?.();
@@ -356,7 +361,7 @@
       <div class="ad-identity-copy">
         <h2 class="ad-name" data-testid="agent-detail-name">{header.displayName}</h2>
         <p class="ad-status" data-testid="agent-detail-status">
-          BOT · {header.status}
+          Bot · {header.status}
         </p>
         <BotKindChip
           kind={botKindFor(header.uid, localBots, ownedLocalBotUids) ?? "cloud"}
@@ -396,7 +401,7 @@
             data-testid="agent-detail-uid"
             title="Copy uid"
             onclick={() => void copyUid()}
-          >
+          ><RailIcon name="copy" />
             {header.uid}
             <span class="ad-uid-hint">{copied ? "copied" : "copy"}</span>
           </button>
@@ -462,7 +467,7 @@
                     pendingJobId = job.jobId;
                     confirm = "pause-job";
                   }}
-                >
+                ><RailIcon name="stop" />
                   Pause
                 </button>
               {/if}
@@ -491,7 +496,7 @@
           <div>
             <dt>Tokens</dt>
             <dd data-testid="agent-detail-usage-tokens">
-              {formatTokenCount(usage.tokens)}
+              {compactNumber(usage.tokens)}
             </dd>
           </div>
           <div>
@@ -535,7 +540,7 @@
                 <span class="ad-bar" aria-hidden="true"
                   ><i style={`width:${model.pct}%`}></i></span
                 >
-                <span class="ad-model-n">{formatTokenCount(model.tokens)}</span>
+                <span class="ad-model-n">{compactNumber(model.tokens)}</span>
               </li>
             {/each}
           </ul>
@@ -605,7 +610,7 @@
           data-testid="agent-detail-save"
           disabled={saveBusy}
           onclick={() => void saveProfile()}
-        >
+        ><RailIcon name="save" />
           {saveBusy ? "Saving…" : "Save"}
         </button>
         <div class="ad-danger-row">
@@ -614,7 +619,7 @@
             class="ad-text-btn"
             data-testid="agent-detail-pause-agent"
             onclick={() => (confirm = "pause-agent")}
-          >
+          ><RailIcon name="stop" />
             Pause agent
           </button>
           <button
@@ -622,7 +627,7 @@
             class="ad-text-btn danger"
             data-testid="agent-detail-remove"
             onclick={() => (confirm = "remove-agent")}
-          >
+          ><RailIcon name="trash" />
             Remove from company
           </button>
         </div>
@@ -704,7 +709,7 @@
   .ad-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ad-close {
@@ -718,7 +723,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -749,17 +754,15 @@
   .ad-name {
     margin: 0;
     color: var(--t1);
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .ad-status {
     margin: 2px 0 0;
     color: var(--t3);
-    font: 500 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.3 var(--font-ui);
   }
 
   .ad-desc {
@@ -795,9 +798,7 @@
   .ad-sub,
   .ad-field span {
     color: var(--t3);
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.2 var(--font-ui);
   }
 
   .ad-meta dd,
@@ -816,15 +817,13 @@
     border: 0;
     background: transparent;
     color: inherit;
-    font: 500 11px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 500 13px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
     cursor: pointer;
   }
 
   .ad-uid-hint {
     color: var(--t3);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .ad-section {
@@ -847,7 +846,7 @@
   .ad-note {
     margin: 0;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-jobs {
@@ -882,20 +881,19 @@
   .ad-job-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 550;
+    font-weight: 500;
   }
 
   .ad-job-cadence,
   .ad-job-meta {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-badge {
     justify-self: end;
     color: var(--t3);
-    font: 500 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
+    font: 500 13px/1 var(--font-ui);
   }
 
   .ad-prompt {
@@ -904,7 +902,7 @@
     padding: 8px 0 0;
     border-top: 1px solid var(--line);
     color: var(--t2);
-    font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 400 13px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
   }
 
@@ -940,7 +938,7 @@
   .ad-model-name {
     overflow: hidden;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -960,7 +958,7 @@
 
   .ad-model-n {
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
     text-align: right;
   }
 
@@ -972,7 +970,7 @@
 
   .ad-chips span {
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field {
@@ -1002,7 +1000,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1029,7 +1027,7 @@
   .ad-error {
     margin: 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-close:focus-visible,

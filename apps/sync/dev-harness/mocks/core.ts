@@ -2,8 +2,11 @@
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
 import type { Workspace } from '../../src/lib/workspaces';
-import { resolveHarnessPersona, type ShellPersona } from '../personas';
+import { personaHasLocalHq, resolveHarnessPersona, type ShellPersona } from '../personas';
+import { resolveHarnessState, resolveLoadingMs, withHarnessState } from '../state-flags';
+import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches';
 import { emit } from './event';
+import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
 
 const settings = {
@@ -660,7 +663,29 @@ function tourPreviewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('tour') === '1';
 }
 
+/**
+ * Local bots the preview created this session. `hq bot create` is mocked so
+ * the New bot modal can finish and land in the new bot's DM (console-rail
+ * e2e "Add agent"). Nothing is listed until something is created.
+ */
+const previewLocalBots: Array<Record<string, unknown>> = [];
+
 const handlers: Record<string, Handler> = {
+  local_bots_list: () => ({ bots: previewLocalBots }),
+  local_bots_workers: () => ({ workers: [] }),
+  local_bots_create: (args) => {
+    const name = String(args?.name ?? 'bot');
+    const agentUid = `agt_PREVIEW${name.toUpperCase().replace(/[^A-Z0-9]/g, '')}`;
+    previewLocalBots.push({
+      name,
+      displayName: args?.displayName ?? undefined,
+      agentUid,
+      ownerUid: 'prs_preview',
+      runtime: args?.runtime ?? 'claude',
+      hosting: 'local',
+    });
+    return { agentUid, name };
+  },
   get_setup_status: () =>
     tourPreviewEnabled()
       ? {
@@ -718,7 +743,7 @@ const handlers: Record<string, Handler> = {
     workspaces: harnessPersona()?.workspaces ?? HARNESS_WORKSPACES,
     cloudReachable: true,
     error: null,
-    hqFolderPath: '/Users/corey/Documents/HQ',
+    hqFolderPath: personaHasLocalHq(harnessPersona()) ? '/Users/corey/Documents/HQ' : null,
     manifestError: null,
   }),
   get_company_board: (args) => ({
@@ -753,11 +778,16 @@ const handlers: Record<string, Handler> = {
   // resolves its optimistic write in the browser harness (mirrors the real
   // set_sync_mode, which returns the resulting MembershipSyncConfig).
   set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
-  get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
+  get_config: () => {
+    const persona = harnessPersona();
+    if (!personaHasLocalHq(persona)) return { hqFolderPath: null, companySlug: null, configured: false };
+    const company = persona?.workspaces.find((row) => row.kind === 'company')?.slug;
+    return { hqFolderPath: '/Users/corey/Documents/HQ', companySlug: persona ? (company ?? null) : 'indigo', configured: true };
+  },
   check_core_state: () => currentHarnessCoreState(),
   // Lazy HQ file tree (?view=desktop → company Knowledge tab / Files mode).
   // Serves a small knowledge subtree for any company so the inline
-  // CompanyKnowledgePanel (US-014) is drivable in the browser harness.
+  // company file tree is drivable in the browser harness.
   list_hq_dir: (args) => {
     const rel = String(args?.relPath ?? '');
     if (rel === '') {
@@ -958,6 +988,28 @@ This final paragraph verifies spacing after a thematic break.
     { sub: 'preview', url: 'preview.hq.computer', state: 'deploying', lastDeploy: 'just now', size: '18.3 MB', ver: 'v0.10.34-rc.1', pwd: true },
     { sub: 'docs', url: 'docs.hq.computer', state: 'paused', lastDeploy: '3d ago', size: '6.8 MB', ver: 'v4.2.0', pwd: false },
   ],
+  list_deploy_apps: (args) => {
+    const scope = String(args?.scope ?? 'personal');
+    const value = deployAppsFixture(scope) as { apps: Record<string, unknown>[] };
+    // One public live app so the side panel shows a rendered page snapshot.
+    if (scope === 'personal') value.apps = [{ id: 'pub', name: 'launch-notes', subdomain: 'launch-notes', url: 'https://launch-notes.indigo-hq.com', status: 'active', active: true, accessMode: 'public', createdAt: new Date(Date.now() - 600_000).toISOString(), views30d: 12 }, ...value.apps];
+    return value;
+  },
+  deploy_app_preview: (args) => {
+    const url = String(args?.url ?? '');
+    const name = url.replace(/^https:\/\//, '').split('.')[0] ?? '';
+    // Protected fixture apps have no og:image, like their real gate pages.
+    if (/storyboard|rail-idea/.test(name)) return { ogImageUrl: null, thumbnail: null, fetchedAt: new Date().toISOString() };
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1f2a44"/><stop offset="1" stop-color="#6b4fd8"/></linearGradient></defs><rect width="1200" height="630" fill="url(#g)"/><text x="80" y="340" font-family="Helvetica" font-size="72" fill="#fff">${name}</text></svg>`;
+    return { ogImageUrl: `${url}/og.png`, thumbnail: `data:image/svg+xml;base64,${btoa(svg)}`, fetchedAt: new Date().toISOString() };
+  },
+  deploy_app_snapshot: (args) => {
+    const url = String(args?.url ?? '');
+    const name = url.replace(/^https:\/\//, '').split('.')[0] ?? '';
+    // Stand-in for the rendered page; the desktop returns a 2560x1600 PNG.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800"><rect width="1280" height="800" fill="#f7f7f5"/><rect width="1280" height="64" fill="#fff"/><rect x="40" y="22" width="120" height="20" rx="4" fill="#1f2a44"/><text x="80" y="200" font-family="Helvetica" font-size="64" font-weight="700" fill="#111">${name}</text><text x="80" y="260" font-family="Helvetica" font-size="26" fill="#666">Deployed with HQ</text><rect x="80" y="320" width="520" height="300" rx="12" fill="#e6e3f7"/><rect x="640" y="320" width="560" height="300" rx="12" fill="#ececec"/></svg>`;
+    return { snapshot: `data:image/svg+xml;base64,${btoa(svg)}`, width: 2560, height: 1600 };
+  },
   get_company_secrets: () => [
     {
       env: 'production',
@@ -1058,6 +1110,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 184,
           distinctSessions: 31,
+          tokensByModel: [{ model: "claude-opus-4", input: 820000, output: 210000, cacheCreation: 90000, cacheRead: 1400000 }],
           skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
         },
         activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
@@ -1070,6 +1123,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 143,
           distinctSessions: 28,
+          tokensByModel: [{ model: "claude-sonnet-4", input: 410000, output: 120000, cacheCreation: 30000, cacheRead: 600000 }],
           skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
         },
         activeProjects: ['Instant DM delivery'],
@@ -1082,6 +1136,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 88,
           distinctSessions: 17,
+          tokensByModel: [{ model: "claude-sonnet-4", input: 190000, output: 60000, cacheCreation: 10000, cacheRead: 240000 }],
           skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
         },
         activeProjects: ['S3-versioned conflict handling'],
@@ -1093,6 +1148,7 @@ This final paragraph verifies spacing after a thematic break.
         totals: {
           events: 51,
           distinctSessions: 9,
+          tokensByModel: [{ model: "claude-haiku-4", input: 40000, output: 12000, cacheCreation: 0, cacheRead: 30000 }],
           skills: { bySkill: [{ skill: 'diagnose', count: 11 }] },
         },
         activeProjects: [],
@@ -1242,7 +1298,6 @@ This final paragraph verifies spacing after a thematic break.
     await emit('recording:ended', { windowId: args?.windowId, platform: 'meet', endedAt: new Date().toISOString() });
     return null;
   },
-  is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () =>
     harnessScenario() === 'permission-denied' ? 'denied' : 'prompt',
@@ -1533,6 +1588,8 @@ This final paragraph verifies spacing after a thematic break.
         latest: 'Orbit math notes are ready for review.',
       },
     };
+    // A bot the preview just created has no history yet.
+    if (peer.startsWith('agt_PREVIEW')) return { messages: [], nextCursor: null };
     const person = people[peer] ?? people.prs_ada;
     return {
       messages: [
@@ -1651,7 +1708,27 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: () => ({
+  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+    status: 200,
+    // Two cloud bots, neither local nor live, so Bots' Local and Live filters
+    // have nothing to show (QA-106 guard).
+    body: JSON.stringify({ agents: [
+      { agentUid: 'agt_preview_scout', displayName: 'Scout', setupPhase: 'ready' },
+      { agentUid: 'agt_preview_ranger', displayName: 'Ranger', setupPhase: 'ready' },
+    ] }),
+  }) : String(args?.url ?? '').startsWith('/v1/integrations/admin') ? ({
+    status: 200,
+    // Company connected apps, shaped like hq-pro readAdminSurface.
+    body: JSON.stringify({
+      companyUid: 'cmp_preview',
+      viewer: { personUid: 'prs_preview', role: 'member', canManageGovernance: false, canManageIntegrations: false },
+      connections: [
+        { id: 'conn_slack', provider: 'slack', status: 'connected', scopes: ['channels:read', 'chat:write'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-30T00:00:00Z' },
+        { id: 'conn_linear', provider: 'linear', status: 'needs-reauth', scopes: [], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-29T00:00:00Z' },
+      ],
+      audit: [],
+    }),
+  }) : ({
     status: 200,
     body: JSON.stringify({ grouped: {
       companyWide: [{ skillUid: 'skl_signal', name: 'Capture signal', tags: ['knowledge', 'company'] }],
@@ -1764,11 +1841,22 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       await new Promise(resolve => setTimeout(resolve, SHIFT_TEST_REACTION_DELAY_MS));
     }
   }
-  const handler = handlers[cmd];
-  if (handler) return handler(args) as T;
-  // Unknown command: log once and resolve null so mount paths don't throw.
-  console.debug('[harness] unhandled invoke:', cmd, args);
-  return null as T;
+  const search = typeof window === 'undefined' ? null : window.location.search;
+  if (cmd === 'hq_pro_fetch' && typeof window !== 'undefined') {
+    ((window as Window & { __hqFetchUrls?: string[] }).__hqFetchUrls ??= []).push(String(args?.url ?? ''));
+  }
+  const switched = switchedHandler(cmd, args, search);
+  if (switched) return switched.value as T;
+  const reads = readsSwitch(search);
+  // ?reads= maps onto the state flags so both spellings behave the same.
+  const state = reads === 'fail' ? 'error' : reads === 'empty' ? 'empty' : resolveHarnessState(search);
+  return withReadsSwitch<T>(reads, cmd, () => withHarnessState<T>(state, cmd, () => {
+    const handler = handlers[cmd];
+    if (handler) return handler(args) as T;
+    // Unknown command: log once and resolve null so mount paths don't throw.
+    console.debug('[harness] unhandled invoke:', cmd, args);
+    return null as T;
+  }, resolveLoadingMs(search)), resolveLoadingMs(search));
 }
 
 export class Channel<T = unknown> {

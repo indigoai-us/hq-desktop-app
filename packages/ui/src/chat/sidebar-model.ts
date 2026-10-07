@@ -357,6 +357,8 @@ export function isStrictlyRicherConversationRow(
 export interface ScopeCompany {
   companyUid: string;
   label: string;
+  /** Configured company slug (the `companies/<slug>/` folder). Never derive it from `label`. */
+  slug?: string | null;
   /** Presigned company icon, when the membership row carried one. */
   iconUrl?: string | null;
 }
@@ -406,6 +408,12 @@ export interface GroupedConversations {
   lastWeek: ConversationRow[];
   /** Full filtered list (for "Show all history…" view). */
   all: ConversationRow[];
+  /**
+   * Company channels known to hold no messages (`messageActivityAt === 0`),
+   * listed last under "No messages yet". Only filled when `groupByDay` is
+   * asked to (the All scope).
+   */
+  noMessages?: ConversationRow[];
 }
 
 export const PINS_STORAGE_KEY = "hq.chat.pins";
@@ -1656,11 +1664,19 @@ export function applySidebarFilters(
 export function groupByDay(
   rows: ConversationRow[],
   now: number = Date.now(),
-  options: { humanOnly?: boolean } = {},
+  options: { humanOnly?: boolean; emptyChannelsLast?: boolean } = {},
 ): GroupedConversations {
   const humanOnly = options.humanOnly === true;
   const pinned = rows.filter((r) => r.pinned);
-  const unpinned = rows.filter((r) => !r.pinned);
+  const noMessages: ConversationRow[] = [];
+  const unpinned = rows.filter((r) => {
+    if (r.pinned) return false;
+    if (options.emptyChannelsLast === true && isEmptyCompanyChannel(r)) {
+      noMessages.push(r);
+      return false;
+    }
+    return true;
+  });
 
   const todayStart = startOfLocalDay(now);
   // Anything with activity strictly before (todayStart - 6 days) is older than
@@ -1701,7 +1717,34 @@ export function groupByDay(
     sections,
     lastWeek,
     all: rows.slice(),
+    ...(options.emptyChannelsLast === true ? { noMessages } : {}),
   };
+}
+
+/**
+ * A company channel the server says has never been talked in. Rows from an
+ * older cache carry no `messageActivityAt`; those stay dated by
+ * `lastActivityAt` rather than guessing they are empty.
+ */
+export function isEmptyCompanyChannel(row: ConversationRow): boolean {
+  return isCompanyScopedChannel(row) && row.messageActivityAt === 0;
+}
+
+/**
+ * Rail rows for the All scope: company channels join DMs and project
+ * channels in the date buckets. They skip the rail's channel budget so a
+ * company channel is never hidden just because there are many of them.
+ */
+export function takeAllScopeRailRows(
+  rows: readonly ConversationRow[],
+  options: Parameters<typeof takeRailConversations>[1] = {},
+): ConversationRow[] {
+  const keep = new Set(
+    takeRailConversations(omitCompanyScopedChannels(rows), options).map(
+      (row) => row.id,
+    ),
+  );
+  return rows.filter((row) => keep.has(row.id) || isCompanyScopedChannel(row));
 }
 
 const TYPE_SECTION_ORDER: ReadonlyArray<{
@@ -1759,6 +1802,51 @@ function rowMustStayOnRail(
   if (row.kind === "dm" || row.kind === "group") return true;
   if (row.personUid && recentPersonUids.has(row.personUid)) return true;
   return false;
+}
+
+/**
+ * A team channel owned by a company (`channelScope === "company"`).
+ * Home's inbox omits these; they live in that company's pane under Activity.
+ * Project channels and DMs are not company-scoped.
+ */
+export function isCompanyScopedChannel(row: ConversationRow): boolean {
+  return row.kind === "channel" && (row.channelScope ?? "").trim() === "company";
+}
+
+/** Home inbox rows: everything except company-scoped channels. */
+export function omitCompanyScopedChannels(
+  rows: readonly ConversationRow[],
+): ConversationRow[] {
+  return rows.filter((row) => !isCompanyScopedChannel(row));
+}
+
+/** Company-scoped channels for one company, newest activity first. */
+export function companyScopedChannels(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): ConversationRow[] {
+  const uid = companyUid.trim();
+  if (!uid) return [];
+  return sortConversations(
+    rows.filter(
+      (row) => isCompanyScopedChannel(row) && (row.companyUid ?? "").trim() === uid,
+    ),
+    "recent",
+  );
+}
+
+/** Unread on a company's channels, for the rail tile badge. */
+export function companyChannelUnread(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): number {
+  let total = 0;
+  for (const row of rows) {
+    if (!isCompanyScopedChannel(row)) continue;
+    if ((row.companyUid ?? "").trim() !== companyUid.trim()) continue;
+    total += row.unreadCount ?? (row.unreadDot ? 1 : 0);
+  }
+  return total;
 }
 
 export function isProjectConversationRow(row: ConversationRow): boolean {
@@ -1950,6 +2038,7 @@ export function flattenGrouped(
   const out: ConversationRow[] = [...grouped.pinned];
   for (const section of grouped.sections) out.push(...section.rows);
   if (includeLastWeek) out.push(...grouped.lastWeek);
+  out.push(...(grouped.noMessages ?? []));
   return out;
 }
 
@@ -2671,8 +2760,14 @@ export function railRowScopeLabel(
     duplicateHumanTitles?: ReadonlySet<string>;
   },
 ): RailScopeLabel | null {
-  if (!options.enabled) return null;
   const allCompanies = options.scope === "all";
+  // All scope: a company channel always names its company, even with scope
+  // labels off, since channel names repeat across companies.
+  if (allCompanies && isCompanyScopedChannel(row)) {
+    const name = resolveRailCompanyName(row.companyUid, options.companies);
+    return name ? { kind: "company", text: name } : null;
+  }
+  if (!options.enabled) return null;
 
   if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
     if (!allCompanies) return null;

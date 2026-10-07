@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * FilesModeSidebar — the file-explorer sidebar that REPLACES the 220px V4
    * primary sidebar when the app is in top-level Files mode (US-009, reworked in
@@ -152,8 +153,11 @@
           onclick={() =>
             onselectcompany?.(row.slug === activeSlug ? null : row.slug)}
         >
+          <span class="fs-company-name"
+            ><CompanyLabel name={row.label} companyUid={row.slug} /></span
+          >
+          <!-- Sync status, kept as a trailing signal next to the favicon. -->
           <span class={`fs-dot ${row.tone}`} aria-hidden="true"></span>
-          <span class="fs-company-name">{row.label}</span>
         </button>
       {/each}
     </nav>

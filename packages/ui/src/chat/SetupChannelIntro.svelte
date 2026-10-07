@@ -269,7 +269,8 @@
       const result = await oncreatecompany();
       if (!result.ok) createAnotherError = result.reason;
     } catch (err) {
-      createAnotherError = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-intro] create company failed", err);
+      createAnotherError = "Could not start a new company. Try again.";
     } finally {
       createAnotherBusy = false;
     }
@@ -835,7 +836,7 @@
 
   .hero-actions :global(.setup-btn) {
     border-radius: 8px;
-    min-height: 32px;
+    min-height: var(--hq-btn-h);
     padding-inline: 14px;
   }
 

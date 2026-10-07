@@ -6,7 +6,7 @@
  * adapter's `bots` group and opens its DM even before the intro message has
  * landed (synthetic row), so the user is never left staring at the modal.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
 
@@ -14,6 +14,13 @@ import DesktopApp from "./DesktopApp.svelte";
 import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
+import { createBotFlowDoor } from "./lazy-doors.js";
+
+// The create modal preloads the New bot flow when it opens; load it once here
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 // Setup already ran on this "Mac": the setup bot must not start by itself here.
 beforeEach(() => {
@@ -131,10 +138,15 @@ async function openBotFlow(): Promise<void> {
   await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
   await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
-  await vi.waitFor(() => expect(q('[data-testid="chat-create-new-bot"]')).toBeTruthy());
-  click('[data-testid="chat-create-new-bot"]');
+  await vi.waitFor(() => expect(q('[data-testid="chat-create-menu-agent"]')).toBeTruthy());
+  click('[data-testid="chat-create-menu-agent"]');
   await settle();
-  expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+  // "New bot" asks "Cloud or Local?" first; these are local bots.
+  expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  click('[data-testid="new-bot-choice-local"]');
+  await settle();
+  // The local steps open on the name, as the cloud flow does.
+  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
 }
 
 describe("DesktopApp sidebar '+' → New bot", () => {
@@ -142,6 +154,12 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     const create = vi.fn(async () => ok({ ok: true, name: "assistant", agentUid: "agt_new" }));
     mountApp(adapter({ create }));
     await openBotFlow();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "scout";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
 
     // The worker library came from adapter.bots.workers, with its summary and skill count.
     click('[data-testid="create-bot-kind-template"]');
@@ -150,21 +168,17 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     expect(card.dataset.template).toBe("iris-cx");
     expect(card.textContent).toContain("Answers customer questions.");
     expect(card.textContent).toContain("3 skills");
-    // Blank is all this test needs; picking it moves straight on.
+    // Blank is all this test needs.
     click('[data-testid="create-bot-kind-blank"]');
     await settle();
-    expect(q('[data-testid="create-bot-home-step"]')).toBeTruthy();
-    // Runtime readiness came from preflight: Claude is signed in, Codex is not.
-    expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in");
-    expect(q('[data-testid="chat-bot-where-local"]')?.getAttribute("aria-checked")).toBe("true");
-
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
-    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "scout";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
+    // Local was picked already: no "Where does it run?" step. The coding
+    // tool has its own step.
+    expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
+    expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
+    // Runtime readiness came from preflight: Claude is signed in, Codex is not.
+    expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in");
 
     click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
@@ -193,6 +207,6 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     await vi.waitFor(() => expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("already have 3"));
     // The flow stays put so the user can fix the draft and retry.
     expect(q('[data-testid="chat-create-modal"]')).toBeTruthy();
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
   });
 });

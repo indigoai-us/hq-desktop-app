@@ -66,9 +66,15 @@ let checking = $state(INITIAL.checking);
 let installPhase = $state<AppInstallPhase>(INITIAL.installPhase);
 let downloadPercent = $state<number | null>(INITIAL.downloadPercent);
 let autoUpdateEnabled = $state(INITIAL.autoUpdateEnabled);
+/** Host reports the background update checker is off (dev or debug build). */
+let backgroundUpdatesOff = $state(false);
 let installError = $state<string | null>(INITIAL.installError);
 let idleWaitRemainingSecs = $state<number | null>(INITIAL.idleWaitRemainingSecs);
 let recommendBanner = $state<RecommendBanner | null>(INITIAL.recommendBanner);
+// What holds a ready update back (an upload, a recording), from the native
+// update gate. The update toast and Settings > Updates both read it, so they
+// always name the same reason.
+let holdReasons = $state<string[]>([]);
 
 let runner = createUpdateCheckRunner();
 let downloadInFlight: Promise<void> | null = null;
@@ -189,7 +195,7 @@ export async function checkDesktopUpdates(
 /**
  * "Download & install": phase 1 of the queued update. Downloads the verified
  * package in the background (progress arrives via reportDownloadProgress),
- * then parks the row on RESTART TO UPDATE. A second call while a download or
+ * then parks the row on UPDATE READY. A second call while a download or
  * install is already running (manual or automatic) is a no-op.
  */
 export async function downloadDesktopUpdate(
@@ -218,7 +224,7 @@ export async function downloadDesktopUpdate(
       return;
     }
     installPhase = "failed";
-    installError = result.message ?? "Download failed";
+    installError = plainInstallError(result.message, "download", "Download failed. Try again.");
   })().finally(() => {
     if (generation === storeGeneration) downloadInFlight = null;
   });
@@ -248,7 +254,7 @@ export async function restartToUpdate(
       installPhase = "queued";
       return;
     }
-    installError = result.message ?? "Install failed";
+    installError = plainInstallError(result.message, "install", "Install failed. Try again.");
     installPhase = isRecordingRestartDeferral(result.message) ? "deferred" : "ready";
   })().finally(() => {
     if (generation === storeGeneration) installInFlight = null;
@@ -259,7 +265,7 @@ export async function restartToUpdate(
 
 /**
  * Late-mounting surfaces (the popover opens after a download finished in the
- * background) hydrate straight into RESTART TO UPDATE from the host's staged
+ * background) hydrate straight into UPDATE READY from the host's staged
  * package. Never downgrades an in-flight install. A stuck DOWNLOADING 0%
  * after the host already staged the package is upgraded to ready.
  */
@@ -327,16 +333,32 @@ export function markInstallStarted(version?: string | null): void {
   installPhase = "queued";
 }
 
+/**
+ * `installError` is rendered (tooltips, toast), so it only ever holds app copy.
+ * The recording deferral is a fixed host sentence the toast keys on, so it is
+ * kept; anything else is logged and replaced with plain copy.
+ */
+function plainInstallError(
+  raw: string | null | undefined,
+  what: string,
+  copy: string,
+): string {
+  if (raw && isRecordingRestartDeferral(raw)) return raw;
+  if (raw) console.warn(`[update] ${what} failed`, raw);
+  return copy;
+}
+
 /** Host `update:install-failed` — download or install failed natively. */
 export function reportInstallFailed(payload: unknown): void {
   const rec =
     payload && typeof payload === "object"
       ? (payload as { message?: unknown })
       : null;
-  installError =
-    typeof rec?.message === "string" && rec.message.trim()
-      ? rec.message.trim()
-      : "Update failed";
+  installError = plainInstallError(
+    typeof rec?.message === "string" ? rec.message.trim() : null,
+    "install",
+    "Update failed. Try again.",
+  );
   installPhase = "failed";
   clearIdleWait();
 }
@@ -378,6 +400,15 @@ export function setAutoUpdateEnabled(enabled: boolean): void {
   autoUpdateEnabled = enabled;
 }
 
+export function setBackgroundUpdatesOff(off: boolean): void {
+  backgroundUpdatesOff = off;
+}
+
+export function setUpdateHoldReasons(reasons: readonly string[] | null | undefined): void {
+  const next = (reasons ?? []).filter((r): r is string => typeof r === "string");
+  if (next.join("\n") !== holdReasons.join("\n")) holdReasons = next;
+}
+
 export function applyAvailableUpdate(version: string | null): void {
   if (version && version.trim()) {
     availableVersion = version.trim();
@@ -405,16 +436,21 @@ export function resetUpdateStore(): void {
   installPhase = INITIAL.installPhase;
   downloadPercent = INITIAL.downloadPercent;
   autoUpdateEnabled = INITIAL.autoUpdateEnabled;
+  backgroundUpdatesOff = false;
   installError = INITIAL.installError;
   clearIdleWait();
   idleWaitRemainingSecs = INITIAL.idleWaitRemainingSecs;
   recommendBanner = INITIAL.recommendBanner;
+  holdReasons = [];
   installInFlight = null;
   downloadInFlight = null;
   runner = createUpdateCheckRunner();
 }
 
 export const updateStore = {
+  get holdReasons(): readonly string[] {
+    return holdReasons;
+  },
   get appStatus() {
     return appStatus;
   },
@@ -453,6 +489,9 @@ export const updateStore = {
   },
   get autoUpdateEnabled() {
     return autoUpdateEnabled;
+  },
+  get backgroundUpdatesOff() {
+    return backgroundUpdatesOff;
   },
   get installError() {
     return installError;

@@ -84,9 +84,8 @@
 
 <div class="co-pane" data-testid="settings-companies-pane">
   <p class="co-note" data-testid="settings-company-sync-unavailable">
-    Company membership comes from your signed-in account. Per-company sync is
-    not configurable in this embedded screen; manage local sync in the native
-    Sync surface.
+    Company membership comes from your signed-in account. Turn sync on or off
+    for each company from the HQ menu bar icon.
   </p>
   {#if externalError}
     <p class="co-external-error" data-testid="settings-company-open-error" role="alert">

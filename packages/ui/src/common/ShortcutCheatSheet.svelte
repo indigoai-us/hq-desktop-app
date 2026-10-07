@@ -236,12 +236,7 @@
     overflow: hidden;
     border: 1px solid var(--v4-hairline, var(--pop-border));
     border-radius: var(--v4-radius-popover);
-    background: var(--v4-popover-strong, var(--pop-bg));
-    backdrop-filter: var(--v4-glass-filter-popover, var(--v4-glass-filter));
-    -webkit-backdrop-filter: var(
-      --v4-glass-filter-popover,
-      var(--v4-glass-filter)
-    );
+    background: var(--overlay-bg);
     box-shadow:
       var(--v4-shadow-popover, var(--pop-shadow)),
       inset 0 1px 0 var(--v4-glass-highlight);

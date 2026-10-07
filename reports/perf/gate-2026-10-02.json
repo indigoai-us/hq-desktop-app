@@ -1,0 +1,317 @@
+{
+  "story": "US-040",
+  "command": "pnpm perf:rail -- --reps 5",
+  "runs": 3,
+  "selection": "median of three runs by command-palette p95 (the only failing line)",
+  "allRunsCommandPaletteP95Ms": [
+    31.5,
+    28.6,
+    28.8
+  ],
+  "medianRun": "run-2026-10-02T06-17-51-573Z",
+  "verdict": "FAIL",
+  "checks": [
+    {
+      "name": "coldStartShellReadyMs",
+      "result": "PASS",
+      "detail": "median 144.2 ms, limit 242.7 ms (reference 220.7 + 10%)"
+    },
+    {
+      "name": "firstContentfulPaintMs",
+      "result": "PASS",
+      "detail": "median 140.0 ms, limit 239.8 ms (reference 218.0 + 10%)"
+    },
+    {
+      "name": "companySwitchToCachedPaintMs",
+      "result": "PASS",
+      "detail": "p95 41.3 ms, limit 100 ms"
+    },
+    {
+      "name": "sidepaneSwitch",
+      "result": "PASS",
+      "detail": "p95 41.3 ms, limit 100 ms (same paint budget as a company switch)"
+    },
+    {
+      "name": "switchConversationMs",
+      "result": "PASS",
+      "detail": "p95 31.2 ms, product target 50 ms, gate 124.3 ms"
+    },
+    {
+      "name": "commandPaletteMs",
+      "result": "FAIL",
+      "detail": "p95 28.8 ms, product target 20 ms, gate 20.0 ms"
+    },
+    {
+      "name": "scrollDroppedFramesPct.scroll.messages",
+      "result": "PASS",
+      "detail": "dropped median 0.26% (limit 1%), worst median 16.5 ms (limit 33)"
+    },
+    {
+      "name": "idleBusyMs",
+      "result": "PASS",
+      "detail": "median 0 ms, limit 0"
+    },
+    {
+      "name": "initialJsBytes",
+      "result": "PASS",
+      "detail": "2719068 bytes, limit 2736155 (reference 2582555 + 150 KB)"
+    },
+    {
+      "name": "lazyChunks.atlasAbsent",
+      "result": "PASS",
+      "detail": "Atlas is absent from the initial JS graph"
+    },
+    {
+      "name": "lazyChunks.telemetryAbsent",
+      "result": "PASS",
+      "detail": "Telemetry is absent from the initial JS graph"
+    },
+    {
+      "name": "lazyChunks.atlasBytes",
+      "result": "PASS",
+      "detail": "34831 bytes, limit 122880"
+    },
+    {
+      "name": "lazyChunks.telemetryBytes",
+      "result": "PASS",
+      "detail": "37373 bytes, limit 81920"
+    }
+  ],
+  "machine": {
+    "platform": "darwin 25.4.0",
+    "arch": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "totalMemGb": 128,
+    "loadAvg1m": 5.14,
+    "powerSource": "ac",
+    "node": "v26.0.0",
+    "chromium": "151.0.7922.34"
+  },
+  "recordedAt": "2026-10-02T06:17:51.573Z",
+  "metrics": {
+    "coldLoad.firstContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 140,
+      "p95": 140,
+      "min": 132,
+      "max": 140,
+      "stdev": 4,
+      "samples": [
+        140,
+        140,
+        132,
+        140
+      ]
+    },
+    "coldLoad.largestContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 140,
+      "p95": 140,
+      "min": 132,
+      "max": 140,
+      "stdev": 4,
+      "samples": [
+        140,
+        140,
+        132,
+        140
+      ]
+    },
+    "coldLoad.shellReadyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 144.20000004768372,
+      "p95": 144.80000019073486,
+      "min": 139.10000014305115,
+      "max": 144.80000019073486,
+      "stdev": 2.6961391986416055,
+      "samples": [
+        144.80000019073486,
+        143.70000004768372,
+        139.10000014305115,
+        144.70000004768372
+      ]
+    },
+    "scroll.messages.avgMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 8.37585285202535,
+      "p95": 8.378010471204188,
+      "min": 8.371578947368423,
+      "max": 8.378010471204188,
+      "stdev": 0.002696290606830801,
+      "samples": [
+        8.378010471204188,
+        8.371578947368423,
+        8.375789473684211,
+        8.37591623036649
+      ]
+    },
+    "scroll.messages.worstMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 16.549999999999955,
+      "p95": 16.800000000000182,
+      "min": 16.09999999999991,
+      "max": 16.800000000000182,
+      "stdev": 0.3162277660168859,
+      "samples": [
+        16.40000000000009,
+        16.800000000000182,
+        16.699999999999818,
+        16.09999999999991
+      ]
+    },
+    "scroll.messages.droppedPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0.2631578947368421,
+      "p95": 0.5263157894736842,
+      "min": 0,
+      "max": 0.5263157894736842,
+      "stdev": 0.30386856273138196,
+      "samples": [
+        0,
+        0.5263157894736842,
+        0.5263157894736842,
+        0
+      ]
+    },
+    "interaction.switchConversation": {
+      "n": 4,
+      "discarded": 1,
+      "median": 30.800000071525574,
+      "p95": 31.200000047683716,
+      "min": 27.100000143051147,
+      "max": 31.200000047683716,
+      "stdev": 1.9328303489179588,
+      "samples": [
+        31,
+        27.100000143051147,
+        31.200000047683716,
+        30.600000143051147
+      ]
+    },
+    "interaction.commandPalette": {
+      "n": 4,
+      "discarded": 1,
+      "median": 27.050000071525574,
+      "p95": 28.799999952316284,
+      "min": 23.799999952316284,
+      "max": 28.799999952316284,
+      "stdev": 2.4837807217665633,
+      "samples": [
+        25.40000009536743,
+        28.799999952316284,
+        28.700000047683716,
+        23.799999952316284
+      ]
+    },
+    "idle.busyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.busyPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.renderBatchesPerMinute": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "bundle.jsBytes": {
+      "n": 1,
+      "discarded": 0,
+      "median": 3075457,
+      "p95": 3075457,
+      "min": 3075457,
+      "max": 3075457,
+      "stdev": 0,
+      "samples": [
+        3075457
+      ]
+    }
+  },
+  "rail": {
+    "companySwitch": {
+      "summary": {
+        "n": 4,
+        "discarded": 1,
+        "median": 38.25,
+        "p95": 41.30000019073486,
+        "min": 34.700000047683716,
+        "max": 41.30000019073486,
+        "stdev": 2.8075790915384187,
+        "samples": [
+          37.299999952316284,
+          41.30000019073486,
+          34.700000047683716,
+          39.200000047683716
+        ]
+      }
+    },
+    "sidepaneSwitch": {
+      "summary": {
+        "n": 4,
+        "discarded": 1,
+        "median": 41.200000047683716,
+        "p95": 41.299999952316284,
+        "min": 40.200000047683716,
+        "max": 41.299999952316284,
+        "stdev": 0.518812727295433,
+        "samples": [
+          41.200000047683716,
+          41.200000047683716,
+          41.299999952316284,
+          40.200000047683716
+        ]
+      }
+    },
+    "lazyChunks": {
+      "manifest": true,
+      "atlasInInitialJs": false,
+      "telemetryInInitialJs": false,
+      "atlasBytes": 34831,
+      "telemetryBytes": 37373,
+      "initialJsBytes": 2719068,
+      "atlasInitial": [],
+      "telemetryInitial": []
+    }
+  }
+}

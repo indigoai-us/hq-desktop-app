@@ -32,8 +32,26 @@ import {
   recurringSeriesId,
   resolveInviteCompanyId,
   urlInviteDestinationLabel,
+  isListableMeeting,
 } from "./meetings-model";
 import { takeAgendaWindow } from "./meetings-view-model";
+import {
+  loadNextRecordedSignalPage,
+  mergeRecordedMeetings,
+  ownRecordedMeetings,
+  parseRecordedDetail,
+  parseRecordedDocument,
+  parseRecordedDocumentRef,
+  type RecordedDocument,
+  recordedSignalsFromPages,
+  recordedSignalsRemaining,
+  type RecordedSignalPages,
+  type RecordedSignals,
+  parseRecordedMeetings,
+  type RecordedMeeting,
+} from "./recorded-meetings";
+import { get } from "svelte/store";
+import { activeMeetings } from "./active-meetings";
 import type {
   CompanyMembership,
   GoogleAccount,
@@ -90,6 +108,16 @@ export function configureMeetingsApi(next: MeetingsStoreApi | null): void {
 function requireApi(): MeetingsStoreApi {
   if (!api) throw new Error("meetings-store: no platform api configured");
   return api;
+}
+
+/**
+ * The live-transcript fetch of the configured platform, or null when the
+ * host has none (web, unconfigured). Read by the lazy live-transcript body.
+ */
+export function liveTranscriptFetcher(): import("./live-transcript.svelte").LiveTranscriptFetch | null {
+  const meetings = api?.meetings;
+  const fetch = meetings?.fetchLiveTranscript;
+  return fetch ? (req) => fetch.call(meetings, req) : null;
 }
 
 function unwrap<T>(res: AdapterResult<T>): T {
@@ -175,6 +203,25 @@ let companyNamesByUid = $state<Map<string, string>>(new Map());
 let accountEmailById = $state<Map<string, string>>(new Map());
 let calendarSummaryByKey = $state<Map<string, string>>(new Map());
 let memberships = $state<CompanyMembership[]>([]);
+// Recorded meeting history across every scope the caller can read.
+let recorded = $state<RecordedMeeting[]>([]);
+let recordedError = $state("");
+/** Saved notes per recorded meeting id, loaded when a past meeting opens. */
+export interface RecordedNotesEntry {
+  status: "loading" | "ready" | "error";
+  signals?: RecordedSignals;
+  /** Saved notes not read yet; "Load more" reads the next page. */
+  remaining?: number;
+  loadingMore?: boolean;
+  pages?: RecordedSignalPages;
+  /** Document-shaped meetings: the parsed markdown document. */
+  document?: RecordedDocument | null;
+  /** Some saved notes could not be read; the recap shows Try again. */
+  recapFailed?: boolean;
+  /** Company scope the detail was read with. */
+  companyUid?: string | null;
+}
+let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
 let membershipsError = $state("");
 let fetchError = $state("");
 let refreshBlocked = $state(false);
@@ -186,10 +233,17 @@ let loading = $state(false);
 // an empty list is a real answer, not "still loading".
 let hydratedFromCache = $state(false);
 let firstRefreshSettled = $state(false);
+// Cold start only: the agenda rows painted from the first calendar answer
+// while bot status, calendars and history are still loading.
+let agendaPainted = $state(false);
 // True once at least one network refresh has fully succeeded — the only state
 // in which "no accounts, no meetings" is trustworthy enough to lead with the
 // connect-a-calendar empty state (a failed first fetch must not).
 let hasLiveSnapshot = $state(false);
+// AUDIT-3-16: true when the last read of the linked calendar accounts failed
+// (or the whole refresh failed), so "no accounts" is not a real answer and
+// the page must not offer "Connect your calendar".
+let calendarReadFailed = $state(false);
 let refreshInFlight: Promise<void> | null = null;
 let forceTrailingRefresh = false;
 let mutationRevision = 0;
@@ -199,6 +253,8 @@ let rowPending = $state<Map<string, MeetingBotAction>>(new Map());
 let started = false;
 let viewActive = false;
 let lastRefreshAt = 0;
+/** Last successful network refresh, for the calendar panel's "synced" line. */
+let lastSyncedAt = $state(0);
 let stopPoll: (() => void) | null = null;
 
 // In-app Google calendar OAuth: pending flag + bounded post-consent account
@@ -227,12 +283,16 @@ function hydrateFromCache() {
   >(storage);
   if (!snapshot) return;
   hydratedFromCache = true;
-  events = snapshot.events ?? [];
-  botsByEventId = new Map(snapshot.botsByEventId ?? []);
+  events = (snapshot.events ?? []).filter(isListableMeeting);
   allBots =
     snapshot.scheduledBots ??
     (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
+  botsByEventId = snapshot.botsByEventId?.length
+    ? new Map(snapshot.botsByEventId)
+    : buildBotMap(allBots);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
+  // Older caches stored every readable meeting; re-apply the attendee rule.
+  recorded = onlyOwnMeetings(parseRecordedMeetings(snapshot.recorded ?? []), allBots, events);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
   calendarsByAccount = new Map(snapshot.calendarsByAccount ?? []);
@@ -288,6 +348,7 @@ function refresh(forceAfterMutation = false): Promise<void> {
 async function refreshOnce(refreshRevision: number, epoch: number): Promise<void> {
   const { meetings } = requireApi();
   let nextMembershipsError = "";
+  let accountsFailed = false;
   try {
     const [evts, members, accts] = await Promise.all([
       meetings
@@ -303,9 +364,26 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
         }),
       meetings
         .listAccounts()
-        .then((r) => unwrap(r) as unknown as GoogleAccount[])
-        .catch(() => [] as GoogleAccount[]),
+        .then((r) => unwrap(r) as unknown as GoogleAccount[] | null)
+        .catch((err) => {
+          console.error("meetings listAccounts failed:", err);
+          accountsFailed = true;
+          return null;
+        }),
     ]);
+    // Cold start (no cache): paint the agenda as soon as it arrives instead
+    // of holding it behind the bot, calendar and history reads below.
+    if (
+      !hydratedFromCache &&
+      !agendaPainted &&
+      events.length === 0 &&
+      (evts?.length ?? 0) > 0 &&
+      epoch === sessionEpoch &&
+      refreshRevision === mutationRevision
+    ) {
+      events = takeAgendaWindow(evts ?? []);
+      agendaPainted = true;
+    }
     const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
     // The adapter exposes a single full-list bot lookup (no per-event filter
     // arg on the wire). Fetch once, then derive the per-event slice locally so
@@ -329,7 +407,16 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
 
     // Calendar fan-out is part of the same snapshot. Holding these values
     // locally prevents a pre-mutation poll from partially repainting the UI.
-    const calendarSnapshot = await loadCalendarsForAccounts(meetings, accts ?? []);
+    const [calendarSnapshot, recordedResult] = await Promise.all([
+      loadCalendarsForAccounts(meetings, accts ?? (accountsFailed ? accounts : [])),
+      loadRecordedMeetings(meetings, members ?? [], (rows) => {
+        // BLANK-3: a scope that answered paints at once; a slow scope never
+        // holds the rows that already arrived. The full pass below still owns
+        // the final list.
+        if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
+        if (rows.length >= recorded.length) recorded = onlyOwnMeetings(rows, fullBots ?? allBots, evts ?? []);
+      }),
+    ]);
 
     // A mutation committed while this pass was in flight. Its forced trailing
     // pass owns the next paint; never apply this pre-mutation snapshot.
@@ -356,14 +443,24 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     }
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
-    accounts = accts ?? [];
-    accountEmailById = new Map(
-      (accts ?? []).map((a) => [a.accountId, a.email ?? ""]),
-    );
-    calendarsByAccount = calendarSnapshot.calendarsByAccount;
-    enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
-    calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
+    // A failed accounts read keeps the accounts already on screen.
+    if (!accountsFailed) {
+      accounts = accts ?? [];
+      accountEmailById = new Map(
+        (accts ?? []).map((a) => [a.accountId, a.email ?? ""]),
+      );
+      calendarsByAccount = calendarSnapshot.calendarsByAccount;
+      enabledCalIdsByAccount = calendarSnapshot.enabledCalIdsByAccount;
+      calendarSummaryByKey = calendarSnapshot.calendarSummaryByKey;
+    }
+    calendarReadFailed = accountsFailed;
     membershipsError = nextMembershipsError;
+    // A failed history fetch keeps the cached rows instead of blanking them.
+    if (recordedResult.rows) {
+      recorded = onlyOwnMeetings(recordedResult.rows, fullBots ?? allBots, evts ?? []);
+    }
+    recordedError = recordedResult.error;
+    if (recordedResult.retry.length) void retryRecordedScopes(meetings, recordedResult.retry, epoch);
     fetchError = nextFetchError;
     refreshBlocked = nextRefreshBlocked;
     lastRefreshErrorRaw = nextLastRefreshErrorRaw;
@@ -372,12 +469,14 @@ async function refreshOnce(refreshRevision: number, epoch: number): Promise<void
     // hydrates a complete view.
     persistSnapshot();
     lastRefreshAt = Date.now();
+    lastSyncedAt = lastRefreshAt;
     hasLiveSnapshot = true;
   } catch (err) {
     if (epoch !== sessionEpoch || refreshRevision !== mutationRevision) return;
     // Keep the cached paint; surface the failure rather than blanking out.
     console.error("meetings refresh failed:", err);
     lastRefreshErrorRaw = String(err ?? "");
+    calendarReadFailed = true;
     const gate = meetingsRefreshGate(
       refreshFailureCount,
       err,
@@ -409,6 +508,229 @@ async function reportRefreshProblem(): Promise<ToastDescriptor> {
       text: friendlyError(err, "Could not file the report — try /hq-bug."),
     };
   }
+}
+
+// OWNER-019: read through the adapter. The vault buckets send no CORS
+// headers, so a webview `fetch` of a presigned URL fails on desktop.
+async function readSignalBody(url: string): Promise<string> {
+  return unwrap(await requireApi().meetings.readRecordedBody(url));
+}
+
+/**
+ * Load a recorded meeting's saved notes once per session. The detail call
+ * lists signal refs; bodies are read from their presigned URLs, capped per
+ * meeting. A failure leaves an "error" entry so the canvas does not retry in
+ * a loop; the next session (or refresh of the app) tries again.
+ */
+async function loadRecordedNotes(
+  meetingId: string,
+  companyUid: string | null,
+  opts: { retry?: boolean } = {},
+): Promise<void> {
+  const existing = recordedNotes[meetingId];
+  // Try again refetches the detail, so every presigned link is fresh.
+  // A failed read under a different company scope (a row that only now
+  // knows its company) is read again.
+  const rescoped = existing?.status === "error" && (existing.companyUid ?? null) !== companyUid;
+  if (existing && !rescoped && !(opts.retry && (existing.status === "error" || existing.recapFailed))) return;
+  const epoch = sessionEpoch;
+  recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading", companyUid } };
+  try {
+    const detail = unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid));
+    const refs = parseRecordedDetail(detail);
+    // OWNER-019: document-shaped meetings keep notes and transcript in one
+    // markdown file behind `source.presigned_url`, not in detail fields.
+    const docRef = parseRecordedDocumentRef(detail);
+    const [pages, document] = await Promise.all([
+      loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody),
+      docRef ? readSignalBody(docRef.url).then(parseRecordedDocument) : Promise.resolve(null),
+    ]);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document, companyUid } };
+  } catch (err) {
+    console.error(`meetings getRecorded failed for ${meetingId}:`, err);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { status: "error", companyUid } };
+  }
+}
+
+function notesEntryFor(pages: RecordedSignalPages): RecordedNotesEntry {
+  return {
+    status: "ready",
+    signals: recordedSignalsFromPages(pages),
+    remaining: recordedSignalsRemaining(pages),
+    pages,
+    recapFailed: (pages.failed ?? 0) > 0,
+  };
+}
+
+/**
+ * Read the next page of an opened meeting's saved notes. Pages append in ref
+ * order, so with every page read the recap matches the full set. A failed
+ * page keeps the notes already shown and leaves "Load more" to try again.
+ */
+async function loadMoreRecordedNotes(meetingId: string): Promise<void> {
+  const entry = recordedNotes[meetingId];
+  if (!entry?.pages || entry.loadingMore || !entry.remaining) return;
+  const epoch = sessionEpoch;
+  recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: true } };
+  try {
+    const pages = await loadNextRecordedSignalPage(entry.pages, readSignalBody);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document: entry.document } };
+  } catch (err) {
+    console.error(`meetings load more notes failed for ${meetingId}:`, err);
+    if (epoch !== sessionEpoch) return;
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...entry, loadingMore: false } };
+  }
+}
+
+/**
+ * Recorded meetings the signed-in person attended or recorded. hq-pro's list
+ * is ACL-filtered, so an owner or admin reads every member's recordings; this
+ * narrows it to the caller's own bots, calendar invites and device recordings.
+ */
+function onlyOwnMeetings(
+  rows: RecordedMeeting[],
+  bots: readonly ScheduledBot[],
+  calendarEvents: readonly MeetingEvent[],
+): RecordedMeeting[] {
+  const localRecordingIds = get(activeMeetings)
+    .map((m) => m.recordingId)
+    .filter((id): id is string => Boolean(id));
+  return ownRecordedMeetings(rows, {
+    botIds: bots.map((b) => b.botId),
+    calendarEvents,
+    localRecordingIds,
+  });
+}
+
+/**
+ * Recorded history for personal scope: the caller's unattributed meetings
+ * plus every active company's meetings, merged newest first. hq-pro returns
+ * only unattributed rows when no company is passed, so the fan-out is what
+ * makes company meetings appear. Any failed scope is reported; rows from the
+ * scopes that answered still paint, and a total failure returns null so the
+ * caller keeps its cached rows.
+ */
+/**
+ * OWNER-R1: list scopes that answered with a lasting refusal this session
+ * (company gone, not found, no access). They are skipped quietly until the
+ * session changes; each was logged once with its reason.
+ */
+let unavailableRecordedScopes = new Map<string, string>();
+/** Quiet retries for a list scope that failed for a passing reason. */
+let recordedListRetryDelaysMs: readonly number[] = [1500, 4000];
+
+/** Test hook: shorten the quiet retry delays. */
+export function setRecordedListRetryDelaysForTests(delays: readonly number[]): void {
+  recordedListRetryDelaysMs = delays;
+}
+
+/**
+ * A lasting refusal for this person (the company no longer exists, the
+ * meeting list is not found or not allowed) versus a passing failure
+ * (network, timeout, 5xx, throttling) worth trying again.
+ */
+export function recordedListFailureIsLasting(err: unknown): boolean {
+  const text = String(err instanceof Error ? err.message : err ?? "").toLowerCase();
+  if (/^http-(400|401|403|404|410|422)\b/.test(text)) return true;
+  return /^[a-z_-]*(not-found|not_found|forbidden|not-enabled|not-entitled|no-access|access-denied)[a-z_-]*:/.test(text);
+}
+
+const sleepMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function loadRecordedMeetings(
+  meetings: MeetingsApi,
+  members: CompanyMembership[],
+  /** BLANK-3: rows from the scopes that have answered so far, as each answers. */
+  onPartial?: (rows: RecordedMeeting[]) => void,
+): Promise<{ rows: RecordedMeeting[] | null; error: string; retry: Array<string | null> }> {
+  const companyIds = Array.from(
+    new Set(
+      members
+        .filter((m) => m.companyUid && (m.status ?? "").toLowerCase() === "active")
+        .map((m) => m.companyUid),
+    ),
+  );
+  const scopes: Array<string | null> = [null, ...companyIds].filter(
+    (companyId) => !unavailableRecordedScopes.has(companyId ?? "personal"),
+  );
+  const failing: Array<string | null> = [];
+  const answered: RecordedMeeting[][] = [];
+  const lists = await Promise.all(
+    scopes.map(async (companyId) => {
+      const outcome = await readRecordedScope(meetings, companyId);
+      if (outcome === "failed") {
+        failing.push(companyId);
+        return [] as RecordedMeeting[];
+      }
+      answered.push(outcome);
+      if (onPartial && outcome.length > 0) onPartial(mergeRecordedMeetings(answered));
+      return outcome;
+    }),
+  );
+  // Every source failed: the full failed state, at once.
+  if (scopes.length > 0 && failing.length === scopes.length) {
+    return { rows: null, error: "Some past meetings could not load.", retry: [] };
+  }
+  // Passing failures are retried in the background; the line waits for them.
+  return { rows: mergeRecordedMeetings(lists), error: "", retry: failing };
+}
+
+/**
+ * One list scope: its rows, [] for a lasting refusal (logged once and not
+ * asked again this session), or "failed" for a passing failure.
+ */
+async function readRecordedScope(
+  meetings: MeetingsApi,
+  companyId: string | null,
+): Promise<RecordedMeeting[] | "failed"> {
+  const key = companyId ?? "personal";
+  try {
+    return parseRecordedMeetings(unwrap(await meetings.listRecorded(companyId)));
+  } catch (err) {
+    if (recordedListFailureIsLasting(err)) {
+      unavailableRecordedScopes.set(key, String(err));
+      console.warn(`[meetings] past meetings from ${key} are not available, skipped:`, err);
+      return [];
+    }
+    console.warn(`[meetings] past meetings from ${key} failed:`, err);
+    return "failed";
+  }
+}
+
+/**
+ * Quiet background retries for list scopes that failed for a passing reason.
+ * Rows that arrive are merged in; "Some past meetings could not load." shows
+ * only if a scope still fails after its last retry.
+ */
+async function retryRecordedScopes(meetings: MeetingsApi, failing: Array<string | null>, epoch: number): Promise<void> {
+  let pending = failing;
+  for (const delay of recordedListRetryDelaysMs) {
+    await sleepMs(delay);
+    if (epoch !== sessionEpoch) return;
+    const still: Array<string | null> = [];
+    const arrived: RecordedMeeting[][] = [];
+    await Promise.all(
+      pending.map(async (companyId) => {
+        const outcome = await readRecordedScope(meetings, companyId);
+        if (outcome === "failed") still.push(companyId);
+        else arrived.push(outcome);
+      }),
+    );
+    if (epoch !== sessionEpoch) return;
+    if (arrived.length) {
+      recorded = onlyOwnMeetings(mergeRecordedMeetings([recorded, ...arrived]), allBots, events);
+      persistSnapshot();
+    }
+    pending = still;
+    if (!pending.length) return;
+  }
+  for (const companyId of pending) {
+    console.error(`meetings listRecorded failed for ${companyId ?? "personal"} after retries`);
+  }
+  recordedError = "Some past meetings could not load.";
 }
 
 async function loadCalendarsForAccounts(
@@ -447,7 +769,9 @@ function persistSnapshot(): void {
   saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
     events,
     scheduledBots: allBots,
-    botsByEventId: Array.from(botsByEventId.entries()),
+    // Rebuilt from scheduledBots on hydrate; storing both doubled the
+    // snapshot and pushed the webview's storage quota over its limit.
+    botsByEventId: [],
     companyNamesByUid: Array.from(companyNamesByUid.entries()),
     accounts,
     accountEmailById: Array.from(accountEmailById.entries()),
@@ -456,6 +780,7 @@ function persistSnapshot(): void {
       ([acct, ids]) => [acct, Array.from(ids)],
     ),
     calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
+    recorded,
   }, storage);
 }
 
@@ -1070,11 +1395,15 @@ export function stopMeetingsStore(): void {
   storeStorageHandler = null;
   finishCalendarConnect(null);
   sessionEpoch += 1;
+  unavailableRecordedScopes = new Map();
   started = false;
   viewActive = false;
   hydratedFromCache = false;
   firstRefreshSettled = false;
+  agendaPainted = false;
   hasLiveSnapshot = false;
+  calendarReadFailed = false;
+  lastSyncedAt = 0;
   lastRefreshAt = 0;
 }
 
@@ -1100,6 +1429,9 @@ function resetTenantSession(): void {
   calendarSummaryByKey = new Map();
   memberships = [];
   membershipsError = "";
+  recorded = [];
+  recordedError = "";
+  recordedNotes = {};
   fetchError = "";
   refreshBlocked = false;
   refreshFailureCount = 0;
@@ -1167,6 +1499,20 @@ export const meetingsStore = {
   get membershipsError() {
     return membershipsError;
   },
+  /** Recorded meeting history, newest first, across every readable scope. */
+  get recorded() {
+    return recorded;
+  },
+  /** Saved notes per recorded meeting id (see loadRecordedNotes). */
+  get recordedNotes() {
+    return recordedNotes;
+  },
+  loadRecordedNotes,
+  loadMoreRecordedNotes,
+  /** Plain-language note when some or all history scopes failed. */
+  get recordedError() {
+    return recordedError;
+  },
   get fetchError() {
     return fetchError;
   },
@@ -1178,17 +1524,24 @@ export const meetingsStore = {
   },
   /** US-010: true only before the first cache paint or settled refresh. */
   get initialLoadPending() {
-    return !hydratedFromCache && !firstRefreshSettled;
+    return !hydratedFromCache && !firstRefreshSettled && !agendaPainted;
   },
   /** US-010: a network refresh has fully succeeded at least once. */
   get hasLiveSnapshot() {
     return hasLiveSnapshot;
+  },
+  /** AUDIT-3-16: the last calendar accounts read failed. */
+  get calendarReadFailed() {
+    return calendarReadFailed;
   },
   get pendingActionsByEventId() {
     return rowPending;
   },
   get connectPending() {
     return connectPending;
+  },
+  get lastSyncedAt() {
+    return lastSyncedAt;
   },
   get connectNotice() {
     return connectNotice;

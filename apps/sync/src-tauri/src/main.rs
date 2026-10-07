@@ -451,6 +451,16 @@ fn main() {
     }
 
     let builder = crate::recovery::register_protocol(tauri::Builder::default());
+    // Deployments snapshots of protected apps load through this scheme; it
+    // serves only hosts with a live preview session (deploy_snapshot.rs).
+    let builder = builder.register_asynchronous_uri_scheme_protocol(
+        commands::deploy_snapshot::PREVIEW_SCHEME,
+        |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move {
+                responder.respond(commands::deploy_snapshot::proxy_preview_request(request).await);
+            });
+        },
+    );
     let builder = ui_protocol::register_protocol(builder)
         .on_page_load(|webview, payload| {
             #[cfg(target_os = "macos")]
@@ -519,7 +529,11 @@ fn main() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry, ()>::new("external-links")
                 .on_navigation(|webview, url| {
-                    crate::util::external_links::allow_navigation(webview.app_handle(), url)
+                    crate::util::external_links::allow_webview_navigation(
+                        webview.app_handle(),
+                        webview.label(),
+                        url,
+                    )
                 })
                 .build(),
         )
@@ -864,6 +878,7 @@ fn main() {
             crate::recovery::reset_local_ui_state,
             crate::recovery::open_recovery_window_cmd,
             updater::get_pending_update,
+            updater::background_updates_off,
             updater::install_update,
             updater::download_update,
             updater::install_downloaded_update,
@@ -947,6 +962,10 @@ fn main() {
             commands::desktop_alt::list_agent_tasks,
             commands::desktop_alt::list_channel_agent_tasks,
             commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::list_deploy_apps,
+            commands::deploy_preview::deploy_app_preview,
+            commands::deploy_preview_pass::deploy_app_snapshot,
+            commands::desktop_alt::deploy_access_request,
             commands::desktop_alt::get_company_secrets,
             commands::desktop_alt::get_company_crm_projection_vault,
             commands::desktop_alt::get_company_file_tree,
@@ -962,12 +981,17 @@ fn main() {
             commands::vault_explorer::read_vault_note,
             commands::vault_explorer::read_vault_note_frontmatter,
             commands::projects_local::get_local_projects,
+            commands::projects_local::list_local_sessions,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,
             commands::projects_local::get_local_company_goals,
             commands::projects_local::get_company_crm_projection,
+            commands::projects_local::atlas_local_first_page,
+            commands::projects_local::atlas_local_listing,
+            commands::projects_local::atlas_local_read_text,
             commands::projects_local::set_local_project_status,
             commands::projects_local::set_local_story_passes,
+            commands::projects_local::create_project_file,
             commands::library_local::get_library_root,
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,
@@ -993,6 +1017,8 @@ fn main() {
             commands::marketplace::get_my_creator,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
+            commands::meetings::meetings_fetch_live_transcript,
+            commands::meetings::meetings_read_recorded_body,
             commands::meetings::meetings_list_memberships,
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,

@@ -8,7 +8,7 @@
  * sidebar tells the host which companies to read. These tests change props
  * on a mounted sidebar, so they live in a runes test file.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
@@ -18,6 +18,13 @@ import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
 import { takePendingChannelOpen } from "./open-target.js";
 import { resetWakingSessionStores } from "./create-bot/waking-sessions.js";
+import { createBotFlowDoor } from "../shell/lazy-doors.js";
+
+// The create window loads its bot flow on demand on the rail; load it first
+// so the flow paints in the same tick these tests click into it.
+beforeAll(async () => {
+  await createBotFlowDoor.load();
+});
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
@@ -121,8 +128,19 @@ afterEach(async () => {
   takePendingChannelOpen();
 });
 
+/**
+ * "New bot" asks "Cloud or Local?" first, in the full-window takeover. The
+ * flag decides what Cloud opens: the takeover's own create screen, or the
+ * "+" window's bot flow in the takeover shell.
+ */
+async function chooseKind(kind: "cloud" | "local"): Promise<void> {
+  expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
+  click(`[data-testid="new-bot-choice-${kind}"]`);
+  await settle();
+}
+
 describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
-  it("stays on the in-modal flow until the host has an answer, then offers the takeover", async () => {
+  it("stays on the '+' window's flow until the host has an answer, then offers the takeover", async () => {
     const props = $state({
       ...BASE_PROPS,
       api: createFixtureChatSidebarApi(),
@@ -136,23 +154,32 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-new-message"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
 
-    // The answer arrives: Indigo has the flag.
-    click('[data-testid="chat-create-back"]');
+    // The answer arrives: Indigo has the flag. Close the bot flow first.
+    expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
+    click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
     props.newBotCompanyUids = ["cmp_indigo"];
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    // On the rail, New bot is on the "+" menu, which closes after each pick.
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
     await settle();
+    click('[data-testid="chat-create-menu-agent"]');
+    await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
   });
 
-  it("goes back to the in-modal flow when the flag is read as off", async () => {
+  it("goes back to the '+' window's flow when the flag is read as off", async () => {
     const props = $state({
       ...BASE_PROPS,
       api: createFixtureChatSidebarApi(),
@@ -168,10 +195,13 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-new-message"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("keeps an open takeover's create screen when a later read comes back off", async () => {
@@ -187,8 +217,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="chat-new-message"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
 
     // The person is part-way through. The screen is not taken away.
@@ -200,10 +231,20 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     // Once it is closed, the next "New bot" follows the new answer.
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    // Opened from the "+" menu, so Cancel goes back to the "+" button. It
+    // does not open a create window the person never had open.
+    expect(q('[data-testid="chat-create-modal"]')).toBeNull();
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("chat-new-message");
+    // On the rail, New bot is on the "+" menu, which closes after each pick.
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
     await settle();
+    click('[data-testid="chat-create-menu-agent"]');
+    await settle();
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
+    // The "+" window's own cloud flow, on the shared step screens in its shell.
+    expect(q('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
   it("keeps the list it started with when the takeover is opened from a bot's row (round 4, item 5)", async () => {
@@ -249,8 +290,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     // Make Nova, cancel it, and the removal is refused: Nova keeps a row.
     click('[data-testid="chat-new-message"]');
     await settle();
-    click('[data-testid="chat-create-new-bot"]');
+    click('[data-testid="chat-create-menu-agent"]');
     await settle();
+    await chooseKind("cloud");
     await nameBot();
     await vi.waitFor(() =>
       expect(q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.disabled).toBe(false),

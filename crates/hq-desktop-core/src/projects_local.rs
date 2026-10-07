@@ -102,6 +102,11 @@ pub struct LocalProject {
     /// local/cloud attribution has had a chance to win.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creator_fallback: Option<String>,
+    /// Last write time of the linked `prd.json` on this computer (RFC 3339).
+    /// An activity signal for the board's Active column, never a status: a
+    /// story edit or move by any local session or lane rewrites the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prd_modified_at: Option<String>,
 }
 
 /// A single user story, mirroring the prd.json story shape the Kanban + detail
@@ -678,6 +683,18 @@ pub fn prd_created_at(prd: &PrdFile) -> Option<String> {
     metadata_timestamp(&prd.metadata, &["createdAt", "created_at"])
 }
 
+/// Last-modified time of an HQ-relative file as RFC 3339 UTC, when readable.
+pub fn file_modified_at(hq_root: &Path, rel_path: &str) -> Option<String> {
+    let modified = std::fs::metadata(hq_root.join(rel_path))
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(
+        chrono::DateTime::<chrono::Utc>::from(modified)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
+}
+
 pub fn prd_updated_at(prd: &PrdFile) -> Option<String> {
     metadata_timestamp(&prd.metadata, &["updatedAt", "updated_at"])
 }
@@ -815,6 +832,68 @@ pub fn resolve_project_write_path(
 ) -> Result<ResolvedProjectPath, String> {
     reject_project_write_symlinks(hq_root, rel_path)?;
     resolve_project_path(hq_root, rel_path, expected_filename)
+}
+
+/// Largest text file the New file form may create.
+pub const MAX_NEW_PROJECT_FILE_BYTES: usize = 1024 * 1024;
+
+/// Create a new text file at an HQ-relative path (QA-072). The parent folder
+/// must already exist, may not traverse a symlink, and must resolve inside
+/// the same company it names. The file is opened exclusive and no-follow, so
+/// an existing file or a racing symlink is refused rather than overwritten.
+/// Returns the HQ-relative path written.
+pub fn create_project_text_file(
+    hq_root: &Path,
+    rel_path: &str,
+    contents: &str,
+) -> Result<String, String> {
+    let normalized = validate_hq_relative_path(rel_path, false)?;
+    let relative = Path::new(&normalized);
+    let file_name = relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "new file needs a name".to_string())?
+        .to_string();
+    if file_name.starts_with('.') {
+        return Err("new file name cannot start with a dot".to_string());
+    }
+    if contents.len() > MAX_NEW_PROJECT_FILE_BYTES {
+        return Err("new file is too large".to_string());
+    }
+    let parent = relative
+        .parent()
+        .and_then(|parent| parent.to_str())
+        .filter(|parent| !parent.is_empty())
+        .ok_or_else(|| "new file must go inside a folder".to_string())?
+        .to_string();
+    reject_project_write_symlinks(hq_root, &parent)?;
+    let canonical_parent = canonical_hq_relative_path(hq_root, &parent, false)?;
+    if canonical_parent != parent {
+        return Err("new file folder resolves to a different folder".to_string());
+    }
+    matching_project_company_scope(&normalized, &format!("{canonical_parent}/{file_name}"))?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    let opened = open_hq_scoped_directory(hq_root, &parent)?
+        .create_new_file(std::ffi::OsStr::new(&file_name));
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let opened = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(hq_root.join(&normalized));
+    let mut file = opened.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            "a file with that name is already in this folder".to_string()
+        } else {
+            format!("could not create file: {error}")
+        }
+    })?;
+
+    use std::io::Write;
+    file.write_all(contents.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| format!("could not write file: {error}"))?;
+    Ok(normalized)
 }
 
 fn require_same_project_write_target(
@@ -1358,6 +1437,7 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
                     board_rel,
                 ),
                 creator_fallback: None,
+                prd_modified_at: None,
             });
         }
     }
@@ -1410,6 +1490,7 @@ fn scan_personal_projects(hq_root: &Path) -> Vec<LocalProject> {
             stories_complete,
             provenance,
             creator_fallback: None,
+            prd_modified_at: None,
         });
     }
     out
@@ -1521,6 +1602,7 @@ fn scan_local_projects_scoped(
                         &board_source,
                     ),
                     creator_fallback: None,
+                    prd_modified_at: None,
                 });
             }
         }
@@ -1574,6 +1656,7 @@ fn scan_local_projects_scoped(
                 stories_complete,
                 provenance,
                 creator_fallback: None,
+                prd_modified_at: None,
             });
         }
     }
@@ -1582,6 +1665,12 @@ fn scan_local_projects_scoped(
         out.extend(scan_personal_projects(hq_root));
     }
 
+    for project in &mut out {
+        project.prd_modified_at = project
+            .prd_path
+            .as_deref()
+            .and_then(|rel| file_modified_at(hq_root, rel));
+    }
     apply_git_creator_fallbacks(hq_root, &mut out);
     out
 }
@@ -2849,7 +2938,8 @@ mod tests {
         assert_eq!(
             projects
                 .iter()
-                .filter(|project| project.prd_path.as_deref() == Some("personal/projects/my-project/prd.json"))
+                .filter(|project| project.prd_path.as_deref()
+                    == Some("personal/projects/my-project/prd.json"))
                 .count(),
             1,
             "board-linked Personal PRDs are not duplicated",
@@ -3013,6 +3103,17 @@ mod tests {
         assert_eq!(project.provenance.creator.as_deref(), Some("Corey"));
         assert_eq!(project.provenance.origin.as_deref(), Some("HQ plan"));
         assert!(project.provenance.assignee.is_none());
+        // The board's Active column reads the prd.json write time on this computer.
+        let modified = project
+            .prd_modified_at
+            .as_deref()
+            .expect("linked prd reports its modified time");
+        let modified = chrono::DateTime::parse_from_rfc3339(modified).expect("rfc3339");
+        let age = chrono::Utc::now().signed_duration_since(modified);
+        assert!(
+            age.num_minutes().abs() < 5,
+            "fresh prd write reads as recent: {age}"
+        );
 
         let prd = read_project_prd(&root, "companies/indigo/projects/launch/prd.json")
             .expect("provenance PRD parses");
@@ -3106,6 +3207,7 @@ mod tests {
             stories_complete: 0,
             provenance,
             creator_fallback: None,
+            prd_modified_at: None,
         };
         let mut projects = vec![
             project(
@@ -4650,5 +4752,43 @@ mod tests {
         assert!(s.ends_with('Z'));
         assert_eq!(&s[4..5], "-");
         assert_eq!(&s[10..11], "T");
+    }
+
+    #[test]
+    fn create_project_text_file_writes_new_file_once() {
+        let root = make_fixture_tree();
+        let rel = "companies/indigo/projects/flagship/welcome-v2.md";
+        let written = create_project_text_file(&root, rel, "# Welcome\n").unwrap();
+        assert_eq!(written, rel);
+        assert_eq!(fs::read_to_string(root.join(rel)).unwrap(), "# Welcome\n");
+
+        let again = create_project_text_file(&root, rel, "other").unwrap_err();
+        assert!(again.contains("already in this folder"), "{again}");
+        assert_eq!(fs::read_to_string(root.join(rel)).unwrap(), "# Welcome\n");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn create_project_text_file_refuses_missing_folder_dotfile_and_escape() {
+        let root = make_fixture_tree();
+        assert!(create_project_text_file(&root, "companies/indigo/nope/a.md", "").is_err());
+        assert!(
+            create_project_text_file(&root, "companies/indigo/projects/flagship/.env", "").is_err()
+        );
+        assert!(create_project_text_file(&root, "companies/indigo/../x.md", "").is_err());
+        assert!(create_project_text_file(&root, "a.md", "").is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_project_text_file_refuses_symlinked_folder() {
+        let root = make_fixture_tree();
+        let other = root.join("companies").join("beta");
+        fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(&other, root.join("companies/indigo/link")).unwrap();
+        assert!(create_project_text_file(&root, "companies/indigo/link/a.md", "").is_err());
+        assert!(!other.join("a.md").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 }

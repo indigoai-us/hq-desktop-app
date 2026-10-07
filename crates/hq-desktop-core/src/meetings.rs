@@ -30,6 +30,21 @@ pub struct MeetingEvent {
     pub meeting_url: Option<String>,
     #[serde(default)]
     pub signals: Option<serde_json::Value>,
+    // Event details for the meeting canvas. Serde drops any field not listed
+    // here, so before these existed the canvas never saw attendees or the
+    // description even though hq-pro sends them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organizer: Option<serde_json::Value>,
+    #[serde(default, rename = "htmlLink", skip_serializing_if = "Option::is_none")]
+    pub html_link: Option<String>,
+    #[serde(default, rename = "conferenceData", skip_serializing_if = "Option::is_none")]
+    pub conference_data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +121,7 @@ struct ScheduledBotRest {
     calendar_event_id: Option<String>,
     #[serde(default)]
     calendar_series_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     recurring_meeting: bool,
     #[serde(default)]
     scheduled_start_time: Option<String>,
@@ -116,12 +131,22 @@ struct ScheduledBotRest {
     updated_at: Option<String>,
     #[serde(default, alias = "company")]
     company_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     auto_scheduled: bool,
     #[serde(default)]
     error_message: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_false")]
     source_landed: bool,
+}
+
+/// hq-pro sends `null` for unset booleans on older bot rows (e.g.
+/// `recurringMeeting: null`). Treat null like an absent key so the row parses
+/// instead of being dropped by [`scheduled_bots_from_values`].
+fn null_as_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(false))
 }
 
 impl From<ScheduledBotWire> for ScheduledBot {
@@ -850,6 +875,47 @@ mod tests {
         assert!(log.contains("botId=bot-bad"), "expected bot id in skip log");
     }
 
+    /// OWNER-019: hq-pro sends `null` for unset booleans on older bot rows.
+    /// Before the fix every such row was skipped with
+    /// "invalid type: null, expected a boolean" (22k log lines per pass).
+    #[test]
+    fn bots_response_tolerates_null_booleans() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let log_path = tmp.path().join("hq-sync.log");
+        let _guard = crate::logfile::LogOverrideGuard::new(log_path.clone());
+        let json = r#"{
+            "bots": [
+                {
+                    "botId": "00a409b1-c4f0-4301-803f-3737e124dd0f",
+                    "status": "done",
+                    "meetingUrl": "https://zoom.us/j/1",
+                    "platform": "zoom",
+                    "recurringMeeting": null,
+                    "autoScheduled": null,
+                    "sourceLanded": null,
+                    "calendarEventId": null,
+                    "companyId": "cmp_01KQ7P52H2T70HAWX9E65Z2BZV"
+                },
+                {
+                    "botId": "bot-true",
+                    "status": "done",
+                    "meetingUrl": "https://zoom.us/j/2",
+                    "platform": "zoom",
+                    "recurringMeeting": true,
+                    "autoScheduled": true,
+                    "sourceLanded": true
+                }
+            ]
+        }"#;
+        let parsed: BotsResponse = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.bots.len(), 2, "null-boolean row must not be dropped");
+        let b = &parsed.bots[0];
+        assert!(!b.recurring_meeting && !b.auto_scheduled && !b.source_landed);
+        assert!(parsed.bots[1].recurring_meeting && parsed.bots[1].source_landed);
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(!log.contains("malformed scheduled-bot"), "unexpected skip: {log}");
+    }
+
     /// The cancel response shares the same `recallBotId` alias, so it must also
     /// tolerate both id keys arriving together.
     #[test]
@@ -1305,5 +1371,368 @@ mod tests {
         // depending on how the payload was constructed.
         let body = build_notification_body("zoom", Some(""), Some(""));
         assert_eq!(body, "Zoom meeting");
+    }
+}
+
+#[cfg(test)]
+mod event_details_passthrough_tests {
+    use super::MeetingEvent;
+    use serde_json::json;
+
+    /// Regression: the meeting canvas showed "No attendees" and "No agenda"
+    /// for every event because these fields were dropped at this boundary.
+    #[test]
+    fn event_details_survive_the_round_trip() {
+        let wire = json!({
+            "id": "evt_1",
+            "summary": "HQ Dev Standup",
+            "description": "1. Wins\n2. Blockers",
+            "location": "https://zoom.us/j/123",
+            "start": { "dateTime": "2026-10-02T09:30:00-06:00" },
+            "end": { "dateTime": "2026-10-02T10:30:00-06:00" },
+            "status": "confirmed",
+            "attendees": [
+                { "email": "a@example.com", "displayName": "Ada", "responseStatus": "accepted" },
+                { "email": "b@example.com", "displayName": null, "responseStatus": "needsAction" }
+            ],
+            "organizer": { "email": "a@example.com", "displayName": "Ada" },
+            "htmlLink": "https://calendar.google.com/event?eid=1",
+            "conferenceData": { "entryPoints": [{ "entryPointType": "video", "uri": "https://zoom.us/j/123" }] }
+        });
+        let event: MeetingEvent = serde_json::from_value(wire).unwrap();
+        let out = serde_json::to_value(&event).unwrap();
+        assert_eq!(out["description"], "1. Wins\n2. Blockers");
+        assert_eq!(out["location"], "https://zoom.us/j/123");
+        assert_eq!(out["attendees"][0]["displayName"], "Ada");
+        assert_eq!(out["attendees"][1]["responseStatus"], "needsAction");
+        assert_eq!(out["organizer"]["email"], "a@example.com");
+        assert_eq!(out["htmlLink"], "https://calendar.google.com/event?eid=1");
+        assert_eq!(out["conferenceData"]["entryPoints"][0]["uri"], "https://zoom.us/j/123");
+    }
+
+    #[test]
+    fn events_without_details_still_parse_and_omit_them() {
+        let wire = json!({
+            "id": "evt_2",
+            "start": { "date": "2026-10-02" },
+            "end": { "date": "2026-10-03" },
+            "status": "confirmed"
+        });
+        let event: MeetingEvent = serde_json::from_value(wire).unwrap();
+        let out = serde_json::to_value(&event).unwrap();
+        assert!(out.get("attendees").is_none());
+        assert!(out.get("description").is_none());
+    }
+}
+
+// ── Live transcript (Recall real-time, read path) ────────────────────────────
+//
+// `GET /v1/meetings/{recallBotId}?view=live&companyId=&sinceRevision=` serves
+// the projected live transcript for a meeting the notetaker is still in. The
+// desktop polls it with `If-None-Match` so an unchanged snapshot costs a 304.
+// Contract: hq-pro docs/plans/meeting-live-transcript.md section 2.3.
+
+/// One finalized utterance from the live snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTranscriptSegment {
+    pub segment_id: String,
+    #[serde(default)]
+    pub participant_id: Option<String>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    #[serde(default)]
+    pub start_seconds: f64,
+    #[serde(default)]
+    pub end_seconds: Option<f64>,
+    pub text: String,
+}
+
+/// The latest in-progress utterance, display only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveTranscriptPartial {
+    #[serde(default)]
+    pub participant_id: Option<String>,
+    #[serde(default)]
+    pub speaker: Option<String>,
+    #[serde(default)]
+    pub start_seconds: f64,
+    pub text: String,
+}
+
+/// 200 body. Segments and partial are parsed per row so one bad segment is
+/// dropped and logged instead of failing the whole poll.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveTranscriptWire {
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    provisional: bool,
+    #[serde(default)]
+    segments: Vec<serde_json::Value>,
+    #[serde(default)]
+    partial: Option<serde_json::Value>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct LiveTranscriptErrorWire {
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// What one live-transcript poll produced. Serialized with a `kind` tag so
+/// the renderer can branch without parsing HTTP status text.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum LiveTranscriptFetch {
+    /// New data. `segments` holds only rows past the requested revision.
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        revision: u64,
+        etag: Option<String>,
+        updated_at: Option<String>,
+        provisional: bool,
+        truncated: bool,
+        segments: Vec<LiveTranscriptSegment>,
+        partial: Option<LiveTranscriptPartial>,
+    },
+    /// 304: the snapshot has not changed since the ETag we sent.
+    NotModified,
+    /// 404 `live-transcript-disabled`: the server has live transcripts off.
+    Disabled,
+    /// 404 `live-transcript-not-found` (or a bare 404): no snapshot yet.
+    NotFound,
+}
+
+/// Build the poll URL. Ids are checked against the URL-safe alphabet so a
+/// malformed value from the renderer never produces a different route.
+pub fn live_transcript_url(
+    base: &str,
+    recall_bot_id: &str,
+    company_id: &str,
+    since_revision: Option<u64>,
+) -> Result<String, String> {
+    if !is_url_safe_id(recall_bot_id) {
+        return Err("invalid recallBotId".to_string());
+    }
+    if !is_url_safe_id(company_id) {
+        return Err("invalid companyId".to_string());
+    }
+    let mut url = format!(
+        "{}/v1/meetings/{recall_bot_id}?view=live&companyId={company_id}",
+        base.trim_end_matches('/')
+    );
+    if let Some(rev) = since_revision {
+        url.push_str(&format!("&sinceRevision={rev}"));
+    }
+    Ok(url)
+}
+
+/// Map one HTTP response onto [`LiveTranscriptFetch`]. Any other status is an
+/// error string for the log; the renderer keeps its last good state.
+pub fn interpret_live_transcript_response(
+    status: u16,
+    etag: Option<String>,
+    body: &str,
+) -> Result<LiveTranscriptFetch, String> {
+    match status {
+        304 => Ok(LiveTranscriptFetch::NotModified),
+        404 => {
+            let code = serde_json::from_str::<LiveTranscriptErrorWire>(body)
+                .ok()
+                .and_then(|w| w.code);
+            if code.as_deref() == Some("live-transcript-disabled") {
+                Ok(LiveTranscriptFetch::Disabled)
+            } else {
+                Ok(LiveTranscriptFetch::NotFound)
+            }
+        }
+        200..=299 => {
+            let wire: LiveTranscriptWire =
+                serde_json::from_str(body).map_err(|e| format!("live-transcript parse: {e}"))?;
+            Ok(LiveTranscriptFetch::Ok {
+                revision: wire.revision,
+                etag,
+                updated_at: wire.updated_at,
+                provisional: wire.provisional,
+                truncated: wire.truncated,
+                segments: live_segments_from_values(wire.segments),
+                partial: wire.partial.and_then(live_partial_from_value),
+            })
+        }
+        other => Err(format!("live-transcript HTTP {other}")),
+    }
+}
+
+fn live_segments_from_values(values: Vec<serde_json::Value>) -> Vec<LiveTranscriptSegment> {
+    let mut out = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        match serde_json::from_value::<LiveTranscriptSegment>(value) {
+            Ok(seg) if !seg.segment_id.is_empty() && !seg.text.trim().is_empty() => out.push(seg),
+            Ok(_) => crate::logfile::log(
+                "meetings",
+                &format!("skipping empty live-transcript segment {index}"),
+            ),
+            Err(err) => crate::logfile::log(
+                "meetings",
+                &format!("skipping malformed live-transcript segment {index}: {err}"),
+            ),
+        }
+    }
+    out
+}
+
+fn live_partial_from_value(value: serde_json::Value) -> Option<LiveTranscriptPartial> {
+    if value.is_null() {
+        return None;
+    }
+    match serde_json::from_value::<LiveTranscriptPartial>(value) {
+        Ok(p) if !p.text.trim().is_empty() => Some(p),
+        Ok(_) => None,
+        Err(err) => {
+            crate::logfile::log(
+                "meetings",
+                &format!("skipping malformed live-transcript partial: {err}"),
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod live_transcript_tests {
+    use super::*;
+
+    const BODY: &str = r#"{
+      "schemaVersion": 1,
+      "meetingId": "bot_1",
+      "revision": 42,
+      "updatedAt": "2026-10-02T16:10:00.000Z",
+      "provisional": true,
+      "segments": [
+        {"segmentId":"s1","participantId":"100","speaker":"Corey","startSeconds":812.4,"endSeconds":818.9,"text":"Hello","utteranceFinalized":true,"futureField":1},
+        {"segmentId":"s2","speaker":"Stefan","startSeconds":"bad","text":"broken"},
+        {"segmentId":"s3","speaker":"Stefan","startSeconds":820,"text":"Hi"}
+      ],
+      "partial": {"participantId":"100","speaker":"Corey","startSeconds":821,"text":"So the"},
+      "truncated": false
+    }"#;
+
+    #[test]
+    fn builds_url_with_and_without_cursor() {
+        assert_eq!(
+            live_transcript_url("https://x/", "bot_1", "cmp_A", None).unwrap(),
+            "https://x/v1/meetings/bot_1?view=live&companyId=cmp_A"
+        );
+        assert_eq!(
+            live_transcript_url("https://x", "bot_1", "cmp_A", Some(7)).unwrap(),
+            "https://x/v1/meetings/bot_1?view=live&companyId=cmp_A&sinceRevision=7"
+        );
+    }
+
+    #[test]
+    fn rejects_ids_that_would_change_the_route() {
+        assert!(live_transcript_url("https://x", "../bot", "cmp_A", None).is_err());
+        assert!(live_transcript_url("https://x", "bot_1", "cmp&x=1", None).is_err());
+        assert!(live_transcript_url("https://x", "", "cmp_A", None).is_err());
+    }
+
+    #[test]
+    fn parses_200_and_drops_a_malformed_segment() {
+        let got = interpret_live_transcript_response(200, Some("\"e1\"".into()), BODY).unwrap();
+        match got {
+            LiveTranscriptFetch::Ok {
+                revision,
+                etag,
+                provisional,
+                segments,
+                partial,
+                ..
+            } => {
+                assert_eq!(revision, 42);
+                assert_eq!(etag.as_deref(), Some("\"e1\""));
+                assert!(provisional);
+                assert_eq!(
+                    segments
+                        .iter()
+                        .map(|s| s.segment_id.as_str())
+                        .collect::<Vec<_>>(),
+                    vec!["s1", "s3"]
+                );
+                assert_eq!(segments[0].speaker.as_deref(), Some("Corey"));
+                assert_eq!(segments[0].start_seconds, 812.4);
+                assert_eq!(partial.unwrap().text, "So the");
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn round_trips_to_camel_case_for_the_renderer() {
+        let got = interpret_live_transcript_response(200, None, BODY).unwrap();
+        let json = serde_json::to_value(&got).unwrap();
+        assert_eq!(json["kind"], "ok");
+        assert_eq!(json["revision"], 42);
+        assert_eq!(json["updatedAt"], "2026-10-02T16:10:00.000Z");
+        assert_eq!(json["segments"][0]["segmentId"], "s1");
+        assert_eq!(json["segments"][0]["startSeconds"], 812.4);
+        assert_eq!(json["partial"]["speaker"], "Corey");
+    }
+
+    #[test]
+    fn maps_304_and_404_codes() {
+        assert_eq!(
+            interpret_live_transcript_response(304, None, "").unwrap(),
+            LiveTranscriptFetch::NotModified
+        );
+        assert_eq!(
+            interpret_live_transcript_response(404, None, r#"{"code":"live-transcript-disabled"}"#)
+                .unwrap(),
+            LiveTranscriptFetch::Disabled
+        );
+        assert_eq!(
+            interpret_live_transcript_response(
+                404,
+                None,
+                r#"{"code":"live-transcript-not-found"}"#
+            )
+            .unwrap(),
+            LiveTranscriptFetch::NotFound
+        );
+        assert_eq!(
+            interpret_live_transcript_response(404, None, "not json").unwrap(),
+            LiveTranscriptFetch::NotFound
+        );
+        assert_eq!(
+            serde_json::to_value(LiveTranscriptFetch::NotModified).unwrap()["kind"],
+            "not-modified"
+        );
+    }
+
+    #[test]
+    fn other_statuses_are_errors() {
+        assert!(interpret_live_transcript_response(403, None, "{}").is_err());
+        assert!(interpret_live_transcript_response(500, None, "{}").is_err());
+        assert!(interpret_live_transcript_response(200, None, "not json").is_err());
+    }
+
+    #[test]
+    fn null_partial_is_none() {
+        let body = r#"{"revision":1,"segments":[],"partial":null}"#;
+        match interpret_live_transcript_response(200, None, body).unwrap() {
+            LiveTranscriptFetch::Ok {
+                partial, segments, ..
+            } => {
+                assert!(partial.is_none());
+                assert!(segments.is_empty());
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
     }
 }

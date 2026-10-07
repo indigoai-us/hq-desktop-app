@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
+  import { onMount, untrack } from "svelte";
+  import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
   import { hostComputerNoun, PERSONAL_TRANSCRIPTS_FLAG } from "@hq/platform";
   import type {
     MeetingPermissionsSnapshot,
@@ -28,6 +32,7 @@
   } from "./meetings-store.svelte";
   import type { MeetingsStorage } from "./meetings-cache";
   import LiveNowCard from "../common/LiveNowCard.svelte";
+  import { meetingsRailState } from "./meetings-rail-state.svelte";
   import {
     meetingDetectionNeedsSetup,
     missingMeetingPermissions,
@@ -54,7 +59,6 @@
   import {
     MEETINGS_CONNECT_EMPTY_BODY,
     MEETINGS_CONNECT_EMPTY_TITLE,
-    MEETINGS_LOADING_LABEL,
     MEETINGS_PAGE_DEK,
     MEETINGS_PAST_EMPTY,
     MEETINGS_UPCOMING_EMPTY,
@@ -65,6 +69,7 @@
   } from "./meetings-view-model";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
   import PageHeader from "../shell/PageHeader.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -202,7 +207,7 @@
   );
   const agendaTitle = $derived(agendaTab === "past" ? "Past" : "Upcoming");
 
-  // US-010: first paint. Skeleton until we have either a cache snapshot or a
+  // US-010: first paint. Loader until we have either a cache snapshot or a
   // settled first refresh; then, if there is genuinely nothing AND no calendar
   // account is linked (and the emptiness is not a fetch failure), lead with
   // the connect-a-calendar state instead of "no meetings".
@@ -210,6 +215,7 @@
   const showConnectEmpty = $derived(
     !initialLoadPending &&
       meetingsStore.hasLiveSnapshot &&
+      !meetingsStore.calendarReadFailed &&
       !fetchError &&
       accounts.length === 0 &&
       events.length === 0 &&
@@ -380,6 +386,44 @@
     }, 4000);
   }
 
+  // OWNER-003: page feedback renders on the shared toast layer. The page
+  // timer above still owns how long it stays (the upgrade action can hold it).
+  const MEETINGS_TOAST_KEY = "meetings-notice";
+  $effect(() => {
+    const current = toast;
+    const pending = toastUpgradePending;
+    untrack(() => {
+      if (!current) {
+        dismissToastByKey(MEETINGS_TOAST_KEY);
+        return;
+      }
+      const upgradeUrl = current.upgradeUrl;
+      pushToast({
+        key: MEETINGS_TOAST_KEY,
+        kind: "sticky",
+        tone: current.kind === "warn" ? "err" : "neutral",
+        title: current.text,
+        detail: "",
+        onDismiss: () => {
+          toast = null;
+        },
+        actions: upgradeUrl
+          ? [
+              {
+                label: pending ? "Opening…" : "Upgrade",
+                testId: "meetings-plan-upgrade",
+                primary: true,
+                disabled: pending,
+                keepOpen: true,
+                onAction: () => void openToastUpgrade(upgradeUrl),
+              },
+            ]
+          : [],
+      });
+    });
+  });
+  $effect(() => () => dismissToastByKey(MEETINGS_TOAST_KEY));
+
   async function openToastUpgrade(url: string): Promise<void> {
     if (toastUpgradePending) return;
     const safeUrl = externalHref(url);
@@ -473,7 +517,8 @@
     try {
       await openExternal("https://calendar.google.com");
     } catch (err) {
-      flashToast("warn", `Couldn't open Calendar: ${String(err)}`);
+      console.warn("[meetings] open Google Calendar failed", err);
+      flashToast("warn", "Couldn't open Calendar. Try again.");
     } finally {
       calendarOpening = false;
     }
@@ -487,7 +532,8 @@
     try {
       await openExternal(url);
     } catch (err) {
-      flashToast("warn", `Couldn't open the meeting: ${String(err)}`);
+      console.warn("[meetings] open meeting link failed", err);
+      flashToast("warn", "Couldn't open the meeting. Try again.");
     } finally {
       upNextJoining = false;
     }
@@ -505,7 +551,8 @@
           await openExternal(result.url);
         } catch (err) {
           meetingsStore.stopCalendarConnectWatch();
-          flashToast("warn", `Couldn't open the browser: ${String(err)}`);
+          console.warn("[meetings] open calendar connect URL failed", err);
+          flashToast("warn", "Couldn't open the browser. Try again.");
         }
       }
     } finally {
@@ -530,7 +577,8 @@
     try {
       await openExternal(HQ_CONSOLE_INTEGRATIONS_URL);
     } catch (err) {
-      flashToast("warn", `Couldn't open HQ Console: ${String(err)}`);
+      console.warn("[meetings] open HQ Console failed", err);
+      flashToast("warn", "Couldn't open HQ Console. Try again.");
     }
   }
 
@@ -808,7 +856,7 @@
             aria-label={reporting
               ? "Reporting refresh problem"
               : "Report refresh problem"}
-          >
+          ><RailIcon name="send" />
             {reporting ? "Reporting…" : "Report a problem"}
           </button>
         {/if}
@@ -837,7 +885,7 @@
         onclick={openCalendar}
         disabled={calendarOpening}
         aria-busy={calendarOpening}
-      >
+      ><RailIcon name="external" />
         {calendarOpening ? "Opening…" : "Open calendar"}
       </button>
       <button
@@ -855,25 +903,6 @@
     </div>
     {/snippet}
   </PageHeader>
-
-  {#if toast}
-    <div class="toast" class:toast-warn={toast.kind === "warn"} role="status">
-      <span>{toast.text}</span>
-      {#if toast.upgradeUrl}
-        <button
-          class="toast-upgrade"
-          data-testid="meetings-plan-upgrade"
-          type="button"
-          disabled={toastUpgradePending}
-          onclick={() => {
-            if (toast?.upgradeUrl) void openToastUpgrade(toast.upgradeUrl);
-          }}
-        >
-          {toastUpgradePending ? "Opening…" : "Upgrade"}
-        </button>
-      {/if}
-    </div>
-  {/if}
 
   <div class="content">
     <div class="url-invite-bar">
@@ -910,17 +939,14 @@
         <!-- Destination picker. Only renders once the user starts typing —
              keeps the idle bar clean. `null` = Personal (the default). -->
         <span class="url-invite-company-wrap">
-          <select
-            class="url-invite-company"
-            aria-label="Save bot to"
-            bind:value={urlInputCompanyId}
+          <Dropdown
+            testid="url-invite-company"
+            label="Save bot to"
+            value={urlInputCompanyId ?? ""}
+            onchange={(v) => (urlInputCompanyId = v || null)}
             disabled={urlInviting}
-          >
-            <option value={null}>Personal</option>
-            {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
-              <option value={uid}>{name}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "Personal" }, ...[...companyNamesByUid.entries()].map(([uid, name]) => ({ value: uid, label: name }))]}
+          />
           <span class="url-invite-company-chevron" aria-hidden="true">›</span>
         </span>
       {/if}
@@ -934,7 +960,7 @@
           ? "Inviting recording bot"
           : "Invite recording bot"}
         onclick={onUrlInvite}
-      >
+      ><RailIcon name="user-plus" />
         {urlInviting ? "Inviting…" : "Invite"}
       </button>
     </div>
@@ -987,14 +1013,15 @@
           onclick={openDetectionSetup}
           disabled={meetingPermsOpening}
           aria-busy={meetingPermsOpening}
-        >
+        ><RailIcon name="settings" />
           {meetingPermsOpening ? "Opening…" : "Set up"}
         </button>
       </section>
     {/if}
 
-    <!-- Native controls apply to desktop detections, not calendar recording bots. -->
-    {#if nativeLiveMeeting}
+    <!-- Native controls apply to desktop detections, not calendar recording bots.
+         Under the console-rail canvas host the host shows this card instead. -->
+    {#if nativeLiveMeeting && !meetingsRailState.hostOwnsLiveCard}
       <LiveNowCard
         meeting={nativeLiveMeeting}
         memberships={$recordingMemberships}
@@ -1019,10 +1046,13 @@
           {@const dur = durationLabel(upNext)}
           <div class="next-title">{upNext.summary ?? "(no title)"}</div>
           <div class="next-meta">
-            Next · {companyLabel(upNext, companyNamesByUid)}{#if dur}
+            Next · {#if upNext.sourceCompanyUid}<CompanyLabel
+                name={companyLabel(upNext, companyNamesByUid)}
+                companyUid={upNext.sourceCompanyUid}
+              />{:else}Personal{/if}{#if dur}
               · {dur}{/if}
           </div>
-        {:else}
+        {:else if !initialLoadPending}
           <div class="next-title">Nothing scheduled next</div>
           <div class="next-meta">Waiting for the next calendar event</div>
         {/if}
@@ -1034,7 +1064,7 @@
           onclick={joinUpNext}
           disabled={upNextJoining}
           aria-busy={upNextJoining}
-        >
+        ><RailIcon name="arrow-right" />
           {upNextJoining ? "Joining…" : "Join"}
         </button>
       {/if}
@@ -1086,15 +1116,7 @@
         aria-busy="true"
         data-testid="meetings-loading"
       >
-        <p class="loading-label">{MEETINGS_LOADING_LABEL}</p>
-        <div class="skeleton-rows" aria-hidden="true">
-          {#each Array.from({ length: 4 }) as _row, i (i)}
-            <div class="skeleton-row">
-              <span class="skeleton-bar skeleton-time"></span>
-              <span class="skeleton-bar skeleton-title"></span>
-            </div>
-          {/each}
-        </div>
+        <ReadLoader testid="meetings-loader" surface="meetings" />
       </section>
     {:else if showConnectEmpty}
       <!-- US-010: settled + truly empty + no linked account → connect-first. -->
@@ -1112,7 +1134,7 @@
           onclick={connectCalendar}
           disabled={connectStarting || connectPending}
           aria-busy={connectStarting || connectPending}
-        >
+        ><RailIcon name="plug" />
           {connectPending
             ? "Waiting for Google…"
             : connectStarting
@@ -1193,7 +1215,7 @@
                     onclick={() => void disconnectCalendar(row.accountId)}
                     disabled={disconnecting}
                     aria-busy={disconnecting}
-                  >
+                  ><RailIcon name="x" />
                     {disconnecting ? "Disconnecting…" : "Disconnect"}
                   </button>
                 {/if}
@@ -1213,7 +1235,7 @@
                   onclick={connectCalendar}
                   disabled={connectStarting || connectPending}
                   aria-busy={connectStarting || connectPending}
-                >
+                ><RailIcon name="plug" />
                   {connectPending
                     ? "Waiting for Google…"
                     : connectStarting
@@ -1263,7 +1285,7 @@
         class="footer-manage"
         data-testid="meetings-manage"
         onclick={openIntegrationsConsole}
-      >
+      ><RailIcon name="external" />
         Manage in console
       </button>
     </footer>
@@ -1296,7 +1318,7 @@
   .subtitle {
     margin: 0;
     color: var(--t3, var(--v4-text-3));
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.45;
   }
@@ -1307,19 +1329,27 @@
     gap: 8px;
     margin-top: 2px;
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
+  /* Status is a 6px dot plus text, not a bordered pill. */
   .error-pill {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
+    gap: 6px;
+    padding: 0;
+    border: 0;
     color: var(--v4-error);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
     white-space: nowrap;
+  }
+  .error-pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
   }
   .error-copy {
     min-width: 0;
@@ -1331,7 +1361,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
     text-decoration: underline;
     cursor: pointer;
@@ -1357,47 +1387,6 @@
     gap: 8px;
   }
 
-  .toast {
-    --toast-dot: var(--v4-ok);
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    margin: 10px 0 0;
-    padding: 8px 0 0;
-    border: 0;
-    border-top: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: transparent;
-    color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
-    line-height: 18px;
-  }
-
-  .toast::before {
-    width: 5px;
-    height: 5px;
-    flex: 0 0 auto;
-    border-radius: var(--v4-radius-pill);
-    background: var(--toast-dot);
-    content: "";
-    transform: translateY(-1px);
-  }
-
-  .toast-warn {
-    --toast-dot: var(--v4-warn);
-  }
-
-  .toast-upgrade {
-    flex: 0 0 auto;
-    border: 0;
-    border-bottom: 1px solid currentColor;
-    padding: 0;
-    background: transparent;
-    color: var(--v4-text-1);
-    font: inherit;
-    cursor: pointer;
-  }
-
   .detect-setup {
     display: flex;
     align-items: center;
@@ -1415,13 +1404,13 @@
 
   .detect-title {
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
 
   .detect-meta {
     color: var(--v4-text-2);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
 
@@ -1438,7 +1427,7 @@
     font: inherit;
     /* Match the app-standard 12px control size — the meetings --type-body
        token is 15px, which made these header buttons visibly oversized. */
-    font-size: 12px;
+    font-size: 13px;
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -1530,7 +1519,7 @@
     background: transparent;
     color: var(--t1, var(--v4-text-1));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     line-height: 18px;
   }
   .url-input::placeholder {
@@ -1604,8 +1593,8 @@
     padding-right: 10px;
     border-right: 1px solid var(--v4-rowline);
     color: var(--v4-text-1);
-    font-family: var(--font-mono);
-    font-size: var(--type-metadata, 10px);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--type-metadata, 13px);
     white-space: nowrap;
   }
   .next-copy {
@@ -1616,8 +1605,8 @@
   .next-title {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1625,7 +1614,7 @@
   .next-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1652,14 +1641,12 @@
   }
   .health-label {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
   }
   .health-value {
     color: var(--v4-text-2);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 15px;
   }
   .health-value.health-error,
@@ -1670,7 +1657,7 @@
     display: block;
     margin-top: 1px;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
   }
 
   /* Secondary sections — naked, hairline only (no rounded outer cards). */
@@ -1696,61 +1683,30 @@
   .section-head h3 {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
-    letter-spacing: 0.06em;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 500;
     line-height: 14px;
-    text-transform: uppercase;
   }
   .section-head > span {
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     line-height: 14px;
   }
   .section-error {
     margin: 8px 0 0;
     color: var(--v4-error);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
   .section-empty {
     padding: 12px 0;
     color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
   }
-  /* US-010: first-load skeleton — quiet muted bars, no motion needed. */
+  /* US-010: first load shows the shared loader. */
   .agenda-loading {
     padding: 12px 0;
-  }
-  .loading-label {
-    margin: 0 0 10px;
-    color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
-    line-height: 18px;
-  }
-  .skeleton-rows {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .skeleton-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .skeleton-bar {
-    display: inline-block;
-    height: 10px;
-    border-radius: 5px;
-    background: var(--v4-text-3);
-    opacity: 0.18;
-  }
-  .skeleton-time {
-    width: 64px;
-  }
-  .skeleton-title {
-    width: min(46%, 320px);
   }
   /* US-010: connect-first empty state. */
   .connect-empty {
@@ -1763,14 +1719,14 @@
   .ce-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 18px;
   }
   .ce-copy {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 18px;
     max-width: 420px;
   }
@@ -1782,14 +1738,14 @@
   }
   .na-title {
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 18px;
   }
   .na-copy {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 16px;
   }
 
@@ -1815,7 +1771,7 @@
   }
   .disconnect-btn {
     padding: 3px 8px;
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
   }
   .sync-source:last-child {
     border-bottom: none;
@@ -1842,8 +1798,8 @@
     display: block;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
-    font-weight: 600;
+    font-size: var(--type-body, 13px);
+    font-weight: 500;
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1852,7 +1808,7 @@
     display: block;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1860,12 +1816,11 @@
   .status-pill {
     max-width: 110px;
     overflow: hidden;
-    padding: 2px 8px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: var(--v4-radius-pill);
+    padding: 0;
+    border: 0;
     color: var(--v4-text-2);
-    font-size: var(--type-metadata, 10px);
-    font-weight: 600;
+    font-size: var(--type-metadata, 13px);
+    font-weight: 400;
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1887,7 +1842,7 @@
   .what {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: var(--type-body, 12px);
+    font-size: var(--type-body, 13px);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1895,7 +1850,7 @@
   .who {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: var(--type-secondary, 11px);
+    font-size: var(--type-secondary, 13px);
     line-height: 14px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1925,7 +1880,7 @@
     background: transparent;
     color: var(--t2, var(--v4-text-3));
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     line-height: 17.4px;
     white-space: nowrap;
@@ -1952,11 +1907,9 @@
   .footer-meta {
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: var(--type-metadata, 10px);
+    font-size: var(--type-metadata, 13px);
     font-weight: 500;
-    letter-spacing: 0.06em;
     line-height: 14px;
-    text-transform: uppercase;
   }
   .footer-manage {
     flex: 0 0 auto;
@@ -1967,7 +1920,7 @@
     background: transparent;
     color: var(--t2, var(--v4-text-2));
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     letter-spacing: 0;
     line-height: 14px;

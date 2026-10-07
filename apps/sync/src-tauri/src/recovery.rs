@@ -359,6 +359,7 @@ pub async fn open_recovery_window(
 pub fn shell_ready(app: AppHandle) -> Result<(), String> {
     boot_log("shell_ready from UI");
     handle_event(&app, apply_watchdog(&app, |dog| dog.on_shell_ready()));
+    crate::commands::vault_explorer::prewarm_after_shell_ready(app);
     Ok(())
 }
 

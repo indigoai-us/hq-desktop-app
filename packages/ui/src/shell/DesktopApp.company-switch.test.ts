@@ -413,6 +413,9 @@ describe("DesktopApp company switch", () => {
     // it legitimately names A's company uid even while B is on screen. That
     // is not a tenant-boundary leak — A's channel, draft, and roster data
     // (asserted above and below) stay out of it. Exclude just that section.
+    // Console rail: companies live on the rail only, so the shell no longer
+    // mounts that section at all.
+    expect(host.querySelector('[data-testid="chat-companies-section"]')).toBeNull();
     const companiesSectionHtml =
       host.querySelector('[data-testid="chat-companies-section"]')
         ?.outerHTML ?? "";

@@ -6,7 +6,11 @@ import {
   APPEARANCE_REQUEST_EVENT,
   type AppearancePreferences,
 } from "./appearance-seam.js";
-import { createShellAppearanceSeam } from "./settings-theme-seam.js";
+import {
+  createShellAppearanceSeam,
+  restoreStoredColorTheme,
+} from "./settings-theme-seam.js";
+import { THEME_STORAGE_KEY } from "./shell-settings-model.js";
 import { SETTINGS_PREFS_KEY } from "./settings-prefs.js";
 
 function memoryStorage(
@@ -87,5 +91,43 @@ describe("createShellAppearanceSeam window transparency", () => {
     expect(requests.at(-1)?.windowTransparency).toBe(10);
     expect(seam.read().windowTransparency).toBe(10);
     expect(seen).toEqual([10]);
+  });
+});
+
+describe("restoreStoredColorTheme (boot)", () => {
+  afterEach(() => document.documentElement.removeAttribute("data-force-theme"));
+
+  it("leaves a harness- or OS-chosen light theme alone when nothing is saved", () => {
+    const root = document.documentElement;
+    root.setAttribute("data-force-theme", "light");
+    restoreStoredColorTheme(root, memoryStorage());
+    expect(root.getAttribute("data-force-theme")).toBe("light");
+  });
+
+  it("does not force dark on a fresh install", () => {
+    const root = document.documentElement;
+    restoreStoredColorTheme(root, memoryStorage());
+    expect(root.hasAttribute("data-force-theme")).toBe(false);
+  });
+
+  it("re-applies an explicitly saved light theme", () => {
+    const root = document.documentElement;
+    root.setAttribute("data-force-theme", "dark");
+    restoreStoredColorTheme(
+      root,
+      memoryStorage({ [THEME_STORAGE_KEY]: "light" }),
+    );
+    expect(root.getAttribute("data-force-theme")).toBe("light");
+  });
+
+  it("reads the live attribute, not a dark default, for the Settings seam", () => {
+    const root = document.documentElement;
+    root.setAttribute("data-force-theme", "light");
+    const seam = createShellAppearanceSeam({
+      root,
+      target: new EventTarget(),
+      storage: memoryStorage(),
+    });
+    expect(seam.read().colorTheme).toBe("light");
   });
 });

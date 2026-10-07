@@ -244,7 +244,7 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    background: var(--overlay-bg, var(--panel-bg));
     box-shadow: var(--panel-shadow);
     color: var(--t1);
     font: 400 13px/1.4 var(--font-ui);

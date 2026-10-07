@@ -1,23 +1,25 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
-   * The New bot flow: kind → home → details, with a live preview card and
-   * one footer. Hosts it inside the create modal (and the Settings → Bots
-   * pane). Owns the draft; the host owns the busy/error state because it
-   * runs the create and navigates.
+   * The New bot flow, as one question per screen in the New bot takeover's
+   * card: Cloud or Local (unless the host already asked), then the steps for
+   * that home. Every entry point (the takeover, the "+" window, Settings →
+   * Bots) uses it. Owns the draft; the host owns the busy/error state because
+   * it runs the create and navigates.
    *
-   * Both homes walk all three steps. A Cloud draft's details step collects
-   * the name and @handle the company channel's retired card used to ask for,
-   * plus a title, and hands them to `onCloudCreate` (today's company team
-   * action). Local drafts hand `oncreate` the CLI input plus the avatar pick
-   * and title. Neither create path takes a title, so for both homes the host
-   * saves it onto the agent profile once the bot exists.
+   * Local: name → blank or template → coding tool. Cloud: company (when there
+   * is a choice) → name, brain and size. A cloud draft hands `onCloudCreate`
+   * the name, @handle and title; a local draft hands `oncreate` the CLI input
+   * plus the avatar pick and title. Neither create path takes a title, so the
+   * host saves it onto the agent profile once the bot exists.
    *
    * Cmd-Enter creates from any step once every walked step is valid — except
    * on a Cloud draft, where it moves to the next step until the details step
    * is reached, so a company bot is never made under a name nobody has seen.
    */
   import { onMount, untrack } from "svelte";
-  import { hostComputerNoun, primaryEnterKeyHint } from "@hq/platform";
+  import { hostComputerNoun } from "@hq/platform";
+  import { formatShortcut, matchesShortcut } from "../../common/keyboard-shortcuts.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -26,21 +28,28 @@
   } from "@hq/platform";
   import type { AvatarPack, AvatarSelection } from "../../avatars/types.js";
   import type { LocalBotEntryResult } from "../local-bots.js";
-  import BotPreviewCard from "./BotPreviewCard.svelte";
   import CloudDetailsStep from "./CloudDetailsStep.svelte";
   import DetailsStep from "./DetailsStep.svelte";
   import HomeStep from "./HomeStep.svelte";
   import KindStep from "./KindStep.svelte";
+  import NewBotStepHead from "./NewBotStepHead.svelte";
+  import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
+  import IdentityMark from "../messaging/IdentityMark.svelte";
+  import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import type { RuntimeSignInApi } from "./RuntimeSignIn.svelte";
   import type { RuntimeStatus } from "./runtime-status.js";
   import type { CloudBotDraft } from "../lifecycle-entry-points.js";
+  import type { CloudUnavailableCopy, CreateAvailability, CreateErrorFix } from "@hq/agents";
+  import type { DirectCloudFlowSeam } from "./direct-cloud-lazy.js";
+  import { newWizardIdempotencyKey } from "./wizard-key.js";
   import {
-    STEP_TITLES,
     botDisplayName,
     botHandle,
     canAdvance,
     canCreate,
+    claudeAllowedForCloud,
     companyTemplates,
+    defaultCloudRuntime,
     firstBlockingStep,
     initialDraft,
     nextStep,
@@ -49,7 +58,8 @@
     stepIssue,
     stepsFor,
     templateCard,
-    thinksWithLine,
+    stepTitle,
+    templateBringsLine,
     toCreateInput,
     type BotRuntime,
     type CreateBotContext,
@@ -101,6 +111,15 @@
     onback?: (() => void) | null;
     entryBusy?: "bot" | "agent" | string | null;
     entryError?: string | null;
+    /** The action that fixes `entryError` (direct cloud create only). */
+    entryFix?: CreateErrorFix | null;
+    /**
+     * `agents.desktop-agent-creation`: when the flag is on, Cloud is always
+     * shown (disabled with the reason and the fix when it cannot be used) and
+     * the cloud draft carries a per-session idempotency key and the quote.
+     * Absent or flag off → the older behaviour, unchanged.
+     */
+    directCloud?: DirectCloudFlowSeam | null;
     signInApi?: RuntimeSignInApi | null;
     onsignin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
     onsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
@@ -137,8 +156,22 @@
     loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /** Sign-in poll interval; tests shorten it. */
     pollMs?: number;
-    /** Force the preview placement (tests); default follows the viewport. */
-    previewPlacement?: "rail" | "top" | null;
+    /** Company the flow was opened from (Team page Add agent); Cloud starts on it. */
+    initialCompanyUid?: string | null;
+    /** Slug of that company; a Local bot starts as its company bot (QA-043). */
+    initialCompanySlug?: string | null;
+    /**
+     * The home picked on the New bot choice screen ("Cloud or Local?"). The
+     * flow opens on that home's first step; without it the flow asks first.
+     */
+    initialHome?: "local" | "cloud" | null;
+    /**
+     * What the first step's back button says. "Cancel" by default; "Back"
+     * when `onback` returns to an earlier screen (the Cloud or Local choice).
+     */
+    firstBackLabel?: string;
+    /** Local name step: "Create a cloud bot instead". Without it the flow offers it only after its own Cloud or Local question. */
+    onswitchcloud?: (() => void) | null;
   }
 
   let {
@@ -155,6 +188,8 @@
     onback = null,
     entryBusy = null,
     entryError = null,
+    entryFix = null,
+    directCloud = null,
     signInApi = null,
     onsignin = null,
     onsignedin = null,
@@ -162,7 +197,11 @@
     avatarPacks = null,
     loadAvatarPacks = null,
     pollMs = 1500,
-    previewPlacement = null,
+    initialCompanyUid = null,
+    initialCompanySlug = null,
+    initialHome = null,
+    firstBackLabel = "Cancel",
+    onswitchcloud = null,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -183,15 +222,53 @@
    * "⌘↵" on macOS and "Ctrl+Enter" on Windows / Linux so a person on a PC
    * never sees a Mac key symbol they cannot press.
    */
-  const primaryEnterHint = primaryEnterKeyHint();
+  // OWNER-D 8 (AUDIT-2-15): the app's own chord label, read from the window's
+  // platform, so a Mac shows ⌘↵ even before the Tauri host probe answers.
+  const CREATE_CHORD = "Mod+Enter";
+  const primaryEnterHint = formatShortcut(CREATE_CHORD);
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
-  const canCloud = $derived(!!onCloudCreate && companies.length > 0);
+  /** `agents.desktop-agent-creation` resolved on for this person or one of their companies. */
+  let directCloudOn = $state(false);
+  /** `@hq/agents` copy for an unavailable Cloud, loaded with the flag (kept off the startup bundle). */
+  let unavailableCopy = $state<typeof import("@hq/agents").cloudUnavailableCopy | null>(null);
+  /** Per-company create availability, filled in once the flag is on. */
+  let cloudAvailability = $state<Record<string, CreateAvailability>>({});
+  /**
+   * One key per create attempt: a double-click or a retry after a network
+   * failure replays it. A refusal the server answered with a fix (handle
+   * taken, new price, plan) made no bot, so the next create gets a new key
+   * instead of replaying the refusal.
+   */
+  let cloudIdempotencyKey = newWizardIdempotencyKey();
+  let keyRotatedForFix: CreateErrorFix | null = null;
+  const companyBlocks = $derived.by<Record<string, CloudUnavailableCopy>>(() => {
+    const out: Record<string, CloudUnavailableCopy> = {};
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return out;
+    for (const company of companies) {
+      const copy = cloudUnavailableCopy(cloudAvailability[company.companyUid] ?? null, {
+        companyLabel: company.label,
+        companies: companies.length,
+      });
+      if (copy) out[company.companyUid] = copy;
+    }
+    return out;
+  });
+  /** Why Cloud cannot be used at all (flag on only): no company, or every company refuses. */
+  const cloudBlocked = $derived.by<CloudUnavailableCopy | null>(() => {
+    const cloudUnavailableCopy = unavailableCopy;
+    if (!directCloudOn || !cloudUnavailableCopy) return null;
+    if (companies.length === 0) return cloudUnavailableCopy(null, { companies: 0 });
+    if (!onCloudCreate) return null;
+    const blocked = companies.map((c) => companyBlocks[c.companyUid]);
+    return blocked.every(Boolean) ? (blocked[0] ?? null) : null;
+  });
+  const canCloud = $derived(!!onCloudCreate && companies.length > 0 && !cloudBlocked);
   let claudeProviderEnabled = $state(false);
   let cloudProvisionOptions = $state<AgentProvisionOptionsView | null>(null);
   let cloudQuoteStatus = $state<"loading" | "ready" | "error">("loading");
-  let cloudApiKey = $state("");
   let quoteReloadToken = $state(0);
   let quoteGeneration = 0;
 
@@ -205,47 +282,97 @@
     ownerCompanies,
     templates,
     claudeProviderEnabled,
+    directCloudOn,
     cloudProvisionOptions,
     cloudQuoteStatus,
-    cloudApiKeyPresent: cloudApiKey.trim().length > 0,
     hostNoun,
   });
 
   // The draft is seeded once from the initial context; later prop changes
   // (a worker list arriving, a sign-in landing) flow through `ctx` only.
-  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx)));
-  let step = $state<CreateBotStep>("kind");
+  let draft = $state<CreateBotDraft>(untrack(() => initialDraft(ctx, initialCompanyUid, initialCompanySlug, initialHome)));
+  /**
+   * The flow asks "Cloud or Local?" itself when the host has not and Cloud is
+   * shown: it can be used, or the direct-create flag shows it disabled with
+   * its reason. Otherwise (no company, or a host without a cloud create, like
+   * Settings) Cloud stays hidden and the flow opens on the local steps.
+   */
+  const homeGiven = untrack(() => (initialHome === "local" ? canLocal : initialHome === "cloud" ? canCloud : false));
+  const asksHome = $derived(!homeGiven && canLocal && !!onCloudCreate && (canCloud || directCloudOn));
+  /** The name the draft opened with (may be a default); unchanged means the person has not started. */
+  const openingName = untrack(() => draft.name.trim());
+  /** The person answered the flow's own "Cloud or Local?". */
+  let homeAnswered = false;
+  let choosing = $state(untrack(() => asksHome));
+  /** A cloud bot gets a "Pick the company" step only when there is a choice. */
+  const pickCompany = untrack(() => companies.length > 1);
+  const stepOpts = { pickCompany };
+  let step = $state<CreateBotStep>(untrack(() => stepsFor(draft, stepOpts)[0] ?? "details"));
   let pickedAvatarSrc = $state<string | null>(null);
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
+  /** The user picked a brain themselves; the Cloud default no longer changes it. */
+  let runtimeAnswered = false;
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
-  const steps = $derived(stepsFor(draft));
+  const steps = $derived(stepsFor(draft, stepOpts));
   const stepIndex = $derived(Math.max(0, steps.indexOf(step)));
-  const isLast = $derived(nextStep(step, draft) === null);
-  const advanceOk = $derived(!busy && canAdvance(step, draft, ctx));
-  const createOk = $derived(!busy && canCreate(draft, ctx));
-  const issue = $derived(stepIssue(step, draft, ctx));
+  const isLast = $derived(nextStep(step, draft, stepOpts) === null);
+  const advanceOk = $derived(!busy && canAdvance(step, draft, ctx, stepOpts));
+  const createOk = $derived(!busy && canCreate(draft, ctx, stepOpts));
+  const issue = $derived(stepIssue(step, draft, ctx, stepOpts));
   const chosenTemplate = $derived(
     draft.kind === "template" && draft.templateId
       ? (templates.find((t) => t.id === draft.templateId) ?? null)
       : null,
   );
   const chosenTemplateCard = $derived(chosenTemplate ? templateCard(chosenTemplate) : null);
-  const kindLine = $derived(
-    draft.kind === "template"
-      ? chosenTemplateCard
-        ? `From ${chosenTemplateCard.name}`
-        : "From a template"
-      : "Blank bot",
-  );
   const scopeText = $derived(scopeLine(draft, ctx));
-  const previewKindLine = $derived(scopeText ? `${kindLine} · ${scopeText}` : kindLine);
   const previewAvatar = $derived(pickedAvatarSrc);
+  const runtimeLabel = $derived(LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime);
   const cloudCompany = $derived(companies.find((c) => c.companyUid === draft.companyUid) ?? null);
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
   );
+
+  onMount(() => {
+    const seam = directCloud;
+    if (!seam) return;
+    let active = true;
+    const uids = untrack(() => companies.map((c) => c.companyUid));
+    void seam.anyEnabled(uids).then(async (on) => {
+      if (!active || !on) return;
+      const agents = await import("@hq/agents");
+      if (!active) return;
+      unavailableCopy = agents.cloudUnavailableCopy;
+      directCloudOn = true;
+      const entries = await Promise.all(
+        uids.map(async (uid) => [uid, await seam.availability(uid)] as const),
+      );
+      if (!active) return;
+      cloudAvailability = Object.fromEntries(entries);
+    });
+    return () => {
+      active = false;
+    };
+  });
+
+  // The direct-create flag resolves after the draft is seeded: a Cloud bot the
+  // user has not picked a brain for moves to the Claude default then.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud" || untrack(() => runtimeAnswered)) return;
+    if (draft.runtime !== "claude") draft = { ...draft, runtime: "claude" };
+  });
+
+  // A company that cannot take a cloud bot is never the selected one while
+  // another can.
+  $effect(() => {
+    if (!directCloudOn || draft.home !== "cloud") return;
+    const uid = draft.companyUid ?? "";
+    if (uid && !companyBlocks[uid]) return;
+    const open = companies.find((c) => !companyBlocks[c.companyUid]);
+    if (open && open.companyUid !== uid) draft = { ...draft, companyUid: open.companyUid };
+  });
 
   onMount(() => {
     if (!loadClaudeProviderFlag) return;
@@ -254,7 +381,7 @@
       .then((result) => {
         if (!active) return;
         claudeProviderEnabled = result.ok && result.value === true;
-        if (!claudeProviderEnabled && draft.home === "cloud" && draft.runtime === "claude") {
+        if (!claudeAllowedForCloud(ctx) && draft.home === "cloud" && draft.runtime === "claude") {
           draft = { ...draft, runtime: "codex" };
         }
         if (!result.ok && result.reason === "error") {
@@ -317,35 +444,14 @@
     };
   });
 
-  // Preview placement: right rail on wide windows, top otherwise.
-  let wide = $state(true);
-  $effect(() => {
-    if (previewPlacement || typeof window === "undefined" || typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia("(min-width: 900px)");
-    const apply = () => (wide = mq.matches);
-    apply();
-    mq.addEventListener?.("change", apply);
-    return () => mq.removeEventListener?.("change", apply);
-  });
-  const placement = $derived<"rail" | "top">(previewPlacement ?? (wide ? "rail" : "top"));
-
   function patch(p: Partial<CreateBotDraft>): void {
     if (busy) return;
-    const oldHome = draft.home;
-    const oldCompanyUid = draft.companyUid;
-    const oldRuntime = draft.runtime;
-    const oldAuthMode = draft.authMode;
     draft = { ...draft, ...p };
-    if (p.home === "cloud" && draft.runtime === "claude" && claudeProviderEnabled !== true) {
+    if (p.runtime !== undefined) runtimeAnswered = true;
+    if (p.home === "cloud" && !runtimeAnswered) {
+      draft = { ...draft, runtime: defaultCloudRuntime(ctx) };
+    } else if (p.home === "cloud" && draft.runtime === "claude" && !claudeAllowedForCloud(ctx)) {
       draft = { ...draft, runtime: "codex" };
-    }
-    if (
-      oldHome !== draft.home ||
-      oldCompanyUid !== draft.companyUid ||
-      oldRuntime !== draft.runtime ||
-      oldAuthMode !== draft.authMode
-    ) {
-      cloudApiKey = "";
     }
     if (p.scope !== undefined) scopeAnswered = true;
     // A company template is a company bot for that company unless the user
@@ -361,23 +467,50 @@
     step = next;
   }
 
+  // The direct-create flag can show Cloud after the flow opened: ask then,
+  // unless the person already started on the local steps.
+  $effect(() => {
+    if (!asksHome || homeAnswered) return;
+    untrack(() => {
+      if (step === steps[0] && draft.name.trim() === openingName) choosing = true;
+    });
+  });
+
+  /** The flow's own "Cloud or Local?": that home's first step. */
+  function pickHome(kind: NewBotKind): void {
+    if (busy) return;
+    homeAnswered = true;
+    if (kind !== draft.home) {
+      patch(kind === "local"
+        ? { home: "local", runtime: initialDraft(ctx, null, null, "local").runtime }
+        : { home: "cloud" });
+      if (kind === "local") runtimeAnswered = false;
+    }
+    step = stepsFor(draft, stepOpts)[0] ?? "details";
+    choosing = false;
+  }
+
+  /** "Create a cloud bot instead": the host's cloud screen, or this flow's cloud steps. */
+  const switchCloud = $derived(onswitchcloud ?? (asksHome && canCloud ? () => pickHome("cloud") : null));
+
   function advance(): void {
     if (!advanceOk) return;
-    const next = nextStep(step, draft);
+    const next = nextStep(step, draft, stepOpts);
     if (next) goTo(next);
   }
 
   function back(): void {
     if (busy) return;
-    const prev = prevStep(step, draft);
+    const prev = prevStep(step, draft, stepOpts);
     if (prev) goTo(prev);
+    else if (asksHome) choosing = true;
     else onback?.();
   }
 
   async function submit(): Promise<void> {
     if (busy) return;
-    if (!canCreate(draft, ctx)) {
-      const blocking = firstBlockingStep(draft, ctx);
+    if (!canCreate(draft, ctx, stepOpts)) {
+      const blocking = firstBlockingStep(draft, ctx, stepOpts);
       if (blocking) goTo(blocking);
       return;
     }
@@ -388,14 +521,26 @@
         (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
       );
       if (draft.companyUid && quotedSize) {
+        if (entryFix && entryFix !== keyRotatedForFix) {
+          keyRotatedForFix = entryFix;
+          cloudIdempotencyKey = newWizardIdempotencyKey();
+        }
         await onCloudCreate?.(draft.companyUid, {
           name: draft.name.trim(),
           handle: botHandle(draft),
           runtime: draft.runtime,
           size: quotedSize.key,
-          authMode: draft.authMode,
-          ...(draft.authMode === "apiKey" && cloudApiKey ? { apiKey: cloudApiKey } : {}),
           ...(title ? { title } : {}),
+          ...(directCloudOn && cloudProvisionOptions && quotedSize.netMonthlyCents !== null
+            ? {
+                idempotencyKey: cloudIdempotencyKey,
+                quote: {
+                  instanceType: quotedSize.instanceType,
+                  netMonthlyCents: quotedSize.netMonthlyCents,
+                  catalogVersion: cloudProvisionOptions.catalogVersion,
+                },
+              }
+            : {}),
         });
       }
       return;
@@ -414,7 +559,7 @@
   }
 
   function onKey(event: KeyboardEvent): void {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    if (matchesShortcut(CREATE_CHORD, event)) {
       event.preventDefault();
       event.stopPropagation();
       if (busy) return;
@@ -431,73 +576,136 @@
       void submit();
       return;
     }
-    if (event.key === "Enter" && !isLast && advanceOk) {
+    if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
+      // The cloud flow's keys: Enter moves on (and creates on the last
+      // step); a button or a list handles its own Enter.
       const target = event.target as HTMLElement | null;
-      // Radios/cards handle their own Enter; a plain Enter on the search box advances.
-      if (target?.tagName === "INPUT" && (target as HTMLInputElement).type === "search") {
-        event.preventDefault();
-        advance();
-      }
+      if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
+      event.preventDefault();
+      if (busy) return;
+      if (isLast) {
+        if (createOk) void submit();
+      } else advance();
+      return;
     }
   }
 
   const primaryLabel = $derived(
     entryBusy === "bot"
       ? "Creating… (about half a minute)"
-      : entryBusy === "agent"
+      : busy
         ? "Creating…"
         : !isLast
-          ? "Next"
+          ? "Continue"
           : draft.home === "cloud"
             ? `Create in ${cloudCompany?.label ?? "the company"}`
             : "Create bot",
   );
+  const cloudReason = $derived(canCloud ? null : (cloudBlocked?.reason ?? "Cloud bots aren't available right now."));
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="flow" class:rail={placement === "rail"} data-testid="chat-create-bot-step" data-step={step} onkeydown={onKey}>
-  <div class="flow-main">
-    <div class="flow-head">
-      <ol class="flow-crumbs" aria-label="Steps">
-        {#each steps as s, i (s)}
-          <li class="flow-crumb" class:current={s === step} class:done={i < stepIndex} aria-current={s === step ? "step" : undefined}>
-            <button
-              type="button"
-              class="flow-crumb-btn"
-              data-testid={`create-bot-crumb-${s}`}
-              disabled={busy || i > stepIndex}
-              onclick={() => goTo(s)}
-            >
-              <span class="flow-crumb-n" aria-hidden="true">{i + 1}</span>
-              {STEP_TITLES[s]}
-            </button>
-          </li>
-        {/each}
-      </ol>
+<!-- One question per screen, in the New bot takeover's card. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="new-bot-create" data-testid="chat-create-bot-step" data-step={choosing ? "where" : step} data-home={draft.home} role="group" onkeydown={choosing ? undefined : onKey}>
+{#if choosing}
+  {#if onback}
+    <div class="new-bot-create-head">
+      <button type="button" class="new-bot-back" data-testid="create-bot-back" disabled={busy} onclick={() => onback?.()}><RailIcon name="arrow-left" />{firstBackLabel}</button>
     </div>
-
-    {#if placement === "top"}
-      <BotPreviewCard
-        placement="top"
-        name={draft.name}
-        handle={botHandle(draft)}
-        home={draft.home}
-        runtime={draft.runtime}
-        thinksWith={thinksWithLine(draft, ctx)}
-        title={draft.title}
-        avatarUrl={previewAvatar}
-        kindLine={previewKindLine}
-      />
+  {/if}
+  <NewBotKindChoice {cloudReason} onpick={pickHome} />
+  {#if entryError}
+    <p class="new-bot-create-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
+  {/if}
+  {#if !canCloud && cloudBlocked?.fix?.kind === "checkout"}
+    <p class="new-bot-price" data-testid="chat-bot-where-cloud-fix-line">
+      <a class="new-bot-takeover-local" href={cloudBlocked.fix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-bot-where-cloud-fix">{cloudBlocked.fix.label}</a>
+    </p>
+  {/if}
+{:else}
+  {@const head = stepTitle(step, draft.home)}
+  <NewBotStepHead
+    total={steps.length}
+    current={stepIndex + 1}
+    onback={back}
+    backTestId="create-bot-back"
+    backDisabled={busy}
+    kicker={head.kicker}
+    lead={head.lead}
+    em={head.em}
+    tail={head.tail ?? ""}
+  >
+    {#if step !== "details" && draft.home === "local"}
+      <!-- Who is being made, and how, as one line. -->
+      <p class="new-bot-identity" data-testid="bot-identity-line">
+        <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={draft.name || "bot"} avatarUrl={previewAvatar} agentUid={`agt_preview_${botHandle(draft) || "bot"}`} /></span>
+        <span class="new-bot-identity-name" data-testid="bot-identity-name">{draft.name.trim() || "your bot"}</span>
+        {#if draft.title.trim()}<span class="new-bot-identity-meta" data-testid="bot-identity-title">{draft.title.trim()}</span>{/if}
+        <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Local · {runtimeLabel}{chosenTemplateCard ? ` · from ${chosenTemplateCard.name}` : ""}{scopeText ? ` · ${scopeText}` : ""}</span>
+      </p>
     {/if}
+  </NewBotStepHead>
 
-    <div class="flow-body">
-      {#if step === "kind"}
-        <KindStep {draft} {templates} disabled={busy} onpatch={patch} onadvance={advance} />
-      {:else if step === "home"}
+  <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
+    <section class="new-bot-step" data-testid={`create-bot-sunrise-${step}`}>
+      <p class="new-bot-create-copy">{head.copy.replace("this computer", `this ${hostNoun}`)}</p>
+      {#if draft.home === "cloud"}
+        {#if step === "home"}
+          <HomeStep
+            runtimeOnly
+            {draft}
+            {canLocal}
+            {canCloud}
+            cloudAlwaysShown={directCloudOn}
+            cloudBlocked={cloudBlocked}
+            {companyBlocks}
+            runtimeReady={botRuntimeReady}
+            runtimeStatus={botRuntimeStatus}
+            {companies}
+            disabled={busy}
+            onpatch={patch}
+          />
+        {:else}
+          <CloudDetailsStep
+            {draft}
+            companyLabel={cloudCompany?.label ?? "your company"}
+            claudeProviderEnabled={claudeAllowedForCloud(ctx)}
+            cloudProvisionOptions={cloudProvisionOptions}
+            cloudQuoteStatus={cloudQuoteStatus}
+            onretryquote={() => (quoteReloadToken += 1)}
+            disabled={busy}
+            onpatch={patch}
+          />
+        {/if}
+      {:else if step === "details"}
+        <DetailsStep
+          sunrise
+          {draft}
+          existingNames={names}
+          template={chosenTemplateCard}
+          {ownerCompanies}
+          {avatarPacks}
+          {loadAvatarPacks}
+          avatarSrc={pickedAvatarSrc}
+          disabled={busy}
+          onpatch={patch}
+          onavatar={(_selection, src) => (pickedAvatarSrc = src)}
+        />
+      {:else if step === "kind"}
+        <KindStep sunrise {draft} {templates} disabled={busy} onpatch={patch} onadvance={advance} />
+        {#if chosenTemplateCard && templateBringsLine(chosenTemplateCard)}
+          <!-- What the template brings, where it is picked. -->
+          <p class="cb-help brings" data-testid="chat-bot-template-brings">{templateBringsLine(chosenTemplateCard)}</p>
+        {/if}
+      {:else}
         <HomeStep
+          runtimeOnly
           {draft}
           {canLocal}
           {canCloud}
+          cloudAlwaysShown={directCloudOn}
+          cloudBlocked={cloudBlocked}
+          {companyBlocks}
           runtimeReady={botRuntimeReady}
           runtimeStatus={botRuntimeStatus}
           {companies}
@@ -514,225 +722,36 @@
           {onassistedinstall}
           {onrequestaitools}
         />
-      {:else if draft.home === "cloud"}
-        <CloudDetailsStep
-          {draft}
-          companyLabel={cloudCompany?.label ?? "your company"}
-          claudeProviderEnabled={claudeProviderEnabled}
-          cloudProvisionOptions={cloudProvisionOptions}
-          cloudQuoteStatus={cloudQuoteStatus}
-          apiKey={cloudApiKey}
-          onapikey={(value) => (cloudApiKey = value)}
-          onretryquote={() => (quoteReloadToken += 1)}
-          disabled={busy}
-          onpatch={patch}
-        />
-      {:else}
-        <DetailsStep
-          {draft}
-          existingNames={names}
-          template={chosenTemplateCard}
-          {ownerCompanies}
-          {avatarPacks}
-          {loadAvatarPacks}
-          avatarSrc={pickedAvatarSrc}
-          disabled={busy}
-          onpatch={patch}
-          onavatar={(_selection, src) => (pickedAvatarSrc = src)}
-        />
       {/if}
-    </div>
-
-    {#if entryError}
-      <p class="flow-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
-    {/if}
-
-    <div class="flow-footer">
-      <button type="button" class="flow-back" data-testid="create-bot-back" disabled={busy} onclick={back}>
-        {prevStep(step, draft) ? "Back" : "Cancel"}
-      </button>
-      <span class="flow-issue" data-testid="create-bot-issue" aria-live="polite">{issue ?? ""}</span>
-      <span class="flow-hint" aria-hidden="true">{primaryEnterHint} TO CREATE</span>
-      <button
-        type="button"
-        class="flow-primary"
-        data-testid={isLast ? "chat-bot-create" : "create-bot-next"}
-        disabled={isLast ? !createOk : !advanceOk}
-        aria-busy={busy ? "true" : undefined}
-        onclick={primary}
-      >
-        {primaryLabel}
-      </button>
-    </div>
+    </section>
   </div>
 
-  {#if placement === "rail"}
-    <div class="flow-rail">
-      <BotPreviewCard
-        placement="rail"
-        name={draft.name}
-        handle={botHandle(draft)}
-        home={draft.home}
-        runtime={draft.runtime}
-        thinksWith={thinksWithLine(draft, ctx)}
-        title={draft.title}
-        avatarUrl={previewAvatar}
-        kindLine={previewKindLine}
-      />
-    </div>
-  {/if}
+  <footer class="new-bot-create-foot">
+    {#if entryError}
+      <p class="new-bot-create-error" role="alert" data-testid="chat-create-entry-error">
+        {entryError}
+        {#if entryFix?.kind === "checkout"}
+          <a class="new-bot-takeover-local" href={entryFix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-create-entry-fix">{entryFix.label}</a>
+        {:else if entryFix?.kind === "reload_quote"}
+          <button type="button" class="new-bot-takeover-local" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => (quoteReloadToken += 1)}><RailIcon name="refresh" />Get the new price</button>
+        {:else if entryFix?.kind === "edit_handle" && step !== "details"}
+          <button type="button" class="new-bot-takeover-local" data-testid="chat-create-entry-fix" disabled={busy} onclick={() => goTo("details")}><RailIcon name="pencil" />Change handle</button>
+        {/if}
+      </p>
+    {/if}
+    {#if issue}<p class="new-bot-price" data-testid="create-bot-issue" aria-live="polite">{issue}</p>{/if}
+    <button
+      type="button"
+      class="new-bot-create-submit"
+      data-testid={isLast ? "chat-bot-create" : "create-bot-next"}
+      disabled={isLast ? !createOk : !advanceOk}
+      aria-busy={busy ? "true" : undefined}
+      onclick={primary}
+    ><RailIcon name={isLast ? "plus" : "arrow-right"} />{primaryLabel}</button>
+    {#if isLast}<p class="new-bot-price new-bot-chord-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="new-bot-chord">{primaryEnterHint}</kbd> to create</p>{/if}
+    {#if step === "details" && draft.home === "local" && switchCloud}
+      <button type="button" class="new-bot-takeover-local" data-testid="create-bot-switch-cloud" disabled={busy} onclick={switchCloud}>Create a cloud bot instead</button>
+    {/if}
+  </footer>
+{/if}
 </div>
-
-<style>
-  .flow {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    flex: 1 1 auto;
-  }
-  .flow.rail {
-    flex-direction: row;
-  }
-  .flow-main {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    flex: 1 1 auto;
-    min-width: 0;
-    min-height: 0;
-    padding: 14px 16px 12px;
-  }
-  .flow-rail {
-    flex: 0 0 240px;
-    padding: 14px 16px 14px 0;
-  }
-  .flow-head {
-    display: flex;
-    align-items: center;
-  }
-  .flow-crumbs {
-    display: flex;
-    gap: 4px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    flex-wrap: wrap;
-  }
-  .flow-crumb-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t3);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .flow-crumb-btn:disabled {
-    cursor: default;
-  }
-  .flow-crumb.current .flow-crumb-btn {
-    color: var(--t1);
-    font-weight: 600;
-  }
-  .flow-crumb.done .flow-crumb-btn {
-    color: var(--t2);
-  }
-  .flow-crumb-btn:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: 1px;
-  }
-  .flow-crumb-n {
-    display: grid;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    border: 1px solid currentColor;
-    font: 500 10px/1 var(--font-mono);
-  }
-  .flow-crumb.current .flow-crumb-n {
-    background: var(--t1);
-    border-color: var(--t1);
-    color: var(--v4-surface-solid, #fff);
-  }
-  .flow-crumb:not(:last-child)::after {
-    content: "›";
-    color: var(--t3);
-    align-self: center;
-    margin-left: 4px;
-  }
-  .flow-crumb {
-    display: inline-flex;
-  }
-  .flow-body {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    padding-right: 2px;
-  }
-  .flow-error {
-    margin: 0;
-    padding: 8px 10px;
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--v4-error, #d9534f) 10%, transparent);
-    color: var(--v4-error, #d9534f);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-  .flow-footer {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--v4-hairline);
-  }
-  .flow-back {
-    font: inherit;
-    font-size: 13px;
-    padding: 6px 12px;
-    border: 1px solid var(--v4-control-border, var(--border));
-    border-radius: 8px;
-    background: var(--v4-control-bg, transparent);
-    color: var(--t1);
-    cursor: pointer;
-  }
-  .flow-issue {
-    flex: 1 1 auto;
-    color: var(--t3);
-    font-size: 12px;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .flow-hint {
-    color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-  }
-  .flow-primary {
-    font: inherit;
-    font-size: 13px;
-    font-weight: 600;
-    padding: 7px 14px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--v4-cta-bg, var(--v4-brand-accent, #4c6fff));
-    color: var(--v4-cta-text, #fff);
-    cursor: pointer;
-  }
-  .flow-primary:disabled,
-  .flow-back:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .flow-primary:focus-visible,
-  .flow-back:focus-visible {
-    outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
-    outline-offset: 2px;
-  }
-</style>

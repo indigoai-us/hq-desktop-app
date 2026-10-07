@@ -5,6 +5,10 @@
 </script>
 
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import DayGroupHeader from "./DayGroupHeader.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   /**
    * Chat-first unified conversation sidebar (US-003).
    *
@@ -127,7 +131,9 @@
     distinctDmPeople,
     duplicateHumanDmTitles,
     formatSearchHitTime,
+    companyScopedChannels,
     groupByDay,
+    omitCompanyScopedChannels,
     groupByType,
     historySearchScopeLabel,
     initialsFor,
@@ -168,6 +174,7 @@
     historyDayGroups,
     searchHitSnippet,
     takeRailConversations,
+    takeAllScopeRailRows,
     withWakingBotRow,
     withCancelledBotRows,
     flattenGrouped,
@@ -192,6 +199,9 @@
     type SwitcherRow,
   } from "./sidebar-modal-fixtures";
   import CreateModal from "./CreateModal.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { newChannelSheetDoor, newMessageSheetDoor } from "../shell/lazy-doors.js";
+  import { CREATE_MENU_ITEMS, type CreateMenuAction } from "./create-menu.js";
   import NewBotTakeover from "./create-bot/NewBotTakeover.svelte";
   import {
     beginBotRemoval,
@@ -241,8 +251,16 @@
 
   export interface ChatSidebarActions {
     openCreate: () => void;
+    /** The New message sheet (⇧⌘K, owned by the shell registry). */
+    openNewMessage: () => void;
+    openNewChannel: () => void;
     openSearch: () => void;
     openHistory: () => void;
+    /**
+     * Open the create modal on the New bot flow (Team, Bots, Settings, Atlas).
+     * `companyUid` is the company the user came from; the Cloud step starts on it.
+     */
+    openNewAgent: (companyUid?: string | null) => void;
   }
 
   interface Props {
@@ -251,6 +269,11 @@
     /** Wake events (web: bridged from the MeshClient). */
     wakes?: ChatWakeBus | null;
     companies?: Workspace[] | null;
+    /**
+     * Console rail shell: companies live on the rail only, so the sidebar
+     * drops its Companies block and company pin menu.
+     */
+    companiesOnRail?: boolean;
     /** A company's home channel was just created/adopted by `ensureCompanyHomeChannel`
      *  (roster row had no `homeChannelId` yet). Lets the host patch its own
      *  roster copy and refresh from the server, so chrome elsewhere (and a
@@ -298,6 +321,11 @@
     oncompanyscopechange?: (companyUid: string | null) => void;
     /** Host-owned sign-out (desktop emitted `tray:sign-out`). */
     onsignout?: () => Promise<void> | void;
+    /**
+     * Home model in the console rail hides this card. Account actions live
+     * on the rail avatar (US-010). Phone layout keeps the card.
+     */
+    hideAccountFooter?: boolean;
     /**
      * Lifecycle entry points. The host runs the card action and navigates to
      * the posted card; the sidebar only offers the rows ("+" modal and the
@@ -377,6 +405,8 @@
     openExternal?: ((url: string) => void | Promise<void>) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam, passed through to the New bot flow. */
+    directCloud?: import("./create-bot/direct-cloud-lazy.js").DirectCloudFlowSeam | null;
     /** Personal local bot (local-bots): desktop hosts only; see CreateModal. */
     oncreatebot?:
       | ((input: LocalBotCreateInput, extras?: CreateBotExtras) => Promise<LocalBotEntryResult>)
@@ -480,12 +510,8 @@
     rowExtrasLoading?: boolean;
     rowExtrasError?: boolean;
     rowExtras?: RowExtrasResolver | null;
-    /** US-006: when true, contacts whose last message is agent-only show their preview. */
-    showBotMessages?: boolean;
-    /** Optional content rendered above the account footer (e.g. UpdateAvailableCard). */
+    /** Optional content rendered above the account footer. */
     bottomContent?: Snippet;
-    /** Fires when the user clicks the bot-message toggle in the sidebar header. */
-    onshowbotmessageschange?: (value: boolean) => void;
     /**
      * When true (the `desktop.human-only-conversations` flag is on), rows are
      * ordered and sectioned by the last message a person typed, in three
@@ -502,6 +528,7 @@
     api,
     wakes = null,
     companies = null,
+    companiesOnRail = false,
     onhomechannelresolved,
     self = null,
     isAdmin = null,
@@ -522,6 +549,7 @@
     onselect,
     oncompanyscopechange,
     onsignout,
+    hideAccountFooter = false,
     oncreatecompany = null,
     companyCreate = null,
     oncreateagent = null,
@@ -543,6 +571,7 @@
     openExternal = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     oncreatebot = null,
     botRuntimeReady = null,
     botRuntimeStatus = null,
@@ -573,9 +602,7 @@
     rowExtrasLoading = false,
     rowExtrasError = false,
     rowExtras = null,
-    showBotMessages = false,
     bottomContent,
-    onshowbotmessageschange,
     humanOnly = false,
   }: Props = $props();
   // Host still reports load failures; the sidebar no longer paints them.
@@ -791,11 +818,10 @@
    * new-channel modals.
    */
   let createOpen = $state(false);
-  const createButtonLabel = $derived(
-    oncreatebot || oncreatecompany || oncreateagent
-      ? "New message, channel, company, or bot"
-      : "New message or channel",
-  );
+  let createMenuOpen = $state(false);
+  let messageSheetOpen = $state(false);
+  let channelSheetOpen = $state(false);
+  const createButtonLabel = "New message, channel, or agent";
   let plusBtnEl = $state<HTMLButtonElement | null>(null);
   /** "Search or jump to…" channel switcher overlay (?view=v2). */
   let searchOpen = $state(false);
@@ -903,6 +929,7 @@
       .map((w) => ({
         companyUid: w.cloudUid as string,
         label: w.displayName?.trim() || w.slug,
+        slug: w.slug,
         // Every-plan company icon (NOT gated on brandingEnabled).
         iconUrl: w.iconUrl ?? null,
       })),
@@ -1306,6 +1333,7 @@
         companyHomeEnsuring = rest;
         return;
       } catch (err) {
+        // raw-error-ok: log only
         const reason = err instanceof Error ? err.message : String(err);
         companiesLog(
           `open-failed company=${label} attempt=${attempt}/${ENSURE_HOME_CHANNEL_MAX_ATTEMPTS} reason=${reason}`,
@@ -1379,13 +1407,28 @@
   );
 
   const companyScoped = $derived(scope !== "all" && scope !== "personal");
+  // Home keeps DMs, bots, and project channels. Company channels render
+  // under Activity only while that company is the pane (US-008).
+  const activityChannelRows = $derived(
+    companyScoped ? companyScopedChannels(filteredRows, scope) : [],
+  );
+  // All scope: company channels sort into the date buckets with DMs, by
+  // their most recent message. Home and Personal still omit them.
+  const inboxRows = $derived(
+    scope === "all" ? filteredRows : omitCompanyScopedChannels(filteredRows),
+  );
   const railRows = $derived(
     sortMode === "type" || companyScoped
-      ? filteredRows
-      : takeRailConversations(filteredRows, {
-          selectedId: activeId,
-          recentPersonUids: recentDms,
-        }),
+      ? inboxRows
+      : scope === "all"
+        ? takeAllScopeRailRows(inboxRows, {
+            selectedId: activeId,
+            recentPersonUids: recentDms,
+          })
+        : takeRailConversations(inboxRows, {
+            selectedId: activeId,
+            recentPersonUids: recentDms,
+          }),
   );
 
   /** US-016: open the newest rail row when the shell has no selection. */
@@ -1447,8 +1490,16 @@
     // and rows that hydrate a beat later — but once the first fetch has
     // settled (or timed out) with nothing else, open #setup so the pane is
     // never an infinite skeleton.
+    // A selected company paints its channels under Activity, not in the
+    // Home day groups. Prefer one of those over a personal DM (US-008).
+    const livePool =
+      companyScoped && activityChannelRows.length > 0
+        ? activityChannelRows
+        : // All lists company channels too, but boot never opens one on
+          // its own (it did not before they joined the date buckets).
+          omitCompanyScopedChannels(inboxRows);
     const live = pickAutoOpenConversation(
-      filteredRows.filter((row) => !isSetupChannel(row.channelId)),
+      livePool.filter((row) => !isSetupChannel(row.channelId)),
       selectedId,
       humanOnly,
     );
@@ -1460,7 +1511,7 @@
     if (!bootAttempted || loading) return;
     if (hasRosterCompany && !hasNonSetupRows && !companyRowsGraceElapsed) return;
     const fallback = pickSettledBootConversation(
-      filteredRows,
+      companyScoped ? filteredRows : omitCompanyScopedChannels(inboxRows),
       selectedId,
       humanOnly,
     );
@@ -1475,10 +1526,16 @@
   const grouped = $derived(
     sortMode === "type"
       ? groupByType(railRows)
-      : groupByDay(railRows, Date.now(), { humanOnly }),
+      : groupByDay(railRows, Date.now(), {
+          humanOnly,
+          emptyChannelsLast: scope === "all",
+        }),
   );
   /** Rows in painted order — the selection model's range/keyboard order. */
-  const renderedRows = $derived(flattenGrouped(grouped, lastWeekExpanded));
+  const renderedRows = $derived([
+    ...activityChannelRows,
+    ...flattenGrouped(grouped, lastWeekExpanded),
+  ]);
   const orderedRowIds = $derived(renderedRows.map((row) => row.id));
   $effect(() => {
     const emit = ondisplayrows;
@@ -1589,6 +1646,8 @@
         }
         // The same list for as long as it is open, as "New bot" keeps it.
         newBotCompaniesAtOpen = newBotTargets;
+        // A starting bot's row goes straight to that bot: no Cloud or Local question.
+        newBotChoose = false;
         newBotOpen = true;
         return;
       }
@@ -1654,7 +1713,14 @@
   $effect(() => {
     const emit = onactions;
     if (!emit) return;
-    emit({ openCreate, openSearch, openHistory });
+    emit({
+      openCreate,
+      openNewMessage: () => openCreateAction("message"),
+      openNewChannel,
+      openSearch,
+      openHistory,
+      openNewAgent,
+    });
     return () => emit(null);
   });
   const historyHiddenCount = $derived(
@@ -1768,6 +1834,9 @@
     scopeMenuOpen = false;
     footerMenuOpen = false;
     createOpen = false;
+    createMenuOpen = false;
+    messageSheetOpen = false;
+    channelSheetOpen = false;
     newBotOpen = false;
     searchOpen = false;
   }
@@ -1784,14 +1853,52 @@
     filterOpen = next;
   }
 
+  /** The company a host entry (Team page Add agent) opened New bot from. */
+  let createBotCompanyUid = $state<string | null>(null);
+  const createBotCompanySlug = $derived(
+    createBotCompanyUid
+      ? ((companies ?? []).find((w) => w.cloudUid === createBotCompanyUid)?.slug ?? null)
+      : null,
+  );
   function openCreate(): void {
     closeAllOverlays();
+    createBotCompanyUid = null;
+    createSunrise = false;
+    createBotHome = null;
     createOpen = true;
   }
-  /** The "+" button: a plain channel; the host resets the kind on its own opens. */
+  /** The "+" button opens the create menu. New company is not on this menu. */
+  function openNewChannel(): void {
+    closeAllOverlays();
+    channelSheetOpen = true;
+  }
+
   function openCreateFromButton(): void {
+    const next = !createMenuOpen;
+    closeAllOverlays();
+    createMenuOpen = next;
+  }
+
+  function openCreateAction(action: CreateMenuAction): void {
+    createMenuOpen = false;
+    if (action === "message") {
+      messageSheetOpen = true;
+      return;
+    }
+    if (action === "channel") {
+      channelSheetOpen = true;
+      return;
+    }
+    // "New bot": the full-window takeover, which asks "Cloud or Local?"
+    // first. Only when no bot can be made at all does the create window's
+    // own bot step open (it says why).
+    newBotPreferredCompanyUid = null;
+    if (newBotChoicePossible) {
+      openNewBotTakeover({ choose: true });
+      return;
+    }
     createKind = "channel";
-    createStep = "find";
+    createStep = "bot";
     openCreate();
   }
 
@@ -1812,6 +1919,26 @@
    * of having the screen taken away under them.
    */
   let newBotCompaniesAtOpen = $state<ScopeCompany[] | null>(null);
+  /** The takeover opens on the "Cloud or Local?" question (every New bot entry; not a starting bot's row). */
+  let newBotChoose = $state(false);
+  /** Open the takeover on its cloud create screen, the choice behind Back. */
+  let newBotOpenCloud = $state(false);
+  /** The company a New bot entry was opened for (Team page Add agent). */
+  let newBotPreferredCompanyUid = $state<string | null>(null);
+  /** The "+" window's bot step wears the takeover shell: it was opened from the choice. */
+  let createSunrise = $state(false);
+  /** The home picked on the choice, preselected in the bot flow. */
+  let createBotHome = $state<"local" | "cloud" | null>(null);
+  /** A Local bot can be made on this computer. */
+  const canMakeLocalBot = $derived(!!oncreatebot);
+  /** A cloud bot can be made through the "+" window's flow (companies without the takeover too). */
+  const canMakeCloudBotInWindow = $derived(
+    !!oncreateagent && agentCompanies.some((company) => company.companyUid.trim()),
+  );
+  /** "New bot" has something to offer: the choice screen opens. */
+  const newBotChoicePossible = $derived(
+    canMakeLocalBot || newBotTargets.length > 0 || canMakeCloudBotInWindow,
+  );
   const takeoverCompanies = $derived(
     newBotOpen && newBotCompaniesAtOpen?.length
       ? newBotCompaniesAtOpen
@@ -1822,6 +1949,22 @@
    * step: local bots, and cloud bots in the companies the takeover does not
    * list.
    */
+  /** The takeover lists a company it can make a cloud bot in itself. */
+  const takeoverHasCloud = $derived(
+    !!oncreatenewbot && !!loadCloudProvisionOptions && takeoverCompanies.length > 0,
+  );
+  /** Why Cloud is off on the choice screen. Null when it can be picked. */
+  const newBotCloudReason = $derived(
+    takeoverHasCloud || canMakeCloudBotInWindow
+      ? null
+      : agentCompanies.length === 0 && scopeCompanies.length === 0
+        ? "Cloud bots run in a company. Join or create one first."
+        : "Cloud bots aren't available in your companies yet.",
+  );
+  /** Why Local is off on the choice screen. Null when it can be picked. */
+  const newBotLocalReason = $derived(
+    canMakeLocalBot ? null : "Local bots can't be made from this app.",
+  );
   const takeoverOtherWayLabel = $derived(
     newBotOtherWayLabel({
       local: !!oncreatebot,
@@ -1843,19 +1986,24 @@
    * reached from their own rows; none of them stands in the way of making
    * another one.
    */
-  function openNewBotTakeover(): void {
+  function openNewBotTakeover(options: { choose?: boolean } = {}): void {
+    newBotOpenCloud = false;
+    newBotFromCreateWindow = createOpen;
     createOpen = false;
+    newBotChoose = options.choose ?? true;
     newBotCompaniesAtOpen = newBotTargets;
     openWakingKey = null;
     newBotOpen = true;
   }
 
   // The host reads the flag per company. Tell it the list when it changes,
-  // and again when the "+" modal opens so an answer older than the host's
-  // five minutes is read again before the person reaches "New bot".
+  // and again when the "+" menu or the create window opens so an answer older
+  // than the host's five minutes is read again before the person reaches
+  // "New bot".
   $effect(() => {
     const key = agentCompanyKey;
     void createOpen;
+    void createMenuOpen;
     untrack(() => onagentcompanies?.(key ? key.split("\n") : []));
   });
 
@@ -2567,18 +2715,79 @@
     });
   }
 
+  /**
+   * True when the takeover was opened from the create window's "New bot" row.
+   * On the rail it usually opens from the "+" menu, with no window behind it.
+   */
+  let newBotFromCreateWindow = false;
+
+  /** Cancel goes back to where the person came from: the create window, or the "+" button. */
   async function cancelNewBotTakeover(): Promise<void> {
     newBotOpen = false;
+    const backToWindow = newBotFromCreateWindow;
+    newBotFromCreateWindow = false;
+    if (!backToWindow) {
+      await tick();
+      plusBtnEl?.focus();
+      return;
+    }
     createStep = "find";
+    createSunrise = false;
+    createBotHome = null;
     createOpen = true;
     await tick();
     document.querySelector<HTMLInputElement>('[data-testid="chat-create-query"]')?.focus();
   }
 
-  function openLocalBotFromTakeover(): void {
+  /**
+   * Leave the takeover for the "+" window's bot flow, worn in the same
+   * takeover shell: Local from the choice, Cloud in companies the takeover
+   * does not list, or the create screen's "local bot instead" (no preset).
+   */
+  function openBotFlowFromChoice(home: "local" | "cloud" | null): void {
     newBotOpen = false;
+    newBotFromCreateWindow = false;
+    // Only the company this New bot was opened for (Team page Add agent)
+    // carries over; an older preselect must not.
+    createBotCompanyUid = newBotPreferredCompanyUid;
+    createKind = "channel";
     createStep = "bot";
+    createSunrise = true;
+    createBotHome = home;
     createOpen = true;
+  }
+
+  function openLocalBotFromTakeover(): void {
+    openBotFlowFromChoice(null);
+  }
+
+  /** Back from the bot flow's first step: the "Cloud or Local?" question again. */
+  function backToNewBotChoice(): void {
+    createOpen = false;
+    createSunrise = false;
+    createBotHome = null;
+    newBotCompaniesAtOpen = newBotTargets;
+    openWakingKey = null;
+    newBotChoose = true;
+    newBotOpenCloud = false;
+    newBotOpen = true;
+  }
+
+  /**
+   * "Create a cloud bot instead" on the local steps: the cloud create screen
+   * when the takeover has one, else the "+" window's cloud flow.
+   */
+  function switchLocalToCloud(): void {
+    if (takeoverHasCloud) {
+      backToNewBotChoice();
+      newBotOpenCloud = true;
+      return;
+    }
+    if (!canMakeCloudBotInWindow) return;
+    // Close the local steps first: the window's flow is built for the home
+    // it opens with, so the cloud one must open fresh.
+    createOpen = false;
+    void tick().then(() => openBotFlowFromChoice("cloud"));
   }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
@@ -2594,6 +2803,11 @@
     hint?: { title: string; companyUid: string | null },
   ): void {
     createOpen = false;
+    createSunrise = false;
+    createBotHome = null;
+    newBotPreferredCompanyUid = null;
+    // The New channel sheet closes through here too (QA-019).
+    channelSheetOpen = false;
     plusBtnEl?.focus();
     if (!openChannelId) return;
     // A just-created channel is opened before the directory feed lists it, so
@@ -2652,6 +2866,22 @@
     footerMenuOpen = next;
   }
 
+  /** Host entry point (Team page Add agent): open on the New agent step. */
+  function openNewAgent(companyUid: string | null = null): void {
+    // Every New bot entry starts on the "Cloud or Local?" question.
+    if (newBotChoicePossible) {
+      closeAllOverlays();
+      newBotPreferredCompanyUid = companyUid;
+      openNewBotTakeover({ choose: true });
+      return;
+    }
+    newBotPreferredCompanyUid = null;
+    createKind = "channel";
+    createStep = "bot";
+    openCreate();
+    createBotCompanyUid = companyUid;
+  }
+
   /** Failure reason from a switcher-triggered New company, shown inline. */
   let scopeEntryError = $state<string | null>(null);
   let scopeEntryBusy = $state(false);
@@ -2678,7 +2908,8 @@
       }
       scopeEntryError = result.reason;
     } catch (err) {
-      scopeEntryError = err instanceof Error ? err.message : String(err);
+      console.warn("[chat-sidebar] new company failed", err);
+      scopeEntryError = "Could not start a new company. Try again.";
     } finally {
       scopeEntryBusy = false;
     }
@@ -2744,6 +2975,13 @@
       // Any outside mousedown dismisses the cursor context menu. Clicks inside
       // it call stopPropagation, so they never reach this handler.
       if (contextMenu) contextMenu = null;
+      if (createMenuOpen) {
+        const menu = document.querySelector('[data-testid="chat-create-menu"]');
+        const inside =
+          (plusBtnEl?.contains(event.target) ?? false) ||
+          (menu?.contains(event.target) ?? false);
+        if (!inside) createMenuOpen = false;
+      }
       if (scopeMenuOpen) {
         const menu = document.querySelector('[data-testid="chat-scope-menu"]');
         const inside =
@@ -2785,10 +3023,15 @@
       }
       // No `createOpen` branch on purpose — CreateModal owns its own Escape
       // (and backdrop) dismissal; two handlers would double-fire.
-      if (scopeMenuOpen || filterOpen || footerMenuOpen) {
-        scopeMenuOpen = false;
-        filterOpen = false;
-        footerMenuOpen = false;
+      if (createMenuOpen || messageSheetOpen || channelSheetOpen || scopeMenuOpen || filterOpen || footerMenuOpen) {
+        createMenuOpen = false;
+        if (!messageSheetOpen && !channelSheetOpen) {
+          scopeMenuOpen = false;
+          filterOpen = false;
+          footerMenuOpen = false;
+        }
+        messageSheetOpen = false;
+        channelSheetOpen = false;
         event.preventDefault();
       }
     }
@@ -2994,11 +3237,12 @@
     const directory = directoryReconciler.reconcile("manual").catch(() => {}); // onError already surfaced it
     try {
       const [contactsResp, requestsResp] = await Promise.all([
-        raceTimeout(api.listContacts({ showBotMessages }), bootTimeoutMs, "list_contacts").catch(
+        raceTimeout(api.listContacts({ showBotMessages: false }), bootTimeoutMs, "list_contacts").catch(
           (err) => {
             sidebarLog("boot-error", {
               source: "list_contacts",
               timeout: err instanceof BootTimeoutError,
+              // raw-error-ok: telemetry payload only
               message: err instanceof Error ? err.message : String(err),
             });
             console.error("chat-sidebar: list_contacts failed", err);
@@ -3016,6 +3260,7 @@
           sidebarLog("boot-error", {
             source: "list_dm_requests",
             timeout: err instanceof BootTimeoutError,
+            // raw-error-ok: telemetry payload only
             message: err instanceof Error ? err.message : String(err),
           });
           console.error("chat-sidebar: list_dm_requests failed", err);
@@ -3041,6 +3286,7 @@
       loadError = "Couldn’t load conversations.";
       sidebarLog("boot-error", {
         source: "refresh",
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: refresh failed", err);
@@ -3087,21 +3333,6 @@
     });
   });
 
-  // Re-fetch contacts when the bot-message toggle flips so list previews update.
-  // Skip the initial run: `onMount` already primes the roster with the current
-  // toggle value, so re-reading here would double the boot contacts fetch.
-  let botToggleSeen = false;
-  $effect(() => {
-    const _show = showBotMessages;
-    untrack(() => {
-      if (!botToggleSeen) {
-        botToggleSeen = true;
-        return;
-      }
-      void refreshLists();
-    });
-  });
-
   /** Re-read pending connection requests alone (no directory/contacts churn). */
   async function refreshRequests(): Promise<void> {
     try {
@@ -3115,6 +3346,7 @@
       sidebarLog("boot-error", {
         source: "list_dm_requests",
         timeout: err instanceof BootTimeoutError,
+        // raw-error-ok: telemetry payload only
         message: err instanceof Error ? err.message : String(err),
       });
       console.error("chat-sidebar: list_dm_requests failed", err);
@@ -3440,6 +3672,9 @@
         group: "Sidebar",
         run: () => selectScope("personal"),
       },
+      // ⇧⌘K / ⇧⌘N / ⌥⌘N (the Create menu) are shell bindings so they work
+      // from every page; registering them here too would double-bind them
+      // and leave them dead wherever this sidebar is unmounted (QA-077).
     ]);
 
     window.addEventListener(COMPOSER_DRAFT_CHANGED_EVENT, refreshDraftIds);
@@ -3602,7 +3837,8 @@
       await onsignout();
       signOutConfirmOpen = false;
     } catch (error) {
-      signOutError = `Couldn’t sign out: ${String(error)}`;
+      console.warn("[chat-sidebar] sign out failed", error);
+      signOutError = "Couldn’t sign out. Try again.";
     } finally {
       signingOut = false;
     }
@@ -3760,8 +3996,9 @@
         data-testid="chat-new-message"
         aria-label={createButtonLabel}
         title={createButtonLabel}
-        aria-haspopup="dialog"
-        aria-expanded={createOpen}
+        aria-haspopup="menu"
+        aria-expanded={createMenuOpen}
+        aria-controls="chat-create-menu"
         onclick={openCreateFromButton}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3773,6 +4010,31 @@
           />
         </svg>
       </button>
+      {#if createMenuOpen}
+        <div
+          class="chat-popover chat-create-menu"
+          id="chat-create-menu"
+          role="menu"
+          aria-label="Create"
+          data-testid="chat-create-menu"
+          use:menuPortal={{ anchor: plusBtnEl, placement: "bottom-start" }}
+        >
+          <div class="chat-create-sec">Create</div>
+          {#each CREATE_MENU_ITEMS as item (item.id)}
+            <button
+              type="button"
+              class="chat-popover-row chat-create-row"
+              role="menuitem"
+              data-testid={"chat-create-menu-" + item.id}
+              onclick={() => openCreateAction(item.id)}
+            >
+              <span class="t">{item.label}</span>
+              <span class="chat-scope-shortcut">{formatShortcut(item.keys)}</span>
+            </button>
+          {/each}
+          <p class="chat-create-foot">Scope follows the selected row · {scopeLabel}</p>
+        </div>
+      {/if}
       <button
         type="button"
         class="chat-icon-btn"
@@ -3796,26 +4058,6 @@
             stroke-width="1.25"
             stroke-linecap="round"
           />
-        </svg>
-      </button>
-      <!-- US-006: bot-message toggle -->
-      <button
-        type="button"
-        class="chat-icon-btn"
-        class:on={showBotMessages}
-        data-testid="chat-bot-toggle"
-        aria-label={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        aria-pressed={showBotMessages}
-        title={showBotMessages ? 'Hide bot messages' : 'Show bot messages'}
-        onclick={() => onshowbotmessageschange?.(!showBotMessages)}
-      >
-        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true" focusable="false">
-          <rect x="2" y="4" width="10" height="7" rx="2" stroke="currentColor" stroke-width="1.25" fill="none"/>
-          <rect x="4.5" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <rect x="8" y="6.5" width="1.5" height="1.5" rx="0.5" fill="currentColor"/>
-          <line x1="7" y1="1" x2="7" y2="4" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
-          <circle cx="7" cy="1" r="0.75" fill="currentColor"/>
-          <line x1="4.5" y1="9.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
         </svg>
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
@@ -3863,7 +4105,7 @@
                 aria-pressed={sortMode === "recent"}
                 onclick={() => (sortMode = "recent")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">🕐</span>
+                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("clock")}</span>
                 Recent
               </button>
               <button
@@ -3873,7 +4115,7 @@
                 aria-pressed={sortMode === "type"}
                 onclick={() => (sortMode = "type")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">≣</span>
+                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("list")}</span>
                 Type
               </button>
             </div>
@@ -3886,10 +4128,10 @@
               data-testid="chat-filter-mine"
               onclick={() => setShowFilter("mine")}
             >
-              <span class="chat-filter-lead" aria-hidden="true">⌂</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("home")}</span>
               <span class="chat-filter-text">My projects</span>
               {#if showFilter === "mine"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3901,10 +4143,10 @@
                 setShowFilter("all");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">≣</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("list")}</span>
               <span class="chat-filter-text">All</span>
               {#if showFilter === "all"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3916,10 +4158,10 @@
                 setShowFilter("projects");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">#</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("hash")}</span>
               <span class="chat-filter-text">Project channels</span>
               {#if showFilter === "projects"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             <button
@@ -3931,10 +4173,10 @@
                 setShowFilter("dms");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">💬</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("bubble")}</span>
               <span class="chat-filter-text">DMs &amp; groups</span>
               {#if showFilter === "dms"}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
             {#if canSeeCompanyProjects}
@@ -3951,10 +4193,10 @@
                   setShowFilter("company-projects");
                 }}
               >
-                <span class="chat-filter-lead" aria-hidden="true">⌾</span>
+                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("target")}</span>
                 <span class="chat-filter-text">Company projects</span>
                 {#if showFilter === "company-projects"}
-                  <span class="chat-filter-check" aria-hidden="true">✓</span>
+                  <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
                 {/if}
               </button>
             {/if}
@@ -3967,7 +4209,7 @@
               aria-pressed={showArchived}
               onclick={() => setShowArchived(!showArchived)}
             >
-              <span class="chat-filter-lead" aria-hidden="true">🗄</span>
+              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("archive")}</span>
               <span class="chat-filter-text">Show archived</span>
               {#if archivedVisibleCount > 0 && !showArchived}
                 <span
@@ -3976,7 +4218,7 @@
                 >
               {/if}
               {#if showArchived}
-                <span class="chat-filter-check" aria-hidden="true">✓</span>
+                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
               {/if}
             </button>
 
@@ -4036,7 +4278,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-all"
         onclick={selectAllVisible}
-      >
+      ><RailIcon name="check-circle" />
         Select all
       </button>
       <button
@@ -4045,7 +4287,7 @@
         data-testid="chat-selection-archive"
         disabled={selectionCount === 0}
         onclick={archiveSelection}
-      >
+      ><RailIcon name="archive" />
         {selectionAllArchived ? "Unarchive" : "Archive"}
       </button>
       <button
@@ -4053,7 +4295,7 @@
         class="chat-selection-action"
         data-testid="chat-selection-done"
         onclick={exitSelectionMode}
-      >
+      ><RailIcon name="check" />
         Done
       </button>
     </div>
@@ -4071,12 +4313,7 @@
     aria-busy={allRows.length === 0 && (!firstRefreshSettled || loading)}
   >
     {#if allRows.length === 0 && (!firstRefreshSettled || loading)}
-      <div class="sidebar-skeleton" role="status" aria-label="Loading conversations" data-testid="sidebar-loading">
-        <span class="sr-only">Loading conversations…</span>
-        {#each Array(10) as _, index}
-          <div class="skeleton-row" aria-hidden="true"><span class="skeleton-icon"></span><span class="skeleton-line" style:width={`${45 + (index % 3) * 15}%`}></span></div>
-        {/each}
-      </div>
+      <ReadLoader testid="sidebar-loading" />
     {:else}
     {#if pendingRequestCount > 0}
       <button
@@ -4086,7 +4323,7 @@
         aria-label={`Connection requests, ${pendingRequestCount} pending`}
         onclick={openConnectionRequests}
       >
-        <span class="chat-glyph requests" aria-hidden="true">·</span>
+        <span class="chat-glyph requests" aria-hidden="true">{@render filterIcon("requests")}</span>
         <span class="chat-row-title">Connection requests</span>
         <span
           class="chat-unread-badge"
@@ -4098,7 +4335,7 @@
       </button>
     {/if}
 
-    {#if (companies ?? []).length > 0}
+    {#if !companiesOnRail && (companies ?? []).length > 0}
       <div class="chat-section-label chat-companies-label" id="chat-companies-label">
         <span>COMPANIES</span>
         <button
@@ -4139,7 +4376,11 @@
                   {checked}
                   onchange={() => toggleCompanyPin(uid)}
                 />
-                <span>{company.displayName || company.slug}</span>
+                <CompanyLabel
+                  name={company.displayName || company.slug}
+                  iconUrl={company.iconUrl}
+                  companyUid={uid}
+                />
               </label>
             {/if}
           {/each}
@@ -4152,8 +4393,17 @@
         data-testid="chat-companies-section"
       >
         {#if companySectionRows.length === 0}
+          <button
+            type="button"
+            class="chat-row"
+            data-testid="create-or-join-company"
+            onclick={() => void oncreatecompany?.()}
+          >
+            <span class="chat-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
+            <span class="chat-row-title">Create or join a company</span>
+          </button>
           <p class="chat-companies-empty" data-testid="chat-companies-empty">
-            No companies yet.
+            Conversations appear here once you belong to a company.
           </p>
         {:else}
           {#each companySectionRows as company (company.companyUid)}
@@ -4165,12 +4415,13 @@
                 data-testid={`chat-companies-row-${company.companyUid}`}
                 onclick={() => openCompanyHome(company)}
               >
-                {#if company.iconUrl}
-                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
-                {:else}
-                  <span class="chat-glyph" aria-hidden="true">·</span>
-                {/if}
-                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-row-title"
+                  ><CompanyLabel
+                    name={company.label}
+                    iconUrl={company.iconUrl}
+                    companyUid={company.companyUid}
+                  /></span
+                >
               </button>
             {:else}
               {@const ensuring = companyHomeEnsuring[company.companyUid] === true}
@@ -4187,12 +4438,13 @@
                     : "No company channel yet"}
                 onclick={() => openCompanyHome(company)}
               >
-                {#if company.iconUrl}
-                  <img class="chat-companies-row-icon" src={company.iconUrl} alt="" aria-hidden="true" />
-                {:else}
-                  <span class="chat-glyph" aria-hidden="true">·</span>
-                {/if}
-                <span class="chat-row-title">{company.label}</span>
+                <span class="chat-row-title"
+                  ><CompanyLabel
+                    name={company.label}
+                    iconUrl={company.iconUrl}
+                    companyUid={company.companyUid}
+                  /></span
+                >
                 {#if ensuring}
                   <span
                     class="chat-companies-row-status"
@@ -4214,6 +4466,22 @@
             {/if}
           {/each}
         {/if}
+      </div>
+    {/if}
+
+    {#if activityChannelRows.length > 0}
+      <div class="chat-section-label" id="chat-activity-label">
+        <span>ACTIVITY</span>
+      </div>
+      <div
+        class="chat-list"
+        role="list"
+        aria-labelledby="chat-activity-label"
+        data-testid="company-activity-channels"
+      >
+        {#each activityChannelRows as row (row.id)}
+          {@render conversationRow(row)}
+        {/each}
       </div>
     {/if}
 
@@ -4241,16 +4509,7 @@
     {/if}
 
     {#each grouped.sections as section (section.key)}
-      {@const [sectionName, sectionDate] = section.label.split(" · ")}
-      <div
-        class="chat-section-label chat-day-head"
-        id={`chat-sec-${section.key}`}
-      >
-        <span>{sectionName}</span>
-        {#if sectionDate}<span class="chat-day-date" data-testid="chat-day-date"
-            >{sectionDate}</span
-          >{/if}
-      </div>
+      <DayGroupHeader label={section.label} id={`chat-sec-${section.key}`} />
       <div
         class="chat-list"
         role={selectionMode ? "listbox" : "list"}
@@ -4299,12 +4558,27 @@
       {/if}
     {/if}
 
+    {#if (grouped.noMessages?.length ?? 0) > 0}
+      <DayGroupHeader label="No messages yet" id="chat-sec-no-messages" />
+      <div
+        class="chat-list"
+        role={selectionMode ? "listbox" : "list"}
+        aria-multiselectable={selectionMode ? true : undefined}
+        aria-labelledby="chat-sec-no-messages"
+        data-testid="chat-no-messages-section"
+      >
+        {#each grouped.noMessages ?? [] as row (row.id)}
+          {@render conversationRow(row)}
+        {/each}
+      </div>
+    {/if}
+
     <button
       type="button"
       class="chat-history-affordance"
       data-testid="chat-show-history"
       onclick={openHistory}
-    >
+    ><RailIcon name="chevron-down" />
       Show all history{historyHiddenCount > 0
         ? ` (${historyHiddenCount})`
         : ""}…
@@ -4325,6 +4599,7 @@
 
   {@render bottomContent?.()}
 
+  {#if !hideAccountFooter}
   <div class="chat-footer" bind:this={footerEl}>
     <button
       type="button"
@@ -4378,6 +4653,7 @@
       </div>
     {/if}
   </div>
+  {/if}
 
   {#if contextMenu}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -4699,7 +4975,7 @@
                 >
               {/if}
               <span class="chat-switcher-name">{row.name}</span>
-              <span class="chat-switcher-company">{row.company}</span>
+              <span class="chat-switcher-company"><CompanyLabel name={row.company} /></span>
             </button>
           {:else}
             <div class="chat-empty">
@@ -4711,9 +4987,54 @@
     </div>
   {/if}
 
+  {#if messageSheetOpen}
+    <!-- Portaled so ⇧⌘K / ⇧⌘N show on pages that hide this sidebar (QA-077). -->
+    <div class="sheet-portal" use:portal>
+      <LazyDoor
+        door={newMessageSheetDoor}
+        props={{
+          api,
+          rows: [...directoryRows, ...browseRows],
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          companies: scopeCompanies,
+          activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+          scopeLabel,
+          onclose: () => {
+            messageSheetOpen = false;
+            plusBtnEl?.focus();
+          },
+          onopen: (row: ConversationRow) => {
+            messageSheetOpen = false;
+            plusBtnEl?.focus();
+            void openRow(row);
+          },
+        }}
+      />
+    </div>
+  {/if}
+
+  {#if channelSheetOpen}
+    <div class="sheet-portal" use:portal>
+      <LazyDoor
+        door={newChannelSheetDoor}
+        props={{
+          api,
+          rows: [...directoryRows, ...browseRows],
+          contacts: localBotsAsContacts(contacts, localBots, botDisplayNames),
+          companies: createScopeCompanies,
+          activeCompanyUid: scope !== "all" && scope !== "personal" ? scope : null,
+          onclose: closeCreate,
+          aftercreate: onChannelCreated,
+        }}
+      />
+    </div>
+  {/if}
+
   {#if createOpen}
     <CreateModal
       {api}
+      botCompanyUid={createBotCompanyUid}
+      botCompanySlug={createBotCompanySlug}
       rows={[...directoryRows, ...browseRows]}
       contacts={localBotsAsContacts(contacts, localBots, botDisplayNames)}
       {scopeCompanies}
@@ -4730,9 +5051,10 @@
       {oncreatecompany}
       {companyCreate}
       {oncreateagent}
-      onnewcloudbot={newBotTargets.length > 0 ? openNewBotTakeover : null}
+      onnewcloudbot={newBotChoicePossible ? () => openNewBotTakeover({ choose: true }) : null}
       {loadClaudeProviderFlag}
       {loadCloudProvisionOptions}
+      {directCloud}
       {agentCompanies}
       {oncreatebot}
       {botRuntimeReady}
@@ -4752,18 +5074,28 @@
       {loadAvatarPacks}
       initialKind={createKind}
       initialStep={createStep}
+      sunrise={createSunrise}
+      initialBotHome={createBotHome}
+      onsunriseback={createSunrise ? backToNewBotChoice : null}
+      onsunrisecloud={createSunrise && newBotCloudReason === null ? switchLocalToCloud : null}
     />
   {/if}
 
   {#if newBotOpen}
     <NewBotTakeover
       canCreateLocalBot={!!oncreatebot}
+      choose={newBotChoose}
+      openCloud={newBotOpenCloud}
+      cloudReason={newBotCloudReason}
+      localReason={newBotLocalReason}
+      onchoosecloud={canMakeCloudBotInWindow ? () => openBotFlowFromChoice("cloud") : null}
+      onchooselocal={canMakeLocalBot ? () => openBotFlowFromChoice("local") : null}
       oncancel={cancelNewBotTakeover}
       onopenlocal={takeoverOtherWayLabel ? openLocalBotFromTakeover : null}
       otherWayLabel={takeoverOtherWayLabel}
       nameCompany={inSeveralCompanies}
       companies={takeoverCompanies}
-      currentCompanyUid={scopedCompanyUid || null}
+      currentCompanyUid={newBotPreferredCompanyUid ?? (scopedCompanyUid || null)}
       runtimeReady={botRuntimeReady}
       loadProvisionOptions={loadCloudProvisionOptions}
       {loadClaudeProviderFlag}
@@ -4809,6 +5141,21 @@
 <!-- Slack-style pencil shown before a row title when it has an unsent draft.
      Shared by the rail row and the search-hit row; colour comes from
      `.chat-row-draft` (`var(--t3)`). -->
+{#snippet filterIcon(name: string)}
+  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+    {#if name === "clock"}<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" />
+    {:else if name === "list"}<path d="M3 4.5h10M3 8h10M3 11.5h10" />
+    {:else if name === "home"}<path d="M3 7.5 8 3.5l5 4v5H3z" />
+    {:else if name === "hash"}<path d="M6.5 3 5.5 13M10.5 3l-1 10M3.5 6.5h9.5M3 9.5h9.5" />
+    {:else if name === "bubble"}<path d="M3 4h10v6.5H7.5L4.5 13v-2.5H3z" />
+    {:else if name === "target"}<circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2" />
+    {:else if name === "archive"}<path d="M2.5 4h11v2.5h-11zM3.5 6.5v6h9v-6M6.5 9h3" />
+    {:else if name === "check"}<path d="M3.5 8.5l3 3 6-7" />
+    {:else if name === "requests"}<circle cx="6.5" cy="5.5" r="2.5" /><path d="M2 13c.6-2.4 2.3-3.5 4.5-3.5s3.9 1.1 4.5 3.5M12.5 5v4M10.5 7h4" />
+    {/if}
+  </svg>
+{/snippet}
+
 {#snippet draftMark()}
   <span
     class="chat-row-draft"
@@ -5114,6 +5461,16 @@
 {/snippet}
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .chat-pin-btn { position: relative; }
+  .chat-pin-btn::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   .chat-sidebar {
     position: relative;
     /* height:100% must include the padding below, or the sidebar renders ~22px
@@ -5357,10 +5714,6 @@
     position: relative;
   }
 
-  .sidebar-skeleton { padding: 12px 8px; }
-  .skeleton-row { display: flex; align-items: center; gap: 10px; height: 36px; }
-  .skeleton-icon { width: 20px; height: 20px; border-radius: 5px; background: var(--line); }
-  .skeleton-line { height: 10px; border-radius: 4px; background: var(--line); }
   .chat-scroll {
     display: flex;
     flex: 1 1 auto;
@@ -5486,14 +5839,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .chat-companies-row-icon {
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    object-fit: cover;
-    flex: 0 0 auto;
-  }
-
   .chat-row-disabled {
     opacity: 0.55;
     cursor: pointer;
@@ -5517,23 +5862,6 @@
   .chat-companies-row-status-muted {
     color: var(--t3, inherit);
     opacity: 0.65;
-  }
-
-  /* Day-group header: name left, date right-aligned (D-13). */
-  .chat-day-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .chat-day-date {
-    color: var(--t3);
-    font-family: var(--font-mono, inherit);
-    font-size: 10px;
-    font-weight: 400;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: normal;
   }
 
   /* Real box so the pin control can sit beside the row (not nested in it). */
@@ -5736,10 +6064,11 @@
     cursor: pointer;
   }
 
+  /* Direct child of the column scroller: `.chat-row`'s flex-grow would
+     stretch it to fill the empty list and float its label mid-panel. */
   .chat-requests-row {
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 500;
+    flex: 0 0 auto;
+    color: var(--t2);
   }
 
   .chat-row:hover {
@@ -6142,20 +6471,20 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    /* Near-opaque popover tier: without a backdrop blur the translucent
+       --panel-bg let the timeline read straight through the menu. */
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   :global(:root[data-force-theme="dark"]) .chat-popover,
   :global(.dark) .chat-popover {
-    background: var(--panel-bg);
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .chat-popover {
-      background: var(--panel-bg);
+      background: var(--overlay-bg);
     }
   }
 
@@ -6342,10 +6671,8 @@
     padding: 6px;
     border: 1px solid var(--panel-border);
     border-radius: 12px;
-    background: var(--panel-bg);
+    background: var(--overlay-bg);
     box-shadow: var(--panel-shadow);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
   }
 
   .chat-popover-row {
@@ -6357,10 +6684,45 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     text-align: left;
     cursor: pointer;
+  }
+
+  /* + Create menu: header, rows, and footer share the 8px row indent;
+     shortcuts sit right-aligned like the scope menu. */
+  .chat-create-menu {
+    min-width: 240px;
+    max-height: none;
+  }
+
+  .chat-create-sec {
+    padding: 4px 8px 6px;
+    color: var(--t2);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .chat-popover-row.chat-create-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 8px;
+  }
+
+  .chat-create-row .chat-scope-shortcut {
+    margin-left: auto;
+  }
+
+  .chat-create-foot {
+    margin: 4px 0 0;
+    padding: 6px 8px 2px;
+    border-top: 1px solid var(--line, var(--panel-border));
+    color: var(--t3);
+    font-size: 13px;
+    line-height: 17px;
   }
 
   .chat-scope-sep {
@@ -6568,12 +6930,9 @@
   .chat-filter-caption {
     margin: 0;
     padding: 2px 6px 4px;
-    color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    color: var(--t2);
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .chat-filter-caption.pad-top {
@@ -6619,7 +6978,8 @@
   }
 
   .chat-sort-ic {
-    font-size: 11px;
+    display: inline-grid;
+    place-items: center;
     line-height: 1;
   }
 
@@ -6648,9 +7008,8 @@
   .chat-filter-lead {
     display: inline-grid;
     place-items: center;
-    width: 18px;
+    width: 16px;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
@@ -6660,8 +7019,9 @@
   }
 
   .chat-filter-check {
+    display: inline-grid;
+    place-items: center;
     color: var(--t2);
-    font-size: 12px;
     line-height: 1;
   }
 
@@ -6896,5 +7256,8 @@
     .chat-sidebar {
       transition: none;
     }
+  }
+  .sheet-portal {
+    display: contents;
   }
 </style>
