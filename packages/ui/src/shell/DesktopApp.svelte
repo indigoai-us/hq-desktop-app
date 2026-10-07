@@ -58,6 +58,17 @@
   import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
   import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import ForwardPicker from "../chat/messaging/ForwardPicker.svelte";
+  import {
+    adminCompaniesOf,
+    buildForwardHttpRequest,
+    forwardConfirmation,
+    forwardSourceFrom,
+    parseForwardResponse,
+    type ForwardRequest,
+    type ForwardResult,
+    type ForwardSource,
+  } from "../chat/messaging/forward-model.js";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { botKindFor } from "../chat/bot-kind.js";
@@ -1771,6 +1782,10 @@
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
   let inboxRouteNotice = $state<string | null>(null);
+  /** Open Forward picker (US-009); null when closed. */
+  let forwardSource = $state<ForwardSource | null>(null);
+  let forwardNotice = $state<string | null>(null);
+  let forwardNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   let navigationPending = $state(false);
   let navigationUnavailable = $state<{
     destination: NavigationDestination;
@@ -9588,6 +9603,40 @@
     };
   });
 
+  /** Forward the message from the open conversation (US-009). No fetch. */
+  function openForward(msg: ConversationMessageWire): void {
+    const row = selectedRow;
+    if (!row) return;
+    const conversationId = (row.kind === "dm" ? row.personUid : row.channelId) ?? "";
+    if (!conversationId || !msg.eventId) return;
+    const fromUid = (msg.fromPersonUid ?? "").trim();
+    const senderName =
+      (msg.fromDisplayName ?? "").trim() ||
+      (fromUid ? displayNameByUid[fromUid] : "") ||
+      (msg.direction === "out" ? (self?.displayName ?? "") : "");
+    forwardSource = forwardSourceFrom(msg, conversationId, row.companyUid ?? null, senderName);
+  }
+
+  async function sendForward(req: ForwardRequest): Promise<ForwardResult> {
+    const send = adapter.messaging.forwardMessage;
+    if (!send) return { ok: false, code: "UNKNOWN", status: null, files: [], notShareable: [] };
+    const http = buildForwardHttpRequest(req);
+    const res = await send({ path: http.path, body: http.body });
+    if (!res.ok) {
+      console.error("[forward] request failed", res);
+      return { ok: false, code: "NETWORK", status: null, files: [], notShareable: [] };
+    }
+    return parseForwardResponse(res.value.status, res.value.body);
+  }
+
+  function showForwardNotice(text: string): void {
+    forwardNotice = text;
+    if (forwardNoticeTimer) clearTimeout(forwardNoticeTimer);
+    forwardNoticeTimer = setTimeout(() => (forwardNotice = null), 5000);
+  }
+
+  const forwardAdminCompanies = $derived(adminCompaniesOf(companies));
+
   const mentionRoster = $derived(
     // Re-run disambiguation after company labels and resolved emails are in,
     // so two survivors sharing a display name render "Jacob Posel (Indigo)" vs
@@ -11202,6 +11251,24 @@
     </div>
   {/if}
 
+  {#if forwardNotice}
+    <div class="inbox-route-notice" data-testid="forward-confirmation" role="status">
+      {forwardNotice}
+    </div>
+  {/if}
+
+  {#if forwardSource}
+    <ForwardPicker
+      source={forwardSource}
+      rows={railRows}
+      contacts={mentionRoster}
+      adminCompanies={forwardAdminCompanies}
+      onsend={sendForward}
+      onclose={() => (forwardSource = null)}
+      ondone={(name, result) => showForwardNotice(forwardConfirmation(name, result.omittedAttachments))}
+    />
+  {/if}
+
   {#if inboxRouteNotice}
     <div
       class="inbox-route-notice"
@@ -12318,6 +12385,7 @@
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
                   onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
+                  onforward={adapter.messaging.forwardMessage ? openForward : undefined}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}

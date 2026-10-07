@@ -182,6 +182,11 @@
      * button is drawn: the host has no threads to open here.
      */
     onreply?: (rootEventId: string) => void;
+    /**
+     * Forward this message (US-009). Without it no Forward button is drawn.
+     * Not offered on unsent rows, which have no server event id yet.
+     */
+    onforward?: (msg: ConversationMessageWire) => void;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
     /** Open an existing in-channel session from a work-session card. */
@@ -370,6 +375,7 @@
     mentionCandidates = [],
     allowHereMention = false,
     onreply,
+    onforward,
     onstartsession,
     onopensession,
     onopenattachment,
@@ -2239,6 +2245,18 @@
                       onclick={() => copyMessage(msg)}
                     >
                       {copiedEventId === msg.eventId ? "Copied" : "Copy"}
+                    </button>
+                  {/if}
+                  {#if onforward && !msg.eventId.startsWith("local-send-")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-forward"
+                      data-testid="message-forward"
+                      aria-label="Forward message"
+                      title="Forward"
+                      onclick={() => onforward(msg)}
+                    >
+                      Forward
                     </button>
                   {/if}
                   {#if onstartsession}
