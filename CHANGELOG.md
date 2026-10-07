@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Selecting a row in Deployments, including clicking its name, no longer opens the site in your browser. The row is selected and its side panel updates. The site opens only from the Visit button in the side panel. The panel's page preview was being loaded in a way the app treated as a link click.
 - Every page title now uses the same 20px title size; Marketplace, Settings and Notifications were smaller and heavier. The Meetings list title is now "Meetings" in the same size.
 - Hovering a project on the Atlas map now always shows its name, even on a narrow map where the section names around it leave no free space. A section name the hovered name has to cover steps aside until you move the pointer away. Before, hovering a small, quiet project could show the names of its repos but not its own.
 - Meetings opens with your list right away, using the last list it saved, and then updates it in the background. Before, the list could take about six seconds to appear. While Meetings is still loading for the first time, it no longer says "Nothing scheduled", "Nothing live" or "No calendar". The loading text is now just "Loading".
