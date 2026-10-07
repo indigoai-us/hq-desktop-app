@@ -276,7 +276,8 @@
 
   const labels = $derived(
     atlasScreenLabels({
-      reserved: [...fixedBoxes, ...districtLabels.map((d) => d.box), ...chipBoxes],
+      reserved: [...fixedBoxes, ...chipBoxes],
+      yielding: districtLabels.map((d) => d.box),
       placed: shown,
       selected,
       hovered,
@@ -288,6 +289,13 @@
       measure: measureLabel,
     }),
   );
+
+  // A section name the hovered object's name had to land on steps aside
+  // while the hover lasts (see atlasScreenLabels).
+  const shownDistrictLabels = $derived.by(() => {
+    const hoveredBox = labels.find((l) => l.rank === 0)?.box;
+    return hoveredBox ? districtLabels.filter((d) => !meets(d.box, hoveredBox)) : districtLabels;
+  });
 
   const CARD_WIDTH = 280;
   type HoverCard = {
@@ -574,7 +582,7 @@
       {/each}
     </g>
     <g class="labels" data-testid="atlas-labels">
-      {#each districtLabels as label (label.id)}
+      {#each shownDistrictLabels as label (label.id)}
         <text class="region" data-atlas-section={label.id.slice("district:".length)} data-testid={`atlas-${label.id.replace(":", "-label-")}`} x={label.x} y={label.y} text-anchor="middle">{label.text}<tspan class="count" dx="7">{sectionCounts.get(label.id.slice("district:".length)) ?? ""}</tspan></text>
       {/each}
       {#each labels as label (label.id)}
