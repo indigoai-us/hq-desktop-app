@@ -278,6 +278,146 @@ fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
     }
 }
 
+fn classify_runner_exit_error(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("hqsnap4 has an invalid journal payload") {
+        "journal-invalid-payload"
+    } else if lower.contains("state-store lock")
+        || lower.contains("state store lock")
+        || lower.contains("state-store is locked")
+        || (lower.contains("state") && lower.contains("store") && lower.contains("lock"))
+    {
+        "state-store-lock"
+    } else if (lower.contains("targeted pull") || lower.contains("targeted-pull"))
+        && lower.contains("fail")
+    {
+        "targeted-pull-failed"
+    } else {
+        "unknown"
+    }
+}
+
+fn scrub_runner_error_message(message: &str) -> String {
+    let mut scrubbed = String::new();
+    for (index, token) in message.split_whitespace().enumerate() {
+        if index > 0 {
+            scrubbed.push(' ');
+        }
+        let candidate = token.trim_matches(|c: char| {
+            !c.is_alphanumeric()
+                && c != '/'
+                && c != '\\'
+                && c != '.'
+                && c != '@'
+                && c != '_'
+                && c != '-'
+        });
+        let lower = candidate.to_ascii_lowercase();
+        let email = candidate.contains('@') && candidate.rsplit_once('.').is_some();
+        let path = candidate.contains('/')
+            || candidate.contains('\\')
+            || candidate.starts_with('~')
+            || candidate.starts_with('.')
+            || [".json", ".md", ".ts", ".js", ".rs", ".db", ".log"]
+                .iter()
+                .any(|extension| lower.ends_with(extension));
+        let key_like = lower.starts_with("bearer")
+            || lower.starts_with("token=")
+            || lower.starts_with("token:")
+            || lower.starts_with("access_token=")
+            || lower.starts_with("refresh_token=")
+            || lower.starts_with("authorization=")
+            || lower.starts_with("api_key=")
+            || lower.starts_with("api-key=")
+            || lower.starts_with("key=")
+            || lower.starts_with("secret=")
+            || lower.starts_with("password=")
+            || lower.starts_with("cookie=")
+            || lower.starts_with("auth=")
+            || lower.starts_with("sk-")
+            || lower.starts_with("ghp_")
+            || lower.starts_with("github_pat_")
+            || lower.starts_with("akia")
+            || lower.starts_with("f_")
+            || lower.starts_with("folder_")
+            || lower.starts_with("file_")
+            || lower.starts_with("obj_")
+            || lower.starts_with("vaultkey_")
+            || candidate.starts_with("eyJ")
+            || (candidate.len() >= 24
+                && candidate.chars().any(|c| c.is_ascii_alphabetic())
+                && candidate.chars().any(|c| c.is_ascii_digit()));
+        if email {
+            scrubbed.push_str("[email]");
+        } else if path {
+            scrubbed.push_str("[path]");
+        } else if key_like {
+            scrubbed.push_str("[redacted]");
+        } else {
+            scrubbed.push_str(token);
+        }
+    }
+    scrubbed.chars().take(300).collect()
+}
+
+fn runner_exit_error_from_line(line: &str) -> Option<String> {
+    if serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("diagnostic")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        if value.get("event").and_then(serde_json::Value::as_str) == Some("receiver.sync.failed") {
+            let message = value
+                .get("err")
+                .and_then(|error| error.get("message"))
+                .and_then(serde_json::Value::as_str)?;
+            return Some(scrub_runner_error_message(&format!(
+                "targeted pull failed: {message}"
+            )));
+        }
+    }
+    match crate::events::parse_sync_line(line)? {
+        SyncEvent::Error(error) => Some(scrub_runner_error_message(&error.message)),
+        _ => None,
+    }
+}
+
+fn report_runner_exit_error(
+    app: &AppHandle,
+    payload: SyncErrorEvent,
+    code: Option<i32>,
+    runner_error_message: Option<&str>,
+) -> tauri::Result<()> {
+    let error_class = runner_error_message
+        .map(classify_runner_exit_error)
+        .unwrap_or("unknown");
+    let exit_code = code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("error_class", error_class);
+            scope.set_fingerprint(Some(&["sync-runner-exit", &exit_code, error_class]));
+            scope.set_extra(
+                "runner.error_class",
+                sentry::protocol::Value::String(error_class.to_string()),
+            );
+            if let Some(message) = runner_error_message {
+                scope.set_extra(
+                    "runner.error_message",
+                    sentry::protocol::Value::String(message.to_string()),
+                );
+            }
+        },
+        || sentry::capture_message(&format!("[sync] {}", payload.message), sentry::Level::Error),
+    );
+    app.emit(EVENT_SYNC_ERROR, payload)
+}
+
 /// Emit a `sync:error` Tauri event AND capture the message to Sentry.
 ///
 /// Used at exactly one call site today: the runner non-zero exit handler
@@ -982,6 +1122,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     let jwt_for_handler = jwt.clone();
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
+    let runner_exit_error = Mutex::new(None::<String>);
     tauri::async_runtime::spawn_blocking(move || {
         log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
@@ -994,6 +1135,9 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 log("runner.stdout", &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
+                if let Some(error) = runner_exit_error_from_line(&line) {
+                    *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                }
                 handle_sync_line(
                     &app_bg,
                     &hq_folder_for_handler,
@@ -1007,25 +1151,20 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // most likely place the cause shows up (npx download retry,
                 // node uncaught exception, runner panic, etc.).
                 log("runner.stderr", &line);
-                // Catch-all error pipeline: every runner stderr line becomes
-                // a Sentry breadcrumb attached to the current scope. If the
-                // runner exits non-zero, the `report_sync_error` capture at
-                // the exit site below will publish a single Sentry event with
-                // these breadcrumbs as the trail of "what the runner was
-                // doing right before it died". This is the design intent —
-                // breadcrumbs accumulate noise for free, exit-time capture
-                // converts that into a single alertable issue with context.
+                if let Some(error) = runner_exit_error_from_line(&line) {
+                    *runner_exit_error.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+                }
+                // Keep only a fixed Sentry breadcrumb marker for each stderr
+                // line. Raw output remains in the local sync log; the last
+                // structured error message is separately scrubbed and attached
+                // to the non-zero exit event below.
                 //
-                // PROTOCOL NOTE (2026-04-25): the runner currently emits
-                // structured per-file error events on STDOUT as ndjson. Once
-                // the runner is updated to emit errors on STDERR (planned
-                // protocol change in @indigoai-us/hq-cloud), each runner
-                // error becomes a breadcrumb here automatically — no Tauri
-                // changes required.
+                // Structured error events can arrive on either stream; their
+                // scrubbed last message is retained by `runner_exit_error`.
                 sentry::add_breadcrumb(sentry::Breadcrumb {
                     category: Some("runner.stderr".into()),
                     level: sentry::Level::Warning,
-                    message: Some(line.clone()),
+                    message: Some("runner stderr received".into()),
                     ..Default::default()
                 });
                 #[cfg(debug_assertions)]
@@ -1046,13 +1185,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // the frontend already knows. A non-zero exit means the runner
                 // bailed before emitting a useful protocol stream.
                 if !success {
-                    let _ = report_sync_error(
+                    let last_error = runner_exit_error
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .clone();
+                    let _ = report_runner_exit_error(
                         &app_bg,
                         crate::events::SyncErrorEvent {
                             company: None,
                             path: "(runner)".to_string(),
                             message: format!("hq-sync-runner exited {}", exit_desc),
                         },
+                        code,
+                        last_error.as_deref(),
                     );
                 } else {
                     // Successful exit but no AllComplete observed (e.g.
