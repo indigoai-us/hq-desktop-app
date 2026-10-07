@@ -46,6 +46,7 @@ The release moves it under the version it ships in.
 
 - Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
 - Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
+- Setup now explains how to free disk space when an install cannot continue.
 - Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
 - Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
 
