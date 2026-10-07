@@ -703,6 +703,17 @@ impl PackageUseUpdateRequest {
         &mut self,
         now_ms: u64,
     ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
+        self.try_acquire_with_live_records_at_and_maximum_age(
+            now_ms,
+            maximum_package_use_holder_age_ms(),
+        )
+    }
+
+    fn try_acquire_with_live_records_at_and_maximum_age(
+        &mut self,
+        now_ms: u64,
+        maximum_hold_age_ms: u64,
+    ) -> Result<(Option<PackageUseUpdateGuard>, Vec<LeaseRecord>), String> {
         let entries = fs::read_dir(&self.paths.lease_directory).map_err(|error| {
             format!(
                 "Could not inspect HQ CLI package-use leases ({})",
@@ -710,7 +721,6 @@ impl PackageUseUpdateRequest {
             )
         })?;
         let mut live_records = Vec::new();
-        let maximum_hold_age_ms = maximum_package_use_holder_age_ms();
         for entry in entries {
             let entry = entry.map_err(|error| {
                 format!(
@@ -741,11 +751,10 @@ impl PackageUseUpdateRequest {
             let record = serde_json::from_slice::<LeaseRecord>(&bytes).map_err(|error| {
                 format!("Could not decode an HQ CLI package-use lease ({error})")
             })?;
-            // Three hours is far above normal npm package operations, while
-            // the observed incident distribution is dominated by holders over
-            // 24 hours. Preserve every young live holder (including daemon and
-            // MCP purposes); reclaim an over-ceiling holder regardless of its
-            // optional purpose field while this caller owns the updater lock.
+            // CLI holders refresh their lease-file mtime every five minutes.
+            // Reclaim only when that liveness signal exceeds the configurable
+            // ceiling, regardless of optional purpose, while this caller owns
+            // the updater lock.
             if lease_record_is_live(&record)
                 && !lease_file_exceeds_maximum_hold(lease_modified_at, now_ms, maximum_hold_age_ms)
             {
@@ -1540,11 +1549,12 @@ mod tests {
     }
 
     #[test]
-    fn keeps_a_recent_lease_from_a_long_running_live_process() {
+    fn keeps_a_recent_heartbeat_from_a_long_running_live_process() {
         let (_temp, paths) = fixture();
         let pid = std::process::id();
         let process_start_ms = process_start_time_ms(pid).unwrap();
-        let now_ms = process_start_ms + DEFAULT_MAX_PACKAGE_USE_HOLDER_AGE_MS + 60_000;
+        let maximum_hold_age_ms = 100;
+        std::thread::sleep(Duration::from_millis(maximum_hold_age_ms + 10));
         let lease_path = paths
             .lease_directory
             .join(format!("{pid}-{process_start_ms}.json"));
@@ -1556,11 +1566,23 @@ mod tests {
             Some("daemon"),
             None,
         );
-        set_file_modified_time_ms(&lease_path, now_ms - 60_000);
+        std::thread::sleep(Duration::from_millis(10));
+        let heartbeat_ms = lease_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(heartbeat_ms.saturating_sub(process_start_ms) > maximum_hold_age_ms);
         let mut request = PackageUseUpdateRequest::begin_at(paths).unwrap();
 
         let (guard, live_records) = request
-            .try_acquire_with_live_records_at(now_ms)
+            .try_acquire_with_live_records_at_and_maximum_age(
+                heartbeat_ms + 1,
+                maximum_hold_age_ms,
+            )
             .unwrap();
 
         assert!(guard.is_none(), "a recent lease must keep blocking the updater");
