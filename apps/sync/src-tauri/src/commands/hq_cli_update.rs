@@ -2062,6 +2062,61 @@ fn record_non_convergent_episode_markers(keys: &[String]) -> Result<(), String> 
 /// wedging the CLI-update single-flight for every later caller.
 const PNPM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Environment for every pnpm process the CLI updater starts (the install and
+/// each probe).
+///
+/// - Corepack: with `COREPACK_DEFAULT_TO_LATEST` unset, a Corepack `pnpm` shim
+///   that has no default yet resolves the registry's newest pnpm and writes it
+///   to Corepack's global lastKnownGood file. That is how an HQ update moved a
+///   user from pnpm 10 to pnpm 12.5.1. Project selection and auto-pinning are
+///   off so the app's working directory cannot choose or rewrite a version.
+/// - `HQ_RESCUE_SELF_UPDATED` / `HQ_NO_UPDATE_CHECK`: a lifecycle script that
+///   runs `hq` during the install must never start a second update.
+const PNPM_UPDATE_CHILD_ENV: [(&str, &str); 5] = [
+    ("COREPACK_DEFAULT_TO_LATEST", "0"),
+    ("COREPACK_ENABLE_PROJECT_SPEC", "0"),
+    ("COREPACK_ENABLE_AUTO_PIN", "0"),
+    ("HQ_RESCUE_SELF_UPDATED", "1"),
+    ("HQ_NO_UPDATE_CHECK", "1"),
+];
+
+/// Run one pnpm probe with a hard deadline that covers every process it
+/// starts. The probe runs in its own process group; on timeout the whole group
+/// is killed, not only the direct child. Killing only the direct child let a
+/// pnpm that re-invokes itself (`pnpm dlx dlx dlx ... bin -g` under a Corepack
+/// pnpm 12) keep forking after the deadline until the machine ran out of
+/// processes. `None` on spawn error or timeout.
+async fn run_bounded_pnpm_probe(
+    mut cmd: tokio::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    cmd.envs(PNPM_UPDATE_CHILD_ENV.iter().copied())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let child = cmd.spawn().ok()?;
+    #[cfg_attr(not(unix), allow(unused_variables))]
+    let pid = child.id();
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(result) => result.ok(),
+        Err(_) => {
+            // The future (and with it the direct child) is dropped here; the
+            // group kill reaches every descendant the probe started.
+            #[cfg(unix)]
+            if let Some(pid) = pid {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            None
+        }
+    }
+}
+
 /// The global bin directory pnpm resolves NATIVELY (`pnpm bin -g`) under the same
 /// environment the install used — deliberately WITHOUT the forced global-bin-dir
 /// flag the install passes. The forced-flag probe the r2 fix
@@ -2081,14 +2136,12 @@ async fn pnpm_effective_global_bin_dir(
     pnpm_home: Option<&str>,
 ) -> Option<String> {
     let mut cmd = paths::tokio_spawn_command(pnpm_bin, &["bin", "-g"]);
-    cmd.env("PATH", path).kill_on_drop(true);
+    cmd.env("PATH", path);
     if let Some(home) = pnpm_home {
         cmd.env("PNPM_HOME", home);
     }
-    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()? // timed out -> future dropped -> child killed
-        .ok()?; // spawn / exec error
+    // Timed out -> the probe's whole process group is killed.
+    let output = run_bounded_pnpm_probe(cmd, PNPM_PROBE_TIMEOUT).await?;
     if !output.status.success() {
         return None;
     }
@@ -2106,13 +2159,8 @@ async fn pnpm_probe_line(
     args: &[&str],
 ) -> Option<String> {
     let mut cmd = paths::tokio_spawn_command(pnpm_bin, args);
-    cmd.env("PATH", path)
-        .env("PNPM_HOME", pnpm_home)
-        .kill_on_drop(true);
-    let output = tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    cmd.env("PATH", path).env("PNPM_HOME", pnpm_home);
+    let output = run_bounded_pnpm_probe(cmd, PNPM_PROBE_TIMEOUT).await?;
     if !output.status.success() {
         return None;
     }
@@ -2268,7 +2316,8 @@ async fn install_hq_cli_update_via_pnpm(
             let mut cmd = paths::spawn_command(&pnpm, &[]);
             cmd.args(&args)
                 .env("PATH", &path)
-                .envs(NPM_INSTALL_CHILD_ENV.iter().copied());
+                .envs(NPM_INSTALL_CHILD_ENV.iter().copied())
+                .envs(PNPM_UPDATE_CHILD_ENV.iter().copied());
             // Without PNPM_HOME the child falls back to its own default, which
             // on a Dock-launched app is not necessarily the home that owns the
             // shim we are trying to replace.
@@ -5170,6 +5219,92 @@ mod tests {
     use std::process::{Command, Stdio};
     #[cfg(unix)]
     use std::sync::{Mutex, OnceLock};
+
+    #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, body).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// Regression: under a Corepack pnpm 12, `pnpm bin -g` re-invoked itself as
+    /// `pnpm dlx dlx dlx ... bin -g` without end. The probe deadline killed only
+    /// the direct child, so the chain kept forking until the machine hit EAGAIN.
+    /// The deadline must take down every process the probe started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pnpm_probe_timeout_kills_a_self_reinvoking_process_chain() {
+        let temp = tempfile::tempdir().unwrap();
+        let pids = temp.path().join("pids");
+        std::fs::create_dir_all(&pids).unwrap();
+        let fake = temp.path().join("pnpm");
+        // Each level records its pid, then starts itself again with `dlx`
+        // prepended and waits, the shape of the reported process storm.
+        write_executable(
+            &fake,
+            &format!(
+                "#!/bin/sh\necho $$ > \"{}/$$\"\nsleep 0.05\n\"$0\" dlx \"$@\"\n",
+                pids.display()
+            ),
+        );
+        let cmd = paths::tokio_spawn_command(fake.to_str().unwrap(), &["bin", "-g"]);
+
+        let output = run_bounded_pnpm_probe(cmd, Duration::from_millis(800)).await;
+        assert!(
+            output.is_none(),
+            "a probe that never finishes must time out"
+        );
+
+        // Give the kernel a moment to deliver SIGKILL, then confirm nothing
+        // the probe started is still alive or still spawning.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let recorded_before = std::fs::read_dir(&pids).unwrap().count();
+        assert!(
+            recorded_before >= 2,
+            "the fake pnpm should have re-invoked itself"
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let recorded_after = std::fs::read_dir(&pids).unwrap().count();
+        assert_eq!(
+            recorded_before, recorded_after,
+            "the chain kept spawning after the deadline"
+        );
+        for entry in std::fs::read_dir(&pids).unwrap() {
+            let pid: i32 = entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            let alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
+            assert!(!alive, "probe process {pid} survived the deadline");
+        }
+    }
+
+    /// Every pnpm probe runs with Corepack settings that cannot rewrite the
+    /// user's default pnpm, and with the hq update guard set.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pnpm_probes_run_with_corepack_and_update_guards() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("pnpm");
+        write_executable(
+            &fake,
+            "#!/bin/sh\nprintf '%s %s %s %s %s' \"$COREPACK_DEFAULT_TO_LATEST\" \"$COREPACK_ENABLE_PROJECT_SPEC\" \"$COREPACK_ENABLE_AUTO_PIN\" \"$HQ_RESCUE_SELF_UPDATED\" \"$HQ_NO_UPDATE_CHECK\"\n",
+        );
+        let line = pnpm_probe_line(
+            fake.to_str().unwrap(),
+            "/usr/bin:/bin",
+            temp.path().to_str().unwrap(),
+            &["root", "-g"],
+        )
+        .await
+        .expect("probe output");
+        assert_eq!(line, "0 0 0 1 1");
+    }
 
     #[test]
     fn remaining_cli_package_use_lease_budget_subtracts_elapsed_and_saturates() {
