@@ -147,7 +147,14 @@
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
   import { updateToastCopy } from "./update-toast.js";
-  import { syncToastCopy } from "./sync-toast.js";
+  import {
+    isSyncToastDismissed,
+    readDismissedSyncToasts,
+    syncToastCopy,
+    withSyncToastDismissed,
+    withSyncToastRestored,
+    writeDismissedSyncToasts,
+  } from "./sync-toast.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
@@ -1667,6 +1674,7 @@
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
       // not what "pull it onto this machine" promises. Matches the old company Overview.
+      restoreSyncToast(target.slug);
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);
@@ -1699,10 +1707,49 @@
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
   // nothing stay silent; attention states belong to the Core pill.
+  //
+  // Closing it with X sticks (rule in sync-toast.ts): hidden for the rest of
+  // the run and, for that company, on later runs and after a restart, until
+  // the person starts a sync for it. Before, X removed the toast and the next
+  // per-file `sync:progress` pushed it straight back.
   const SYNC_TOAST_KEY = "sync";
   let syncRunMoved = false;
+  // This run: X was pressed, or the busy toast was actually shown. The quiet
+  // "Files up to date" only follows a run whose toast was shown and kept.
+  let syncRunDismissed = $state(false);
+  let syncRunShown = false;
+  const syncToastStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: (self?.uid ?? tenantAccountId ?? "").trim() || null, companyId: "all" },
+    ),
+  );
+  let dismissedSyncToasts = $state<Set<string>>(new Set());
+  $effect(() => {
+    const storage = syncToastStorage;
+    untrack(() => {
+      dismissedSyncToasts = readDismissedSyncToasts(storage);
+    });
+  });
+
+  function handleSyncToastDismiss(): void {
+    const company = syncStatus.company;
+    syncRunDismissed = true;
+    dismissedSyncToasts = withSyncToastDismissed(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
+  /** The person asked for a sync: show its progress again. */
+  function restoreSyncToast(company?: string | null): void {
+    syncRunDismissed = false;
+    dismissedSyncToasts = withSyncToastRestored(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
   $effect(() => {
     const status = syncStatus;
+    const dismissed = dismissedSyncToasts;
+    const runDismissed = syncRunDismissed;
     untrack(() => {
       if (status.phase === "syncing" && (status.planTotal > 0 || status.progressed > 0)) {
         syncRunMoved = true;
@@ -1710,13 +1757,28 @@
       const copy = syncToastCopy(status, syncRunMoved, false, (slug) =>
         railCompanyRoster.find((company) => company.slug === slug)?.label ?? (slug === "personal" ? "Personal" : null),
       );
+      const hidden = runDismissed || isSyncToastDismissed(dismissed, status.company);
       if (copy.state === "busy" && syncRunMoved) {
-        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress });
+        if (hidden) {
+          dismissToastByKey(SYNC_TOAST_KEY);
+          return;
+        }
+        syncRunShown = true;
+        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress, dismissLabel: "Hide sync progress", onDismiss: handleSyncToastDismiss });
       } else if (copy.state === "done") {
+        const show = syncRunShown && !runDismissed;
         syncRunMoved = false;
-        pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+        syncRunShown = false;
+        syncRunDismissed = false;
+        if (show) {
+          pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+        } else {
+          dismissToastByKey(SYNC_TOAST_KEY);
+        }
       } else if (copy.state === "attention") {
         syncRunMoved = false;
+        syncRunShown = false;
+        syncRunDismissed = false;
         dismissToastByKey(SYNC_TOAST_KEY);
       }
     });
@@ -14055,7 +14117,10 @@
                     onsetupstarted={recordWelcomeSetupRun}
                     readyFirstActionEnabled={readyFirstActionEnabled}
                     {readyFirstActionReady}
-                    onstartsync={() => adapter.sync.startSync()}
+                    onstartsync={() => {
+                      restoreSyncToast();
+                      return adapter.sync.startSync();
+                    }}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
                     installGuide={setupInstallGuide}
