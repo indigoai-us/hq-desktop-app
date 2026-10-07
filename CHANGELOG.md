@@ -9,6 +9,7 @@ The release moves it under the version it ships in.
 ## [Unreleased]
 
 - Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
 - Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
 - People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
 - CLI update timeout messages stay actionable when lease-holder details cannot be read.
