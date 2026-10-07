@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
 - Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
 - Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
 
