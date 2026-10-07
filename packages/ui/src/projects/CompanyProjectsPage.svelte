@@ -48,6 +48,9 @@
     PORTFOLIO_COLUMN_CAPTION,
     PORTFOLIO_COLUMN_LABEL,
     PORTFOLIO_STATE_FILTER_OPTIONS,
+    readShowComplete,
+    visiblePortfolioColumns,
+    writeShowComplete,
     type PortfolioColumn,
     type PortfolioStateFilter,
     type PortfolioViewMode,
@@ -68,6 +71,7 @@
   import { projectActivity, type ProjectActivity } from "./project-activity.js";
   import ProjectDetailView from "./ProjectDetailView.svelte";
   import ProjectRow from "./ProjectRow.svelte";
+  import ProjectRepoChips from "./ProjectRepoChips.svelte";
   import BoardFaces from "./BoardFaces.svelte";
   import NewProjectSheet from "./NewProjectSheet.svelte";
   import { linkedProjectIds, mergeGoalsWithCache, readGoalsCache } from "../goals/goals-model.js";
@@ -83,7 +87,7 @@
   } from "./new-project.js";
   import ProvenanceLine from "../common/ProvenanceLine.svelte";
   import Dropdown from "../common/LazyDropdown.svelte";
-  import { personMatches, uniquePeople } from "../common/people/people.js";
+  import { personMatches, resolvePerson, uniquePeople } from "../common/people/people.js";
   import { loadPeople, peopleFor, setActivePeopleCompany } from "../common/people/people-roster.svelte.js";
   import UnavailableNote from "../common/UnavailableNote.svelte";
   import "../home/tokens.css";
@@ -138,6 +142,8 @@
   let ownerFilter = $state("");
   /** Board is the DESKTOP-004 default. */
   let viewMode = $state<PortfolioViewMode>("board");
+  /** Complete is hidden by default; this machine may choose to show it. */
+  let showComplete = $state(readShowComplete(goalsStorage));
   /**
    * Legacy projectFilter still supports the needs-link cycle used by Link goal
    * empty-state contracts and company-work-actions.
@@ -459,6 +465,10 @@
       now,
       live: liveRead,
       sessions: boardPushSessions,
+      nameFor: (uid) => {
+        const person = resolvePerson(roster.index, uid);
+        return person.resolved ? person.name : null;
+      },
     });
   }
 
@@ -551,6 +561,18 @@
   const portfolioGroups = $derived(
     groupProjectsByPortfolioColumn(filteredCompanyProjects, sessions, resolveColumn),
   );
+
+  /** Columns on screen: Complete only when shown or filtered to. */
+  const visibleColumns = $derived(visiblePortfolioColumns(stateFilter, showComplete));
+  const completeHidden = $derived(!visibleColumns.includes("complete"));
+  const hiddenCompleteCount = $derived(
+    completeHidden ? portfolioGroups.complete.length : 0,
+  );
+
+  function setShowComplete(show: boolean): void {
+    showComplete = show;
+    writeShowComplete(goalsStorage, show);
+  }
 
   /** The task view pane sits beside the board view only. */
   const paneOpen = $derived(peek !== null && viewMode === "board");
@@ -1218,10 +1240,11 @@
         <div class="board-split">
         <div
           class="kanban-board"
+          class:hides-complete={completeHidden}
           data-testid="portfolio-kanban"
           aria-label="Projects by operational state"
         >
-          {#each PORTFOLIO_COLUMNS as column (column)}
+          {#each visibleColumns as column (column)}
             {@const columnProjects = portfolioGroups[column]}
             {@const renderWindow = progressiveWindow(
               columnProjects,
@@ -1255,6 +1278,14 @@
                     >{columnProjects.length}</span
                   >
                 </span>
+                {#if column === "complete" && showComplete && stateFilter !== "complete"}
+                  <button
+                    type="button"
+                    class="column-hide"
+                    data-testid="hide-complete"
+                    onclick={() => setShowComplete(false)}
+                  >Hide</button>
+                {/if}
                 <span class="visually-hidden"
                   >{PORTFOLIO_COLUMN_CAPTION[column]}</span
                 >
@@ -1274,6 +1305,7 @@
                     {@const goal = linkedGoalLabel(project)}
                     <ProjectRow
                       {project}
+                      {column}
                       showCompany={false}
                       goalLabel={goal}
                       {provenanceUnavailable}
@@ -1305,6 +1337,21 @@
               </div>
             </section>
           {/each}
+          {#if completeHidden}
+            <div class="complete-rail" data-testid="complete-hidden-rail">
+              <span class="kanban-column-title">
+                <span class="column-dot" data-column="complete" aria-hidden="true"></span>
+                {PORTFOLIO_COLUMN_LABEL.complete}
+              </span>
+              <button
+                type="button"
+                class="show-complete"
+                data-testid="show-complete"
+                disabled={hiddenCompleteCount === 0}
+                onclick={() => setShowComplete(true)}
+              >{hiddenCompleteCount === 0 ? "None complete" : `Show ${hiddenCompleteCount} complete`}</button>
+            </div>
+          {/if}
         </div>
         </div>
       {:else}
@@ -1321,7 +1368,7 @@
             <span>On it</span>
             <span>Updated</span>
           </div>
-          {#each PORTFOLIO_COLUMNS as column (column)}
+          {#each visibleColumns as column (column)}
             {@const columnProjects = portfolioGroups[column]}
             {@const renderWindow = progressiveWindow(
               columnProjects,
@@ -1329,9 +1376,22 @@
               PROJECT_RENDER_BATCH,
             )}
             {#if columnProjects.length > 0}
-              <div class="project-group-label">
+              <div class="project-group-label" data-testid={`project-group-${column}`}>
+                {#if column === "active"}
+                  <span class="live-dot" aria-hidden="true"></span>
+                {:else}
+                  <span class="column-dot" data-column={column} aria-hidden="true"></span>
+                {/if}
                 <span>{PORTFOLIO_COLUMN_LABEL[column]}</span>
                 <span class="group-count">{columnProjects.length}</span>
+                {#if column === "complete" && showComplete && stateFilter !== "complete"}
+                  <button
+                    type="button"
+                    class="column-hide"
+                    data-testid="hide-complete"
+                    onclick={() => setShowComplete(false)}
+                  >Hide</button>
+                {/if}
               </div>
               {#each renderWindow.items as project (projectIdentity(project))}
                 {@const progress = projectProgress(
@@ -1372,6 +1432,9 @@
                         </button>
                       {/if}
                     </span>
+                    {#if (project.repos?.length ?? 0) > 0 || project.branchName}
+                      <ProjectRepoChips repos={project.repos ?? []} branch={project.branchName ?? null} />
+                    {/if}
                   </div>
                   <div class="list-goal">{goal ?? "No goal"}</div>
                   <div
@@ -1416,6 +1479,14 @@
               {/if}
             {/if}
           {/each}
+          {#if completeHidden && hiddenCompleteCount > 0}
+            <button
+              type="button"
+              class="show-complete list-show-complete"
+              data-testid="show-complete"
+              onclick={() => setShowComplete(true)}
+            >Show {hiddenCompleteCount} complete</button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -1478,11 +1549,13 @@
     min-width: 0;
   }
 
+  /* Same 52px title band as Activity, Team and Meetings, so the title sits on
+     the same line under the top bar on every page. */
   .projects-header {
     justify-content: space-between;
     gap: var(--v4-space-4, 16px);
     flex-shrink: 0;
-    min-height: 28px;
+    min-height: 52px;
   }
 
   .projects-heading {
@@ -1496,7 +1569,7 @@
     font-size: 20px;
     font-weight: 500;
     letter-spacing: 0;
-    line-height: 1.2;
+    line-height: 1.25;
   }
 
   .projects-count {
@@ -1836,17 +1909,86 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Complete hidden (the default): three columns share the width and a slim
+     rail where Complete was offers it back. */
+  .kanban-board.hides-complete {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  }
+
+  .complete-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+    padding: 9px 2px 0 8px;
+    border-left: 1px solid var(--v4-hairline);
+  }
+
+  .complete-rail .kanban-column-title {
+    color: var(--v4-text-3);
+    white-space: nowrap;
+  }
+
+  .show-complete,
+  .column-hide {
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: var(--v4-radius-button);
+    background: transparent;
+    color: var(--v4-text-2);
+    font: inherit;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background 140ms ease, color 140ms ease;
+  }
+
+  .show-complete:hover:not(:disabled),
+  .column-hide:hover {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  .show-complete:disabled {
+    color: var(--v4-text-3);
+    cursor: default;
+  }
+
+  .show-complete:focus-visible,
+  .column-hide:focus-visible {
+    outline: 2px solid var(--v4-control-border);
+    outline-offset: 1px;
+  }
+
+  .column-hide {
+    margin-left: auto;
+    border-color: transparent;
+    color: var(--v4-text-3);
+  }
+
+  .list-show-complete {
+    margin: 10px 4px 0;
+  }
+
   /* Four columns while each can hold a card (QA-029). A narrower board wraps
      to two columns, then one, so cards never clip or scroll sideways. */
   @container projects-board (max-width: 620px) {
-    .kanban-board {
+    .kanban-board,
+    .kanban-board.hides-complete {
       grid-template-columns: repeat(2, minmax(0, 1fr));
       row-gap: 16px;
+    }
+    .complete-rail {
+      border-left: 0;
+      padding-left: 2px;
     }
   }
 
   @container projects-board (max-width: 320px) {
-    .kanban-board {
+    .kanban-board,
+    .kanban-board.hides-complete {
       grid-template-columns: minmax(0, 1fr);
     }
   }
@@ -2018,6 +2160,7 @@
     display: grid;
     gap: var(--v4-row-stack-gap, 3px);
     min-width: 0;
+    padding: 8px 0;
   }
 
   .list-name {
