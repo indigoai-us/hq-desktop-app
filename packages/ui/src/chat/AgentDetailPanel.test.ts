@@ -292,3 +292,130 @@ describe("AgentDetailPanel", () => {
     expect(onsaveavatar).toHaveBeenCalledWith({ kind: "generated" });
   });
 });
+
+const PROFILE = {
+  schemaVersion: 2,
+  agent: {
+    uid: "agt_izzy",
+    displayName: "Izzy",
+    title: "Chief of Staff",
+    description: "Executive Assistant",
+    companyUid: "cmp_indigo",
+    owner: { uid: "prs_corey", name: "Corey" },
+    role: "admin",
+    connected: true,
+  },
+  brain: {
+    model: "grok-4.7",
+    provider: "grok",
+    reasoningEffort: "low",
+    logins: [{ provider: "grok", status: "authorized", mode: "subscription" }],
+  },
+  box: {
+    persona: { soul: "You are Izzy.", customized: true },
+    skills: [{ name: "email-triage" }],
+    routines: [
+      {
+        id: "r1",
+        name: "Morning triage",
+        prompt: "Triage email",
+        schedule: { cadence: "daily", expr: "5 14 * * *", display: "14:05 UTC daily" },
+        enabled: true,
+      },
+    ],
+    platforms: [{ name: "slack", state: "connected" }],
+    channels: {},
+    integrations: {
+      probedAt: "2026-10-07T11:38:10Z",
+      featured: ["notion"],
+      ready: [{ provider: "notion", name: "Notion", tools: 3 }],
+      attention: [
+        { provider: "linear", name: "Linear", reason: "needs-reauth", fix: "Reconnect this integration." },
+      ],
+    },
+  },
+  boxFreshness: { fetchedAt: "2026-09-01T14:50:00.000Z", source: "cache" },
+  editable: { title: true, description: true },
+};
+
+describe("AgentDetailPanel profile endpoint", () => {
+  it("builds the panel from the profile and skips the calls it covers", async () => {
+    const getStatus = vi.fn(async () => ok(STATUS));
+    const listMobileRoster = vi.fn(async () => ok({ agents: [] }));
+    const listJobs = vi.fn(async () => ok(JOBS));
+    const listOwners = vi.fn(async () => ok({ owners: [] }));
+    const getCompanyTelemetry = vi.fn(async () => ok(TELEMETRY));
+    await mountPanel({
+      adapter: {
+        agents: agentsApi({
+          getProfile: async () => ok(PROFILE),
+          getStatus,
+          listMobileRoster,
+          listJobs,
+          listOwners,
+          getCompanyTelemetry,
+        }),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="agent-detail-channels"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="agent-detail-usage-tokens"]')?.textContent).toBe("1.0k");
+    });
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(listMobileRoster).not.toHaveBeenCalled();
+    expect(listJobs).not.toHaveBeenCalled();
+    expect(listOwners).not.toHaveBeenCalled();
+    expect(getCompanyTelemetry).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[data-testid="agent-detail-jobs"]')).toBeNull();
+    expect(host.querySelector('[data-testid="agent-detail-channel-row"]')?.textContent).toContain("slack");
+    expect(host.querySelector('[data-testid="agent-detail-apps-featured"]')?.textContent).toContain("Notion");
+    expect(host.querySelector('[data-testid="agent-detail-apps-attention"]')?.textContent).toContain("Reconnect");
+    expect(host.querySelector('[data-testid="agent-detail-routine-row"]')?.textContent).toContain("Morning triage");
+    expect(host.querySelector('[data-testid="agent-detail-brain-model"]')?.textContent).toContain("grok-4.7");
+    expect(host.querySelector('[data-testid="agent-detail-instructions"]')?.textContent).toBe("You are Izzy.");
+    expect(host.querySelector('[data-testid="agent-detail-freshness"]')?.textContent).toContain("saved copy");
+  });
+
+  it("falls back to the existing calls when the profile is not served", async () => {
+    const getStatus = vi.fn(async () => ok(STATUS));
+    const listJobs = vi.fn(async () => ok(JOBS));
+    await mountPanel({
+      adapter: {
+        agents: agentsApi({
+          getProfile: async () => failure("http-404", "Not found"),
+          getStatus,
+          listJobs,
+        }),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="agent-detail-job-row"]')).not.toBeNull();
+    });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+    expect(listJobs).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[data-testid="agent-detail-channels"]')).toBeNull();
+    expect(host.querySelector('[data-testid="agent-detail-freshness"]')).toBeNull();
+  });
+
+  it("sends routine actions through the runtime relay", async () => {
+    const runtimeAction = vi.fn(async () => ok({ ok: true }));
+    await mountPanel({
+      adapter: {
+        agents: agentsApi({ getProfile: async () => ok(PROFILE), runtimeAction }),
+      },
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="agent-detail-routine-row"]')).not.toBeNull();
+    });
+    (host.querySelector('[data-testid="agent-detail-routine-toggle"]') as HTMLButtonElement).click();
+    await vi.waitFor(() => {
+      expect(runtimeAction).toHaveBeenCalledWith(
+        "agt_izzy",
+        expect.objectContaining({ actionId: "cron.pause", params: { jobId: "r1" } }),
+      );
+    });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="agent-detail-routine-badge"]')?.textContent).toContain("PAUSED");
+    });
+  });
+});
