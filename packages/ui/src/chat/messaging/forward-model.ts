@@ -28,6 +28,18 @@ export interface ForwardCandidate {
   companyUid: string | null;
   principalUid?: string;
   channelId?: string;
+  /** Epoch-ms of the row's latest activity; 0 for roster-only contacts. */
+  lastActivityAt: number;
+  /** Second line under the name: email for people, company for scoped rows. */
+  subtitle?: string;
+}
+
+export type ForwardOriginKind = "channel" | "dm" | "group";
+
+export interface ForwardOrigin {
+  kind: ForwardOriginKind;
+  /** Channel or conversation title the message was taken from. */
+  label: string;
 }
 
 export interface ForwardSource {
@@ -36,6 +48,12 @@ export interface ForwardSource {
   /** Company of the source conversation; null when the row has none. */
   companyUid: string | null;
   senderName: string;
+  /** Sender principal, for the avatar on the quoted card. */
+  senderUid?: string;
+  /** ISO time of the source message, for the quoted card. */
+  createdAt?: string;
+  /** Where the message came from, for the quoted card. */
+  origin?: ForwardOrigin;
   body: string;
   artifactKind?: ArtifactKind;
   artifactTitle?: string;
@@ -154,6 +172,7 @@ export function buildForwardCandidates(
         name,
         companyUid: rowCompany,
         principalUid: uid,
+        lastActivityAt: activityOf(row.lastActivityAt),
       });
     } else {
       const channelId = clean(row.channelId);
@@ -167,6 +186,7 @@ export function buildForwardCandidates(
         name,
         companyUid: rowCompany,
         channelId,
+        lastActivityAt: activityOf(row.lastActivityAt),
       });
     }
   }
@@ -181,15 +201,122 @@ export function buildForwardCandidates(
     const name = clean(contact.displayName).slice(0, MAX_CANDIDATES_NAME);
     if (!name) continue;
     seen.add(id);
+    const subtitle = clean(contact.email) || clean(contact.companyName);
     out.push({
       id,
       kind: contact.participantType === "agent" || uid.startsWith("agt_") ? "bot" : "person",
       name,
       companyUid: contactCompany,
       principalUid: uid,
+      lastActivityAt: 0,
+      ...(subtitle ? { subtitle } : {}),
     });
   }
   return out;
+}
+
+function activityOf(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export type ForwardSectionKey = "recent" | "channels" | "people" | "bots";
+
+export interface ForwardSection {
+  key: ForwardSectionKey;
+  label: string;
+  items: ForwardCandidate[];
+}
+
+export const FORWARD_RECENT_LIMIT = 5;
+
+const SECTION_LABEL: Record<ForwardSectionKey, string> = {
+  recent: "Recent",
+  channels: "Channels",
+  people: "People",
+  bots: "Bots",
+};
+
+/**
+ * Group candidates for the picker list. With no query the first section is
+ * the most recently active destinations; the rest are split by kind and
+ * sorted by recency then name. A query drops the recent section and keeps
+ * only matches, so a destination never appears twice.
+ */
+export function groupForwardCandidates(
+  candidates: readonly ForwardCandidate[],
+  query: string,
+  recentLimit: number = FORWARD_RECENT_LIMIT,
+): ForwardSection[] {
+  const q = query.trim().toLowerCase();
+  const matches = q ? candidates.filter((c) => c.name.toLowerCase().includes(q)) : [...candidates];
+  const byRecency = (a: ForwardCandidate, b: ForwardCandidate): number =>
+    b.lastActivityAt - a.lastActivityAt || a.name.localeCompare(b.name);
+  const out: ForwardSection[] = [];
+  const used = new Set<string>();
+  if (!q) {
+    const recent = matches
+      .filter((c) => c.lastActivityAt > 0)
+      .sort(byRecency)
+      .slice(0, recentLimit);
+    if (recent.length > 0) {
+      for (const c of recent) used.add(c.id);
+      out.push({ key: "recent", label: SECTION_LABEL.recent, items: recent });
+    }
+  }
+  const bucket = (key: ForwardSectionKey, pick: (c: ForwardCandidate) => boolean): void => {
+    const items = matches.filter((c) => !used.has(c.id) && pick(c)).sort(byRecency);
+    if (items.length > 0) out.push({ key, label: SECTION_LABEL[key], items });
+  };
+  bucket("channels", (c) => c.kind === "channel" || c.kind === "group");
+  bucket("people", (c) => c.kind === "person");
+  bucket("bots", (c) => c.kind === "bot");
+  return out;
+}
+
+/** Flat order of the grouped list, for arrow-key navigation. */
+export function flattenForwardSections(sections: readonly ForwardSection[]): ForwardCandidate[] {
+  return sections.flatMap((s) => s.items);
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function startOfDay(ms: number): number {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Short time for the quoted card: `14:05`, `Yesterday 14:05`, `Oct 3 14:05`, `Oct 3, 2025`. */
+export function forwardTimeLabel(createdAt: string | undefined, now: number = Date.now()): string {
+  const ms = Date.parse(createdAt ?? "");
+  if (!createdAt || Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const today = startOfDay(now);
+  const day = startOfDay(ms);
+  if (day === today) return time;
+  if (day === today - 86_400_000) return `Yesterday ${time}`;
+  if (d.getFullYear() === new Date(now).getFullYear()) return `${MONTHS[d.getMonth()]} ${d.getDate()} ${time}`;
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+/** "in #welcome", "in Ana, Bo" (group), or "Direct message". */
+export function forwardOriginLabel(origin: ForwardOrigin | undefined): string {
+  if (!origin) return "";
+  const label = clean(origin.label);
+  if (origin.kind === "channel") return label ? `in #${label}` : "in a channel";
+  if (origin.kind === "group") return label ? `in ${label}` : "in a group message";
+  return "Direct message";
+}
+
+/** Label for the scope chip inside the search field. */
+export function forwardScopeLabel(
+  companyChoice: string,
+  adminCompanies: readonly ForwardCompany[],
+): string {
+  const uid = clean(companyChoice);
+  if (!uid) return "This conversation";
+  return adminCompanies.find((c) => c.uid === uid)?.name ?? uid;
 }
 
 /** Case-insensitive substring match on the name. */
@@ -242,6 +369,7 @@ export function forwardSourceFrom(
   conversationId: string,
   companyUid: string | null,
   senderName: string,
+  origin?: ForwardOrigin,
 ): ForwardSource {
   const details = clean(msg.details);
   const prompt = clean(msg.prompt);
@@ -256,6 +384,9 @@ export function forwardSourceFrom(
     eventId: msg.eventId,
     companyUid: clean(companyUid) || null,
     senderName: clean(senderName) || "Someone",
+    ...(clean(msg.fromPersonUid) ? { senderUid: clean(msg.fromPersonUid) } : {}),
+    ...(clean(msg.createdAt) ? { createdAt: clean(msg.createdAt) } : {}),
+    ...(origin ? { origin } : {}),
     body: typeof msg.body === "string" ? msg.body : "",
     attachmentCount: attachmentNames.length,
     attachmentNames,

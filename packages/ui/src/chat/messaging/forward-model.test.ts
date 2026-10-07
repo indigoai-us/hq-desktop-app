@@ -34,11 +34,11 @@ function row(extra: Partial<ConversationRow>): ConversationRow {
 const rows: ConversationRow[] = [
   row({ id: "dm:prs_ana", kind: "dm", title: "Ana", personUid: "prs_ana" }),
   row({ id: "dm:agt_bot", kind: "dm", title: "Helper", personUid: "agt_bot" }),
-  row({ id: "ch:ch_a", kind: "channel", title: "team-a", channelId: "ch_a", companyUid: "cmp_a" }),
-  row({ id: "ch:ch_b", kind: "channel", title: "team-b", channelId: "ch_b", companyUid: "cmp_b" }),
-  row({ id: "ch:ch_g", kind: "group", title: "Ana, Bo", channelId: "ch_g" }),
-  row({ id: "ch:ch_browse", kind: "channel", title: "browse", channelId: "ch_browse", companyUid: "cmp_a", browseOnly: true }),
-  row({ id: "ch:ch_inv", kind: "channel", title: "invited", channelId: "ch_inv", companyUid: "cmp_a", membership: "invited" }),
+  row({ id: "ch:ch_a", kind: "channel", title: "team-a", lastActivityAt: 0, channelId: "ch_a", companyUid: "cmp_a" }),
+  row({ id: "ch:ch_b", kind: "channel", title: "team-b", lastActivityAt: 0, channelId: "ch_b", companyUid: "cmp_b" }),
+  row({ id: "ch:ch_g", kind: "group", title: "Ana, Bo", lastActivityAt: 0, channelId: "ch_g" }),
+  row({ id: "ch:ch_browse", kind: "channel", title: "browse", lastActivityAt: 0, channelId: "ch_browse", companyUid: "cmp_a", browseOnly: true }),
+  row({ id: "ch:ch_inv", kind: "channel", title: "invited", lastActivityAt: 0, channelId: "ch_inv", companyUid: "cmp_a", membership: "invited" }),
 ];
 const contacts: MentionTarget[] = [
   { participantUid: "prs_cy", participantType: "human", displayName: "Cy", companyUid: "cmp_a" },
@@ -136,7 +136,7 @@ describe("buildForwardHttpRequest", () => {
   const forwardOf = { conversationId: "prs_ana", eventId: "e1" };
   it("sends a DM forward to /v1/notify/dm with toPersonUid, note as body, and forwardOf", () => {
     const req = buildForwardHttpRequest({
-      destination: { id: "dm:agt_bot", kind: "bot", name: "Helper", companyUid: null, principalUid: "agt_bot" },
+      destination: { id: "dm:agt_bot", kind: "bot", name: "Helper", companyUid: null, lastActivityAt: 0, principalUid: "agt_bot" },
       forwardOf,
       note: "  fyi ",
     });
@@ -144,7 +144,7 @@ describe("buildForwardHttpRequest", () => {
   });
   it("sends a channel or group forward to the channel route with ack and fileAccess", () => {
     const req = buildForwardHttpRequest({
-      destination: { id: "ch:c/1", kind: "channel", name: "t", companyUid: "cmp_b", channelId: "c/1" },
+      destination: { id: "ch:c/1", kind: "channel", name: "t", companyUid: "cmp_b", lastActivityAt: 0, channelId: "c/1" },
       forwardOf,
       note: "",
       fileAccess: "omit",
@@ -155,7 +155,7 @@ describe("buildForwardHttpRequest", () => {
   });
   it("never sets acknowledgeCrossCompany unless asked", () => {
     const req = buildForwardHttpRequest({
-      destination: { id: "ch:c", kind: "channel", name: "t", companyUid: null, channelId: "c" },
+      destination: { id: "ch:c", kind: "channel", name: "t", companyUid: null, lastActivityAt: 0, channelId: "c" },
       forwardOf,
       note: "",
     });
@@ -231,8 +231,8 @@ describe("US-010 model", () => {
     attachmentCount: 1,
     attachmentNames: ["a.pdf"],
   };
-  const dm = { id: "dm:p", kind: "person" as const, name: "Ana", companyUid: "cmp_a", principalUid: "p" };
-  const ch = { id: "ch:x", kind: "channel" as const, name: "x", companyUid: "cmp_a", channelId: "x" };
+  const dm = { id: "dm:p", kind: "person" as const, name: "Ana", companyUid: "cmp_a", lastActivityAt: 0, principalUid: "p" };
+  const ch = { id: "ch:x", kind: "channel" as const, name: "x", companyUid: "cmp_a", lastActivityAt: 0, channelId: "x" };
 
   it("coerces attachments at the parse boundary", () => {
     const withFiles = forwardSourceFrom(

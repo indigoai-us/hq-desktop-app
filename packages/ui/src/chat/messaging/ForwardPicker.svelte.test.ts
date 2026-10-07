@@ -67,6 +67,21 @@ function setup(overrides: Record<string, unknown> = {}) {
 const q = <T extends Element = HTMLElement>(sel: string) => host!.querySelector<T>(sel as never) as T | null;
 const options = () => Array.from(host!.querySelectorAll<HTMLButtonElement>('[data-testid="forward-option"]'));
 const optionNames = () => options().map((o) => o.querySelector(".forward-option-name")!.textContent);
+const opt = (id: string) => options().find((o) => o.dataset.id === id)!;
+const sectionKeys = () =>
+  Array.from(host!.querySelectorAll<HTMLElement>('[data-testid="forward-section"]')).map((s) => s.dataset.section);
+const chips = () =>
+  Array.from(host!.querySelectorAll<HTMLElement>('[data-testid="forward-recipient"]')).map((c) => c.dataset.id);
+const selectedIds = () =>
+  options()
+    .filter((o) => o.getAttribute("aria-selected") === "true")
+    .map((o) => o.dataset.id);
+function chooseCompany(uid: string) {
+  q<HTMLButtonElement>('[data-testid="forward-company"]')!.click();
+  flushSync();
+  q<HTMLButtonElement>(`[data-testid="forward-company-menu"] [data-value="${uid}"]`)!.click();
+  flushSync();
+}
 
 function key(target: Element, k: string, extra: KeyboardEventInit = {}) {
   target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...extra }));
@@ -82,7 +97,8 @@ function type(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
 describe("ForwardPicker", () => {
   it("opens from the given rows and contacts with no network call (AC1, AC6, AC7)", () => {
     const { onsend, fetchSpy } = setup();
-    expect(optionNames()).toEqual(["Ana", "Helper", "#team-a", "Cy"]);
+    expect(optionNames()).toEqual(["#team-a", "Ana", "Cy", "Helper"]);
+    expect(sectionKeys()).toEqual(["channels", "people", "bots"]);
     expect(onsend).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -93,14 +109,51 @@ describe("ForwardPicker", () => {
     expect(optionNames()).toEqual(["Helper"]);
   });
 
-  it("selects exactly one destination (AC2)", () => {
+  it("selects several destinations as chips and toggles them off (AC2)", () => {
     setup();
-    options()[0].click();
+    opt("dm:prs_ana").click();
     flushSync();
-    options()[2].click();
+    opt("ch:ch_a").click();
     flushSync();
-    const selected = options().filter((o) => o.getAttribute("aria-selected") === "true");
-    expect(selected.map((o) => o.dataset.id)).toEqual(["ch:ch_a"]);
+    expect(selectedIds()).toEqual(["ch:ch_a", "dm:prs_ana"]);
+    expect(chips()).toEqual(["dm:prs_ana", "ch:ch_a"]);
+    expect(q('[data-testid="forward-send"]')!.textContent).toBe("Forward to 2");
+    opt("dm:prs_ana").click();
+    flushSync();
+    expect(chips()).toEqual(["ch:ch_a"]);
+    q<HTMLButtonElement>('[data-testid="forward-recipient-remove"]')!.click();
+    flushSync();
+    expect(chips()).toEqual([]);
+    expect(q<HTMLButtonElement>('[data-testid="forward-send"]')!.disabled).toBe(true);
+  });
+
+  it("lists the most recent destinations first, then channels, people, and bots", () => {
+    const active = rows.map((r) =>
+      r.id === "dm:agt_bot" ? { ...r, lastActivityAt: 300 } : r.id === "ch:ch_a" ? { ...r, lastActivityAt: 200 } : r,
+    );
+    setup({ rows: active });
+    expect(sectionKeys()).toEqual(["recent", "people"]);
+    expect(optionNames()).toEqual(["Helper", "#team-a", "Ana", "Cy"]);
+    type(q<HTMLInputElement>('[data-testid="forward-search"]')!, "a");
+    expect(sectionKeys()).toEqual(["channels", "people"]);
+  });
+
+  it("shows the sender's time and origin on the quoted card", () => {
+    const createdAt = new Date();
+    createdAt.setHours(14, 5, 0, 0);
+    setup({ source: { ...source, createdAt: createdAt.toISOString(), origin: { kind: "channel", label: "welcome" } } });
+    expect(q('[data-testid="forward-preview-time"]')!.textContent).toBe("14:05");
+    expect(q('[data-testid="forward-preview-origin"]')!.textContent).toBe("in #welcome");
+  });
+
+  it("Backspace on an empty search removes the last chip", () => {
+    setup();
+    opt("dm:prs_ana").click();
+    flushSync();
+    opt("ch:ch_a").click();
+    flushSync();
+    key(q('[data-testid="forward-search"]')!, "Backspace");
+    expect(chips()).toEqual(["dm:prs_ana"]);
   });
 
   it("previews sender, first lines, and the Details title (AC3)", () => {
@@ -120,17 +173,17 @@ describe("ForwardPicker", () => {
 
   it("lets a multi-company admin pick another company's destinations (AC4)", () => {
     setup({ adminCompanies: [{ uid: "cmp_a", name: "A" }, { uid: "cmp_b", name: "B" }] });
-    const select = q<HTMLSelectElement>('[data-testid="forward-company"]')!;
-    expect(select).not.toBeNull();
-    select.value = "cmp_b";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    flushSync();
+    const chip = q<HTMLButtonElement>('[data-testid="forward-company"]')!;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent!.trim()).toBe("A");
+    chooseCompany("cmp_b");
+    expect(q<HTMLButtonElement>('[data-testid="forward-company"]')!.textContent!.trim()).toBe("B");
     expect(optionNames()).toEqual(["#team-b"]);
   });
 
   it("sends forwardOf and the note, closes, and names the destination (AC5)", async () => {
     const { onsend, onclose, ondone } = setup();
-    options()[0].click();
+    opt("dm:prs_ana").click();
     flushSync();
     type(q<HTMLTextAreaElement>('[data-testid="forward-note"]')!, "see this");
     q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
@@ -152,23 +205,55 @@ describe("ForwardPicker", () => {
     expect(onclose).toHaveBeenCalledTimes(1);
   });
 
-  it("Enter sends only when a destination is selected (AC6)", async () => {
+  it("Enter in the search adds the highlighted row; a second Enter or ⌘Enter sends (AC6)", async () => {
     const { onsend } = setup();
     const search = q<HTMLInputElement>('[data-testid="forward-search"]')!;
+    type(search, "an");
     key(search, "Enter");
     await tick();
     expect(onsend).not.toHaveBeenCalled();
+    expect(chips()).toEqual(["dm:prs_ana"]);
+    expect(search.value).toBe("");
     key(search, "ArrowDown");
     key(search, "Enter");
     await tick();
-    expect(onsend).toHaveBeenCalledTimes(1);
-    expect(onsend.mock.calls[0][0].destination.id).toBe("dm:prs_ana");
+    expect(chips()).toEqual(["dm:prs_ana", "dm:prs_cy"]);
+    key(search, "Enter", { metaKey: true });
+    await tick();
+    await tick();
+    expect(onsend).toHaveBeenCalledTimes(2);
+    expect(onsend.mock.calls.map((c) => c[0].destination.id)).toEqual(["dm:prs_ana", "dm:prs_cy"]);
+  });
+
+  it("sends to every chip in order and names them all; a failure keeps only the rest selected", async () => {
+    const { onsend, onclose, ondone } = setup();
+    onsend.mockResolvedValueOnce(okResult);
+    onsend.mockResolvedValueOnce({ ok: false, code: "NETWORK", status: null, files: [], notShareable: [] });
+    opt("dm:prs_ana").click();
+    flushSync();
+    opt("ch:ch_a").click();
+    flushSync();
+    q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
+    await tick();
+    await tick();
+    await tick();
+    expect(onsend).toHaveBeenCalledTimes(2);
+    expect(onclose).not.toHaveBeenCalled();
+    expect(ondone).not.toHaveBeenCalled();
+    expect(chips()).toEqual(["ch:ch_a"]);
+    q<HTMLButtonElement>('[data-testid="forward-error-action"]')!.click();
+    await tick();
+    await tick();
+    expect(onsend).toHaveBeenCalledTimes(3);
+    expect(onsend.mock.calls[2][0].destination.id).toBe("ch:ch_a");
+    expect(onclose).toHaveBeenCalled();
+    expect(ondone).toHaveBeenCalledWith("team-a", okResult);
   });
 
   it("send stays disabled until a destination is selected", () => {
     setup();
     expect(q<HTMLButtonElement>('[data-testid="forward-send"]')!.disabled).toBe(true);
-    options()[1].click();
+    opt("dm:prs_ana").click();
     flushSync();
     expect(q<HTMLButtonElement>('[data-testid="forward-send"]')!.disabled).toBe(false);
   });
@@ -184,7 +269,7 @@ describe("ForwardPicker", () => {
       sourceCompany: { uid: "cmp_a", name: "A" },
       destinationCompany: { uid: "cmp_b", name: "B" },
     });
-    options()[0].click();
+    opt("dm:prs_ana").click();
     flushSync();
     q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
     await tick();
@@ -202,7 +287,7 @@ describe("ForwardPicker", () => {
   it("offers grant or omit when files need access", async () => {
     const { onsend } = setup();
     onsend.mockResolvedValueOnce({ ok: false, code: "FORWARD_FILE_ACCESS_REQUIRED", status: 409, files: [], notShareable: [] });
-    options()[0].click();
+    opt("dm:prs_ana").click();
     flushSync();
     q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
     await tick();
@@ -215,7 +300,7 @@ describe("ForwardPicker", () => {
   it("shows a plain sentence on failure, never the server text", async () => {
     const { onsend, onclose } = setup();
     onsend.mockResolvedValueOnce({ ok: false, code: "FORWARD_SOURCE_NOT_FOUND", status: 404, files: [], notShareable: [] });
-    options()[0].click();
+    opt("dm:prs_ana").click();
     flushSync();
     q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
     await tick();
@@ -233,19 +318,12 @@ describe("ForwardPicker", () => {
       { uid: "cmp_b", name: "Beta" },
     ];
 
-    async function sendTo(index: number) {
-      options()[index].click();
+    async function sendTo(id: string) {
+      opt(id).click();
       flushSync();
       q<HTMLButtonElement>('[data-testid="forward-send"]')!.click();
       await tick();
       await tick();
-    }
-
-    function chooseCompany(uid: string) {
-      const sel = q<HTMLSelectElement>('[data-testid="forward-company"]')!;
-      sel.value = uid;
-      sel.dispatchEvent(new Event("change", { bubbles: true }));
-      flushSync();
     }
 
     const filesRequired: ForwardResult = {
@@ -259,7 +337,7 @@ describe("ForwardPicker", () => {
     it("AC0: shows 'This shares {n} files with {name}', the names, and two actions", async () => {
       const { onsend } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce(filesRequired);
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(q('[data-testid="forward-files-title"]')!.textContent).toBe("This shares 2 files with Ana");
       const listed = Array.from(q('[data-testid="forward-files-list"]')!.querySelectorAll("li")).map((l) => l.textContent);
       expect(listed).toEqual(["a.pdf", "b.png"]);
@@ -270,7 +348,7 @@ describe("ForwardPicker", () => {
     it("AC0: singular wording for one file", async () => {
       const { onsend } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce({ ...filesRequired, files: [{ id: "f1", name: "a.pdf" }], notShareable: [] });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(q('[data-testid="forward-files-title"]')!.textContent).toBe("This shares 1 file with Ana");
     });
 
@@ -278,7 +356,7 @@ describe("ForwardPicker", () => {
       const { onsend, ondone } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce(filesRequired);
       type(q<HTMLTextAreaElement>('[data-testid="forward-note"]')!, "fyi");
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(onsend.mock.calls[0][0].fileAccess).toBeUndefined();
       q<HTMLButtonElement>('[data-testid="forward-files-grant"]')!.click();
       await tick();
@@ -293,7 +371,7 @@ describe("ForwardPicker", () => {
     it("AC1: send without files resends with fileAccess omit", async () => {
       const { onsend } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce(filesRequired);
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       q<HTMLButtonElement>('[data-testid="forward-files-omit"]')!.click();
       await tick();
       expect(onsend.mock.calls[1][0].fileAccess).toBe("omit");
@@ -302,7 +380,7 @@ describe("ForwardPicker", () => {
     it("AC4: a file that cannot be shared is listed as not included with no share action", async () => {
       const { onsend } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce(filesRequired);
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       const blocked = q('[data-testid="forward-files-not-included"]')!;
       expect(blocked.textContent).toContain("Not included");
       expect(blocked.textContent).toContain("secret.xlsx");
@@ -313,7 +391,7 @@ describe("ForwardPicker", () => {
     it("AC4: when every file is blocked only send without files is offered", async () => {
       const { onsend } = setup({ source: fileSource });
       onsend.mockResolvedValueOnce({ ...filesRequired, files: [] });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(q('[data-testid="forward-files-grant"]')).toBeNull();
       expect(q('[data-testid="forward-files-omit"]')).not.toBeNull();
       expect(q('[data-testid="forward-files-not-included"]')!.textContent).toContain("secret.xlsx");
@@ -375,7 +453,7 @@ describe("ForwardPicker", () => {
         sourceCompany: { uid: "cmp_a", name: "Acme" },
         destinationCompany: null,
       });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(onsend.mock.calls[0][0].acknowledgeCrossCompany).toBeUndefined();
       expect(q('[data-testid="forward-ack"]')!.textContent).toContain(
         "This sends the message from Acme to another company. Files are not included.",
@@ -400,7 +478,7 @@ describe("ForwardPicker", () => {
       const { onsend, onclose } = setup();
       onsend.mockResolvedValueOnce(result);
       type(q<HTMLTextAreaElement>('[data-testid="forward-note"]')!, "keep me");
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       const err = q('[data-testid="forward-error"]')!;
       const text = err.textContent ?? "";
       expect(text).not.toContain("{");
@@ -411,7 +489,7 @@ describe("ForwardPicker", () => {
       // AC6: picker open, destination and note preserved.
       expect(onclose).not.toHaveBeenCalled();
       expect(q('[data-testid="forward-picker"]')).not.toBeNull();
-      expect(options()[0].getAttribute("aria-selected")).toBe("true");
+      expect(opt("dm:prs_ana").getAttribute("aria-selected")).toBe("true");
       expect(q<HTMLTextAreaElement>('[data-testid="forward-note"]')!.value).toBe("keep me");
     });
 
@@ -419,7 +497,7 @@ describe("ForwardPicker", () => {
       const { onsend, ondone } = setup();
       onsend.mockResolvedValueOnce({ ok: false, code: "NETWORK", status: null, files: [], notShareable: [] });
       type(q<HTMLTextAreaElement>('[data-testid="forward-note"]')!, "again");
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       q<HTMLButtonElement>('[data-testid="forward-error-action"]')!.click();
       await tick();
       await tick();
@@ -432,7 +510,7 @@ describe("ForwardPicker", () => {
     it("AC5: Send without files resends with fileAccess omit", async () => {
       const { onsend } = setup();
       onsend.mockResolvedValueOnce({ ok: false, code: "FORWARD_FILE_SHARE_FORBIDDEN", status: 403, files: [], notShareable: [] });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(q('[data-testid="forward-error-action"]')!.textContent).toBe("Send without files");
       q<HTMLButtonElement>('[data-testid="forward-error-action"]')!.click();
       await tick();
@@ -444,7 +522,7 @@ describe("ForwardPicker", () => {
       onsend.mockResolvedValueOnce({
         ok: false, code: "FORWARD_FILE_GRANT_FAILED", status: 502, files: [], notShareable: [], file: { name: "a.pdf" },
       });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       expect(q('[data-testid="forward-error-action"]')!.textContent).toBe("Try again");
       q<HTMLButtonElement>('[data-testid="forward-error-omit"]')!.click();
       await tick();
@@ -454,7 +532,7 @@ describe("ForwardPicker", () => {
     it("AC5: Pick another destination clears the selection and keeps the picker open", async () => {
       const { onsend, onclose } = setup();
       onsend.mockResolvedValueOnce({ ok: false, code: "CROSS_COMPANY_FORBIDDEN", status: 403, files: [], notShareable: [] });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       q<HTMLButtonElement>('[data-testid="forward-error-action"]')!.click();
       flushSync();
       expect(onclose).not.toHaveBeenCalled();
@@ -465,7 +543,7 @@ describe("ForwardPicker", () => {
     it("AC5: Close closes the picker", async () => {
       const { onsend, onclose } = setup();
       onsend.mockResolvedValueOnce({ ok: false, code: "FORWARD_SOURCE_NOT_FOUND", status: 404, files: [], notShareable: [] });
-      await sendTo(0);
+      await sendTo("dm:prs_ana");
       q<HTMLButtonElement>('[data-testid="forward-error-action"]')!.click();
       expect(onclose).toHaveBeenCalledTimes(1);
     });

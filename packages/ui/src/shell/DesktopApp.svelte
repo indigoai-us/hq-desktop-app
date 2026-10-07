@@ -9614,7 +9614,10 @@
       (msg.fromDisplayName ?? "").trim() ||
       (fromUid ? displayNameByUid[fromUid] : "") ||
       (msg.direction === "out" ? (self?.displayName ?? "") : "");
-    forwardSource = forwardSourceFrom(msg, conversationId, row.companyUid ?? null, senderName);
+    forwardSource = forwardSourceFrom(msg, conversationId, row.companyUid ?? null, senderName, {
+      kind: row.kind === "channel" ? "channel" : row.kind === "group" ? "group" : "dm",
+      label: row.title,
+    });
   }
 
   async function sendForward(req: ForwardRequest): Promise<ForwardResult> {
@@ -11263,6 +11266,7 @@
       rows={railRows}
       contacts={mentionRoster}
       adminCompanies={forwardAdminCompanies}
+      {avatarByUid}
       onsend={sendForward}
       onclose={() => (forwardSource = null)}
       ondone={(name, result) => showForwardNotice(forwardConfirmation(name, result.omittedAttachments))}

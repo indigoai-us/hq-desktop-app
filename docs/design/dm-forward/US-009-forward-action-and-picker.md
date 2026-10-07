@@ -108,3 +108,16 @@ Keyboard (AC6): focus the search field on open; Escape anywhere in the dialog ca
 ## AC mapping
 
 0 → Decision 2. 1 → Decision 3 candidates + search. 2 → single select + note. 3 → preview. 4 → company control rule. 5 → Send + ondone. 6 → synchronous candidates + keyboard. 7 → candidate source restricted to sidebar + contacts.
+
+## Revision: picker layout (owner review, 2026-10-07)
+
+Corey reviewed the first picker in the beta app and asked for it to match HQ messaging. The redesign changes the dialog, not the wire contract.
+
+- Quoted card: the sender's avatar (`IdentityMark`, photo from `avatarByUid`, generated mark for bots, monogram otherwise), name, short time (`forwardTimeLabel`), and origin ("in #welcome", "in Ana, Bo", or "Direct message", from `forwardOriginLabel`). Soft fill, no border, no accent bar.
+- One "To" field. The company scope is a chip at the left of the search (`data-testid="forward-company"`, a button that opens a small menu) instead of a separate select. Chosen recipients render as chips in the same field; Backspace on an empty search removes the last one.
+- Results are grouped by `groupForwardCandidates`: Recent (top five by sidebar `lastActivityAt`), then Channels, People, Bots. Rows carry an avatar, presence dot (`presenceStatus`), name, a subtitle (email or company when known), a type tag, and a check mark when picked. Hover or arrow keys move the highlight; `aria-activedescendant` tracks it.
+- Multi-select: `selectedIds` holds many destinations. Sending runs them in order through the same `onsend`; a prompt (cross-company ack, file access) or an error stops the run at that destination, delivered ones leave the selection, and confirming or retrying resends only what is outstanding. `ondone` receives the delivered names joined by ", ".
+- Keys: Enter in the search adds the highlighted row; Enter elsewhere or ⌘/Ctrl+Enter sends; Shift+Enter in the note inserts a newline; Escape closes the scope menu first, then the dialog.
+- Footer: a quiet key hint on the left, Cancel and a filled primary Forward ("Forward to N" for several) on the right, 13 px UI type with 11 px secondary and 10 px uppercase section labels.
+
+Avatar note: the shared Avatar component is landing separately (hq-desktop-app PR 1444 on release/console-rail-beta). The picker uses the existing `IdentityMark` on main; swap to the shared component once it is on main.
