@@ -56,20 +56,20 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
     root: '[data-testid="chat-create-bot-step"]',
     open: async (page) => {
       await createMenu(page, 'agent');
-      // New bot asks "Cloud or Local?" first; Local opens the step flow.
+      // New bot asks the name, then "Where should it live?"; Local opens the
+      // step flow on the coding tool.
+      await page.getByTestId('new-bot-name').fill('Scout');
+      await page.getByTestId('new-bot-continue-name').click();
       await page.getByTestId('new-bot-choice-local').click();
+      await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
+      await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     },
-    // The local steps open on the name; Continue walks blank or a template,
-    // then the coding tool.
+    // Advanced opens on the same step: the handle, who it is for,
+    // permissions and memory.
     next: [
       async (page) => {
-        await page.getByTestId('create-bot-next').click();
-        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'kind');
-      },
-      async (page) => {
-        await page.getByTestId('create-bot-next').click();
-        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
-        await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
+        await page.getByTestId('chat-bot-advanced-toggle').click();
+        await expect(page.getByTestId('chat-bot-advanced')).toBeVisible();
       },
     ],
   },

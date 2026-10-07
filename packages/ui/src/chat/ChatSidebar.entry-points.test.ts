@@ -20,6 +20,7 @@ import { mount, tick, unmount } from "svelte";
 import { ok, type AgentProvisionOptionsView } from "@hq/platform";
 
 import ChatSidebar from "./ChatSidebar.svelte";
+import { newBotKickoff } from "./create-bot/create-bot-model.js";
 import { createFixtureChatSidebarApi } from "../shell/fixtures.js";
 import type { Workspace } from "./workspaces.js";
 import type { EntryPointResult } from "./lifecycle-entry-points.js";
@@ -129,11 +130,20 @@ function click(selector: string): void {
 }
 
 /**
- * "New bot" asks "Cloud or Local?" first, inside the full-window takeover.
- * Pick one; the rest of the flow follows from that answer.
+ * "New bot" asks the name first, then "Where should it live?" (Cloud or
+ * Local), inside the full-window takeover. Name it, pick one; the rest of
+ * the flow follows from that answer.
  */
-async function chooseKind(kind: "cloud" | "local"): Promise<void> {
+async function chooseKind(kind: "cloud" | "local", name = "assistant"): Promise<void> {
   expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
+  if (q('[data-testid="new-bot-name-screen"]')) {
+    const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    input.value = name;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+  }
   expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
   const option = q<HTMLButtonElement>(`[data-testid="new-bot-choice-${kind}"]`);
   expect(option?.disabled).toBe(false);
@@ -141,28 +151,27 @@ async function chooseKind(kind: "cloud" | "local"): Promise<void> {
   await settle();
 }
 
-/** Choice → Kind step → Home step (Blank is preselected) of the "+" window's bot flow. */
-/**
- * Choice (Local) → the local steps, which are the cloud flow's screens: the
- * name step comes first. Local was picked already, so "Where does it run?"
- * is not asked again.
- */
-async function toLocalNameStep(): Promise<void> {
-  click('[data-testid="chat-create-new-bot"]');
+/** The takeover's first step: the name. Continue lands on "Where should it live?". */
+async function nameFirst(name = "assistant"): Promise<void> {
+  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  input.value = name;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
   await settle();
-  await chooseKind("local");
-  expectSunriseFlow("local");
-  expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
-  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+  click('[data-testid="new-bot-continue-name"]');
+  await settle();
 }
 
-/** Name → Blank or template → the coding tool step. */
-async function toLocalRuntimeStep(): Promise<void> {
-  click('[data-testid="create-bot-next"]');
+/**
+ * Name → choice (Local) → the local steps, which are the cloud flow's
+ * screens. The name and Local were given already, so the flow opens on its
+ * one step, the coding tool, and "Where does it run?" is not asked again.
+ */
+async function toLocalStep(name = "assistant"): Promise<void> {
+  click('[data-testid="chat-create-new-bot"]');
   await settle();
-  expect(q('[data-testid="create-bot-kind-step"]')).toBeTruthy();
-  click('[data-testid="create-bot-next"]');
-  await settle();
+  await chooseKind("local", name);
+  expectSunriseFlow("local");
+  expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("home");
   expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
   expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
 }
@@ -180,7 +189,7 @@ function expectSunriseFlow(home: "cloud" | "local"): void {
   expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe(home);
 }
 
-/** The flow's current step ("home", "details", "kind", or "where"). */
+/** The flow's current step ("name", "where", "home" or "details"). */
 function flowStep(): string | null {
   return q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step") ?? null;
 }
@@ -189,10 +198,10 @@ function flowStep(): string | null {
  * Choice (Cloud) → the "+" window's cloud flow. With several companies it
  * opens on the company picker (home); with one, straight on the details.
  */
-async function toCloudFlow(): Promise<void> {
+async function toCloudFlow(name = "assistant"): Promise<void> {
   click('[data-testid="chat-create-new-bot"]');
   await settle();
-  await chooseKind("cloud");
+  await chooseKind("cloud", name);
   expectSunriseFlow("cloud");
 }
 
@@ -280,7 +289,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(row?.textContent).toContain("Indigo");
     click('[data-testid="chat-create-new-bot"]');
     await settle();
-    // No local bots from this host → Local is off on "Cloud or Local?".
+    // No local bots from this host → Local is off on "Where should it live?".
+    await nameFirst();
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
     await chooseKind("cloud");
     expectSunriseFlow("cloud");
@@ -383,6 +393,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     // first cloud step is the company picker.
     click('[data-testid="chat-create-new-bot"]');
     await settle();
+    await nameFirst();
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(false);
     await chooseKind("cloud");
     expectSunriseFlow("cloud");
@@ -493,11 +504,13 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(takeover?.style.getPropertyValue("--new-bot-wallpaper")).toContain(
       "url(",
     );
-    // The first screen asks where the bot runs; Cloud leads to the name step.
-    expect(takeover?.textContent).toContain("Where should it run?");
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
-    await chooseKind("cloud");
+    // The first screen asks the name; then where the bot lives; Cloud
+    // leads to the takeover's create screen.
     expect(takeover?.textContent).toContain("Enter a name");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    await nameFirst("Nova");
+    expect(takeover?.textContent).toContain("Where should Nova live?");
+    await chooseKind("cloud");
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     expect(takeover?.querySelectorAll(".new-bot-takeover-card").length).toBe(1);
     expect(oncreateagent).not.toHaveBeenCalled();
@@ -530,13 +543,7 @@ describe("ChatSidebar lifecycle entry points", () => {
       await openModal();
       click('[data-testid="chat-create-new-bot"]');
       await settle();
-      await chooseKind("cloud");
-      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-      name.value = "Nova";
-      name.dispatchEvent(new Event("input", { bubbles: true }));
-      await settle();
-      click('[data-testid="new-bot-continue-name"]');
-      await settle();
+      await chooseKind("cloud", "Nova");
       click('[data-testid="new-bot-create-submit"]');
       await settle();
 
@@ -591,14 +598,7 @@ describe("ChatSidebar lifecycle entry points", () => {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
-    await chooseKind("cloud");
-
-    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-    name.value = "Nova";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    click('[data-testid="new-bot-continue-name"]');
-    await settle();
+    await chooseKind("cloud", "Nova");
     click('[data-testid="new-bot-create-submit"]');
     await settle();
 
@@ -665,14 +665,7 @@ describe("ChatSidebar lifecycle entry points", () => {
       await openModal();
       click('[data-testid="chat-create-new-bot"]');
       await settle();
-      await chooseKind("cloud");
-
-      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-      name.value = "Nova";
-      name.dispatchEvent(new Event("input", { bubbles: true }));
-      await settle();
-      click('[data-testid="new-bot-continue-name"]');
-      await settle();
+      await chooseKind("cloud", "Nova");
       click('[data-testid="new-bot-create-submit"]');
       await settle(10);
 
@@ -740,7 +733,9 @@ describe("ChatSidebar lifecycle entry points", () => {
     click('[data-testid="new-bot-choice-local"]');
     await settle();
     expectSunriseFlow("local");
-    expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+    // The name typed in the takeover came along: the flow is on the coding tool.
+    expect(flowStep()).toBe("home");
+    expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("assistant");
     expect(oncreatebot).not.toHaveBeenCalled();
   });
 
@@ -902,9 +897,9 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
     expectSunriseFlow("cloud");
 
-    // Step 1 of 2: the company.
+    // Step 3 of 4 (after the name and where): the company.
     expect(flowStep()).toBe("home");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 2");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 4");
     expect(q('[data-testid="chat-bot-create"]')).toBeNull();
     click('[data-company="cmp_acme"]');
     await settle();
@@ -912,9 +907,9 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     click('[data-testid="create-bot-next"]');
     await settle();
 
-    // Step 2 of 2: name and size, then Create.
+    // Step 4 of 4: name and size, then Create.
     expect(flowStep()).toBe("details");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 2");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 4 of 4");
     expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
     // Back returns to the company step with the pick kept.
     click('[data-testid="create-bot-back"]');
@@ -987,12 +982,11 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
-    await chooseKind("cloud");
+    await chooseKind("cloud", "Nova");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
 
     // One company: no company step, and the create goes to that company.
-    await nameTakeoverBot("Nova");
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
     click('[data-testid="new-bot-create-submit"]');
     await settle(10);
@@ -1018,9 +1012,8 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
-    await chooseKind("cloud");
+    await chooseKind("cloud", "Nova");
     expect(q('[data-testid="new-bot-takeover"]')).toBeTruthy();
-    await nameTakeoverBot("Nova");
     click('[data-testid="new-bot-continue-brain"]');
     await settle();
 
@@ -1115,7 +1108,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="chat-create-new-bot"]')).toBeNull();
   });
 
-  it("walks name → kind → coding tool (Local already picked) and submits name, runtime, and pre-approval to the host", async () => {
+  it("walks name → Local → coding tool and submits name, runtime, pre-approval and the kickoff to the host", async () => {
     const oncreatebot = vi.fn(async () => ({
       ok: true as const,
       agentUid: "agt_new",
@@ -1129,10 +1122,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     const row = q<HTMLButtonElement>('[data-testid="chat-create-new-bot"]');
     expect(row).toBeTruthy();
     expect(row?.textContent).toContain("Runs on this computer");
-    await toLocalNameStep();
-    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    expect(name.value).toBe("assistant");
-    await toLocalRuntimeStep();
+    await toLocalStep("assistant");
     click('[data-testid="chat-bot-runtime-grok"]');
     await settle();
     // The old preview card is one line under the title now.
@@ -1141,7 +1131,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreatebot).toHaveBeenCalledWith(
-      { name: "assistant", runtime: "grok", autoApprove: true },
+      { name: "assistant", runtime: "grok", autoApprove: true, kickoff: newBotKickoff() },
       {},
     );
     expect(q('[data-testid="chat-create-modal"]')).toBeNull();
@@ -1158,7 +1148,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     click('[data-testid="chat-create-new-bot"]');
     await settle();
     await chooseKind("local");
-    // ⌘↵ creates from the first step once the draft is complete.
+    // ⌘↵ creates from the coding tool step once the draft is complete.
     q('[data-testid="chat-create-bot-step"]')!.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",
@@ -1198,8 +1188,7 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     });
     await settle();
     await openModal();
-    await toLocalNameStep();
-    await toLocalRuntimeStep();
+    await toLocalStep("assistant");
     // Claude is not signed in → the first signed-in runtime (Codex) is preselected.
     expect(
       q<HTMLButtonElement>(
@@ -1223,57 +1212,49 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(
       q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(false);
-    // Back to the name step: its Continue is the gate there.
+    // Back to the takeover's where question, then its name step: Continue is the gate there.
     click('[data-testid="create-bot-back"]');
     await settle();
-    click('[data-testid="create-bot-back"]');
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should assistant live?");
+    click('[data-testid="new-bot-back-to-name"]');
     await settle();
-    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    expect(name.value).toBe("assistant");
     // Spaces and capitals are a display name now, not an error.
     name.value = "Dr Love";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
-    ).toBe(false);
-    expect(q('[data-testid="chat-bot-derived-handle"]')?.textContent).toBe(
-      "@dr-love",
-    );
-    // An emoji-only name has nothing to slugify: the handle is what blocks.
+    expect(q('[data-testid="new-bot-name-handle"]')?.textContent).toContain("@dr-love");
+    // An emoji-only name has nothing to slugify: the name step holds it.
     name.value = "🚀";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
-    ).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
-      "no letters or digits",
-    );
-    // The handle field opens on its own so the block is fixable in place.
-    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
-    handle.value = "rocket";
-    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    click('[data-testid="new-bot-continue-name"]');
     await settle();
-    expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
-    ).toBe(false);
-    handle.value = "";
-    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(q('[data-testid="new-bot-name-issue"]')?.textContent).toContain("can't be used for a bot");
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
+    // A name whose handle is taken here gets through the name step (Cloud
+    // could still use it) and is held on the local coding tool step, with
+    // the handle field open to fix it in place.
     name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
-    expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
-    ).toBe(true);
-    expect(q('[data-testid="chat-bot-name-help"]')?.textContent).toContain(
-      "handle @scout",
-    );
-    // A free name clears the block.
-    name.value = "assistant";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    click('[data-testid="new-bot-choice-local"]');
     await settle();
     expect(
-      q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled,
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
+    ).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
+      "handle @scout",
+    );
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    handle.value = "scout-2";
+    handle.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    expect(
+      q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(false);
     expect(oncreatebot).not.toHaveBeenCalled();
   });
@@ -1386,21 +1367,17 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
   });
   const STATUS = async () => ({ ok: true, value: { setupState: { phase: "creating" } } });
 
-  /** Press "+" then "New bot", then answer "Cloud or Local?" with Cloud. */
-  async function pressNewBot(): Promise<void> {
+  /** Press "+" then "New bot", name the bot, then answer "Where should it live?" with Cloud. */
+  async function pressNewBot(name = "Nova"): Promise<void> {
     await openModal();
     click('[data-testid="chat-create-new-bot"]');
     await settle();
-    await chooseKind("cloud");
+    await chooseKind("cloud", name);
   }
 
+  /** The name was given before Cloud was picked: the create screen names it. */
   async function nameTakeoverBot(name: string): Promise<void> {
-    const field = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-    field.value = name;
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    click('[data-testid="new-bot-continue-name"]');
-    await settle();
+    expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe(name);
   }
 
   function targetLine(): string {

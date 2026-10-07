@@ -6,6 +6,7 @@
  * adapter's `bots` group and opens its DM even before the intro message has
  * landed (synthetic row), so the user is never left staring at the modal.
  */
+import { newBotKickoff } from "../chat/create-bot/create-bot-model.js";
 import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import { ok, type PlatformAdapter } from "@hq/platform";
@@ -133,35 +134,37 @@ function mountApp(adapterForTest: PlatformAdapter): void {
   });
 }
 
-/** "+" → New bot → the flow's kind step. */
-async function openBotFlow(): Promise<void> {
+/** "+" → New bot → the name → Local → the flow's coding tool step. */
+async function openBotFlow(name = "assistant"): Promise<void> {
   await vi.waitFor(() => expect(host.querySelector('[data-testid="chat-new-message"]')).toBeTruthy());
   await settle();
   host.querySelector<HTMLButtonElement>('[data-testid="chat-new-message"]')!.click();
   await vi.waitFor(() => expect(q('[data-testid="chat-create-menu-agent"]')).toBeTruthy());
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
-  // "New bot" asks "Cloud or Local?" first; these are local bots.
+  // "New bot" asks the name first, then "Where should it live?"; these are local bots.
+  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  input.value = name;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle();
+  click('[data-testid="new-bot-continue-name"]');
+  await settle();
   expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
   click('[data-testid="new-bot-choice-local"]');
   await settle();
-  // The local steps open on the name, as the cloud flow does.
-  expect(q('[data-testid="create-bot-details-step"]')).toBeTruthy();
+  // The name was given: the local steps open on the coding tool.
+  expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
 }
 
 describe("DesktopApp sidebar '+' → New bot", () => {
   it("creates through adapter.bots, opens the new bot's DM, and offers workers + signed-in runtimes", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "assistant", agentUid: "agt_new" }));
     mountApp(adapter({ create }));
-    await openBotFlow();
-    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-    name.value = "scout";
-    name.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
+    await openBotFlow("scout");
 
     // The worker library came from adapter.bots.workers, with its summary and skill count.
+    click('[data-testid="create-bot-templates-toggle"]');
+    await settle();
     click('[data-testid="create-bot-kind-template"]');
     await vi.waitFor(() => expect(q('[data-testid="create-bot-template-card"]')).toBeTruthy());
     const card = q<HTMLButtonElement>('[data-testid="create-bot-template-card"]')!;
@@ -170,8 +173,6 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     expect(card.textContent).toContain("3 skills");
     // Blank is all this test needs.
     click('[data-testid="create-bot-kind-blank"]');
-    await settle();
-    click('[data-testid="create-bot-next"]');
     await settle();
     // Local was picked already: no "Where does it run?" step. The coding
     // tool has its own step.
@@ -182,7 +183,7 @@ describe("DesktopApp sidebar '+' → New bot", () => {
 
     click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true, kickoff: newBotKickoff() });
     await vi.waitFor(() => expect(q('[data-testid="chat-create-modal"]')).toBeNull());
     // The new bot's DM is the selected conversation.
     await vi.waitFor(() =>
@@ -198,10 +199,6 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     mountApp(adapter({ create }));
     await openBotFlow();
 
-    click('[data-testid="create-bot-next"]');
-    await settle();
-    click('[data-testid="create-bot-next"]');
-    await settle();
     click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(q('[data-testid="chat-create-entry-error"]')?.textContent).toContain("already have 3"));

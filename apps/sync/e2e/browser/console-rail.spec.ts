@@ -88,24 +88,25 @@ test.describe('console rail: full user path', () => {
     await page.getByTestId('rail-company').click();
     await page.locator('[data-row-id="team"]').click();
     await page.getByTestId('team-add-agent').click();
-    // New bot asks "Cloud or Local?" first, in the full-window takeover.
+    // New bot asks the name first, in the full-window takeover, then
+    // "Where should <Name> live?".
+    await expect(page.getByTestId('new-bot-name-screen')).toBeVisible();
+    await page.getByTestId('new-bot-name').fill('Scout');
+    await page.getByTestId('new-bot-continue-name').click();
     await expect(page.getByTestId('new-bot-kind-choice')).toBeVisible();
+    await expect(page.locator('#new-bot-takeover-title')).toHaveText('Where should Scout live?');
     await page.getByTestId('new-bot-choice-local').click();
-    // The local flow is the cloud flow's step screens: name, then blank or
-    // a template, then the coding tool.
+    // The local flow is the cloud flow's step screens, on its one step: the
+    // coding tool, with the name carried in.
     const flow = page.getByTestId('chat-create-bot-step');
     await expect(flow).toBeVisible();
     // One layout: the takeover's step screens (step dots), no wizard crumbs.
     await expect(flow.getByTestId('new-bot-progress')).toBeVisible();
     await expect(page.locator('[data-testid^="create-bot-crumb-"]')).toHaveCount(0);
     await expect(page.getByTestId('new-agent-stepper')).toHaveCount(0);
-    await expect(flow).toHaveAttribute('data-step', 'details');
-    await page.getByTestId('chat-bot-name').fill('Scout');
-    await page.getByTestId('create-bot-next').click();
-    await expect(flow).toHaveAttribute('data-step', 'kind');
-    await page.getByTestId('create-bot-next').click();
     // Local was already picked, so "Where does it run?" is not asked again.
     await expect(flow).toHaveAttribute('data-step', 'home');
+    await expect(flow.getByTestId('bot-identity-name')).toHaveText('Scout');
     await expect(page.getByTestId('chat-bot-where')).toHaveCount(0);
     await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });

@@ -30,7 +30,6 @@
   import { hostComputerNoun } from "@hq/platform";
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
-  import type { AvatarPack } from "../avatars/types.js";
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import LazyDoor from "../shell/LazyDoor.svelte";
   import { createBotFlowDoor } from "../shell/lazy-doors.js";
@@ -199,9 +198,6 @@
     botSignIn?: RuntimeSignInApi | null;
     /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
-    /** Avatar packs for the Details step; `loadAvatarPacks` fetches lazily. */
-    avatarPacks?: AvatarPack[] | null;
-    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
      * What to create inside a company: a plain team channel (default —
      * `scope: "company"` for name uniqueness, but never the company's home)
@@ -227,10 +223,12 @@
     sunrise?: boolean;
     /** The home picked on that choice; the bot flow opens with it selected. */
     initialBotHome?: "local" | "cloud" | null;
-    /** Back from the bot flow's first step when opened from the choice: return to it. */
-    onsunriseback?: (() => void) | null;
-    /** The takeover's local steps offer "Create a cloud bot instead" with this. */
-    onsunrisecloud?: (() => void) | null;
+    /** The name given on the takeover's first step; the bot flow does not ask it again. */
+    initialBotName?: string | null;
+    /** Back from the bot flow's first step when opened from the choice: return to it, with the name. */
+    onsunriseback?: ((name: string) => void) | null;
+    /** The takeover's local steps offer "Create a cloud bot instead" with this, with the name. */
+    onsunrisecloud?: ((name: string) => void) | null;
   }
 
   let {
@@ -266,14 +264,13 @@
     botCompanies = null,
     botSignIn = null,
     onbotsignedin = null,
-    avatarPacks = null,
-    loadAvatarPacks = null,
     initialKind = "channel",
     initialStep = "find",
     botCompanyUid = null,
     botCompanySlug = null,
     sunrise = false,
     initialBotHome = null,
+    initialBotName = null,
     onsunriseback = null,
     onsunrisecloud = null,
   }: Props = $props();
@@ -2196,11 +2193,11 @@
         initialCompanyUid: botCompanyUid,
         initialCompanySlug: botCompanySlug,
         initialHome: initialBotHome,
-        firstBackLabel: "Back",
+        initialName: initialBotName,
         onswitchcloud: sunriseLocalSteps && onsunrisecloud
-          ? () => {
+          ? (name: string) => {
               if (entryBusy) return;
-              onsunrisecloud?.();
+              onsunrisecloud?.(name);
             }
           : null,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
@@ -2209,9 +2206,9 @@
         directCloud,
         oncreate: canCreateLocalBot ? submitLocalBot : null,
         onback: sunrise && onsunriseback
-          ? () => {
+          ? (name: string) => {
               if (entryBusy) return;
-              onsunriseback?.();
+              onsunriseback?.(name);
             }
           : () => {
               botOpenedDirect = false;
@@ -2223,8 +2220,6 @@
         entryFix,
         signInApi: botSignIn,
         onsignedin: onbotsignedin,
-        avatarPacks,
-        loadAvatarPacks,
       }}
     />
 {/snippet}

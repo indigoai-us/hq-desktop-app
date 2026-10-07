@@ -2062,23 +2062,23 @@ describe("New bot step Escape", () => {
     expect(card).toBeTruthy();
     const flow = card!.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
     expect(flow).toBeTruthy();
-    // Local only here: the flow opens on the local name step.
+    // Local only here: the flow opens on the name, the first step everywhere.
     expect(flow!.getAttribute("data-home")).toBe("local");
-    expect(flow!.getAttribute("data-step")).toBe("details");
-    // The step head: dots (name, kind, coding tool) and Back.
+    expect(flow!.getAttribute("data-step")).toBe("name");
+    // The step head: dots (name, coding tool) and Back.
     const dots = card!.querySelector('[data-testid="new-bot-progress"]');
-    expect(dots?.querySelectorAll("span").length).toBe(3);
-    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 3");
+    expect(dots?.querySelectorAll("span").length).toBe(2);
+    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 2");
     expect(card!.querySelector('[data-testid="create-bot-back"]')?.textContent).toContain("Back");
-    expect(card!.querySelector('[data-testid="create-bot-next"]')?.textContent).toContain("Continue");
+    expect(card!.querySelector('[data-testid="new-bot-continue-name"]')?.textContent).toContain("Continue");
     // None of the old wizard's chrome: no step crumbs, no plain modal card.
     expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
     expect(document.querySelector(".create-card")).toBeNull();
     // Continue moves to the next dot.
-    $<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+    $<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
     await tick();
-    expect(flow!.getAttribute("data-step")).toBe("kind");
-    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
+    expect(flow!.getAttribute("data-step")).toBe("home");
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 2");
     expect(onclose).not.toHaveBeenCalled();
   });
 

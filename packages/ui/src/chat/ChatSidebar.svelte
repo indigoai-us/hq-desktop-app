@@ -77,7 +77,6 @@
   import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
   import { botHandle, newBotOtherWayLabel, type BotRuntime } from "./create-bot/create-bot-model.js";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
-  import type { AvatarPack } from "../avatars/types.js";
   import { botKindFor } from "./bot-kind.js";
   import BotKindChip from "./BotKindChip.svelte";
   import {
@@ -436,8 +435,6 @@
     existingBotNames?: readonly string[] | null;
     botSignIn?: RuntimeSignInApi | null;
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
-    avatarPacks?: AvatarPack[] | null;
-    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
      * The user's own local bots. GET /v1/notify/contacts never lists them, so
      * they are merged into the contacts the "+" modal searches and invites
@@ -585,8 +582,6 @@
     existingBotNames = null,
     botSignIn = null,
     onbotsignedin = null,
-    avatarPacks = null,
-    loadAvatarPacks = null,
     localBots = null,
     botDisplayNames = null,
     ownedLocalBotUids = null,
@@ -1648,6 +1643,7 @@
         newBotCompaniesAtOpen = newBotTargets;
         // A starting bot's row goes straight to that bot: no Cloud or Local question.
         newBotChoose = false;
+        newBotName = "";
         newBotOpen = true;
         return;
       }
@@ -1929,6 +1925,12 @@
   let createSunrise = $state(false);
   /** The home picked on the choice, preselected in the bot flow. */
   let createBotHome = $state<"local" | "cloud" | null>(null);
+  /**
+   * The name given on the takeover's first step. It goes with the person to
+   * the local steps and back, and to the cloud screen from "Create a cloud
+   * bot instead". A new "New bot" starts without one.
+   */
+  let newBotName = $state("");
   /** A Local bot can be made on this computer. */
   const canMakeLocalBot = $derived(!!oncreatebot);
   /** A cloud bot can be made through the "+" window's flow (companies without the takeover too). */
@@ -1988,6 +1990,7 @@
    */
   function openNewBotTakeover(options: { choose?: boolean } = {}): void {
     newBotOpenCloud = false;
+    newBotName = "";
     newBotFromCreateWindow = createOpen;
     createOpen = false;
     newBotChoose = options.choose ?? true;
@@ -2734,6 +2737,7 @@
     createStep = "find";
     createSunrise = false;
     createBotHome = null;
+    newBotName = "";
     createOpen = true;
     await tick();
     document.querySelector<HTMLInputElement>('[data-testid="chat-create-query"]')?.focus();
@@ -2744,7 +2748,8 @@
    * takeover shell: Local from the choice, Cloud in companies the takeover
    * does not list, or the create screen's "local bot instead" (no preset).
    */
-  function openBotFlowFromChoice(home: "local" | "cloud" | null): void {
+  function openBotFlowFromChoice(home: "local" | "cloud" | null, name: string = newBotName): void {
+    newBotName = name.trim();
     newBotOpen = false;
     newBotFromCreateWindow = false;
     // Only the company this New bot was opened for (Team page Add agent)
@@ -2757,12 +2762,13 @@
     createOpen = true;
   }
 
-  function openLocalBotFromTakeover(): void {
-    openBotFlowFromChoice(null);
+  function openLocalBotFromTakeover(name: string): void {
+    openBotFlowFromChoice(null, name);
   }
 
-  /** Back from the bot flow's first step: the "Cloud or Local?" question again. */
-  function backToNewBotChoice(): void {
+  /** Back from the bot flow's first step: "Where should it live?" again, with the name. */
+  function backToNewBotChoice(name: string = newBotName): void {
+    newBotName = name.trim();
     createOpen = false;
     createSunrise = false;
     createBotHome = null;
@@ -2777,9 +2783,9 @@
    * "Create a cloud bot instead" on the local steps: the cloud create screen
    * when the takeover has one, else the "+" window's cloud flow.
    */
-  function switchLocalToCloud(): void {
+  function switchLocalToCloud(name: string = newBotName): void {
     if (takeoverHasCloud) {
-      backToNewBotChoice();
+      backToNewBotChoice(name);
       newBotOpenCloud = true;
       return;
     }
@@ -2787,7 +2793,7 @@
     // Close the local steps first: the window's flow is built for the home
     // it opens with, so the cloud one must open fresh.
     createOpen = false;
-    void tick().then(() => openBotFlowFromChoice("cloud"));
+    void tick().then(() => openBotFlowFromChoice("cloud", name));
   }
 
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
@@ -5070,12 +5076,11 @@
       {botCompanies}
       {botSignIn}
       {onbotsignedin}
-      {avatarPacks}
-      {loadAvatarPacks}
       initialKind={createKind}
       initialStep={createStep}
       sunrise={createSunrise}
       initialBotHome={createBotHome}
+      initialBotName={createSunrise ? newBotName : null}
       onsunriseback={createSunrise ? backToNewBotChoice : null}
       onsunrisecloud={createSunrise && newBotCloudReason === null ? switchLocalToCloud : null}
     />
@@ -5086,10 +5091,11 @@
       canCreateLocalBot={!!oncreatebot}
       choose={newBotChoose}
       openCloud={newBotOpenCloud}
+      initialName={newBotName}
       cloudReason={newBotCloudReason}
       localReason={newBotLocalReason}
-      onchoosecloud={canMakeCloudBotInWindow ? () => openBotFlowFromChoice("cloud") : null}
-      onchooselocal={canMakeLocalBot ? () => openBotFlowFromChoice("local") : null}
+      onchoosecloud={canMakeCloudBotInWindow ? (name) => openBotFlowFromChoice("cloud", name) : null}
+      onchooselocal={canMakeLocalBot ? (name) => openBotFlowFromChoice("local", name) : null}
       oncancel={cancelNewBotTakeover}
       onopenlocal={takeoverOtherWayLabel ? openLocalBotFromTakeover : null}
       otherWayLabel={takeoverOtherWayLabel}

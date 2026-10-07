@@ -13001,7 +13001,6 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
-          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}
