@@ -208,7 +208,11 @@ describe('US-001 the question on the ready screen', () => {
     await mountAt(READY_STEP);
     const line = byId<HTMLElement>('ready-consent')!;
     expect(line.textContent).toContain('Share anonymous usage data');
-    expect(line.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+    const shareLine = [...line.querySelectorAll('label')].find((label) =>
+      label.textContent?.includes('Share anonymous usage data'),
+    );
+    expect(shareLine).toBeDefined();
+    expect(shareLine!.querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
     expect(line.querySelectorAll('input[type="radio"]')).toHaveLength(0);
     expect(shareBox().checked).toBe(true);
     expect(shareBox().disabled).toBe(false);

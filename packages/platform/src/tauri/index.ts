@@ -892,6 +892,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     getConfig: () => this.call("get_config"),
     getSettings: () => this.call("get_settings"),
     updateSettings: (patch) => this.queueSettingsPatch(patch),
+    getHqAnywherePersonSetting: () => this.call("get_hq_anywhere_person_setting"),
+    putHqAnywherePersonSetting: (value) =>
+      this.call("put_hq_anywhere_person_setting", { value }),
     getSetupStatus: () => this.call("get_setup_status"),
     markWelcomeSetupComplete: () => this.call("mark_welcome_setup_complete"),
     markWelcomeTourShown: () => this.call("mark_welcome_tour_shown"),

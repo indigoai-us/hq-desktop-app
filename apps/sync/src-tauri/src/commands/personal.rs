@@ -1222,6 +1222,58 @@ pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String>
     Ok(resolve_or_provision(&app, &vault).await?.is_some())
 }
 
+/// Read the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn get_hq_anywhere_person_setting() -> Result<bool, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not load the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    read_hq_anywhere_person_setting(&vault).await
+}
+
+async fn read_hq_anywhere_person_setting(vault: &VaultClient) -> Result<bool, String> {
+    vault
+        .get_hq_anywhere_person_setting()
+        .await
+        .map(|setting| setting.value)
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting read failed: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })
+}
+
+/// Store the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn put_hq_anywhere_person_setting(value: bool) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not save the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    vault
+        .put_hq_anywhere_person_setting(value)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting write failed: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })
+}
+
 pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,
@@ -1789,8 +1841,46 @@ mod tests {
     };
     use tauri::Listener;
     use tempfile::TempDir;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_the_person_setting_value() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                "key": "hq-anywhere",
+                "value": true
+            })))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(read_hq_anywhere_person_setting(&vault).await.unwrap(), true);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.query(), Some("setting=hq-anywhere"));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_a_safe_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("private upstream detail"))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(
+            read_hq_anywhere_person_setting(&vault).await,
+            Err("Could not load the HQ Anywhere setting.".to_string())
+        );
+    }
 
     // --- prepare-phase metadata fast path -----------------------------------
 

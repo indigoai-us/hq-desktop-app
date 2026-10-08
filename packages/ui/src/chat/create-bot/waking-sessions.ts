@@ -248,7 +248,8 @@ function createStore(storage: SessionStorage | null): WakingSessionStore {
     try {
       storage.setItem(WAKING_BOTS_STORAGE_KEY, next);
       written = read();
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/create-bot/waking-sessions.ts:251", error);
       // Best effort: the list still holds for the life of the window.
     }
   }

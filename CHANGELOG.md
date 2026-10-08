@@ -10,13 +10,64 @@ The release moves it under the version it ships in.
 
 - Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
 
+### Fixed
+
+- The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
+
+## [0.10.402] — 2026-10-07
+
+- "Check for Updates…" opens Settings → Updates when it finds an update. The Recovery window opens only when the desktop window timed out, crashed, or started in safe mode.
+- The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
+- When the app updates a pnpm-installed HQ CLI, it no longer changes your default pnpm version through Corepack, and its pnpm checks stop every process they started when they time out. Before this, a failed update could leave Corepack on pnpm 12 and start thousands of `pnpm dlx` processes.
+
+## [0.10.401] — 2026-10-07
+
+- First sync attribution now includes the company selected or joined during setup, including existing companies.
+
+## [0.10.400] — 2026-10-07
+
+- Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
+- People can turn HQ Anywhere on or off in Settings after onboarding.
+
+## [0.10.399] — 2026-10-07
+
+- The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
+- The bot panel now loads a bot owner's whole profile in one call and adds Channels, Apps, Routines, Brain and Persona sections. Owners can pause, resume, run, edit, create and delete routines, and edit the bot's title. When the profile is not available the panel loads as before.
+- Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
+- Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
+
+- Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
+- Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+- CLI update timeout messages stay actionable when lease-holder details cannot be read.
+
+- Runner exit reports now include a bounded reason when the runner provides one.
+
+## [0.10.398] — 2026-10-06
+
+- First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
+
+- Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
+- Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
+- Setup now explains how to free disk space when an install cannot continue.
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
 - Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+- A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
+- A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
+- The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
+
+- Desktop Core baseline writes now accept an identical baseline left by a concurrent writer and separately report a lost write or invalid target.
 
 ## [0.10.397] — 2026-10-06
 
 - The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
 
 - Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
+
+- HQ Desktop no longer emits a warning after it stops an orphaned sync runner during a watch-owner takeover; it continues reporting other watch-owner exits.
 
 ## [0.10.396] — 2026-10-05
 

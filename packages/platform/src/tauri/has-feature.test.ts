@@ -4,7 +4,7 @@ import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
 import {
   COMPANY_NAME_PREFILL_FLAG,
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
+  COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   registryKeyFor,
 } from "../flags.js";
@@ -125,9 +125,9 @@ describe("TauriPlatformAdapter hasFeature", () => {
 });
 
 describe("createSyncPlatformAdapter hasFeature", () => {
-  it('honors the first-launch sign-in reach flag and fails closed without a snapshot', async () => {
-    expect(registryKeyFor(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).toBe(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
-    const enabledSnapshot = vi.fn(() => ({ version: 1, flags: { [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: true } }));
+  it('falls back to hq-pro when the company-route lookup retry registry snapshot is unavailable', async () => {
+    expect(registryKeyFor(COMPANY_ROUTE_LOOKUP_RETRY_FLAG)).toBe(COMPANY_ROUTE_LOOKUP_RETRY_FLAG);
+    const enabledSnapshot = vi.fn(() => ({ version: 1, flags: { [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: true } }));
     const enabledCheck = vi.fn(() => true);
     const enabled = createSyncPlatformAdapter({
       invoke: async (cmd) => {
@@ -140,9 +140,9 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         isEnabled: enabledCheck,
       }),
     });
-    const enabledResult = await enabled.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+    const enabledResult = await enabled.identity.hasFeature(COMPANY_ROUTE_LOOKUP_RETRY_FLAG);
     expect(enabledSnapshot).toHaveBeenCalled();
-    expect(enabledCheck).toHaveBeenCalledWith(FIRST_LAUNCH_SIGNIN_REACH_FLAG);
+    expect(enabledCheck).toHaveBeenCalledWith(COMPANY_ROUTE_LOOKUP_RETRY_FLAG);
     expect(enabledResult).toEqual({
       ok: true,
       value: true,
@@ -159,9 +159,9 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         isEnabled: () => true,
       }),
     });
-    await expect(unavailable.identity.hasFeature(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).resolves.toEqual({
+    await expect(unavailable.identity.hasFeature(COMPANY_ROUTE_LOOKUP_RETRY_FLAG)).resolves.toEqual({
       ok: true,
-      value: false,
+      value: true,
     });
   });
 
@@ -192,7 +192,7 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
         throw new Error(`unexpected ${cmd}`);
       },
-      createFlagClient: () => fakeClient({
+      createFlagClient: () => makeFlagClient({
         ready: async () => {},
         snapshot: () => null,
         isEnabled: () => true,
@@ -205,7 +205,7 @@ describe("createSyncPlatformAdapter hasFeature", () => {
         if (cmd === 'hq_pro_fetch') return { status: 200, body: 'true' };
         throw new Error(`unexpected ${cmd}`);
       },
-      createFlagClient: () => fakeClient({
+      createFlagClient: () => makeFlagClient({
         ready: async () => { throw new Error('offline'); },
         snapshot: () => null,
         isEnabled: () => true,

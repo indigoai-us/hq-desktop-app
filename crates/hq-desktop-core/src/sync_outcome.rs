@@ -10,6 +10,7 @@ use crate::runner_error_shape::{
     RunnerErrorPathRootRollup, RunnerErrorResidualSignatureRollup, RunnerErrorShapeRollup,
     RunnerErrorSite, RunnerErrorSiteRollup, RunnerErrorUnknownProfileRollup,
 };
+use crate::runner_exit_record::{parse_runner_exit_line, RunnerExitRecord};
 use crate::uploads_paused::UploadsPassObservation;
 use sha2::{Digest, Sha256};
 
@@ -36,6 +37,9 @@ pub struct RunTotals {
     /// channel. Auth-required is intentionally exit 0, but must never be
     /// overwritten by the manual exit handler's synthetic AllComplete.
     pub saw_auth_error: bool,
+    /// Latest valid bounded runner-exit diagnostic, when emitted by a newer
+    /// runner. The parser retains only an integer and a closed reason enum.
+    runner_exit_record: Option<RunnerExitRecord>,
     /// What this pass said about uploads per company: plan-limit notices,
     /// per-company completions, and companies that uploaded a file. Settles
     /// the "uploads paused" state at `AllComplete` (hard-stop-readiness
@@ -202,6 +206,47 @@ pub struct RunTotals {
     /// watcher route applies on `AllComplete`. Memory-local: only fixed tokens,
     /// bounded integers, and a digest of the normalized symbols ever leave here.
     heap_oom: Option<HeapOomEvidence>,
+}
+
+#[cfg(test)]
+mod sentry_path_tag_tests {
+    use super::{remember_runner_exit_error, sentry_path_tag};
+    use std::sync::Mutex;
+
+    #[test]
+    fn sentry_path_tags_keep_only_lowercase_sentinel_tokens() {
+        assert_eq!(sentry_path_tag("(runner)"), "(runner)");
+        assert_eq!(sentry_path_tag("(telemetry-events)"), "(telemetry-events)");
+        for path in [
+            "companies/acme/knowledge/plan.md",
+            "/srv/hq/companies/acme/plan.md",
+            r"C:\Users\Ada\HQ\plan.md",
+            r"\\server\share\HQ\plan.md",
+        ] {
+            assert_eq!(sentry_path_tag(path), "[Filtered]", "{path}");
+        }
+        for invalid in ["(Runner)", "()", "(bad_value)", "(runner/path)"] {
+            assert_eq!(sentry_path_tag(invalid), "[Filtered]", "{invalid}");
+        }
+    }
+
+    #[test]
+    fn runner_exit_error_keeps_recognized_class_after_unknown_candidate() {
+        let current = Mutex::new(None);
+        remember_runner_exit_error(&current, Some("journal-invalid-payload"));
+        remember_runner_exit_error(&current, Some("unknown"));
+        assert_eq!(
+            *current.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("journal-invalid-payload")
+        );
+
+        let empty = Mutex::new(None);
+        remember_runner_exit_error(&empty, Some("unknown"));
+        assert_eq!(
+            *empty.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("unknown")
+        );
+    }
 }
 
 /// Bounded, memory-local heap-OOM evidence. No field ever leaves the process as
@@ -460,6 +505,9 @@ impl RunTotals {
     /// Node-too-old signature is not a runner protocol error, it is the
     /// interpreter failing before the runner can start.
     pub fn record_stderr_line(&mut self, line: &str) {
+        if let Some(record) = parse_runner_exit_line(line) {
+            self.runner_exit_record = Some(record);
+        }
         if is_node_too_old_signature(line) {
             self.saw_node_too_old = true;
         }
@@ -502,6 +550,12 @@ impl RunTotals {
         // affects capture. Fed the SAME line as the classification above, so both
         // routes (which share this seam) inherit identical heap attribution.
         self.record_heap_oom_stderr_line(line, signature.class);
+    }
+
+    /// The latest parsed runner-exit diagnostic, absent for older runners or
+    /// when no valid record was written.
+    pub fn runner_exit_record(&self) -> Option<RunnerExitRecord> {
+        self.runner_exit_record
     }
 
     /// Single-pass, line-oriented V8 heap-OOM retention. Three transitions, in
@@ -2123,6 +2177,12 @@ impl RunnerErrorRollup {
         *count = count.saturating_add(1);
     }
 
+    /// Add one message to the fixed-vocabulary class rollup. Exposes the same
+    /// classifier to the Windows app without duplicating its vocabulary.
+    pub fn record_message(&mut self, message: &str) {
+        self.record(message);
+    }
+
     /// True when the only runner error class recorded this pass was disk
     /// exhaustion (`ENOSPC`) — at least one ENOSPC and zero of every other class.
     /// This is the robust, last-wins-immune signal that a terminal exit was
@@ -2238,6 +2298,40 @@ impl RunnerErrorRollup {
         dominant
             .map(RunnerErrorClass::fingerprint_token)
             .unwrap_or("none")
+    }
+}
+
+/// Keep only the fixed sentinel vocabulary used for Sentry path tags. A real
+/// file or vault path is never suitable as a telemetry dimension.
+pub fn sentry_path_tag(path: &str) -> String {
+    let Some(token) = path
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return "[Filtered]".to_string();
+    };
+    if !token.is_empty()
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        path.to_string()
+    } else {
+        "[Filtered]".to_string()
+    }
+}
+
+/// Retain the most informative recognized runner error class seen in a run.
+/// An `unknown` candidate only fills an empty slot, so a later generic error
+/// cannot erase an earlier fixed-vocabulary class.
+pub fn remember_runner_exit_error(
+    current: &std::sync::Mutex<Option<&'static str>>,
+    candidate: Option<&'static str>,
+) {
+    let Some(candidate) = candidate else { return };
+    let mut current = current.lock().unwrap_or_else(|error| error.into_inner());
+    if candidate != "unknown" || current.is_none() {
+        *current = Some(candidate);
     }
 }
 
@@ -2832,6 +2926,17 @@ pub fn termination_fingerprint_token_for_host(
 /// the `termination_status_raw` extra, so nothing is lost.
 pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str = "runner:memory-exhausted";
 
+/// Bounded meaning for a runner exit code. This is diagnostic metadata only;
+/// it must not affect the exit disposition or retry policy.
+pub fn runner_exit_meaning(code: Option<i32>, saw_auth_error: bool) -> &'static str {
+    match (code, saw_auth_error) {
+        (Some(18), true) => "identity_required_pass",
+        (Some(18), false) => "exit_18_unattributed",
+        (Some(_), _) => "other",
+        (None, _) => "no_exit_code",
+    }
+}
+
 /// Evidence that a watcher exit was caused by runner memory exhaustion. Any ONE
 /// is sufficient. Attribution is EVIDENCE-GATED on purpose: a bare SIGKILL, a
 /// force-quit, an app teardown, or a cancellation with none of these keeps its
@@ -2932,6 +3037,31 @@ pub fn watcher_exit_class(
         "node_fatal"
     } else {
         "other"
+    }
+}
+
+/// Preserve a recognized environmental runner cause in watcher grouping only
+/// when no stronger OS or sticky crash evidence is present. Unknown fatal classes,
+/// Windows native faults, and runs with any observed genuine crash keep their
+/// existing exit class.
+pub fn watcher_exit_class_with_fatal_cause(
+    code: Option<i32>,
+    signal: Option<i32>,
+    node_fatal: bool,
+    memory_attributed: bool,
+    saw_genuine_crash_fatal: bool,
+    runner_fatal_class: &str,
+) -> &'static str {
+    let exit_class = watcher_exit_class(code, signal, node_fatal, memory_attributed);
+    if exit_class == "other"
+        && signal.is_none()
+        && !is_windows_fault_exit(code)
+        && !saw_genuine_crash_fatal
+        && runner_fatal_class == RunnerFatalClass::DiskFull.as_str()
+    {
+        "disk_full"
+    } else {
+        exit_class
     }
 }
 
@@ -4151,6 +4281,14 @@ pub fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEven
 mod tests {
     use super::*;
 
+    #[test]
+    fn runner_exit_meaning_uses_closed_values() {
+        assert_eq!(runner_exit_meaning(Some(18), true), "identity_required_pass");
+        assert_eq!(runner_exit_meaning(Some(18), false), "exit_18_unattributed");
+        assert_eq!(runner_exit_meaning(Some(2), false), "other");
+        assert_eq!(runner_exit_meaning(None, false), "no_exit_code");
+    }
+
     // ── grouping / suppression invariance (attribution must only ADD info) ───────
     //
     // The message-shape / path-root / provenance attribution added for
@@ -4913,6 +5051,44 @@ mod tests {
         );
         assert_eq!(watcher_exit_class(Some(1), None, true, false), "node_fatal");
         assert_eq!(watcher_exit_class(Some(127), None, false, false), "other");
+    }
+
+    #[test]
+    fn watcher_exit_class_carries_disk_full_and_preserves_unknown_exits() {
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "disk_full"),
+            "disk_full"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, false, "none"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                None,
+                Some(SIGSEGV_SIGNAL),
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(Some(21), None, false, false, true, "disk_full"),
+            "other"
+        );
+        assert_eq!(
+            watcher_exit_class_with_fatal_cause(
+                Some(0xC000_001Du32 as i32),
+                None,
+                false,
+                false,
+                false,
+                "disk_full"
+            ),
+            "other"
+        );
     }
 
     #[test]

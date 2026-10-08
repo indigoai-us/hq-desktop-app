@@ -1505,6 +1505,9 @@ async fn stage_plugin_update(
         downloaded_at: Instant::now(),
         telemetry_attempt: telemetry_attempt.clone(),
     });
+    crate::commands::client_health::record_staged_update_deferred(
+        hq_desktop_core::client_health::ClientHealthUpdateDeferReason::Other,
+    );
     log(
         "updater",
         &format!("desktop update v{version} downloaded; waiting for restart"),
@@ -1771,6 +1774,9 @@ async fn commit_staged_install_with_decision(
     let version = staged.info.version.clone();
     if decision == DeferralDecision::WaitForIdle {
         app.state::<DownloadedUpdate>().put(staged);
+        crate::commands::client_health::record_staged_update_deferred(
+            hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync,
+        );
         return Err(UPDATE_DEFERRED_DURING_SYNC.to_string());
     }
     let telemetry_attempt = staged.telemetry_attempt.clone();
@@ -1840,6 +1846,9 @@ fn spawn_auto_install_waiter(app: AppHandle) {
             let (sync_is_active, decision) = sample_automatic_sync_state(sync_in_progress, elapsed);
             match decision {
                 DeferralDecision::WaitForIdle => {
+                    crate::commands::client_health::record_staged_update_deferred(
+                        hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync,
+                    );
                     emit_update_waiting_for_idle(&app, &version, remaining);
                     let wait_reason = UpdateDecision::Defer {
                         reason: DeferReason::Held {
@@ -1872,6 +1881,25 @@ fn spawn_auto_install_waiter(app: AppHandle) {
                         let gate =
                             automatic_install_gate_decision(decision, focus.app_focus(), &holds.0);
                         if let UpdateDecision::Defer { .. } = &gate.decision {
+                            let defer_reason = match &gate.decision {
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Focused,
+                                } => hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusyActivity,
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Held { .. },
+                                } if sync_is_active => {
+                                    hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusySync
+                                }
+                                UpdateDecision::Defer {
+                                    reason: DeferReason::Held { .. },
+                                } => {
+                                    hq_desktop_core::client_health::ClientHealthUpdateDeferReason::BusyActivity
+                                }
+                                UpdateDecision::InstallNow => hq_desktop_core::client_health::ClientHealthUpdateDeferReason::Other,
+                            };
+                            crate::commands::client_health::record_staged_update_deferred(
+                                defer_reason,
+                            );
                             for reason in deferral_log_limiter
                                 .eligible_reasons(&gate.decision, Instant::now())
                             {
@@ -1969,6 +1997,11 @@ pub(crate) fn deferred_restart_is_safe(held: bool, focused: bool) -> bool {
 /// to consume. Wait on the same poll cadence, then require the normal
 /// automatic-update focus rule before exiting the app.
 pub(crate) fn defer_restart_until_safe(app: AppHandle, update_version: Option<String>) {
+    if update_version.is_some() {
+        crate::commands::client_health::record_staged_update_deferred(
+            hq_desktop_core::client_health::ClientHealthUpdateDeferReason::PendingRestart,
+        );
+    }
     if DEFERRED_RESTART_ACTIVE
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -2390,10 +2423,11 @@ pub fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
             match check_for_updates(handle.clone()).await {
                 // Update found: `check_for_updates` already emitted
                 // `update:available`, which every existing surface (Settings
-                // row, banner, version pop-out) listens for. Also raise the
-                // native recovery window so a stuck UI still has a path.
+                // row, banner, version pop-out) listens for. Bring up the
+                // normal Settings → Updates prompt; only a desktop shell the
+                // watchdog judged broken gets the native recovery window.
                 Ok(Some(_)) => {
-                    crate::recovery::spawn_tray_open_recovery(handle);
+                    crate::recovery::present_manual_update_found(handle).await;
                 }
                 Ok(None) => notify_manual_check(&handle, &up_to_date_body(&handle)),
                 Err(e) => {

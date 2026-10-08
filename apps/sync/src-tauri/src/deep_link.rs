@@ -245,6 +245,15 @@ pub fn hq_url_from_argv<S: AsRef<str>>(argv: &[S]) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn conversation_route(conversation: &str, message: &str) -> String {
+    let kind = if conversation.starts_with("chn_") {
+        "channel"
+    } else {
+        "dm"
+    };
+    format!("conversation:{kind}:{conversation}:{message}")
+}
+
 fn map_hq_segments(segs: &[&str]) -> Option<String> {
     match segs {
         [head] if head.eq_ignore_ascii_case("meetings") => Some("meetings".into()),
@@ -262,6 +271,21 @@ fn map_hq_segments(segs: &[&str]) -> Option<String> {
                 && is_id_token(message) =>
         {
             Some(format!("inbox:channel:{channel}:{message}"))
+        }
+        [head, company, conversation, "message", message]
+            if head.eq_ignore_ascii_case("conversation")
+                && is_id_token(company)
+                && is_id_token(conversation)
+                && is_id_token(message) =>
+        {
+            Some(conversation_route(conversation, message))
+        }
+        [head, conversation, message]
+            if head.eq_ignore_ascii_case("c")
+                && is_id_token(conversation)
+                && is_id_token(message) =>
+        {
+            Some(conversation_route(conversation, message))
         }
         [head, slug, rest @ ..]
             if head.eq_ignore_ascii_case("files")
@@ -387,6 +411,24 @@ mod tests {
             parse_hq_url("hq:///inbox/dm/prs_ada").as_deref(),
             Some("inbox:dm:prs_ada")
         );
+    }
+
+    #[test]
+    fn parse_hq_url_maps_conversation_message_links() {
+        assert_eq!(
+            parse_hq_url("hq://conversation/cmp_1/chn_eng/message/evt_root").as_deref(),
+            Some("conversation:channel:chn_eng:evt_root"),
+        );
+        assert_eq!(
+            parse_hq_url("hq://conversation/cmp_1/psn_ada/message/evt_1").as_deref(),
+            Some("conversation:dm:psn_ada:evt_1"),
+        );
+        assert_eq!(
+            parse_hq_url("hq://c/chn_eng/evt_root").as_deref(),
+            Some("conversation:channel:chn_eng:evt_root"),
+        );
+        assert!(parse_hq_url("hq://conversation/cmp_1/chn_eng/evt_root").is_none());
+        assert!(parse_hq_url("hq://c/chn_eng").is_none());
     }
 
     #[test]
