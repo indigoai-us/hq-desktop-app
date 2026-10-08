@@ -364,7 +364,8 @@ pub fn record_bridge_died() -> Result<Vec<String>, String> {
 ///
 /// Mapping:
 /// - fetch error → [`ReconcileOutcome::Unknown`] (retry next launch unless aged out)
-/// - `not_found` (404) → [`ReconcileOutcome::IngestFailed`] (never finalised)
+/// - `not_found` (404) → [`ReconcileOutcome::Finalising`] for the bounded
+///   retry window, then [`ReconcileOutcome::IngestFailed`]
 /// - `source_landed` → [`ReconcileOutcome::Saved`]
 /// - status `failed`/`error` → [`ReconcileOutcome::IngestFailed`]
 /// - anything else (scheduled/recording/processing/completed-not-landed) →
