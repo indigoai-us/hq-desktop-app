@@ -25,6 +25,17 @@ describe('conflict parked notices', () => {
     ]);
   });
 
+  it('keeps personal and company copies distinct even when their paths match', () => {
+    const company = notice('company-id');
+    const personal: ConflictParkedNotice = {
+      ...company,
+      id: 'personal-id',
+      scope: 'personal',
+      companySlug: null,
+    };
+    expect(mergeConflictNotices([], [company, personal])).toEqual([company, personal]);
+  });
+
   it('clears only the acknowledged notice', () => {
     expect(removeConflictNotice([notice('a'), notice('b')], 'a')).toEqual([notice('b')]);
     expect(filterAcknowledgedConflictNotices([notice('a'), notice('b')], new Set(['b']))).toEqual([
