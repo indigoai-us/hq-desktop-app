@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 ### Fixed
 
+- The idle sync monitor samples the watcher process group directly on macOS instead of launching `ps` and parsing the system process list. Unchanged sync progress and last-pass files are no longer reparsed every second, and the tray command reader skips unchanged files between 250 ms checks.
 - The macOS menu-bar helper checks its badge and upload-status snapshots every two seconds while idle, while still applying published changes on its next check.
 - HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
 

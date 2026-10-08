@@ -7059,6 +7059,64 @@ struct TreeRssSample {
     largest_child_kind: Option<WatcherProcessKind>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessGroupRssMember {
+    pid: u32,
+    rss_kb: u64,
+    kind: WatcherProcessKind,
+}
+
+#[cfg(target_os = "macos")]
+fn sum_process_group_rss_kb(members: &[ProcessGroupRssMember], root: u32) -> Option<TreeRssSample> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut total_kb = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
+    let mut largest_node_member_kb = 0_u64;
+    let mut largest_node_member_pid = None;
+    let mut largest_child_member_kb = 0_u64;
+    let mut largest_child_kind = None;
+    let mut root_member_kb = None;
+
+    for member in members {
+        if !seen.insert(member.pid) {
+            continue;
+        }
+        total_kb = total_kb.saturating_add(member.rss_kb);
+        pid_count = pid_count.saturating_add(1);
+        if member.pid == root {
+            root_member_kb = Some(member.rss_kb);
+        }
+        if member.rss_kb > largest_member_kb {
+            largest_member_kb = member.rss_kb;
+        }
+        if member.kind == WatcherProcessKind::Node && member.rss_kb > largest_node_member_kb {
+            largest_node_member_kb = member.rss_kb;
+            largest_node_member_pid = Some(member.pid);
+        }
+        if member.pid != root && member.rss_kb > largest_child_member_kb {
+            largest_child_member_kb = member.rss_kb;
+            largest_child_kind = Some(member.kind);
+        }
+    }
+
+    Some(TreeRssSample {
+        total_kb,
+        pid_count,
+        largest_member_kb,
+        root_member_kb: root_member_kb?,
+        largest_node_member_kb: largest_node_member_pid
+            .is_some()
+            .then_some(largest_node_member_kb),
+        largest_node_member_pid,
+        largest_child_member_kb: (pid_count > 1).then_some(largest_child_member_kb),
+        largest_child_kind,
+    })
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
 /// `ps -eo pid=,ppid=,rss=,comm=` table, and decompose it into the PID count,
 /// largest member, largest Node process, and largest descendant kind. Cycle-safe
@@ -7143,27 +7201,115 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     })
 }
 
-/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
-/// bounded `ps -eo pid=,ppid=,rss=,comm=` invocation summed by
-/// [`sum_pid_tree_rss_kb`].
-/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
-/// to the single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID.
+/// macOS reads only the watcher's process group with libproc; other Unix targets
+/// retain the bounded `ps` snapshot. `None` on read/parse failure or a missing
+/// root, so the caller falls back to a single-PID sample.
 #[cfg(not(target_os = "windows"))]
 fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
-    let mut cmd = std::process::Command::new("ps");
-    paths::no_window(&mut cmd);
-    let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "macos")]
+    {
+        return sample_process_group_rss_kb(root);
     }
-    sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(test)]
+        PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
+        let mut cmd = std::process::Command::new("ps");
+        paths::no_window(&mut cmd);
+        let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+    }
 }
 
-/// Best-effort RSS (KB) of the registered watcher. On Unix this uses `ps`,
-/// which reports RSS in 1-KB units. Returns `None` on any failure; diagnostic
-/// sampling never changes whether a crash is captured.
-#[cfg(not(target_os = "windows"))]
+#[cfg(test)]
+static PS_TREE_SAMPLE_SPAWNS: AtomicU64 = AtomicU64::new(0);
+
+/// Sample only the watcher's dedicated process group with libproc. The watcher
+/// is launched with `process_group(0)` in `process.rs`, so its PID is also the
+/// group ID inherited by its children. This avoids spawning `ps` and parsing a
+/// system-wide process table on every 30-second supervisor tick.
+#[cfg(target_os = "macos")]
+fn sample_process_group_rss_kb(root: u32) -> Option<TreeRssSample> {
+    let root_pid = libc::pid_t::try_from(root).ok()?;
+    if unsafe { libc::getpgid(root_pid) } != root_pid {
+        return None;
+    }
+
+    // proc_listpgrppids returns a PID count (unlike proc_listpids, which
+    // returns bytes). Leave room for process churn between the sizing and fill
+    // calls; the reported count still bounds the initialized prefix.
+    let needed = unsafe { libc::proc_listpgrppids(root_pid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return None;
+    }
+    let capacity = (needed as usize).saturating_add(16);
+    let mut pids = vec![0_i32; capacity];
+    let listed = unsafe {
+        libc::proc_listpgrppids(
+            root_pid,
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    if listed <= 0 {
+        return None;
+    }
+
+    let mut members = Vec::with_capacity((listed as usize).min(pids.len()));
+    for pid in pids.into_iter().take(listed as usize) {
+        if pid <= 0 {
+            continue;
+        }
+        let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+        let task_size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let task_read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTASKINFO,
+                0,
+                task.as_mut_ptr().cast(),
+                task_size,
+            )
+        };
+        if task_read != task_size {
+            continue;
+        }
+        let rss_kb = unsafe { task.assume_init().pti_resident_size / 1024 };
+
+        let mut name = [0_u8; 64];
+        let name_len = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        let kind = if name_len > 0 {
+            let name_end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            let name = String::from_utf8_lossy(&name[..name_end]);
+            classify_watcher_process_kind(&name)
+        } else {
+            WatcherProcessKind::Unknown
+        };
+        members.push(ProcessGroupRssMember {
+            pid: pid as u32,
+            rss_kb,
+            kind,
+        });
+    }
+
+    sum_process_group_rss_kb(&members, root)
+}
+
+/// Best-effort RSS (KB) of the registered watcher. On macOS this uses libproc;
+/// other Unix targets use `ps`, which reports RSS in 1-KB units. Returns `None`
+/// on any failure; diagnostic sampling never changes whether a crash is captured.
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    #[cfg(test)]
+    PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd
@@ -7174,6 +7320,23 @@ fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
         return None;
     }
     parse_ps_rss_kb(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    (read == size).then(|| unsafe { task.assume_init().pti_resident_size / 1024 })
 }
 
 /// Best-effort Windows working-set sample for the app-owned watcher PID. The
@@ -15381,7 +15544,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
@@ -15398,6 +15561,42 @@ mod tests {
             sample.tree_largest_member_kb.unwrap_or(0) > 0,
             "a comparable tree sample carries a largest-member RSS"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sample_watcher_rss_scoped_uses_libproc_without_spawning_ps() {
+        use std::os::unix::process::CommandExt;
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut child = ChildGuard(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("start process-group fixture"),
+        );
+        let before = PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed);
+        let sample = sample_watcher_rss_scoped(child.0.id())
+            .expect("the live process group must be sampleable");
+
+        assert!(sample.kb > 0);
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(sample.tree_pid_count.unwrap_or(0) >= 1);
+        assert_eq!(
+            PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed),
+            before,
+            "sampling a live watcher process group must not spawn `ps`"
+        );
+        child.0.kill().expect("stop process-group fixture");
+        child.0.wait().expect("reap process-group fixture");
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared
