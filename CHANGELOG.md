@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+### Changed
+
+- In bot messages, every card label (status pills, notes, questions, progress bars and stat tiles) now shows a small icon before its text. Lists of details such as Owner, Folder and Pickup now read as one wrapping line of pairs instead of a two-column table.
+
 ### Fixed
 
 - On a Mac, the "One shortcut to remember" step of first-run setup now draws a Mac keyboard (fn, control, option, command) with option and shift lit, matching the ⌥ ⇧ O shown under it. It used to draw a Windows keyboard with Alt lit. Windows and Linux keep the Alt Shift O keyboard.
