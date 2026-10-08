@@ -28,6 +28,7 @@
 
 use crate::sync_outcome::classify_runner_fatal_class;
 use crate::sync_outcome::RunnerFatalClass;
+use crate::runner_exit_record::parse_runner_exit_line;
 
 /// Cap on how many entries the unmatched-stderr shape rollup renders into a
 /// single Sentry tag value, highest count first. Mirrors
@@ -1064,11 +1065,13 @@ pub struct UnmatchedStderrShapeRollup {
 }
 
 impl UnmatchedStderrShapeRollup {
-    /// Record one stderr line ONLY if the fatal classifier did not recognise it.
-    /// A recognised line already has a `runner_fatal_class` and must not also be
-    /// counted here, so the rollup describes exactly the unattributed remainder.
+    /// Record a line only when neither the fatal classifier nor the structured
+    /// runner-exit parser recognises it, so the rollup describes the unattributed
+    /// remainder.
     pub fn record_if_unmatched(&mut self, line: &str) {
-        if classify_runner_fatal_class(line) != RunnerFatalClass::None {
+        if classify_runner_fatal_class(line) != RunnerFatalClass::None
+            || parse_runner_exit_line(line).is_some()
+        {
             return;
         }
         self.bump(classify_unmatched_stderr_shape(line));

@@ -50,24 +50,15 @@ function render(overrides: Record<string, unknown> = {}) {
       loadProvisionOptions: async () => ({ ok: true as const, value: options }),
       oncreate,
       oncomplete,
+      // The name is the takeover's first step; this screen opens on the brain.
+      name: "Polar",
       ...overrides,
     },
   });
   return { oncreate, oncomplete };
 }
-function typeName(value: string): void {
-  const input = document.querySelector<HTMLInputElement>(
-    "[data-testid='new-bot-name']",
-  )!;
-  input.value = value;
-  input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-}
+/** The name was given on the takeover's first step: the screen opens on the brain. */
 async function advanceName(): Promise<void> {
-  typeName("Polar");
-  await settle();
-  document
-    .querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!
-    .click();
   await settle();
 }
 afterEach(async () => {
@@ -77,31 +68,71 @@ afterEach(async () => {
 });
 
 describe("NewBotCreateScreen", () => {
-  it("keeps the name input alone and never renders the derived handle", async () => {
+  it("never asks for the name again: it opens on the brain, names the bot in the identity line, and never renders the handle", async () => {
     render();
     await settle();
+    expect(document.querySelector("[data-testid='new-bot-name']")).toBeNull();
+    expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='bot-identity-name']")?.textContent).toBe("Polar");
+    expect(document.querySelector("[data-testid='bot-identity-meta']")?.textContent).toBe("Cloud");
     expect(
       document.querySelector("[data-testid='new-bot-derived-handle']"),
     ).toBeNull();
     expect(document.querySelector(".new-bot-name-row")).toBeNull();
     expect(document.querySelector("#new-bot-handle")).toBeNull();
+    // The dots count the takeover's name and where steps too, and the
+    // optional company and size steps.
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 3 of 5");
   });
-  it("advances with Enter and preselects the signed-in brain", async () => {
+  it("preselects the signed-in brain; Next: Company, then Next: Size, and the last step has only Create <Name>", async () => {
     render();
     await settle();
-    typeName("Polar");
-    document
-      .querySelector<HTMLInputElement>("[data-testid='new-bot-name']")!
-      .dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
+    const codex = document.querySelector<HTMLInputElement>("input[value='codex']")!;
+    expect(codex.checked).toBe(true);
+    // Several companies: "Next: Company" and "Finish with defaults", side by side.
+    expect(document.querySelector("[data-testid='new-bot-continue-brain']")?.textContent?.trim()).toBe("Next: Company");
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")?.textContent?.trim()).toBe("Finish with defaults");
+    expect(document.querySelector(".new-bot-foot-actions")?.children).toHaveLength(2);
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
     await settle();
-    expect(
-      document.querySelector("[data-testid='new-bot-step-2']"),
-    ).toBeTruthy();
-    expect(
-      document.querySelector<HTMLInputElement>("input[value='codex']")?.checked,
-    ).toBe(true);
+    expect(document.querySelector("[data-testid='new-bot-step-3']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 4 of 5");
+    expect(document.querySelector("[data-testid='bot-identity-meta']")?.textContent).toBe("Cloud · Current company");
+    expect(document.querySelector("[data-testid='new-bot-continue-brain']")).toBeNull();
+    // The company step: no "More options" link; the size is its own step.
+    expect(document.querySelector(".new-bot-more")).toBeNull();
+    expect(document.querySelector("[data-testid='new-bot-continue-company']")?.textContent?.trim()).toBe("Next: Size");
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")?.textContent?.trim()).toBe("Finish with defaults");
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-company']")!.click();
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-step-4']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 5 of 5");
+    expect(document.querySelector("input[name='new-bot-size']")).toBeTruthy();
+    expect(document.querySelector("[data-testid='new-bot-continue-company']")).toBeNull();
+    expect(document.querySelector(".new-bot-foot-actions")?.children).toHaveLength(1);
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")?.textContent?.trim()).toBe("Create Polar");
+    // Back walks the steps in order.
+    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-step-3']")).toBeTruthy();
+    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
+  });
+
+  it("Enter on the brain step finishes with defaults: the brain shown, in the company it opened on", async () => {
+    const { oncreate } = render();
+    await settle();
+    const codex = document.querySelector<HTMLInputElement>("input[value='codex']")!;
+    codex.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith("cmp_current", expect.objectContaining({ name: "Polar", runtime: "codex" }));
+  });
+  it("counts one step before it when the where question was not asked", async () => {
+    render({ leadSteps: 1, companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" });
+    await settle();
+    // One company: the brain, then the optional size.
+    expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 2 of 3");
   });
   describe("Claude is offered only when the company has it (review A-C1)", () => {
     function brains(): string[] {
@@ -347,7 +378,7 @@ describe("NewBotCreateScreen", () => {
       });
       await openCompanyStep();
       expect(price()).toBe("$50.00/month for Basic.");
-      document.querySelector<HTMLButtonElement>(".new-bot-more")!.click();
+      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-company']")!.click();
       await settle();
       document.querySelector<HTMLInputElement>("input[name='new-bot-size'][value='power']")!.click();
       await settle();
@@ -364,26 +395,18 @@ describe("NewBotCreateScreen", () => {
       expect(price()).toBe("$90.00/month for Power.");
     });
 
-    it("A-I6: stops a name that makes no handle at the name step, before anything is sent", async () => {
+    it("A-I6: holds Create bot for a name that makes no handle, before anything is sent", async () => {
       // A name with no ASCII letter or digit makes an empty handle. The
-      // server refused it only after the create had begun.
-      const { oncreate } = render(ONE_COMPANY);
+      // server refused it only after the create had begun. The takeover's
+      // name step refuses it; this screen holds Create if one arrives anyway.
+      const { oncreate } = render({ ...ONE_COMPANY, name: "日本語" });
       await settle();
-      typeName("日本語");
+      createButton().click();
       await settle();
-      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
-      await settle();
-      expect(document.querySelector("[data-testid='new-bot-step-1']")).toBeTruthy();
-      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeNull();
-      expect(document.querySelector("[role='alert']")?.textContent).toBe("That name can't be used for a bot. Try letters and numbers.");
+      expect(document.querySelector("[data-testid='new-bot-name-unusable']")?.textContent).toBe(
+        "That name can't be used for a bot. Try letters and numbers.",
+      );
       expect(oncreate).not.toHaveBeenCalled();
-
-      // A name the handle can be made from goes through.
-      typeName("日本語 Bot 2");
-      await settle();
-      document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
-      await settle();
-      expect(document.querySelector("[data-testid='new-bot-step-2']")).toBeTruthy();
     });
 
     it("A-I10: shows the whole reason for a refusal, not only its first sentence", async () => {
@@ -510,12 +533,19 @@ describe("NewBotCreateScreen", () => {
     document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
     await settle();
     document.querySelector<HTMLInputElement>("input[value='claude']")!.click();
-    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    document
+      .querySelector<HTMLButtonElement>(
+        "[data-testid='new-bot-continue-brain']",
+      )!
+      .click();
     await settle();
     expect(
-      document.querySelector<HTMLInputElement>("[data-testid='new-bot-name']")
-        ?.value,
-    ).toBe("Polar");
+      document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")?.getAttribute("aria-checked"),
+    ).toBe("true");
+    document.querySelector<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    expect(document.querySelector<HTMLInputElement>("input[value='claude']")?.checked).toBe(true);
   });
   it("shows a final-step failure and permits a retry", async () => {
     const oncreate = vi
@@ -763,11 +793,30 @@ describe("NewBotCreateScreen", () => {
     await settle();
     expect(oncreate).toHaveBeenCalledWith("cmp_3", expect.anything());
   });
+  it("never grows the grid past four rows: the filter finds the rest, and the picked company stays in view", async () => {
+    render({ companies: manyCompanies(20), currentCompanyUid: "cmp_17" });
+    await openCompanyStep();
+    const shown = () =>
+      [...document.querySelectorAll<HTMLElement>("[data-testid='new-bot-company-grid'] [role='radio']")].map(
+        (tile) => tile.dataset.companyUid,
+      );
+    expect(shown()).toHaveLength(12);
+    expect(shown()).toContain("cmp_17");
+    expect(shown().slice(0, 11)).toEqual(Array.from({ length: 11 }, (_, index) => `cmp_${index}`));
+    expect(document.querySelector("[data-testid='new-bot-company-more']")?.textContent).toBe("8 more. Type to find them.");
+    const filter = document.querySelector<HTMLInputElement>("[data-testid='new-bot-company-filter']")!;
+    filter.value = "Company 1";
+    filter.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await settle();
+    // Company 10 to 19: ten matches, all shown, no "more" line.
+    expect(shown()).toEqual(Array.from({ length: 10 }, (_, index) => `cmp_${index + 10}`));
+    expect(document.querySelector("[data-testid='new-bot-company-more']")).toBeNull();
+  });
 });
 
 describe("NewBotCreateScreen: which company the bot is created in (review G-1)", () => {
   const line = (): string =>
-    document.querySelector("[data-testid='new-bot-target-company']")?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    document.querySelector("[data-testid='new-bot-price']")?.textContent?.replace(/\s+/g, " ").trim() ?? "";
 
   it("names the only company it offers on the last step, for a person with more than one company", async () => {
     const { oncreate } = render({
@@ -778,7 +827,7 @@ describe("NewBotCreateScreen: which company the bot is created in (review G-1)",
     await advanceName();
     // One company on the list: no picker, and the brain step is the last one.
     expect(document.querySelector("[data-testid='new-bot-company-grid']")).toBeNull();
-    expect(line()).toBe("Polar will be created in Current company.");
+    expect(line()).toBe("$50.00/month for Basic, billed to Current company.");
     document.querySelector<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!.click();
     await settle();
     expect(oncreate).toHaveBeenCalledWith("cmp_current", expect.objectContaining({ name: "Polar" }));
@@ -788,21 +837,47 @@ describe("NewBotCreateScreen: which company the bot is created in (review G-1)",
     render({ nameCompany: true });
     await settle();
     await advanceName();
-    // Not on the brain step: the company is chosen on the next one.
-    expect(line()).toBe("");
+    // On the brain step Finish with defaults would create in the company the
+    // screen opened on, so it says which.
+    expect(line()).toBe("$50.00/month for Basic, billed to Current company.");
     document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
     await settle();
-    expect(line()).toBe("Polar will be created in Current company.");
+    expect(line()).toBe("$50.00/month for Basic, billed to Current company.");
     document.querySelector<HTMLButtonElement>("[data-company-uid='cmp_other']")!.click();
     await settle();
-    expect(line()).toBe("Polar will be created in Other company.");
+    expect(line()).toBe("$50.00/month for Basic, billed to Other company.");
   });
 
   it("says nothing about the company to a person who has only one", async () => {
     render({ companies: [{ companyUid: "cmp_current", label: "Current company" }] });
     await settle();
     await advanceName();
+    expect(line()).toBe("$50.00/month for Basic.");
+  });
+
+  it("says Checking plan... in the plan line's place until the plan answers, then one short line and no other status", async () => {
+    let answer!: (value: { ok: true; value: typeof options }) => void;
+    render({
+      nameCompany: true,
+      loadProvisionOptions: () => new Promise((resolve) => { answer = resolve; }),
+    });
+    await settle();
+    const plan = document.querySelector("[data-testid='new-bot-price']");
+    expect(plan?.textContent).toBe("Checking plan...");
+    expect(plan?.getAttribute("data-state")).toBe("checking");
+    answer({ ok: true, value: { ...options, options: [{ ...options.options[0]!, notBilled: true, netMonthlyCents: 0 }] } });
+    await settle();
+    await settle();
+    // The same element, now with the plan: nothing is added or moved.
+    expect(document.querySelector("[data-testid='new-bot-price']")).toBe(plan);
+    expect(plan?.textContent).toBe("Included with Current company's plan.");
+    expect(plan?.getAttribute("data-state")).toBe("ready");
+    expect(document.querySelectorAll(".new-bot-create-foot .new-bot-price, footer .new-bot-price")).toHaveLength(1);
     expect(document.querySelector("[data-testid='new-bot-target-company']")).toBeNull();
+    // The line sits above the buttons.
+    const foot = plan!.parentElement!;
+    const children = [...foot.children];
+    expect(children.indexOf(plan!)).toBeLessThan(children.indexOf(foot.querySelector(".new-bot-foot-actions")!));
   });
 
   it("labels the second way out as the host says, and keeps the local label without one", async () => {

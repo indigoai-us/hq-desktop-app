@@ -61,7 +61,8 @@ function writeStoredCache(
 ): void {
   try {
     storage?.setItem(GALLERY_CACHE_STORAGE_KEY, JSON.stringify(cache));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/avatars/gallery.ts:64", error);
     /* private mode */
   }
 }
@@ -94,7 +95,8 @@ export function clearAvatarGalleryCache(
   memoryCache = null;
   try {
     storage?.removeItem?.(GALLERY_CACHE_STORAGE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/avatars/gallery.ts:97", error);
     /* ignore */
   }
 }

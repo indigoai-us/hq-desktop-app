@@ -2,7 +2,9 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   import { newBotWallpaper } from "./new-bot-wallpapers.js";
   import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
-  import { onDestroy, onMount } from "svelte";
+  import NewBotExternalStep from "./NewBotExternalStep.svelte";
+  import NewBotNameStep from "./NewBotNameStep.svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
   import type { AdapterPromise, AgentProvisionOptionsView } from "@hq/platform";
@@ -24,28 +26,35 @@
   interface Props {
     canCreateLocalBot?: boolean;
     /**
-     * Open on the "Cloud or Local?" question. "New bot" opens with it; the
-     * takeover opened on a starting bot's row goes straight to that bot.
+     * Ask "Where should it live?" (Cloud or Local) after the name. "New bot"
+     * opens with it; the takeover opened on a starting bot's row goes
+     * straight to that bot.
      */
     choose?: boolean;
     /**
-     * With `choose`: open on the cloud create screen with the choice behind
-     * Back ("Create a cloud bot instead" on the local steps).
+     * With `choose` and a name: open on the cloud create screen with the
+     * choice behind Back ("Create a cloud bot instead" on the local steps).
      */
     openCloud?: boolean;
+    /**
+     * The name given earlier in this New bot (it went to the local steps and
+     * came back). With it the takeover skips the name step.
+     */
+    initialName?: string;
     /** Why Cloud cannot be picked on the choice screen. Null when it can. */
     cloudReason?: string | null;
     /** Why Local cannot be picked on the choice screen. Null when it can. */
     localReason?: string | null;
     /**
      * Cloud was picked but this takeover lists no company for it: the host
-     * opens the "+" window's cloud flow (companies without the takeover).
+     * opens the "+" window's cloud flow (companies without the takeover),
+     * with the name given here.
      */
-    onchoosecloud?: (() => void) | null;
-    /** Local was picked: the host opens the local flow in the same shell. */
-    onchooselocal?: (() => void) | null;
+    onchoosecloud?: ((name: string) => void) | null;
+    /** Local was picked: the host opens the local flow in the same shell, with the name given here. */
+    onchooselocal?: ((name: string) => void) | null;
     oncancel: () => void;
-    onopenlocal?: (() => void) | null;
+    onopenlocal?: ((name: string) => void) | null;
     /** What the button for `onopenlocal` says on the create screen (see NewBotCreateScreen). */
     otherWayLabel?: string;
     /** True when the person belongs to more than one company: the last step names the target. */
@@ -110,6 +119,7 @@
     canCreateLocalBot = false,
     choose = false,
     openCloud = false,
+    initialName = "",
     cloudReason = null,
     localReason = null,
     onchoosecloud = null,
@@ -164,23 +174,55 @@
 
   /** The takeover has its own cloud create screen to show. */
   const hasCloudScreen = $derived(!!(oncreate && loadProvisionOptions && companies.length));
-  /** True while the "Cloud or Local?" question is on screen. */
-  // Read once, at open: the question is asked when the takeover opens on it.
-  function opensOnChoice(): boolean {
-    return choose && !(openCloud && hasCloudScreen);
+  /**
+   * Which create screen is on: the name (always first), "Where should it
+   * live?", or the cloud create screen. Read once, at open: a name given
+   * earlier skips the name step.
+   */
+  type Phase = "name" | "where" | "cloud" | "external";
+  function openingPhase(): Phase {
+    if (!initialName.trim()) return "name";
+    if (openCloud && hasCloudScreen) return "cloud";
+    return choose || !hasCloudScreen ? "where" : "cloud";
   }
-  let choosing = $state(opensOnChoice());
+  let phase = $state<Phase>(openingPhase());
+  /** The bot's name, from the first step. Kept across Back and the other screens. */
+  let botName = $state(untrack(() => initialName.trim()));
+  /**
+   * The next bot after a clean start (a cancelled create, a removed bot) is
+   * a new New bot: it asks where it should live again, even when this
+   * takeover was opened on a starting bot's row with no question. Without
+   * this, the name led straight to the cloud create screen and its plan
+   * check, and Local could not be picked.
+   */
+  let askWhereNext = $state(false);
+  /** The where question is part of this New bot's steps (and its dots). */
+  const asksWhere = $derived(choose || askWhereNext || !hasCloudScreen);
+  /**
+   * Step bars for the screens the takeover shows: the name, the where
+   * question, then the steps after it. Cloud continues on its brain step,
+   * the company step when there is more than one company, and the size.
+   * Without the cloud screen the bars count the local steps' shortest walk
+   * (coding tool, who it's for, fine-tune).
+   */
+  const leadSteps = $derived(asksWhere ? 2 : 1);
+  const totalSteps = $derived(leadSteps + (hasCloudScreen ? (companies.length > 1 ? 3 : 2) : 3));
+
+  function continueName(name: string): void {
+    botName = name;
+    phase = asksWhere ? "where" : "cloud";
+  }
 
   function pickKind(kind: NewBotKind): void {
     if (kind === "local") {
-      onchooselocal?.();
+      onchooselocal?.(botName);
       return;
     }
     if (hasCloudScreen || !onchoosecloud) {
-      choosing = false;
+      phase = "cloud";
       return;
     }
-    onchoosecloud();
+    onchoosecloud(botName);
   }
 
   let dialogEl = $state<HTMLDivElement | null>(null);
@@ -313,11 +355,19 @@
     }
   }
 
+  /** Back to the first step with nothing typed, for the next bot. */
+  function startClean(): void {
+    createScreenKey += 1;
+    botName = "";
+    if (onchooselocal) askWhereNext = true;
+    phase = "name";
+  }
+
   /** Cancel while the create request is out: stop here and start clean. */
   function cancelCreate(): void {
     createTurn += 1;
     creating = false;
-    createScreenKey += 1;
+    startClean();
     oncancelcreate?.();
   }
 
@@ -365,7 +415,7 @@
     }
     localWakingSession = null;
     ignoreExternalWakingSession = true;
-    createScreenKey += 1;
+    startClean();
     oncancelbot?.(session);
   }
 
@@ -528,9 +578,24 @@
           {retryMessage}
         />
         {/key}
-      {:else if choosing}
-        <NewBotKindChoice {cloudReason} {localReason} onpick={pickKind} />
-      {:else if oncreate && loadProvisionOptions && companies.length}
+      {:else if phase === "name"}
+        <div class="new-bot-create" data-testid="new-bot-name-screen" role="group">
+          <NewBotNameStep name={botName} total={totalSteps} current={1} oncontinue={continueName} />
+        </div>
+      {:else if phase === "external"}
+        <NewBotExternalStep onback={() => (phase = "where")} />
+      {:else if phase === "where" || !hasCloudScreen}
+        <NewBotKindChoice
+          name={botName}
+          {cloudReason}
+          {localReason}
+          total={totalSteps}
+          current={2}
+          onback={() => (phase = "name")}
+          onpick={pickKind}
+          onconnectexternal={() => (phase = "external")}
+        />
+      {:else if oncreate && loadProvisionOptions}
         {#key createScreenKey}
         <NewBotCreateScreen
           {companies}
@@ -541,33 +606,15 @@
           oncreate={createBot}
           oncomplete={startWaking}
           {onupgrade}
-          onopenlocal={canCreateLocalBot || otherWayLabel ? onopenlocal : null}
+          onopenlocal={(canCreateLocalBot || otherWayLabel) && onopenlocal ? () => onopenlocal?.(botName) : null}
           {otherWayLabel}
           {nameCompany}
           checking={checkingCreate}
-          onback={choose && !creating ? () => (choosing = true) : null}
+          name={botName}
+          leadSteps={leadSteps}
+          onback={creating ? null : () => (phase = asksWhere ? "where" : "name")}
         />
         {/key}
-      {:else}
-        <p class="new-bot-takeover-kicker">A new teammate</p>
-        <h1 id="new-bot-takeover-title">
-          Meet your <em>next</em> bot.
-        </h1>
-        <p class="new-bot-takeover-copy">
-          Give it a name, choose a brain, and it will be ready to talk in HQ.
-        </p>
-        <p class="new-bot-takeover-next">Name and brain are next.</p>
-      {/if}
-
-      {#if !choosing && !oncreate && canCreateLocalBot && onopenlocal}
-        <button
-          type="button"
-          class="new-bot-takeover-local"
-          data-testid="new-bot-takeover-local"
-          onclick={onopenlocal}
-        ><RailIcon name="plus" />
-          Create a local bot instead
-        </button>
       {/if}
     </div>
   </main>

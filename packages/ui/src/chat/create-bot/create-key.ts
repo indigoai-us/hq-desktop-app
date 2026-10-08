@@ -113,7 +113,8 @@ export function loadPendingCreateKeys(
 function save(pending: readonly PendingCreateKey[], storage: KeyStorage | null | undefined): void {
   try {
     storage?.setItem(CREATE_KEYS_STORAGE_KEY, JSON.stringify(pending.slice(0, MAX_PENDING)));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/create-bot/create-key.ts:116", error);
     // Best effort: the key still holds for the life of the window.
   }
 }

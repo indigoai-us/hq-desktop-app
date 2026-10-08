@@ -5,7 +5,12 @@
  */
 
 export type ActiveMeetingState =
-  "detected" | "starting" | "recording" | "stopping" | "error";
+  | "detected"
+  | "starting"
+  | "recording"
+  | "stopping"
+  | "finalising"
+  | "error";
 
 export interface ActiveMeeting {
   windowId: string;

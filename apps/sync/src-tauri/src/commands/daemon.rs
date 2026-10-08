@@ -95,8 +95,8 @@ pub use hq_desktop_core::daemon::{
 /// Singleton handle for daemon process.
 const DAEMON_HANDLE: &str = "hq-sync-daemon";
 
-/// SIGKILL delay after SIGTERM when stopping daemon.
-const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+/// SIGKILL delay after SIGTERM when stopping the watch runner.
+const SIGKILL_DELAY: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 
 /// A healthy watch daemon emits protocol progress or completion records on
 /// every pass. If no record arrives for this interval, terminate the process so
@@ -730,8 +730,8 @@ fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
     terminate_daemon_once_with_delay(category, SIGKILL_DELAY)
 }
 
-/// Testable core of [`terminate_daemon_once`]. Production always supplies the
-/// five-second grace period; native process tests shorten only the wait while
+/// Testable core of [`terminate_daemon_once`]. Production supplies the shared
+/// runner grace period; native process tests shorten only the wait while
 /// exercising the identical cancellation and lifecycle path.
 fn terminate_daemon_once_with_delay(
     category: DaemonFailureCategory,
@@ -1870,10 +1870,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                                 DaemonFailureCategory::None,
                                             );
                                         }
-                                        sentry::capture_message(
-                                            "auto-sync watcher exited with a live watch-owner lease",
-                                            sentry::Level::Warning,
-                                        );
+                                        if hq_desktop_core::watch_owner::should_emit_busy_watch_exit_warning(
+                                            plan,
+                                        ) {
+                                            sentry::capture_message(
+                                                "auto-sync watcher exited with a live watch-owner lease",
+                                                sentry::Level::Warning,
+                                            );
+                                        }
                                         RunnerReportDirDisposition::DeleteOnExitPath
                                     }
                                 },
@@ -2042,6 +2046,7 @@ struct WatcherExitCaptureContext {
     heartbeat_stall_termination_in_flight: bool,
     cancelled: bool,
     fatal_runner_signature_seen: bool,
+    saw_genuine_crash_fatal: bool,
     runner_fatal_class: String,
     /// Allow-listed libuv syscall identifier and integer errno for the last
     /// recognised libuv fatal-syscall stderr line, when present. Content-safe:
@@ -2154,6 +2159,8 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// Snapshot of the existing auth-error signal for watcher-exit diagnostics.
+    saw_auth_error: bool,
     /// The content half of the shared disk-exhaustion recognizer (gates a/b/c,
     /// signal-independent) computed at the exit boundary from the SAME `RunTotals`
     /// the manual route reads. Combined with the exit signal by
@@ -2177,6 +2184,7 @@ struct WatcherExitCaptureContext {
     /// runner is distinguishable from a noisy-but-unrecognised one. `None` when no
     /// unmatched line was seen this generation.
     runner_unmatched_stderr_shapes: Option<String>,
+    runner_exit_record: Option<hq_desktop_core::runner_exit_record::RunnerExitRecord>,
     /// Windows Error Reporting fault attribution for this generation. The image
     /// and module are allow-listed tokens (or `unavailable`); provenance is an
     /// honesty token; the code and offset are bare integers. Every field degrades
@@ -2295,6 +2303,7 @@ impl Default for WatcherExitCaptureContext {
             heartbeat_stall_termination_in_flight: false,
             cancelled: false,
             fatal_runner_signature_seen: false,
+            saw_genuine_crash_fatal: false,
             runner_fatal_class: "none".to_string(),
             runner_fatal_syscall: None,
             runner_fatal_errno: None,
@@ -2342,10 +2351,12 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            saw_auth_error: false,
             runner_disk_exhaustion_content: false,
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
             runner_unmatched_stderr_shapes: None,
+            runner_exit_record: None,
             // No Windows fault read applies by default (non-Windows, or a clean /
             // non-fault exit); the image/module keep the `unavailable` sentinel.
             watcher_fault_provenance: WatcherFaultProvenance::NotApplicable.as_str().to_string(),
@@ -2521,6 +2532,7 @@ fn watcher_exit_capture_context(
             .load(Ordering::Acquire),
         cancelled,
         fatal_runner_signature_seen: totals.saw_fatal_runner_signature,
+        saw_genuine_crash_fatal: totals.saw_genuine_crash_fatal,
         runner_fatal_class: totals.runner_fatal_class.as_str().to_string(),
         runner_fatal_syscall: totals.runner_fatal_syscall().map(|s| s.to_string()),
         runner_fatal_errno: totals.runner_fatal_errno(),
@@ -2558,6 +2570,7 @@ fn watcher_exit_capture_context(
         runner_error_residual_signature: totals.runner_error_residual_signature.tag_value(),
         runner_error_sites: totals.runner_error_sites.tag_value(),
         runner_error_scope: totals.runner_error_scope(),
+        runner_exit_record: totals.runner_exit_record(),
         runner_error_companies: totals.runner_error_company_count(),
         runner_phase: phase_context.phase.to_string(),
         runner_phase_elapsed_bucket: runner_phase_elapsed_bucket(
@@ -2597,6 +2610,7 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        saw_auth_error: totals.saw_auth_error,
         // Content half of the shared disk-exhaustion recognizer, from the SAME
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
@@ -4653,11 +4667,39 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
                 RunnerFatalClass::NodeFatal | RunnerFatalClass::NodeCheckAbort
             )
         });
-    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class(
+    // Prefer the last actual stderr line's signature when it recognises a fatal
+    // shape, else fall back to the run's accumulated context. Reuse this chosen
+    // class for grouping, the title, and the event tags.
+    let last_stderr_signature = last_stderr
+        .map(classify_runner_fatal_signature)
+        .filter(|signature| signature.class.seen());
+    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = if code
+        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
+        && signal.is_none()
+    {
+        ("none".to_string(), None, None)
+    } else {
+        match last_stderr_signature {
+            Some(signature) => (
+                signature.class.as_str().to_string(),
+                signature.syscall.map(|syscall| syscall.to_string()),
+                signature.errno,
+            ),
+            None => (
+                context.runner_fatal_class.clone(),
+                context.runner_fatal_syscall.clone(),
+                context.runner_fatal_errno,
+            ),
+        }
+    };
+    let runner_fatal_class_seen = runner_fatal_class != "none";
+    let exit_class = hq_desktop_core::sync_outcome::watcher_exit_class_with_fatal_cause(
         code,
         signal,
         node_fatal,
         memory_attributed,
+        context.saw_genuine_crash_fatal,
+        &runner_fatal_class,
     );
     let fingerprint = ["sync-watcher-exit", exit_class];
     let windows_termination = code
@@ -4685,6 +4727,18 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     {
         format!(
             "auto-sync watcher refused: another sync runner owns this HQ root, \
+             consecutive failure #{consecutive}{episode_suffix}{diag}"
+        )
+    } else if exit_class == RunnerFatalClass::DiskFull.as_str() {
+        let exit_description = if code.is_some() && signal.is_some() {
+            format!("code={code:?} signal={signal:?}")
+        } else {
+            normalized_abort
+                .map(str::to_owned)
+                .unwrap_or_else(|| describe_exit(code, signal))
+        };
+        format!(
+            "auto-sync watcher exited because the disk is full ({exit_description}), \
              consecutive failure #{consecutive}{episode_suffix}{diag}"
         )
     } else if let Some(exit_description) = normalized_abort {
@@ -4715,33 +4769,6 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         )
     };
 
-    // Prefer the last actual stderr line's signature (class + libuv syscall +
-    // errno) when it recognises a fatal shape, else fall back to the run's
-    // accumulated context. All three come from one source so they always
-    // describe the same line — the same discipline the manual route uses.
-    let last_stderr_signature = last_stderr
-        .map(classify_runner_fatal_signature)
-        .filter(|signature| signature.class.seen());
-    let (runner_fatal_class, runner_fatal_syscall, runner_fatal_errno) = if code
-        == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
-        && signal.is_none()
-    {
-        ("none".to_string(), None, None)
-    } else {
-        match last_stderr_signature {
-            Some(signature) => (
-                signature.class.as_str().to_string(),
-                signature.syscall.map(|syscall| syscall.to_string()),
-                signature.errno,
-            ),
-            None => (
-                context.runner_fatal_class.clone(),
-                context.runner_fatal_syscall.clone(),
-                context.runner_fatal_errno,
-            ),
-        }
-    };
-    let runner_fatal_class_seen = runner_fatal_class != "none";
     let (stderr_cause, owner_result, stderr_producer) =
         watcher_exit_stderr_diagnostics(last_stderr);
     let stderr_cause = if code == Some(hq_desktop_core::sync_outcome::RUNNER_ALREADY_OWNED_EXIT)
@@ -4997,6 +5024,12 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
     if let Some(shapes) = &context.runner_unmatched_stderr_shapes {
         tags.push(("runner_unmatched_stderr_shapes", shapes.clone()));
     }
+    if let Some(record) = context
+        .runner_exit_record
+        .filter(|record| Some(record.code) == code)
+    {
+        tags.push(("runner_exit_reason", record.reason.as_str().to_string()));
+    }
     if let (Some(code), Some(termination)) = (code, windows_termination) {
         tags.push(("windows_exit_status", windows_exit_status_hex(code)));
         tags.push(("windows_exit_class", termination.class_name().to_string()));
@@ -5051,7 +5084,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         }
     }
 
-    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen, code);
     if !context.runner_fatal_lines.is_empty() {
         let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
         if !lines.is_empty() {
@@ -5263,6 +5296,7 @@ fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static
 fn watcher_exit_context_extras(
     context: &WatcherExitCaptureContext,
     runner_fatal_class_seen: bool,
+    code: Option<i32>,
 ) -> Vec<(&'static str, sentry::protocol::Value)> {
     let mut extras = vec![
         (
@@ -5294,6 +5328,17 @@ fn watcher_exit_context_extras(
         (
             "runner_fatal_class_seen",
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
+        ),
+        (
+            "runner_identity_error_seen",
+            sentry::protocol::Value::Bool(context.saw_auth_error),
+        ),
+        (
+            "runner_exit_meaning",
+            sentry::protocol::Value::String(
+                hq_desktop_core::sync_outcome::runner_exit_meaning(code, context.saw_auth_error)
+                    .to_string(),
+            ),
         ),
         (
             "runner_error_companies",
@@ -7014,6 +7059,64 @@ struct TreeRssSample {
     largest_child_kind: Option<WatcherProcessKind>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessGroupRssMember {
+    pid: u32,
+    rss_kb: u64,
+    kind: WatcherProcessKind,
+}
+
+#[cfg(target_os = "macos")]
+fn sum_process_group_rss_kb(members: &[ProcessGroupRssMember], root: u32) -> Option<TreeRssSample> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut total_kb = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
+    let mut largest_node_member_kb = 0_u64;
+    let mut largest_node_member_pid = None;
+    let mut largest_child_member_kb = 0_u64;
+    let mut largest_child_kind = None;
+    let mut root_member_kb = None;
+
+    for member in members {
+        if !seen.insert(member.pid) {
+            continue;
+        }
+        total_kb = total_kb.saturating_add(member.rss_kb);
+        pid_count = pid_count.saturating_add(1);
+        if member.pid == root {
+            root_member_kb = Some(member.rss_kb);
+        }
+        if member.rss_kb > largest_member_kb {
+            largest_member_kb = member.rss_kb;
+        }
+        if member.kind == WatcherProcessKind::Node && member.rss_kb > largest_node_member_kb {
+            largest_node_member_kb = member.rss_kb;
+            largest_node_member_pid = Some(member.pid);
+        }
+        if member.pid != root && member.rss_kb > largest_child_member_kb {
+            largest_child_member_kb = member.rss_kb;
+            largest_child_kind = Some(member.kind);
+        }
+    }
+
+    Some(TreeRssSample {
+        total_kb,
+        pid_count,
+        largest_member_kb,
+        root_member_kb: root_member_kb?,
+        largest_node_member_kb: largest_node_member_pid
+            .is_some()
+            .then_some(largest_node_member_kb),
+        largest_node_member_pid,
+        largest_child_member_kb: (pid_count > 1).then_some(largest_child_member_kb),
+        largest_child_kind,
+    })
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
 /// `ps -eo pid=,ppid=,rss=,comm=` table, and decompose it into the PID count,
 /// largest member, largest Node process, and largest descendant kind. Cycle-safe
@@ -7098,27 +7201,115 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     })
 }
 
-/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
-/// bounded `ps -eo pid=,ppid=,rss=,comm=` invocation summed by
-/// [`sum_pid_tree_rss_kb`].
-/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
-/// to the single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID.
+/// macOS reads only the watcher's process group with libproc; other Unix targets
+/// retain the bounded `ps` snapshot. `None` on read/parse failure or a missing
+/// root, so the caller falls back to a single-PID sample.
 #[cfg(not(target_os = "windows"))]
 fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
-    let mut cmd = std::process::Command::new("ps");
-    paths::no_window(&mut cmd);
-    let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "macos")]
+    {
+        return sample_process_group_rss_kb(root);
     }
-    sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(test)]
+        PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
+        let mut cmd = std::process::Command::new("ps");
+        paths::no_window(&mut cmd);
+        let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+    }
 }
 
-/// Best-effort RSS (KB) of the registered watcher. On Unix this uses `ps`,
-/// which reports RSS in 1-KB units. Returns `None` on any failure; diagnostic
-/// sampling never changes whether a crash is captured.
-#[cfg(not(target_os = "windows"))]
+#[cfg(test)]
+static PS_TREE_SAMPLE_SPAWNS: AtomicU64 = AtomicU64::new(0);
+
+/// Sample only the watcher's dedicated process group with libproc. The watcher
+/// is launched with `process_group(0)` in `process.rs`, so its PID is also the
+/// group ID inherited by its children. This avoids spawning `ps` and parsing a
+/// system-wide process table on every 30-second supervisor tick.
+#[cfg(target_os = "macos")]
+fn sample_process_group_rss_kb(root: u32) -> Option<TreeRssSample> {
+    let root_pid = libc::pid_t::try_from(root).ok()?;
+    if unsafe { libc::getpgid(root_pid) } != root_pid {
+        return None;
+    }
+
+    // proc_listpgrppids returns a PID count (unlike proc_listpids, which
+    // returns bytes). Leave room for process churn between the sizing and fill
+    // calls; the reported count still bounds the initialized prefix.
+    let needed = unsafe { libc::proc_listpgrppids(root_pid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return None;
+    }
+    let capacity = (needed as usize).saturating_add(16);
+    let mut pids = vec![0_i32; capacity];
+    let listed = unsafe {
+        libc::proc_listpgrppids(
+            root_pid,
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    if listed <= 0 {
+        return None;
+    }
+
+    let mut members = Vec::with_capacity((listed as usize).min(pids.len()));
+    for pid in pids.into_iter().take(listed as usize) {
+        if pid <= 0 {
+            continue;
+        }
+        let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+        let task_size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let task_read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTASKINFO,
+                0,
+                task.as_mut_ptr().cast(),
+                task_size,
+            )
+        };
+        if task_read != task_size {
+            continue;
+        }
+        let rss_kb = unsafe { task.assume_init().pti_resident_size / 1024 };
+
+        let mut name = [0_u8; 64];
+        let name_len = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        let kind = if name_len > 0 {
+            let name_end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            let name = String::from_utf8_lossy(&name[..name_end]);
+            classify_watcher_process_kind(&name)
+        } else {
+            WatcherProcessKind::Unknown
+        };
+        members.push(ProcessGroupRssMember {
+            pid: pid as u32,
+            rss_kb,
+            kind,
+        });
+    }
+
+    sum_process_group_rss_kb(&members, root)
+}
+
+/// Best-effort RSS (KB) of the registered watcher. On macOS this uses libproc;
+/// other Unix targets use `ps`, which reports RSS in 1-KB units. Returns `None`
+/// on any failure; diagnostic sampling never changes whether a crash is captured.
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    #[cfg(test)]
+    PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd
@@ -7129,6 +7320,23 @@ fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
         return None;
     }
     parse_ps_rss_kb(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    (read == size).then(|| unsafe { task.assume_init().pti_resident_size / 1024 })
 }
 
 /// Best-effort Windows working-set sample for the app-owned watcher PID. The
@@ -7255,7 +7463,7 @@ fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
 /// `start_daemon` run first) and the interval between checks thereafter.
 const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
-const WATCH_OWNER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const WATCH_OWNER_TERMINATION_GRACE: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 static ORPHAN_TAKEOVER_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
@@ -8759,7 +8967,19 @@ mod tests {
 
     #[test]
     fn test_sigkill_delay_constant() {
-        assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
+        assert_eq!(SIGKILL_DELAY, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn watcher_stop_graces_exceed_runner_shutdown_deadline() {
+        let runner_deadline = Duration::from_millis(7_500);
+        assert!(SIGKILL_DELAY > runner_deadline);
+        assert!(WATCH_OWNER_TERMINATION_GRACE > runner_deadline);
+        assert_eq!(SIGKILL_DELAY, crate::commands::process::SYNC_RUNNER_STOP_GRACE);
+        assert_eq!(
+            WATCH_OWNER_TERMINATION_GRACE,
+            crate::commands::process::SYNC_RUNNER_STOP_GRACE
+        );
     }
 
     // ── Crash-vs-teardown decision (HQ-SYNC-5) ───────────────────────────
@@ -9218,6 +9438,7 @@ mod tests {
         let context = WatcherExitCaptureContext {
             runner_phase: "pull".to_string(),
             runner_phase_elapsed_bucket: "5m_to_30m".to_string(),
+            runner_fatal_class: "disk_full".to_string(),
             ..WatcherExitCaptureContext::default()
         };
 
@@ -9240,6 +9461,64 @@ mod tests {
             recorded_tag(capture, "runner_phase_elapsed_bucket"),
             "5m_to_30m"
         );
+        assert_eq!(recorded_tag(capture, "exit_class"), "disk_full");
+        assert!(
+            capture.message.contains("disk is full"),
+            "known disk-full cause should appear in the report title: {}",
+            capture.message
+        );
+    }
+
+    #[test]
+    fn stronger_crash_evidence_keeps_disk_full_stderr_out_of_the_disk_full_bucket() {
+        for (code, saw_genuine_crash_fatal) in [
+            (Some(21), true),
+            (Some(0xC000_001Du32 as i32), false),
+        ] {
+            let mut effects = RecordingWatcherEffects::default();
+            let context = WatcherExitCaptureContext {
+                runner_fatal_class: "disk_full".to_string(),
+                saw_genuine_crash_fatal,
+                ..WatcherExitCaptureContext::default()
+            };
+
+            handle_watcher_exit_with_effects(
+                &mut effects,
+                code,
+                None,
+                false,
+                false,
+                "/opt/homebrew/bin/npx",
+                Some("unrecognised stderr"),
+                current_termination_host(),
+                &context,
+            );
+
+            let capture = &effects.captures[0];
+            assert_eq!(recorded_tag(capture, "exit_class"), "other");
+            assert!(capture.message.contains("exited unexpectedly"));
+            assert!(!capture.message.contains("because the disk is full"));
+        }
+    }
+
+    #[test]
+    fn unknown_watcher_exit_21_remains_in_the_unexpected_bucket() {
+        let mut effects = RecordingWatcherEffects::default();
+        handle_watcher_exit_with_effects(
+            &mut effects,
+            Some(21),
+            None,
+            false,
+            false,
+            "/opt/homebrew/bin/npx",
+            Some("unrecognised stderr"),
+            current_termination_host(),
+            &WatcherExitCaptureContext::default(),
+        );
+
+        let capture = effects.captures.first().expect("unknown exit is captured");
+        assert_eq!(recorded_tag(capture, "exit_class"), "other");
+        assert!(capture.message.contains("exited unexpectedly"));
     }
 
     #[test]
@@ -15265,7 +15544,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
@@ -15282,6 +15561,42 @@ mod tests {
             sample.tree_largest_member_kb.unwrap_or(0) > 0,
             "a comparable tree sample carries a largest-member RSS"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sample_watcher_rss_scoped_uses_libproc_without_spawning_ps() {
+        use std::os::unix::process::CommandExt;
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut child = ChildGuard(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("start process-group fixture"),
+        );
+        let before = PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed);
+        let sample = sample_watcher_rss_scoped(child.0.id())
+            .expect("the live process group must be sampleable");
+
+        assert!(sample.kb > 0);
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(sample.tree_pid_count.unwrap_or(0) >= 1);
+        assert_eq!(
+            PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed),
+            before,
+            "sampling a live watcher process group must not spawn `ps`"
+        );
+        child.0.kill().expect("stop process-group fixture");
+        child.0.wait().expect("reap process-group fixture");
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared

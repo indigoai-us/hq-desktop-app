@@ -115,7 +115,8 @@ export function loadTranscriptCache(sessionId: string): SetupAgentTurn[] {
 export function saveTranscriptCache(sessionId: string, turns: readonly SetupAgentTurn[]): void {
   try {
     storage()?.setItem(SETUP_AGENT_TRANSCRIPT_KEY, JSON.stringify({ sessionId, turns: [...turns] } satisfies TranscriptCache));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/setup-agent.svelte.ts:118", error);
     // Storage unavailable: the transcript simply is not kept across a relaunch.
   }
 }
@@ -332,7 +333,8 @@ export class SetupAgent {
     if (!api || !sessionId) return;
     try {
       if (await api.attach(sessionId)) this.watch(sessionId);
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/setup-agent.svelte.ts:330", error);
       // The cache already covers it.
     }
   }
