@@ -39,6 +39,9 @@ macro_rules! print {
     ($($arg:tt)*) => { ::hq_desktop_core::best_effort_print!($($arg)*) };
 }
 
+#[cfg(not(feature = "meet-native-webdriver"))]
+mod launchd_task;
+
 #[cfg(feature = "meet-native-webdriver")]
 mod meet_native;
 
@@ -335,6 +338,9 @@ fn main() {
 
 #[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
+    // LaunchAgent work is delegated to the user's node installation while
+    // launchd sees this Indigo-signed, stable app executable as argv[0].
+    launchd_task::run_if_requested();
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
     // the verified NSIS package from outside the install directory.
@@ -796,6 +802,9 @@ fn main() {
             commands::telemetry::emit_desktop_telemetry_if_opted_in,
             commands::telemetry::emit_desktop_operational_telemetry,
             commands::personal::ensure_person_entity,
+            commands::personal::get_hq_anywhere_person_setting,
+            commands::personal::put_hq_anywhere_person_setting,
+            commands::hq_anywhere::set_hq_anywhere_global_install,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,
@@ -1400,6 +1409,11 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             setup_startup_surfaces(app.handle(), first_run)?;
 
+            // A staged updater package is owned by the current process. Clear
+            // persisted deferral markers before the updater can stage a new
+            // package or the first client-health heartbeat can run.
+            commands::client_health::clear_staged_update_signal_at_startup();
+
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the
             // user touches anything sensitive. Server-side source of truth is
@@ -1569,6 +1583,12 @@ fn main() {
             // See `commands::recall_sdk` for the gate definition and the
             // graceful-degradation contract.
             {
+                // This marker is a live-process claim for external updaters,
+                // never a recovery ledger. Remove a predecessor's claim before
+                // the SDK can start so a crash cannot permanently block updates.
+                if let Err(e) = hq_desktop_core::recording_active::cleanup_on_boot() {
+                    util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
+                }
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
@@ -1691,7 +1711,9 @@ fn main() {
                 // Funnel mirror: queue setup_abandoned when quitting before
                 // sign-in/install and give the sender a bounded window.
                 commands::cdp_mirror::on_exit_requested(_app_handle);
-                commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
+                commands::process::terminate_all_for_exit(
+                    commands::process::SYNC_RUNNER_STOP_GRACE,
+                );
             }
 
             if matches!(&event, tauri::RunEvent::Exit) {

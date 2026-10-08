@@ -35,15 +35,45 @@ export interface PostReadyActionEvent {
   };
 }
 
+export const POST_READY_ACTION_DROP_REASONS = [
+  'not_ready',
+  'already_sent',
+  'session_ended',
+  'flag_off',
+  'flag_error',
+  'identity_error',
+  'identity_missing',
+] as const;
+export type PostReadyActionDropReason = (typeof POST_READY_ACTION_DROP_REASONS)[number];
+
+export function postReadyIdentityAdapterValue<T>(
+  result: { ok: true; value: T } | { ok: false },
+): T {
+  if (!result.ok) throw new Error('Post-ready identity adapter lookup failed');
+  return result.value;
+}
+
+export interface PostReadyActionDroppedEvent {
+  eventName: 'desktop_post_ready_action_dropped';
+  sessionId?: string;
+  properties: {
+    reason: PostReadyActionDropReason;
+    action: PostReadyAction;
+  };
+}
+
+type PostReadyTelemetryEvent = PostReadyActionEvent | PostReadyActionDroppedEvent;
+
 export interface PostReadyActionTelemetryOptions {
   storage?: PostReadyActionStorage | null;
   isFlagEnabled: () => Promise<boolean>;
+  isDropReasonFlagEnabled: () => Promise<boolean>;
   getIdentity: (
     scope?: { companyUid?: string; companySlug?: string },
   ) => Promise<{ personUid: string; companyUid: string | null } | null>;
   appVersion: string;
   os: 'macos' | 'windows' | 'linux';
-  emit?: (event: PostReadyActionEvent) => Promise<void>;
+  emit?: (event: PostReadyTelemetryEvent) => Promise<void>;
   newSessionId?: () => string;
 }
 
@@ -53,6 +83,7 @@ interface StoredState {
   sessionId: string | null;
   sent: PostReadyAction[];
   ended: boolean;
+  dropReasonSent: boolean;
 }
 
 export interface PostReadyActionTelemetry {
@@ -96,15 +127,62 @@ export function createPostReadyActionTelemetry(
 ): PostReadyActionTelemetry {
   const storage = options.storage === undefined ? safeStorage() : options.storage;
   const emit = options.emit ?? ((event) =>
-    emitDesktopOperationalTelemetry({
-      eventName: event.eventName,
-      sessionId: event.sessionId,
-      properties: { ...event.properties, idempotencyKey: event.idempotencyKey },
-    })
+    event.eventName === 'desktop_post_ready_action_dropped'
+      ? emitDesktopOperationalTelemetry({
+          eventName: event.eventName,
+          ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+          properties: event.properties,
+        })
+      : emitDesktopOperationalTelemetry({
+          eventName: event.eventName,
+          sessionId: event.sessionId,
+          properties: { ...event.properties, idempotencyKey: event.idempotencyKey },
+        })
   );
   const newSessionId = options.newSessionId ?? createUuid;
   let state = loadState(storage);
+  let dropReasonSentInMemory = state.dropReasonSent;
   let operation = Promise.resolve(false);
+  let dropReasonPending: Promise<void> | null = null;
+
+  async function reportDropReason(action: PostReadyAction, reason: PostReadyActionDropReason): Promise<void> {
+    if (state.dropReasonSent) dropReasonSentInMemory = true;
+    if (dropReasonSentInMemory) return;
+    if (dropReasonPending) {
+      await dropReasonPending;
+      return;
+    }
+    dropReasonPending = (async () => {
+      let enabled = false;
+      try {
+        enabled = await options.isDropReasonFlagEnabled();
+      } catch (err) {
+        console.warn('[post-ready telemetry] drop-reason flag lookup failed:', err);
+        return;
+      }
+      if (!enabled) return;
+      state = loadState(storage);
+      if (state.dropReasonSent) dropReasonSentInMemory = true;
+      if (dropReasonSentInMemory) return;
+      state = { ...state, dropReasonSent: true };
+      dropReasonSentInMemory = true;
+      saveState(storage, state);
+      try {
+        await emit({
+          eventName: 'desktop_post_ready_action_dropped',
+          ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+          properties: { reason, action },
+        });
+      } catch (err) {
+        console.warn('[post-ready telemetry] drop-reason event delivery failed:', err);
+      }
+    })();
+    try {
+      await dropReasonPending;
+    } finally {
+      dropReasonPending = null;
+    }
+  }
 
   function beginFirstSessionIfReady(allowClosedSession = false): boolean {
     if (!state.ready || (state.ended && !allowClosedSession)) return false;
@@ -122,13 +200,22 @@ export function createPostReadyActionTelemetry(
     // The app-shell adapter is created before the welcome flow reaches `ready`.
     // Refresh the persisted marker when a later UI action arrives.
     state = loadState(storage);
-    if (
-      !POST_READY_ACTIONS.includes(action) ||
-      !beginFirstSessionIfReady(action === 'close_window')
-    ) {
+    if (!POST_READY_ACTIONS.includes(action)) {
       return false;
     }
-    if (state.sent.includes(action)) return false;
+    if (!state.ready) {
+      await reportDropReason(action, 'not_ready');
+      return false;
+    }
+    if (state.sent.includes(action)) {
+      await reportDropReason(action, 'already_sent');
+      return false;
+    }
+    if (state.ended && action !== 'close_window') {
+      await reportDropReason(action, 'session_ended');
+      return false;
+    }
+    beginFirstSessionIfReady(action === 'close_window');
     if (action === 'close_window') {
       // End the measured first session even if telemetry is disabled or offline.
       state = { ...state, ended: true };
@@ -136,11 +223,12 @@ export function createPostReadyActionTelemetry(
     }
 
     const pending = operation.then(async () => {
-      if (
-        state.sent.includes(action) ||
-        (state.ended && action !== 'close_window') ||
-        !beginFirstSessionIfReady(action === 'close_window')
-      ) {
+      if (state.sent.includes(action)) {
+        await reportDropReason(action, 'already_sent');
+        return false;
+      }
+      if (state.ended && action !== 'close_window') {
+        await reportDropReason(action, 'session_ended');
         return false;
       }
       let enabled = false;
@@ -148,20 +236,26 @@ export function createPostReadyActionTelemetry(
         enabled = await options.isFlagEnabled();
       } catch (err) {
         console.warn('[post-ready telemetry] flag lookup failed:', err);
+        await reportDropReason(action, 'flag_error');
         return false;
       }
-      if (!enabled) return false;
+      if (!enabled) {
+        await reportDropReason(action, 'flag_off');
+        return false;
+      }
 
       let identity: Awaited<ReturnType<typeof options.getIdentity>>;
       try {
         identity = await options.getIdentity(scope);
       } catch (err) {
         console.warn('[post-ready telemetry] identity lookup failed:', err);
+        await reportDropReason(action, 'identity_error');
         return false;
       }
       const personUid = identity?.personUid.trim() ?? '';
       const companyUid = identity?.companyUid?.trim() ?? '';
       if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) {
+        await reportDropReason(action, 'identity_missing');
         return false;
       }
 
@@ -213,29 +307,47 @@ export function createPostReadyActionTelemetry(
     scope: { companyUid: string },
   ): Promise<boolean> {
     state = loadState(storage);
-    if (!['shown', 'clicked', 'dismissed'].includes(value) || !beginFirstSessionIfReady(true)) return false;
+    if (!['shown', 'clicked', 'dismissed'].includes(value)) return false;
+    if (!beginFirstSessionIfReady(true)) {
+      await reportDropReason('start_sync', 'not_ready');
+      return false;
+    }
     const pending = operation.then(async () => {
-      if (!beginFirstSessionIfReady(true)) return false;
+      if (!beginFirstSessionIfReady(true)) {
+        await reportDropReason('start_sync', 'not_ready');
+        return false;
+      }
       let enabled = false;
       try {
         enabled = await options.isFlagEnabled();
       } catch (err) {
         console.warn('[post-ready telemetry] flag lookup failed:', err);
+        await reportDropReason('start_sync', 'flag_error');
         return false;
       }
-      if (!enabled) return false;
+      if (!enabled) {
+        await reportDropReason('start_sync', 'flag_off');
+        return false;
+      }
       let identity: Awaited<ReturnType<typeof options.getIdentity>>;
       try {
         identity = await options.getIdentity(scope);
       } catch (err) {
         console.warn('[post-ready telemetry] identity lookup failed:', err);
+        await reportDropReason('start_sync', 'identity_error');
         return false;
       }
       const personUid = identity?.personUid.trim() ?? '';
       const companyUid = identity?.companyUid?.trim() ?? '';
-      if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || companyUid !== scope.companyUid || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) return false;
+      if (!/^prs_[A-Za-z0-9_-]+$/.test(personUid) || companyUid !== scope.companyUid || !/^cmp_[A-Za-z0-9_-]+$/.test(companyUid)) {
+        await reportDropReason('start_sync', 'identity_missing');
+        return false;
+      }
       const sessionId = state.sessionId;
-      if (!sessionId) return false;
+      if (!sessionId) {
+        await reportDropReason('start_sync', 'not_ready');
+        return false;
+      }
       const utcDay = new Date().toISOString().slice(0, 10);
       try {
         await emit({
@@ -273,7 +385,14 @@ export function isPostReadyAction(value: unknown): value is PostReadyAction {
 }
 
 function loadState(storage: PostReadyActionStorage | null): StoredState {
-  const empty: StoredState = { version: 1, ready: false, sessionId: null, sent: [], ended: false };
+  const empty: StoredState = {
+    version: 1,
+    ready: false,
+    sessionId: null,
+    sent: [],
+    ended: false,
+    dropReasonSent: false,
+  };
   if (!storage) return empty;
   try {
     const raw = storage.getItem(STORAGE_KEY);
@@ -286,6 +405,7 @@ function loadState(storage: PostReadyActionStorage | null): StoredState {
       sessionId: typeof parsed.sessionId === 'string' ? parsed.sessionId : null,
       sent: Array.isArray(parsed.sent) ? parsed.sent.filter(isPostReadyAction) : [],
       ended: parsed.ended === true,
+      dropReasonSent: parsed.dropReasonSent === true,
     };
   } catch (err) {
     console.warn('[post-ready telemetry] local state read failed:', err);

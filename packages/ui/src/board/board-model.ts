@@ -501,7 +501,8 @@ function messageHaystack(msg: BoardActivityMessageInput): string {
   if (msg.systemEvent) {
     try {
       parts.push(JSON.stringify(msg.systemEvent));
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/board/board-model.ts:504", error);
       // ignore non-serializable
     }
   }

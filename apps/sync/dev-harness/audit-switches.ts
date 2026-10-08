@@ -14,6 +14,11 @@
  *   ?toast=update|info|error|progress|stack       raise toasts through the real paths
  *   ?gates=on                                    flag registry answers true for every key
  *   ?atlas=populated                             company Atlas reads a synced folder
+ *   ?newbot=priced|included                      New bot opens its cloud takeover: every
+ *       company has cloud bots, and the plan check answers with a price
+ *       (priced) or as included in the company's plan (included)
+ *   ?plan=slow                                   with ?newbot=, the plan check answers
+ *       after ?loadingMs (default 2500), to see "Checking plan..."
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
@@ -55,6 +60,37 @@ export function failsInPartial(cmd: string): boolean {
 
 export function gatesOn(search?: string | null): boolean {
   return params(search).get('gates') === 'on';
+}
+
+export type NewBotSwitch = 'priced' | 'included';
+
+export function newBotSwitch(search?: string | null): NewBotSwitch | null {
+  const value = params(search).get('newbot');
+  return value === 'priced' || value === 'included' ? value : null;
+}
+
+/** The plan check New bot makes for a company, as the server answers it. */
+function newBotProvisionOptions(kind: NewBotSwitch): unknown {
+  const included = kind === 'included';
+  const option = (key: string, productName: string, instanceType: string, cents: number, isDefault: boolean) => ({
+    key,
+    productName,
+    instanceType,
+    listCents: cents,
+    default: isDefault,
+    selectable: true,
+    netMonthlyCents: included && isDefault ? 0 : cents,
+    deltaCents: null,
+    unavailableReason: null,
+    notBilled: included && isDefault,
+    lanes: isDefault ? 1 : 2,
+    workers: isDefault ? 1 : 2,
+  });
+  return {
+    defaultInstanceType: 't4g.medium',
+    catalogVersion: 'harness',
+    options: [option('basic', 'Basic', 't4g.medium', 5000, true), option('power', 'Power', 't4g.large', 9000, false)],
+  };
 }
 
 export function atlasPopulated(search?: string | null): boolean {
@@ -114,6 +150,20 @@ export function switchedHandler(
       return { value: { accountId: null, generation: 1, status: auth, reason: null } };
     }
     if (cmd === 'get_auth_state') return { value: { authenticated: false } };
+  }
+  const newBot = newBotSwitch(search);
+  if (newBot && cmd === 'hq_pro_fetch') {
+    const url = typeof args?.url === 'string' ? args.url : '';
+    if (url.startsWith('/v1/flags/resolve?companyUid=')) {
+      const flags = { 'agents.desktop-agent-creation': true };
+      return { value: { status: 200, body: JSON.stringify({ version: 1, flags }) } };
+    }
+    if (url.startsWith('/v1/agents/provision-options')) {
+      const answer = { status: 200, body: JSON.stringify(newBotProvisionOptions(newBot)) };
+      if (params(search).get('plan') !== 'slow') return { value: answer };
+      const ms = Number(params(search).get('loadingMs')) || 2500;
+      return { value: new Promise((resolve) => setTimeout(() => resolve(answer), ms)) };
+    }
   }
   if (gatesOn(search) && cmd === 'hq_pro_fetch') {
     const url = typeof args?.url === 'string' ? args.url : '';

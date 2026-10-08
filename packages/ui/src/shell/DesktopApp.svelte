@@ -82,7 +82,6 @@
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
-  import GoalsRailHost from "./GoalsRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -490,6 +489,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import {
     botSetupMatchesRow,
+    botSetupAsksAccess,
     botSetupUidFromCardId,
     botSetupWires,
     type BotSetupEntry,
@@ -580,7 +580,11 @@
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
-  import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
+  import {
+    applyAuthoritativePresence,
+    applyChannelRoster,
+    parseChannelMembers,
+  } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
     projectIdForRow,
@@ -2769,6 +2773,7 @@
       ...botSetupByUid,
       [agentUid]: {
         agentUid,
+        kind: "local",
         name: label,
         email: null,
         companySlug: input.companies?.[0] ?? null,
@@ -6691,6 +6696,17 @@
    * Null when the app does not know the company: such a link then goes to the
    * web's front page, never to a page named by the company's uid.
    */
+  /**
+   * The synced folder of a company on this computer, by uid, for a recorded
+   * meeting's document under companies/<slug>/sources/meetings. Null when the
+   * company is not synced here.
+   */
+  function meetingCompanyFolderSlug(companyUid: string): string | null {
+    const uid = companyUid.trim();
+    if (!uid) return null;
+    const row = (companies ?? []).find((w) => w.kind === "company" && (w.cloudUid ?? "").trim() === uid);
+    return row && row.state !== "cloud-only" ? row.slug : null;
+  }
   function companySlugForUid(companyUid: string | null | undefined): string | null {
     const uid = (companyUid ?? "").trim();
     if (!uid) return null;
@@ -8100,20 +8116,12 @@
     const withPresence = (uid: string): boolean =>
       Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
     return {
-      ...withRoster,
+      ...applyAuthoritativePresence(withRoster, withPresence),
       activeSessions:
         fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
       liveAgents: fromLive?.liveAgents?.length
         ? fromLive.liveAgents
         : withRoster.liveAgents,
-      members: withRoster.members.map((m) => ({
-        ...m,
-        online: withPresence(m.personUid),
-      })),
-      agents: withRoster.agents.map((a) => ({
-        ...a,
-        online: withPresence(a.personUid),
-      })),
     };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
@@ -8792,6 +8800,7 @@
           ...botSetupByUid,
           [agentUid]: {
             agentUid,
+            kind: "cloud",
             name: draft.name.trim() || "New bot",
             email: null,
             companySlug: companies?.find((c) => c.cloudUid === companyUid)?.slug ?? null,
@@ -9085,7 +9094,9 @@
     const setupUid = botSetupUidFromCardId(event.cardId);
     if (setupUid) {
       const entry = botSetupByUid[setupUid];
-      if (!entry) return;
+      // A local bot never shows the access card, so a stray action from an
+      // older render changes nothing.
+      if (!entry || !botSetupAsksAccess(entry)) return;
       patchBotSetup(setupUid, {
         access:
           event.actionId === "deny"
@@ -11675,14 +11686,6 @@
     }
   });
 
-  /**
-   * OWNER-R8: viewers and guests see the objective pane read-only. A role the
-   * roster has not answered yet adds no restriction.
-   */
-  function canEditGoals(role: string | null | undefined): boolean {
-    return !/^(viewer|guest|read[-_ ]?only)$/i.test((role ?? "").trim());
-  }
-
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
     atlasFilterActor = null;
@@ -12500,6 +12503,7 @@
     accountId={tenantAccountId}
     storage={tenantStorage}
     sessionGeneration={tenantGeneration}
+    companySlugForUid={meetingCompanyFolderSlug}
     onback={() => {
       void leaveCurrentDestination();
     }}
@@ -13001,7 +13005,6 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
-          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}
@@ -13178,15 +13181,6 @@
             companyUid={companyPaneCompany.uid ?? null}
             {avatarByUid}
             onsignin={onsignin ? startReauth : undefined}
-          />
-        {:else if railPlaceholder?.id === "goals" && companyPaneCompany}
-          <GoalsRailHost
-            {adapter}
-            slug={companyPaneCompany.slug ?? ""}
-            canEdit={canEditGoals(companyPaneRole)}
-            onopenproject={(project) => {
-              void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
-            }}
           />
         {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
           <LazyDoor
@@ -14206,6 +14200,7 @@
                   composerLocked={composerLocked}
                   {onopenurl}
                   channelId={selectedRow.channelId}
+                  peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
                   {hqFolderPath}
                   ontogglereaction={persistReaction}
@@ -14440,6 +14435,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}

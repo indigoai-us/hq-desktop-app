@@ -181,12 +181,44 @@ describe("subscribeRosterRefreshEvents", () => {
   });
 
   it("survives a listen seam that rejects", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = new Error("Tauri event listener is unavailable");
     const listen = vi.fn(async () => {
-      throw new Error("Tauri event listener is unavailable");
+      throw error;
     });
     const teardown = subscribeRosterRefreshEvents(listen, vi.fn());
     await Promise.resolve();
+    await Promise.resolve();
+    try {
+      expect(warning).toHaveBeenCalledTimes(ROSTER_REFRESH_EVENTS.length);
+      expect(warning).toHaveBeenCalledWith(
+        "[hq-ui-roster-refresh] event listener registration failed",
+        error,
+      );
+      expect(() => teardown()).not.toThrow();
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it("logs listener teardown failures and keeps teardown non-throwing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const cleanupError = new Error("native listener cleanup failed");
+    const listen = vi.fn(async () => () => {
+      throw cleanupError;
+    });
+    const teardown = subscribeRosterRefreshEvents(listen, vi.fn());
+    await Promise.resolve();
+
     expect(() => teardown()).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(warn).toHaveBeenCalledTimes(ROSTER_REFRESH_EVENTS.length);
+    expect(warn).toHaveBeenCalledWith(
+      "[hq-ui-roster-refresh] event listener cleanup failed",
+      { name: "Error", message: "Roster event listener cleanup failed" },
+    );
   });
 });
 

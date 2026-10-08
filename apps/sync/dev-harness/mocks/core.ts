@@ -31,6 +31,8 @@ const settings = {
   telemetryEnabled: true,
 };
 
+let harnessHqAnywhereSetting = false;
+
 function harnessPersona(): ShellPersona | null {
   if (typeof window === 'undefined') return null;
   return resolveHarnessPersona(window.location.search);
@@ -1171,6 +1173,11 @@ This final paragraph verifies spacing after a thematic break.
     }
     return { ...settings };
   },
+  get_hq_anywhere_person_setting: () => harnessHqAnywhereSetting,
+  put_hq_anywhere_person_setting: (args) => {
+    harnessHqAnywhereSetting = args?.value === true;
+    return null;
+  },
   save_settings: (args) => {
     const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
     Object.assign(settings, prefs);
@@ -1820,6 +1827,15 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/flags/resolve') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        version: 1,
+        flags: { 'hq-anywhere-runtime': true },
+      }),
+    };
+  }
   if (url === '/v1/notify/prefs') {
     if (method === 'PUT' && body && typeof body === 'object') Object.assign(harnessNotifyPrefs, body);
     const until = harnessNotifyPrefs.pausedUntil;
