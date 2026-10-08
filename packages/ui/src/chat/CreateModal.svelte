@@ -2237,9 +2237,7 @@
         data-testid="new-bot-takeover-cancel"
         disabled={entryBusy !== null}
         onclick={closeAll}
-      >
-        Cancel
-      </button>
+      ><RailIcon name="x" />Cancel</button>
     </header>
     <main class="new-bot-takeover-stage">
       <div

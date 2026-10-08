@@ -227,6 +227,10 @@
   line-height: 1.5;
 }
 
+.new-bot-plan-line {
+  min-height: 1.5em;
+}
+
 .new-bot-create-label {
   color: rgba(255, 255, 255, 0.78);
   font-size: 12px;
@@ -243,7 +247,7 @@
 .new-bot-create-input {
   min-width: 0;
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 10px;
   padding: 10px 12px;
   background: rgba(9, 9, 11, 0.5);
   color: var(--new-bot-ink);
@@ -286,7 +290,7 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 12px;
   padding: 9px 10px;
   background: rgba(9, 9, 11, 0.36);
   color: var(--new-bot-ink);
@@ -347,7 +351,7 @@
 
 .new-bot-create-submit {
   border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 0;
+  border-radius: 12px;
   padding: 11px 14px;
   background: rgba(255, 255, 255, 0.92);
   color: #111113;
@@ -562,8 +566,10 @@
   overflow: hidden;
 }
 
-.new-bot-takeover-card:has([data-testid="new-bot-step-3"]) {
-  width: min(640px, 100%);
+/* Every cloud step is as wide as the Where card, so the card does not jump
+   between steps. */
+.new-bot-takeover-card:has(.new-bot-create) {
+  width: min(560px, 100%);
 }
 
 .new-bot-create {
@@ -644,9 +650,12 @@
   outline-offset: 2px;
 }
 
+/* A gradient border that follows the rounded corners (border-image cannot). */
 .new-bot-company.selected {
-  border-image: linear-gradient(90deg, #ff809f, #ffb580) 1;
-  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  background:
+    linear-gradient(#26232a, #26232a) padding-box,
+    linear-gradient(90deg, #ff809f, #ffb580) border-box;
 }
 
 .new-bot-company-monogram {
@@ -655,6 +664,7 @@
   place-items: center;
   width: 26px;
   height: 26px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.09);
   color: rgba(255, 255, 255, 0.82);
   font-size: 12px;
@@ -928,7 +938,7 @@
   gap: 12px;
   width: min(400px, 100%);
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 16px;
   padding: 24px;
   background: #111113;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
@@ -960,7 +970,7 @@
 
 .new-bot-confirm-remove {
   border: 1px solid #fecaca;
-  border-radius: 0;
+  border-radius: 12px;
   padding: 10px 13px;
   background: transparent;
   color: #fecaca;
@@ -1118,10 +1128,17 @@
 }
 
 /* The local flow on the cloud flow's step screens: the card keeps the cloud
-   card's width, and the bot-step pieces (rows, pills, fields) take the
-   takeover's square rows and quiet ink. */
+   card's width and padding, and the bot-step pieces (rows, pills, fields)
+   take the takeover's rounded rows and quiet ink. */
 .new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps {
   width: min(560px, 100%);
+  --new-bot-card-pad: clamp(30px, 7vw, 42px);
+}
+
+@media (max-height: 780px) {
+  .new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps {
+    --new-bot-card-pad: 26px;
+  }
 }
 
 .new-bot-identity {
@@ -1187,7 +1204,7 @@
 .new-bot-takeover-card--steps .cb-advanced,
 .new-bot-takeover-card--steps .cb-library {
   border-color: var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 10px;
 }
 
 .new-bot-takeover-card--steps .cb-card {
@@ -1395,7 +1412,7 @@
   justify-content: center;
   gap: 6px;
   border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 0;
+  border-radius: 12px;
   padding: 11px 14px;
   background: transparent;
   color: var(--new-bot-ink);
