@@ -68,6 +68,7 @@
     recordPlanLimitPauses,
     resolvePlanLimitCompanyUids,
     savePlanLimitNotifications,
+    statusPushFilesPause,
     type PlanLimitNotificationRow,
     type StorageLike,
   } from './plan-limit-notifications';
@@ -574,15 +575,6 @@
    * left to retry) and `false` when the fetch failed for the session that asked.
    */
   let workspaceRequest = 0;
-  const PLAN_LIMIT_WARNING_PCT = 80;
-  const PLAN_LIMIT_STATUS_RESOURCES = [
-    'users',
-    'secrets',
-    'deployments',
-    'storageBytes',
-    'integrations',
-    'agents',
-  ] as const;
 
   function removeStatusPushNotice(company: string): void {
     const existing = planLimitNotices.filter(
@@ -646,35 +638,17 @@
             { method: 'GET' },
           );
           if (!response.ok) throw new Error(`usage-limits returned HTTP ${response.status}`);
-          const status = (await response.json()) as Record<string, unknown>;
+          const status: unknown = await response.json();
           if (!isCurrent()) return;
-          const plan = status.planLimits && typeof status.planLimits === 'object'
-            ? (status.planLimits as Record<string, unknown>)
-            : status;
-          if (
-            plan.plan !== 'free' ||
-            plan.cohort !== 'enforceable' ||
-            plan.planLimitsExempt === true
-          ) {
+          // Only hq-pro's armed `files.create` stop means new files are paused.
+          // A usage row at a warning level, or over on a non-file cap, is not
+          // a pause (statusPushFilesPause).
+          const pause = statusPushFilesPause(status);
+          if (!pause.paused) {
             removeStatusPushNotice(workspace.slug);
             continue;
           }
-          const hasWarning = PLAN_LIMIT_STATUS_RESOURCES.some((resource) => {
-            if (resource === 'agents' && plan.agentsGrandfathered === true) return false;
-            const value = plan[resource];
-            if (!value || typeof value !== 'object') return false;
-            const row = value as Record<string, unknown>;
-            return row.over === true || (
-              typeof row.pctUsed === 'number' &&
-              Number.isFinite(row.pctUsed) &&
-              row.pctUsed >= PLAN_LIMIT_WARNING_PCT
-            );
-          });
-          if (!hasWarning) {
-            removeStatusPushNotice(workspace.slug);
-            continue;
-          }
-          const upgradeUrl = planLimitUpgradeLink(plan.upgradeUrl ?? status.upgradeUrl);
+          const upgradeUrl = planLimitUpgradeLink(pause.upgradeUrl);
           applyStatusPlanLimitNotice(workspace.slug, upgradeUrl);
         } catch (error) {
           console.error(`Could not refresh plan-limit status for ${workspace.slug}.`, error);

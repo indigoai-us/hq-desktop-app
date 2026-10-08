@@ -10,6 +10,7 @@ import {
   recordPlanLimitPauses,
   resolvePlanLimitCompanyUids,
   savePlanLimitNotifications,
+  statusPushFilesPause,
 } from './plan-limit-notifications';
 
 const URL_A = 'https://hq.computer/companies/acme/billing?entrySurface=desktop_limit';
@@ -111,5 +112,61 @@ describe('plan-limit notifications', () => {
     expect(loadPlanLimitNotifications(storage, 'acct_c')).toEqual([]);
     map.set('hq.desktop.planLimitNotifications.v1:acct_d', JSON.stringify([{ id: 'dm:x' }]));
     expect(loadPlanLimitNotifications(storage, 'acct_d')).toEqual([]);
+  });
+});
+
+describe('statusPushFilesPause (usage-limits body -> "files are paused" row)', () => {
+  const free = {
+    plan: 'free',
+    cohort: 'enforceable',
+    upgradeUrl: URL_A,
+    users: { used: 1, limit: 5, pctUsed: 20, over: false },
+    storageBytes: { used: 5_000_000, limit: 10_737_418_240, pctUsed: 0.05, over: false },
+  };
+
+  it('does not pause on a zero-capacity resource read as 100% (2026-10-07 fan-out)', () => {
+    // hq-pro read free agents 0/0 as pctUsed 100 and the shell announced
+    // "New files are paused" for every free company a person belonged to.
+    const body = { ...free, agents: { used: 0, limit: 0, pctUsed: 100, over: false } };
+    expect(statusPushFilesPause(body)).toEqual({ paused: false });
+  });
+
+  it('does not pause on a warning level or an over row on a non-file cap', () => {
+    expect(
+      statusPushFilesPause({ ...free, users: { used: 4, limit: 5, pctUsed: 80, over: false } }),
+    ).toEqual({ paused: false });
+    expect(
+      statusPushFilesPause({ ...free, secrets: { used: 11, limit: 10, pctUsed: 110, over: true } }),
+    ).toEqual({ paused: false });
+    expect(
+      statusPushFilesPause({ ...free, armedStops: ['secrets.create', 'members.create'] }),
+    ).toEqual({ paused: false });
+  });
+
+  it('pauses only when hq-pro arms the files.create stop, carrying its upgrade link', () => {
+    expect(statusPushFilesPause({ ...free, armedStops: ['files.create'] })).toEqual({
+      paused: true,
+      upgradeUrl: URL_A,
+    });
+    expect(
+      statusPushFilesPause({ planLimits: { ...free, armedStops: ['secrets.create', 'files.create'] } }),
+    ).toEqual({ paused: true, upgradeUrl: URL_A });
+    expect(statusPushFilesPause({ ...free, upgradeUrl: undefined, armedStops: ['files.create'] })).toEqual({
+      paused: true,
+      upgradeUrl: undefined,
+    });
+  });
+
+  it('never pauses a paid, grandfathered or exempt company even with an armed stop', () => {
+    const armedStops = ['files.create'];
+    expect(statusPushFilesPause({ ...free, plan: 'team', armedStops })).toEqual({ paused: false });
+    expect(statusPushFilesPause({ ...free, cohort: 'grandfathered', armedStops })).toEqual({ paused: false });
+    expect(statusPushFilesPause({ ...free, planLimitsExempt: true, armedStops })).toEqual({ paused: false });
+  });
+
+  it('never pauses on a malformed body', () => {
+    expect(statusPushFilesPause(null)).toEqual({ paused: false });
+    expect(statusPushFilesPause('paused')).toEqual({ paused: false });
+    expect(statusPushFilesPause({ armedStops: 'files.create' })).toEqual({ paused: false });
   });
 });
