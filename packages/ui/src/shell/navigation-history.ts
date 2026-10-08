@@ -744,6 +744,7 @@ export function destinationFromEmbeddedTarget(
         kind: "channel",
         channelId: target.channelId,
         replyRootEventId: target.replyRootEventId ?? null,
+        messageId: trimId(target.messageId),
       };
     case "dm":
       return {

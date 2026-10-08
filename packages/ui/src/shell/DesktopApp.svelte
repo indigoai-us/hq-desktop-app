@@ -581,7 +581,11 @@
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
-  import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
+  import {
+    applyAuthoritativePresence,
+    applyChannelRoster,
+    parseChannelMembers,
+  } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
     projectIdForRow,
@@ -8102,20 +8106,12 @@
     const withPresence = (uid: string): boolean =>
       Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
     return {
-      ...withRoster,
+      ...applyAuthoritativePresence(withRoster, withPresence),
       activeSessions:
         fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
       liveAgents: fromLive?.liveAgents?.length
         ? fromLive.liveAgents
         : withRoster.liveAgents,
-      members: withRoster.members.map((m) => ({
-        ...m,
-        online: withPresence(m.personUid),
-      })),
-      agents: withRoster.agents.map((a) => ({
-        ...a,
-        online: withPresence(a.personUid),
-      })),
     };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
@@ -14210,6 +14206,7 @@
                   composerLocked={composerLocked}
                   {onopenurl}
                   channelId={selectedRow.channelId}
+                  peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
                   {hqFolderPath}
                   ontogglereaction={persistReaction}
@@ -14444,6 +14441,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}

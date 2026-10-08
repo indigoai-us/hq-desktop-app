@@ -20,6 +20,27 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+export const CHANNEL_DIRECTORY_WAKE_EVENT_TYPE = "channel.directory.changed";
+
+/** Ids-only directory doorbell: the sidebar refreshes its own directory feed. */
+export function isDirectoryChangedWake(raw: unknown): boolean {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return false;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  return (
+    (parsed as { eventType?: unknown }).eventType ===
+    CHANNEL_DIRECTORY_WAKE_EVENT_TYPE
+  );
+}
+
 /** True when the payload already names the resource to fetch — skip topic routes. */
 export function isTargetedMeshWake(raw: string | undefined): boolean {
   if (!raw) return false;

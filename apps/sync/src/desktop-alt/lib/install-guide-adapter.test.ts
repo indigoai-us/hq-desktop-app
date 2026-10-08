@@ -141,11 +141,13 @@ describe("classifyInstallFailure — plain wording for each known signal", () =>
   });
 
   it("routes disk-full signals to a plain-language sentence", () => {
-    const plain = classifyInstallFailure(
+    for (const raw of [
       "ENOSPC: no space left on device",
-      "Claude Code",
-    )!;
-    expect(plain.toLowerCase()).toContain("disk space");
+      "HQ could not install this tool because the managed Node/npm disk has no space available. Keep at least 1 GiB free.",
+    ]) {
+      const plain = classifyInstallFailure(raw, "Claude Code")!;
+      expect(plain.toLowerCase()).toContain("disk space");
+    }
   });
 
   it("returns null for a signal it does not know, so the caller falls back to the generic sentence", () => {
