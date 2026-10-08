@@ -171,6 +171,29 @@ closed_wire_enum!(
 );
 
 closed_wire_enum!(
+    /// Outcome of the most recent desktop updater check.
+    ClientHealthUpdateCheckOutcome {
+        NoUpdate => "no_update",
+        UpdateAvailable => "update_available",
+        CheckError => "check_error",
+        Disabled => "disabled",
+        Deferred => "deferred",
+    }
+);
+
+closed_wire_enum!(
+    /// Content-free error class for the most recent desktop updater check.
+    ClientHealthUpdaterErrorClass {
+        Network => "network",
+        Signature => "signature",
+        ManifestParse => "manifest_parse",
+        HttpStatus => "http_status",
+        Timeout => "timeout",
+        Other => "other",
+    }
+);
+
+closed_wire_enum!(
     /// CPU architecture of the installation.
     ClientHealthArch {
         X64 => "x64",
@@ -451,6 +474,12 @@ pub struct ClientHealthHeartbeat {
     /// updater exists but has not run. The two are distinct on the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updater_state: Option<ClientHealthUpdaterState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update_check_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_check_outcome: Option<ClientHealthUpdateCheckOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_check_error_class: Option<ClientHealthUpdaterErrorClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_defer_reason: Option<ClientHealthUpdateDeferReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -918,6 +947,9 @@ pub fn parse_client_health_heartbeat(
         )?,
         conflict_count: None,
         updater_state: None,
+        last_update_check_at: None,
+        update_check_outcome: None,
+        update_check_error_class: None,
         update_defer_reason: None,
         install_outcome: None,
         failure_reason: None,
@@ -942,6 +974,21 @@ pub fn parse_client_health_heartbeat(
     if let Some(entry) = raw.get("updaterState") {
         heartbeat.updater_state = Some(ClientHealthUpdaterState::parse_field(
             "updaterState",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("lastUpdateCheckAt") {
+        heartbeat.last_update_check_at = Some(assert_iso_utc("lastUpdateCheckAt", Some(entry))?);
+    }
+    if let Some(entry) = raw.get("updateCheckOutcome") {
+        heartbeat.update_check_outcome = Some(ClientHealthUpdateCheckOutcome::parse_field(
+            "updateCheckOutcome",
+            Some(entry),
+        )?);
+    }
+    if let Some(entry) = raw.get("updateCheckErrorClass") {
+        heartbeat.update_check_error_class = Some(ClientHealthUpdaterErrorClass::parse_field(
+            "updateCheckErrorClass",
             Some(entry),
         )?);
     }
@@ -1609,6 +1656,22 @@ mod tests {
         assert_eq!(round_trip["updaterState"], json!("update_ready"));
         assert_eq!(round_trip["updateDeferReason"], json!("busy_sync"));
         assert_eq!(round_trip["installOutcome"], json!("staged"));
+    }
+
+    #[test]
+    fn updater_check_timestamp_outcome_and_error_class_round_trip() {
+        let mut value: Value = serde_json::from_str(HEARTBEAT_HEALTHY).unwrap();
+        value["updaterState"] = json!("up_to_date");
+        value["lastUpdateCheckAt"] = json!("2026-10-08T18:00:00.000Z");
+        value["updateCheckOutcome"] = json!("check_error");
+        value["updateCheckErrorClass"] = json!("network");
+
+        let parsed = parse_client_health_heartbeat(&value).expect("updater check data parses");
+        let round_trip = serde_json::to_value(parsed).expect("heartbeat serializes");
+        assert_eq!(round_trip["updaterState"], json!("up_to_date"));
+        assert_eq!(round_trip["lastUpdateCheckAt"], value["lastUpdateCheckAt"]);
+        assert_eq!(round_trip["updateCheckOutcome"], json!("check_error"));
+        assert_eq!(round_trip["updateCheckErrorClass"], json!("network"));
     }
 
     #[test]

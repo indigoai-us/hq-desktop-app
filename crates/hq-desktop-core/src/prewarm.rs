@@ -54,7 +54,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -140,6 +140,11 @@ impl PrewarmCoordinator {
 
 static PREWARM_COORDINATOR: OnceLock<PrewarmCoordinator> = OnceLock::new();
 static AUTOMATIC_UPDATE_DEFERRALS: AtomicU64 = AtomicU64::new(0);
+static STARTUP_RUNNER_REFRESH_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn claim_startup_runner_refresh(started: &AtomicBool) -> bool {
+    !started.swap(true, Ordering::AcqRel)
+}
 
 fn process_prewarm_coordinator() -> &'static PrewarmCoordinator {
     PREWARM_COORDINATOR.get_or_init(PrewarmCoordinator::new)
@@ -303,25 +308,158 @@ pub fn materialize_hq_cloud_cache() -> Result<(), String> {
     with_materialization_lock(run_materialization_payload)?
 }
 
-fn run_materialization_payload() -> Result<(), String> {
-    let npx = paths::resolve_bin("npx");
-    let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
-    let path = paths::child_path();
-    let output = paths::spawn_command(
-        &npx,
-        &["-y", &package_spec, "--", "node", "-e", "process.exit(0)"],
-    )
-    .env("PATH", &path)
-    .output()
-    .map_err(|err| {
-        if err.kind() == ErrorKind::PermissionDenied {
-            "HQ Sync cannot run npx because the Node/npm installation is not executable. \
-             Reinstall Node 20 or newer, then reopen HQ Sync."
-                .to_string()
-        } else {
-            format!("HQ Sync could not start npx to prepare its cache: {err}")
+/// Refresh the exact cached runner once at app startup so a newer patch in
+/// the same requested range reaches existing desktops without a pin bump. The
+/// old entry remains available until npm has materialized its replacement.
+pub fn refresh_hq_cloud_cache_at_startup() -> Result<(), String> {
+    let Some(npx_cache_dir) = crate::runner_target::npx_cache_dir() else {
+        return materialize_hq_cloud_cache();
+    };
+    let package_spec = crate::runner_target::pinned_package_spec();
+    let entry = npx_cache_dir.join(crate::runner_target::npx_cache_entry_hash(&package_spec));
+    with_materialization_lock(|| {
+        recover_refresh_backup(&entry)?;
+        if !entry.exists() {
+            return run_materialization_payload();
         }
+        refresh_cache_entry(
+            &entry,
+            || run_materialization_payload_with_preference(true),
+            run_materialization_payload,
+        )
+    })?
+}
+
+fn refresh_cache_entry(
+    entry: &std::path::Path,
+    refresh: impl FnOnce() -> Result<(), String>,
+    fallback: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let parent = entry
+        .parent()
+        .ok_or_else(|| "HQ Sync cannot locate its npm cache entry".to_string())?;
+    let name = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "HQ Sync cannot name its npm cache entry".to_string())?;
+    let mut suffix = 0u32;
+    let backup = loop {
+        let candidate = parent.join(format!(
+            ".{name}.hq-refresh-{}-{suffix}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    };
+    std::fs::rename(entry, &backup).map_err(|err| {
+        format!("HQ Sync could not preserve its cached runner before refresh: {err}")
     })?;
+
+    match refresh() {
+        Ok(()) if entry.exists() => {
+            remove_cache_path(&backup)?;
+            Ok(())
+        }
+        Ok(()) => {
+            std::fs::rename(&backup, entry).map_err(|err| {
+                format!("HQ Sync could not restore its cached runner after an empty refresh: {err}")
+            })?;
+            fallback().map_err(|fallback_error| {
+                format!("HQ Sync's online runner refresh produced no cache entry and the cached runner could not be used: {fallback_error}")
+            })
+        }
+        Err(refresh_error) => {
+            if entry.exists() {
+                remove_cache_path(entry)?;
+            }
+            std::fs::rename(&backup, entry).map_err(|err| {
+                format!("HQ Sync could not restore its cached runner after refresh failed: {err}")
+            })?;
+            match fallback() {
+                Ok(()) => {
+                    eprintln!("[prewarm] online runner refresh failed; kept the cached runner: {refresh_error}");
+                    Ok(())
+                }
+                Err(fallback_error) => Err(format!(
+                    "HQ Sync could not refresh the runner ({refresh_error}) or use the cached runner ({fallback_error})"
+                )),
+            }
+        }
+    }
+}
+
+fn recover_refresh_backup(entry: &std::path::Path) -> Result<(), String> {
+    let parent = entry
+        .parent()
+        .ok_or_else(|| "HQ Sync cannot locate its npm cache entry".to_string())?;
+    let name = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "HQ Sync cannot name its npm cache entry".to_string())?;
+    let prefix = format!(".{name}.hq-refresh-");
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("HQ Sync could not inspect its npm cache: {error}"));
+        }
+    };
+    let mut backups = entries
+        .flatten()
+        .filter(|item| item.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|item| item.path())
+        .collect::<Vec<_>>();
+    backups.sort();
+    if entry.exists() {
+        for backup in backups {
+            remove_cache_path(&backup)?;
+        }
+    } else if let Some(backup) = backups.first() {
+        std::fs::rename(backup, entry).map_err(|err| {
+            format!(
+                "HQ Sync could not recover its cached runner after an interrupted refresh: {err}"
+            )
+        })?;
+        for backup in backups.iter().skip(1) {
+            remove_cache_path(backup)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_cache_path(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|err| format!("HQ Sync could not inspect its npm cache entry: {err}"))?;
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+    .map_err(|err| format!("HQ Sync could not remove an obsolete npm cache entry: {err}"))
+}
+
+fn run_materialization_payload() -> Result<(), String> {
+    run_materialization_payload_with_preference(false)
+}
+
+fn run_materialization_payload_with_preference(prefer_online: bool) -> Result<(), String> {
+    let npx = paths::resolve_bin("npx");
+    let path = paths::child_path();
+    let args = materialization_args(prefer_online);
+    let output = paths::spawn_command(&npx, &args.iter().map(String::as_str).collect::<Vec<_>>())
+        .env("PATH", &path)
+        .output()
+        .map_err(|err| {
+            if err.kind() == ErrorKind::PermissionDenied {
+                "HQ Sync cannot run npx because the Node/npm installation is not executable. \
+             Reinstall Node 20 or newer, then reopen HQ Sync."
+                    .to_string()
+            } else {
+                format!("HQ Sync could not start npx to prepare its cache: {err}")
+            }
+        })?;
 
     if output.status.success() {
         Ok(())
@@ -331,6 +469,21 @@ fn run_materialization_payload() -> Result<(), String> {
             &String::from_utf8_lossy(&output.stderr),
         ))
     }
+}
+
+fn materialization_args(prefer_online: bool) -> Vec<String> {
+    let mut args = vec![
+        "-y".to_string(),
+        format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+        "--".to_string(),
+        "node".to_string(),
+        "-e".to_string(),
+        "process.exit(0)".to_string(),
+    ];
+    if prefer_online {
+        args.insert(0, "--prefer-online".to_string());
+    }
+    args
 }
 
 /// Spawn a detached thread that warms the npx cache for
@@ -386,8 +539,14 @@ fn spawn_prewarm_with(
 }
 
 pub fn spawn_prewarm() {
+    if !claim_startup_runner_refresh(&STARTUP_RUNNER_REFRESH_STARTED) {
+        return;
+    }
     let coordinator = process_prewarm_coordinator().clone();
-    drop(spawn_prewarm_with(coordinator, materialize_hq_cloud_cache));
+    drop(spawn_prewarm_with(
+        coordinator,
+        refresh_hq_cloud_cache_at_startup,
+    ));
 }
 
 #[cfg(test)]
@@ -395,6 +554,113 @@ mod tests {
     use super::*;
     use std::future::Future as _;
     use std::sync::mpsc;
+
+    #[test]
+    fn startup_refresh_is_claimed_once_per_process_launch() {
+        let started = AtomicBool::new(false);
+        assert!(claim_startup_runner_refresh(&started));
+        assert!(!claim_startup_runner_refresh(&started));
+    }
+
+    #[test]
+    fn startup_refresh_recovery_is_a_noop_before_the_npx_cache_exists() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("not-created-yet").join("target-hash");
+        recover_refresh_backup(&entry).unwrap();
+        assert!(!entry.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn startup_refresh_requests_latest_in_the_existing_range() {
+        let args = materialization_args(true);
+        assert!(args.iter().any(|arg| arg == "--prefer-online"));
+        assert!(args
+            .iter()
+            .any(|arg| { arg == &format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION) }));
+    }
+
+    #[test]
+    fn newer_in_range_runner_replaces_the_cached_older_runner_at_startup() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "old").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || {
+                std::fs::create_dir(&entry).unwrap();
+                std::fs::write(entry.join("version"), "new").unwrap();
+                Ok(())
+            },
+            || panic!("successful refresh must not use the fallback"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "new"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_uses_cached_runner_when_online_command_produces_no_entry() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "cached").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || Ok(()),
+            || {
+                assert_eq!(
+                    std::fs::read_to_string(entry.join("version")).unwrap(),
+                    "cached"
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "cached"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn startup_refresh_restores_cached_runner_when_registry_refresh_fails() {
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join("target-hash");
+        std::fs::create_dir(&entry).unwrap();
+        std::fs::write(entry.join("version"), "cached").unwrap();
+
+        refresh_cache_entry(
+            &entry,
+            || {
+                std::fs::create_dir(&entry).unwrap();
+                std::fs::write(entry.join("partial"), "incomplete").unwrap();
+                Err("registry offline".to_string())
+            },
+            || {
+                assert_eq!(
+                    std::fs::read_to_string(entry.join("version")).unwrap(),
+                    "cached"
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(entry.join("version")).unwrap(),
+            "cached"
+        );
+        assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 1);
+    }
 
     /// Build an npx stand-in that records accidental execution without
     /// reading a package or writing npm cache data.
