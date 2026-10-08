@@ -57,6 +57,7 @@ import {
   POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
   createHqProFlagFetch,
   createHqProRestFetch,
   createScopedFeatureFlagGates,
@@ -246,6 +247,11 @@ export function createSyncPlatformAdapter(
     }
     if (flag === SETUP_DEPS_TIMEOUT_RETRY_FLAG) {
       // Dependency timeout retries are opt-in until hq-flags explicitly enables them.
+      return Promise.resolve(ok(false));
+    }
+    if (flag === VISUAL_FIRST_RUN_FLAG) {
+      // Visual first-run setup is a rollout: off until the hq-flags registry
+      // holds an explicit enabled value.
       return Promise.resolve(ok(false));
     }
     if (flag === FIRST_FOLDER_SYNC_STEP_FLAG) {
