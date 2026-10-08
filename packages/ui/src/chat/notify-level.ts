@@ -146,7 +146,8 @@ export function saveRememberedNotifyLevels(
 ): void {
   try {
     storage?.setItem(REMEMBERED_NOTIFY_LEVELS_KEY, JSON.stringify(levels));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/notify-level.ts:149", error);
     /* private mode / quota: keep the in-memory copy */
   }
 }

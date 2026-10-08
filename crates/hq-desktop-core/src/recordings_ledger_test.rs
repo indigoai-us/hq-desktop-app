@@ -70,7 +70,7 @@ fn upsert_inserts_entry_keyed_by_window_id() {
     let e = ledger.get("win-1").expect("entry present");
     assert_eq!(e.recording_id, "rec_abc");
     assert_eq!(e.company_uid.as_deref(), Some("co_indigo"));
-    assert_eq!(e.started_at, "2026-06-03T10:00:00+00:00");
+    assert_eq!(e.started_at, "2026-06-03T10:00:00Z");
 }
 
 #[test]
@@ -388,13 +388,14 @@ fn entry_at(recording_id: &str, started_at: &str) -> RecordingEntry {
         recording_id: recording_id.to_string(),
         company_uid: None,
         started_at: started_at.to_string(),
+        not_found_since: None,
     }
 }
 
 #[test]
 fn classify_source_landed_is_saved() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Ok(status("completed", true)));
+    let out = classify("win-1", &entry, &Ok(status("completed", true)), ts("2026-06-03T10:01:00Z"));
     assert_eq!(
         out,
         ReconcileOutcome::Saved {
@@ -410,7 +411,7 @@ fn classify_completed_not_landed_is_still_processing() {
     // `completed` status but the transcript hasn't landed as a source yet —
     // this is exactly the #240 symptom and must NOT read as Saved.
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Ok(status("completed", false)));
+    let out = classify("win-1", &entry, &Ok(status("completed", false)), ts("2026-06-03T10:01:00Z"));
     match out {
         ReconcileOutcome::StillProcessing { status, .. } => assert_eq!(status, "completed"),
         other => panic!("expected StillProcessing, got {other:?}"),
@@ -420,7 +421,7 @@ fn classify_completed_not_landed_is_still_processing() {
 #[test]
 fn classify_processing_is_still_processing() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Ok(status("processing", false)));
+    let out = classify("win-1", &entry, &Ok(status("processing", false)), ts("2026-06-03T10:01:00Z"));
     assert!(matches!(out, ReconcileOutcome::StillProcessing { .. }));
     assert!(!out.clears_entry());
 }
@@ -428,7 +429,7 @@ fn classify_processing_is_still_processing() {
 #[test]
 fn classify_failed_is_ingest_failed() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Ok(status("failed", false)));
+    let out = classify("win-1", &entry, &Ok(status("failed", false)), ts("2026-06-03T10:01:00Z"));
     assert!(matches!(out, ReconcileOutcome::IngestFailed { .. }));
     assert!(out.clears_entry());
 }
@@ -436,21 +437,21 @@ fn classify_failed_is_ingest_failed() {
 #[test]
 fn classify_error_status_case_insensitive_is_ingest_failed() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Ok(status("ERROR", false)));
+    let out = classify("win-1", &entry, &Ok(status("ERROR", false)), ts("2026-06-03T10:01:00Z"));
     assert!(matches!(out, ReconcileOutcome::IngestFailed { .. }));
 }
 
 #[test]
-fn classify_not_found_is_ingest_failed() {
+fn classify_not_found_is_finalising_within_retry_window() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
     let s = RecordingStatus {
         status: "".to_string(),
         source_landed: false,
         not_found: true,
     };
-    let out = classify("win-1", &entry, &Ok(s));
+    let out = classify("win-1", &entry, &Ok(s), ts("2026-06-03T10:01:00Z"));
     match out {
-        ReconcileOutcome::IngestFailed { reason, .. } => assert!(reason.contains("not found")),
+        ReconcileOutcome::Finalising { .. } => {},
         other => panic!("expected IngestFailed, got {other:?}"),
     }
 }
@@ -458,7 +459,7 @@ fn classify_not_found_is_ingest_failed() {
 #[test]
 fn classify_fetch_error_is_unknown_and_retained() {
     let entry = entry_at("rec_1", "2026-06-03T10:00:00Z");
-    let out = classify("win-1", &entry, &Err("network down".to_string()));
+    let out = classify("win-1", &entry, &Err("network down".to_string()), ts("2026-06-03T10:01:00Z"));
     match &out {
         ReconcileOutcome::Unknown { reason, .. } => assert_eq!(reason, "network down"),
         other => panic!("expected Unknown, got {other:?}"),
@@ -554,7 +555,7 @@ fn reconcile_failed_entry_is_cleared_and_surfaced() {
 }
 
 #[test]
-fn reconcile_not_found_entry_is_ingest_failed_and_cleared() {
+fn reconcile_not_found_entry_is_retained_as_finalising() {
     let mut ledger = RecordingsLedger::new();
     upsert(
         &mut ledger,
@@ -572,7 +573,29 @@ fn reconcile_not_found_entry_is_ingest_failed_and_cleared() {
         })
     });
 
-    assert!(matches!(outcomes[0], ReconcileOutcome::IngestFailed { .. }));
+    assert!(matches!(outcomes[0], ReconcileOutcome::Finalising { .. }));
+    assert_eq!(ledger.len(), 1);
+    assert!(ledger.values().next().unwrap().not_found_since.is_some());
+}
+
+#[test]
+fn reconcile_not_found_retries_until_server_eventually_finds_recording() {
+    let mut ledger = RecordingsLedger::new();
+    upsert(&mut ledger, "win-1".to_string(), "rec_late".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    let missing = || Ok(RecordingStatus { status: String::new(), source_landed: false, not_found: true });
+    assert!(matches!(reconcile(&mut ledger, ts("2026-06-03T10:10:00Z"), |_, _| missing())[0], ReconcileOutcome::Finalising { .. }));
+    assert!(matches!(reconcile(&mut ledger, ts("2026-06-03T10:20:00Z"), |_, _| missing())[0], ReconcileOutcome::Finalising { .. }));
+    assert!(matches!(reconcile(&mut ledger, ts("2026-06-03T10:25:00Z"), |_, _| Ok(status("completed", true)))[0], ReconcileOutcome::Saved { .. }));
+    assert!(ledger.is_empty());
+}
+
+#[test]
+fn reconcile_not_found_fails_only_after_retry_window() {
+    let mut ledger = RecordingsLedger::new();
+    upsert(&mut ledger, "win-1".to_string(), "rec_gone".to_string(), None, ts("2026-06-03T10:00:00Z"));
+    let missing = || Ok(RecordingStatus { status: String::new(), source_landed: false, not_found: true });
+    let _ = reconcile(&mut ledger, ts("2026-06-03T10:10:00Z"), |_, _| missing());
+    assert!(matches!(reconcile(&mut ledger, ts("2026-06-03T10:40:00Z"), |_, _| missing())[0], ReconcileOutcome::IngestFailed { .. }));
     assert!(ledger.is_empty());
 }
 
@@ -635,6 +658,7 @@ fn reconcile_corrupt_started_at_ages_out() {
             recording_id: "rec_bad".to_string(),
             company_uid: None,
             started_at: "not-a-date".to_string(),
+            not_found_since: None,
         },
     );
     let outcomes = reconcile(&mut ledger, ts("2026-06-03T10:00:00Z"), |_, _| {

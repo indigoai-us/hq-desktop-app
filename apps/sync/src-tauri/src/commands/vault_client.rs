@@ -3,6 +3,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::util::client_info::build_client;
 use hq_desktop_core::request_policy::RequestBuilderExt;
+use hq_desktop_core::routes::{path_for, PERSON_SETTING_GET, PERSON_SETTING_PUT};
 
 // ── Error ─────────────────────────────────────────────────────────────────────
 
@@ -371,6 +372,13 @@ pub struct TelemetryOptInResponse {
     /// wording). `None` on servers that predate the field.
     #[serde(default)]
     pub stale: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonSettingResponse {
+    pub key: String,
+    pub value: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -806,6 +814,44 @@ impl VaultClient {
             .filter(|s| !s.is_empty())
     }
 
+    /// `GET /v1/bot/auto-schedule?setting=hq-anywhere` — read the caller's opt-in setting.
+    pub async fn get_hq_anywhere_person_setting(
+        &self,
+    ) -> Result<PersonSettingResponse, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}{}",
+                self.base_url,
+                path_for(PERSON_SETTING_GET, "")
+            ))
+            .query(&[("setting", "hq-anywhere")])
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `PUT /v1/bot/auto-schedule?setting=hq-anywhere` — write the caller's setting.
+    pub async fn put_hq_anywhere_person_setting(
+        &self,
+        value: bool,
+    ) -> Result<PersonSettingResponse, VaultClientError> {
+        let resp = self
+            .client
+            .put(format!(
+                "{}{}",
+                self.base_url,
+                path_for(PERSON_SETTING_PUT, "")
+            ))
+            .query(&[("setting", "hq-anywhere")])
+            .bearer_auth(&self.auth_token)
+            .json(&serde_json::json!({ "value": value }))
+            .send()
+            .await?;
+        self.handle_response(resp).await
+    }
+
     /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
     pub async fn get_telemetry_opt_in(&self) -> Result<TelemetryOptInResponse, VaultClientError> {
         let resp = self
@@ -989,7 +1035,7 @@ impl VaultClient {
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn client(url: &str) -> VaultClient {
@@ -1570,6 +1616,76 @@ mod tests {
         assert_eq!(cfg.sync_mode, "all");
         assert!(cfg.is_default);
         assert!(cfg.custom_paths.is_none());
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_person_setting_uses_the_caller_scoped_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "key": "hq-anywhere",
+                "value": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "key": "hq-anywhere",
+                "value": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        let initial = client.get_hq_anywhere_person_setting().await.unwrap();
+        assert_eq!(initial.key, "hq-anywhere");
+        assert!(!initial.value);
+
+        let saved = client.put_hq_anywhere_person_setting(true).await.unwrap();
+        assert_eq!(saved.key, "hq-anywhere");
+        assert!(saved.value);
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer test-token");
+        assert_eq!(requests[0].url.path(), "/v1/bot/auto-schedule");
+        assert_eq!(requests[0].url.query(), Some("setting=hq-anywhere"));
+        assert_eq!(requests[1].url.path(), "/v1/bot/auto-schedule");
+        assert_eq!(requests[1].url.query(), Some("setting=hq-anywhere"));
+        let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body, json!({ "value": true }));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_person_setting_returns_transient_responses_after_one_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        assert!(client.get_hq_anywhere_person_setting().await.is_err());
+        assert!(client.put_hq_anywhere_person_setting(true).await.is_err());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "one native request per operation");
     }
 
     #[tokio::test]

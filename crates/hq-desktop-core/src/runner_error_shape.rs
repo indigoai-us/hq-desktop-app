@@ -290,7 +290,33 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `complete` event's new optional `filesPlanLimited` counter instead of
 /// per-file `error` events. The source-version marker moves with the runner
 /// pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.31";
+///
+/// The `~6.18.31` -> `~6.18.51` bump was re-derived from both published runner
+/// trees (`git diff v6.18.31..v6.18.51 -- src`, excluding tests). It adds three
+/// literal `this.name` identities and removes none, and no `readonly name`
+/// identity changes. `TombstoneFullReconcileRequiredError`
+/// (src/cli/tombstones.ts) is rethrown out of tombstone pagination when a full
+/// reconcile cannot obtain an authoritative snapshot, and
+/// `UnsafeSymlinkTargetError` (src/s3.ts) is thrown by a pull download that
+/// refuses a symlink target; both reach the runner-error event surface and get
+/// named cause arms. `TombstoneTimeoutError` sets `this.name = "TimeoutError"`
+/// but is only ever the `cause` of a `TombstoneFetchError`, whose identity is
+/// what reaches the event, so it is excluded like `PushScopeForbiddenError`.
+/// `HQ_CLOUD_IDENTITIES` grows from 57 to 59. `src/bin/sync-runner-events.ts`
+/// is untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
+/// source-version marker moves with the runner pin.
+///
+/// The `~6.18.51` -> `~6.18.52` bump was re-derived from both published runner
+/// trees (`git diff v6.18.51..v6.18.52 -- src`, excluding tests). It adds one
+/// literal `this.name` identity, `PresignAlreadyCurrent` (src/object-io.ts),
+/// which the PUT path catches and turns into an already-current result, so it
+/// never reaches the event surface and is excluded like
+/// `PushScopeForbiddenError`. `HQ_CLOUD_IDENTITIES` remains 59.
+/// `src/bin/sync-runner-events.ts` is untouched, so `ERROR_TYPES` remains
+/// (`error`, `auth-error`). The runner adds an additive `journal-quarantine`
+/// event, which `parse_sync_line` skips as an unknown type. The source-version
+/// marker moves with the runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.52";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -1438,6 +1464,13 @@ pub enum RunnerErrorCause {
     ObjectLockChecksumRequired,
     ObjectBodyIdleTimeout,
     SyncDeviceLimit,
+    // Added when the runner pin moved to ~6.18.51 — the two identities hq-cloud
+    // gained between 6.18.31 and 6.18.51 that reach the event surface: the
+    // tombstone full-reconcile refusal (`TombstoneFullReconcileRequiredError`,
+    // src/cli/tombstones.ts) and the refused pull symlink target
+    // (`UnsafeSymlinkTargetError`, src/s3.ts).
+    TombstoneFullReconcileRequired,
+    UnsafeSymlinkTarget,
     // ── AWS S3/STS error names ────────────────────────────────────────────────
     AccessDenied,
     NoSuchKey,
@@ -1520,7 +1553,7 @@ pub enum RunnerErrorCause {
 impl RunnerErrorCause {
     /// Declaration order is the render tie-break for equal counts and lets tests
     /// enumerate the emitter's own token set.
-    pub const ALL: [RunnerErrorCause; 104] = [
+    pub const ALL: [RunnerErrorCause; 106] = [
         Self::EntityNotFound,
         Self::EntityPermission,
         Self::EntityResolution,
@@ -1578,6 +1611,8 @@ impl RunnerErrorCause {
         Self::ObjectLockChecksumRequired,
         Self::ObjectBodyIdleTimeout,
         Self::SyncDeviceLimit,
+        Self::TombstoneFullReconcileRequired,
+        Self::UnsafeSymlinkTarget,
         Self::AccessDenied,
         Self::NoSuchKey,
         Self::NoSuchBucket,
@@ -1693,6 +1728,8 @@ impl RunnerErrorCause {
             Self::ObjectLockChecksumRequired => "object_lock_checksum_required",
             Self::ObjectBodyIdleTimeout => "object_body_idle_timeout",
             Self::SyncDeviceLimit => "sync_device_limit",
+            Self::TombstoneFullReconcileRequired => "tombstone_full_reconcile_required",
+            Self::UnsafeSymlinkTarget => "unsafe_symlink_target",
             Self::AccessDenied => "access_denied",
             Self::NoSuchKey => "no_such_key",
             Self::NoSuchBucket => "no_such_bucket",
@@ -1832,6 +1869,10 @@ fn cause_from_identifier(raw: &str) -> Option<RunnerErrorCause> {
         "ObjectLockChecksumRequired" => RunnerErrorCause::ObjectLockChecksumRequired,
         "ObjectBodyIdleTimeoutError" => RunnerErrorCause::ObjectBodyIdleTimeout,
         "SyncDeviceLimitError" => RunnerErrorCause::SyncDeviceLimit,
+        // Added at the ~6.18.51 pin: the tombstone full-reconcile refusal
+        // (src/cli/tombstones.ts) and the refused pull symlink target (src/s3.ts).
+        "TombstoneFullReconcileRequiredError" => RunnerErrorCause::TombstoneFullReconcileRequired,
+        "UnsafeSymlinkTargetError" => RunnerErrorCause::UnsafeSymlinkTarget,
         // AWS S3/STS error names (surfaced as `e.name` by the SDK, or as a
         // `code=`/`cause=` value by older wrappers). hq-cloud's own
         // `AccessDeniedError` class shares the `access_denied` identity.
@@ -3373,8 +3414,10 @@ mod tests {
         "SyncMutationNotEnrolledError",
         "TerminalSessionTimeoutError",
         "TombstoneFetchError",
+        "TombstoneFullReconcileRequiredError",
         "UnreachablePushPathsError",
         "UnregisteredCompanySkillError",
+        "UnsafeSymlinkTargetError",
         "VaultAuthError",
         "VaultClientError",
         "VaultConflictError",
@@ -3403,8 +3446,10 @@ mod tests {
         // SyncManifestContractError, the manifest-upload contract class), and
         // from 52 to 57 at ~6.18.5 (added RealtimeAdmissionTimeout,
         // RealtimeDrainBurst, ObjectLockChecksumRequired,
-        // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError).
-        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 57);
+        // ObjectBodyIdleTimeoutError, and SyncDeviceLimitError), and from 57 to
+        // 59 at ~6.18.51 (added TombstoneFullReconcileRequiredError and
+        // UnsafeSymlinkTargetError).
+        assert_eq!(HQ_CLOUD_IDENTITIES.len(), 59);
         let mut tokens = std::collections::BTreeSet::new();
         for name in HQ_CLOUD_IDENTITIES {
             // A realistic describeError rendering: the leading class name + prose.
@@ -3430,7 +3475,7 @@ mod tests {
                 cause.as_str()
             );
         }
-        assert_eq!(tokens.len(), 57, "expected 57 distinct cause tokens");
+        assert_eq!(tokens.len(), 59, "expected 59 distinct cause tokens");
     }
 
     /// hq-cloud identities deliberately left out of the vocabulary because the
@@ -3445,6 +3490,13 @@ mod tests {
             // Added at ~6.18.16 (git diff v6.18.5..v6.18.16).
             "ReceiverDispatchError",
             "OutpostExecWaitError",
+            // Added at ~6.18.51 (git diff v6.18.31..v6.18.51): the name
+            // `TombstoneTimeoutError` assigns; it only rides as the cause of a
+            // `TombstoneFetchError`.
+            "TimeoutError",
+            // Added at ~6.18.52 (git diff v6.18.51..v6.18.52): caught by the
+            // PUT path in src/object-io.ts.
+            "PresignAlreadyCurrent",
         ];
         for name in EXCLUDED {
             assert!(

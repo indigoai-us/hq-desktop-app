@@ -974,27 +974,82 @@ async fn resolve_mode(cache_path: Option<&Path>) -> (Option<SyncHostMode>, HostF
 /// Today's launch behaviour: warm the npx cache and start the watch runner.
 fn start_legacy_services(handle: AppHandle, launch_reconcile_enabled: bool) {
     crate::commands::prewarm::spawn_prewarm();
+    start_legacy_sync(handle, launch_reconcile_enabled);
+}
+
+/// Start the watch runner (or the one-shot sync-on-launch pass) for the
+/// legacy host. Nothing starts while HQ is not installed yet: sync would
+/// write into the default HQ folder before the person has chosen where HQ
+/// lives. [`start_sync_services_after_setup`] runs this again once setup ends.
+fn start_legacy_sync(handle: AppHandle, launch_reconcile_enabled: bool) {
+    match current_legacy_sync_plan(launch_reconcile_enabled) {
+        LegacySyncPlan::HeldForSetup => log(
+            LOG_TAG,
+            "HQ is not installed yet; auto-sync starts after setup finishes",
+        ),
+        LegacySyncPlan::StartWatcher => {
+            #[cfg(test)]
+            crate::commands::process::record_sync_runner_spawn_attempt();
+            std::thread::spawn(move || {
+                // Small delay to let the app fully initialize
+                std::thread::sleep(Duration::from_secs(2));
+                let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
+            });
+        }
+        LegacySyncPlan::SyncOnLaunch => schedule_sync_on_launch(handle),
+        LegacySyncPlan::Nothing => {}
+    }
+}
+
+/// The plan for this process's current setup gate and sync settings.
+fn current_legacy_sync_plan(launch_reconcile_enabled: bool) -> LegacySyncPlan {
     let dev_disable_auto_sync = std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH")
         .ok()
         .as_deref()
         == Some("1");
-    if !dev_disable_auto_sync && (is_autostart_enabled() || is_realtime_sync_enabled()) {
-        #[cfg(test)]
-        crate::commands::process::record_sync_runner_spawn_attempt();
-        std::thread::spawn(move || {
-            // Small delay to let the app fully initialize
-            std::thread::sleep(Duration::from_secs(2));
-            let _ = crate::commands::daemon::start_daemon_for_app_launch(handle);
-        });
-    } else if !dev_disable_auto_sync
-        && hq_desktop_core::daemon::should_run_sync_on_launch(
-            launch_reconcile_enabled,
-            sync_on_launch_enabled(),
-            is_realtime_sync_enabled(),
-            is_autostart_enabled(),
-        )
-    {
-        schedule_sync_on_launch(handle);
+    legacy_sync_plan(
+        crate::commands::lifecycle::sync_held_for_setup(),
+        dev_disable_auto_sync,
+        is_autostart_enabled() || is_realtime_sync_enabled(),
+        || {
+            hq_desktop_core::daemon::should_run_sync_on_launch(
+                launch_reconcile_enabled,
+                sync_on_launch_enabled(),
+                is_realtime_sync_enabled(),
+                is_autostart_enabled(),
+            )
+        },
+    )
+}
+
+/// What the legacy host starts for sync on this launch (or after setup).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacySyncPlan {
+    /// HQ is not installed yet: nothing starts and nothing touches the folder.
+    HeldForSetup,
+    /// Auto-sync is on: start the watch runner.
+    StartWatcher,
+    /// Auto-sync is off but a one-shot sync-on-launch pass is due.
+    SyncOnLaunch,
+    Nothing,
+}
+
+fn legacy_sync_plan(
+    held_for_setup: bool,
+    dev_disable_auto_sync: bool,
+    auto_sync_on: bool,
+    sync_on_launch_due: impl FnOnce() -> bool,
+) -> LegacySyncPlan {
+    if held_for_setup {
+        LegacySyncPlan::HeldForSetup
+    } else if dev_disable_auto_sync {
+        LegacySyncPlan::Nothing
+    } else if auto_sync_on {
+        LegacySyncPlan::StartWatcher
+    } else if sync_on_launch_due() {
+        LegacySyncPlan::SyncOnLaunch
+    } else {
+        LegacySyncPlan::Nothing
     }
 }
 
@@ -1018,6 +1073,35 @@ fn schedule_sync_on_launch(app: AppHandle) {
             }
         });
     });
+}
+
+/// The hq daemon's sync service runs only when Auto-sync wants it and setup
+/// is finished on this computer.
+fn daemon_sync_wanted(sync_wanted: bool, held_for_setup: bool) -> bool {
+    sync_wanted && !held_for_setup
+}
+
+/// Setup just finished in this process: start the sync services that the
+/// launch kept off while HQ was not installed. Auto-sync is the default, so a
+/// new user gets the watch runner now, rooted at the folder they chose,
+/// instead of on the supervisor's next tick.
+pub fn start_sync_services_after_setup(handle: AppHandle) {
+    match current_phase() {
+        HostPhase::Legacy => start_legacy_sync(handle, false),
+        HostPhase::Daemon => {
+            std::thread::spawn(|| {
+                if let Err(e) = set_daemon_sync(sync_wanted()) {
+                    log(
+                        LOG_TAG,
+                        &format!("could not apply the Auto-sync setting after setup: {e}"),
+                    );
+                }
+            });
+        }
+        // Host selection has not finished; it starts sync itself and the
+        // setup gate is already open by then.
+        HostPhase::Pending => {}
+    }
 }
 
 /// Sync should run: Auto-sync on, cloud not paused, and no dev kill switch.
@@ -1050,13 +1134,16 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
     }
     std::thread::spawn(watch_env_changes);
     crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
-    if let Err(e) = set_daemon_sync(sync_wanted()) {
+    // Before setup finishes the hq daemon's sync stays paused, so it does not
+    // fill the default HQ folder; setup completion applies the setting again.
+    let held_for_setup = crate::commands::lifecycle::sync_held_for_setup();
+    if let Err(e) = set_daemon_sync(daemon_sync_wanted(sync_wanted(), held_for_setup)) {
         log(
             LOG_TAG,
             &format!("could not apply the Auto-sync setting: {e}"),
         );
     }
-    if launch_sync {
+    if launch_sync && !held_for_setup {
         schedule_sync_on_launch(handle.clone());
     }
     host_loop();
@@ -1090,7 +1177,7 @@ fn daemon_env() -> HashMap<String, String> {
 fn local_hq() -> Option<String> {
     match resolve_hq() {
         HqInvocation::Local(path) => Some(path),
-        HqInvocation::Npx => None,
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => None,
     }
 }
 
@@ -1792,6 +1879,75 @@ mod tests {
         assert_eq!(error, HOST_PHASE_RETRY_MESSAGE);
         assert!(!error.to_ascii_lowercase().contains("daemon"));
         set_phase(HostPhase::Legacy);
+    }
+
+    /// Before setup finishes, launch starts neither the watch runner nor a
+    /// sync-on-launch pass, whatever the Auto-sync setting says. Once setup
+    /// finishes, the default Auto-sync starts the watch runner.
+    #[test]
+    fn legacy_sync_plan_waits_for_setup_then_starts_the_watcher() {
+        let never_due = || -> bool { panic!("sync-on-launch must not be consulted") };
+        assert_eq!(
+            legacy_sync_plan(true, false, true, never_due),
+            LegacySyncPlan::HeldForSetup
+        );
+        assert_eq!(
+            legacy_sync_plan(true, false, false, never_due),
+            LegacySyncPlan::HeldForSetup
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, true, never_due),
+            LegacySyncPlan::StartWatcher
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, false, || true),
+            LegacySyncPlan::SyncOnLaunch
+        );
+        assert_eq!(
+            legacy_sync_plan(false, false, false, || false),
+            LegacySyncPlan::Nothing
+        );
+        assert_eq!(
+            legacy_sync_plan(false, true, true, never_due),
+            LegacySyncPlan::Nothing
+        );
+    }
+
+    /// The legacy launch path itself: with setup unfinished and Auto-sync on
+    /// (the default for a new user), launch plans no watch runner and no
+    /// sync pass and does not create the default HQ folder. After setup the
+    /// same settings start the watch runner.
+    #[test]
+    fn legacy_launch_holds_sync_until_setup_then_starts_the_watcher() {
+        let _phase_guard = TEST_PHASE_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _env = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let home = TempDir::new().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        assert!(is_autostart_enabled() || is_realtime_sync_enabled());
+        crate::commands::lifecycle::publish_sync_setup_gate(
+            hq_desktop_core::lifecycle::LifecycleState::NeedsInstall,
+        );
+
+        assert_eq!(current_legacy_sync_plan(true), LegacySyncPlan::HeldForSetup);
+        assert!(!home.path().join("hq").exists());
+
+        assert!(crate::commands::lifecycle::publish_sync_setup_gate(
+            hq_desktop_core::lifecycle::LifecycleState::SteadyState,
+        ));
+        assert_eq!(current_legacy_sync_plan(true), LegacySyncPlan::StartWatcher);
+        assert!(!home.path().join("hq").exists());
+    }
+
+    #[test]
+    fn hq_daemon_sync_stays_paused_until_setup_finishes() {
+        assert!(!daemon_sync_wanted(true, true));
+        assert!(!daemon_sync_wanted(false, true));
+        assert!(daemon_sync_wanted(true, false));
+        assert!(!daemon_sync_wanted(false, false));
     }
 
     #[test]

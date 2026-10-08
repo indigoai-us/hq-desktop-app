@@ -57,6 +57,8 @@ pub(crate) enum UploadOutcome {
 /// Rationale per exclusion:
 ///   - `companies/`: synced separately by the runner's per-membership fanout;
 ///     do not double-write into the personal vault.
+///   - `person-settings/`: cloud-authoritative preferences are written through
+///     hq-pro; a local projection must not bypass its validation on first push.
 ///   - `workspace/`, `repos/`: per user directive — heavy local-only content
 ///     (cloned remotes, session threads) that should not live in the personal
 ///     vault.
@@ -77,7 +79,7 @@ pub(crate) enum UploadOutcome {
 /// Mirror this constant in `@indigoai-us/hq-cloud`'s sync-runner so push
 /// behaviour from the Node runner matches the Rust first-push.
 pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] =
-    &[".git", "companies", "repos", "workspace"];
+    &[".git", "companies", "person-settings", "repos", "workspace"];
 
 /// Journal slug for the personal vault. MUST match `PERSONAL_VAULT_JOURNAL_SLUG`
 /// in `@indigoai-us/hq-cloud` (`src/journal.ts` = `"__hq_personal_vault__"`).
@@ -1220,6 +1222,58 @@ pub async fn ensure_person_entity(app: tauri::AppHandle) -> Result<bool, String>
     Ok(resolve_or_provision(&app, &vault).await?.is_some())
 }
 
+/// Read the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn get_hq_anywhere_person_setting() -> Result<bool, String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not load the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    read_hq_anywhere_person_setting(&vault).await
+}
+
+async fn read_hq_anywhere_person_setting(vault: &VaultClient) -> Result<bool, String> {
+    vault
+        .get_hq_anywhere_person_setting()
+        .await
+        .map(|setting| setting.value)
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting read failed: {error}");
+            "Could not load the HQ Anywhere setting.".to_string()
+        })
+}
+
+/// Store the signed-in person's HQ Anywhere opt-in through hq-pro's person-settings API.
+#[tauri::command]
+pub async fn put_hq_anywhere_person_setting(value: bool) -> Result<(), String> {
+    let access_token = crate::commands::cognito::get_valid_access_token()
+        .await
+        .map_err(|error| {
+            eprintln!("[person-settings] could not refresh caller token: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })?;
+    let api_url = crate::commands::sync::resolve_vault_api_url().map_err(|error| {
+        eprintln!("[person-settings] could not resolve vault API: {error}");
+        "Could not save the HQ Anywhere setting.".to_string()
+    })?;
+    let vault = VaultClient::new(&api_url, &access_token);
+    vault
+        .put_hq_anywhere_person_setting(value)
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            eprintln!("[person-settings] HQ Anywhere setting write failed: {error}");
+            "Could not save the HQ Anywhere setting.".to_string()
+        })
+}
+
 pub async fn ensure_personal_bucket_and_first_push<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,
@@ -1787,8 +1841,46 @@ mod tests {
     };
     use tauri::Listener;
     use tempfile::TempDir;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_the_person_setting_value() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                "key": "hq-anywhere",
+                "value": true
+            })))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(read_hq_anywhere_person_setting(&vault).await.unwrap(), true);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.query(), Some("setting=hq-anywhere"));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_get_command_helper_returns_a_safe_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(ResponseTemplate::new(502).set_body_string("private upstream detail"))
+            .mount(&server)
+            .await;
+        let vault = VaultClient::new(&server.uri(), "test-token");
+
+        assert_eq!(
+            read_hq_anywhere_person_setting(&vault).await,
+            Err("Could not load the HQ Anywhere setting.".to_string())
+        );
+    }
 
     // --- prepare-phase metadata fast path -----------------------------------
 
@@ -2314,6 +2406,10 @@ mod tests {
         );
         // Excluded (must be skipped)
         write_file(&root.join("companies/acme/file.md"), b"company");
+        write_file(
+            &root.join("person-settings/person_abc/hq-anywhere.json"),
+            b"cloud-authoritative settings",
+        );
         write_file(&root.join("repos/foo/README.md"), b"repos");
         write_file(&root.join("workspace/threads/T-1.md"), b"workspace");
 
@@ -2358,7 +2454,7 @@ mod tests {
             );
         }
         // Excluded entries must NOT appear.
-        for forbidden in ["companies/", "repos/", "workspace/"] {
+        for forbidden in ["companies/", "person-settings/", "repos/", "workspace/"] {
             assert!(
                 !captured.iter().any(|k| k.starts_with(forbidden)),
                 "{forbidden} must be skipped; got: {captured:?}",
@@ -2453,6 +2549,14 @@ mod tests {
         assert!(
             !is_personal_vault_path("companies/README.md"),
             "only manifest.yaml is special-cased — other companies/ root files stay excluded",
+        );
+        assert!(
+            !is_personal_vault_path("person-settings/person_abc/hq-anywhere.json"),
+            "cloud-authoritative person settings stay outside first-push scope",
+        );
+        assert!(
+            is_personal_vault_path("knowledge/person-settings/notes.md"),
+            "nested user content named person-settings remains in scope",
         );
         assert!(
             !is_personal_vault_path("companies/manifest.yml"),

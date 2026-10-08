@@ -102,6 +102,16 @@ pub fn resolve_request_url(url: &str, vault_base: &str) -> Result<String, String
     Err("hq-pro fetch URL must be a /path or https URL".to_string())
 }
 
+/// The request path for the fetch log: no host, no query string and no
+/// fragment, so a query-carried value (or a presigned signature) never
+/// reaches the log file.
+pub fn fetch_log_path(full_url: &str) -> String {
+    match url::Url::parse(full_url) {
+        Ok(parsed) => parsed.path().to_string(),
+        Err(_) => full_url.split(['?', '#']).next().unwrap_or("").to_string(),
+    }
+}
+
 /// Longest per-request bound a caller may ask `hq_pro_fetch` for.
 const HQ_PRO_FETCH_MAX_TIMEOUT_SECS: u64 = 60;
 
@@ -148,13 +158,25 @@ pub async fn hq_pro_fetch(
         }
     }
 
+    // Path and elapsed time make slow hq-pro calls measurable from the log.
+    let log_path = fetch_log_path(&full);
+    let started = std::time::Instant::now();
     let resp = req.send().await.map_err(|e| {
-        log(LOG_TAG, &format!("HQ_PRO_FETCH_NETWORK_FAIL {e}"));
-        format!("Network error: {e}")
+        let ms = started.elapsed().as_millis();
+        let message = format!("Network error: {e}");
+        // reqwest's error text can carry the full URL with its query; the log
+        // line names the path only.
+        let e = e.without_url();
+        log(
+            LOG_TAG,
+            &format!("HQ_PRO_FETCH_NETWORK_FAIL method={method} path={log_path} ms={ms} {e}"),
+        );
+        message
     })?;
     let status = resp.status().as_u16();
     let retry_after = retry_after_header(resp.headers());
     let text = resp.text().await.unwrap_or_default();
+    let ms = started.elapsed().as_millis();
     let outcome = if (200..300).contains(&status) {
         "OK"
     } else {
@@ -162,7 +184,7 @@ pub async fn hq_pro_fetch(
     };
     log(
         LOG_TAG,
-        &format!("HQ_PRO_FETCH_{outcome} method={method} status={status}"),
+        &format!("HQ_PRO_FETCH_{outcome} method={method} status={status} path={log_path} ms={ms}"),
     );
     Ok(HqProHttpResponse {
         status,
@@ -396,6 +418,28 @@ mod tests {
         assert_eq!(fetch_timeout(Some(45)), Some(Duration::from_secs(45)));
         assert_eq!(fetch_timeout(Some(0)), Some(Duration::from_secs(1)));
         assert_eq!(fetch_timeout(Some(3600)), Some(Duration::from_secs(60)));
+    }
+
+    /// The fetch log names the path only: no host, no query string (which
+    /// can carry ids or a presigned signature), no fragment.
+    #[test]
+    fn fetch_log_path_keeps_the_path_and_drops_the_query() {
+        assert_eq!(
+            fetch_log_path("https://api.example.com/v1/meetings/bot_123?companyId=cmp_1"),
+            "/v1/meetings/bot_123"
+        );
+        assert_eq!(
+            fetch_log_path(
+                "https://api.example.com/v1/files/x.md?X-Amz-Signature=secret&X-Amz-Credential=k#frag"
+            ),
+            "/v1/files/x.md"
+        );
+        assert_eq!(
+            fetch_log_path("/v1/flags/resolve?companyUid=cmp_1"),
+            "/v1/flags/resolve"
+        );
+        let line = fetch_log_path("https://api.example.com/v1/meetings?token=abc");
+        assert!(!line.contains("token") && !line.contains("abc"), "{line}");
     }
 
     #[test]

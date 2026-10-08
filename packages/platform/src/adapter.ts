@@ -1397,6 +1397,7 @@ export interface AgencyApi {
  */
 export interface AgentProfilePatch {
   displayName?: string;
+  title?: string;
   description?: string;
 }
 
@@ -1405,6 +1406,18 @@ export const OUTPOST_PATHS = {
   status: "/outpost/status",
   jobsStatus: "/outpost/jobs/status",
 } as const;
+
+/**
+ * POST /v1/agents/{uid}/runtime/actions body. Routine changes use the
+ * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
+ * names the routine and `body` carries the create/update fields.
+ */
+export interface AgentRuntimeActionInput {
+  actionId: string;
+  idempotencyKey: string;
+  params?: Record<string, string>;
+  body?: Record<string, unknown>;
+}
 
 /**
  * The body of an attach-Slack request. `returnTo: "desktop"` says the attach
@@ -1427,6 +1440,8 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
   profile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  runtimeActions: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/runtime/actions`,
   stop: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
@@ -1560,6 +1575,17 @@ export interface AgentsApi {
   listJobs(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
   pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /**
+   * GET /v1/agents/{uid}/profile: the owner's whole bot profile in one
+   * call. Anyone else gets 404, and so does a server that has not shipped
+   * the route; callers fall back to the individual reads.
+   */
+  getProfile?(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/runtime/actions: owner relay to the bot's box. */
+  runtimeAction?(
+    agentUid: string,
+    input: AgentRuntimeActionInput,
+  ): AdapterPromise<Json>;
   /** PATCH /v1/agents/{uid}/profile — owner/admin. */
   updateProfile(
     agentUid: string,
@@ -1878,6 +1904,12 @@ export interface AppShellApi {
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;
+  /**
+   * The company the native read gate is bound to, or null. A surface that
+   * binds a company for one read puts this back afterwards. Hosts without a
+   * native gate omit it.
+   */
+  getActiveCompany?(): AdapterPromise<string | null>;
   openDriftDetail(report: Json): AdapterPromise<void>;
   openMeetingPermissionsWindow(): AdapterPromise<void>;
   notificationPermissionState(): AdapterPromise<string>;
@@ -2224,6 +2256,12 @@ export interface SettingsApi {
   getSettings(): AdapterPromise<Json>;
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
+  /** Read the signed-in person's server-backed HQ Anywhere preference. */
+  getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
+  /** Write the signed-in person's server-backed HQ Anywhere preference. */
+  putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
+  /** Apply or remove the native global Claude Code/Codex setup. */
+  syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:
