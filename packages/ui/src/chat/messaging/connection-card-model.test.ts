@@ -433,8 +433,11 @@ describe("toolFacts", () => {
   it("names a connection by its display name, else by its provider", () => {
     const names = (over: Record<string, unknown>) => toolFacts(list([connection(over)]), null).usable[0]?.name;
     expect(names({ installation: { displayName: " Linear (Acme) " } })).toBe("Linear (Acme)");
-    expect(names({ installation: null, provider: "factory:google-drive" })).toBe("Google-drive");
-    expect(names({ installation: { displayName: "" }, provider: "hubspot" })).toBe("Hubspot");
+    // The shared integrationDisplayName: no `factory:` prefix, no slug dashes, brand spelling.
+    expect(names({ installation: null, provider: "factory:google-drive" })).toBe("Google Drive");
+    expect(names({ installation: { displayName: "" }, provider: "hubspot" })).toBe("HubSpot");
+    expect(names({ installation: null, provider: "factory:linear" })).toBe("Linear");
+    expect(names({ installation: null, provider: "factory:remote_mcp_posthog_com_e755da2a91" })).toBe("PostHog");
     expect(names({ installation: null, provider: "" })).toBe("App");
   });
 

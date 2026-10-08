@@ -1,4 +1,6 @@
 import { deploymentFromApp, type DeployAppsPage } from "../../library/personal-deployments.js";
+import { integrationDisplayName, integrationDomain } from "../../common/integration-display.js";
+import { integrationAppKey, integrationHealth } from "./integration-apps.js";
 
 /**
  * Company Files and connect (console-rail US-029).
@@ -54,13 +56,20 @@ export interface VaultGrant {
 export interface IntegrationRow {
   id: string;
   name: string;
-  mark: string;
+  /** The app's website, for its bundled brand mark. "" when unknown. */
+  domain: string;
+  /** Groups connections of one app (integration-apps.ts). */
+  appKey: string;
   detail: string;
-  status: "active" | "needs-sign-in" | "disconnected" | "available";
+  status: "active" | "needs-attention" | "needs-sign-in" | "disconnected" | "available";
   owner: string;
   audience: string;
   synced: string;
   kind: "connected" | "available" | "mcp";
+  /** Plain-language diagnosis of a fault, HQ-authored. "" when healthy or unknown. */
+  reason: string;
+  /** The server's role-aware fix for a fault, verbatim. "" when it sent none. */
+  fixPath: string;
 }
 
 export interface SecretRow {
@@ -124,11 +133,11 @@ export function fixtureCache(): FilesConnectCache {
       { id: "eng", name: "Engineering", role: "group · 5", level: "write", locked: true },
     ],
     integrations: [
-      { id: "slack", name: "Slack", mark: "SL", detail: "indigo.slack.com · channels:read, chat:write", status: "active", owner: "Corey", audience: "Everyone on the team", synced: "2m ago", kind: "connected" },
-      { id: "linear", name: "Linear", mark: "LN", detail: "indigo · issues:read, issues:write", status: "active", owner: "Yousuf", audience: "Engineering · 5", synced: "11m ago", kind: "connected" },
-      { id: "gmail", name: "Gmail", mark: "GM", detail: "Saved sign-in is no longer valid", status: "needs-sign-in", owner: "Eric B.", audience: "Only Eric B.", synced: "3d ago", kind: "connected" },
-      { id: "notion", name: "Notion", mark: "NT", detail: "HQ Reviewed · pages, databases", status: "available", owner: "", audience: "", synced: "", kind: "available" },
-      { id: "hq-work", name: "hq-work", mark: "HQ", detail: "Board and work-mesh tools", status: "active", owner: "HQ", audience: "Agents", synced: "live", kind: "mcp" },
+      { id: "slack", name: "Slack", domain: "slack.com", appKey: "slack.com", detail: "indigo.slack.com · channels:read, chat:write", status: "active", owner: "Corey", audience: "Everyone on the team", synced: "2m ago", kind: "connected", reason: "", fixPath: "" },
+      { id: "linear", name: "Linear", domain: "linear.app", appKey: "linear.app", detail: "indigo · issues:read, issues:write", status: "active", owner: "Yousuf", audience: "Engineering · 5", synced: "11m ago", kind: "connected", reason: "", fixPath: "" },
+      { id: "gmail", name: "Gmail", domain: "gmail.com", appKey: "gmail.com", detail: "Saved sign-in is no longer valid", status: "needs-sign-in", owner: "Eric B.", audience: "Only Eric B.", synced: "3d ago", kind: "connected", reason: "The saved sign-in is no longer valid.", fixPath: "" },
+      { id: "notion", name: "Notion", domain: "notion.so", appKey: "notion.so", detail: "HQ Reviewed · pages, databases", status: "available", owner: "", audience: "", synced: "", kind: "available", reason: "", fixPath: "" },
+      { id: "hq-work", name: "hq-work", domain: "", appKey: "hq-work", detail: "Board and work-mesh tools", status: "active", owner: "HQ", audience: "Agents", synced: "live", kind: "mcp", reason: "", fixPath: "" },
     ],
     secrets: [
       { id: "attio", name: "ATTIO_API_KEY", kind: "standard", version: "v4", host: "", scope: "Company", rotated: "12d ago", apps: "crm-sync, meeting-prep", readers: "@all" },
@@ -351,6 +360,8 @@ export function statusLabel(status: string): string {
       return "Live";
     case "needs-sign-in":
       return "Needs sign-in";
+    case "needs-attention":
+      return "Needs attention";
     case "error":
       return "Error";
     case "off":
@@ -420,32 +431,11 @@ export function emptyCompanyCache(): FilesConnectCache {
     files: 0,
     nodes: [],
     grants: [],
-    integrations: availableIntegrations(),
+    // The connectable-app catalog fills from hq-pro when Available opens.
+    integrations: [],
     secrets: [],
     deployments: [],
   };
-}
-
-const PROVIDER_NAMES: Record<string, string> = {
-  slack: "Slack",
-  "managed-slack": "Slack",
-  linear: "Linear",
-  gmail: "Gmail",
-  google: "Google",
-  notion: "Notion",
-  github: "GitHub",
-  quickbooks: "QuickBooks",
-  hubspot: "HubSpot",
-};
-
-function providerName(provider: string): string {
-  const known = PROVIDER_NAMES[provider.toLowerCase()];
-  if (known) return known;
-  return provider
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
 }
 
 /**
@@ -470,17 +460,14 @@ function scopeLabels(scopes: readonly string[]): string[] {
   return labels;
 }
 
-function connectionStatus(status: unknown): IntegrationRow["status"] {
-  if (status === "connected") return "active";
-  if (status === "needs-reauth" || status === "needs-attention") return "needs-sign-in";
-  return "disconnected";
-}
-
 /**
  * The company's connected apps from hq-pro `GET /v1/integrations/admin`
- * (`{ connections: [{ id, provider, status, scopes, createdByName }] }`).
+ * (`{ connections: [{ id, provider, status, scopes, createdByName,
+ * installation: { displayName, domain, status }, errorReason, fix_path }] }`).
  * Revoked connections are gone from the company, so they are left out. A body
  * without a `connections` list is a failed read, not an empty company.
+ * Names never show a raw provider id (integration-display.ts); health follows
+ * the console (integration-apps.ts).
  */
 export function companyIntegrationRows(body: unknown): IntegrationRow[] {
   const list = (body as { connections?: unknown } | null)?.connections;
@@ -492,43 +479,33 @@ export function companyIntegrationRows(body: unknown): IntegrationRow[] {
     const id = typeof c.id === "string" ? c.id : "";
     const provider = typeof c.provider === "string" ? c.provider.trim() : "";
     if (!id || !provider || c.status === "revoked") continue;
-    const name = providerName(provider);
     const owner = typeof c.createdByName === "string" ? c.createdByName.trim() : "";
     const labels = scopeLabels(Array.isArray(c.scopes) ? c.scopes.filter((v): v is string => typeof v === "string") : []);
+    const health = integrationHealth(c);
     rows.push({
       id,
-      name,
-      mark: name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || name.slice(0, 2),
+      name: integrationDisplayName(c),
+      domain: integrationDomain(c),
+      appKey: integrationAppKey(c),
       detail: labels.length ? labels.join(", ") : owner ? `Connected by ${owner}` : "Connected",
-      status: connectionStatus(c.status),
+      status: health.state,
       owner,
       audience: "",
       synced: "",
       kind: "connected",
+      reason: health.reason,
+      fixPath: health.fixPath,
     });
   }
   return rows;
 }
 
-/** The connectable app catalog. Company-neutral: no workspace, owner or scope. */
-export function availableIntegrations(): IntegrationRow[] {
-  return [
-    ["slack", "Slack", "SL"],
-    ["linear", "Linear", "LN"],
-    ["gmail", "Gmail", "GM"],
-    ["notion", "Notion", "NT"],
-    ["github", "GitHub", "GH"],
-  ].map(([id, name, mark]) => ({
-    id: id!,
-    name: name!,
-    mark: mark!,
-    detail: "Connect with your browser",
-    status: "available" as const,
-    owner: "",
-    audience: "",
-    synced: "",
-    kind: "available" as const,
-  }));
+/** Whether the admin answer says the viewer may add apps; null when it does not say. */
+export function viewerCanManageIntegrations(body: unknown): boolean | null {
+  const viewer = (body as { viewer?: unknown } | null)?.viewer;
+  if (!viewer || typeof viewer !== "object") return null;
+  const flag = (viewer as Record<string, unknown>).canManageIntegrations;
+  return typeof flag === "boolean" ? flag : null;
 }
 
 export interface MemberOption {
