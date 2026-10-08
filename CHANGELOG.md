@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The Starter plan card now shows 3 integrations instead of 1, matching the new Starter limit.
+
 ## [0.10.406] - 2026-10-08
 
 - The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.

@@ -42,7 +42,7 @@ describe('plan card copy', () => {
       ['on', 'Vault, sync, secrets & deploy', null],
       [
         'capped',
-        '10 secrets · 10 GB · 1 integration, no MCP or Atlas',
+        '10 secrets · 10 GB · 3 integrations, no MCP or Atlas',
         '500 lifetime deploys. Over a limit, new files and new secrets stop until you are back under',
       ],
     ]);
