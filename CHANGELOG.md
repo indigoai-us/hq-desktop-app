@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.404] - 2026-10-08
+
+- When HQ Anywhere is on, the desktop app installs HQ context for Claude Code and Codex runtimes found on the computer. Turning it off removes that setup; sign-in restores it when the saved setting is enabled.
+
 ### Fixed
 
 - The idle sync monitor samples the watcher process group directly on macOS instead of launching `ps` and parsing the system process list. Unchanged sync progress and last-pass files are no longer reparsed every second, and the tray command reader skips unchanged files between 250 ms checks.

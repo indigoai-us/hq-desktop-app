@@ -2015,6 +2015,8 @@ export interface SettingsApi {
   getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
   /** Write the signed-in person's server-backed HQ Anywhere preference. */
   putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
+  /** Apply or remove the native global Claude Code/Codex setup. */
+  syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:

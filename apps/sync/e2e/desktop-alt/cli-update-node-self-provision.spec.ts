@@ -364,7 +364,7 @@ describe('hq-CLI version probe recovers an unreadable CLI through the managed No
   it('gives the core version probe a managed-Node interpreter fallback', () => {
     // A present managed Node is retried by prepending its bin dir to the child
     // PATH, and — for a node-shebanged shim — invoked directly.
-    expect(core).toContain('fn hq_version_with_recovery(');
+    expect(core).toContain('fn hq_version_with_recovery_timeout(');
     expect(core).toContain('paths::path_with_interpreter_hint(');
     expect(core).toContain('fn managed_node_executable(');
     expect(core).toContain('fn shebang_names_node(');
