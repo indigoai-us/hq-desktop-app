@@ -53,3 +53,35 @@ export function paneForEntry(entry: NavigationEntry): DestinationPane {
       return { pane: "none" };
   }
 }
+
+/**
+ * The company scope a newly committed entry is recorded under.
+ *
+ * Home's chat sidepane lists the scope its entry carries. The rail Home
+ * button always lands on the cross-company list, and the company picker in
+ * the sidepane header is the only control that narrows it to one company
+ * (which also adds that company's Activity section). Opening a conversation,
+ * Notifications, or connection requests from anywhere outside Home (a company
+ * page's Bots / Team / Atlas "Message", a notification, ⌘K over a company
+ * page) used to carry that page's company into Home, so the same sidebar
+ * showed an Activity section on one path and not on another. Those entries
+ * now record the cross-company scope, exactly what the Home button shows.
+ * Opening a conversation while already on Home keeps the scope the person
+ * picked. `messages` is left alone: it is how an explicit scope pick lands.
+ */
+export function entryCompanyUidForCommit(
+  destination: NavigationEntry["destination"],
+  companyUid: string | null,
+  from: NavigationEntry | null,
+): string | null {
+  switch (destination.kind) {
+    case "channel":
+    case "dm":
+    case "notifications":
+    case "dm-requests":
+      if (from && paneForEntry(from).pane !== "home") return null;
+      return companyUid;
+    default:
+      return companyUid;
+  }
+}
