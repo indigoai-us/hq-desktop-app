@@ -512,6 +512,9 @@ jobs:
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build == true }}
     runs-on: macos-14
+    env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
     timeout-minutes: 90
     defaults:
       run:
@@ -1050,6 +1053,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
       SHELL_KEY: ${{ needs.shell-key.outputs.key }}
       # rust-toolchain.toml pins channel "stable", which would override the
@@ -1450,6 +1455,9 @@ jobs:
     needs: validate
     if: ${{ !cancelled() && needs.validate.result == 'success' && inputs.legacy_build != true }}
     runs-on: ubuntu-latest
+    env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
     defaults:
       run:
         working-directory: apps/sync
@@ -1774,6 +1782,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
       RUST_TARGET: x86_64-pc-windows-msvc
     outputs:
@@ -2017,6 +2027,8 @@ jobs:
     permissions:
       contents: write
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       GH_TOKEN: ${{ github.token }}
       RUST_TARGET: aarch64-pc-windows-msvc
     outputs:
@@ -2979,6 +2991,8 @@ jobs:
           - aarch64-pc-windows-msvc
 
     env:
+      # Vite/Rollup bundling of the UI exceeded Node's default ~2 GB heap on macOS (run 37857004569).
+      NODE_OPTIONS: --max-old-space-size=6144
       RUST_BACKTRACE: 1
       HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
       VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
