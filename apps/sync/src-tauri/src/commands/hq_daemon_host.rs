@@ -661,7 +661,11 @@ pub async fn acknowledge_conflict_notice(
     ])
     .await?;
     let pending = get_pending_conflict_notices()?;
-    app.emit("sync:conflict-notices", &pending)
+    app.emit_to(
+        crate::commands::desktop_alt::WINDOW_LABEL,
+        "sync:conflict-notices",
+        &pending,
+    )
         .map_err(|_| "Conflict notice update could not be delivered.".to_string())
 }
 

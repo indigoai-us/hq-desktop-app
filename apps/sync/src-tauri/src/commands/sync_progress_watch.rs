@@ -169,7 +169,11 @@ pub fn setup_last_pass_watch(app: &AppHandle) {
                     .unwrap_or_default();
                 if fingerprint != last_notice_fingerprint {
                     last_notice_fingerprint = fingerprint;
-                    let _ = handle.emit("sync:conflict-notices", &record.pending_conflict_notices);
+                    let _ = handle.emit_to(
+                        crate::commands::desktop_alt::WINDOW_LABEL,
+                        "sync:conflict-notices",
+                        &record.pending_conflict_notices,
+                    );
                 }
             }
             let Some(pass) = tracker.take_new(pass) else {

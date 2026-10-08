@@ -16,7 +16,7 @@ const notice: Notice = {
 describe('ConflictParkedNotice rendering', () => {
   it('names the file and provides Finder and acknowledgement actions', () => {
     const html = render(ConflictParkedNotice, {
-      props: { notices: [notice], busyIds: new Set(), onShowInFinder: vi.fn(), onAcknowledge: vi.fn() },
+      props: { notices: [notice], busyIds: new Set<string>(), onShowInFinder: vi.fn(), onAcknowledge: vi.fn() },
     }).body;
 
     expect(html).toContain('Conflict copy parked');
