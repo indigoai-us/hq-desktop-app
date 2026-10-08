@@ -8,6 +8,7 @@ import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
+import { commandLineToolsAnswer } from '../clt-mocks';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -1821,6 +1822,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
   }
+  const clt = commandLineToolsAnswer(cmd);
+  if (clt !== NOT_HANDLED) return clt as T;
   if (companyFlowEnabled()) {
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;
