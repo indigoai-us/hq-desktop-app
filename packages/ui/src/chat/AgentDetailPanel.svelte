@@ -10,7 +10,6 @@
   import { botKindFor } from "./bot-kind.js";
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
-  import { renderMarkdown } from "../common/markdown.js";
   import type { SelfIdentity } from "../identity/self.js";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
@@ -29,7 +28,6 @@
     routineActionRequest,
     routineBodyFromDraft,
     seedHeader,
-    skillTextFromResult,
     unavailableMessage,
     usageFromCompanyTelemetry,
     type AgentDetailHeader,
@@ -40,7 +38,6 @@
     type LoadState,
     type RoutineActionId,
     type RoutineDraft,
-    type SkillTextState,
   } from "./agent-detail-model.js";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -98,9 +95,6 @@
   let routineBusy = $state(false);
   let routineError = $state<string | null>(null);
   let appsExpanded = $state(false);
-  let openSkill = $state<string | null>(null);
-  let skillText = $state<SkillTextState>({ status: "loading" });
-  let skillRequest = 0;
   let jobsState = $state<LoadState<AgentJobRow[]>>({ status: "loading" });
   let usageState = $state<LoadState<AgentUsageView>>({ status: "loading" });
   let expandedJobId = $state<string | null>(null);
@@ -145,8 +139,6 @@
     routineEditId = null;
     routineError = null;
     appsExpanded = false;
-    openSkill = null;
-    skillRequest += 1;
     expandedJobId = null;
     saveError = null;
     actionError = null;
@@ -401,25 +393,6 @@
       return false;
     }
     return true;
-  }
-
-  async function toggleSkill(name: string): Promise<void> {
-    if (openSkill === name) {
-      openSkill = null;
-      skillRequest += 1;
-      return;
-    }
-    const request = ++skillRequest;
-    openSkill = name;
-    skillText = { status: "loading" };
-    const getSkill = adapter.agents?.getSkill;
-    if (!getSkill) {
-      skillText = skillTextFromResult({ ok: false, status: 404 }, name);
-      return;
-    }
-    const result = await getSkill(agentUid, name);
-    if (request !== skillRequest) return;
-    skillText = skillTextFromResult(result, name);
   }
 
   async function setRoutineEnabled(
@@ -920,50 +893,6 @@
         >
           {saveBusy ? "Saving…" : "Save"}
         </button>
-        <h4 class="ad-sub">Instructions <span class="ad-note">read-only</span></h4>
-        {#if view.persona.instructions}
-          <pre class="ad-prompt ad-soul" data-testid="agent-detail-instructions"
-            >{view.persona.instructions}</pre
-          >
-        {:else}
-          <p class="ad-muted">No instructions to show.</p>
-        {/if}
-        {#if view.skills.length > 0}
-          <h4 class="ad-sub">Skills</h4>
-          <ul class="ad-rows" data-testid="agent-detail-skills">
-            {#each view.skills as skill (skill.name)}
-              <li data-testid="agent-detail-skill-row">
-                <button
-                  type="button"
-                  class="ad-job-toggle"
-                  aria-expanded={openSkill === skill.name}
-                  data-testid="agent-detail-skill-toggle"
-                  onclick={() => void toggleSkill(skill.name)}
-                >
-                  <span class="ad-row-title">{skill.name}</span>
-                  {#if skill.summary}
-                    <span class="ad-row-meta">{skill.summary}</span>
-                  {/if}
-                </button>
-                {#if openSkill === skill.name}
-                  <div class="ad-skill-text" data-testid="agent-detail-skill-text">
-                    {#if skillText.status === "loading"}
-                      <p class="ad-muted">Loading...</p>
-                    {:else if skillText.status === "ready"}
-                      {#if skillText.body.trim()}
-                        <div class="ad-markdown">{@html renderMarkdown(skillText.body)}</div>
-                      {:else}
-                        <p class="ad-muted">This skill has no text.</p>
-                      {/if}
-                    {:else}
-                      <p class="ad-muted" data-testid="agent-detail-skill-error">{skillText.message}</p>
-                    {/if}
-                  </div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        {/if}
       </section>
     {:else}
     <section class="ad-section" data-testid="agent-detail-jobs">
@@ -1483,14 +1412,6 @@
     letter-spacing: 0.08em;
   }
 
-  .ad-skill-text {
-    padding: 6px 0 8px;
-    max-height: 320px;
-    overflow: auto;
-  }
-  .ad-markdown :global(p) {
-    margin: 0 0 6px;
-  }
   .ad-prompt {
     grid-column: 1 / -1;
     margin: 4px 0 0;
@@ -1655,11 +1576,6 @@
 
   .ad-left {
     align-self: flex-start;
-  }
-
-  .ad-soul {
-    max-height: 220px;
-    overflow-y: auto;
   }
 
   .ad-field select {

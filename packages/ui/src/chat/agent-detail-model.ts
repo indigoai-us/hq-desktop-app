@@ -708,13 +708,6 @@ export interface AgentAppsView {
   connectable: AgentAppConnectable[];
 }
 
-export interface AgentSkillRow {
-  name: string;
-  summary: string | null;
-  enabled: boolean;
-  provenance: string | null;
-}
-
 export type RoutineSource = "box" | "hq";
 
 export type RoutineCadence = "daily" | "weekly" | "interval" | "once" | "custom";
@@ -785,8 +778,6 @@ export interface AgentProfileView {
   apps: AgentAppsView;
   routines: AgentRoutineRow[];
   deliverOptions: AgentDeliverOption[];
-  persona: { instructions: string; customized: boolean };
-  skills: AgentSkillRow[];
 }
 
 function ownerNameFrom(owner: unknown): string | null {
@@ -979,7 +970,6 @@ export function profileFromPayload(
     runtimeStatus: null,
     canManage: true,
   };
-  const persona = box && isRecord(box.persona) ? box.persona : {};
   return {
     header,
     role: str(agent.role) || null,
@@ -1003,56 +993,11 @@ export function profileFromPayload(
     hasBox: box != null,
     channels: listOf(box?.platforms)
       .map((row) => ({ name: str(row.name), state: str(row.state) || "unknown" }))
-      .filter((row) => row.name),
+      // Connected platforms only for now; the full list returns when platform management is added.
+      .filter((row) => row.name && row.state === "connected"),
     apps: appsFromBox(box?.integrations),
     routines: routinesFromBox(box?.routines, now),
     deliverOptions: deliverOptionsFrom(box?.channels),
-    persona: {
-      instructions: typeof persona.soul === "string" ? persona.soul.trim() : "",
-      customized: persona.customized === true,
-    },
-    skills: listOf(box?.skills)
-      .map((row) => ({
-        name: str(row.name),
-        summary: str(row.summary) || null,
-        enabled: row.enabled !== false,
-        provenance: str(row.provenance) || null,
-      }))
-      .filter((row) => row.name),
-  };
-}
-
-export type SkillTextState =
-  | { status: "loading" }
-  | { status: "ready"; name: string; body: string }
-  | { status: "offline"; message: string }
-  | { status: "not-found"; message: string }
-  | { status: "error"; message: string };
-
-export const SKILL_OFFLINE_MESSAGE = "The bot is offline, try again later";
-export const SKILL_NOT_FOUND_MESSAGE = "This skill was not found on the bot.";
-
-export function skillTextFromResult(
-  result:
-    | { ok: true; value: unknown }
-    | { ok: false; code?: string; message?: string; status?: number },
-  name: string,
-): SkillTextState {
-  if (result.ok) {
-    const rec = isRecord(result.value) ? result.value : {};
-    const body = typeof rec.body === "string" ? rec.body : "";
-    return { status: "ready", name: str(rec.name) || name, body };
-  }
-  const code = (result.code ?? "").toLowerCase();
-  if (result.status === 503 || code.includes("503")) {
-    return { status: "offline", message: SKILL_OFFLINE_MESSAGE };
-  }
-  if (result.status === 404 || code.includes("404")) {
-    return { status: "not-found", message: SKILL_NOT_FOUND_MESSAGE };
-  }
-  return {
-    status: "error",
-    message: "Could not load this skill. Try again.",
   };
 }
 

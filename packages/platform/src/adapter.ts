@@ -1258,8 +1258,6 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
   runtimeActions: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/runtime/actions`,
-  skill: (agentUid: string, name: string) =>
-    `/v1/agents/${encodeURIComponent(agentUid)}/skills/${encodeURIComponent(name)}`,
   stop: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
@@ -1369,12 +1367,6 @@ export interface AgentsApi {
    * the route; callers fall back to the individual reads.
    */
   getProfile?(agentUid: string): AdapterPromise<Json>;
-  /**
-   * GET /v1/agents/{uid}/skills/{name}: the full text of one skill on the
-   * bot's box, `{name, description, body, fetchedAt}`. Owner only (404 for
-   * anyone else); 503 when the box is offline.
-   */
-  getSkill?(agentUid: string, name: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/runtime/actions: owner relay to the bot's box. */
   runtimeAction?(
     agentUid: string,
