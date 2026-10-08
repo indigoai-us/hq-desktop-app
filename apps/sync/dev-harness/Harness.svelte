@@ -23,7 +23,7 @@
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { bannerFixtures } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
-  import { TOUR_SEEN_STORAGE_KEY, pushToast } from '@hq/ui';
+  import { TOUR_SEEN_STORAGE_KEY, VISUAL_FIRST_RUN_DONE_KEY, WELCOME_SETUP_RUN_KEY, pushToast } from '@hq/ui';
   import { raiseToasts, toastSwitch } from './audit-switches';
 
   // Fixture thread for ?view=conversation — exercises the copy-message toolbar
@@ -150,6 +150,16 @@
       localStorage.removeItem(TOUR_SEEN_STORAGE_KEY);
     } catch {
       // Storage unavailable: the mocked host flag still says "not shown".
+    }
+  }
+  // ?firstrun=visual|visual-notools|visual-fail (dev-harness/audit-switches.ts):
+  // a first run, so forget that setup ran or the takeover finished here.
+  if (params.get('firstrun')) {
+    try {
+      localStorage.removeItem(WELCOME_SETUP_RUN_KEY);
+      localStorage.removeItem(VISUAL_FIRST_RUN_DONE_KEY);
+    } catch {
+      // Storage unavailable: nothing was remembered either.
     }
   }
   const theme = params.get('theme') ?? 'dark';
