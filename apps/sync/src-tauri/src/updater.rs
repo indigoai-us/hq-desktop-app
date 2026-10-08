@@ -115,6 +115,49 @@ fn emit_update_outcome(
     let _ = attempt.observe_result(stage, to_version, Ok::<(), ()>(()), send_update_outcome);
 }
 
+fn record_client_health_update_check<T, E: std::fmt::Display>(result: &Result<Option<T>, E>) {
+    use hq_desktop_core::client_health::{
+        ClientHealthUpdateCheckOutcome as Outcome, ClientHealthUpdaterErrorClass as ErrorClass,
+    };
+
+    match result {
+        Ok(Some(_)) => crate::commands::client_health::record_update_check_result(
+            Outcome::UpdateAvailable,
+            None,
+        ),
+        Ok(None) => {
+            crate::commands::client_health::record_update_check_result(Outcome::NoUpdate, None)
+        }
+        Err(error) => {
+            let message = error.to_string().to_ascii_lowercase();
+            let class = if message.contains("timed out") || message.contains("timeout") {
+                ErrorClass::Timeout
+            } else if message.contains("signature") {
+                ErrorClass::Signature
+            } else if message.contains("json")
+                || message.contains("parse")
+                || message.contains("manifest")
+            {
+                ErrorClass::ManifestParse
+            } else if message.contains("http") || message.contains("status code") {
+                ErrorClass::HttpStatus
+            } else if message.contains("network")
+                || message.contains("connect")
+                || message.contains("dns")
+                || message.contains("socket")
+            {
+                ErrorClass::Network
+            } else {
+                ErrorClass::Other
+            };
+            crate::commands::client_health::record_update_check_result(
+                Outcome::CheckError,
+                Some(class),
+            );
+        }
+    }
+}
+
 pub(crate) fn emit_update_download_progress(app: &AppHandle, downloaded: u64, total: Option<u64>) {
     let _ = app.emit(
         "update:progress",
@@ -1221,7 +1264,9 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -1291,7 +1336,9 @@ pub async fn reinstall_latest_release(app: AppHandle) -> Result<(), String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -1443,7 +1490,9 @@ pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String>
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.check().await {
+    let check_result = updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -2101,7 +2150,9 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
     // anyway) and the stable fallback path skips the network entirely.
     let updater = channel_aware_updater(&app).await?;
     let authoritative = updater.provenance.absence_is_authoritative();
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -2166,7 +2217,9 @@ pub async fn download_update(app: AppHandle) -> Result<UpdateInfo, String> {
         UpdateOutcomeStage::CheckStarted,
         crate::app_version::current(),
     );
-    match updater.updater.check().await {
+    let check_result = updater.updater.check().await;
+    record_client_health_update_check(&check_result);
+    match check_result {
         Ok(Some(update)) => {
             let info = discovered_update(
                 update.version.clone(),
@@ -2668,7 +2721,9 @@ pub fn setup_update_checker(app: &AppHandle) {
                                 UpdateOutcomeStage::CheckStarted,
                                 crate::app_version::current(),
                             );
-                            match updater.updater.check().await {
+                            let check_result = updater.updater.check().await;
+                            record_client_health_update_check(&check_result);
+                            match check_result {
                                 Ok(Some(update)) => {
                                     let info = discovered_update(
                                         update.version.clone(),

@@ -44,7 +44,8 @@ use tokio::sync::Notify;
 use hq_desktop_core::client_health::{
     clear_staged_update_signal_at_process_start, parse_client_health_heartbeat, ClientHealthArch,
     ClientHealthFailureReason, ClientHealthHeartbeat, ClientHealthInstallOutcome,
-    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState, ClientHealthUpdateDeferReason,
+    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState,
+    ClientHealthUpdateCheckOutcome, ClientHealthUpdateDeferReason, ClientHealthUpdaterErrorClass,
     ClientHealthUpdaterState, ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION,
     CLIENT_HEALTH_MAX_CONFLICT_COUNT, CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
 };
@@ -99,6 +100,10 @@ struct ClientHealthState {
     /// Closed `ClientHealthUpdaterState` wire token of the last observed
     /// updater transition. `None` = never observed → reported `unchecked`.
     updater_state: Option<String>,
+    /// Timestamp, outcome, and closed error class for the last updater check.
+    last_update_check_at: Option<String>,
+    update_check_outcome: Option<String>,
+    update_check_error_class: Option<String>,
     /// Closed client-health reason for a staged update whose install is held.
     update_defer_reason: Option<String>,
     /// Closed client-health result for the most recent updater install.
@@ -414,6 +419,44 @@ pub(crate) fn record_updater_status(status: &PendingUpdateStatus) {
     persist_updater_state(updater_wire_state(status));
 }
 
+/// Persist a content-free updater check result so an `up_to_date` heartbeat
+/// can be distinguished from an old successful no-offer result.
+pub(crate) fn record_update_check_result(
+    outcome: ClientHealthUpdateCheckOutcome,
+    error_class: Option<ClientHealthUpdaterErrorClass>,
+) {
+    let checked_at = now_iso();
+    if let Err(error) = with_state(|state| {
+        apply_update_check_result(state, &checked_at, outcome, error_class);
+    }) {
+        eprintln!("[client-health] record-update-check-result failed: {error}");
+    }
+    notify_client_health_state_changed();
+}
+
+fn apply_update_check_result(
+    state: &mut ClientHealthState,
+    checked_at: &str,
+    outcome: ClientHealthUpdateCheckOutcome,
+    error_class: Option<ClientHealthUpdaterErrorClass>,
+) {
+    state.last_update_check_at = Some(checked_at.to_string());
+    state.update_check_outcome = Some(outcome.wire_value().to_string());
+    state.update_check_error_class = error_class.map(|class| class.wire_value().to_string());
+    if outcome == ClientHealthUpdateCheckOutcome::CheckError
+        && matches!(
+            state.updater_state.as_deref(),
+            None | Some("unchecked" | "up_to_date")
+        )
+    {
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateFailed
+                .wire_value()
+                .to_string(),
+        );
+    }
+}
+
 /// A verified package is staged and its automatic install is being held.
 /// Preserve the staged state even if a later updater check reports no update.
 pub(crate) fn record_staged_update_deferred(reason: ClientHealthUpdateDeferReason) {
@@ -669,6 +712,15 @@ fn build_heartbeat_payload(
             .min(CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES),
         conflict_count: Some(state.conflict_count.min(CLIENT_HEALTH_MAX_CONFLICT_COUNT)),
         updater_state: Some(reported_updater_state(state)),
+        last_update_check_at: state.last_update_check_at.clone(),
+        update_check_outcome: state
+            .update_check_outcome
+            .as_deref()
+            .and_then(update_check_outcome_from_wire),
+        update_check_error_class: state
+            .update_check_error_class
+            .as_deref()
+            .and_then(updater_error_class_from_wire),
         update_defer_reason: state
             .update_defer_reason
             .as_deref()
@@ -678,6 +730,31 @@ fn build_heartbeat_payload(
             .as_deref()
             .and_then(install_outcome_from_wire),
         failure_reason: derive_failure_reason(sync_state, state),
+    }
+}
+
+fn update_check_outcome_from_wire(value: &str) -> Option<ClientHealthUpdateCheckOutcome> {
+    use ClientHealthUpdateCheckOutcome as O;
+    match value {
+        "no_update" => Some(O::NoUpdate),
+        "update_available" => Some(O::UpdateAvailable),
+        "check_error" => Some(O::CheckError),
+        "disabled" => Some(O::Disabled),
+        "deferred" => Some(O::Deferred),
+        _ => None,
+    }
+}
+
+fn updater_error_class_from_wire(value: &str) -> Option<ClientHealthUpdaterErrorClass> {
+    use ClientHealthUpdaterErrorClass as E;
+    match value {
+        "network" => Some(E::Network),
+        "signature" => Some(E::Signature),
+        "manifest_parse" => Some(E::ManifestParse),
+        "http_status" => Some(E::HttpStatus),
+        "timeout" => Some(E::Timeout),
+        "other" => Some(E::Other),
+        _ => None,
     }
 }
 
@@ -1239,6 +1316,68 @@ mod tests {
             heartbeat.updater_state,
             Some(ClientHealthUpdaterState::Unchecked),
             "this client HAS an updater — absence would claim it is too old to report one"
+        );
+    }
+
+    #[test]
+    fn failed_check_replaces_stale_up_to_date_status_and_reports_timestamp() {
+        let mut state = state_with_id(1);
+        state.updater_state = Some(ClientHealthUpdaterState::UpToDate.wire_value().to_string());
+
+        apply_update_check_result(
+            &mut state,
+            "2026-10-08T18:00:00.000Z",
+            ClientHealthUpdateCheckOutcome::CheckError,
+            Some(ClientHealthUpdaterErrorClass::Network),
+        );
+
+        let heartbeat = build_heartbeat_payload(
+            &state,
+            full_versions(),
+            false,
+            false,
+            "2026-10-08T18:00:01.000Z".to_string(),
+        );
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateFailed)
+        );
+        assert_eq!(
+            heartbeat.last_update_check_at.as_deref(),
+            Some("2026-10-08T18:00:00.000Z")
+        );
+        assert_eq!(
+            heartbeat.update_check_outcome,
+            Some(ClientHealthUpdateCheckOutcome::CheckError)
+        );
+        assert_eq!(
+            heartbeat.update_check_error_class,
+            Some(ClientHealthUpdaterErrorClass::Network)
+        );
+    }
+
+    #[test]
+    fn failed_check_preserves_a_known_available_or_staged_update() {
+        let mut state = state_with_id(1);
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateReady
+                .wire_value()
+                .to_string(),
+        );
+        state.update_defer_reason = Some("busy_sync".to_string());
+        state.install_outcome = Some("staged".to_string());
+
+        apply_update_check_result(
+            &mut state,
+            "2026-10-08T18:00:00.000Z",
+            ClientHealthUpdateCheckOutcome::CheckError,
+            Some(ClientHealthUpdaterErrorClass::Network),
+        );
+
+        let heartbeat = build_heartbeat_payload(&state, full_versions(), false, false, now_iso());
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateReady)
         );
     }
 
