@@ -70,7 +70,7 @@ fn upsert_inserts_entry_keyed_by_window_id() {
     let e = ledger.get("win-1").expect("entry present");
     assert_eq!(e.recording_id, "rec_abc");
     assert_eq!(e.company_uid.as_deref(), Some("co_indigo"));
-    assert_eq!(e.started_at, "2026-06-03T10:00:00+00:00");
+    assert_eq!(e.started_at, "2026-06-03T10:00:00Z");
 }
 
 #[test]

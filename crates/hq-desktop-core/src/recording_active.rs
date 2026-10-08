@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::hq_config_dir;
@@ -62,13 +62,14 @@ fn write_at(
     let body = serde_json::to_vec(&RecordingActivity {
         version: VERSION,
         pid,
-        updated_at: now.to_rfc3339(),
+        updated_at: now.to_rfc3339_opts(SecondsFormat::Secs, true),
         recordings,
     })
     .map_err(|e| e.to_string())?;
     let tmp = target.with_extension("json.tmp");
     let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
     file.write_all(&body).map_err(|e| e.to_string())?;
+    file.write_all(b"\n").map_err(|e| e.to_string())?;
     file.sync_all().ok();
     fs::rename(&tmp, &target).map_err(|e| e.to_string())
 }
@@ -89,6 +90,7 @@ fn cleanup_at(target: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use regex::Regex;
 
     #[test]
     fn serializes_the_hook_contract() {
@@ -110,23 +112,64 @@ mod tests {
     }
 
     fn recording(id: &str, window: &str) -> ActiveRecording {
-        ActiveRecording { recording_id: id.into(), window_id: window.into(), started_at: "2026-10-07T21:00:00Z".into() }
+        ActiveRecording {
+            recording_id: id.into(),
+            window_id: window.into(),
+            started_at: "2026-10-07T21:00:00Z".into(),
+        }
     }
 
     #[test]
     fn writes_refreshes_shrinks_and_removes_the_marker() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("recording-active.json");
-        let now = DateTime::parse_from_rfc3339("2026-10-07T21:44:00Z").unwrap().with_timezone(&Utc);
-        write_at(&marker, 42, vec![recording("rec-1", "win-1"), recording("rec-2", "win-2")], now).unwrap();
-        let initial: RecordingActivity = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-10-07T21:44:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        write_at(
+            &marker,
+            42,
+            vec![recording("rec-1", "win-1"), recording("rec-2", "win-2")],
+            now,
+        )
+        .unwrap();
+        let initial: RecordingActivity =
+            serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
         assert_eq!(initial.recordings.len(), 2);
-        write_at(&marker, 42, vec![recording("rec-2", "win-2")], now + chrono::Duration::minutes(1)).unwrap();
-        let shrunk: RecordingActivity = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
-        assert_eq!(shrunk.updated_at, "2026-10-07T21:45:00+00:00");
+        write_at(
+            &marker,
+            42,
+            vec![recording("rec-2", "win-2")],
+            now + chrono::Duration::minutes(1),
+        )
+        .unwrap();
+        let shrunk: RecordingActivity =
+            serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+        assert_eq!(shrunk.updated_at, "2026-10-07T21:45:00Z");
         assert_eq!(shrunk.recordings, vec![recording("rec-2", "win-2")]);
         write_at(&marker, 42, Vec::new(), now).unwrap();
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn writer_uses_second_precision_utc_timestamps_and_matches_contract_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("recording-active.json");
+        let now = DateTime::parse_from_rfc3339("2026-10-07T21:44:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        write_at(&marker, 42, vec![recording("rec-1", "win-1")], now).unwrap();
+
+        let bytes = fs::read(&marker).unwrap();
+        let state: RecordingActivity = serde_json::from_slice(&bytes).unwrap();
+        let utc_seconds = Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$").unwrap();
+        assert!(utc_seconds.is_match(&state.updated_at));
+        assert!(utc_seconds.is_match(&state.recordings[0].started_at));
+        assert_eq!(
+            bytes,
+            include_bytes!("../fixtures/recording-active.sample.json"),
+        );
     }
 
     #[test]

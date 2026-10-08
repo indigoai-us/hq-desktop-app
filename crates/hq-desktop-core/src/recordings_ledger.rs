@@ -272,7 +272,7 @@ pub fn upsert(
         RecordingEntry {
             recording_id,
             company_uid: company_uid.filter(|s| !s.is_empty()),
-            started_at: started_at.to_rfc3339(),
+            started_at: started_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             not_found_since: None,
         },
     );
