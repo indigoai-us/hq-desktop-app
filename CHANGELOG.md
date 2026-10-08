@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Show a notice when sync parks a conflict copy, with actions to reveal the preserved file or dismiss the notice.
+
 ### Fixed
 
 - On a Mac, the "One shortcut to remember" step of first-run setup now draws a Mac keyboard (fn, control, option, command) with option and shift lit, matching the ⌥ ⇧ O shown under it. It used to draw a Windows keyboard with Alt lit. Windows and Linux keep the Alt Shift O keyboard.
