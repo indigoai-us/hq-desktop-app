@@ -9,6 +9,7 @@
   import ShareDetail from '../src/components/ShareDetail.svelte';
   import MeetingsWindow from '../src/components/MeetingsWindow.svelte';
   import MeetingsShot from './MeetingsShot.svelte';
+  import AccessShot from './AccessShot.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import OnboardingWizard from '../src/components/onboarding/OnboardingWizard.svelte';
   import CinematicIntro from '../src/components/onboarding/CinematicIntro.svelte';
@@ -16,6 +17,7 @@
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
+  import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -222,7 +224,10 @@
   }
 </script>
 
-{#if view === 'activity'}
+{#if view === 'forward'}
+  <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
+  <ForwardPickerPreview />
+{:else if view === 'activity'}
   <!-- Recent Changes at its native 560x460 size. -->
   <ActivityLog />
 {:else if view === 'new-files'}
@@ -239,6 +244,8 @@
   <MeetingsWindow />
 {:else if view === 'meetings-shot'}
   <MeetingsShot />
+{:else if view === 'access-shot'}
+  <AccessShot />
 {:else if view === 'permissions'}
   <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
   <MeetingPermissionsWindow />

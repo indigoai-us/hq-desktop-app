@@ -388,6 +388,11 @@ export function normalizeConversationMessages(
       reactions: parseWireReactions(row.reactions),
       mentions: parseWireMentions(row.mentions),
       attachments: parseWireAttachments(row.attachments ?? row.attachment),
+      ...(row.forwardedFrom !== undefined ? { forwardedFrom: row.forwardedFrom } : {}),
+      ...(asString(row.forwardNote) ? { forwardNote: asString(row.forwardNote) } : {}),
+      ...(row.omittedAttachments !== undefined
+        ? { omittedAttachments: row.omittedAttachments }
+        : {}),
       ...(rootEventId ? { rootEventId } : {}),
       ...(replyCount !== undefined ? { replyCount } : {}),
       ...(lastReplyAt ? { lastReplyAt } : {}),

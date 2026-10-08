@@ -36,6 +36,7 @@
   import MentionPicker from "./MentionPicker.svelte";
   import { isHumanMessage, type LocalBotRow } from "@hq/platform";
   import ArtifactCard from "./ArtifactCard.svelte";
+  import ForwardedBlock from "./ForwardedBlock.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import type { ImagePreviewCache } from "./image-preview-cache";
   import MessageAttachments from "./MessageAttachments.svelte";
@@ -43,6 +44,9 @@
   import ComposerPendingAttachments from "./ComposerPendingAttachments.svelte";
   import {
     parseMessageAttachments,
+    parseForwardedFrom,
+    parseOmittedAttachments,
+    forwardNoteText,
     isHiddenTimelineMessage,
     systemModelForMessage,
     type FileAttachmentModel,
@@ -122,6 +126,7 @@
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
   import { copyableText } from "./conversation-copy";
+  import { buildMessageLink } from "./message-link";
   import {
     activeMentionQuery,
     applyMentionMarkup,
@@ -186,6 +191,11 @@
      * button is drawn: the host has no threads to open here.
      */
     onreply?: (rootEventId: string) => void;
+    /**
+     * Forward this message (US-009). Without it no Forward button is drawn.
+     * Not offered on unsent rows, which have no server event id yet.
+     */
+    onforward?: (msg: ConversationMessageWire) => void;
     /** Start an in-channel session from this message. */
     onstartsession?: (rootEventId: string) => void;
     /** Open an existing in-channel session from a work-session card. */
@@ -351,6 +361,8 @@
     conversationKey?: string | null;
     /** While offline, a successful queue parks the optimistic row instead of failing it. */
     offline?: boolean;
+    /** The other person of a direct message; names the conversation in "Copy link". */
+    peerPersonUid?: string | null;
   }
 
   let {
@@ -370,6 +382,7 @@
     mentionCandidates = [],
     allowHereMention = false,
     onreply,
+    onforward,
     onstartsession,
     onopensession,
     onopenattachment,
@@ -405,6 +418,7 @@
     serverHumanView = false,
     conversationKey = null,
     offline = false,
+    peerPersonUid = null,
   }: Props = $props();
 
   /** A message's text and blocks, with any blocks the host put on it. */
@@ -700,23 +714,58 @@
   let reactPickerFor = $state<string | null>(null);
   /** eventId whose "Copy" just succeeded — flips the label to "Copied". */
   let copiedEventId = $state<string | null>(null);
+  /** Which of that message's copy buttons succeeded. */
+  let copiedKind = $state<"text" | "id" | "link">("text");
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Copy the visible message text (body + details) to the clipboard. */
-  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
-    const text = copyableText(msg, "body");
-    if (!text) return;
+  async function writeClipboard(
+    msg: ConversationMessageWire,
+    text: string,
+    kind: "text" | "id" | "link",
+  ): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       return;
     }
     copiedEventId = msg.eventId;
+    copiedKind = kind;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => {
       copiedEventId = null;
       copiedTimer = null;
     }, 1500);
+  }
+
+  /** Copy the visible message text (body + details) to the clipboard. */
+  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
+    const text = copyableText(msg, "body");
+    if (!text) return;
+    await writeClipboard(msg, text, "text");
+  }
+
+  const linkConversationId = $derived(
+    (channelId ?? peerPersonUid ?? "").trim() || null,
+  );
+  const linkCompanyUid = $derived(
+    (companyUid ?? vaultCompanyUid ?? "").trim() || null,
+  );
+
+  async function copyMessageId(msg: ConversationMessageWire): Promise<void> {
+    await writeClipboard(msg, msg.eventId, "id");
+  }
+
+  async function copyMessageLink(msg: ConversationMessageWire): Promise<void> {
+    if (!linkConversationId || !linkCompanyUid) return;
+    await writeClipboard(
+      msg,
+      buildMessageLink({
+        companyUid: linkCompanyUid,
+        conversationId: linkConversationId,
+        eventId: msg.eventId,
+      }),
+      "link",
+    );
   }
   let dragActive = $state(false);
   let dragDepth = 0;
@@ -1768,6 +1817,78 @@
   });
 </script>
 
+{#snippet bubbleBodyText(msg: ConversationMessageWire, text: string)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="dm-bubble-body selectable-text msg-body"
+    class:msg-body-jumbo={isJumboEmojiBody(text)}
+    data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
+    use:revealLines={{
+      active: revealIds.has(msg.eventId),
+      text,
+      onreveal: followReveal,
+    }}
+    onclick={(e) => {
+      if (onBodyLinkActivate(e)) return;
+      onMentionActivate(e, e.target);
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        if (onBodyLinkActivate(e)) return;
+        onMentionActivate(e, e.target);
+      }
+    }}
+  >
+    {#if isHeavyMessageBody(text)}
+      <PlainMessageBody body={text} />
+    {:else}
+      {@html applyMentionMarkup(
+        renderMessageBodyMarkdown(text),
+        storedMentions(msg),
+      )}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet bubbleContent(msg: ConversationMessageWire, rich: ExtractedRichContent)}
+  {#if rich.text.trim()}
+    {@render bubbleBodyText(msg, rich.text)}
+  {/if}
+  {#if rich.rich}
+    <RichMessageContent
+      content={rich.rich}
+      ondecision={handleDecision}
+      {answeredQuestionIds}
+      {answeredChoices}
+      connections={cardsForMessage(msg)}
+    />
+  {/if}
+  {#if msg.details?.trim()}
+    <ArtifactCard
+      kind="details"
+      text={msg.details}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  {#if msg.prompt?.trim()}
+    <ArtifactCard
+      kind="prompt"
+      text={msg.prompt}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  <MessageAttachments
+    {previewCache}
+    {vaultCompanyUid}
+    attachments={parseMessageAttachments(msg)}
+    onopen={openAttachment}
+    resolveUrl={resolveAttachmentUrl}
+    {onreleaseurl}
+  />
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div
@@ -1884,8 +2005,9 @@
               data-event-id={msg.eventId}
             >
               <span class="dm-msg-avatar">
+                <!-- A bot's card shows the bot's avatar, as its messages do. -->
                 <IdentityMark
-                  kind="person"
+                  kind={isAgent(msg) ? "agent" : "person"}
                   label={messageAuthor(msg)}
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
@@ -2011,6 +2133,8 @@
             />
           {:else if messageHasVisibleContent(msg) || parseMessageAttachments(msg).length > 0}
             {@const rich = richForMessage(msg)}
+            {@const forwarded = parseForwardedFrom(msg.forwardedFrom)}
+            {@const forwardNote = forwarded ? forwardNoteText(msg.forwardNote) : ""}
             <div
               class="dm-msg dm-msg-{msg.direction === 'out' ? 'out' : 'in'}"
               class:dm-msg-group-start={groupStart}
@@ -2069,71 +2193,19 @@
                   </div>
                 {/if}
                 <div class="dm-bubble">
-                  {#if rich.text.trim()}
-                    <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <div
-                      class="dm-bubble-body selectable-text msg-body"
-                      class:msg-body-jumbo={isJumboEmojiBody(rich.text)}
-                      data-reveal={revealIds.has(msg.eventId) ? "true" : undefined}
-                      use:revealLines={{
-                        active: revealIds.has(msg.eventId),
-                        text: rich.text,
-                        onreveal: followReveal,
-                      }}
-                      onclick={(e) => {
-                        if (onBodyLinkActivate(e)) return;
-                        onMentionActivate(e, e.target);
-                      }}
-                      onkeydown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          if (onBodyLinkActivate(e)) return;
-                          onMentionActivate(e, e.target);
-                        }
-                      }}
+                  {#if forwarded}
+                    {#if forwardNote}
+                      {@render bubbleBodyText(msg, forwardNote)}
+                    {/if}
+                    <ForwardedBlock
+                      forwardedFrom={forwarded}
+                      omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
                     >
-                      {#if isHeavyMessageBody(rich.text)}
-                        <PlainMessageBody body={rich.text} />
-                      {:else}
-                        {@html applyMentionMarkup(
-                          renderMessageBodyMarkdown(rich.text),
-                          storedMentions(msg),
-                        )}
-                      {/if}
-                    </div>
+                      {@render bubbleContent(msg, rich)}
+                    </ForwardedBlock>
+                  {:else}
+                    {@render bubbleContent(msg, rich)}
                   {/if}
-                  {#if rich.rich}
-                    <RichMessageContent
-                      content={rich.rich}
-                      ondecision={handleDecision}
-                      {answeredQuestionIds}
-                      {answeredChoices}
-                      connections={cardsForMessage(msg)}
-                    />
-                  {/if}
-                  {#if msg.details?.trim()}
-                    <ArtifactCard
-                      kind="details"
-                      text={msg.details}
-                      eventId={msg.eventId}
-                      onopen={onopenartifact}
-                    />
-                  {/if}
-                  {#if msg.prompt?.trim()}
-                    <ArtifactCard
-                      kind="prompt"
-                      text={msg.prompt}
-                      eventId={msg.eventId}
-                      onopen={onopenartifact}
-                    />
-                  {/if}
-                  <MessageAttachments
-                    {previewCache}
-                    {vaultCompanyUid}
-                    attachments={parseMessageAttachments(msg)}
-                    onopen={openAttachment}
-                    resolveUrl={resolveAttachmentUrl}
-                    {onreleaseurl}
-                  />
                 </div>
                 {#if queuedLocalIds.includes(msg.eventId)}
                   <span class="queued-mark" data-testid="message-queued">◷ Queued · sends when back online</span>
@@ -2270,8 +2342,44 @@
                       title="Copy message"
                       onclick={() => copyMessage(msg)}
                     ><RailIcon name="copy" />
-                      {copiedEventId === msg.eventId ? "Copied" : "Copy"}
+                      {copiedEventId === msg.eventId && copiedKind === "text" ? "Copied" : "Copy"}
                     </button>
+                  {/if}
+                  {#if onforward && !msg.eventId.startsWith("local-send-")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-forward"
+                      data-testid="message-forward"
+                      aria-label="Forward message"
+                      title="Forward"
+                      onclick={() => onforward(msg)}
+                    >
+                      Forward
+                    </button>
+                  {/if}
+                  {#if !msg.eventId.startsWith("local-")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-copy"
+                      data-testid="message-copy-id"
+                      aria-label="Copy message ID"
+                      title="Copy ID"
+                      onclick={() => copyMessageId(msg)}
+                    ><RailIcon name="copy" />
+                      {copiedEventId === msg.eventId && copiedKind === "id" ? "Copied" : "Copy ID"}
+                    </button>
+                    {#if linkConversationId && linkCompanyUid}
+                      <button
+                        type="button"
+                        class="dm-quick-react-btn dm-quick-copy"
+                        data-testid="message-copy-link"
+                        aria-label="Copy message link"
+                        title="Copy link"
+                        onclick={() => copyMessageLink(msg)}
+                      ><RailIcon name="link" />
+                        {copiedEventId === msg.eventId && copiedKind === "link" ? "Copied" : "Copy link"}
+                      </button>
+                    {/if}
                   {/if}
                   {#if onstartsession}
                     <button

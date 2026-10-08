@@ -535,4 +535,88 @@ describe("DesktopApp update-available card", () => {
     expect(toasts[0].dataset.kind).toBe("quiet");
     expect(toasts[0].textContent).toContain("Files up to date");
   });
+  function syncToasts(): NodeListOf<HTMLElement> {
+    return document.querySelectorAll<HTMLElement>('[data-testid="sync-toast"]');
+  }
+
+  async function remount(events: ReturnType<typeof createSyncEventHost>): Promise<void> {
+    if (component) await unmount(component);
+    component = null;
+    host.remove();
+    await mountApp(events.host);
+  }
+
+  it("X keeps the sync toast hidden through later progress ticks, batches and the done notice", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("sync:plan", { company: "personal", filesToUpload: 1844 });
+    events.emit("sync:progress", { company: "personal" });
+    await settle();
+    expect(syncToasts()).toHaveLength(1);
+    expect(syncToasts()[0].textContent).toContain("Syncing 1844 files for Personal");
+
+    syncToasts()[0].querySelector<HTMLButtonElement>('[data-testid="toast-dismiss"]')!.click();
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+
+    for (let i = 0; i < 5; i += 1) events.emit("sync:progress", { company: "personal" });
+    events.emit("sync:plan", { company: "personal", filesToUpload: 20 });
+    // Another company later in the same run stays hidden too.
+    events.emit("sync:plan", { company: "Acme", filesToUpload: 3 });
+    events.emit("sync:progress", { company: "Acme" });
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+
+    events.emit("sync:all-complete", {});
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+  });
+
+  it("a dismissed company stays hidden on later runs and after a restart; other companies still show", async () => {
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("sync:plan", { company: "personal", filesToUpload: 10 });
+    events.emit("sync:progress", { company: "personal" });
+    await settle();
+    syncToasts()[0].querySelector<HTMLButtonElement>('[data-testid="toast-dismiss"]')!.click();
+    await settle();
+    events.emit("sync:all-complete", {});
+    await settle();
+    expect(window.localStorage.getItem("hq.work.tenant.v1.prs_me.all.hq.syncToast.dismissed.v1")).toBe('["personal"]');
+
+    // Next run, same window.
+    events.emit("sync:plan", { company: "personal", filesToUpload: 4 });
+    events.emit("sync:progress", { company: "personal" });
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+    events.emit("sync:all-complete", {});
+    await settle();
+
+    // Restart: the choice was saved, so the toast stays off for Personal.
+    await remount(events);
+    events.emit("sync:plan", { company: "personal", filesToUpload: 4 });
+    events.emit("sync:progress", { company: "personal" });
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+    events.emit("sync:all-complete", {});
+    await settle();
+    expect(syncToasts()).toHaveLength(0);
+
+    // A company the person never closed still gets its toast.
+    events.emit("sync:plan", { company: "Acme", filesToUpload: 2 });
+    events.emit("sync:progress", { company: "Acme" });
+    await settle();
+    expect(syncToasts()).toHaveLength(1);
+    expect(syncToasts()[0].textContent).toContain("1 of 2 done");
+  });
+
+  it("the saved dismissal belongs to the account that made it", async () => {
+    window.localStorage.setItem("hq.work.tenant.v1.prs_other.all.hq.syncToast.dismissed.v1", '["personal"]');
+    const events = createSyncEventHost();
+    await mountApp(events.host);
+    events.emit("sync:plan", { company: "personal", filesToUpload: 2 });
+    events.emit("sync:progress", { company: "personal" });
+    await settle();
+    expect(syncToasts()).toHaveLength(1);
+  });
 });

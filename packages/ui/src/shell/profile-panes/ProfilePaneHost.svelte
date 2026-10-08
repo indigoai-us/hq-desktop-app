@@ -4,7 +4,9 @@
    * Name-click destination: bot or person profile, with the session pane and
    * edit sheet layered on the bot. The first frame uses the roster snapshot.
    */
-  import BotProfilePane from "./BotProfilePane.svelte";
+  import BotProfilePane, { type BotPaneTab } from "./BotProfilePane.svelte";
+  import BotJobsPane from "./BotJobsPane.svelte";
+  import { botJobsFromPayload, type BotJob } from "./bot-jobs.js";
   import BotSessionPane from "./BotSessionPane.svelte";
   import EditBotSheet from "./EditBotSheet.svelte";
   import UserProfilePane from "./UserProfilePane.svelte";
@@ -76,6 +78,10 @@
   let editing = $state(false);
   let editTab = $state<EditBotTab>("identity");
   let jobs = $state<ProfileRun[] | null>(null);
+  /** The Jobs tab's rows; null until the jobs read settles. */
+  let botJobs = $state<BotJob[] | null>(null);
+  let jobsUnavailable = $state<string | null>(null);
+  let paneTab = $state<BotPaneTab>("profile");
   let usage = $state<{ status: "loading" | "ready" | "unavailable"; tokens?: string; sessions?: number | null; daily?: number[]; message?: string } | null>(null);
   let memberships = $state<ProfileCompany[] | null>(null);
   /** Name from the bot's own status record; wins over the cached name. */
@@ -91,6 +97,8 @@
     const api = agents;
     const company = companyUid ?? null;
     jobs = null;
+    botJobs = null;
+    jobsUnavailable = null;
     memberships = null;
     refreshedName = "";
     actionError = null;
@@ -126,6 +134,11 @@
       .then(([jobsRes, usageRes]) => {
         if (cancelled) return;
         if (jobsRes.ok) {
+          botJobs = botJobsFromPayload(jobsRes.value);
+        } else {
+          jobsUnavailable = unavailableMessage(jobsRes, "jobs");
+        }
+        if (jobsRes.ok) {
           jobs = jobsFromPayload(jobsRes.value).map((job) => ({
             id: job.jobId,
             title: job.title,
@@ -150,6 +163,7 @@
         if (cancelled) return;
         console.warn("[hq-desktop] bot profile refresh failed", err);
         usage = { status: "unavailable", message: "Not available yet." };
+        if (botJobs === null) jobsUnavailable = "Not available yet.";
       });
     return () => {
       cancelled = true;
@@ -170,6 +184,19 @@
       actionError = next ? "Could not pause the bot." : "Could not resume the bot.";
       console.warn("[hq-desktop] bot pause/resume failed", res.message ?? res.reason);
     }
+  }
+
+  /** Pause one scheduled job (the only job control open to people today). */
+  async function pauseJob(jobId: string): Promise<boolean> {
+    const uid = (agentUid ?? "").trim();
+    if (!uid || !agents) return false;
+    const res = await agents.pauseJob(uid, jobId);
+    if (!res.ok) {
+      console.warn("[hq-desktop] pause the job failed", res.message ?? res.reason);
+      return false;
+    }
+    botJobs = (botJobs ?? []).map((job) => (job.id === jobId ? { ...job, enabled: false } : job));
+    return true;
   }
 
   function openEdit(tab: EditBotTab = "identity"): void {
@@ -240,7 +267,14 @@
       onpause={() => void setPaused(true)}
       onresume={() => void setPaused(false)}
       onstop={stopSession}
+      tab={paneTab}
+      ontab={(next) => (paneTab = next)}
+      jobsCount={botJobs ? botJobs.length : null}
+      jobsPanel={agentUid && agents ? jobsPanel : undefined}
     />
+    {#snippet jobsPanel()}
+      <BotJobsPane jobs={botJobs} unavailable={jobsUnavailable} onpause={pauseJob} />
+    {/snippet}
   {:else}
     <UserProfilePane snapshot={personView} {onclose} {onmessage} {onatlas} {onmanage} />
   {/if}

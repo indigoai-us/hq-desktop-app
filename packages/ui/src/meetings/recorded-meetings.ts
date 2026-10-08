@@ -131,12 +131,31 @@ export function recordedToEvent(m: RecordedMeeting): MeetingEvent {
   };
 }
 
-/** Calendar events plus recorded history, recorded rows after calendar rows. */
+/**
+ * Calendar events plus recorded history, recorded rows after calendar rows.
+ * A recorded row takes its attendees (and organizer) from the calendar event
+ * it was recorded from: same title, starting within ten minutes (the rule
+ * ownRecordedMeetings uses). hq-pro's rows carry no attendees, so without
+ * this the side panel waited for the transcript to name the speakers.
+ */
 export function withRecordedEvents(
   events: readonly MeetingEvent[],
   recorded: readonly RecordedMeeting[],
 ): MeetingEvent[] {
-  return [...events, ...recorded.map(recordedToEvent)];
+  const calendar = calendarKeys(events.filter((e) => !e.recorded && (e.attendees ?? []).length > 0));
+  return [
+    ...events,
+    ...recorded.map((m) => {
+      const event = recordedToEvent(m);
+      const match = calendar.find((c) => calendarMatchesRecording(c, m))?.event;
+      if (!match) return event;
+      return {
+        ...event,
+        attendees: match.attendees,
+        ...(match.organizer ? { organizer: match.organizer } : {}),
+      };
+    }),
+  ];
 }
 
 /**
@@ -164,6 +183,32 @@ function normTitle(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+interface CalendarKey<E> {
+  title: string;
+  at: number;
+  event: E;
+}
+
+function calendarKeys<E extends Pick<MeetingEvent, "summary" | "start">>(
+  events: readonly E[],
+): CalendarKey<E>[] {
+  return events
+    .map((event) => ({
+      title: normTitle(event.summary),
+      at: Date.parse(event.start?.dateTime ?? event.start?.date ?? ""),
+      event,
+    }))
+    .filter((e) => e.title && Number.isFinite(e.at));
+}
+
+/** The calendar event a recording came from: same title, start within the window. */
+function calendarMatchesRecording(
+  key: Pick<CalendarKey<unknown>, "title" | "at">,
+  m: Pick<RecordedMeeting, "title" | "startTime">,
+): boolean {
+  return key.title === normTitle(m.title) && Math.abs(key.at - Date.parse(m.startTime)) <= CALENDAR_MATCH_WINDOW_MS;
+}
+
 /**
  * Keep only meetings the signed-in person attended or recorded. Company role
  * never widens the list. With no matching signal a row is hidden.
@@ -173,20 +218,8 @@ export function ownRecordedMeetings(
   signals: OwnMeetingSignals,
 ): RecordedMeeting[] {
   const ids = new Set<string>([...signals.botIds, ...(signals.localRecordingIds ?? [])]);
-  const calendar = signals.calendarEvents
-    .map((e) => ({
-      title: normTitle(e.summary),
-      at: Date.parse(e.start?.dateTime ?? e.start?.date ?? ""),
-    }))
-    .filter((e) => e.title && Number.isFinite(e.at));
-  return rows.filter((m) => {
-    if (ids.has(m.meetingId)) return true;
-    const title = normTitle(m.title);
-    const at = Date.parse(m.startTime);
-    return calendar.some(
-      (e) => e.title === title && Math.abs(e.at - at) <= CALENDAR_MATCH_WINDOW_MS,
-    );
-  });
+  const calendar = calendarKeys(signals.calendarEvents);
+  return rows.filter((m) => ids.has(m.meetingId) || calendar.some((e) => calendarMatchesRecording(e, m)));
 }
 
 // ── Recorded meeting detail (`GET /v1/meetings/{id}`) ─────────────────────
@@ -408,6 +441,20 @@ export function parseRecordedDocument(markdown: string): RecordedDocument {
   }
   const participants = Array.from(new Set(transcript.map((t) => t.speaker)));
   return { transcript, notes, participants };
+}
+
+/**
+ * The event the canvas renders for an opened recorded meeting: its recap
+ * signals once read, and its document (transcript, notes, speakers) as soon
+ * as it is read, each without waiting for the other.
+ */
+export function withRecordedNotes(
+  event: MeetingEvent,
+  notes: { signals?: RecordedSignals; document?: RecordedDocument | null } | undefined,
+): MeetingEvent {
+  if (!notes) return event;
+  const withSignals = notes.signals ? { ...event, signals: notes.signals } : event;
+  return withRecordedDocument(withSignals, notes.document);
 }
 
 /**

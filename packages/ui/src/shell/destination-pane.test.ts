@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { companyRowDestination } from "./company-pane.js";
-import { paneForEntry } from "./destination-pane.js";
+import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
 import {
   createNavigationEntry,
   type NavigationDestination,
@@ -72,5 +72,45 @@ describe("paneForEntry (QA-047): every destination sets its own sidepane", () =>
       pane: "home",
       companyKey: COMPANY,
     });
+  });
+});
+
+describe("entryCompanyUidForCommit: Home looks the same however it is reached", () => {
+  const bots = entry(companyRowDestination("bots", COMPANY));
+  const homeScoped = entry({ kind: "messages" });
+  const meetings = entry({ kind: "meetings" });
+
+  it("a conversation opened from a company page lands in the cross-company list", () => {
+    for (const destination of [
+      { kind: "dm", personUid: "agt_deez" },
+      { kind: "channel", channelId: "ch_1" },
+      { kind: "notifications" },
+      { kind: "dm-requests" },
+    ] as NavigationDestination[]) {
+      expect(entryCompanyUidForCommit(destination, COMPANY, bots)).toBeNull();
+      expect(entryCompanyUidForCommit(destination, COMPANY, meetings)).toBeNull();
+    }
+  });
+
+  it("a conversation opened on Home keeps the company the person picked", () => {
+    expect(
+      entryCompanyUidForCommit({ kind: "dm", personUid: "agt_deez" }, COMPANY, homeScoped),
+    ).toBe(COMPANY);
+    expect(
+      entryCompanyUidForCommit({ kind: "channel", channelId: "ch_1" }, null, homeScoped),
+    ).toBeNull();
+  });
+
+  it("an explicit scope pick (Messages) and company pages keep their scope", () => {
+    expect(entryCompanyUidForCommit({ kind: "messages" }, COMPANY, bots)).toBe(COMPANY);
+    expect(
+      entryCompanyUidForCommit(companyRowDestination("team", COMPANY), COMPANY, bots),
+    ).toBe(COMPANY);
+  });
+
+  it("with no entry to leave, the scope in force is kept", () => {
+    expect(
+      entryCompanyUidForCommit({ kind: "dm", personUid: "agt_deez" }, COMPANY, null),
+    ).toBe(COMPANY);
   });
 });

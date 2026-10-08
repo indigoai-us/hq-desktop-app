@@ -76,8 +76,6 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
       ["Ada", 1600, 5, 3, 2, "run-project", false],
       ["Scout", 115, 1, 0, 0, "", true],
     ]);
-    expect(snap.dayWeights).toEqual([200, 500]);
-    expect(snap.attributedPct).toBe(75);
     expect(() => activityFromCompanyTelemetry({ grouped: {} })).toThrow();
   });
 
@@ -88,20 +86,23 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
     expect(read).toHaveBeenCalledWith("acme", expect.objectContaining({ from: expect.any(String), to: expect.any(String) }));
     const [, range] = read.mock.calls[0] as unknown as [string, { from: string; to: string }];
     expect((Date.parse(range.to) - Date.parse(range.from)) / 86_400_000).toBe(29);
-    const names = [...target.querySelectorAll("tbody tr td:first-child")].map((td) => td.textContent?.trim());
+    const names = [...target.querySelectorAll("[data-testid='activity-member-row'] .who-name")].map((el) => el.textContent?.trim());
     expect(names).toEqual(["Ada", "Scout"]);
-    // OWNER-R5 shared person display in the table.
-    expect(target.querySelectorAll("tbody tr td:first-child [data-testid='person-name']")).toHaveLength(2);
-    expect(target.textContent).toContain("75% attributed");
+    // OWNER-R5 shared person display in the list.
+    expect(target.querySelectorAll("[data-testid='activity-member-row'] [data-testid='person-name']")).toHaveLength(2);
   });
 
-  it("offers no Live tab and no 'not read yet' line when the read has no live sessions (OWNER-R31)", async () => {
+  it("is the team view only: no Team/Tokens switch, no token chart, no attribution line", async () => {
     const target = mountWith(vi.fn(async () => ok(COMPANY_TELEMETRY)));
     await settle();
-    const tabs = [...target.querySelectorAll("[aria-label='Activity views'] [role='tab']")].map((b) => b.textContent);
-    expect(tabs).toEqual(["Team", "Tokens"]);
-    expect(target.querySelector("[data-testid='activity-live-unavailable']")).toBeNull();
-    expect(target.textContent).not.toContain("does not read them yet");
+    expect(target.querySelector("[aria-label='Activity views']")).toBeNull();
+    expect(target.querySelector("[data-testid='activity-tokens']")).toBeNull();
+    expect(target.querySelector("[data-testid='token-day-strip']")).toBeNull();
+    expect(target.textContent).not.toContain("Tokens");
+    expect(target.textContent).not.toContain("attributed");
+    // The range control and Export stay.
+    expect([...target.querySelectorAll("[aria-label='Range'] [role='tab']")].map((b) => b.textContent)).toEqual(["7d", "30d", "90d"]);
+    expect(target.textContent).toContain("Export");
   });
 
   it("shows the shared loader while the first read is in flight", async () => {
@@ -174,7 +175,7 @@ describe("BLANK-1-31 company Activity reads company telemetry", () => {
   });
 });
 
-describe("OWNER-R7 Activity team table and member pane", () => {
+describe("OWNER-R7 Activity team list and member pane", () => {
   let component: Record<string, unknown> | null = null;
   afterEach(async () => {
     if (component) await unmount(component);
@@ -202,28 +203,51 @@ describe("OWNER-R7 Activity team table and member pane", () => {
       },
     ],
   };
-  function mountWith() {
+  function mountWith(extra: Record<string, unknown> = {}) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     component = mount(ActivityView, {
       target,
-      props: { slug: "acme", companyLabel: "Acme", adapter: { company: { getTeamTelemetry: vi.fn(async () => ok(body)) } } as never },
+      props: { slug: "acme", companyLabel: "Acme", adapter: { company: { getTeamTelemetry: vi.fn(async () => ok(body)) } } as never, ...extra },
     });
     return target;
   }
 
-  it("shows the web columns, web order and names, never ids", async () => {
+  const names = (target: HTMLElement) =>
+    [...target.querySelectorAll("[data-testid='activity-member-row'] .who-name")].map((el) => el.textContent?.trim());
+
+  it("sorts by recent activity by default and by name on request", async () => {
     const target = mountWith();
     await settle();
-    expect([...target.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual([
-      "Member", "Trend", "Tokens", "Sessions", "Stories", "PRs", "Deploys", "Top skill", "Outcomes/1M",
+    expect(names(target)).toEqual(["Ada", "Unknown bot"]);
+    target.querySelector<HTMLButtonElement>("[data-testid='activity-sort-name']")!.click();
+    flushSync();
+    expect(names(target)).toEqual(["Ada", "Unknown bot"].sort((a, b) => a.localeCompare(b)));
+    expect(target.querySelector("[data-testid='activity-sort-name']")?.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("shows a real photo when the app has one, initials otherwise", async () => {
+    const target = mountWith({ avatarByUid: { prs_a: "https://example.com/ada.png" } });
+    await settle();
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-testid='activity-member-row']")];
+    expect(rows[0].querySelector("[data-testid='activity-member-photo']")?.getAttribute("src")).toBe("https://example.com/ada.png");
+    expect(rows[1].querySelector("[data-testid='activity-member-photo']")).toBeNull();
+    expect(rows[1].querySelector("[data-testid='activity-member-initials']")).not.toBeNull();
+  });
+
+  it("shows one row per person with activity bars, last active and team counts, never ids", async () => {
+    const target = mountWith();
+    await settle();
+    expect([...target.querySelectorAll(".team-head span")].map((el) => el.textContent)).toEqual([
+      "Person", "Last 30d", "Last active", "Sessions", "Stories", "PRs", "Deploys",
     ]);
-    const rows = [...target.querySelectorAll("tbody tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => td.textContent?.trim()));
-    expect(rows[0][0]).toBe("Ada");
-    expect(rows[0][5]).toBe("1");
-    expect(rows[0][8]).toBe("3.75");
-    expect(rows[1][0]).toBe("Unknown bot");
-    expect(rows[1][8]).toBe("—");
+    const rows = [...target.querySelectorAll<HTMLElement>("[data-testid='activity-member-row']")];
+    const cells = rows.map((row) => [...row.children].map((el) => el.textContent?.trim()));
+    expect(cells[0].slice(1)).toEqual(["", "Today", "5", "3", "1", "2"]);
+    expect(names(target)[0]).toBe("Ada");
+    expect(names(target)[1]).toBe("Unknown bot");
+    expect(rows[0].querySelectorAll("[data-testid='activity-member-bars'] i")).toHaveLength(30);
+    expect(rows[1].querySelector("[data-testid='activity-member-initials']")?.classList.contains("bot")).toBe(true);
     expect(target.textContent).not.toMatch(/\b(prs|agt)_/);
   });
 
@@ -235,10 +259,9 @@ describe("OWNER-R7 Activity team table and member pane", () => {
     const pane = target.querySelector("[data-testid='activity-member-pane']");
     expect(pane?.textContent).toContain("Ada");
     expect(pane?.textContent).toContain("ada@example.com");
-    expect(pane?.textContent).toContain("claude");
     expect(pane?.textContent).toContain("run-project");
     expect(pane?.textContent).toContain("github");
-    expect(pane?.querySelector("svg path")?.getAttribute("d")).toBeTruthy();
+    expect(pane?.querySelectorAll(".bars i:not(.idle)").length).toBeGreaterThan(0);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     flushSync();
     expect(target.querySelector("[data-testid='activity-member-pane']")).toBeNull();

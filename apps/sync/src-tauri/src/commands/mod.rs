@@ -28,6 +28,7 @@ pub mod hq_daemon_host;
 pub mod deploy_preview;
 pub mod deploy_preview_pass;
 pub mod deploy_snapshot;
+pub mod hq_anywhere;
 pub mod desktop_alt;
 pub mod desktop_auth;
 pub mod dm_mqtt;
@@ -100,6 +101,7 @@ pub mod watcher_exit_lifecycle;
 pub mod window_material;
 pub mod update_gate;
 pub mod uploads_paused;
+pub mod retired_entities;
 pub mod workspaces;
 #[cfg(any(windows, test))]
 mod windows_symlink_fallback;

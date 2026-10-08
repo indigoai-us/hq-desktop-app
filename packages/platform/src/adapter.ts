@@ -725,6 +725,17 @@ export type NotifyPrefsPatch = Partial<Omit<NotifyPrefs, "updatedAt">>;
 
 export interface MessagingApi {
   /**
+   * POST a forward (US-009) to `/v1/notify/dm` or
+   * `/v1/notify/channels/{id}/messages`. Resolves `ok` with the HTTP status and
+   * raw body for any HTTP answer, success or refusal, so the caller can read
+   * the server's `code`. Fails only when HQ could not be reached. Optional:
+   * hosts without it draw no Forward button.
+   */
+  forwardMessage?(args: {
+    path: string;
+    body: Json;
+  }): AdapterPromise<{ status: number | null; body: string }>;
+  /**
    * GET /v1/notify/prefs. Optional: hosts without it hide the fine-grained
    * notification settings. A server that predates the route answers 404
    * (`code: "http-404"`), which callers treat as "not available yet".
@@ -769,6 +780,14 @@ export interface MessagingApi {
    */
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
+  /**
+   * Which of these company (`cmp_*`) and bot (`agt_*`) uids no longer have a
+   * live cloud entity (desktop `resolve_retired_entities`, which reads
+   * `GET /entity/{uid}`: 404 or `deleted: true` is gone). Answers
+   * `{ retiredCompanyUids, goneAgentUids, liveUids, agentCompanyUids }`.
+   * Optional: hosts without it never hide rows of retired companies.
+   */
+  resolveRetiredEntities?(uids: string[]): AdapterPromise<Json>;
   listDmRequests(): AdapterPromise<Json[]>;
   /**
    * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —
@@ -1332,9 +1351,12 @@ export interface FilesApi {
   /**
    * OWNER-R17: who can open one vault path, with inherited grants and display
    * names (hq-pro GET /files/{companyUid}/acl/tree, the read the web console's
-   * access panel uses). Read-only. Hosts without it omit it.
+   * access panel uses). Read-only. Hosts without it omit it. Pass `page`
+   * to read a large folder in pages (`limit` up to 200, `cursor` from the
+   * previous page's `nextCursor`); the server refuses it with
+   * ACL_TREE_PAGINATION_DISABLED where paging is not on.
    */
-  getAccessTree?(companyUid: string, prefix: string): AdapterPromise<Json>;
+  getAccessTree?(companyUid: string, prefix: string, page?: { limit: number; cursor?: string }): AdapterPromise<Json>;
   /** OWNER-R17: the company's groups, for names (hq-pro GET /secrets/{companyUid}/groups). Read-only. */
   listAccessGroups?(companyUid: string): AdapterPromise<Json>;
   /**
@@ -1389,6 +1411,7 @@ export interface AgencyApi {
  */
 export interface AgentProfilePatch {
   displayName?: string;
+  title?: string;
   description?: string;
 }
 
@@ -1397,6 +1420,18 @@ export const OUTPOST_PATHS = {
   status: "/outpost/status",
   jobsStatus: "/outpost/jobs/status",
 } as const;
+
+/**
+ * POST /v1/agents/{uid}/runtime/actions body. Routine changes use the
+ * `cron.pause|resume|trigger|delete|create|update` actions; `params.jobId`
+ * names the routine and `body` carries the create/update fields.
+ */
+export interface AgentRuntimeActionInput {
+  actionId: string;
+  idempotencyKey: string;
+  params?: Record<string, string>;
+  body?: Record<string, unknown>;
+}
 
 /**
  * The body of an attach-Slack request. `returnTo: "desktop"` says the attach
@@ -1419,6 +1454,8 @@ export const AGENT_PATHS = {
     `/v1/agents/${encodeURIComponent(agentUid)}/jobs/${encodeURIComponent(jobId)}/pause`,
   profile: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/profile`,
+  runtimeActions: (agentUid: string) =>
+    `/v1/agents/${encodeURIComponent(agentUid)}/runtime/actions`,
   stop: (agentUid: string) =>
     `/v1/agents/${encodeURIComponent(agentUid)}/stop`,
   start: (agentUid: string) =>
@@ -1552,6 +1589,17 @@ export interface AgentsApi {
   listJobs(agentUid: string): AdapterPromise<Json>;
   /** POST /v1/agents/{uid}/jobs/{jobId}/pause — owner/admin. */
   pauseJob(agentUid: string, jobId: string): AdapterPromise<Json>;
+  /**
+   * GET /v1/agents/{uid}/profile: the owner's whole bot profile in one
+   * call. Anyone else gets 404, and so does a server that has not shipped
+   * the route; callers fall back to the individual reads.
+   */
+  getProfile?(agentUid: string): AdapterPromise<Json>;
+  /** POST /v1/agents/{uid}/runtime/actions: owner relay to the bot's box. */
+  runtimeAction?(
+    agentUid: string,
+    input: AgentRuntimeActionInput,
+  ): AdapterPromise<Json>;
   /** PATCH /v1/agents/{uid}/profile — owner/admin. */
   updateProfile(
     agentUid: string,
@@ -1870,6 +1918,12 @@ export interface AppShellApi {
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;
+  /**
+   * The company the native read gate is bound to, or null. A surface that
+   * binds a company for one read puts this back afterwards. Hosts without a
+   * native gate omit it.
+   */
+  getActiveCompany?(): AdapterPromise<string | null>;
   openDriftDetail(report: Json): AdapterPromise<void>;
   openMeetingPermissionsWindow(): AdapterPromise<void>;
   notificationPermissionState(): AdapterPromise<string>;
@@ -2216,6 +2270,12 @@ export interface SettingsApi {
   getSettings(): AdapterPromise<Json>;
   /** Persist a minimal patch over the latest host settings. */
   updateSettings(patch: Json): AdapterPromise<void>;
+  /** Read the signed-in person's server-backed HQ Anywhere preference. */
+  getHqAnywherePersonSetting?(): AdapterPromise<boolean>;
+  /** Write the signed-in person's server-backed HQ Anywhere preference. */
+  putHqAnywherePersonSetting?(value: boolean): AdapterPromise<void>;
+  /** Apply or remove the native global Claude Code/Codex setup. */
+  syncHqAnywhereGlobal?(enabled: boolean): AdapterPromise<void>;
   getSetupStatus(): AdapterPromise<Json>;
   /**
    * The welcome channel's guided setup finished on this machine. Optional:

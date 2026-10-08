@@ -45,6 +45,8 @@ export type AtlasNode = {
   stories?: AtlasStories;
   /** For a folder: the file inside it that Open files shows (README, PRD, SKILL...). */
   file?: string;
+  /** Frontmatter title when the source read one; the Today panel prefers it over the file stem. */
+  title?: string;
 };
 
 export type AtlasRefEdge = {
@@ -132,6 +134,7 @@ export function parseAtlasGraph(raw: unknown): AtlasGraph | null {
       parentId: typeof n.parentId === "string" ? n.parentId : undefined,
       depth: num(n.depth),
       ...(typeof n.file === "string" && n.file ? { file: n.file } : {}),
+      ...(typeof n.title === "string" && n.title.trim() ? { title: n.title.trim() } : {}),
       stories:
         stories && num(stories.total) != null
           ? { done: num(stories.done) ?? 0, total: num(stories.total) as number }

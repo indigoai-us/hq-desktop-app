@@ -19,6 +19,7 @@
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
+  import { buildMessageLink } from "./message-link";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
   import type { LocalBotRow } from "@hq/platform";
@@ -47,7 +48,13 @@
     withHereMention,
     type MentionTarget,
   } from "../mentions.js";
-  import { parseMessageAttachments } from "./channelMessageModels";
+  import {
+    parseMessageAttachments,
+    parseForwardedFrom,
+    parseOmittedAttachments,
+    forwardNoteText,
+  } from "./channelMessageModels";
+  import ForwardedBlock from "./ForwardedBlock.svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import {
     CHAT_ATTACHMENT_ACCEPT,
@@ -77,7 +84,7 @@
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { richContentForMessage } from "./richMessageContent";
+  import { richContentForMessage, type ExtractedRichContent } from "./richMessageContent";
   import type { DecisionOption } from "./richMessageContent";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
@@ -159,6 +166,8 @@
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
+    /** Company of the conversation, for "Copy link". */
+    companyUid?: string | null;
     onclose: () => void;
     onreplycount?: (
       rootEventId: string,
@@ -224,6 +233,7 @@
     onopenartifact = undefined,
     onreleaseurl = undefined,
     vaultCompanyUid = null,
+    companyUid = null,
     onclose,
     onreplycount,
     onactivethreadchange,
@@ -240,6 +250,47 @@
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
   let reactPickerFor = $state<string | null>(null);
+
+  /** `id:<eventId>` or `link:<eventId>` whose copy just succeeded. */
+  let copiedKey = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const linkConversationId = $derived(
+    ((scope === "channel" ? channelId : withPersonUid) ?? "").trim() || null,
+  );
+  const linkCompanyUid = $derived(
+    (companyUid ?? vaultCompanyUid ?? "").trim() || null,
+  );
+
+  async function writeClipboard(text: string, key: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedKey = key;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedKey = null;
+      copiedTimer = null;
+    }, 1500);
+  }
+
+  async function copyId(eventId: string): Promise<void> {
+    await writeClipboard(eventId, `id:${eventId}`);
+  }
+
+  async function copyLink(eventId: string): Promise<void> {
+    if (!linkConversationId || !linkCompanyUid) return;
+    await writeClipboard(
+      buildMessageLink({
+        companyUid: linkCompanyUid,
+        conversationId: linkConversationId,
+        eventId,
+      }),
+      `link:${eventId}`,
+    );
+  }
 
   /** Open the author's profile or agent pane. */
   function openAuthorProfile(msg: ConversationMessageWire | null): void {
@@ -936,6 +987,71 @@
   });
 </script>
 
+{#snippet replyBodyText(msg: ConversationMessageWire, text: string)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="reply-md msg-body"
+    class:msg-body-jumbo={isJumboEmojiBody(text)}
+    onclick={(e) => {
+      if (onBodyLinkActivate(e)) return;
+      onMentionActivate(e, e.target);
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        if (onBodyLinkActivate(e)) return;
+        onMentionActivate(e, e.target);
+      }
+    }}
+  >
+    {#if isHeavyMessageBody(text)}
+      <PlainMessageBody body={text} />
+    {:else}
+      {@html applyMentionMarkup(
+        renderMessageBodyMarkdown(text),
+        storedMentions(msg),
+      )}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet replyContent(msg: ConversationMessageWire, rich: ExtractedRichContent, withArtifacts: boolean)}
+  {#if rich.text.trim()}
+    {@render replyBodyText(msg, rich.text)}
+  {/if}
+  {#if rich.rich}
+    <RichMessageContent
+      content={rich.rich}
+      ondecision={handleDecision}
+      {answeredQuestionIds}
+      {answeredChoices}
+    />
+  {/if}
+  {#if withArtifacts && msg.details?.trim()}
+    <ArtifactCard
+      kind="details"
+      text={msg.details}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  {#if withArtifacts && msg.prompt?.trim()}
+    <ArtifactCard
+      kind="prompt"
+      text={msg.prompt}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  <MessageAttachments
+    {previewCache}
+    {vaultCompanyUid}
+    attachments={parseMessageAttachments(msg)}
+    onopen={onopenattachment}
+    resolveUrl={resolveAttachmentUrl}
+    {onreleaseurl}
+  />
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -978,6 +1094,8 @@
         {#if root}
           {@const rootId = root.eventId}
           {@const rootRich = richContentForMessage(root)}
+          {@const rootForwarded = parseForwardedFrom(root.forwardedFrom)}
+          {@const rootForwardNote = rootForwarded ? forwardNoteText(root.forwardNote) : ""}
           <span class="reply-avatar" aria-hidden="true">
             <IdentityMark
               kind={isAgent(root) ? "agent" : "person"}
@@ -1003,64 +1121,19 @@
               <span class="reply-time">{formatTime(root.createdAt)}</span>
             </div>
             <div class="reply-root-body">
-              {#if rootRich.text.trim()}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="reply-md msg-body"
-                  class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
-                  onclick={(e) => {
-                    if (onBodyLinkActivate(e)) return;
-                    onMentionActivate(e, e.target);
-                  }}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e)) return;
-                      onMentionActivate(e, e.target);
-                    }
-                  }}
+              {#if rootForwarded}
+                {#if rootForwardNote}
+                  {@render replyBodyText(root, rootForwardNote)}
+                {/if}
+                <ForwardedBlock
+                  forwardedFrom={rootForwarded}
+                  omittedAttachments={parseOmittedAttachments(root.omittedAttachments)}
                 >
-                  {#if isHeavyMessageBody(rootRich.text)}
-                    <PlainMessageBody body={rootRich.text} />
-                  {:else}
-                    {@html applyMentionMarkup(
-                      renderMessageBodyMarkdown(rootRich.text),
-                      storedMentions(root),
-                    )}
-                  {/if}
-                </div>
+                  {@render replyContent(root, rootRich, true)}
+                </ForwardedBlock>
+              {:else}
+                {@render replyContent(root, rootRich, true)}
               {/if}
-              {#if rootRich.rich}
-                <RichMessageContent
-                  content={rootRich.rich}
-                  ondecision={handleDecision}
-                  {answeredQuestionIds}
-                  {answeredChoices}
-                />
-              {/if}
-              {#if root.details?.trim()}
-                <ArtifactCard
-                  kind="details"
-                  text={root.details}
-                  eventId={root.eventId}
-                  onopen={onopenartifact}
-                />
-              {/if}
-              {#if root.prompt?.trim()}
-                <ArtifactCard
-                  kind="prompt"
-                  text={root.prompt}
-                  eventId={root.eventId}
-                  onopen={onopenartifact}
-                />
-              {/if}
-              <MessageAttachments
-                        {previewCache}
-                        {vaultCompanyUid}
-                attachments={parseMessageAttachments(root)}
-                onopen={onopenattachment}
-                resolveUrl={resolveAttachmentUrl}
-                {onreleaseurl}
-              />
             </div>
             {#if reactionsFor(rootId).length > 0}
               <ReactionBar
@@ -1110,6 +1183,28 @@
                   />
                 {/if}
               </span>
+              <button
+                type="button"
+                class="reply-quick-react-btn"
+                data-testid="reply-copy-id"
+                aria-label="Copy message ID"
+                title="Copy ID"
+                onclick={() => copyId(rootId)}
+              >
+                {copiedKey === `id:${rootId}` ? "Copied" : "Copy ID"}
+              </button>
+              {#if linkConversationId && linkCompanyUid}
+                <button
+                  type="button"
+                  class="reply-quick-react-btn"
+                  data-testid="reply-copy-link"
+                  aria-label="Copy message link"
+                  title="Copy link"
+                  onclick={() => copyLink(rootId)}
+                >
+                  {copiedKey === `link:${rootId}` ? "Copied" : "Copy link"}
+                </button>
+              {/if}
             </div>
             <span class="reply-root-label">
               {replyCount}
@@ -1133,6 +1228,8 @@
       {:else}
         {#each visibleReplies as msg (msg.eventId)}
           {@const replyRich = richContentForMessage(msg)}
+          {@const replyForwarded = parseForwardedFrom(msg.forwardedFrom)}
+          {@const replyForwardNote = replyForwarded ? forwardNoteText(msg.forwardNote) : ""}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
@@ -1163,48 +1260,19 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
-              {#if replyRich.text.trim()}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="reply-md msg-body"
-                  class:msg-body-jumbo={isJumboEmojiBody(replyRich.text)}
-                  onclick={(e) => {
-                    if (onBodyLinkActivate(e)) return;
-                    onMentionActivate(e, e.target);
-                  }}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e)) return;
-                      onMentionActivate(e, e.target);
-                    }
-                  }}
+              {#if replyForwarded}
+                {#if replyForwardNote}
+                  {@render replyBodyText(msg, replyForwardNote)}
+                {/if}
+                <ForwardedBlock
+                  forwardedFrom={replyForwarded}
+                  omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
                 >
-                  {#if isHeavyMessageBody(replyRich.text)}
-                    <PlainMessageBody body={replyRich.text} />
-                  {:else}
-                    {@html applyMentionMarkup(
-                      renderMessageBodyMarkdown(replyRich.text),
-                      storedMentions(msg),
-                    )}
-                  {/if}
-                </div>
+                  {@render replyContent(msg, replyRich, true)}
+                </ForwardedBlock>
+              {:else}
+                {@render replyContent(msg, replyRich, false)}
               {/if}
-              {#if replyRich.rich}
-                <RichMessageContent
-                  content={replyRich.rich}
-                  ondecision={handleDecision}
-                  {answeredQuestionIds}
-                  {answeredChoices}
-                />
-              {/if}
-              <MessageAttachments
-                    {previewCache}
-                    {vaultCompanyUid}
-                attachments={parseMessageAttachments(msg)}
-                onopen={onopenattachment}
-                resolveUrl={resolveAttachmentUrl}
-                {onreleaseurl}
-              />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
                     {selfPersonUid}
@@ -1255,6 +1323,28 @@
                       />
                     {/if}
                   </span>
+                  <button
+                    type="button"
+                    class="reply-quick-react-btn"
+                    data-testid="reply-copy-id"
+                    aria-label="Copy message ID"
+                    title="Copy ID"
+                    onclick={() => copyId(msg.eventId)}
+                  >
+                    {copiedKey === `id:${msg.eventId}` ? "Copied" : "Copy ID"}
+                  </button>
+                  {#if linkConversationId && linkCompanyUid}
+                    <button
+                      type="button"
+                      class="reply-quick-react-btn"
+                      data-testid="reply-copy-link"
+                      aria-label="Copy message link"
+                      title="Copy link"
+                      onclick={() => copyLink(msg.eventId)}
+                    >
+                      {copiedKey === `link:${msg.eventId}` ? "Copied" : "Copy link"}
+                    </button>
+                  {/if}
                 </div>
               {/if}
               {#if msg.sendStatus === "sending"}

@@ -1,32 +1,65 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activityFromCompanyTelemetry,
+  activityBars,
   activityToCsv,
-  dayBars,
+  lastActiveDaysAgo,
+  lastActiveLabel,
   metadata,
   saveCsvViaDialog,
+  sortMembers,
+  type ActivityMember,
   type ActivitySnapshot,
 } from "./activity-model.js";
 
-describe("activity day strip", () => {
-  it("draws 30 days and dims weekends when the range is 30d", () => {
-    const now = new Date(2026, 9, 1, 12);
-    const bars = dayBars("30d", [], now);
-    expect(bars).toHaveLength(30);
-    expect(bars[bars.length - 1]?.today).toBe(true);
-    for (const bar of bars) {
-      const date = new Date(`${bar.iso}T12:00:00`);
-      const weekend = date.getDay() === 0 || date.getDay() === 6;
-      expect(bar.weekend).toBe(weekend);
-    }
-    expect(bars.some((bar) => bar.weekend)).toBe(true);
-    expect(bars.some((bar) => !bar.weekend)).toBe(true);
+describe("team list order and bars", () => {
+  const member = (id: string, name: string, trend: number[], sessions = 1): ActivityMember => ({
+    id,
+    name,
+    mark: name.slice(0, 2).toUpperCase(),
+    bot: false,
+    live: false,
+    tokens: 0,
+    sessions,
+    stories: 0,
+    deploys: 0,
+    topSkill: "",
+    outcomesPerMillion: null,
+    spendUsd: null,
+    trend,
+  });
+  const ada = member("a", "Ada", [5, 0, 0, 0]); // last active 3 days ago
+  const bo = member("b", "bo", [0, 0, 0, 9]); // today
+  const cy = member("c", "Cy", [0, 0, 4, 0], 2); // yesterday
+  const dee = member("d", "Dee", [0, 0, 4, 0], 5); // yesterday, more sessions
+  const old = member("e", "Eve", []); // no trend cached
+
+  it("reads the last active day from the trend", () => {
+    expect(lastActiveDaysAgo([5, 0, 0, 0])).toBe(3);
+    expect(lastActiveDaysAgo([0, 0, 0, 9])).toBe(0);
+    expect(lastActiveDaysAgo([0, 0])).toBeNull();
+    expect(lastActiveDaysAgo(undefined)).toBeNull();
+    expect(lastActiveLabel(0)).toBe("Today");
+    expect(lastActiveLabel(1)).toBe("Yesterday");
+    expect(lastActiveLabel(6)).toBe("6d ago");
+    expect(lastActiveLabel(6, true)).toBe("Live now");
+    expect(lastActiveLabel(null)).toBeNull();
   });
 
-  it("scales bar height from the cached weights", () => {
-    const bars = dayBars("7d", [10, 20, 40, 0, 5, 8, 16], new Date(2026, 9, 1));
-    expect(bars).toHaveLength(7);
-    expect(Math.max(...bars.map((bar) => bar.heightPct))).toBe(100);
+  it("sorts by recent activity: live first, then last active day, then sessions", () => {
+    const ids = (rows: ActivityMember[]) => rows.map((m) => m.id);
+    expect(ids(sortMembers([ada, old, cy, bo, dee], "recent"))).toEqual(["b", "d", "c", "a", "e"]);
+    expect(ids(sortMembers([ada, old, cy, bo, dee], "recent", new Set(["a"])))).toEqual(["a", "b", "d", "c", "e"]);
+  });
+
+  it("sorts by name without regard to case", () => {
+    expect(sortMembers([cy, bo, ada], "name").map((m) => m.name)).toEqual(["Ada", "bo", "Cy"]);
+  });
+
+  it("draws one bar per day in the range, idle days flat", () => {
+    expect(activityBars([0, 10, 100], 5)).toEqual([0, 0, 0, 12, 100]);
+    expect(activityBars(undefined, 3)).toEqual([0, 0, 0]);
+    expect(activityBars([1, 2, 3, 4], 2)).toEqual([75, 100]);
   });
 });
 
@@ -48,10 +81,6 @@ describe("activity export", () => {
         spendUsd: 3,
       },
     ],
-    live: [],
-    pulse: [],
-    dayWeights: [],
-    attributedPct: 90,
     updatedLabel: "",
   };
 
@@ -147,8 +176,7 @@ describe("activity from company telemetry", () => {
     expect(ada.deploys).toBe(3);
     expect(ada.tokensByModel).toEqual([{ model: "claude-opus-5-5", total: 1000 }]);
     expect(ada.services).toEqual([{ service: "github", count: 4 }]);
-    expect(snap.dayWeights).toEqual([2, 10]);
-    expect(snap.attributedPct).toBe(75);
+    expect(ada.trend).toEqual([0, 10, 20]);
   });
 
   it("still reads the legacy perMember shape", () => {

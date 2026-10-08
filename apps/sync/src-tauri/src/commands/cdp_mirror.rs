@@ -634,14 +634,23 @@ pub fn held_auth_rows_at(path: &std::path::Path, now: u64) -> Vec<Value> {
 }
 
 /// Persist one sign-in row for a later session. Only the closed labels
-/// `provider`, `step` and `errorCategory` are kept, never error text. Expired
-/// rows are pruned and the oldest dropped past [`AUTH_HELD_CAP`].
+/// `provider`, `step` and `errorCategory` plus UUID correlation keys are kept,
+/// never error text. Expired rows are pruned and the oldest dropped past
+/// [`AUTH_HELD_CAP`].
 pub fn hold_auth_row_at(
     path: &std::path::Path,
     event_name: &str,
     properties: Option<&Value>,
+    session_id: Option<&str>,
     now: u64,
 ) -> Result<(), String> {
+    // Resolve the install id before locking the read-modify-write below. Its
+    // helper also acquires the menubar lock while minting the id.
+    let install_attempt_id = if event_name == "desktop_auth_progress" {
+        super::first_run::install_attempt_id_at(path)
+    } else {
+        None
+    };
     // The held list is read, extended and written back; hold the lock across
     // all three so no other menubar.json write lands in between.
     let _lock = hq_desktop_core::first_run::lock_menubar_writes();
@@ -655,9 +664,18 @@ pub fn hold_auth_row_at(
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let mut rows = held_auth_rows_at(path, now);
+    let session_id = if event_name == "desktop_auth_progress" {
+        session_id
+            .and_then(|value| uuid::Uuid::parse_str(value).ok())
+            .map(|value| value.to_string())
+    } else {
+        None
+    };
     rows.push(json!({
         "eventName": event_name,
         "properties": props,
+        "installAttemptId": install_attempt_id,
+        "sessionId": session_id,
         "occurredAt": occurred_at,
         "heldAtMs": now,
         "idempotencyKey": format!("hq-desktop-app:auth-held:{}", uuid::Uuid::new_v4()),
@@ -671,7 +689,7 @@ pub fn hold_auth_row_at(
 /// logged by kind only.
 pub fn hold_auth_row(event_name: &str, properties: Option<&Value>) {
     let held = paths::menubar_json_path()
-        .and_then(|path| hold_auth_row_at(&path, event_name, properties, now_ms()));
+        .and_then(|path| hold_auth_row_at(&path, event_name, properties, None, now_ms()));
     if held.is_err() {
         crate::util::logfile::log("cdp", "WARN auth_held hold_write_failed");
     }
@@ -989,15 +1007,17 @@ impl SyncTrigger {
     }
 }
 
-/// The runner pass in flight (one at a time): its trigger and, once the
-/// runner reports `all-complete`, the file count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The runner pass in flight (one at a time): its trigger, file count, and
+/// company attribution for the first pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SyncInFlight {
     trigger: SyncTrigger,
     file_count: Option<u64>,
+    first_sync_company_uid: Option<String>,
 }
 
 static SYNC_IN_FLIGHT: Mutex<Option<SyncInFlight>> = Mutex::new(None);
+static ONBOARDING_SELECTED_COMPANY_UID: Mutex<Option<String>> = Mutex::new(None);
 
 fn sync_in_flight() -> std::sync::MutexGuard<'static, Option<SyncInFlight>> {
     SYNC_IN_FLIGHT
@@ -1009,9 +1029,18 @@ fn sync_in_flight() -> std::sync::MutexGuard<'static, Option<SyncInFlight>> {
 /// it end) or `daemon` (the HQ daemon owns the pass; its end is not observed).
 pub fn note_sync_started(trigger: SyncTrigger, flow: &'static str) {
     if flow == "runner" {
+        // For a first pass, pin the onboarding choice before any per-company
+        // runner callbacks arrive. If onboarding did not select a company,
+        // `attach_first_sync_company_uid` keeps the first one reported.
+        let selected_company_uid = if trigger == SyncTrigger::First {
+            onboarding_selected_company_uid()
+        } else {
+            None
+        };
         *sync_in_flight() = Some(SyncInFlight {
             trigger,
             file_count: None,
+            first_sync_company_uid: initial_first_sync_company_uid(trigger, selected_company_uid),
         });
     }
     emit_operational(
@@ -1030,15 +1059,18 @@ pub fn note_sync_files(files_downloaded: u32) {
 /// End row for a runner pass: `sync_completed` when `error_class` is `None`,
 /// else `sync_failed`. `None` when no pass was in flight.
 pub fn sync_end_event(
-    in_flight: Option<(SyncTrigger, Option<u64>)>,
+    in_flight: Option<(SyncTrigger, Option<u64>, Option<String>)>,
     error_class: Option<&str>,
 ) -> Option<(&'static str, Value)> {
-    let (trigger, file_count) = in_flight?;
+    let (trigger, file_count, first_sync_company_uid) = in_flight?;
     let mut props = json!({ "trigger": trigger.as_str(), "flow": "runner" });
     match error_class {
         None => {
             if let Some(count) = file_count {
                 props["downloadedCount"] = json!(count);
+            }
+            if let Some(company_uid) = first_sync_company_uid {
+                props["companyUid"] = json!(company_uid);
             }
             Some((OP_SYNC_COMPLETED, props))
         }
@@ -1049,10 +1081,69 @@ pub fn sync_end_event(
     }
 }
 
+fn attach_first_sync_company_uid(company_uid: &str) {
+    if let Some(in_flight) = sync_in_flight().as_mut() {
+        in_flight.first_sync_company_uid = next_first_sync_company_uid(
+            in_flight.trigger,
+            in_flight.first_sync_company_uid.as_deref(),
+            company_uid,
+        );
+    }
+}
+
+/// Keep the onboarding-selected or invite-joined company available to the
+/// first runner pass. Onboarding calls this before handing off to the runner.
+pub fn note_onboarding_company_selected(company_uid: &str) {
+    *ONBOARDING_SELECTED_COMPANY_UID
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(company_uid.to_string());
+}
+
+fn clear_onboarding_company_selected() {
+    *ONBOARDING_SELECTED_COMPANY_UID
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+}
+
+fn onboarding_selected_company_uid() -> Option<String> {
+    ONBOARDING_SELECTED_COMPANY_UID
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+fn initial_first_sync_company_uid(
+    trigger: SyncTrigger,
+    selected_company_uid: Option<String>,
+) -> Option<String> {
+    (trigger == SyncTrigger::First)
+        .then_some(selected_company_uid)
+        .flatten()
+}
+
+fn next_first_sync_company_uid(
+    trigger: SyncTrigger,
+    current_company_uid: Option<&str>,
+    candidate_company_uid: &str,
+) -> Option<String> {
+    if trigger != SyncTrigger::First {
+        return current_company_uid.map(str::to_owned);
+    }
+    current_company_uid
+        .map(str::to_owned)
+        .or_else(|| Some(candidate_company_uid.to_owned()))
+}
+
 /// Hook for the runner's terminal seam (`record_sync_run_ended` call sites).
 pub fn note_sync_ended(error_class: Option<&str>) {
-    let in_flight = sync_in_flight().take().map(|f| (f.trigger, f.file_count));
-    let links_account = sync_end_links_account(in_flight.map(|f| f.0), error_class);
+    let in_flight = sync_in_flight()
+        .take()
+        .map(|f| (f.trigger, f.file_count, f.first_sync_company_uid));
+    let trigger = in_flight.as_ref().map(|f| f.0);
+    if trigger == Some(SyncTrigger::First) {
+        clear_onboarding_company_selected();
+    }
+    let links_account = sync_end_links_account(trigger, error_class);
     if let Some((name, props)) = sync_end_event(in_flight, error_class) {
         emit_operational(name, props);
     }
@@ -1109,6 +1200,7 @@ pub fn note_signin_link_visitor(anon_id: &str) {
 /// company's hash.
 pub fn note_first_sync_completed(company_uid: &str) {
     record(EVENT_FIRST_SYNC_COMPLETED, Map::new());
+    attach_first_sync_company_uid(company_uid);
     note_account_linked_for(Some(company_uid.to_string()));
 }
 
@@ -1171,6 +1263,14 @@ pub fn on_exit_requested(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static SYNC_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_sync_state_for_test() -> std::sync::MutexGuard<'static, ()> {
+        SYNC_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn ci_suppression_skips_only_the_first_launch_mirror_event() {
@@ -1574,27 +1674,153 @@ mod tests {
     #[test]
     fn sync_end_rows_follow_the_in_flight_pass() {
         assert!(sync_end_event(None, None).is_none(), "no pass in flight");
-        let (name, props) = sync_end_event(Some((SyncTrigger::Manual, Some(12))), None).unwrap();
+        let (name, props) = sync_end_event(Some((SyncTrigger::Manual, Some(12), None)), None).unwrap();
         assert_eq!(name, OP_SYNC_COMPLETED);
         assert_eq!(
             props,
             json!({"trigger": "manual", "flow": "runner", "downloadedCount": 12})
         );
-        let (name, props) =
-            sync_end_event(Some((SyncTrigger::First, None)), Some("auth_expired")).unwrap();
+        let (name, props) = sync_end_event(
+            Some((SyncTrigger::First, None, Some("cmp_first".to_string()))),
+            Some("auth_expired"),
+        )
+        .unwrap();
         assert_eq!(name, OP_SYNC_FAILED);
         assert_eq!(
             props,
             json!({"trigger": "first", "flow": "runner", "errorClass": "auth_expired"})
         );
+        let (name, props) = sync_end_event(
+            Some((SyncTrigger::First, None, Some("cmp_first".to_string()))),
+            None,
+        )
+        .unwrap();
+        assert_eq!(name, OP_SYNC_COMPLETED);
+        assert_eq!(props["companyUid"], "cmp_first");
+        assert_eq!(props["trigger"], "first");
         assert_eq!(SyncTrigger::Auto.as_str(), "auto");
     }
 
     #[test]
+    fn first_sync_company_is_attached_only_to_a_first_trigger() {
+        assert_eq!(
+            next_first_sync_company_uid(SyncTrigger::First, None, "cmp_first").as_deref(),
+            Some("cmp_first")
+        );
+        assert_eq!(
+            next_first_sync_company_uid(SyncTrigger::Manual, None, "cmp_manual"),
+            None
+        );
+    }
+
+    #[test]
+    fn first_sync_uses_onboarding_selected_company_at_runner_start() {
+        let _guard = lock_sync_state_for_test();
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        note_onboarding_company_selected("cmp_selected");
+        assert_eq!(
+            initial_first_sync_company_uid(SyncTrigger::First, onboarding_selected_company_uid())
+                .as_deref(),
+            Some("cmp_selected")
+        );
+        assert_eq!(
+            initial_first_sync_company_uid(SyncTrigger::Manual, Some("cmp_selected".to_string())),
+            None
+        );
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    #[test]
+    fn onboarding_workspace_selection_wires_into_first_sync_pass() {
+        let _guard = lock_sync_state_for_test();
+        let auth = include_str!("desktop_auth.rs");
+        let selection_command = auth
+            .split("pub async fn record_onboarding_workspace_selected")
+            .nth(1)
+            .expect("onboarding workspace selection command")
+            .split("\n}")
+            .next()
+            .expect("command body");
+        let capture_position = selection_command
+            .find(
+                "crate::commands::cdp_mirror::note_onboarding_company_selected(&company_uid);",
+            )
+            .expect("workspace selection passes its UID to first-sync attribution");
+        let receipt_position = selection_command
+            .find("workspace_receipt_authorization_for_current_session().await")
+            .expect("workspace selection authorization");
+        assert!(
+            capture_position < receipt_position,
+            "workspace selection must hand its UID to first-sync attribution"
+        );
+
+        *SYNC_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        note_onboarding_company_selected("cmp_invite_joined");
+        note_sync_started(SyncTrigger::First, "runner");
+        let first_pass = sync_in_flight().take().expect("first pass was recorded");
+        assert_eq!(
+            first_pass.first_sync_company_uid.as_deref(),
+            Some("cmp_invite_joined")
+        );
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    #[test]
+    fn first_sync_end_clears_onboarding_company_before_a_later_account() {
+        let _guard = lock_sync_state_for_test();
+        *SYNC_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *ONBOARDING_SELECTED_COMPANY_UID
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        note_onboarding_company_selected("cmp_previous_account");
+        note_sync_started(SyncTrigger::First, "runner");
+        note_sync_ended(Some("test_failure"));
+
+        assert_eq!(onboarding_selected_company_uid(), None);
+        note_sync_started(SyncTrigger::First, "runner");
+        let later_pass = sync_in_flight().take().expect("later pass was recorded");
+        assert_eq!(later_pass.first_sync_company_uid, None);
+    }
+
+    #[test]
+    fn first_sync_keeps_first_company_when_onboarding_selection_is_unavailable() {
+        let first = next_first_sync_company_uid(SyncTrigger::First, None, "cmp_first");
+        assert_eq!(
+            next_first_sync_company_uid(SyncTrigger::First, first.as_deref(), "cmp_second")
+                .as_deref(),
+            Some("cmp_first")
+        );
+    }
+
+    #[test]
+    fn first_sync_company_uid_is_not_added_to_the_cdp_mirror_allow_list() {
+        let (_, _, allowed_properties) = OPERATIONAL_MIRRORS
+            .iter()
+            .find(|(name, _, _)| *name == OP_SYNC_COMPLETED)
+            .expect("sync completion mirror row");
+        assert_eq!(*allowed_properties, ["trigger", "flow", "downloadedCount"]);
+    }
+
+    #[test]
     fn sync_in_flight_is_taken_exactly_once() {
+        let _guard = lock_sync_state_for_test();
         *sync_in_flight() = Some(SyncInFlight {
             trigger: SyncTrigger::Auto,
             file_count: None,
+            first_sync_company_uid: None,
         });
         note_sync_files(4);
         let taken = sync_in_flight().take();
@@ -1602,7 +1828,8 @@ mod tests {
             taken,
             Some(SyncInFlight {
                 trigger: SyncTrigger::Auto,
-                file_count: Some(4)
+                file_count: Some(4),
+                first_sync_company_uid: None,
             })
         );
         assert!(sync_in_flight().take().is_none());

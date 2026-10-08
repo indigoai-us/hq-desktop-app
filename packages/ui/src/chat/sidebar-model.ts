@@ -19,6 +19,12 @@ import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
+import {
+  dmPeerLabel,
+  isUnknownPeerLabel,
+  readablePeerName,
+  type PeerDirectory,
+} from "./peer-names";
 import type { NotifyLevel } from "./notify-level";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
@@ -865,6 +871,12 @@ export interface NormalizeOptions {
     title?: string | null;
     name?: string | null;
   }>;
+  /**
+   * uid → name/email from every roster the sidebar has (contacts, channel
+   * members, company members, thread messages). DM rows and group DM members
+   * missing a name read it from here. Absent-safe.
+   */
+  peerDirectory?: PeerDirectory | null;
 }
 
 function toIdSet(
@@ -872,6 +884,29 @@ function toIdSet(
 ): Set<string> {
   if (!value) return new Set();
   return value instanceof Set ? new Set(value) : new Set(value);
+}
+
+/**
+ * Group DM rosters can carry a member whose displayName is blank or a raw id.
+ * Swap in the directory's name when one is known; otherwise leave it for
+ * `channelDisplayName` to skip.
+ */
+function withNamedMembers(
+  channel: Channel,
+  directory: PeerDirectory | null | undefined,
+): Channel {
+  if (channel.scope !== "group" || !channel.members?.length) return channel;
+  let changed = false;
+  const members = channel.members.map((member) => {
+    if (readablePeerName(member.displayName)) return member;
+    const name = readablePeerName(
+      directory?.get(member.personUid?.trim() ?? "")?.displayName,
+    );
+    if (!name) return member;
+    changed = true;
+    return { ...member, displayName: name };
+  });
+  return changed ? { ...channel, members } : channel;
 }
 
 /** Channel / group DM → ConversationRow. */
@@ -926,7 +961,7 @@ export function normalizeChannel(
     ...(isGroup ? {} : { isCompanyHome }),
     title:
       (isCompanyHome ? companyDisplayName?.trim() : "") ||
-      channelDisplayName(channel, {
+      channelDisplayName(withNamedMembers(channel, options.peerDirectory), {
         projectTitles: options.projectTitles,
       }),
     companyUid:
@@ -976,8 +1011,8 @@ export function normalizeDm(
   const pinnedIds = toIdSet(options.pinnedIds);
   const dmDots = toIdSet(options.dmDots);
   const id = `dm:${contact.personUid}`;
-  const title =
-    contact.displayName?.trim() || contact.email?.trim() || contact.personUid;
+  // Never the raw prs_/agt_ id: name, else email, else "Unknown person".
+  const title = dmPeerLabel(contact, options.peerDirectory);
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -1133,7 +1168,13 @@ export function collapseDuplicateDmRows(
       continue;
     }
     const email = (row.email ?? "").trim().toLowerCase();
-    const key = email || `name:${row.title.trim().toLowerCase()}`;
+    // Rows nothing names share the "Unknown person" label; they are still
+    // different people, so key them by uid instead of by title.
+    const key =
+      email ||
+      (isUnknownPeerLabel(row.title) && row.personUid
+        ? `uid:${row.personUid}`
+        : `name:${row.title.trim().toLowerCase()}`);
     const prev = byKey.get(key);
     if (!prev) {
       byKey.set(key, row);
@@ -2842,6 +2883,7 @@ export function searchHitSnippet(hit: MessageSearchHit): string {
 export function resolveSearchHitRow(
   hit: MessageSearchHit,
   rows: ConversationRow[],
+  peerDirectory?: PeerDirectory | null,
 ): ConversationRow {
   if (hit.scope === "dm" && hit.counterpartyUid) {
     const existing = rows.find(
@@ -2851,7 +2893,7 @@ export function resolveSearchHitRow(
     return {
       id: `dm:${hit.counterpartyUid}`,
       kind: "dm",
-      title: hit.counterpartyUid,
+      title: dmPeerLabel({ personUid: hit.counterpartyUid }, peerDirectory),
       companyUid: hit.companyUid ?? null,
       unreadDot: false,
       lastActivityAt: parseActivityMs(hit.createdAt),

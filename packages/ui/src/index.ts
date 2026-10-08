@@ -28,6 +28,7 @@ export { default as RecipientPicker } from "./chat/recipient-picker/RecipientPic
 export * from "./chat/recipient-picker/recipient-picker-model.js";
 export { recipientItemsFromDirectory } from "./chat/recipient-picker/candidates.js";
 export * from "./chat/chat-api.js";
+export * from "./chat/retired-entities.js";
 export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
 export * from "./chat/live-directory.js";

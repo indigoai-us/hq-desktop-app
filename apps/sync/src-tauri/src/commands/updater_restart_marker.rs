@@ -14,13 +14,6 @@ struct UpdaterRestartMarker {
     written_at_unix_secs: u64,
 }
 
-pub(crate) fn startup_is_updater_restart(
-    launch_agent_relaunch: bool,
-    marker_matches: bool,
-) -> bool {
-    launch_agent_relaunch || marker_matches
-}
-
 pub(crate) fn persist_before_gui_restart(
     app: &AppHandle,
     expected_version: &str,
@@ -109,9 +102,9 @@ fn consume_at(path: &Path, running_version: &str, now_secs: u64) -> io::Result<b
 
 #[cfg(test)]
 mod tests {
-    use super::{consume_at, persist_at, startup_is_updater_restart};
+    use super::{consume_at, persist_at};
     use hq_desktop_core::lifecycle::{
-        classify_lifecycle, require_local_toolchain_after_updater_restart, LifecycleInputs,
+        classify_lifecycle, require_local_toolchain_for_startup, LifecycleInputs,
         LifecycleState,
     };
     use std::fs;
@@ -142,6 +135,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         }
     }
 
@@ -151,10 +145,14 @@ mod tests {
         persist_at(&path, "0.10.388", 1_000).unwrap();
 
         let marker_matches = consume_at(&path, "0.10.388", 1_005).unwrap();
-        let updater_restart = startup_is_updater_restart(false, marker_matches);
+        let updater_restart = marker_matches;
         let classified = classify_lifecycle(previously_setup_inputs());
-        let verdict =
-            require_local_toolchain_after_updater_restart(classified, false, updater_restart);
+        let verdict = require_local_toolchain_for_startup(
+            classified,
+            false,
+            true,
+            updater_restart,
+        );
         assert!(
             updater_restart,
             "the GUI fallback marker is updater evidence"
@@ -170,7 +168,7 @@ mod tests {
             let path = marker_path("marker.json");
             persist_at(&path, version, written_at).unwrap();
             let marker_matches = consume_at(&path, "0.10.388", 2_000).unwrap();
-            assert!(!startup_is_updater_restart(false, marker_matches));
+            assert!(!marker_matches);
             assert!(!path.exists(), "invalid markers are removed");
             let _ = fs::remove_dir_all(path.parent().unwrap());
         }
@@ -180,11 +178,15 @@ mod tests {
     fn normal_launch_without_marker_is_not_an_updater_restart() {
         let path = marker_path("missing.json");
         let marker_matches = consume_at(&path, "0.10.388", 2_000).unwrap();
-        let updater_restart = startup_is_updater_restart(false, marker_matches);
+        let updater_restart = marker_matches;
         let classified = classify_lifecycle(previously_setup_inputs());
-        let verdict =
-            require_local_toolchain_after_updater_restart(classified, false, updater_restart);
+        let verdict = require_local_toolchain_for_startup(
+            classified,
+            false,
+            true,
+            updater_restart,
+        );
         assert!(!updater_restart);
-        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
+        assert_eq!(verdict.state, LifecycleState::SteadyState);
     }
 }

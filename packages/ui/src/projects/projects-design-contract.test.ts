@@ -12,6 +12,7 @@ const FILES = [
   "CompanyProjectsPage.svelte",
   "StoryKanban.svelte",
   "ProjectRow.svelte",
+  "ProjectRepoChips.svelte",
   "ProjectsHome.svelte",
   "ProjectDetailView.svelte",
   "StoryDetailPanel.svelte",

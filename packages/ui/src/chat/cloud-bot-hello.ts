@@ -59,7 +59,8 @@ export async function composeCloudBotHello(
       statusValue = result.value;
       filesStillDownloading = agentChatReadiness(result.value).catchingUp;
     }
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/cloud-bot-hello.ts:62", error);
     // Say the files are still downloading; that is the usual case this early.
   }
   const companyUid = companyUidFromStatus(statusValue) ?? (input.companyUidHint?.trim() || null);

@@ -48,13 +48,13 @@ import {
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   createHqProFlagFetch,
@@ -231,6 +231,10 @@ export function createSyncPlatformAdapter(
       // registry contains an explicit enabled value.
       return Promise.resolve(ok(false));
     }
+    if (flag === POST_READY_DROP_REASON_FLAG) {
+      // Drop diagnostics remain off until an operator explicitly enables them.
+      return Promise.resolve(ok(false));
+    }
     if (flag === READY_FIRST_ACTION_FLAG) {
       // The first real-use action is opt-in and stays off until the manager
       // creates and enables its hq-flags value.
@@ -251,10 +255,6 @@ export function createSyncPlatformAdapter(
     }
     if (flag === FIRST_LAUNCH_JOIN_KEY_FLAG) {
       // Missing or unreadable registry data leaves the new join-key behavior off.
-      return Promise.resolve(ok(false));
-    }
-    if (flag === FIRST_LAUNCH_SIGNIN_REACH_FLAG) {
-      // Reach measurement is opt-in; missing or unreadable registry data stays off.
       return Promise.resolve(ok(false));
     }
     if (flag === PERSONAL_WORKSPACE_BOARD_FLAG) {
@@ -774,6 +774,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },
+      resolveRetiredEntities: (uids) => call<Json>('resolve_retired_entities', { uids }),
       listDmRequests: async () => {
         const result = await call<unknown>('list_dm_requests');
         if (!result.ok) return result;
@@ -921,6 +922,21 @@ export function createSyncPlatformAdapter(
           });
         }
         return call('send_dm', { toPersonUid, body });
+      },
+      forwardMessage: async ({ path, body }) => {
+        const attempted = await hqProAttemptWithRetries<unknown>('POST', path, body);
+        if (attempted.result.ok) {
+          return ok({
+            status: attempted.status,
+            body: JSON.stringify(attempted.result.value ?? {}),
+          });
+        }
+        // An HTTP refusal keeps its status and body so the server code reaches
+        // the picker; only a transport failure stays a failure.
+        if (attempted.status !== null && attempted.result.code !== 'network') {
+          return ok({ status: attempted.status, body: attempted.body ?? '' });
+        }
+        return attempted.result;
       },
       // Exactly one recipient key travels; the other is explicitly null to
       // match the Rust `build_compose_payload` contract.
@@ -1252,6 +1268,9 @@ export function createSyncPlatformAdapter(
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),
       pauseJob: (agentUid, jobId) =>
         hqProJson('POST', AGENT_PATHS.pauseJob(agentUid, jobId)),
+      getProfile: (agentUid) => hqProJson('GET', AGENT_PATHS.profile(agentUid)),
+      runtimeAction: (agentUid, input) =>
+        hqProJson('POST', AGENT_PATHS.runtimeActions(agentUid), input),
       updateProfile: (agentUid, patch) =>
         hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
       stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
@@ -1414,8 +1433,15 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
-      getAccessTree: (companyUid, prefix) =>
-        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      getAccessTree: (companyUid, prefix, page) =>
+        hqProJson(
+          'GET',
+          withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, {
+            prefix,
+            limit: page?.limit,
+            cursor: page?.cursor,
+          }),
+        ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
       atlasLocal: {
@@ -1586,6 +1612,7 @@ export function createSyncPlatformAdapter(
         call('take_pending_messages_target'),
       setActiveCompany: (slug) =>
         call('set_desktop_active_company', { companySlug: slug }),
+      getActiveCompany: () => call<string | null>('get_desktop_active_company'),
       openDriftDetail: (report) => call('open_drift_detail', { report }),
       openMeetingPermissionsWindow: () =>
         call('open_meeting_permissions_window'),
@@ -1689,6 +1716,11 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      getHqAnywherePersonSetting: () => call('get_hq_anywhere_person_setting'),
+      putHqAnywherePersonSetting: (value) =>
+        call('put_hq_anywhere_person_setting', { value }),
+      syncHqAnywhereGlobal: (enabled) =>
+        call('set_hq_anywhere_global_install', { enabled }),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

@@ -1551,8 +1551,10 @@ export function messageHasVisibleContent(message: {
   richContent?: unknown;
   prompt?: string | null;
   details?: string | null;
+  forwardNote?: string | null;
 }): boolean {
   if (message.prompt?.trim() || message.details?.trim()) return true;
+  if (typeof message.forwardNote === "string" && message.forwardNote.trim()) return true;
   const { text, rich } = richContentForMessage(message);
   if (text.trim()) return true;
   return rich?.blocks.some((block) => !HOST_PLACED_BLOCK_KINDS.has(block.kind)) ?? false;
