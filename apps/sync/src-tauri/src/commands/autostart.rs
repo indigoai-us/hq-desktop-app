@@ -225,7 +225,41 @@ pub fn take_launch_agent_repoint_notice() -> Option<String> {
 pub fn ensure_autostart_on_launch() {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use hq_platform::autostart::ReconcileAction;
+        use hq_platform::autostart::{LaunchEnsureGate, ReconcileAction};
+
+        // Only the installed production bundle may write the login item at
+        // launch. A scratch build shares ~/Library/LaunchAgents and would
+        // otherwise repoint the owner's login item at itself.
+        #[cfg(target_os = "macos")]
+        let bundle_identifier = hq_platform::autostart::running_bundle_identifier();
+        // Windows has no bundle identifier; only the env switch applies.
+        #[cfg(target_os = "windows")]
+        let bundle_identifier =
+            Some(hq_platform::autostart::PRODUCTION_BUNDLE_IDENTIFIER.to_string());
+        let updater_disabled = std::env::var(hq_platform::autostart::UPDATER_DISABLED_ENV).ok();
+        match hq_platform::autostart::launch_ensure_gate(
+            bundle_identifier.as_deref(),
+            updater_disabled.as_deref(),
+        ) {
+            LaunchEnsureGate::Proceed => {}
+            LaunchEnsureGate::SkipUpdaterDisabled => {
+                log(
+                    "autostart",
+                    "autostart: ensure skipped, HQ_UPDATER_DISABLED is set",
+                );
+                return;
+            }
+            LaunchEnsureGate::SkipNonProductionBundle(id) => {
+                log(
+                    "autostart",
+                    &format!(
+                        "autostart: ensure skipped, non-production bundle {}",
+                        id.as_deref().unwrap_or("<unknown>")
+                    ),
+                );
+                return;
+            }
+        }
 
         let want_enabled = start_at_login_pref();
 
