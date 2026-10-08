@@ -48,6 +48,40 @@ export interface PlanLimitPause {
   upgradeUrl: string | null;
 }
 
+/**
+ * The one hq-pro signal that says new files are refused right now. The
+ * usage-limits response lists it only when the stage hard-stop switch is on,
+ * the company is enforced, and the company is at or over the storage cap.
+ */
+export const FILES_PAUSED_ARMED_STOP = 'files.create';
+
+/**
+ * Read a `GET /v1/billing/usage-limits` body and decide whether to show the
+ * status-push "New files are paused" row for that company.
+ *
+ * Only `armedStops` containing `files.create` means paused. A usage row at
+ * 80% (a warning) or an `over` row on users, secrets, integrations or agents
+ * does not pause uploads, and on 2026-10-07 reading those as a pause
+ * announced "files are paused" for every free company a person belonged to
+ * (free `agents` 0/0 read as 100%). Returns the upgrade link hq-pro chose
+ * (unvalidated) when paused, `null` otherwise.
+ */
+export function statusPushFilesPause(
+  body: unknown,
+): { paused: true; upgradeUrl: unknown } | { paused: false } {
+  if (!body || typeof body !== 'object') return { paused: false };
+  const status = body as Record<string, unknown>;
+  const plan =
+    status.planLimits && typeof status.planLimits === 'object'
+      ? (status.planLimits as Record<string, unknown>)
+      : status;
+  const armed = plan.armedStops ?? status.armedStops;
+  if (!Array.isArray(armed) || !armed.includes(FILES_PAUSED_ARMED_STOP)) {
+    return { paused: false };
+  }
+  return { paused: true, upgradeUrl: plan.upgradeUrl ?? status.upgradeUrl };
+}
+
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
