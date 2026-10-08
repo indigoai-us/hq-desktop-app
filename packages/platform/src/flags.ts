@@ -105,6 +105,13 @@ export const HUMAN_ONLY_CONVERSATIONS_FLAG =
 export const PERSONAL_TRANSCRIPTS_FLAG =
   "desktop.meetings-personal-transcripts";
 /**
+ * Visual first-run setup (owner plan, 2026-10-08): with it on, a first run
+ * opens the New bot step-through takeover (name the HQ assistant, coding
+ * tools, done) instead of auto-starting the setup bot's chat. Default off:
+ * a missing, unconfigured or unreadable value keeps today's setup chat.
+ */
+export const VISUAL_FIRST_RUN_FLAG = "desktop.visual-first-run";
+/**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
  * `hasFeature(DESKTOP_AGENT_CREATION_FLAG, { companyUid })`. A person-only
@@ -171,6 +178,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
+  [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
   [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,

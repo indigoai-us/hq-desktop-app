@@ -161,6 +161,9 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   // Guided tour: shuts the command palette it opened. The tour never
   // navigates.
   closeTourSurfaces: "none",
+  // Visual first run: puts the takeover away and records it as finished.
+  // The caller picks the conversation (the assistant's DM or #welcome).
+  closeVisualFirstRun: "none",
   applyEmbeddedNavigation: "push",
   applyInboxDeepLink: "push",
   applyCompanyDeepLink: "push",

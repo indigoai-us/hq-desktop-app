@@ -18,6 +18,7 @@ import {
   POST_READY_ACTION_TELEMETRY_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
+  VISUAL_FIRST_RUN_FLAG,
   bearerTokenFromHeaders,
   createFeatureFlagGate,
   createHqProFlagFetch,
@@ -215,6 +216,64 @@ describe("registry key mapping", () => {
       adapter.identity.hasFeature(SETUP_DEPS_TIMEOUT_RETRY_FLAG),
     ).resolves.toEqual(ok(true));
     expect(isEnabled).toHaveBeenCalledWith(SETUP_DEPS_TIMEOUT_RETRY_FLAG);
+  });
+
+  it("maps visual first-run setup through its desktop hq-flags key", () => {
+    expect(VISUAL_FIRST_RUN_FLAG).toBe("desktop.visual-first-run");
+    expect(registryKeyFor(VISUAL_FIRST_RUN_FLAG)).toBe(VISUAL_FIRST_RUN_FLAG);
+  });
+
+  it("keeps visual first-run setup off when hq-flags has no value for it", async () => {
+    const isEnabled = vi.fn(() => true);
+    const invoke = vi.fn(async () => undefined);
+    const adapter = createSyncPlatformAdapter({
+      invoke,
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: {} }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+    // Off without asking hq-pro's per-feature route either.
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("keeps visual first-run setup off when the registry cannot be read", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {
+            throw new Error("registry unavailable");
+          },
+          snapshot: () => null,
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("turns visual first-run setup on only for an explicit hq-flags value", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () =>
+        fakeClient({
+          ready: async () => {},
+          snapshot: () => ({ version: 1, flags: { [VISUAL_FIRST_RUN_FLAG]: true } }),
+          isEnabled,
+        }),
+    });
+
+    await expect(adapter.identity.hasFeature(VISUAL_FIRST_RUN_FLAG)).resolves.toEqual(ok(true));
+    expect(isEnabled).toHaveBeenCalledWith(VISUAL_FIRST_RUN_FLAG);
   });
 
   it("keeps the ready first action off until hq-flags configures it", async () => {
