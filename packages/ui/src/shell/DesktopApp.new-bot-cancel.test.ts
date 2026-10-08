@@ -151,14 +151,14 @@ async function pressCreate(name: string): Promise<void> {
   await settle();
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
-  // "New bot" asks "Cloud or Local?" first.
-  click('[data-testid="new-bot-choice-cloud"]');
-  await settle();
+  // "New bot" asks the name first, then "Where should it live?".
   const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
   input.value = name;
   input.dispatchEvent(new Event("input", { bubbles: true }));
   await settle();
   click('[data-testid="new-bot-continue-name"]');
+  await settle();
+  click('[data-testid="new-bot-choice-cloud"]');
   await settle();
   await vi.waitFor(() =>
     expect(q<HTMLButtonElement>('[data-testid="new-bot-create-submit"]')?.disabled).toBe(false),
@@ -196,7 +196,7 @@ describe("DesktopApp: Cancel in the new bot flow", () => {
 
     click('[data-testid="new-bot-takeover-cancel"]');
     await settle();
-    expect(q('[data-testid="new-bot-step-1"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-step-name"]')).toBeTruthy();
     expect(deprovision).not.toHaveBeenCalled();
 
     // The create answers after Cancel: the bot exists.

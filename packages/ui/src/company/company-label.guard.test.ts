@@ -31,6 +31,10 @@ const ALLOWLIST: Record<string, string> = {
     "The New Bot takeover's own company tile: a monogram and the name, on its dark screen.",
   "chat/create-bot/NewBotCreateScreen.svelte::company.label.trim().slice(0, 1).toLocaleUpperCase()":
     "The tile's one-letter monogram.",
+  "chat/create-bot/CreateBotFlow.svelte::cloudCompany ? ` \u00b7 ${cloudCompany.label}` : \"\"":
+    "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
+  "chat/create-bot/NewBotCreateScreen.svelte::selectedCompanyLabel && (step !== 2 || singleCompany) ? ` \u00b7 ${selectedCompanyLabel}` : \"\"":
+    "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
   "chat/create-bot/CloudDetailsStep.svelte::nameError ?? `What ${companyLabel} will call it.`":
     "Help sentence.",
   "chat/create-bot/CloudDetailsStep.svelte::handleError ?? `People @mention it as @${handle} in ${companyLabel}'s channels.`":
