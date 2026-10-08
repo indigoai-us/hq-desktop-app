@@ -35,7 +35,7 @@ const PAGES: PageCase[] = [
   { name: 'Meetings', open: (p) => click(p, '[data-testid="rail-meetings"]'), ready: '[data-testid="rail-meetings"][aria-current="page"]' },
   { name: 'Settings', open: (p) => click(p, '[data-testid="rail-you"]').then(() => click(p, '[data-testid="account-settings"]')), ready: '[data-testid="settings-host"]' },
   { name: 'Atlas', open: (p) => click(p, '[data-testid="rail-company"]'), ready: '[data-row-id="atlas"][aria-current="page"]' },
-  { name: 'company Goals pane', open: (p) => companyRow(p, 'goals'), ready: '[data-row-id="goals"][aria-current="page"]' },
+  { name: 'company Projects pane', open: (p) => companyRow(p, 'projects'), ready: '[data-row-id="projects"][aria-current="page"]' },
   { name: 'My Telemetry', open: (p) => click(p, '[data-testid="rail-telemetry"]'), ready: '[data-testid="rail-telemetry"][aria-current="page"]' },
   { name: 'Outpost', open: (p) => click(p, '[data-testid="rail-outpost"]'), ready: '[data-testid="rail-outpost"][aria-current="page"]' },
 ];

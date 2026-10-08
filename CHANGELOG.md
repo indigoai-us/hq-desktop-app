@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Goals is no longer in the company sidebar. A saved link or back button that pointed at Goals now opens Atlas. Groups and Grants in the People section now have icons like Team and Bots: two people for Groups and a lock for Grants.
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
 - The Bots page no longer shows "Something went wrong" when a company bot runs on this Mac. That bot was in both the local list and the cloud list, so the page tried to show it twice and stopped. It now lists each bot once, as the local bot, and the Bots count in the sidebar counts it once.
 - New bot now asks for the bot's name first, then "Where should <name> live?" with Cloud and Local side by side. Below them, "Already have a bot running somewhere else? Connect it" shows how to connect a bot you already run.
