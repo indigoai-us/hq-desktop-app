@@ -456,6 +456,27 @@ impl VaultClient {
         }
     }
 
+    /// Test-only: a client with its own connection pool.
+    ///
+    /// `new` hands out the process-wide shared client, so in the test binary
+    /// every `#[tokio::test]` (each on its own runtime) shares one keep-alive
+    /// pool. wiremock's pooled servers keep their ports across tests, so a test
+    /// can pick up an idle connection opened on an earlier test's runtime,
+    /// which is gone. That first send then fails in transport and, in a retry
+    /// loop, counts as an attempt the mock never saw. Tests that count requests
+    /// use this so every send reaches the server.
+    #[cfg(test)]
+    pub(crate) fn with_own_pool(
+        base_url: impl Into<String>,
+        auth_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            auth_token: auth_token.into(),
+            client: Client::new(),
+        }
+    }
+
     /// `POST /entity` — create a new entity; returns the created EntityInfo.
     pub async fn create_entity(
         &self,
