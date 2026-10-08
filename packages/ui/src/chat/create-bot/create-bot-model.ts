@@ -386,7 +386,8 @@ export function newBotKickoff(opts: { template?: boolean } = {}): string {
     "3) whether I have a model preference, or the default is fine. " +
     "End the message with that question and nothing else. " +
     "When I answer, keep my answers in your notes and use them from then on, " +
-    "and tell me in one line anything I need to set myself in HQ."
+    "and tell me in one line anything I need to set myself in HQ. " +
+    "Do not ask me to grant you access: you run on my computer and already work with what I can reach."
   );
 }
 

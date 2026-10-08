@@ -111,13 +111,12 @@ test.describe('console rail: full user path', () => {
     await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });
     await page.getByTestId('chat-bot-create').click();
-    // Lands in the new bot's DM, where the bot asks for the rest of setup.
+    // Lands in the new bot's DM. A local bot runs with the person's own
+    // access, so it greets and never asks for a grant.
     await expect(flow).toHaveCount(0);
-    const access = page.getByTestId('share-request-card');
-    await expect(access).toBeVisible();
-    await expect(access).toHaveAttribute('data-kind', 'access_request');
-    await expect(page.getByText("Hi, I'm Scout.")).toBeVisible();
-    await expect(page.getByText('Pick my skills: open my profile')).toBeVisible();
+    await expect(page.getByText("Hi, I'm Scout. I'll ask a few quick questions to finish my setup.")).toBeVisible();
+    await expect(page.getByTestId('share-request-card')).toHaveCount(0);
+    await expect(page.getByText('Pick my skills: open my profile')).toHaveCount(0);
     if (shots) {
       await page.screenshot({ path: `${shots}/bot-thread.png` });
       await page.locator('.dm-msg-author', { hasText: 'Scout' }).first().click().catch(() => {});

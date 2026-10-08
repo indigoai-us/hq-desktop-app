@@ -197,6 +197,12 @@ describe("DesktopApp sidebar '+' → New bot", () => {
           host.textContent,
       ).toContain("scout"),
     );
+    // A local bot runs with the person's own access: its thread greets and
+    // never asks for a grant or shows the access card.
+    await vi.waitFor(() => expect(host.textContent).toContain("Hi, I'm scout. I'll ask a few quick questions to finish my setup."));
+    expect(q('[data-testid="share-request-card"]')).toBeNull();
+    expect(host.textContent).not.toContain("grant me access");
+    expect(host.textContent).not.toContain("Pick my skills");
   });
 
   it("surfaces the CLI's reason and keeps the modal open when creation fails", async () => {

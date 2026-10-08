@@ -310,6 +310,10 @@ describe("kickoff", () => {
     expect(kickoff).toContain("job title");
     expect(kickoff).toContain("avatar");
     expect(kickoff).toContain("model preference");
+    // A local bot works with the person's own access: it is told not to ask
+    // for a grant, and nothing else in the kickoff asks for one.
+    expect(kickoff).toContain("Do not ask me to grant you access");
+    expect(kickoff.replace("Do not ask me to grant you access", "")).not.toMatch(/grant|access|permission/i);
     // The CLI's bounds: one line, at most 2000 characters, no control characters.
     expect(kickoff.length).toBeLessThanOrEqual(2000);
     // eslint-disable-next-line no-control-regex

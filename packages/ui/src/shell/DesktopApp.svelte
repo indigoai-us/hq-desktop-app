@@ -490,6 +490,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import {
     botSetupMatchesRow,
+    botSetupAsksAccess,
     botSetupUidFromCardId,
     botSetupWires,
     type BotSetupEntry,
@@ -2769,6 +2770,7 @@
       ...botSetupByUid,
       [agentUid]: {
         agentUid,
+        kind: "local",
         name: label,
         email: null,
         companySlug: input.companies?.[0] ?? null,
@@ -8792,6 +8794,7 @@
           ...botSetupByUid,
           [agentUid]: {
             agentUid,
+            kind: "cloud",
             name: draft.name.trim() || "New bot",
             email: null,
             companySlug: companies?.find((c) => c.cloudUid === companyUid)?.slug ?? null,
@@ -9085,7 +9088,9 @@
     const setupUid = botSetupUidFromCardId(event.cardId);
     if (setupUid) {
       const entry = botSetupByUid[setupUid];
-      if (!entry) return;
+      // A local bot never shows the access card, so a stray action from an
+      // older render changes nothing.
+      if (!entry || !botSetupAsksAccess(entry)) return;
       patchBotSetup(setupUid, {
         access:
           event.actionId === "deny"
