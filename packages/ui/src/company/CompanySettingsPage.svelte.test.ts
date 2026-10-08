@@ -128,3 +128,160 @@ describe("CompanySettingsPage Brand", () => {
     expect(readSettingsCache("unicom-brand")?.brand.logoName).toBe("mark.svg");
   });
 });
+
+describe("CompanySettingsPage live Groups and Grants", () => {
+  const tree = (prefix: string, children: unknown[]) => ({
+    prefix,
+    direct: [],
+    inherited: [{ granteeType: "group", granteeId: "grp_core", permission: "admin", grantedBy: "prs_a", grantedAt: "x", sourcePrefix: "*" }],
+    children,
+    directRow: null,
+    identities: { prs_ana: { uid: "prs_ana", type: "person", name: "Ana" } },
+  });
+
+  function filesApi(overrides: Record<string, unknown> = {}) {
+    return {
+      listDir: vi.fn(async () => ({
+        ok: true as const,
+        value: [
+          { name: "agents", path: "companies/acme/agents", isDir: true, hasChildren: true },
+          { name: "knowledge", path: "companies/acme/knowledge", isDir: true, hasChildren: true },
+        ],
+      })),
+      listAccessGroups: vi.fn(async () => ({
+        ok: true as const,
+        value: { groups: [{ groupId: "grp_core", name: "core" }, { groupId: "grp_exec", name: "Exec", memberCount: 3 }] },
+      })),
+      getAccessTree: vi.fn(async (_uid: string, prefix: string) => ({
+        ok: true as const,
+        value:
+          prefix === "agents/*"
+            ? tree(prefix, [{ granteeType: "person", granteeId: "prs_ana", permission: "write", grantedBy: "prs_a", grantedAt: "x", sourcePrefix: "agents/a/*" }])
+            : tree(prefix, [{ granteeType: "group", granteeId: "grp_exec", permission: "read", grantedBy: "prs_a", grantedAt: "x", sourcePrefix: "knowledge/*" }]),
+      })),
+      ...overrides,
+    };
+  }
+
+  function open(section: "groups" | "grants", props: Record<string, unknown>) {
+    const target = render(props);
+    current.section = section;
+    flushSync();
+    return target;
+  }
+
+  it("Groups shows a loader, then the server's groups with their grant summary", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const files = filesApi();
+    const inner = files.listAccessGroups;
+    files.listAccessGroups = vi.fn(async () => {
+      await gate;
+      return inner();
+    });
+    const target = open("groups", { slug: "acme", companyUid: "cmp_live1", files });
+    expect(target.querySelector("[data-testid='groups-loading']")).not.toBeNull();
+    expect(target.querySelector("[data-testid='groups-empty']")).toBeNull();
+    release();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(2);
+    });
+    expect(text(target, "groups-sub")).toMatch(/^2 groups/);
+    expect(files.listAccessGroups).toHaveBeenCalledWith("cmp_live1");
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "group-grants")).toContain("1 · 1 admin, 0 write, 0 read");
+    });
+    expect(text(target, "group-members")).toContain("Not included");
+    expect(target.textContent).not.toContain("after the next sync");
+    expect(target.querySelector("[data-testid='delete-group']")).toBeNull();
+  });
+
+  it("Groups says the read failed, never zero groups, and retries", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let fail = true;
+    const files = filesApi({
+      listAccessGroups: vi.fn(async () =>
+        fail ? { ok: false as const, reason: "error" as const, code: "http-500", message: "boom" } : { ok: true as const, value: { groups: [] } },
+      ),
+    });
+    const target = open("groups", { slug: "acme", companyUid: "cmp_live2", files });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='groups-failed']")).not.toBeNull();
+    });
+    expect(target.querySelector("[data-testid='groups-empty']")).toBeNull();
+    expect(target.textContent).not.toContain("boom");
+    fail = false;
+    target.querySelector<HTMLButtonElement>("[data-testid='groups-retry']")!.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "groups-empty")).toBe("This company has no groups yet.");
+    });
+    warn.mockRestore();
+  });
+
+  it("Groups says it is unavailable without a cloud company", () => {
+    const target = open("groups", { slug: "acme", companyUid: null, files: filesApi() });
+    expect(target.querySelector("[data-testid='groups-unavailable']")).not.toBeNull();
+  });
+
+  it("Grants reads each top-level folder and shows counts per folder that expand to rows", async () => {
+    const files = filesApi();
+    const target = open("grants", { slug: "acme", companyUid: "cmp_live3", files });
+    expect(target.querySelector("[data-testid='grants-loading']")).not.toBeNull();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='grant-section']")).toHaveLength(3);
+    });
+    expect(files.listDir).toHaveBeenCalledWith("companies/acme");
+    expect(files.getAccessTree.mock.calls.map((c) => c[1]).sort()).toEqual(["agents/*", "knowledge/*"]);
+    expect(text(target, "grants-sub")).toMatch(/^3 folder grants/);
+    const folders = [...target.querySelectorAll<HTMLElement>("[data-testid='grant-section']")].map((b) => b.dataset.folder);
+    expect(folders[0]).toBe("*");
+    const agents = target.querySelector<HTMLButtonElement>("[data-testid='grant-section'][data-folder='agents']")!;
+    expect(agents.textContent?.replace(/\s+/g, " ").trim()).toBe("agents/ 1 0 0 0 1");
+    expect(target.querySelector("[data-testid='grant-row']")).toBeNull();
+    agents.click();
+    flushSync();
+    expect(text(target, "grant-row")).toBe("Ana agents/a/* write No expiry");
+
+    target.querySelector<HTMLButtonElement>("[data-testid='grant-filter-groups']")!.click();
+    flushSync();
+    expect(target.querySelectorAll("[data-testid='grant-section']")).toHaveLength(2);
+    target.querySelector<HTMLButtonElement>("[data-testid='grant-filter-expiring']")!.click();
+    flushSync();
+    expect(text(target, "grants-filter-empty")).toContain("No folder grants have an expiry date");
+  });
+
+  it("Grants lists folders it could not read instead of hiding them", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const base = filesApi();
+    const files = filesApi({
+      getAccessTree: vi.fn(async (uid: string, prefix: string) =>
+        prefix === "knowledge/*" ? { ok: false as const, reason: "error" as const, code: "http-502", message: "bad gateway" } : base.getAccessTree(uid, prefix),
+      ),
+    });
+    const target = open("grants", { slug: "acme", companyUid: "cmp_live4", files });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='grants-unread']")).not.toBeNull();
+    });
+    expect(text(target, "grants-unread")).toContain("knowledge/ · Could not read this folder's grants.");
+    expect(target.textContent).not.toContain("bad gateway");
+    warn.mockRestore();
+  });
+
+  it("Grants shows failed when every folder read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const files = filesApi({ getAccessTree: vi.fn(async () => ({ ok: false as const, reason: "error" as const, code: "http-500", message: "x" })) });
+    const target = open("grants", { slug: "acme", companyUid: "cmp_live5", files });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelector("[data-testid='grants-failed']")).not.toBeNull();
+    });
+    expect(target.querySelector("[data-testid='grant-section']")).toBeNull();
+    warn.mockRestore();
+  });
+});

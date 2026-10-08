@@ -13581,6 +13581,7 @@
             company={adapter.company ?? null}
             messaging={adapter.messaging ?? null}
             seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            files={adapter.files ?? null}
           />
         {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
           <BotsPage
