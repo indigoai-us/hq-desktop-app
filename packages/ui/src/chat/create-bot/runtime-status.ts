@@ -121,6 +121,26 @@ export function runtimeChipSuffix(status: RuntimeStatus | null): string {
 }
 
 /**
+ * The short status on a coding tool's card: "Signed in", "Sign in first",
+ * "Not installed" or "Couldn't check". `ready` is the boolean fallback for a
+ * host that has no per-runtime status.
+ */
+export function runtimeCardStatus(status: RuntimeStatus | null, ready: boolean): string {
+  switch (status?.state) {
+    case "signedIn":
+      return "Signed in";
+    case "signedOut":
+      return "Sign in first";
+    case "notInstalled":
+      return "Not installed";
+    case "probeFailed":
+      return "Couldn’t check";
+    default:
+      return ready ? "Signed in" : "Sign in first";
+  }
+}
+
+/**
  * Only a runtime whose binary was FOUND may be offered a sign-in. This is the
  * rule the missing state broke: a Sign in on a CLI that is not here spawns
  * nothing and leaves the modal on "Opening … sign-in…" forever.

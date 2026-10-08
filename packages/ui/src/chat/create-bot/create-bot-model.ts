@@ -6,10 +6,11 @@
  * "can I advance / can I create" lives here so the Svelte components stay
  * thin and the rules are unit-testable without a DOM.
  *
- * Every AI teammate is a bot. A Local bot picks its coding tool, with a
- * template and the advanced settings (handle, who it is for, permissions,
- * memory) one click away; its title, avatar and model are asked in its first
- * message instead (`newBotKickoff`). A Cloud bot is named, sized and given a
+ * Every AI teammate is a bot. A Local bot picks its coding tool; who it is
+ * for, a template and the fine-tuning (handle, permissions, memory) are
+ * optional steps after it, each on its own screen, and "Finish with
+ * defaults" creates from any of them. Its title, avatar and model are asked
+ * in its first message instead (`newBotKickoff`). A Cloud bot is named, sized and given a
  * brain. The company channel's "Create a bot" card is retired, so this flow
  * is the ONLY place a cloud bot is named. A suggested name is a prefill the
  * person can see and change, never a silent default.
@@ -24,7 +25,13 @@ import type {
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
 import { runtimeBlocksNext, runtimeStatusOf, runtimeStepIssue, type RuntimeStatus } from "./runtime-status.js";
 
-export type CreateBotStep = "home" | "details";
+/**
+ * A step after the name and the Cloud or Local question. Local: "home" (the
+ * coding tool, required), then the optional "scope" (who it is for),
+ * "template" (start from) and "tune" (handle, permissions, memory). Cloud:
+ * "home" (the company, when there is a choice) and "details".
+ */
+export type CreateBotStep = "home" | "details" | "scope" | "template" | "tune";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
@@ -545,26 +552,47 @@ export function templateBringsLine(card: TemplateCard | null): string {
 
 /**
  * The steps this draft walks after the name and the Cloud or Local question,
- * one question per screen. A local bot picks its coding tool (a template and
- * the advanced settings sit on that screen, folded away). A cloud bot picks
- * its company first when there is a choice (the price is that company's),
- * then is named and sized on one screen.
+ * one question per screen. A local bot picks its coding tool, then may go on
+ * to who it is for, a template (only when there are templates) and the
+ * fine-tuning. A cloud bot picks its company first when there is a choice
+ * (the price is that company's), then its brain and size.
  */
 export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
-  if (draft.home === "local") return LOCAL_STEPS;
+  if (draft.home === "local") {
+    return opts.hasTemplates === false ? LOCAL_STEPS.filter((step) => step !== "template") : LOCAL_STEPS;
+  }
   return opts.pickCompany ? ["home", "details"] : ["details"];
 }
 
 /**
  * `pickCompany`: a cloud bot gets a "Pick the company" step. Off when there is
- * one company and it is already selected.
+ * one company and it is already selected. `hasTemplates`: false drops the
+ * local "Start from" step, which would offer only Blank.
  */
 export interface StepOptions {
   pickCompany?: boolean;
+  hasTemplates?: boolean;
 }
 
-/** Local steps after the name and the Cloud or Local question. */
-export const LOCAL_STEPS: CreateBotStep[] = ["home"];
+/** Local steps after the name and the Cloud or Local question. Only the first is required. */
+export const LOCAL_STEPS: CreateBotStep[] = ["home", "scope", "template", "tune"];
+
+/** Local steps "Finish with defaults" may skip. */
+export const OPTIONAL_LOCAL_STEPS: readonly CreateBotStep[] = ["scope", "template", "tune"];
+
+/** What "Next: ..." calls each step. */
+export const STEP_NAMES: Record<CreateBotStep, string> = {
+  home: "Coding tool",
+  scope: "Who it's for",
+  template: "Start from",
+  tune: "Fine-tune",
+  details: "Details",
+};
+
+/** "Next: Who it's for". Cloud's company step comes before its details. */
+export function nextStepLabel(step: CreateBotStep | null): string {
+  return step ? `Next: ${STEP_NAMES[step]}` : "";
+}
 
 export interface StepTitle {
   kicker: string;
@@ -575,12 +603,15 @@ export interface StepTitle {
 }
 
 /**
- * Each step's heading: a plain lead and the word that matters set apart
- * ("Enter a <name.>"). The copy names "this computer"; the flow swaps in
- * the host's own noun.
+ * Each step's heading: a plain lead and the word that matters set apart.
+ * Local steps set the bot's name apart ("Which tool should <Nova> think
+ * with?"); `{name}` in `em` is replaced with it.
  */
-export const LOCAL_STEP_TITLES: Record<"home", StepTitle> = {
-  home: { kicker: "How it thinks", lead: "Pick the", em: "coding tool.", copy: "Your bot thinks with a coding tool signed in on this computer." },
+export const LOCAL_STEP_TITLES: Record<"home" | "scope" | "template" | "tune", StepTitle> = {
+  home: { kicker: "How it thinks", lead: "Which tool should", em: "{name}", tail: "think with?", copy: "It uses your own plan for the tool you pick." },
+  scope: { kicker: "Who it's for", lead: "Who is", em: "{name}", tail: "for?", copy: "You can keep it to yourself or share it with a team." },
+  template: { kicker: "Start from", lead: "Where should", em: "{name}", tail: "start?", copy: "Blank, or a worker your company already has." },
+  tune: { kicker: "Fine-tune", lead: "Fine-tune", em: "{name}.", copy: "These keep their defaults unless you change them." },
 };
 
 /** The first New bot step, the same on every path. */
@@ -596,10 +627,13 @@ export const CLOUD_STEP_TITLES: Record<"home" | "details", StepTitle> = {
   details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "It runs in your company's cloud and stays on when this computer is asleep." },
 };
 
-/** Headings for the step on screen. */
-export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"]): StepTitle {
-  if (home === "cloud") return CLOUD_STEP_TITLES[step];
-  return step === "home" ? LOCAL_STEP_TITLES.home : NAME_STEP_TITLE;
+/** Headings for the step on screen, with the bot's name set apart on the local steps. */
+export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"], name = ""): StepTitle {
+  if (home === "cloud") return step === "home" || step === "details" ? CLOUD_STEP_TITLES[step] : NAME_STEP_TITLE;
+  if (step === "details") return NAME_STEP_TITLE;
+  const title = LOCAL_STEP_TITLES[step];
+  const shown = name.trim() || "your bot";
+  return { ...title, em: title.em.replace("{name}", shown) };
 }
 
 export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
@@ -617,15 +651,16 @@ export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home"
 /** Why this step cannot advance yet; null when it can. */
 export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): string | null {
   switch (step) {
+    case "scope":
+      return scopeIssue(draft, ctx);
+    case "template":
+      return draft.kind === "template" && !draft.templateId ? "Pick a template." : null;
+    case "tune":
+      return displayNameIssue(draft.name) ?? localHandleIssue(draft, ctx.existingNames);
     case "home":
       if (draft.home === "local") {
         const host = ctx.hostNoun?.trim() || "computer";
         if (!ctx.canLocal) return `Bots can’t run on this ${host}.`;
-        // The name, template and advanced settings are all answered by the
-        // time this, the only local step, is on screen, so they are checked
-        // here too: Create bot never runs with one of them unusable.
-        const settingsIssue = localSettingsIssue(draft, ctx);
-        if (settingsIssue) return settingsIssue;
         {
           const label = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
           const status = runtimeStatusOf(ctx.runtimeStatus, draft.runtime);
@@ -702,7 +737,7 @@ export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: Crea
   return stepIssue(step, draft, ctx, opts) === null;
 }
 
-/** Every step the draft walks is valid → Cmd-Enter may create from anywhere. */
+/** Every step the draft walks is valid: Finish may create from anywhere. */
 export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
   return stepsFor(draft, opts).every((step) => stepIssue(step, draft, ctx, opts) === null);
 }
@@ -710,6 +745,20 @@ export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext, opts: St
 /** The first step that still needs the user; null when the draft is complete. */
 export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): CreateBotStep | null {
   return stepsFor(draft, opts).find((step) => stepIssue(step, draft, ctx, opts) !== null) ?? null;
+}
+
+/**
+ * A Local draft ready for "Finish with defaults". A handle that is only
+ * taken (the name is fine, another bot here already has its slug) gets the
+ * first free numbered one, "scout-2", from the same helper that suggests
+ * names. Anything else is left for the Fine-tune step to say. The draft is
+ * returned unchanged when there is nothing to fix.
+ */
+export function withFreeHandle(draft: CreateBotDraft, existing: readonly string[]): CreateBotDraft {
+  if (draft.home !== "local") return draft;
+  const handle = botHandle(draft);
+  if (!handle || !isValidLocalBotName(handle) || !taken(handle, existing)) return draft;
+  return { ...draft, handle: suggestBotName(existing, [handle]) };
 }
 
 /**
