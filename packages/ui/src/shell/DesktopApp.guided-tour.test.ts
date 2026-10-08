@@ -98,6 +98,7 @@ describe("DesktopApp first-run guided tour", () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
     const createBot = vi.fn(async () => ok({ ok: true, name: "x", agentUid: "agt_x" }));
     const onselectrow = vi.fn();
+    let claudeLoggedIn = false;
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -133,6 +134,19 @@ describe("DesktopApp first-run guided tour", () => {
       shell: {
         detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
       },
+      // The setup bot runs on Claude. Setup opens it only once a coding tool
+      // is signed in, so the fixture signs in before the person presses run.
+      sessions: {
+        preflight: async () =>
+          ok({
+            claudeAvailable: true,
+            claudeLoggedIn,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+          }),
+      },
     } as unknown as PlatformAdapter;
 
     host = document.createElement("div");
@@ -164,7 +178,9 @@ describe("DesktopApp first-run guided tour", () => {
     expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
 
     // Mid-tour the setup bot's DM opens (on a real install the bot does this
-    // by itself). Step 1 now points at its composer.
+    // by itself once a coding tool is signed in). Step 1 now points at its
+    // composer.
+    claudeLoggedIn = true;
     q("setup-run")!.click();
     await settle();
     await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("setup"), {
