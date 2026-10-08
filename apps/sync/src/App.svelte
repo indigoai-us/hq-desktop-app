@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { fetch as tauriHttpFetch } from '@tauri-apps/plugin-http';
   import {
     createSyncPlatformAdapter,
+    ensureHqAnywhereGlobalRuntime,
     POST_READY_ACTION_TELEMETRY_FLAG,
+    POST_READY_DROP_REASON_FLAG,
     type Json,
   } from '@hq/platform';
   import { startTraySync } from './lib/traySync';
@@ -45,6 +46,7 @@
   import type { WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
+  import { registerChannelUnreadListeners } from './lib/channelUnreadListeners';
   import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
   import { TrayMessageBadgePublisher } from './lib/trayMessageBadge';
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
@@ -76,7 +78,6 @@
     createFirstLaunchSignInReachReporter,
     setFirstLaunchSignInReachReporter,
     startupOutcomeForLifecycle,
-    resolveFirstLaunchSignInReachFlag,
   } from './lib/first-launch-signin-reach-telemetry';
   import {
     handleMeetingDetected,
@@ -96,6 +97,7 @@
   import { markConsentRepromptShown } from './lib/onboarding-telemetry';
   import {
     createPostReadyActionTelemetry,
+    postReadyIdentityAdapterValue,
     isPostReadyAction,
     POST_READY_ACTION_EVENT,
     registerPostReadyCloseTelemetry,
@@ -116,9 +118,6 @@
         'suppressFirstLaunchTelemetry' in context &&
         context.suppressFirstLaunchTelemetry === true;
     },
-    isEnabled: async (visitorId) => {
-      return resolveFirstLaunchSignInReachFlag(visitorId, tauriHttpFetch);
-    },
     getInstallAttemptId: async () => {
       const value = await invoke<unknown>('desktop_install_attempt_id');
       return typeof value === 'string' ? value : null;
@@ -135,6 +134,10 @@
         const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
         return result.ok && result.value === true;
       },
+      isDropReasonFlagEnabled: async () => {
+        const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
+        return result.ok && result.value === true;
+      },
       getIdentity: async (scope) => resolvePostReadyIdentity(scope),
     }))
     .catch((err) => {
@@ -144,6 +147,10 @@
         os: desktopTelemetryOs(),
         isFlagEnabled: async () => {
           const result = await traySyncAdapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG);
+          return result.ok && result.value === true;
+        },
+        isDropReasonFlagEnabled: async () => {
+          const result = await traySyncAdapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG);
           return result.ok && result.value === true;
         },
         getIdentity: async (scope) => resolvePostReadyIdentity(scope),
@@ -200,10 +207,8 @@
   async function resolvePostReadyIdentity(
     scope?: { companyUid?: string; companySlug?: string },
   ): Promise<{ personUid: string; companyUid: string | null } | null> {
-    const person = await traySyncAdapter.identity.whoami();
-    if (!person.ok) return null;
-    const workspaces = await traySyncAdapter.identity.listWorkspaces();
-    if (!workspaces.ok) return null;
+    const person = postReadyIdentityAdapterValue(await traySyncAdapter.identity.whoami());
+    const workspaces = postReadyIdentityAdapterValue(await traySyncAdapter.identity.listWorkspaces());
     let activeSlug = scope?.companySlug ?? config?.companySlug ?? '';
     if (!activeSlug && !scope?.companyUid) {
       activeSlug = (await invoke<string | null>('get_desktop_active_company').catch((err) => {
@@ -211,7 +216,7 @@
         return null;
       })) ?? '';
     }
-    const memberships = workspaces.value as Json[];
+    const memberships = workspaces as Json[];
     const active = scope?.companyUid
       ? memberships.find(
           (workspace) => String(workspace.companyUid ?? workspace.uid ?? '') === scope.companyUid,
@@ -224,7 +229,7 @@
             (workspace) => activeSlug && String(workspace.slug ?? workspace.companySlug ?? '') === activeSlug,
           ) ?? (memberships.length === 1 ? memberships[0] : undefined);
     const companyUid = active && String(active.companyUid ?? active.uid ?? '').trim();
-    return { personUid: person.value.personUid, companyUid: companyUid || null };
+    return { personUid: person.personUid, companyUid: companyUid || null };
   }
 
   function desktopTelemetryOs(): 'macos' | 'windows' | 'linux' {
@@ -402,7 +407,7 @@
     /** ISO 8601 timestamp when the detection fired. */
     detectedAt: string;
     /** Lifecycle state — drives the Record/Stop button label. */
-    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'finalising' | 'error';
     /** Recall.ai recording id (returned by start_recording). */
     recordingId?: string;
     /** Last error message from a failed start/stop, if any. */
@@ -1106,25 +1111,17 @@
     );
 
     // Exact channel unread snapshots include increases and read/decrement
-    // transitions, so the aggregate and native menu-bar count cannot stick.
-    unlisteners.push(
-      await listen<{ channelId: string; unread: number }>(
-        'channel:unread-changed',
-        (e) => {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        },
-      ),
-    );
-
-    unlisteners.push(
-      await listen<Channel>('channel:updated', (e) => {
-        if (typeof e.payload.unread === 'number') {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        } else {
-          void loadChannelUnreadCount();
-        }
-      }),
-    );
+    // transitions. The directory-change emitter also sends a payload-less
+    // invalidation, which the listener handles by refreshing the full snapshot.
+    const channelUnreadUnlisteners = await registerChannelUnreadListeners({
+      listen: (eventName, handlePayload) =>
+        listen<unknown>(eventName, ({ payload }) => handlePayload(payload)),
+      applyChannelUnread,
+      refreshSnapshot: () => {
+        void loadChannelUnreadCount();
+      },
+    });
+    unlisteners.push(...channelUnreadUnlisteners);
 
     unlisteners.push(
       await listen('tray:replay-intro', () => {
@@ -2048,6 +2045,24 @@
     }, 5000);
   }
 
+  let hqAnywhereRuntimeSetupInFlight: Promise<void> | null = null;
+  function reconcileHqAnywhereGlobalRuntime(): void {
+    if (hqAnywhereRuntimeSetupInFlight) return;
+    hqAnywhereRuntimeSetupInFlight = ensureHqAnywhereGlobalRuntime(
+      traySyncAdapter.identity,
+      traySyncAdapter.settings,
+    )
+      .then((result) => {
+        if (!result.ok) console.warn('[hq-anywhere] startup runtime setup failed:', result);
+      })
+      .catch((error) => {
+        console.warn('[hq-anywhere] startup runtime setup failed:', error);
+      })
+      .finally(() => {
+        hqAnywhereRuntimeSetupInFlight = null;
+      });
+  }
+
   async function checkAuth() {
     const outcome = await resolveStartupState(probeStartupState, {
       onRetry: (attempt, err) =>
@@ -2120,8 +2135,10 @@
       }
     }
 
-    if (authenticated) void loadUnreadSummary();
-    else resetUnreadSummary();
+    if (authenticated) {
+      void loadUnreadSummary();
+      reconcileHqAnywhereGlobalRuntime();
+    } else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
     // whether this person's recorded consent is stale and should be re-asked.
     // Non-blocking and fail-quiet — the window renders immediately; if a
@@ -2198,6 +2215,7 @@
       await handleSyncNow();
     }
     if (auth.authenticated) {
+      reconcileHqAnywhereGlobalRuntime();
       void invoke('open_desktop_alt_window').catch((e) => {
         console.error('open_desktop_alt_window after sign-in failed:', e);
       });

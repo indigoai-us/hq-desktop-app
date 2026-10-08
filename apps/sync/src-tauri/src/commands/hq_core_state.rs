@@ -3047,6 +3047,7 @@ struct CoreUpdateBaselinePersistenceDiagnosticTags {
     permission_state: &'static str,
     disk_state: &'static str,
     concurrent_writer: &'static str,
+    concurrent_writer_outcome: &'static str,
     stamp_state: String,
     outcome: &'static str,
     stamp_key: &'static str,
@@ -3094,6 +3095,8 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "invalid_input",
                     "serialization",
                     "not_found",
+                    "baseline_write_lost",
+                    "baseline_target_corrupt",
                     "permission_denied",
                     "already_exists",
                     "storage_full",
@@ -3130,6 +3133,15 @@ impl CoreUpdateBaselinePersistenceDiagnosticTags {
                     "temp_consumed_target_present",
                     "no_evidence",
                     "unknown",
+                ],
+            ),
+            concurrent_writer_outcome: bounded(
+                value("concurrent_writer_outcome"),
+                &[
+                    "baseline_match",
+                    "baseline_mismatch",
+                    "target_invalid",
+                    "not_classified",
                 ],
             ),
             stamp_state: stamp_tags.state,
@@ -3179,7 +3191,17 @@ fn send_core_update_baseline_persistence_warning(
 ) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let category = report.error_category.label();
-        let (message, fingerprint) = if report.diagnostic_tags.outcome == "refresh_pending" {
+        let (message, fingerprint) = if report.diagnostic_tags.error_kind == "baseline_write_lost" {
+            (
+                "Desktop Core baseline write lost to concurrent writer",
+                ["desktop-core-baseline-write-lost"],
+            )
+        } else if report.diagnostic_tags.error_kind == "baseline_target_corrupt" {
+            (
+                "Desktop Core baseline target corrupt after concurrent writer",
+                ["desktop-core-baseline-target-corrupt"],
+            )
+        } else if report.diagnostic_tags.outcome == "refresh_pending" {
             (
                 "Desktop Core baseline refresh pending",
                 ["desktop-core-baseline-refresh-pending"],
@@ -3223,6 +3245,10 @@ fn send_core_update_baseline_persistence_warning(
                     report.diagnostic_tags.concurrent_writer,
                 );
                 sentry_scope.set_tag(
+                    "persistence_concurrent_writer_outcome",
+                    report.diagnostic_tags.concurrent_writer_outcome,
+                );
+                sentry_scope.set_tag(
                     "persistence_stamp_state",
                     &report.diagnostic_tags.stamp_state,
                 );
@@ -3238,6 +3264,28 @@ fn send_core_update_baseline_persistence_warning(
                 );
             },
             || sentry::capture_message(message, sentry::Level::Warning),
+        );
+    }));
+}
+
+fn report_identical_concurrent_baseline_write() {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        sentry::with_scope(
+            |scope| {
+                scope.set_fingerprint(Some(&["desktop-core-baseline-concurrent-writer"]));
+                scope.set_tag("operation", "baseline_persistence");
+                scope.set_tag(
+                    "persistence_concurrent_writer",
+                    "temp_consumed_target_present",
+                );
+                scope.set_tag("persistence_concurrent_writer_outcome", "baseline_match");
+            },
+            || {
+                sentry::capture_message(
+                    "Desktop Core concurrent writer persisted identical baseline",
+                    sentry::Level::Info,
+                )
+            },
         );
     }));
 }
@@ -3952,19 +4000,47 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
 
     match remote_tree {
         Ok(tree) => {
-            let blobs = tree
+            let blobs: BTreeMap<String, String> = tree
                 .into_iter()
                 .map(|(path, (sha, _))| (path, sha))
                 .collect();
-            if let Err(error) =
-                hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
-                    hq_folder, &source, &commit, blobs,
-                )
-            {
+            let first_attempt =
+                hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics_and_outcome(
+                    hq_folder, &source, &commit, blobs.clone(),
+                );
+            let (persisted_with_diagnostic, persistence_diagnostic) = match first_attempt {
+                Ok(
+                    hq_desktop_core::drift_scope::CoreDriftBaselinePersistenceOutcome::Written,
+                ) => (true, None),
+                Ok(
+                    hq_desktop_core::drift_scope::CoreDriftBaselinePersistenceOutcome::ConcurrentWriterAlreadyPersisted,
+                ) => {
+                    report_identical_concurrent_baseline_write();
+                    (true, None)
+                }
+                Err(error) if error.to_string().contains("error_kind=baseline_write_lost") => {
+                    // Keep the lost-write classification visible, then let the caller
+                    // retry the authoritative tree exactly once.
+                    match hq_desktop_core::drift_scope::persist_core_drift_baseline_with_diagnostics(
+                        hq_folder, &source, &commit, blobs,
+                    ) {
+                        Ok(()) => (true, Some(error.to_string())),
+                        Err(retry_error) => (
+                            false,
+                            Some(format!(
+                                "caller retry also failed: {retry_error}; initial lost write: {error}"
+                            )),
+                        ),
+                    }
+                }
+                Err(error) => (false, Some(error.to_string())),
+            };
+            if !persisted_with_diagnostic && persistence_diagnostic.is_some() {
+                let diagnostic = persistence_diagnostic.as_deref().unwrap_or_default();
                 log(
                     "hq-core-state",
                     &format!(
-                        "could not persist authoritative Core baseline {source}@{commit}: {error}; keeping refresh pending"
+                        "could not persist authoritative Core baseline {source}@{commit}: {diagnostic}; keeping refresh pending"
                     ),
                 );
                 persist_baseline_refresh_target(channel, &source, &commit, injected_path)?;
@@ -3973,7 +4049,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                     baseline_persisted: false,
                     refresh_pending: true,
                     fetch_failure_class: None,
-                    persistence_diagnostic: Some(error.to_string()),
+                    persistence_diagnostic,
                     stamp_key,
                 });
             }
@@ -4003,7 +4079,7 @@ fn persist_applied_rescue_baseline_from_stamp_with_path(
                 baseline_persisted: true,
                 refresh_pending,
                 fetch_failure_class: None,
-                persistence_diagnostic: None,
+                persistence_diagnostic,
                 stamp_key,
             })
         }
@@ -9487,6 +9563,25 @@ error: clone failed";
         assert!(event.extra["baselinePersistenceDetail"]
             .as_str()
             .is_some_and(|detail| detail.contains("baseline refresh pending")));
+    }
+
+    #[test]
+    fn identical_concurrent_baseline_write_emits_only_bounded_outcome_tags() {
+        let events = sentry::test::with_captured_events_options(
+            report_identical_concurrent_baseline_write,
+            sentry::ClientOptions::default(),
+        );
+        let event = events.into_iter().next().expect("baseline match is measured");
+        assert_eq!(event.level, sentry::Level::Info);
+        assert_eq!(
+            event.tags.get("persistence_concurrent_writer_outcome").map(String::as_str),
+            Some("baseline_match")
+        );
+        assert_eq!(
+            event.tags.get("persistence_concurrent_writer").map(String::as_str),
+            Some("temp_consumed_target_present")
+        );
+        assert!(event.extra.is_empty());
     }
 
     #[test]

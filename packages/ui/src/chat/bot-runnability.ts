@@ -208,7 +208,8 @@ export interface LocalBotTraceStore {
 function writeLocalBotTrace(store: LocalBotTraceStore | null | undefined, trace: LocalBotTrace): void {
   try {
     store?.setItem(LOCAL_BOT_TRACE_KEY, JSON.stringify(trace));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/bot-runnability.ts:211", error);
     // A host with storage disabled simply forgets between launches; the
     // in-memory trace still covers everything that happens in this session.
   }

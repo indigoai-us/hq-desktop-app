@@ -100,6 +100,9 @@ function render(props: Record<string, unknown> = {}): void {
       loadClaudeProviderFlag: async () => ok(true),
       loadCloudProvisionOptions: async () => ok(QUOTE),
       oncreate: vi.fn(),
+      // The name was given on the first step (the takeover's), so the flow
+      // opens on "Where should it live?".
+      initialName: "Dr Love",
       ...props,
     },
   });
@@ -147,12 +150,12 @@ describe("New bot flow, agents.desktop-agent-creation off", () => {
     render({ onCloudCreate: vi.fn(), agentTargets: [], directCloud: seam(false) });
     await settle();
     // Flag off and no company: no Cloud/Local question, Cloud nowhere, the
-    // flow opens on the local name step.
+    // flow opens on the local coding tool step.
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
     expect(q('[data-testid="new-bot-choice-cloud"]')).toBeNull();
     expect(q('[data-testid="chat-bot-where-cloud"]')).toBeNull();
     expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
-    expect(q('[data-testid="create-bot-sunrise-details"]')).toBeTruthy();
+    expect(q('[data-testid="create-bot-sunrise-home"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
   });
 

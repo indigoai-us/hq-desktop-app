@@ -175,6 +175,23 @@ export interface BotListRow {
   canPause: boolean;
 }
 
+/**
+ * One row per bot uid. A company bot that runs on this Mac (or one with a
+ * promotion hold) is both a local bot and on the cloud roster; the local row
+ * wins so Pause and the local status stay. Duplicate uids inside one list keep
+ * the first row. Keyed `{#each}` blocks throw on a repeated uid.
+ */
+export function mergeBotRows(local: readonly BotListRow[], cloud: readonly BotListRow[]): BotListRow[] {
+  const seen = new Set<string>();
+  const out: BotListRow[] = [];
+  for (const row of [...local, ...cloud]) {
+    if (seen.has(row.uid)) continue;
+    seen.add(row.uid);
+    out.push(row);
+  }
+  return out;
+}
+
 export function filterBots(rows: readonly BotListRow[], filter: BotFilter): BotListRow[] {
   if (filter === "local") return rows.filter((row) => row.kind === "local");
   if (filter === "cloud") return rows.filter((row) => row.kind === "cloud");

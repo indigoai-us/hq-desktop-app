@@ -356,7 +356,8 @@ export function botRestorePromptDismissed(store: RestorePromptMemory | null | un
 export function rememberBotRestoreDismissed(store: RestorePromptMemory | null | undefined): void {
   try {
     store?.setItem(BOT_RESTORE_DISMISSED_KEY, "1");
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/bot-restore.ts:359", error);
     /* storage disabled */
   }
 }

@@ -11,7 +11,13 @@ import {
 } from './recordingCompany';
 import { armStopWatchdog, clearStopWatchdog, resolveStopTimeout } from './stopWatchdog';
 
-export type ActiveMeetingState = 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+export type ActiveMeetingState =
+  | 'detected'
+  | 'starting'
+  | 'recording'
+  | 'stopping'
+  | 'finalising'
+  | 'error';
 
 export interface ActiveMeeting {
   windowId: string;
@@ -60,6 +66,16 @@ interface BackendActiveRecording {
   recordingId?: string;
   companyUid?: string | null;
   startedAt?: string;
+}
+
+/** Result emitted after launch reconciliation of a recording left in the
+ * durable ledger. `finalising` means Recall has not exposed it yet, so retain
+ * the existing meeting row rather than reporting a loss prematurely. */
+interface RecordingReconciledPayload {
+  outcome?: 'saved' | 'stillProcessing' | 'finalising' | 'ingestFailed' | 'unknown';
+  windowId?: string;
+  recordingId?: string;
+  reason?: string;
 }
 
 interface PopoverMeetingsSnapshot {
@@ -305,6 +321,29 @@ async function installActiveMeetingListeners(handleNotificationActions: boolean)
         state: 'error',
         error: `${event.payload.cmd}: ${event.payload.message}`,
       });
+    }),
+    listen<RecordingReconciledPayload>('recording:reconciled', (event) => {
+      const { outcome, windowId, recordingId, reason } = event.payload;
+      if (!windowId) return;
+      if (outcome === 'finalising' || outcome === 'stillProcessing') {
+        upsertRecordingEvent(windowId, {
+          state: 'finalising',
+          recordingId,
+          error: undefined,
+        });
+        return;
+      }
+      if (outcome === 'saved') {
+        removeActiveMeeting(windowId);
+        return;
+      }
+      if (outcome === 'ingestFailed') {
+        upsertRecordingEvent(windowId, {
+          state: 'error',
+          recordingId,
+          error: reason || 'Recording could not be finalised.',
+        });
+      }
     }),
     listen<{ windowId: string; platform: string; closedAt: string }>(
       'meeting:closed',

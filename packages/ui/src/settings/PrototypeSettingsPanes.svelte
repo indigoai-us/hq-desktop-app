@@ -56,13 +56,13 @@
   import {
     APPEARANCE_SIZES,
     APPEARANCE_THEMES,
-    applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
     calendarAccountLabel,
+    currentColorTheme,
     hasAppearanceHost,
     readHostWindowOpacity,
-    readStoredTheme,
+    requestColorTheme,
     settingsCompanyLists,
   } from "./shell-settings-model.js";
   import {
@@ -94,6 +94,7 @@
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
   import { missingMeetingPermissions } from "../meetings/meeting-permissions";
+  import HqAnywhereSettingRow from "./HqAnywhereSettingRow.svelte";
 
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -152,7 +153,11 @@
     ...(hostOpacity == null ? {} : { windowOpacity: hostOpacity }),
     uiSize: readStoredUiSize(deviceStorage, storage),
   });
-  let theme = $state<ColorTheme>(readStoredTheme());
+  // The selected pill shows the theme actually applied to this window
+  // (`data-force-theme`, absent = System), never a stored copy with its own
+  // default: `readStoredTheme` falls back to "dark", so a fresh install showed
+  // Dark selected while the window followed a light macOS appearance.
+  let theme = $state<ColorTheme>(currentColorTheme());
   let notifPermission = $state<string | null>(null);
   let notifRequesting = $state(false);
   let notifPermissionError = $state<string | null>(null);
@@ -371,7 +376,7 @@
   }
 
   function setTheme(next: ColorTheme): void {
-    theme = applyColorTheme(next);
+    theme = requestColorTheme(next);
   }
 
   function setUiSize(next: SettingsUiSize): void {
@@ -1193,6 +1198,7 @@
     // Keep the slider in sync when transparency changes elsewhere (another
     // window, storage event, native menu) — the host announces every apply.
     const onAppearanceChange = () => {
+      theme = currentColorTheme();
       const next = readHostWindowOpacity();
       if (next != null && next !== prefs.windowOpacity) {
         prefs = writePrefs({ windowOpacity: next });
@@ -1252,6 +1258,7 @@
     </p>
   {/if}
   {#if section === "general"}
+    <HqAnywhereSettingRow {adapter} />
     {#if canTray}
       <div class="set-row">
         <div>

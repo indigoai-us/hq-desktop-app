@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MeshShellOverlay } from "@hq/core";
 import type { ConversationRow } from "../chat/sidebar-model.js";
+import { buildChannelStatusModel } from "../chat/channel-status-model.js";
 import {
   applyChannelRoster,
+  applyAuthoritativePresence,
   createCacheSidebarApi,
   createHybridSidebarApi,
   dmBundleFromRawSnapshot,
@@ -513,6 +515,45 @@ describe("createHybridSidebarApi optional live capabilities", () => {
     };
   }
 
+  it("logs a failed live directory read and still returns the cached fallback", async () => {
+    const error = new Error("offline");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const seeded: MeshShellOverlay = {
+      ...overlay,
+      rows: [
+        {
+          channelId: "cache-after-error",
+          type: "project",
+          scope: "project",
+          companyUid: "cmp_indigo",
+          name: "Cached after error",
+          lastActivityAt: "2026-08-16T00:00:00.000Z",
+          unreadCount: 0,
+          memberCount: 0,
+        },
+      ],
+    };
+    const api = createHybridSidebarApi(
+      liveApi({
+        fetchChannelDirectory: async () => {
+          throw error;
+        },
+      }),
+      () => seeded,
+    );
+
+    try {
+      const feed = await api.fetchChannelDirectory(null);
+      expect(feed.rows?.[0]?.channelId).toBe("cache-after-error");
+      expect(warning).toHaveBeenCalledWith(
+        "[hq-ui] live channel directory read failed; using cached overlay:",
+        error,
+      );
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it("forwards listCompanyMembers and sendDmToEmail from live", async () => {
     const listCompanyMembers = vi.fn(async () => ({
       contacts: [{ personUid: "prs_kai" }],
@@ -741,5 +782,77 @@ describe("parseChannelMembers — enriched profile fields", () => {
     });
     expect(m.avatarUrl).toBeUndefined();
     expect(m.description).toBeUndefined();
+  });
+});
+
+describe("applyChannelRoster presence projection", () => {
+  it("keeps online company participants that are absent from the channel roster", () => {
+    const model = buildChannelStatusModel({
+      project: { id: "work-mesh-testing", title: "Work Mesh Testing" },
+      members: [{ personUid: "prs_hassaan", displayName: "Hassaan" }],
+      presence: [
+        {
+          actorUid: "prs_hassaan",
+          status: "online",
+          actorType: "human",
+          displayName: "Hassaan Saleem",
+        },
+        {
+          actorUid: "agt_other",
+          status: "online",
+          actorType: "agent",
+          displayName: "Other Agent",
+        },
+        {
+          actorUid: "agt_offline",
+          status: "offline",
+          actorType: "agent",
+          displayName: "Offline Agent",
+        },
+      ],
+    });
+
+    const withRoster = applyChannelRoster(model, [
+      { personUid: "prs_hassaan", displayName: "Hassaan" },
+    ]);
+
+    expect(withRoster.members.map((member) => member.personUid)).toEqual([
+      "prs_hassaan",
+    ]);
+    expect(withRoster.agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          personUid: "agt_other",
+          displayName: "Other Agent",
+          online: true,
+        }),
+      ]),
+    );
+    expect(withRoster.agents.map((agent) => agent.personUid)).not.toContain(
+      "agt_offline",
+    );
+  });
+});
+
+describe("applyAuthoritativePresence", () => {
+  it("drops cached presence-only rows once authoritative presence marks them offline", () => {
+    const model = buildChannelStatusModel({
+      project: { id: "work-mesh-testing", title: "Work Mesh Testing" },
+      members: [{ personUid: "prs_member", displayName: "Member", role: "member" }],
+      presence: [
+        { actorUid: "prs_member", status: "online", actorType: "human" },
+        { actorUid: "prs_guest", status: "online", actorType: "human", displayName: "Guest" },
+        { actorUid: "agt_guest", status: "online", actorType: "agent", displayName: "Guest Agent" },
+      ],
+    });
+
+    const updated = applyAuthoritativePresence(
+      model,
+      (uid) => uid !== "prs_guest" && uid !== "agt_guest",
+    );
+
+    expect(updated.members.map((member) => member.personUid)).toEqual(["prs_member"]);
+    expect(updated.members[0]?.online).toBe(true);
+    expect(updated.agents).toEqual([]);
   });
 });

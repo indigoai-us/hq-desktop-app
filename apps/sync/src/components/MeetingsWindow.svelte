@@ -229,7 +229,7 @@
     platform: string;
     meetingUrl: string;
     detectedAt: string;
-    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'finalising' | 'error';
     recordingId?: string;
     error?: string;
     companyUid: string | null;
