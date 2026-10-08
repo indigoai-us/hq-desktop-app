@@ -51,7 +51,7 @@ fn read_command_file_if_changed(
     path: &std::path::Path,
     last_revision: &mut Option<CommandFileRevision>,
     initialized: &mut bool,
-    read: impl FnOnce(&std::path::Path) -> std::io::Result<String>,
+    mut read: impl FnMut(&std::path::Path) -> std::io::Result<String>,
 ) -> std::io::Result<Option<String>> {
     let metadata = match std::fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -268,12 +268,11 @@ pub fn spawn_and_poll(app: &AppHandle) {
         let _ = std::fs::remove_file(&cf);
         loop {
             std::thread::sleep(Duration::from_millis(250));
-            let Ok(Some(cmd)) = read_command_file_if_changed(
-                &cf,
-                &mut last_revision,
-                &mut initialized,
-                std::fs::read_to_string,
-            ) else {
+            let Ok(Some(cmd)) =
+                read_command_file_if_changed(&cf, &mut last_revision, &mut initialized, |path| {
+                    std::fs::read_to_string(path)
+                })
+            else {
                 continue;
             };
             let _ = std::fs::remove_file(&cf);
@@ -383,7 +382,7 @@ mod uploads_paused_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod command_poll_tests {
     use super::*;
     use std::{cell::Cell, io::Write};
 
@@ -392,8 +391,8 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "hq-tray-command-test-{}-{}.txt",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
@@ -404,16 +403,18 @@ mod tests {
         let reads = Cell::new(0);
         let mut revision = None;
         let mut initialized = false;
-        let read = |path: &std::path::Path| {
+        let mut read = |path: &std::path::Path| {
             reads.set(reads.get() + 1);
             std::fs::read_to_string(path)
         };
         assert_eq!(
-            read_command_file_if_changed(&path, &mut revision, &mut initialized, read).unwrap(),
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
             Some("sync".to_string())
         );
         assert_eq!(
-            read_command_file_if_changed(&path, &mut revision, &mut initialized, read).unwrap(),
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
             None
         );
         assert_eq!(
@@ -424,7 +425,8 @@ mod tests {
 
         std::fs::write(&path, "open desktop").unwrap();
         assert_eq!(
-            read_command_file_if_changed(&path, &mut revision, &mut initialized, read).unwrap(),
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
             Some("open desktop".to_string())
         );
         assert_eq!(
