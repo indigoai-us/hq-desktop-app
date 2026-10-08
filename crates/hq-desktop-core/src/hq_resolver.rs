@@ -14,16 +14,16 @@
 //! `hq cloud demote company <slug> --force`, which arrived in
 //! `@indigoai-us/hq-cli@5.10.0`. If the user's installed `hq` binary is
 //! missing or on a stale PATH, the subprocess fails with a cryptic spawn or
-//! unknown-option error. HQ Anywhere additionally requires the global runtime
-//! commands introduced in hq-cli 5.345.46.
+//! unknown-option error. HQ Anywhere has a separate resolver because its
+//! optional global-runtime commands require hq-cli 5.345.46 and must not
+//! change the CLI floor for the shared workflows.
 //!
 //! ## What it does
 //!
 //! Runs capability probes against the local `hq` once per AppBar process:
-//! `hq sync push --help` must contain `--creds-from-stdin`, `hq cloud --help`
-//! must list the `demote` subcommand, and install/uninstall help must expose
-//! `--global` and `--runtime` for HQ Anywhere setup.
-//! If all probes pass, the local binary is used directly (fast path).
+//! `hq sync push --help` must contain `--creds-from-stdin`, and
+//! `hq cloud --help` must list the `demote` subcommand.
+//! If both probes pass, the local binary is used directly (fast path).
 //! Otherwise we fall back to:
 //!
 //! ```text
@@ -53,9 +53,12 @@ use std::sync::OnceLock;
 use crate::logfile::log;
 use crate::paths;
 
-/// npm range used for the auto-fallback. HQ Anywhere global runtime commands
-/// require hq-cli 5.345.46.
-pub const HQ_CLI_NPM_RANGE: &str = "^5.345.46";
+/// npm range used for shared CLI workflows requiring the 5.10-era commands.
+pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
+
+/// New global runtime commands are optional to shared CLI workflows and use
+/// their own fallback floor when HQ Anywhere needs them.
+pub const HQ_CLI_GLOBAL_RUNTIME_NPM_RANGE: &str = "^5.345.46";
 
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
@@ -78,6 +81,9 @@ pub enum HqInvocation {
     Local(String),
     /// Local `hq` was missing or too old; route through `npx -y --package=...@<range> hq`.
     Npx,
+    /// HQ Anywhere needs the newer global-runtime commands; use the pinned
+    /// package without changing the shared CLI fallback floor.
+    NpxGlobalRuntime,
 }
 
 impl HqInvocation {
@@ -98,6 +104,17 @@ impl HqInvocation {
                 ]);
                 cmd
             }
+            HqInvocation::NpxGlobalRuntime => {
+                let npx = paths::resolve_bin("npx");
+                let mut cmd = paths::tokio_spawn_command(&npx, &[]);
+                cmd.args([
+                    "-y",
+                    "--package",
+                    &format!("@indigoai-us/hq-cli@{HQ_CLI_GLOBAL_RUNTIME_NPM_RANGE}"),
+                    "hq",
+                ]);
+                cmd
+            }
         }
     }
 
@@ -106,6 +123,9 @@ impl HqInvocation {
         match self {
             HqInvocation::Local(path) => format!("local:{path}"),
             HqInvocation::Npx => format!("npx:@indigoai-us/hq-cli@{HQ_CLI_NPM_RANGE}"),
+            HqInvocation::NpxGlobalRuntime => {
+                format!("npx:@indigoai-us/hq-cli@{HQ_CLI_GLOBAL_RUNTIME_NPM_RANGE}")
+            }
         }
     }
 
@@ -114,7 +134,7 @@ impl HqInvocation {
     pub fn telemetry_kind(&self) -> &'static str {
         match self {
             HqInvocation::Local(_) => "local",
-            HqInvocation::Npx => "npx",
+            HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => "npx",
         }
     }
 
@@ -123,7 +143,7 @@ impl HqInvocation {
     pub fn sentry_label(&self) -> String {
         match self {
             HqInvocation::Local(_) => self.telemetry_kind().to_string(),
-            HqInvocation::Npx => self.label(),
+            HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => self.label(),
         }
     }
 
@@ -135,7 +155,9 @@ impl HqInvocation {
     /// scope until the spawned subprocess has completed.
     pub async fn npx_serial_guard(&self) -> Option<tokio::sync::MutexGuard<'static, ()>> {
         match self {
-            HqInvocation::Npx => Some(npx_serial_lock().lock().await),
+            HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => {
+                Some(npx_serial_lock().lock().await)
+            }
             HqInvocation::Local(_) => None,
         }
     }
@@ -183,13 +205,13 @@ fn probe() -> HqInvocation {
         return HqInvocation::Npx;
     }
 
-    let (creds_ok, demote_ok, global_install_ok) = (
+    let (creds_ok, demote_ok) = (
         capability_probe_creds_from_stdin(&local),
         capability_probe_cloud_demote(&local),
-        capability_probe_global_runtime_install(&local),
     );
-    if creds_ok && demote_ok && global_install_ok {
-        HqInvocation::Local(local)
+    let selected = select_shared_invocation(local.clone(), creds_ok, demote_ok);
+    if matches!(&selected, HqInvocation::Local(_)) {
+        selected
     } else {
         let mut missing = Vec::new();
         if !creds_ok {
@@ -197,9 +219,6 @@ fn probe() -> HqInvocation {
         }
         if !demote_ok {
             missing.push("`cloud demote` subcommand");
-        }
-        if !global_install_ok {
-            missing.push("global runtime install/uninstall options");
         }
         log(
             "hq-resolver",
@@ -209,7 +228,40 @@ fn probe() -> HqInvocation {
                 missing.join(", "),
             ),
         );
+        selected
+    }
+}
+
+fn shared_cli_capabilities_supported(creds_ok: bool, demote_ok: bool) -> bool {
+    creds_ok && demote_ok
+}
+
+fn select_shared_invocation(local: String, creds_ok: bool, demote_ok: bool) -> HqInvocation {
+    if shared_cli_capabilities_supported(creds_ok, demote_ok) {
+        HqInvocation::Local(local)
+    } else {
         HqInvocation::Npx
+    }
+}
+
+/// Resolve HQ Anywhere's newer runtime commands without raising the minimum
+/// CLI version for the shared install and sync workflows.
+pub fn resolve_hq_for_global_runtime() -> HqInvocation {
+    let shared = resolve_hq();
+    let global_runtime_supported = match &shared {
+        HqInvocation::Local(path) => capability_probe_global_runtime_install(path),
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => false,
+    };
+    select_global_runtime_invocation(shared, global_runtime_supported)
+}
+
+fn select_global_runtime_invocation(
+    shared: HqInvocation,
+    global_runtime_supported: bool,
+) -> HqInvocation {
+    match shared {
+        local @ HqInvocation::Local(_) if global_runtime_supported => local,
+        _ => HqInvocation::NpxGlobalRuntime,
     }
 }
 
@@ -298,8 +350,53 @@ mod tests {
         let install = "Usage: hq install [options]\n--global --runtime <runtime>";
         let uninstall = "Usage: hq uninstall [options]\n--global --runtime <runtime>";
         assert!(global_runtime_install_help_supported(install, uninstall));
-        assert!(!global_runtime_install_help_supported(install, "Usage: hq uninstall\n--global"));
-        assert!(!global_runtime_install_help_supported("Usage: hq install\n--runtime", uninstall));
+        assert!(!global_runtime_install_help_supported(
+            install,
+            "Usage: hq uninstall\n--global"
+        ));
+        assert!(!global_runtime_install_help_supported(
+            "Usage: hq install\n--runtime",
+            uninstall
+        ));
+    }
+
+    #[test]
+    fn shared_resolver_accepts_existing_cli_capabilities_without_global_install() {
+        let local = "/managed/toolchain/hq".to_string();
+        assert!(!global_runtime_install_help_supported(
+            "Usage: hq install [options]",
+            "Usage: hq uninstall [options]",
+        ));
+        assert!(shared_cli_capabilities_supported(true, true));
+        assert!(matches!(
+            select_shared_invocation(local.clone(), true, true),
+            HqInvocation::Local(path) if path == local
+        ));
+    }
+
+    #[test]
+    fn global_runtime_resolver_uses_its_dedicated_npx_pin_when_local_cli_lacks_global_options() {
+        assert!(matches!(
+            select_global_runtime_invocation(
+                HqInvocation::Local("/managed/toolchain/hq".to_string()),
+                false,
+            ),
+            HqInvocation::NpxGlobalRuntime
+        ));
+
+        let cmd = HqInvocation::NpxGlobalRuntime.command();
+        let std_cmd = cmd.as_std();
+        let args: Vec<&str> = std_cmd
+            .get_args()
+            .map(|arg| arg.to_str().unwrap_or(""))
+            .collect();
+        assert_eq!(args[0], "-y");
+        assert_eq!(args[1], "--package");
+        assert_eq!(
+            args[2],
+            format!("@indigoai-us/hq-cli@{HQ_CLI_GLOBAL_RUNTIME_NPM_RANGE}")
+        );
+        assert_eq!(args[3], "hq");
     }
 
     /// The Npx invocation must build the exact npx argv shape the

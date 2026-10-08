@@ -15,6 +15,10 @@ const CODEX_BLOCK_BEGIN: &str =
 const MANAGED_BLOCK_END: &str = "<!-- hq-anywhere:end -->";
 const HQ_MCP_PACK: &str = "hq-anywhere";
 
+fn safe_renderer_failure(_details: &str) -> String {
+    "HQ Anywhere setup failed. Tap to retry.".to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GlobalRuntime {
     Claude,
@@ -211,7 +215,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
         let argv = global_runtime_args(action, runtime);
         let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
         log(LOG_TAG, &format!("running hq {}", args.join(" ")));
-        match crate::commands::install_stages::run_hq_plain(&args, &hq_root).await {
+        match crate::commands::install_stages::run_hq_global_runtime_plain(&args, &hq_root).await {
             Ok(()) => log(
                 LOG_TAG,
                 &format!("{} global setup completed", runtime.as_str()),
@@ -229,7 +233,7 @@ pub async fn set_hq_anywhere_global_install(enabled: bool) -> Result<(), String>
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(failures.join("; "))
+        Err(safe_renderer_failure(&failures.join("; ")))
     }
 }
 
@@ -240,8 +244,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        detect_present_runtimes, global_runtime_args, global_runtime_is_installed, GlobalRuntime,
-        RuntimeAction,
+        detect_present_runtimes, global_runtime_args, global_runtime_is_installed,
+        safe_renderer_failure, GlobalRuntime, RuntimeAction,
     };
 
     struct TempHome(PathBuf);
@@ -414,5 +418,15 @@ mod tests {
             home.path(),
             GlobalRuntime::Codex
         ));
+    }
+
+    #[test]
+    fn renderer_failure_does_not_expose_cli_diagnostics() {
+        let details = "hq install failed: secret path and raw stderr";
+        let renderer_message = safe_renderer_failure(details);
+
+        assert_eq!(renderer_message, "HQ Anywhere setup failed. Tap to retry.");
+        assert!(!renderer_message.contains("secret path"));
+        assert!(!renderer_message.contains("raw stderr"));
     }
 }

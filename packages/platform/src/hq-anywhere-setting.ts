@@ -110,6 +110,5 @@ export async function ensureHqAnywhereGlobalRuntime(
   if (!(await hqAnywhereRuntimeEnabled(identity))) return ok(undefined);
   const setting = await getHqAnywherePersonSetting(settings, options);
   if (!setting.ok) return setting;
-  if (!setting.value) return ok(undefined);
-  return setHqAnywhereGlobalRuntime(identity, settings, true, options);
+  return setHqAnywhereGlobalRuntime(identity, settings, setting.value, options);
 }
