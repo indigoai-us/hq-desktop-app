@@ -5,6 +5,7 @@ import type { Workspace } from '../../src/lib/workspaces';
 import { resolveHarnessPersona, type ShellPersona } from '../personas';
 import { emit } from './event';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
+import { commandLineToolsAnswer } from '../clt-mocks';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -1754,6 +1755,8 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
       .__hqInvokeCounts ??= {});
     counts[cmd] = (counts[cmd] ?? 0) + 1;
   }
+  const clt = commandLineToolsAnswer(cmd);
+  if (clt !== NOT_HANDLED) return clt as T;
   if (companyFlowEnabled()) {
     const answer = await companyFlowAnswer(cmd, args);
     if (answer !== NOT_HANDLED) return answer as T;
