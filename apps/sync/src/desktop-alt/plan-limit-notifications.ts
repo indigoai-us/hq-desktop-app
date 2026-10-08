@@ -75,6 +75,16 @@ export function statusPushFilesPause(
     status.planLimits && typeof status.planLimits === 'object'
       ? (status.planLimits as Record<string, unknown>)
       : status;
+  // hq-pro only arms a stop for a free, enforceable, non-exempt company; the
+  // guards stay here as defense in depth so a malformed or future body can
+  // never announce a pause for a paid, grandfathered or exempt company.
+  if (
+    plan.plan !== 'free' ||
+    plan.cohort !== 'enforceable' ||
+    plan.planLimitsExempt === true
+  ) {
+    return { paused: false };
+  }
   const armed = plan.armedStops ?? status.armedStops;
   if (!Array.isArray(armed) || !armed.includes(FILES_PAUSED_ARMED_STOP)) {
     return { paused: false };

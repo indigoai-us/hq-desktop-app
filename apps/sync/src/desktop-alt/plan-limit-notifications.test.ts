@@ -157,6 +157,13 @@ describe('statusPushFilesPause (usage-limits body -> "files are paused" row)', (
     });
   });
 
+  it('never pauses a paid, grandfathered or exempt company even with an armed stop', () => {
+    const armedStops = ['files.create'];
+    expect(statusPushFilesPause({ ...free, plan: 'team', armedStops })).toEqual({ paused: false });
+    expect(statusPushFilesPause({ ...free, cohort: 'grandfathered', armedStops })).toEqual({ paused: false });
+    expect(statusPushFilesPause({ ...free, planLimitsExempt: true, armedStops })).toEqual({ paused: false });
+  });
+
   it('never pauses on a malformed body', () => {
     expect(statusPushFilesPause(null)).toEqual({ paused: false });
     expect(statusPushFilesPause('paused')).toEqual({ paused: false });
