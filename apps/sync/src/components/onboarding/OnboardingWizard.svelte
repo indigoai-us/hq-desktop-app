@@ -13,7 +13,6 @@
   import {
     HQ_MARK_H,
     HQ_MARK_Q,
-    KEYBOARD_ROWS,
     createConsentEngine,
     createFolderEngine,
     createKeyboardEngine,
@@ -21,6 +20,7 @@
     createOrbitEngine,
     createPanelEngine,
     createReadyEngine,
+    keyboardRowsFor,
   } from './welcome/engines';
   import {
     READY_PROGRESS_DONE_TEXT,
@@ -126,8 +126,10 @@
     type StageState,
   } from '../../lib/onboarding-setup';
   import {
+    openHqShortcutChord,
     readOnboardingHostOs,
     setupExpectationCopy,
+    shortcutKeyboardLayoutFor,
     thisComputerNounFor,
     yourComputerNounFor,
   } from '../../lib/onboarding-platform';
@@ -738,10 +740,12 @@
   const thisComputer = $derived(thisComputerNounFor(setupHostOs));
   // The global shortcut is Option-Shift-O on a Mac and Alt+Shift+O elsewhere.
   const yourComputer = $derived(yourComputerNounFor(setupHostOs));
-  const chordKeys = $derived(setupHostOs === 'windows' ? ['Alt', 'Shift', 'O'] : ['⌥', '⇧', 'O']);
-  const chordSpoken = $derived(
-    setupHostOs === 'windows' ? 'Alt, Shift, O' : 'Option, Shift, O',
-  );
+  // Board, lit keys and legend all come from this one layout decision.
+  const shortcutLayout = $derived(shortcutKeyboardLayoutFor(setupHostOs));
+  const keyboardRows = $derived(keyboardRowsFor(shortcutLayout));
+  const shortcutChord = $derived(openHqShortcutChord(shortcutLayout));
+  const chordKeys = $derived(shortcutChord.keys);
+  const chordSpoken = $derived(shortcutChord.spoken);
   const setupSubStatusModel = $derived(
     setupSubStatus({
       stageId: currentStageId,
@@ -4227,7 +4231,7 @@
       <p class="body">From anywhere on {yourComputer}, this opens the HQ desktop view.</p>
     </div>
     <div class="keyboard" bind:this={refs.kb} aria-hidden="true">
-      {#each KEYBOARD_ROWS as row, ri (ri)}
+      {#each keyboardRows as row, ri (ri)}
         <div class="krow">
           {#each row as key, ki (key.id)}
             <div
