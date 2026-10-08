@@ -2,6 +2,7 @@
   import ReadLoader from "../common/ReadLoader.svelte";
   import ListEmptyState from "../common/ListEmptyState.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Company Bots page (console-rail US-027).
    *
@@ -212,7 +213,7 @@
             onclick={() => selectRow(row.uid)}
           >
             <span class="sq" aria-hidden="true">
-              <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+              <RailIcon name="robot" size={12} />
             </span>
             <span class="nm">{row.name}</span>
             <span class="meta">{kindLabel(row)}</span>

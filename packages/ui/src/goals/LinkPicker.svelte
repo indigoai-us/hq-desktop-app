@@ -67,7 +67,7 @@
 <div class="popover" data-testid="link-picker" role="dialog" aria-label="Link project" use:dismissable={{ onclose, trap: false, autofocus: false }}>
   <div class="ctx">
     <span class="t">{chosen ? projectDisplayName(chosen) : "Pick a project"}</span>
-    <button class="x" type="button" aria-label="Close" onclick={onclose}>✕</button>
+    <button class="x" type="button" aria-label="Close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </div>
   <input class="search" placeholder="Search projects…" bind:value={query} />
   <div class="sec">Projects</div>
@@ -146,6 +146,7 @@
   /* QA-107: border-box so full-width rows and the search field stay inside the popover. */
   .row, .search { box-sizing: border-box; }
   .x, .row, .search { font: inherit; color: inherit; background: transparent; border: 0; }
+  .x { display: inline-flex; align-items: center; justify-content: center; }
   .search {
     width: 100%;
     height: 28px;
@@ -173,6 +174,7 @@
   .row b { font-weight: 600; color: var(--v4-text-1); }
   .row[aria-pressed="true"] { background: var(--v4-active-row); color: var(--v4-text-1); }
   .row:hover:not(:disabled) { background: var(--v4-hover); }
-  .act { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; padding: 0 0 0 6px; cursor: pointer; text-decoration: underline; }
+  .act { font: inherit; color: var(--v4-text-1); background: transparent; border: 0; padding: 0 0 0 6px; text-decoration: none; cursor: pointer; }
+  .act:hover { opacity: 0.7; }
   .foot { font-size: 12px; color: var(--v4-text-3); padding: 4px 8px; }
 </style>

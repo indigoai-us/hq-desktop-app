@@ -32,20 +32,20 @@ next to the action that opens that tool. Sources were read on 2026-10-02.
   (`176 176 364 364`) so it fills a 14px box. Fill is the official Black in
   light mode and the official White in dark mode; no other colour is applied.
 
-## Grok Build: hand-drawn mark kept (xAI)
+## Grok Build: official mark (xAI)
 
-- Source checked: SpaceXAI brand guidelines (dated February 14, 2025),
-  https://x.ai/legal/brand-guidelines. Asset link on that page:
-  https://data.x.ai/logos/SpaceXAI_Grok_Assets.zip.
-- Result: the zip download returned HTTP 403 from the site's bot protection,
-  so no official SVG was obtained.
+- Source: SpaceXAI brand guidelines, https://x.ai/legal/brand-guidelines,
+  read on 2026-10-08. The page itself renders the Grok mark inline (the
+  "Built with Grok" glyph, viewBox `0 0 34 32`, two filled paths). That SVG
+  is copied unaltered into `BRAND_ICONS.grok`.
+- The asset zip linked from the page
+  (https://data.x.ai/logos/SpaceXAI_Grok_Assets.zip) still answers 403 to
+  non-browser downloads; the inline mark is the same glyph.
 - Terms read: use the marks only to refer accurately to SpaceXAI or its
-  services; do not imply endorsement; use logos only exactly as provided at
-  the download link, without alteration. SpaceXAI also states it may withdraw
-  permission at any time.
-- Treatment: the previous simplified slashed-ring glyph stays, in the text
-  colour. Replace it with the file from the zip, unaltered, once someone
-  downloads it from a browser.
+  services; do not imply endorsement; do not alter the logos. SpaceXAI may
+  withdraw permission at any time.
+- Treatment: shape unaltered, shown in the text colour (the mark is
+  monochrome black or white), only next to actions that open Grok Build.
 
 ## Provider marks on My Telemetry
 

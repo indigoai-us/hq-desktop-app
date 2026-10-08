@@ -611,7 +611,7 @@
                   >
                     <span class="ss-company-name"><CompanyLabel name={company.label} companyUid={company.uid} /></span>
                     <span class="ss-company-role" data-testid="settings-profile-company-role">{company.role ?? ""}</span>
-                    <svg class="ss-company-chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    <span class="ss-company-chev" aria-hidden="true"><RailIcon name="caret-right" size={14} /></span>
                   </button>
                 {/each}
               </div>
@@ -795,7 +795,7 @@
   .ss-company-row:hover { background: var(--hover, var(--overlay-hover)); }
   .ss-company-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ss-company-role, .ss-company-chev { color: var(--t3, currentColor); }
-  .ss-company-chev { width: 14px; height: 14px; }
+  .ss-company-chev { display: grid; place-items: center; width: 14px; height: 14px; }
   .ss-nav {
     display: flex;
     flex-direction: column;

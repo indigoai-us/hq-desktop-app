@@ -76,6 +76,5 @@
   .hidden-notice-btn:hover {
     color: var(--v4-text-1, #ededed);
     background: var(--c-hover, rgb(128 128 128 / 12%));
-    text-decoration: underline;
   }
 </style>

@@ -7,6 +7,7 @@
    * logomark or initials, a live dot, and drag reorder.
    */
   import Tooltip from "../common/Tooltip.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { railInitials, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
@@ -132,10 +133,10 @@
         }}
       >
         {#if item.kind === "home"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v10h5v-6h4v6h5V10" /></svg>
+          <RailIcon name="house" size={18} />
           {#if unreadCount > 0}<span class="badge" data-testid="rail-home-badge" aria-hidden="true"></span>{/if}
         {:else if item.kind === "meetings"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
+          <RailIcon name="video-camera" size={18} />
         {:else if item.kind === "company"}
           <span class="co-tile" class:has-logo={Boolean(item.iconUrl)} aria-hidden="true">
             {#if item.iconUrl}
@@ -151,21 +152,21 @@
             <span class="live" data-testid="rail-live-dot" aria-hidden="true"></span>
           {/if}
         {:else if item.kind === "more-companies"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5" /><rect x="14" y="4" width="6" height="6" rx="1.5" /><rect x="4" y="14" width="6" height="6" rx="1.5" /><path d="M17 14v6M14 17h6" /></svg>
+          <RailIcon name="squares-four" size={18} />
         {:else if item.kind === "library"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+          <RailIcon name="folder" size={18} />
         {:else if item.id === "deployments"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17l6-6 4 4 6-6" /><path d="M14 9h6v6" /></svg>
+          <RailIcon name="trend-up" size={18} />
         {:else if item.id === "telemetry"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4" /></svg>
+          <RailIcon name="pulse" size={18} />
         {:else if item.id === "secrets"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4" /><path d="M12 12h9M18 12v3M15 12v2" /></svg>
+          <RailIcon name="key" size={18} />
         {:else if item.id === "connections"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H7a4 4 0 0 0 0 8h2M15 7h2a4 4 0 0 1 0 8h-2M8 11h8" /></svg>
+          <RailIcon name="link" size={18} />
         {:else if item.kind === "marketplace"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9l2-4h12l2 4" /><path d="M4 9h16" /><path d="M5 9v10h14V9" /><path d="M10 19v-5h4v5" /></svg>
+          <RailIcon name="storefront" size={18} />
         {:else if item.id === "outpost"}
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="6" rx="1.5" /><rect x="3" y="13" width="18" height="6" rx="1.5" /><path d="M7 8h.01M7 16h.01" /></svg>
+          <RailIcon name="hard-drives" size={18} />
         {:else if item.kind === "you"}
           <span class="avatar" aria-hidden="true">{youInitials || initials(item.label)}</span>
           {#if youLive}
@@ -249,16 +250,6 @@
   .rail-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: -2px;
-  }
-
-  .rail-btn svg {
-    width: 18px;
-    height: 18px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
   }
 
   .badge {

@@ -4,6 +4,7 @@
    * zooms, double-click frames all. Keyboard (`0`, `Esc`) is owned by the
    * parent view so it also works while focus sits in the inspector.
    */
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     type AtlasPresence,
     type AtlasRefEdge,
@@ -761,8 +762,8 @@
     {#if !hintSeen}<span class="hint">Drag to pan · Scroll to zoom · Press 0 to frame all</span>{/if}
   </div>
   <div class="map-tools" bind:this={toolsEl}>
-    <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}>−</button>
-    <button type="button" class="zoom-btn" aria-label="Zoom in" onclick={() => zoomBy(1.25)}>+</button>
+    <button type="button" class="zoom-btn" aria-label="Zoom out" onclick={() => zoomBy(1 / 1.25)}><RailIcon name="minus" size={14} /></button>
+    <button type="button" class="zoom-btn" aria-label="Zoom in" onclick={() => zoomBy(1.25)}><RailIcon name="plus" size={14} /></button>
   </div>
 </div>
 

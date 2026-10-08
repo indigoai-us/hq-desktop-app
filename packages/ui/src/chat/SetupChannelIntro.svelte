@@ -56,6 +56,7 @@
     type SetupRosterStatus,
   } from "./setup-channel";
   import { SETUP_RESOURCE_GLYPHS } from "./setup-resource-glyphs";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import SetupRunCard from "./SetupRunCard.svelte";
   import SetupConnectStep from "./SetupConnectStep.svelte";
   import SetupButton from "./SetupButton.svelte";
@@ -705,20 +706,7 @@
           data-testid={`setup-resource-${resource.id}`}
           onclick={(event) => openResourceLink(event, resource.href)}
         >
-          <svg
-            class="resource-glyph"
-            viewBox="0 0 16 16"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            {@html SETUP_RESOURCE_GLYPHS[resource.kind]}
-          </svg>
+          <span class="resource-glyph" aria-hidden="true"><RailIcon name={SETUP_RESOURCE_GLYPHS[resource.kind]} size={16} /></span>
           <span class="resource-text">
             <span class="eyebrow eyebrow--muted">{resource.eyebrow}</span>
             <span class="resource-title">{resource.title}</span>
@@ -1018,6 +1006,9 @@
   }
 
   .resource-glyph {
+    display: inline-grid;
+    place-items: center;
+    flex: 0 0 auto;
     padding: 8px;
     box-sizing: content-box;
     border-radius: 8px;
@@ -1043,11 +1034,9 @@
     font-weight: 600;
     line-height: 1.35;
     color: var(--fg);
-    text-decoration: underline;
-    text-decoration-color: transparent;
-    text-underline-offset: 0.16em;
-    transition: text-decoration-color 140ms ease;
+    text-decoration: none;
   }
+  .resource-title:hover { opacity: 0.7; }
 
   .resource-desc {
     font-size: 12px;

@@ -1,6 +1,7 @@
 <script lang="ts">
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   import "../common/button/rail-type.css";
   /**
    * Company Atlas view (US-012): toolbar, ring map, inspector. Paints the
@@ -556,7 +557,7 @@
     {#if filterActor}
       <span class="chip" data-testid="atlas-filter-chip">
         {filterName ?? "Person"} · {filterIds?.size ?? 0} live here
-        <button type="button" class="clear" aria-label="Clear people filter" onclick={() => onclearfilter?.()}>✕</button>
+        <button type="button" class="clear" aria-label="Clear people filter" onclick={() => onclearfilter?.()}><RailIcon name="x" size={12} /></button>
       </span>
     {/if}
     <div class="grow"></div>
@@ -822,6 +823,8 @@
     font-size: 13px;
   }
   .clear {
+    display: inline-flex;
+    align-items: center;
     margin-left: 2px;
     padding: 0 2px;
     border: 0;

@@ -455,7 +455,7 @@
 
   .btn-primary:hover:not(:disabled) {
     background: var(--v4-primary-bg);
-    filter: brightness(0.92);
+    opacity: 0.85;
   }
 
   .btn-secondary {

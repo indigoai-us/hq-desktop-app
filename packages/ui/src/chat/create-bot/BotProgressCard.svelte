@@ -94,9 +94,9 @@
       <li class="progress-step" data-testid={`bot-progress-step-${step.id}`} data-step-state={s}>
         <span class="progress-dot" aria-hidden="true">
           {#if s === "done"}
-            <svg viewBox="0 0 12 12" width="10" height="10"><path d="M2.5 6.5l2.2 2.2L9.5 3.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            <RailIcon name="check" size={10} />
           {:else if s === "failed"}
-            <svg viewBox="0 0 12 12" width="10" height="10"><path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" /></svg>
+            <RailIcon name="x" size={10} />
           {/if}
         </span>
         <span class="progress-label">{step.label}</span>

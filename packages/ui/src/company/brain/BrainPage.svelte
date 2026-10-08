@@ -868,7 +868,7 @@
     <div class="sheet" role="dialog" aria-label={sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skill picker" : "New worker"} data-testid="brain-sheet" use:dismissable={{ onclose: dismissSheet }}>
       <header class="sheet-head">
         <h2>{sheet === "policy" ? "New policy" : sheet === "skill" ? "New skill" : sheet === "picker" ? "Skills" : "New worker"}</h2>
-        <button type="button" class="icon-btn" aria-label="Close" onclick={dismissSheet}>✕</button>
+        <button type="button" class="icon-btn" aria-label="Close" onclick={dismissSheet}><RailIcon name="x" size={14} /></button>
       </header>
       {#if sheet === "policy"}
         <label>Title <input bind:value={policyDraft.title} /></label>
@@ -903,7 +903,7 @@
         </label>
         <div class="chips">
           {#each skillDraft.triggers as phrase (phrase)}
-            <button type="button" class="chip" onclick={() => (skillDraft = { ...skillDraft, triggers: skillDraft.triggers.filter((item) => item !== phrase) })}>{phrase} ×</button>
+            <button type="button" class="chip" onclick={() => (skillDraft = { ...skillDraft, triggers: skillDraft.triggers.filter((item) => item !== phrase) })} aria-label={`Remove ${phrase}`}>{phrase}<RailIcon name="x" size={11} /></button>
           {/each}
         </div>
         <div class="templates">
@@ -951,7 +951,7 @@
 
   {#if shareOpen && selectedSkill}
     <div class="sheet share" role="dialog" aria-label="Share" data-testid="share-sheet" use:dismissable={{ onclose: () => (shareOpen = false), outside: true }}>
-      <header class="sheet-head"><h2>Share</h2><button type="button" class="icon-btn" aria-label="Close" onclick={() => (shareOpen = false)}>✕</button></header>
+      <header class="sheet-head"><h2>Share</h2><button type="button" class="icon-btn" aria-label="Close" onclick={() => (shareOpen = false)}><RailIcon name="x" size={14} /></button></header>
       <p class="path">{selectedSkill.path}</p>
       <p class="meta">Grant level is read or write. The vault share sheet sends the grant.</p>
       <div class="tabs" role="group" aria-label="Grant level">
@@ -1007,6 +1007,7 @@
     border-radius: 6px;
   }
   .chip, .badge { padding: 0; }
+  .chips .chip { display: inline-flex; align-items: center; gap: 4px; }
   .badge.hard { color: var(--t1, var(--v4-text-1)); }
   .tab { height: 26px; padding: 0 8px; cursor: pointer; }
   .tab[aria-selected="true"], .item[aria-current="true"], .opt[aria-checked="true"] {
@@ -1014,7 +1015,7 @@
     color: var(--t1, var(--v4-text-1));
   }
   .tab:hover, .icon-btn:hover, .item:hover { background: var(--hover, var(--v4-hover)); }
-  .icon-btn { height: 26px; box-sizing: border-box; border-color: var(--line2, var(--v4-control-border)); background: var(--btn-bg, transparent); color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; height: 26px; box-sizing: border-box; border-color: var(--line2, var(--v4-control-border)); background: var(--btn-bg, transparent); color: var(--t1, var(--v4-text-1)); padding: 0 10px; cursor: pointer; }
   .search {
     height: 28px;
     box-sizing: border-box;
@@ -1137,7 +1138,8 @@
   .usage { padding: 12px 20px; overflow: auto; }
   .usage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 80px 120px 64px 110px; gap: 12px; padding: 8px; }
   .note { margin: 4px 8px; color: var(--v4-text-2, inherit); }
-  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; min-height: 28px; }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-decoration: none; cursor: pointer; font: inherit; min-height: 28px; }
+  .link:hover { opacity: 0.7; }
   .skill-usage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; margin: 8px 0; }
   .skill-usage dt { color: var(--v4-text-2, inherit); }
   .skill-usage dd { margin: 0; }

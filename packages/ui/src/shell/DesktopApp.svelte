@@ -913,7 +913,6 @@
   } from "../company/company-display-map.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
   import { setCompanyIconRegistry } from "../company/company-icon-registry.svelte.js";
-  import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
     accountChromeFromSelf,
@@ -925,6 +924,7 @@
   import type { RosterStatus } from "../identity/roster-refresh.js";
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
+  import "../chat/scrollbars.css";
   import "../chat/messaging/messaging-tokens.css";
   import "../home/tokens.css";
   import Caret from "../common/Caret.svelte";
@@ -4688,7 +4688,6 @@
       selectedHomeCompany?.slug?.trim() ||
       resolveConversationTitle(selectedRow, railRows),
   );
-  const agentChannelWallpaper = $derived(SETUP_HERO_ART.dark);
 
   /** Company hero and home-channel title use the company display name. */
   const companyHeroTitle = $derived(
@@ -9505,13 +9504,20 @@
     openProfileMember = null;
     openAgentMember = null;
     openArtifactView = null;
+    // Opening a second thread REPLACES the first: the pane only ever shows
+    // one, and stacked entries made closing walk back into the previous
+    // thread instead of shutting the pane.
+    const mode: NavigationMode = openReplyRootId ? "replace" : "push";
     openReplyRootId = id;
-    pushConversationSurface({
-      replyRootEventId: id,
-      tab: "chat",
-      agentSurface: "chat",
-      companyTab: "chat",
-    });
+    pushConversationSurface(
+      {
+        replyRootEventId: id,
+        tab: "chat",
+        agentSurface: "chat",
+        companyTab: "chat",
+      },
+      mode,
+    );
   }
 
   /** Artifact mode for the side pane. The thread underneath is left intact so
@@ -9529,6 +9535,16 @@
     pendingReplyRootId = null;
     pendingReplyForRowId = null;
     replyApplyInFlight = null;
+    // Close the pane directly rather than walking history back out of it.
+    // "Back" only lands somewhere thread-less if the thread was the last
+    // thing pushed: with nothing behind it (a thread opened on the restored
+    // first conversation, or from a deep link) it changed nothing, and the
+    // pane stayed open.
+    if (openReplyRootId && selectedRow) {
+      openReplyRootId = null;
+      pushConversationSurface({ replyRootEventId: null }, "replace");
+      return;
+    }
     void leaveCurrentDestination();
   }
 
@@ -9848,6 +9864,7 @@
       agentSurface: AgentChannelTab;
       fileKey: string | null;
     }>,
+    mode: NavigationMode = "push",
   ): void {
     const row = selectedRow;
     if (!row) return;
@@ -9862,7 +9879,7 @@
     if (patch.agentSurface && patch.agentSurface !== "chat") {
       nested.replyRootEventId = null;
     }
-    void navigate(destinationFromConversation(row, nested));
+    void navigate(destinationFromConversation(row, nested), mode);
   }
 
   function currentShellDestination(): NavigationDestination {
@@ -13712,19 +13729,16 @@
               ? "true"
               : "false"}
           >
-            {#if isAgentChannel}
-              <div
-                class="agent-channel-wallpaper"
-                data-testid="agent-channel-wallpaper"
-                style:background-image={`url(${agentChannelWallpaper})`}
-                aria-hidden="true"
-              ></div>
-            {/if}
             <div class="channel-title-block">
               <div class="channel-title">
                 {#if selectedIsCompanyChannel}
-                  <!-- Company channels lead with the company's own mark. -->
-                  <CompanyIcon iconUrl={selectedCompanyIcon} size={22} />
+                  <!-- Company channels lead with the company's own mark. The
+                       title row aligns on the text baseline, which floated a
+                       bare 22px mark above the name; it is centred on the line
+                       and sized to the `#` used by other channels instead. -->
+                  <span class="channel-title-mark">
+                    <CompanyIcon iconUrl={selectedCompanyIcon} size={17} />
+                  </span>
                 {:else if selectedRow.kind === "channel"}
                   <span class="channel-hash" aria-hidden="true">#</span>
                 {/if}
@@ -13804,7 +13818,7 @@
                         data-testid="channel-pinned-note"
                         title={headerPinnedNote}
                       >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3z" /><path d="M12 13v7" /></svg>
+                        <RailIcon name="push-pin" size={12} />
                         <span class="channel-pin-text">{headerPinnedNote}</span>
                       </span>
                     {/if}
@@ -13819,33 +13833,7 @@
                         aria-label="Project description"
                         onclick={() => (projectAboutOpen = !projectAboutOpen)}
                       >
-                        <svg
-                          viewBox="0 0 16 16"
-                          width="14"
-                          height="14"
-                          fill="none"
-                          aria-hidden="true"
-                        >
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M8 7.15v3.2"
-                            stroke="currentColor"
-                            stroke-width="1.3"
-                            stroke-linecap="round"
-                          />
-                          <circle
-                            cx="8"
-                            cy="5.35"
-                            r="0.7"
-                            fill="currentColor"
-                          />
-                        </svg>
+                        <RailIcon name="info" size={14} />
                       </button>
                     {/if}
                   </span>
@@ -13917,65 +13905,11 @@
                     >
                       <span class="project-tab-icon" aria-hidden="true">
                         {#if t.id === "chat"}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <path
-                              d="M2.75 3.5h10.5v7.25H7.2L4 13.25V10.75H2.75V3.5Z"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
+                          <RailIcon name="chat-circle" size={14} />
                         {:else if t.id === "board"}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <rect
-                              x="2.5"
-                              y="2.5"
-                              width="4"
-                              height="11"
-                              rx="0.75"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                            />
-                            <rect
-                              x="9.5"
-                              y="2.5"
-                              width="4"
-                              height="7"
-                              rx="0.75"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                            />
-                          </svg>
+                          <RailIcon name="kanban" size={14} />
                         {:else}
-                          <svg
-                            viewBox="0 0 16 16"
-                            width="14"
-                            height="14"
-                            fill="none"
-                          >
-                            <path
-                              d="M4 2.75h4.2L12 5.55V13.25H4V2.75Z"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                            <path
-                              d="M8.2 2.9v2.8H12"
-                              stroke="currentColor"
-                              stroke-width="1.2"
-                              stroke-linejoin="round"
-                            />
-                          </svg>
+                          <RailIcon name="file" size={14} />
                         {/if}
                       </span>
                       <span>{t.label}</span>
@@ -14016,39 +13950,7 @@
                     onclick={() => (membersOpen = !membersOpen)}
                   >
                     <span class="member-count-icon" aria-hidden="true">
-                      <svg
-                        viewBox="0 0 16 16"
-                        width="14"
-                        height="14"
-                        fill="none"
-                      >
-                        <circle
-                          cx="6"
-                          cy="5.5"
-                          r="2.25"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                        />
-                        <path
-                          d="M2.5 12.5c.4-2 1.9-3 3.5-3s3.1 1 3.5 3"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          stroke-linecap="round"
-                        />
-                        <circle
-                          cx="11"
-                          cy="6"
-                          r="1.75"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                        />
-                        <path
-                          d="M11.5 9.5c1.2.2 2.2 1.1 2.5 2.5"
-                          stroke="currentColor"
-                          stroke-width="1.2"
-                          stroke-linecap="round"
-                        />
-                      </svg>
+                      <RailIcon name="users" size={14} />
                     </span>
                     <span class="member-count-num"
                       >{memberPillCount || "·"}</span
@@ -14107,7 +14009,7 @@
                     else membersOpen = !membersOpen;
                   }}
                 >
-                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="12.5" cy="8" r="1.2" /></svg>
+                  <RailIcon name="dots-three" size={14} />
                 </button>
               {/if}
             </div>
@@ -14566,6 +14468,7 @@
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
                   onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
+                  onclosereply={closeReply}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -14754,7 +14657,7 @@
                 </div>
               {:else if openReplyRootId && replyScope}
                 <div
-                  class="reply-column"
+                  class="reply-column thread-column"
                   class:overlay={narrowViewport}
                   class:resizable-thread={!narrowViewport}
                   style:--thread-width={threadWidth === null ? "360px" : `${threadWidth}px`}
@@ -15315,6 +15218,16 @@
     min-width: min(360px, 50%);
   }
 
+  /* Side by side, the thread column paints NO ground of its own. The shell
+     root already lays one down and ReplyPanel paints the rail's `--side-bg`
+     on top, so a column ground here was a third layer and the thread came out
+     a full step lighter than the sidebar it should match. Profile and
+     artifact panes keep the column ground; the narrow overlay keeps its own
+     opaque fill because it sits over the conversation. */
+  .reply-column.thread-column:not(.overlay) {
+    background: none;
+  }
+
   .reply-column.resizable-thread {
     flex: 0 0 clamp(280px, var(--thread-width, 50%), calc(100% - 360px));
     min-width: min(280px, 50%);
@@ -15391,10 +15304,6 @@
     font-size: 12px;
   }
 
-  .channel-pin svg {
-    flex: none;
-  }
-
   .channel-pin-text {
     overflow: hidden;
     white-space: nowrap;
@@ -15452,17 +15361,6 @@
     border-bottom: 1px solid var(--line);
   }
 
-  .agent-channel-wallpaper {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    height: 6px;
-    background-position: center;
-    background-size: cover;
-    opacity: 0.82;
-    pointer-events: none;
-  }
 
   .agent-channel-fallback {
     margin: 8px var(--conv-inset, 20px);
@@ -15470,7 +15368,7 @@
     font-size: 13px;
   }
 
-  .channel-header > :not(.agent-channel-wallpaper) {
+  .channel-header > * {
     position: relative;
     z-index: 1;
   }
@@ -15523,8 +15421,7 @@
   }
 
   .channel-header-agent:hover h2 {
-    text-decoration: underline;
-    text-underline-offset: 3px;
+    opacity: 0.7;
   }
 
   .channel-header-agent:focus-visible {
@@ -15537,6 +15434,17 @@
     color: var(--t3);
     font-size: 15px;
     font-weight: 600;
+  }
+
+  .channel-title-mark {
+    display: inline-flex;
+    align-self: center;
+    flex-shrink: 0;
+    line-height: 0;
+    /* Optical: centre the glyph between the lowercase and ascender midlines
+       of the 15px title rather than on its line box. */
+    position: relative;
+    top: 1px;
   }
 
   .channel-title h2 {
@@ -15614,12 +15522,10 @@
     font-weight: 500;
     line-height: 1.45;
     cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
 
   .edit-profile-btn:hover {
-    color: var(--t1);
+    opacity: 0.7;
   }
 
   .edit-profile-btn:focus-visible {
@@ -15627,10 +15533,14 @@
     outline-offset: 2px;
   }
 
+  /* The header's filled controls (these tabs, the notify pill, the member
+     count) share one 28px height so they line up as a set. */
   .project-tabs {
+    box-sizing: border-box;
     display: flex;
-    align-items: center;
+    align-items: stretch;
     gap: 2px;
+    height: 28px;
     background: var(--raised);
     border: none;
     border-radius: 8px;
@@ -15644,7 +15554,7 @@
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 4px 10px;
+    padding: 0 10px;
     border: none;
     border-radius: 6px;
     background: transparent;
@@ -15680,10 +15590,12 @@
   .member-count-btn {
     appearance: none;
     -webkit-appearance: none;
+    box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 12px;
+    height: 28px;
+    padding: 0 12px;
     border: 1px solid transparent;
     border-radius: 8px;
     background: var(--btn-bg);
@@ -15789,9 +15701,10 @@
     border: 0;
     background: none;
     color: var(--accent, var(--t1));
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
+  .bot-unanswered-action:hover { opacity: 0.7; }
   .bot-unanswered-action:disabled {
     opacity: 0.5;
     cursor: default;

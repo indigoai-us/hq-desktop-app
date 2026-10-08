@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Server-stamped lifecycle card (US-008). Markup follows the locked
    * storyboard: a hairline step, mono label, title, controls, one action row.
@@ -246,22 +247,7 @@
         {#if displayState === "pending"}
           <span class="lc-spin" aria-hidden="true"></span>
         {:else if displayState === "done"}
-          <svg
-            class="lc-check"
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="m3.5 8.5 3 3 6-7"
-              stroke="currentColor"
-              stroke-width="1.6"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <span class="lc-check" aria-hidden="true"><RailIcon name="check" size={14} /></span>
         {/if}
         {statusText}
       </span>
@@ -421,22 +407,7 @@
                 <span class="lc-ro-label">{field.label}</span>
                 <span class="lc-ro-value">
                   {#if field.hint === "done" || current === "done"}
-                    <svg
-                      class="lc-check"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                      aria-hidden="true"
-                    >
-                      <path
-                        d="m3.5 8.5 3 3 6-7"
-                        stroke="currentColor"
-                        stroke-width="1.6"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                      />
-                    </svg>
+                    <span class="lc-check" aria-hidden="true"><RailIcon name="check" size={14} /></span>
                   {/if}
                   <span title={isIsoTimestampValue(current) ? current : undefined}
                     >{formatReadonlyTimestamp(current) || field.description || ""}</span
@@ -557,6 +528,7 @@
   }
 
   .lc-check {
+    display: inline-flex;
     color: var(--ok, #34c759);
     flex: 0 0 auto;
   }
@@ -629,6 +601,13 @@
     border-radius: 6px;
     background: var(--raised, var(--pop-hover));
     box-sizing: border-box;
+  }
+
+  /* A read-only value is a filled tile, not a control: no resting outline.
+     The editable field keeps its hairline — that border is the input's
+     affordance, not decoration. */
+  .lc-in-ro {
+    border-color: transparent;
   }
 
   .lc-in.ok {

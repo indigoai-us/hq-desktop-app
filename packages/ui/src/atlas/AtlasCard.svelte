@@ -7,6 +7,17 @@
    */
   import type { AtlasNode } from "./atlas-model.js";
   import { atlasStoryProgress } from "./atlas-activity.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import type { RailIconName } from "../common/button/rail-icons.js";
+
+  /** Phosphor Regular type icon per node type; anything else is a skill. */
+  const TYPE_ICON: Record<string, RailIconName> = {
+    project: "circle",
+    knowledge: "file",
+    policy: "shield-check",
+    repo: "code",
+    worker: "robot",
+  };
 
   interface Props {
     node: AtlasNode;
@@ -29,21 +40,7 @@
   aria-pressed={selected}
   {onclick}
 >
-  <svg class="ic" width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-    {#if node.type === "project"}
-      <circle cx="8" cy="8" r="4.5" />
-    {:else if node.type === "knowledge"}
-      <path d="M4 2.5h5.5L12 5v8.5H4z M9.5 2.5V5H12" />
-    {:else if node.type === "policy"}
-      <path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z" />
-    {:else if node.type === "repo"}
-      <path d="M6 5L3 8l3 3 M10 5l3 3-3 3" />
-    {:else if node.type === "worker"}
-      <path d="M3.5 4.5h9v8h-9z M6 8h.01 M10 8h.01 M8 2v2.5" />
-    {:else}
-      <path d="M8 2.5l1.6 3.4 3.6.4-2.7 2.5.8 3.6L8 10.6l-3.3 1.8.8-3.6-2.7-2.5 3.6-.4z" />
-    {/if}
-  </svg>
+  <span class="ic" aria-hidden="true"><RailIcon name={TYPE_ICON[node.type] ?? "star"} size={14} /></span>
   <span class="body">
     <span class="tt">{node.label}</span>
     <span class="mm">{meta}</span>
@@ -76,12 +73,9 @@
   .card:hover { background: var(--v4-hover, var(--v4-control-faint)); }
   .card.selected { background: var(--v4-active-row); }
   .ic {
+    display: inline-flex;
     margin-top: 2px;
-    fill: none;
-    stroke: var(--v4-text-3);
-    stroke-width: 1.25;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    color: var(--v4-text-3);
   }
   .body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .tt {

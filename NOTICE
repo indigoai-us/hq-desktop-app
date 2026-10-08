@@ -67,3 +67,30 @@ decided: whether the upstream project ships its own NOTICE whose contents
 §4(d) requires reproducing verbatim, and whether the workspace
 `license = "UNLICENSED"` declaration should be restated now that this
 repository carries Apache-2.0 derived source.
+
+-------------------------------------------------------------------------------
+Derived work: holographic foil for the badge cards
+-------------------------------------------------------------------------------
+
+Upstream project : vercel-labs/vgpu ("holographic-card" example)
+Upstream URL     : https://github.com/vercel-labs/vgpu
+Upstream license : MIT License, Copyright (c) 2025 Vercel, Inc.
+
+The following file in this repository is derived from vgpu:
+
+  packages/ui/src/badges/foil-gpu.ts
+      the WGSL foil shader (lighting, diffraction, pearlescence, grain and
+      etched-contour model) adapted from the holographic-card example
+
+Modifications made by Indigo AI:
+
+  * The triangle artwork is replaced by the HQ badge circle; the card fills
+    the canvas and CSS does the 3D tilt.
+  * Corner brackets around the badge, a fade under the card's text, and a
+    tier-metal palette for the mono card set.
+  * A shared low-power device, per-card resources freed on close, and a
+    static fallback where WebGPU is unavailable.
+
+A verbatim copy of the MIT License for this work ships at:
+
+    LICENSES/MIT-vgpu.txt

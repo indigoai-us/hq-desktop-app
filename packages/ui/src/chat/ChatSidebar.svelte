@@ -3801,8 +3801,24 @@
     messageSearchError = null;
   }
 
+  /**
+   * Every way out of the history dialog into a conversation closes it first:
+   * a recent-conversation row (click, or Enter/Space on the focused row
+   * button) as well as a message hit. Left open, the dialog sat on top of the
+   * conversation it had just opened.
+   */
+  function openHistoryRow(row: ConversationRow) {
+    closeHistory();
+    void openRow(row);
+  }
+
   function openSearchHit(hit: MessageSearchHit) {
     const row = resolveSearchHitRow(hit, allRows);
+    // The point of the click is to land on the message, so the history dialog
+    // has to go: left open it sat on top of the conversation it had just
+    // jumped to. closeHistory() moves no focus, so focus stays wherever
+    // opening the conversation puts it.
+    closeHistory();
     void openRow(row, {
       messageId: hit.messageId,
       createdAt: hit.createdAt,
@@ -3864,35 +3880,7 @@
       >
         {#if scope === "all"}
           <span class="chat-scope-tile all" aria-hidden="true">
-            <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-              <rect
-                x="1.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="8.75"
-                y="8.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-              <rect
-                x="5.25"
-                y="2.25"
-                width="5.5"
-                height="5.5"
-                rx="1"
-                stroke="currentColor"
-                stroke-width="1.3"
-              />
-            </svg>
+            <RailIcon name="squares-four" size={11} />
           </span>
         {:else}
           <span class="chat-scope-tile" aria-hidden="true"
@@ -3957,14 +3945,7 @@
               onclick={() => void newCompanyFromSwitcher()}
             >
               <span class="chat-scope-avatar chat-scope-plus" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="none">
-                  <path
-                    d="M8 3.5v9M3.5 8h9"
-                    stroke="currentColor"
-                    stroke-width="1.3"
-                    stroke-linecap="round"
-                  />
-                </svg>
+                <RailIcon name="plus" size={12} />
               </span>
               <span class="chat-scope-row-label">New company</span>
             </button>
@@ -3995,14 +3976,7 @@
         aria-controls="chat-create-menu"
         onclick={openCreateFromButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M8 3v10M3 8h10"
-            stroke="currentColor"
-            stroke-width="1.3"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="plus" />
       </button>
       {#if createMenuOpen}
         <div
@@ -4038,21 +4012,7 @@
         onclick={openSearch}
         bind:this={searchButton}
       >
-        <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <circle
-            cx="7"
-            cy="7"
-            r="4.5"
-            stroke="currentColor"
-            stroke-width="1.25"
-          />
-          <path
-            d="m10.5 10.5 3 3"
-            stroke="currentColor"
-            stroke-width="1.25"
-            stroke-linecap="round"
-          />
-        </svg>
+        <RailIcon name="search" />
       </button>
       <div class="chat-filter-wrap" bind:this={filterWrapEl}>
         <button
@@ -4065,14 +4025,7 @@
           title="Filter"
           onclick={openFilterMenu}
         >
-          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <path
-              d="M2.5 4h11M4.5 8h7M6.5 12h3"
-              stroke="currentColor"
-              stroke-width="1.25"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="filter" />
         </button>
         {#if filterOpen}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -4099,7 +4052,7 @@
                 aria-pressed={sortMode === "recent"}
                 onclick={() => (sortMode = "recent")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("clock")}</span>
+                <span class="chat-sort-ic" aria-hidden="true"><RailIcon name="clock" /></span>
                 Recent
               </button>
               <button
@@ -4109,7 +4062,7 @@
                 aria-pressed={sortMode === "type"}
                 onclick={() => (sortMode = "type")}
               >
-                <span class="chat-sort-ic" aria-hidden="true">{@render filterIcon("list")}</span>
+                <span class="chat-sort-ic" aria-hidden="true"><RailIcon name="list" /></span>
                 Type
               </button>
             </div>
@@ -4122,10 +4075,10 @@
               data-testid="chat-filter-mine"
               onclick={() => setShowFilter("mine")}
             >
-              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("home")}</span>
+              <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="house" /></span>
               <span class="chat-filter-text">My projects</span>
               {#if showFilter === "mine"}
-                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
               {/if}
             </button>
             <button
@@ -4137,10 +4090,10 @@
                 setShowFilter("all");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("list")}</span>
+              <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="list" /></span>
               <span class="chat-filter-text">All</span>
               {#if showFilter === "all"}
-                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
               {/if}
             </button>
             <button
@@ -4152,10 +4105,10 @@
                 setShowFilter("projects");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("hash")}</span>
+              <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="hash" /></span>
               <span class="chat-filter-text">Project channels</span>
               {#if showFilter === "projects"}
-                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
               {/if}
             </button>
             <button
@@ -4167,10 +4120,10 @@
                 setShowFilter("dms");
               }}
             >
-              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("bubble")}</span>
+              <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="chat-circle" /></span>
               <span class="chat-filter-text">DMs &amp; groups</span>
               {#if showFilter === "dms"}
-                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
               {/if}
             </button>
             {#if canSeeCompanyProjects}
@@ -4187,10 +4140,10 @@
                   setShowFilter("company-projects");
                 }}
               >
-                <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("target")}</span>
+                <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="target" /></span>
                 <span class="chat-filter-text">Company projects</span>
                 {#if showFilter === "company-projects"}
-                  <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                  <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
                 {/if}
               </button>
             {/if}
@@ -4203,7 +4156,7 @@
               aria-pressed={showArchived}
               onclick={() => setShowArchived(!showArchived)}
             >
-              <span class="chat-filter-lead" aria-hidden="true">{@render filterIcon("archive")}</span>
+              <span class="chat-filter-lead" aria-hidden="true"><RailIcon name="archive" /></span>
               <span class="chat-filter-text">Show archived</span>
               {#if archivedVisibleCount > 0 && !showArchived}
                 <span
@@ -4212,7 +4165,7 @@
                 >
               {/if}
               {#if showArchived}
-                <span class="chat-filter-check" aria-hidden="true">{@render filterIcon("check")}</span>
+                <span class="chat-filter-check" aria-hidden="true"><RailIcon name="check" /></span>
               {/if}
             </button>
 
@@ -4317,7 +4270,7 @@
         aria-label={`Connection requests, ${pendingRequestCount} pending`}
         onclick={openConnectionRequests}
       >
-        <span class="chat-glyph requests" aria-hidden="true">{@render filterIcon("requests")}</span>
+        <span class="chat-glyph requests" aria-hidden="true"><RailIcon name="user-plus" /></span>
         <span class="chat-row-title">Connection requests</span>
         <span
           class="chat-unread-badge"
@@ -4342,11 +4295,7 @@
           title="Pin companies"
           onclick={() => (companiesSectionMenuOpen = !companiesSectionMenuOpen)}
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-            <circle cx="4" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="8" cy="8" r="1.3" fill="currentColor" />
-            <circle cx="12" cy="8" r="1.3" fill="currentColor" />
-          </svg>
+          <RailIcon name="dots-three" size={12} />
         </button>
       </div>
       {#if companiesSectionMenuOpen}
@@ -4482,11 +4431,7 @@
     {#if grouped.pinned.length > 0}
       <div class="chat-section-label" id="chat-pinned-label">
         <span class="chat-pin-ic" aria-hidden="true">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-            <path
-              d="M10.2 2.4 13.6 5.8a.8.8 0 0 1-.15 1.26l-2.2 1.27-.7 3.15a.6.6 0 0 1-.98.32L7.2 9.43 4.3 12.32a.55.55 0 0 1-.78-.78L6.4 8.66 4.05 6.3a.6.6 0 0 1 .32-.98l3.15-.7 1.27-2.2A.8.8 0 0 1 10.2 2.4Z"
-            />
-          </svg>
+          <RailIcon name="push-pin" size={10} />
         </span>
         PINNED
       </div>
@@ -4528,7 +4473,7 @@
           <span
             class="chat-collapse-chevron"
             class:open={lastWeekExpanded}
-            aria-hidden="true">›</span
+            aria-hidden="true"><RailIcon name="caret-right" size={12} /></span
           >
           <span class="chat-section-label inline">Last week</span>
         </span>
@@ -4611,7 +4556,7 @@
           Signed in
         </span>
       </span>
-      <span class="chat-chevron" aria-hidden="true">›</span>
+      <span class="chat-chevron" aria-hidden="true"><RailIcon name="caret-right" size={10} /></span>
     </button>
     {#if footerMenuOpen}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -4748,21 +4693,7 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="search" size={15} />
           </span>
           <input
             class="chat-switcher-input"
@@ -4864,7 +4795,8 @@
                   class="chat-switcher-row"
                   role="listitem"
                   class:unread={!!row.unreadCount || row.unreadDot}
-                  onclick={() => void openRow(row)}
+                  data-testid="chat-history-row"
+                  onclick={() => openHistoryRow(row)}
                 >
                   {#if row.kind === "channel"}
                     <span class="chat-switcher-hash" aria-hidden="true">#</span>
@@ -4918,21 +4850,7 @@
       >
         <div class="chat-switcher-search">
           <span class="chat-switcher-search-ic" aria-hidden="true">
-            <svg viewBox="0 0 16 16" fill="none">
-              <circle
-                cx="7"
-                cy="7"
-                r="4.5"
-                stroke="currentColor"
-                stroke-width="1.25"
-              />
-              <path
-                d="m10.5 10.5 3 3"
-                stroke="currentColor"
-                stroke-width="1.25"
-                stroke-linecap="round"
-              />
-            </svg>
+            <RailIcon name="search" size={15} />
           </span>
           <input
             class="chat-switcher-input"
@@ -4948,6 +4866,15 @@
             aria-activedescendant={switcherResults.length ? `conversation-search-${activeSearchIndex}` : undefined}
             onkeydown={searchKeydown}
           />
+          <button
+            type="button"
+            class="chat-switcher-close"
+            data-testid="chat-search-close"
+            aria-label="Close search"
+            onclick={closeSearch}
+          >
+            <RailIcon name="x" size={14} />
+          </button>
         </div>
         <div class="chat-switcher-list" id="conversation-search-results" role="listbox" aria-label="Conversations">
           {#each switcherResults as row, index (row.id)}
@@ -5134,20 +5061,6 @@
 <!-- Slack-style pencil shown before a row title when it has an unsent draft.
      Shared by the rail row and the search-hit row; colour comes from
      `.chat-row-draft` (`var(--t3)`). -->
-{#snippet filterIcon(name: string)}
-  <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
-    {#if name === "clock"}<circle cx="8" cy="8" r="5.5" /><path d="M8 5v3l2 1.5" />
-    {:else if name === "list"}<path d="M3 4.5h10M3 8h10M3 11.5h10" />
-    {:else if name === "home"}<path d="M3 7.5 8 3.5l5 4v5H3z" />
-    {:else if name === "hash"}<path d="M6.5 3 5.5 13M10.5 3l-1 10M3.5 6.5h9.5M3 9.5h9.5" />
-    {:else if name === "bubble"}<path d="M3 4h10v6.5H7.5L4.5 13v-2.5H3z" />
-    {:else if name === "target"}<circle cx="8" cy="8" r="5.5" /><circle cx="8" cy="8" r="2" />
-    {:else if name === "archive"}<path d="M2.5 4h11v2.5h-11zM3.5 6.5v6h9v-6M6.5 9h3" />
-    {:else if name === "check"}<path d="M3.5 8.5l3 3 6-7" />
-    {:else if name === "requests"}<circle cx="6.5" cy="5.5" r="2.5" /><path d="M2 13c.6-2.4 2.3-3.5 4.5-3.5s3.9 1.1 4.5 3.5M12.5 5v4M10.5 7h4" />
-    {/if}
-  </svg>
-{/snippet}
 
 {#snippet draftMark()}
   <span
@@ -5157,12 +5070,7 @@
     aria-label="Draft"
     title="Draft"
   >
-    <svg viewBox="0 0 256 256" width="12" height="12" aria-hidden="true">
-      <path
-        d="M227.31 73.37 182.63 28.68a16 16 0 0 0-22.63 0L36.69 152A15.86 15.86 0 0 0 32 163.31V208a16 16 0 0 0 16 16h44.69a15.86 15.86 0 0 0 11.31-4.69L227.31 96a16 16 0 0 0 0-22.63ZM92.69 208H48v-44.69l88-88L180.69 120ZM192 108.68 147.31 64l24-24L216 84.68Z"
-        fill="currentColor"
-      />
-    </svg>
+    <RailIcon name="pencil" size={12} />
   </span>
 {/snippet}
 
@@ -5183,11 +5091,20 @@
   {@const extras = rowExtras?.(row) ?? null}
   {@const hasChildren = Boolean(extras?.children?.length)}
   {@const childrenOpen = childrenAreOpen(row.id, extras?.childrenExpandedByDefault === true)}
+  {@const isActive =
+    activeId === row.id && !extras?.children?.some((child) => child.selected)}
+  {@const isSelected = selectionMode && selection.selected.includes(row.id)}
   <div class="chat-row-group" data-testid="chat-row-group">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- `.chat-conv-li` — not `.chat-row` — carries the hover / selected fill.
+         A button cannot nest a button, so the pin is the row button's
+         sibling; putting the fill on this box is what keeps the pin and the
+         unread count INSIDE the highlight instead of hanging off its edge. -->
     <div
       role={selectionMode ? "presentation" : "listitem"}
-      class="chat-li"
+      class="chat-li chat-conv-li"
+      class:active={isActive}
+      class:selected={isSelected}
       class:gutter-open={showSelectGutter}
       onmouseenter={(e) => showHoverCard(row, e.currentTarget)}
       onmouseleave={scheduleHoverCardHide}
@@ -5214,20 +5131,18 @@
           aria-expanded={childrenOpen}
           onclick={() => toggleChildren(row.id, extras?.childrenExpandedByDefault === true)}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-            <path d="M3 2 7 5 3 8" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
+          <RailIcon name="caret-right" size={10} />
         </button>
       {/if}
       <button
         type="button"
         class="chat-row"
         class:unread={!!row.unreadCount || row.unreadDot}
-        class:active={activeId === row.id && !extras?.children?.some((child) => child.selected)}
+        class:active={isActive}
         class:has-badge={hasBadge}
         data-kind={row.kind}
         data-conversation-id={row.id}
-        class:selected={selectionMode && selection.selected.includes(row.id)}
+        class:selected={isSelected}
         class:archived={archivedSet.has(row.id)}
         class:muted={row.notifyLevel === "muted"}
         role={selectionMode ? "option" : undefined}
@@ -5338,14 +5253,6 @@
             >
           {/if}
         </span>
-        {#if scopeLabel}
-          <span
-            class="chat-row-reveal"
-            data-testid="chat-row-reveal"
-            aria-hidden="true"
-            use:titleWhenTruncated={scopeLabel.text}>{scopeLabel.text}</span
-          >
-        {/if}
         {#if row.notifyLevel === "muted"}
           <span
             class="chat-row-muted"
@@ -5354,33 +5261,8 @@
             aria-label="Muted"
             title="Notifications muted"
           >
-            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-              <path
-                d="M5.2 3.6A3.6 3.6 0 0 1 11.6 6v2.6l1.2 2H5.4M3.9 10.6l.5-.9V6.9"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-              <path d="M6.6 12.6a1.5 1.5 0 0 0 2.8 0" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-              <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-            </svg>
+            <RailIcon name="bell-slash" size={12} />
           </span>
-        {/if}
-        {#if row.unreadCount != null && row.unreadCount > 0}
-          <span
-            class="chat-unread-badge"
-            data-testid="chat-unread-badge"
-            aria-label={`${row.unreadCount} unread`}
-          >
-            {row.unreadCount > 99 ? "99+" : row.unreadCount}
-          </span>
-        {:else if row.unreadDot}
-          <span
-            class="chat-unread-dot"
-            data-testid="chat-unread-dot"
-            aria-label="Unread"
-          ></span>
         {/if}
       </button>
       <button
@@ -5392,16 +5274,25 @@
         data-testid="chat-pin"
         onclick={() => handlePin(row)}
       >
-        <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M6.2 1.8h3.6l.4 4.2 2.2 1.4v1.4H8.6v5.4h-1.2V8.8H3.6V7.4l2.2-1.4.4-4.2Z"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="push-pin" size={12} />
       </button>
+      <!-- The count follows the pin, so the pin sits to its LEFT and both
+           live inside the `.chat-conv-li` fill. -->
+      {#if row.unreadCount != null && row.unreadCount > 0}
+        <span
+          class="chat-unread-badge"
+          data-testid="chat-unread-badge"
+          aria-label={`${row.unreadCount} unread`}
+        >
+          {row.unreadCount > 99 ? "99+" : row.unreadCount}
+        </span>
+      {:else if row.unreadDot}
+        <span
+          class="chat-unread-dot"
+          data-testid="chat-unread-dot"
+          aria-label="Unread"
+        ></span>
+      {/if}
     </div>
     {#if hasChildren && childrenOpen}
       <div
@@ -5429,13 +5320,9 @@
               aria-hidden="true"
             >
               {#if child.kind === "action"}
-                <svg width="12" height="12" viewBox="0 0 10 10">
-                  <path d="M5 1v8M1 5h8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-                </svg>
+                <RailIcon name="plus" size={12} />
               {:else}
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
-                  <path d="M3 3h10v7H7l-4 3V3Z" />
-                </svg>
+                <RailIcon name="chat-circle" size={14} />
               {/if}
             </span>
             <span class="chat-row-child-label" use:titleWhenTruncated={child.label}
@@ -5545,6 +5432,9 @@
     place-items: center;
     width: 22px;
     height: 22px;
+    /* A 22px hit target that never sets the row's height (31px, from the
+       row's own padding and line height). */
+    margin-block: -2px;
     margin-right: 2px;
     padding: 0;
     border: none;
@@ -5555,16 +5445,23 @@
     cursor: pointer;
   }
 
-  .chat-li:hover .chat-pin-btn,
-  .chat-pin-btn.pinned,
-  .chat-pin-btn:focus-visible {
+  /* Hidden at rest — including when the row is already pinned: the PINNED
+     section header is what says a row is pinned, so the control stays out of
+     the way until the row is hovered or reached by keyboard. */
+  .chat-conv-li:hover .chat-pin-btn,
+  .chat-conv-li:has(:global(:focus-visible)) .chat-pin-btn {
     opacity: 1;
   }
 
-  .chat-pin-btn:hover,
   .chat-pin-btn.pinned {
     color: var(--t1);
-    background: var(--hover);
+  }
+
+  /* The row fill is already --hover, so the control's own hover is one step
+     up the button ramp rather than the same tint drawn twice. */
+  .chat-pin-btn:hover {
+    color: var(--t1);
+    background: var(--btn-bg);
   }
 
   .chat-scope-pill {
@@ -5698,11 +5595,6 @@
     color: var(--t1);
   }
 
-  .chat-icon-btn svg {
-    width: 14px;
-    height: 14px;
-  }
-
   .chat-filter-wrap {
     position: relative;
   }
@@ -5718,10 +5610,13 @@
     contain: layout paint;
     margin-right: -8px;
     padding: 0 8px 12px 0;
-    scrollbar-color: var(--line) transparent;
-    scrollbar-width: thin;
   }
 
+  /* One 4px bar, the same as every other scroller in the shell. DO NOT add
+     `scrollbar-width` / `scrollbar-color` here: WebKit and Chromium now
+     implement the standard properties and, where both are present, the
+     standard one WINS — `scrollbar-width: thin` drew an ~11px bar straight
+     through this 4px rule. */
   .chat-scroll::-webkit-scrollbar {
     width: 4px;
   }
@@ -5731,7 +5626,7 @@
   }
   .chat-scroll::-webkit-scrollbar-thumb {
     background: var(--line);
-    border-radius: 999px;
+    border-radius: 2px;
   }
   .chat-scroll::-webkit-scrollbar-thumb:hover {
     background: var(--line2);
@@ -5871,6 +5766,30 @@
     min-width: 0;
   }
 
+  /* Conversation rows: the box that holds the row button, the pin and the
+     unread count carries the hover / selected fill and the 8px radius, so the
+     trailing controls sit inside the highlight. The right inset keeps the
+     count off the fill's rounded edge. */
+  .chat-conv-li {
+    box-sizing: border-box;
+    padding-right: 4px;
+    border-radius: 8px;
+  }
+
+  .chat-conv-li:hover {
+    background: var(--hover);
+  }
+
+  .chat-conv-li.active {
+    background: var(--sel);
+  }
+
+  /* Selection is a state, not an event — carried by the checkbox, with the
+     row in the plain hover tint (never the selected-conversation fill). */
+  .chat-conv-li.selected {
+    background: var(--hover);
+  }
+
   .chat-row-children-toggle {
     position: absolute;
     left: 8px;
@@ -5886,11 +5805,11 @@
     cursor: pointer;
   }
 
-  .chat-row-children-toggle svg {
+  .chat-row-children-toggle :global(svg) {
     transition: transform 120ms ease;
   }
 
-  .chat-row-children-toggle.open svg {
+  .chat-row-children-toggle.open :global(svg) {
     transform: rotate(90deg);
   }
 
@@ -6001,8 +5920,9 @@
   }
 
   .chat-collapse-chevron {
+    display: inline-flex;
+    align-items: center;
     color: var(--t3);
-    font-size: 13px;
     line-height: 1;
     transition: transform 120ms ease;
   }
@@ -6023,9 +5943,10 @@
   }
 
   /* Skip style/layout/paint for rows scrolled out of the rail. Safe to
-     contain: the row draws no focus outline of its own, `.chat-row-reveal` is
-     absolutely positioned INSIDE the row, and the row's menus are portaled to
-     the shell so containment cannot clip them. See chat/scroll-perf.css.
+     contain: the row draws no focus outline of its own, the pin and unread
+     count are siblings in `.chat-conv-li` (outside the contained box), and
+     the row's menus are portaled to the shell so containment cannot clip
+     them. See chat/scroll-perf.css.
 
      A one-line row is 14px of text plus 6px padding each side, about 32px. */
   .chat-row {
@@ -6075,6 +5996,15 @@
     color: var(--t1);
   }
 
+  /* Inside a conversation row the fill belongs to `.chat-conv-li`; the
+     button itself stays clear so the tint is drawn once, edge to edge. */
+  .chat-conv-li .chat-row,
+  .chat-conv-li .chat-row:hover,
+  .chat-conv-li .chat-row.active,
+  .chat-conv-li .chat-row.selected {
+    background: transparent;
+  }
+
   .chat-row.unread .chat-row-title {
     color: var(--t1);
     font-weight: 500;
@@ -6117,7 +6047,11 @@
     white-space: nowrap;
   }
 
+  /* Company / email label: quiet secondary text that appears only while the
+     row is hovered or reached by keyboard, so at rest the rail reads as a
+     plain list of names. One copy only — no overlay duplicate. */
   .chat-row-scope {
+    display: none;
     flex: 0 1000 auto;
     min-width: 0;
     overflow: hidden;
@@ -6126,40 +6060,20 @@
     color: var(--t3);
     font-size: 11px;
     font-weight: 400;
+    /* Revealing the label must not change the row height. It is baseline-
+       aligned with the 13px title, and with the row's inherited 17px line
+       height the smaller font's baseline sits higher in its box, so aligning
+       baselines pushed the label's box 1px below the title's: the copy line
+       grew 17px -> 18px and the row 31px -> 32px on hover, shoving every row
+       below it down. A 13px line box keeps the label inside the title's line
+       box (2-3px clear top and bottom) while still clearing descenders, which
+       `overflow: hidden` would clip at line-height 1. */
+    line-height: 13px;
   }
 
-  .chat-row-reveal {
-    display: none;
-    position: absolute;
-    right: 8px;
-    top: 50%;
-    transform: translateY(-50%);
-    max-width: 46%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    padding: 1px 7px;
-    border-radius: 4px;
-    background: var(--elevated);
-    box-shadow: -10px 0 8px 0 var(--elevated);
-    color: var(--t3);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.3;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-reveal,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-reveal {
-    display: inline-block;
-  }
-
-  .chat-li:hover .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-li:focus-within .chat-row:not(.has-badge) .chat-row-scope,
-  .chat-row:focus-visible:not(.has-badge) .chat-row-scope {
-    visibility: hidden;
+  .chat-conv-li:hover .chat-row-scope,
+  .chat-conv-li:has(:global(:focus-visible)) .chat-row-scope {
+    display: inline;
   }
 
   .chat-row-draft {
@@ -6443,9 +6357,9 @@
   }
 
   .chat-chevron {
+    display: inline-flex;
+    align-items: center;
     color: var(--t3);
-    font-size: 10px;
-    font-weight: 400;
     transform: rotate(90deg);
   }
 
@@ -6579,10 +6493,10 @@
     position: absolute;
     inset: 0;
     background: var(--popover-primary-text, var(--c-bg, var(--bg, #111113)));
-    mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
-      center / 13px 13px no-repeat;
-    -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 13 13'%3E%3Cpath d='M3 6.7 5.4 9.1 10 4.2' fill='none' stroke='%23000' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
-      center / 13px 13px no-repeat;
+    mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z' fill='%23000'/%3E%3C/svg%3E")
+      center / 10px 10px no-repeat;
+    -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'%3E%3Cpath d='M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z' fill='%23000'/%3E%3C/svg%3E")
+      center / 10px 10px no-repeat;
   }
 
   .chat-select-check:focus-visible {
@@ -6730,11 +6644,6 @@
     background: transparent;
     border: 1px dashed var(--line2, var(--panel-border));
     color: var(--t2);
-  }
-
-  .chat-scope-plus svg {
-    width: 12px;
-    height: 12px;
   }
 
   .chat-scope-new:disabled {
@@ -7082,44 +6991,69 @@
     padding: 12px;
     /* Dim, never wash: text-1 is near-white in dark mode, so a text-1 scrim
        BRIGHTENED the app behind modals. A black scrim is the convention in
-       both themes. */
-    background: rgba(0, 0, 0, 0.45);
+       both themes — lighter than a centred modal's, so the conversation
+       stays legible behind a palette that hangs from the top (same scrim as
+       the Create modal; no blur, like every overlay under OWNER-006). */
+    background: rgba(0, 0, 0, 0.28);
   }
 
   .chat-overlay.top {
     align-items: flex-start;
-    padding-top: 88px;
+    padding-top: 72px;
   }
 
+  /* The same card as the Create modal: 12px radius on the one overlay
+     surface (OWNER-006: --overlay-bg / -border / -shadow, defined for light
+     and dark), opaque, so the timeline never reads through it. */
   .chat-switcher {
     display: flex;
     flex-direction: column;
     width: min(560px, 100%);
     max-height: min(60vh, 460px);
     overflow: hidden;
-    border: 1px solid var(--v4-hairline);
-    border-radius: 14px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: var(--v4-shadow-window, var(--panel-shadow));
+    border: 1px solid var(--overlay-border);
+    border-radius: 12px;
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .chat-switcher-search {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--v4-hairline);
+    gap: 10px;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line, var(--v4-hairline));
+  }
+
+  /* The same 24px quiet square as every other panel close in the shell. */
+  .chat-switcher-close {
+    display: grid;
+    flex-shrink: 0;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t3);
+    line-height: 0;
+    cursor: pointer;
+    transition:
+      color 0.12s,
+      background 0.12s;
+  }
+
+  .chat-switcher-close:hover,
+  .chat-switcher-close:focus-visible {
+    background: var(--hover);
+    color: var(--t1);
   }
 
   .chat-switcher-search-ic {
     display: grid;
     place-items: center;
     color: var(--t3);
-  }
-
-  .chat-switcher-search-ic svg {
-    width: 15px;
-    height: 15px;
   }
 
   .chat-switcher-input {
@@ -7206,16 +7140,6 @@
     font-weight: 400;
   }
 
-  :global(:root[data-force-theme="dark"]) .chat-switcher,
-  :global(.dark) .chat-switcher {
-    background: var(--v4-surface-solid, #303030);
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-force-theme="light"])) .chat-switcher {
-      background: var(--v4-surface-solid, #303030);
-    }
-  }
   /*
    * Phone width: a fixed 260px column would leave the conversation ~130px, so
    * the list overlays it instead. `DesktopApp` starts it closed here and

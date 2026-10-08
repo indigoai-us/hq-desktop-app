@@ -85,7 +85,7 @@ describe("ChannelMuteControl", () => {
     ]);
     const checked = items.filter((i) => i.getAttribute("aria-checked") === "true");
     expect(checked.map((i) => i.dataset.testid)).toEqual(["channel-notify-mentions"]);
-    expect(checked[0]!.querySelector("svg")).not.toBeNull();
+    expect(checked[0]!.querySelector('svg[data-rail-icon="check"]')).not.toBeNull();
   });
 
   it("opens the menu on right-click of the speaker", async () => {
@@ -126,13 +126,10 @@ describe("ChannelMuteControl", () => {
 
   // Owner decision 2026-09-25: the control draws a bell, and a slash across
   // it only while the channel is muted. The current level is a background
-  // highlight, never a left accent.
-  const BELL_BODY = "M8 2.5";
-  const BELL_CLAPPER = "M6.6 12.5";
-  const BELL_SLASH = "M2.5 2.5l11 11";
-
-  function glyphPaths(id: string): string[] {
-    return [...q(id).querySelectorAll("path")].map((path) => path.getAttribute("d") ?? "");
+  // highlight, never a left accent. Icons are Phosphor Regular (Bell /
+  // BellSlash) from the shared rail-icon registry.
+  function glyph(id: string): SVGSVGElement | null {
+    return q(id).querySelector<SVGSVGElement>("svg[data-rail-icon]");
   }
 
   function muteStyles(): string {
@@ -144,17 +141,17 @@ describe("ChannelMuteControl", () => {
 
   it("draws a bell without a slash while the channel is unmuted", () => {
     render({ level: "all" });
-    const open = glyphPaths("channel-mute-toggle");
-    expect(open.some((d) => d.includes(BELL_BODY))).toBe(true);
-    expect(open.some((d) => d.includes(BELL_CLAPPER))).toBe(true);
-    expect(open.some((d) => d.includes(BELL_SLASH))).toBe(false);
+    const open = glyph("channel-mute-toggle");
+    expect(open?.getAttribute("data-rail-icon")).toBe("bell");
+    expect(open?.getAttribute("viewBox")).toBe("0 0 256 256");
+    expect(open?.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
   });
 
   it("adds the slash across the bell while the channel is muted", () => {
     render({ level: "muted" });
-    const muted = glyphPaths("channel-mute-toggle");
-    expect(muted.some((d) => d.includes(BELL_BODY))).toBe(true);
-    expect(muted.some((d) => d.includes(BELL_SLASH))).toBe(true);
+    const muted = glyph("channel-mute-toggle");
+    expect(muted?.getAttribute("data-rail-icon")).toBe("bell-slash");
+    expect(muted?.getAttribute("viewBox")).toBe("0 0 256 256");
   });
 
   it("highlights the current level with a background and no left accent", async () => {

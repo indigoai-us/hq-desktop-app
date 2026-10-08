@@ -161,7 +161,7 @@
     >
     <span class="grow"></span>
     <button type="button" class="icon" aria-label="Close" onclick={onclose}>
-      <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
+      <RailIcon name="x" size={14} />
     </button>
   </header>
   <div class="sb">
@@ -260,7 +260,6 @@
     border: 0; border-radius: 6px; background: transparent; color: var(--t3, var(--v4-text-3));
   }
   .icon:hover { background: var(--hover); color: var(--t1, var(--v4-text-1)); }
-  .icon svg { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; }
   .sb { overflow-x: hidden; overflow-y: auto; min-height: 0; }
   .fr {
     display: grid;

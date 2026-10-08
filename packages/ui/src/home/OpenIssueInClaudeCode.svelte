@@ -17,6 +17,7 @@
   import type { ShellApi } from "@hq/platform";
   import { buildClaudeCodeUrl } from "../files/claude-code-link.js";
   import { buildPrompt, type Issue } from "./copy-prompts.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   interface Props {
     /** Platform shell seam — the same `adapter.appShell` the popover holds. */
@@ -97,23 +98,9 @@
       "Open Claude Code in your HQ folder with this error preloaded as a prompt"}
     aria-label={`${label} — open this error in Claude Code with a prefilled fix prompt`}
   >
-    <!-- Sparkle — same glyph the tray popover used, so `compact` (label
-         visually hidden) still has something to draw. -->
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 16 16"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <path
-        d="M8 2.5l1.4 3.6 3.6 1.4-3.6 1.4L8 12.5 6.6 8.9 3 7.5l3.6-1.4L8 2.5z"
-        stroke="currentColor"
-        stroke-width="1.3"
-        stroke-linejoin="round"
-      />
-    </svg>
+    <!-- Phosphor sparkle, so `compact` (label visually hidden) still has
+         something to draw. -->
+    <RailIcon name="sparkle" size={11} />
     <span class="open-issue-label">
       {#if dispatching}
         Opening…

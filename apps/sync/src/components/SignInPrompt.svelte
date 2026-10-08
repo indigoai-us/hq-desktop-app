@@ -604,10 +604,7 @@
         onclick={() => onretry?.()}
         disabled={loadingProvider !== null || quitting}
       >
-        <svg class="provider-glyph" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v2.5h-2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        Retry
+        <RailIcon name="refresh" />Retry
       </button>
     {/if}
 
@@ -727,12 +724,12 @@
     margin-top: 14px;
     font-size: 13px;
     color: var(--v4-text-2, var(--pop-text));
-    text-decoration: underline;
-    text-underline-offset: 3px;
     background: none;
     border: 0;
+    text-decoration: none;
     cursor: pointer;
   }
+  .magic-link:hover { opacity: 0.7; }
   .vf {
     margin-top: 28px;
     font-family: var(--font-mono, ui-monospace, monospace);

@@ -64,11 +64,21 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    width: 100%;
-    max-width: none;
+    /* Hugs its content, like the file card. Stretched to the column, a
+       two-line summary left a metre of empty card beside it and read as a
+       banner rather than one thing among the messages. Floored at the
+       artifact card's 440px so the two stack down the column on one edge.
+       Border-box so the padding stays inside the width and the card can
+       never push past its column. */
+    box-sizing: border-box;
+    width: fit-content;
+    min-width: min(440px, 100%);
+    max-width: 100%;
     margin: 6px 0 0;
     padding: 12px 14px;
-    border: 1px solid var(--line, var(--pop-border));
+    /* No outline, like the file and artifact cards — the raised fill is the
+       edge. Kept in the box model so nothing shifts if a state paints one. */
+    border: 1px solid transparent;
     border-radius: 10px;
     background: var(--raised, var(--pop-hover));
     color: var(--t1, var(--pop-text));

@@ -166,7 +166,7 @@
       <span class="sub">{checkoutOpened ? "step 2 of 2 · checkout opened" : "step 2 of 2"}</span>
     {/if}
     <span class="grow"></span>
-    <button type="button" class="icon" aria-label="Close" onclick={() => onclose?.()}>✕</button>
+    <button type="button" class="icon" aria-label="Close" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
 
   <div class="sb" data-testid="new-company-body">
@@ -209,7 +209,7 @@
         <div>
           <div class="chips">
             {#each invites as email (email)}
-              <span class="chip">{email}<button type="button" class="x" aria-label="Remove {email}" onclick={() => removeInvite(email)}>✕</button></span>
+              <span class="chip">{email}<button type="button" class="x" aria-label="Remove {email}" onclick={() => removeInvite(email)}><RailIcon name="x" size={10} /></button></span>
             {/each}
           </div>
           <input
@@ -273,7 +273,7 @@
         <div>
           <div class="chips">
             {#each invites as email (email)}
-              <span class="chip">{email}<button type="button" class="x" aria-label="Remove {email}" onclick={() => removeInvite(email)}>✕</button></span>
+              <span class="chip">{email}<button type="button" class="x" aria-label="Remove {email}" onclick={() => removeInvite(email)}><RailIcon name="x" size={10} /></button></span>
             {/each}
           </div>
           <input
@@ -352,7 +352,7 @@
   }
   .sub { font-size: 12px; font-weight: 400; color: var(--v4-text-3); margin: 0; }
   .grow { flex: 1; }
-  .icon { border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
+  .icon { display: inline-grid; place-items: center; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
   .sb { overflow: auto; min-height: 0; }
   .fr {
     display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px;
@@ -388,7 +388,7 @@
     font-size: 12px; color: var(--v4-text-1); background: var(--v4-control-bg, transparent);
     border: 1px solid var(--v4-control-border); border-radius: 6px; padding: 0 6px;
   }
-  .x { border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
+  .x { display: inline-grid; place-items: center; border: 0; background: transparent; color: var(--v4-text-3); cursor: pointer; }
   .inl { display: flex; align-items: center; gap: 6px; min-height: 28px; font-size: 13px; }
   .tog {
     width: 30px; height: 18px; border-radius: 9px; border: 1px solid var(--v4-control-border);

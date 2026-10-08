@@ -5,6 +5,7 @@
   // pills and bubbles a (messageId, emoji) toggle up.
   import { type ReactionAggregate, reactionAttribution } from "./reactions";
   import EmojiPicker from "./EmojiPicker.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
 
   interface Props {
     messageId: string;
@@ -42,13 +43,15 @@
 
 <div class="reaction-bar" class:compact>
   {#each reactions as r (r.emoji)}
+    <!-- No `title` attribute: `.reaction-tooltip` below already says this, and
+         the OS tooltip drew a second copy of the same sentence a beat later,
+         in a different place. The accessible name stays on aria-label. -->
     <button
       class="reaction-pill"
       class:reacted={r.reactedByMe}
       type="button"
       onclick={() => toggle(r.emoji)}
       aria-pressed={r.reactedByMe}
-      title={reactorTitle(r)}
       aria-label={reactorTitle(r) ??
         `${r.emoji} ${r.count} ${r.count === 1 ? "reaction" : "reactions"}${r.reactedByMe ? ", you reacted" : ""}`}
     >
@@ -68,8 +71,8 @@
       aria-label="Add a reaction"
       title="Add a reaction"
     >
-      <span class="reaction-add-glyph" aria-hidden="true">☺</span>
-      <span class="reaction-add-plus" aria-hidden="true">+</span>
+      <span class="reaction-add-glyph" aria-hidden="true"><RailIcon name="smiley" size={14} /></span>
+      <span class="reaction-add-plus" aria-hidden="true"><RailIcon name="plus" size={10} /></span>
     </button>
     {#if pickerOpen}
       <EmojiPicker onpick={pick} onclose={() => (pickerOpen = false)} />
@@ -109,19 +112,23 @@
   }
   .reaction-pill:hover .reaction-tooltip,
   .reaction-pill:focus-visible .reaction-tooltip { display: block; }
+  /* The design's pill: 22px tall, 7px of side padding, an 11px emoji and a
+     10px count. At 28px with 13px text these were nearly the height of a line
+     of body copy, so a message with three reactions read as two paragraphs.
+     22px still clears the 24px pointer target once the 4px row gap is counted. */
   .reaction-pill {
     position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
-    min-height: 1.75rem; /* 28px tap target */
-    padding: 0.125rem 0.5rem;
+    gap: 5px;
+    height: 22px;
+    padding: 0 7px;
     border: 1px solid var(--pop-border);
     border-radius: 999px;
     background: var(--pop-hover);
     color: var(--pop-text);
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: 11px;
     line-height: 1;
     cursor: pointer;
     transition:
@@ -135,24 +142,37 @@
     outline: none;
   }
 
+  /* Concept `.react.mine`: yours reads as a SELECTED control, in the same ice
+     tint every other selected thing in the shell uses (both themes define
+     --ice-tile / --ice-ink in chat-tokens.css). It was a neutral fill one shade
+     off the resting one, so a pill you had reacted to and one you had not were
+     nearly indistinguishable. */
   .reaction-pill.reacted {
-    background: var(--c-field-bg);
-    border-color: var(--c-field-border);
+    background: var(--ice-tile, var(--c-field-bg));
+    border-color: color-mix(in srgb, var(--ice-ink, var(--pop-text)) 30%, transparent);
     color: var(--pop-text);
+  }
+
+  .reaction-pill.reacted .reaction-count {
+    color: var(--ice-ink, var(--pop-text));
   }
 
   .reaction-pill.reacted:hover,
   .reaction-pill.reacted:focus-visible {
-    background: var(--pop-hover);
+    background: var(--ice-tile, var(--c-field-bg));
+    border-color: color-mix(in srgb, var(--ice-ink, var(--pop-text)) 55%, transparent);
   }
 
   .reaction-emoji {
-    font-size: var(--text-base);
+    font-size: 11px;
     line-height: 1;
   }
 
+  /* The count is subordinate to the emoji, not equal to it. */
   .reaction-count {
-    font-weight: 600;
+    color: var(--pop-muted);
+    font-size: 10px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
   }
 
@@ -161,14 +181,15 @@
     display: inline-flex;
   }
 
+  /* Matches the pill it sits beside. */
   .reaction-add {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.0625rem;
-    min-width: 1.75rem; /* 28px tap target */
-    min-height: 1.75rem;
-    padding: 0 0.375rem;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
     border: 1px solid var(--pop-border);
     border-radius: 999px;
     background: var(--pop-hover);
@@ -189,16 +210,11 @@
     outline: none;
   }
 
-  .reaction-add-glyph {
-    font-size: var(--text-base);
-    line-height: 1;
+  .reaction-add-glyph,
+  .reaction-add-plus {
+    display: inline-flex;
   }
 
-  .reaction-add-plus {
-    font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 1;
-  }
 
   .reaction-bar.compact {
     gap: 0.1875rem;

@@ -397,8 +397,21 @@
     backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
     -webkit-backdrop-filter: var(--glass-filter-soft, blur(16px) saturate(112%) contrast(101%));
     box-shadow: var(--pop-shadow), inset 0 1px 0 var(--pop-highlight);
-    scrollbar-width: thin;
-    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  /* One 4px bar (see packages/ui chat/scrollbars.css). No scrollbar-width/-color:
+     the standard properties beat ::-webkit-scrollbar and draw ~11px. */
+  .suggestions::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .suggestions::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .suggestions::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb, var(--pop-hover));
+    border-radius: 2px;
   }
 
   .suggestion-list {
@@ -516,10 +529,10 @@
     color: var(--fg);
     font: inherit;
     font-weight: 600;
+    text-decoration: none;
     cursor: pointer;
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
+  .discovery-retry:hover { opacity: 0.7; }
 
   .discovery-retry:focus-visible {
     outline: 2px solid var(--accent);

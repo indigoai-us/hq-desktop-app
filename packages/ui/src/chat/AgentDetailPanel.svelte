@@ -502,7 +502,7 @@
       aria-label="Close bot"
       onclick={() => onclose?.()}
     >
-      ×
+      <RailIcon name="x" size={14} />
     </button>
   </header>
 

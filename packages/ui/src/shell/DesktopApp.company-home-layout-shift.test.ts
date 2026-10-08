@@ -168,7 +168,9 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
 
     await vi.waitFor(() => expect(memberPill()).toBeTruthy());
     const pillRectBefore = getComputedStyle(memberPill()!);
-    expect(pillRectBefore.padding).toBe("5px 12px");
+    // A fixed 28px pill, the header's control height (owner review 2026-10-08).
+    expect(pillRectBefore.height).toBe("28px");
+    expect(pillRectBefore.padding).toBe("0px 12px");
 
     // The shared loader stands in for the real messages until the
     // timeline resolves.
@@ -192,6 +194,7 @@ describe("DesktopApp company-home channel: no layout shift on load", () => {
     // The member pill never disappeared and never re-mounted — same node,
     // same reserved geometry, now showing the real count.
     expect(memberPill()).toBeTruthy();
-    expect(getComputedStyle(memberPill()!).padding).toBe("5px 12px");
+    expect(getComputedStyle(memberPill()!).height).toBe("28px");
+    expect(getComputedStyle(memberPill()!).padding).toBe("0px 12px");
   }, 15_000);
 });

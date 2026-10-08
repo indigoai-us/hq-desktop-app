@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Channel-header mute control. A bell icon (bell-slash when muted) toggles
    * Muted against the channel's last non-muted level; the chevron (or a
@@ -102,23 +103,7 @@
     onclick={toggleMute}
     oncontextmenu={openMenu}
   >
-    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true">
-      <path
-        d="M8 2.5a3.3 3.3 0 0 0-3.3 3.3v2.1c0 .55-.2 1.08-.57 1.49L3 10.75h10l-1.13-1.35a2.3 2.3 0 0 1-.57-1.49V5.8A3.3 3.3 0 0 0 8 2.5Z"
-        stroke="currentColor"
-        stroke-width="1.2"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M6.6 12.5a1.5 1.5 0 0 0 2.8 0"
-        stroke="currentColor"
-        stroke-width="1.2"
-        stroke-linecap="round"
-      />
-      {#if muted}
-        <path d="M2.5 2.5l11 11" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-      {/if}
-    </svg>
+    <RailIcon name={muted ? "bell-slash" : "bell"} size={14} />
   </button>
   <button
     type="button"
@@ -130,9 +115,7 @@
     aria-label="Channel notification level"
     onclick={() => (open = !open)}
   >
-    <svg viewBox="0 0 16 16" width="10" height="10" fill="none" aria-hidden="true">
-      <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
+    <RailIcon name="chevron-down" size={10} />
   </button>
 
   {#if open}
@@ -155,15 +138,7 @@
         >
           <span class="notify-check" aria-hidden="true">
             {#if option.level === level}
-              <svg viewBox="0 0 16 16" width="12" height="12" fill="none">
-                <path
-                  d="M3.5 8.5l3 3 6-7"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <RailIcon name="check" size={12} />
             {/if}
           </span>
           <span class="notify-copy">

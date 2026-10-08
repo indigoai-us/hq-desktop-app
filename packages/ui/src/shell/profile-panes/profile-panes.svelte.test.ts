@@ -6,14 +6,79 @@ import { afterEach, describe, expect, it } from "vitest";
 import ProfilePaneHost from "./ProfilePaneHost.svelte";
 import BotSessionPane from "./BotSessionPane.svelte";
 import { TRANSCRIPT_VIRTUALIZE_THRESHOLD, type SessionLine } from "./profile-pane-model.js";
+import { setBadgeSource } from "../../badges/badge-source.js";
 
 let host: HTMLElement;
 
 afterEach(() => {
   host?.remove();
+  setBadgeSource(null);
 });
 
 describe("ProfilePaneHost", () => {
+  it("hides the Badges section when the person has none", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "Maya Chen", company: "Indigo" } });
+    await tick();
+    expect(host.querySelector('[data-testid="user-profile-pane"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="profile-badges"]')).toBeNull();
+  });
+
+  it("shows the newest four badges on a person and on a bot", async () => {
+    setBadgeSource(({ kind }) =>
+      kind === "bot"
+        ? [{ id: "liftoff", tier: 2, earnedAt: "2026-10-05" }]
+        : [
+            { id: "founding", earnedAt: "2026-03-02" },
+            { id: "founder", earnedAt: "2026-03-04" },
+            { id: "bughunter", tier: 2, earnedAt: "2026-09-28" },
+            { id: "liftoff", tier: 1, earnedAt: "2026-10-06" },
+            { id: "poweruser", tier: 3, earnedAt: "2026-09-14" },
+          ],
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "Maya Chen", company: "Indigo" } });
+    await tick();
+    const person = host.querySelector('[data-testid="profile-badges"]');
+    expect(person?.textContent).toContain("Badges 5");
+    expect([...(person?.querySelectorAll("canvas") ?? [])].map((c) => c.getAttribute("data-badge"))).toEqual([
+      "liftoff",
+      "bughunter",
+      "poweruser",
+      "founder",
+    ]);
+    host.remove();
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, { target: host, props: { kind: "bot", name: "deacon", company: "Indigo" } });
+    await tick();
+    const bot = host.querySelector('[data-testid="bot-profile-pane"] [data-testid="profile-badges"]');
+    expect(bot?.textContent).toContain("Liftoff");
+    expect(bot?.textContent).toContain("Silver");
+  });
+
+  it("opens a badge's detail from the profile and comes back", async () => {
+    setBadgeSource(() => [{ id: "liftoff", tier: 2, earnedAt: "2026-10-06" }]);
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "Maya Chen", company: "Indigo" } });
+    await tick();
+    (host.querySelector('[data-testid="profile-badge"][data-badge-id="liftoff"]') as HTMLButtonElement).click();
+    await tick();
+    const detail = host.querySelector('[data-testid="badge-detail-pane"]');
+    expect(detail?.textContent).toContain("Silver · Earned Oct 6, 2026 by Maya Chen");
+    expect([...host.querySelectorAll('[data-testid="badge-level"].current')].map((li) => li.textContent)).toEqual([
+      expect.stringContaining("10 deploys"),
+    ]);
+    (host.querySelector('[data-testid="badge-detail-back"]') as HTMLButtonElement).click();
+    await tick();
+    expect(host.querySelector('[data-testid="badge-detail-pane"]')).toBeNull();
+    expect(host.querySelector('[data-testid="user-profile-pane"]')).not.toBeNull();
+  });
+
   it("opens a bot profile from a cached name and reaches the edit sheet", async () => {
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -39,6 +104,17 @@ describe("ProfilePaneHost", () => {
     mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "" } });
     await tick();
     expect(host.querySelector('[data-testid="user-profile-loading"]')).not.toBeNull();
+  });
+
+  it("draws the person's mark like the timeline: first + last initials, same mark scaled up", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    mount(ProfilePaneHost, { target: host, props: { kind: "person", name: "Grace Hopper", company: "Indigo" } });
+    await tick();
+    const mark = host.querySelector('[data-testid="user-profile-pane"] .av .identity');
+    expect(mark?.classList.contains("large")).toBe(true);
+    expect(mark?.getAttribute("data-kind")).toBe("person");
+    expect(mark?.textContent?.trim()).toBe("GH");
   });
 
   it("person profile wires View in Atlas and Manage access", async () => {

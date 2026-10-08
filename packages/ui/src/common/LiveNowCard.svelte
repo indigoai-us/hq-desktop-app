@@ -112,23 +112,6 @@
   }
 </script>
 
-{#snippet iconVideo(size: number)}
-  <svg
-    viewBox="0 0 24 24"
-    width={size}
-    height={size}
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="m22 8-6 4 6 4Z" />
-    <rect x="2" y="6" width="14" height="12" rx="2" />
-  </svg>
-{/snippet}
-
 {#if meeting}
   <!-- True live monitor — rounded discrete payload when a detection is active. -->
   <section
@@ -143,7 +126,7 @@
     <div class="card-body">
       <div class="live-main">
         <span class="live-icon" class:recording={meeting.state === "recording"}>
-          {@render iconVideo(18)}
+          <RailIcon name="video-camera" size={18} />
         </span>
         <div class="live-copy">
           <div class="live-name">{title}</div>

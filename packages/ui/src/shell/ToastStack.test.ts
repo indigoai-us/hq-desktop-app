@@ -311,6 +311,25 @@ describe("sync toast copy guard", () => {
   });
 });
 
+describe("toast placement and type (owner review 2026-10-08)", () => {
+  const style = () => {
+    const own = readFileSync(join(SRC, "shell/ToastStack.svelte"), "utf8");
+    return own.slice(own.indexOf("<style>"));
+  };
+  const rule = (sel: string) => style().match(new RegExp(`\\${sel}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+
+  it("sits in the window's lower-right corner, as far from the bottom as from the side", () => {
+    expect(rule(".ts-stack")).toMatch(/right:\s*var\(--toast-right-inset,\s*16px\)/);
+    expect(rule(".ts-stack")).toMatch(/bottom:\s*var\(--toast-bottom-inset,\s*16px\)/);
+  });
+
+  it("sets the title a step above the detail, and mutes the detail", () => {
+    expect(rule(".ts-toast")).toMatch(/font:\s*400 13px/);
+    expect(rule(".ts-title")).toMatch(/font-size:\s*14px/);
+    expect(rule(".ts-m")).toMatch(/color:\s*var\(--v4-text-3\)/);
+  });
+});
+
 describe("toast typography outside the chat shell (QA-095)", () => {
   it("never depends on --font-ui without a sans fallback, since the layer is portaled to <body>", () => {
     const own = readFileSync(join(SRC, "shell/ToastStack.svelte"), "utf8");

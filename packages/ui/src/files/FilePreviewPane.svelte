@@ -1,5 +1,6 @@
 <script lang="ts">
   import ReadLoader from "../common/ReadLoader.svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * FilePreviewPane — preview the selected company file beside the file tree
    * (Files mode + Knowledge tab).
@@ -304,30 +305,7 @@
       >
         {#if copyingPath}
           <span class="action-spinner" aria-hidden="true"></span>
-        {:else}<svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-            aria-hidden="true"
-          >
-            <rect
-              x="5.5"
-              y="5.5"
-              width="7"
-              height="8"
-              rx="1"
-              stroke="currentColor"
-              stroke-width="1.2"
-            />
-            <path
-              d="M3.5 10.5V3.5a1 1 0 0 1 1-1h6"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>{/if}
+        {:else}<RailIcon name="copy" size={12} />{/if}
         <span class="reveal-label">
           {copyingPath
             ? "Copying…"
@@ -351,21 +329,7 @@
         >
           {#if revealing}
             <span class="action-spinner" aria-hidden="true"></span>
-          {:else}<svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              aria-hidden="true"
-            >
-              <path
-                d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.4H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"
-                stroke="currentColor"
-                stroke-width="1.2"
-                stroke-linejoin="round"
-              />
-            </svg>{/if}
+          {:else}<RailIcon name="folder" size={12} />{/if}
           <span class="reveal-label">
             {revealing
               ? "Opening…"
@@ -388,27 +352,7 @@
       <ReadLoader testid="file-preview-loading" />
     {:else if unsupported || mediaError}
       <div class="preview-unsupported" data-testid="file-preview-unsupported">
-        <svg
-          width="28"
-          height="28"
-          viewBox="0 0 24 24"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          aria-hidden="true"
-        >
-          <path
-            d="M6 3h8l4 4v14a0 0 0 0 1 0 0H6a0 0 0 0 1 0 0V3z"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-          <path
-            d="M14 3v4h4"
-            stroke="currentColor"
-            stroke-width="1.4"
-            stroke-linejoin="round"
-          />
-        </svg>
+        <RailIcon name="file" size={28} />
         <strong>Can&rsquo;t preview this file</strong>
         <span
           >It&rsquo;s unsupported or too large to show here. Use the actions
@@ -639,7 +583,7 @@
     color: var(--v4-text-2, var(--muted));
   }
 
-  .preview-unsupported svg {
+  .preview-unsupported :global(.rail-icon) {
     color: var(--v4-text-3, var(--muted-3));
   }
 
@@ -745,7 +689,7 @@
   }
 
   .markdown-body :global(a:hover) {
-    text-decoration: underline;
+    opacity: 0.7;
   }
 
   .markdown-body :global(code) {
@@ -807,7 +751,6 @@
     border: 0;
     border-radius: 0;
     background: transparent;
-    scrollbar-color: var(--v4-control-border, var(--border-strong)) transparent;
   }
 
   .markdown-body :global(table) {

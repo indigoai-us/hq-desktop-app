@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   import { agentAvatarFor } from "./agent-avatars";
   import { paintableAvatarSrc } from "../../avatars/csp-image-src.js";
 
@@ -7,7 +8,7 @@
     label?: string;
     members?: string[];
     privateChannel?: boolean;
-    size?: "small" | "regular";
+    size?: "small" | "regular" | "large";
     online?: boolean;
     /** Real avatar photo — falls back to the monogram when absent or on error. */
     avatarUrl?: string | null;
@@ -61,6 +62,7 @@
 <span
   class="identity"
   class:small={size === "small"}
+  class:large={size === "large"}
   data-kind={kind}
   aria-hidden="true"
 >
@@ -69,8 +71,8 @@
       class="avatar-img"
       src={effectiveAvatarUrl}
       alt=""
-      width={size === "small" ? 22 : 32}
-      height={size === "small" ? 22 : 32}
+      width={size === "small" ? 22 : size === "large" ? 48 : 32}
+      height={size === "small" ? 22 : size === "large" ? 48 : 32}
       loading="lazy"
       decoding="async"
       onerror={() => (imageBroken = true)}
@@ -81,42 +83,14 @@
     </span>
   {:else if kind === "channel"}
     {#if privateChannel}
-      <svg class="channel-lock" viewBox="0 0 16 16" fill="none">
-        <rect
-          x="3.5"
-          y="7"
-          width="9"
-          height="6.5"
-          rx="1.5"
-          stroke="currentColor"
-          stroke-width="1.4"
-        />
-        <path
-          d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        />
-      </svg>
+      <span class="channel-lock"><RailIcon name="lock-simple" size={size === "small" ? 13 : 14} /></span>
     {:else}
-      <span class="channel-glyph">#</span>
+      <span class="channel-glyph"><RailIcon name="hash" size={size === "small" ? 13 : 15} /></span>
     {/if}
   {:else if kind === "agent"}
-    <span class="agent-glyph">✦</span>
+    <span class="agent-glyph"><RailIcon name="sparkle" size={16} /></span>
   {:else if kind === "file"}
-    <svg viewBox="0 0 16 16" fill="none"
-      ><path
-        d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /><path
-        d="M9 1.5V5.5H13"
-        stroke="currentColor"
-        stroke-width="1.35"
-        stroke-linejoin="round"
-      /></svg
-    >
+    <RailIcon name="file" size={15} />
   {:else}
     <span class="monogram">{initials(label)}</span>
   {/if}
@@ -147,6 +121,14 @@
     height: 22px;
     flex-basis: 22px;
     font-size: 8px;
+  }
+  /* Profile header: the same mark scaled up, initials at the regular size's
+     proportion (12px in 32px). */
+  .identity.large {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+    font-size: 18px;
   }
   .monogram {
     display: grid;
@@ -201,29 +183,12 @@
     font-size: 6px;
   }
   .channel-glyph {
+    display: inline-flex;
     color: currentColor;
-    font-size: 19px;
-    font-weight: 450;
-    line-height: 1;
   }
-  .small .channel-glyph {
-    font-size: 17px;
-  }
-  .agent-glyph {
-    font-size: 16px;
-    font-weight: 400;
-  }
-  .identity > svg:not(.channel-lock) {
-    width: 15px;
-    height: 15px;
-  }
+  .agent-glyph,
   .channel-lock {
-    width: 14px;
-    height: 14px;
-  }
-  .small .channel-lock {
-    width: 13px;
-    height: 13px;
+    display: inline-flex;
   }
   .presence {
     position: absolute;

@@ -549,7 +549,7 @@
         aria-label="Close details"
         onclick={closeDetail}
       >
-        <span aria-hidden="true">×</span>
+        <RailIcon name="x" size={14} />
       </button>
     </header>
 
@@ -1051,7 +1051,7 @@
   }
 
   /* US-019 — the byline link to the creator profile. Inherits the @handle
-     blue; underlines on hover/focus so it reads as a clickable link. align-self
+     blue; dims on hover (no underline); focus keeps its outline. align-self
      keeps the card byline link hugging its text (not stretching the grid cell). */
   .author-link {
     align-self: flex-start;
@@ -1060,9 +1060,8 @@
     cursor: pointer;
   }
 
-  .author-link:hover,
-  .author-link:focus-visible {
-    text-decoration: underline;
+  .author-link:hover {
+    opacity: 0.7;
   }
 
   .author-link:focus-visible {

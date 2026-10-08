@@ -513,7 +513,7 @@
         <header class="sh">
           <span class="sh-title">Invite teammate</span>
           <button type="button" class="icon" aria-label="Close" onclick={() => (inviteOpen = false)}>
-            <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none" /></svg>
+            <RailIcon name="x" size={14} />
           </button>
         </header>
         <div class="fr">
@@ -568,7 +568,7 @@
       <span class="who">
         <span class="mini" class:sq={bot} aria-hidden="true">
           {#if bot}
-            <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
+            <RailIcon name="robot" size={12} />
           {:else}
             {initials(member.displayName)}
           {/if}
@@ -595,7 +595,7 @@
       aria-expanded={menuFor === member.id}
       data-testid={`team-menu-${member.id}`}
       onclick={() => (menuFor = menuFor === member.id ? null : member.id)}
-    ><svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true"><circle cx="3" cy="7" r="1" fill="currentColor" /><circle cx="7" cy="7" r="1" fill="currentColor" /><circle cx="11" cy="7" r="1" fill="currentColor" /></svg></button>
+    ><RailIcon name="dots-three" size={14} /></button>
     {#if menuFor === member.id}
       <div class="menu" role="menu" data-testid="team-row-menu">
         {#if pendingRole?.id === member.id}
@@ -724,7 +724,7 @@
   .quiet-retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; cursor: pointer; }
   .badge { padding: 0 6px; border-radius: 999px; background: var(--hover); }
   .action-note { margin: 0 8px 8px; }
-  .quiet-retry:hover { text-decoration: underline; }
+  .quiet-retry:hover { opacity: 0.7; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
   .dot.live { background: var(--ok); }
   .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }

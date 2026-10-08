@@ -111,5 +111,6 @@
   .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lvl { color: var(--t2); }
   .why { grid-column: 1 / -1; color: var(--t3); }
-  .retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+  .retry { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: none; cursor: pointer; }
+  .retry:hover { opacity: 0.7; }
 </style>

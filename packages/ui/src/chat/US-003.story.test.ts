@@ -220,12 +220,23 @@ describe("US-003: Reply affordance + ReplyPanel in the shared shell", () => {
       },
     });
     await tick();
+    // An empty thread draws no reply-count divider (a lone "0 REPLIES" rule
+    // read as a broken label) and no "No replies yet" prose either. Wait for
+    // the thread fetch to settle so this is the loaded state.
     await vi.waitFor(() => {
-      expect(
-        host.querySelector('[data-testid="reply-panel-empty"]'),
-      ).not.toBeNull();
+      expect(api.fetchCalls).toBeGreaterThan(0);
+      expect(host.querySelector('[data-testid="reply-panel-root"]')).not.toBeNull();
+      expect(host.textContent).not.toContain("Loading replies");
     });
-    expect(host.textContent).toContain("No replies yet");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await tick();
+    expect(
+      host.querySelector('[data-testid="reply-panel-root"] .reply-root-label'),
+    ).toBeNull();
+    expect(host.querySelector('[data-testid="reply-count-divider"]')).toBeNull();
+    expect(host.textContent?.toLowerCase()).not.toContain("0 replies");
+    expect(host.querySelector('[data-testid="reply-panel-empty"]')).toBeNull();
+    expect(host.textContent).not.toContain("No replies yet");
   });
 
   it("retries a failed send without re-GETting the reply thread", async () => {

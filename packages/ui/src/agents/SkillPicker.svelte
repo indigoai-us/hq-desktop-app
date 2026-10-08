@@ -34,7 +34,7 @@
 <div class="sp" role="dialog" aria-label="Choose skills" data-testid="skill-picker" use:dismissable={{ onclose, trap: false }}>
   <div class="sp-h">
     <h2>Skills</h2>
-    <button type="button" class="sp-x" aria-label="Close" onclick={onclose}>✕</button>
+    <button type="button" class="sp-x" aria-label="Close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </div>
   <input class="sp-q" placeholder="Filter skills" bind:value={query} data-testid="skill-picker-filter" />
   <ul class="sp-list">
@@ -74,6 +74,11 @@
   }
   .sp-h { display: flex; align-items: center; gap: 8px; }
   .sp-h h2 { margin: 0; font-size: var(--type-section, 16px); font-weight: 600; flex: 1; }
+  .sp-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
   .sp-x, .sp-done {
     border: 1px solid var(--v4-control-border, transparent);
     background: transparent;

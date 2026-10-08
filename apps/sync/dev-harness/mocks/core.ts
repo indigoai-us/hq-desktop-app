@@ -8,6 +8,28 @@ import { readsSwitch, switchedHandler, withReadsSwitch } from '../audit-switches
 import { emit } from './event';
 import { deployAppsFixture } from '../../../../packages/ui/src/library/personal-deployments.fixture';
 import { companyFlowAnswer, companyFlowEnabled, NOT_HANDLED } from '../company-flow-mocks';
+import {
+  botRoster,
+  channelDirectory,
+  channelMembers,
+  channelMessages,
+  companyMembers,
+  botJobs,
+  botStatus,
+  companyMemberships,
+  dmInbox,
+  dmMessages,
+  fileHistory,
+  sharedWithMe,
+  dmThreadIndex,
+  newestFirst,
+  reactionsFor,
+  replyThread,
+  teamContacts,
+  teamNotifications,
+  teamTelemetry,
+  TEAM_PEOPLE,
+} from './team-fixtures';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -1038,33 +1060,25 @@ This final paragraph verifies spacing after a thematic break.
     { id: 'in-proj-204', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', creator: 'jacob@getindigo.ai' },
   ],
   get_company_activity: () => ({
-    stats: { files7: 128, edits7: 342, members: 5, vaultSize: '2.4 GB' },
-    sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],
+    stats: { files7: 412, edits7: 1186, members: TEAM_PEOPLE.length, vaultSize: '6.8 GB' },
+    sparkline: [14, 22, 9, 31, 27, 6, 4, 29, 35, 24, 41, 38, 8, 5],
     recent: [
-      {
-        who: 'corey@getindigo.ai',
-        what: 'Updated',
-        file: 'companies/indigo/projects/desktop-experience/README.md',
-        when: 'just now',
-      },
-      {
-        who: 'maya@getindigo.ai',
-        what: 'Created',
-        file: 'companies/indigo/knowledge/release-notes.md',
-        when: '2h ago',
-      },
-      {
-        who: 'jacob@getindigo.ai',
-        what: 'Synced from cloud',
-        file: 'companies/indigo/policies/desktop.md',
-        when: 'Yesterday',
-      },
+      { who: 'ada@getindigo.ai', what: 'Updated', file: 'companies/indigo/projects/accomplishment-badges/prd.json', when: 'just now' },
+      { who: 'lizzie@getindigo.ai', what: 'Created', file: 'companies/indigo/design/badges/team-page-notes.md', when: '28m ago' },
+      { who: 'grace@getindigo.ai', what: 'Updated', file: 'companies/indigo/projects/hq-sync-conflict-versioning/notes/migration.md', when: '47m ago' },
+      { who: 'corey@getindigo.ai', what: 'Created', file: 'companies/indigo/meetings/2026-10-07-meridian.md', when: '5h ago' },
+      { who: 'maya@getindigo.ai', what: 'Updated', file: 'companies/indigo/launch/launch-checklist.md', when: 'Yesterday' },
+      { who: 'priya@getindigo.ai', what: 'Created', file: 'companies/indigo/bugs/brightline-emoji-filenames.md', when: 'Mon' },
     ],
     top: [
+      { who: 'ada@getindigo.ai', edits: 168 },
       { who: 'corey@getindigo.ai', edits: 142 },
+      { who: 'grace@getindigo.ai', edits: 131 },
+      { who: 'hassaan@getindigo.ai', edits: 117 },
+      { who: 'lizzie@getindigo.ai', edits: 96 },
       { who: 'maya@getindigo.ai', edits: 88 },
-      { who: 'sam@liverecover.com', edits: 51 },
-      { who: 'jacob@getindigo.ai', edits: 23 },
+      { who: 'leo@getindigo.ai', edits: 74 },
+      { who: 'stefan@getindigo.ai', edits: 61 },
     ],
   }),
   get_local_company_goals: () => COMPANY_GOALS,
@@ -1102,67 +1116,7 @@ This final paragraph verifies spacing after a thematic break.
     history: [],
     outpost: null,
   }),
-  get_company_team_telemetry: () => ({
-    perMember: [
-      {
-        personUid: 'prs_corey',
-        displayName: 'Corey Epstein',
-        kind: 'human',
-        role: 'Owner',
-        totals: {
-          events: 184,
-          distinctSessions: 31,
-          tokensByModel: [{ model: "claude-opus-4", input: 820000, output: 210000, cacheCreation: 90000, cacheRead: 1400000 }],
-          skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
-        },
-        activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
-        outcomes: { byType: { storyCompleted: 14, prMerged: 9, deploySucceeded: 3 }, total: 26 },
-        trend: [4, 6, 0, 0, 8, 9, 7, 5, 6, 0, 0, 9, 12, 10, 8, 7, 0, 0, 11, 13, 9, 8, 10, 0, 0, 12, 14, 11, 9, 15],
-      },
-      {
-        personUid: 'agt_izzy',
-        displayName: 'Izzy',
-        kind: 'agent',
-        role: 'Fleet agent',
-        totals: {
-          events: 143,
-          distinctSessions: 28,
-          tokensByModel: [{ model: "claude-sonnet-4", input: 410000, output: 120000, cacheCreation: 30000, cacheRead: 600000 }],
-          skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
-        },
-        activeProjects: ['Instant DM delivery'],
-        outcomes: { byType: { storyCompleted: 6, prMerged: 4, deploySucceeded: 0 }, total: 10 },
-        trend: [3, 3, 2, 3, 4, 3, 2, 3, 3, 2, 3, 4, 3, 3, 2, 3, 4, 3, 2, 3, 3, 4, 3, 2, 3, 3, 4, 3, 2, 0],
-      },
-      {
-        personUid: 'prs_maya',
-        displayName: 'Maya Chen',
-        kind: 'human',
-        role: 'Member',
-        totals: {
-          events: 88,
-          distinctSessions: 17,
-          tokensByModel: [{ model: "claude-sonnet-4", input: 190000, output: 60000, cacheCreation: 10000, cacheRead: 240000 }],
-          skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
-        },
-        activeProjects: ['S3-versioned conflict handling'],
-        outcomes: { byType: { storyCompleted: 5, prMerged: 3, deploySucceeded: 1 }, total: 9 },
-        trend: [0, 0, 0, 2, 3, 0, 0, 4, 5, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 3, 2, 5, 0, 0, 0, 0, 0, 0, 0, 0],
-      },
-      {
-        personUid: 'agt_lin',
-        displayName: 'Lin',
-        kind: 'agent',
-        totals: {
-          events: 51,
-          distinctSessions: 9,
-          tokensByModel: [{ model: "claude-haiku-4", input: 40000, output: 12000, cacheCreation: 0, cacheRead: 30000 }],
-          skills: { bySkill: [{ skill: 'diagnose', count: 11 }] },
-        },
-        activeProjects: [],
-      },
-    ],
-  }),
+  get_company_team_telemetry: () => teamTelemetry(),
   get_local_project_prd: (args) =>
     COMPANY_PRDS[(args?.prdPath as string) ?? ''] ?? prdFor('Project', 'Current step in progress', 1, 4),
   get_local_project_readme: () => '# Project\n\nA representative README for the preview harness.',
@@ -1466,64 +1420,31 @@ This final paragraph verifies spacing after a thematic break.
   // Messaging window fixtures (US-008→011) — representative DMs, a thread, and
   // pending requests so the Messages window renders populated in the harness.
   // -------------------------------------------------------------------------
-  get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
+  fetch_notifications: (args) => {
+    if (harnessPersona()) return null;
+    const all = teamNotifications();
+    const rows = args?.unreadOnly ? all.filter((row) => row.status !== 'read') : all;
+    return {
+      notifications: rows,
+      unreadCount: all.filter((row) => row.status !== 'read').length,
+      nextCursor: null,
+    };
+  },
+  get_unread_summary: () => ({ unreadDms: 4, pendingRequests: 2 }),
   list_contacts: () => {
     const persona = harnessPersona();
     if (persona) return { contacts: persona.contacts };
-    return {
-      contacts: [
-        { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },
-        { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
-        { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
-        { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
-      ],
-    };
+    // The default shell is a busy Indigo team (mocks/team-fixtures.ts).
+    return { contacts: teamContacts() };
   },
   list_channels: () => {
     const persona = harnessPersona();
     if (persona) return { channels: persona.channels };
-    return {
-      channels: [
-        {
-          channelId: 'ch_release',
-          name: '',
-          scope: 'group',
-          visibility: 'private',
-          membership: 'joined',
-          unread: 2,
-          memberCount: 3,
-          lastActivityAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-          members: [
-            { personUid: 'prs_jacob', displayName: 'Jacob Patel' },
-            { personUid: 'prs_alan', displayName: 'Alan Turing' },
-          ],
-        },
-        {
-          channelId: 'ch_core',
-          name: 'hq-core',
-          scope: 'company',
-          companyUid: 'cmp_indigo',
-          companyName: 'Indigo',
-          visibility: 'company',
-          membership: 'joined',
-          unread: 4,
-          memberCount: 18,
-          lastActivityAt: new Date(Date.now() - 32 * 60 * 1000).toISOString(),
-        },
-        {
-          channelId: 'ch_exec',
-          name: 'corey-exec',
-          scope: 'company',
-          companyUid: 'cmp_indigo',
-          companyName: 'Indigo',
-          visibility: 'private',
-          membership: 'joined',
-          unread: 0,
-          memberCount: 5,
-          lastActivityAt: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
-        },
-      ],
-    };
+    return { channels: channelDirectory() };
+  },
+  list_channel_members: (args) => {
+    const members = channelMembers(String(args?.channelId ?? ''));
+    return { members: members ?? [] };
   },
   shell_ready: () => null,
   fetch_channel: (args) => {
@@ -1531,6 +1452,8 @@ This final paragraph verifies spacing after a thematic break.
     if (shiftTestEnabled()) {
       return { messages: shiftTestChannelMessages(channelId), nextCursor: null };
     }
+    const scripted = channelMessages(channelId);
+    if (scripted) return { messages: newestFirst(scripted), nextCursor: null };
     const names = channelId === 'ch_release'
       ? ['Jacob Patel', 'Alan Turing']
       : ['Grace Hopper', 'Ada Lovelace'];
@@ -1571,12 +1494,18 @@ This final paragraph verifies spacing after a thematic break.
     replayed: false,
   }),
   take_pending_setup_target: () => null,
-  list_company_members: () => ({
-    members: [
-      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
-      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', companyName: 'Indigo' },
-    ],
-  }),
+  list_company_members: () => {
+    if (harnessPersona()) {
+      return {
+        members: [
+          { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
+          { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', companyName: 'Indigo' },
+        ],
+      };
+    }
+    // The roster read unwraps `contacts` (GET /v1/notify/contacts?companyUid=…).
+    return { contacts: companyMembers() };
+  },
   fetch_dm_thread: (args) => {
     const peer = String(args?.withPersonUid ?? 'prs_ada');
     const people: Record<string, { name: string; email: string; latest: string }> = {
@@ -1603,6 +1532,8 @@ This final paragraph verifies spacing after a thematic break.
     };
     // A bot the preview just created has no history yet.
     if (peer.startsWith('agt_PREVIEW')) return { messages: [], nextCursor: null };
+    const scripted = harnessPersona() ? null : dmMessages(peer);
+    if (scripted) return { messages: newestFirst(scripted), nextCursor: null };
     const person = people[peer] ?? people.prs_ada;
     return {
       messages: [
@@ -1638,7 +1569,11 @@ This final paragraph verifies spacing after a thematic break.
       ];
     }
     if (id === 'share-1') return [{ emoji: '👍', count: 1, reactedByMe: false }];
-    return [];
+    return reactionsFor(id) ?? [];
+  },
+  fetch_thread: (args) => {
+    const thread = replyThread(String(args?.rootEventId ?? ''));
+    return { scope: args?.scope ?? 'channel', ...thread };
   },
   toggle_reaction: () => ({ ok: true, added: true }),
   set_active_conversation: () => null,
@@ -1721,14 +1656,13 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+  // The busy-team reads answer first; they still pass through ?state= and
+  // ?reads= like every other data command.
+  hq_pro_fetch: (args) => harnessTeamFetch(args) ?? (String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
     status: 200,
-    // Two cloud bots, neither local nor live, so Bots' Local and Live filters
-    // have nothing to show (QA-106 guard).
-    body: JSON.stringify({ agents: [
-      { agentUid: 'agt_preview_scout', displayName: 'Scout', setupPhase: 'ready' },
-      { agentUid: 'agt_preview_ranger', displayName: 'Ranger', setupPhase: 'ready' },
-    ] }),
+    // The Indigo cloud bots, none local and none live, so Bots' Local and
+    // Live filters have nothing to show (QA-106 guard).
+    body: JSON.stringify({ agents: botRoster() }),
   }) : String(args?.url ?? '').startsWith('/v1/integrations/admin') ? ({
     status: 200,
     // Company connected apps, shaped like hq-pro readAdminSurface.
@@ -1747,7 +1681,7 @@ This final paragraph verifies spacing after a thematic break.
       companyWide: [{ skillUid: 'skl_signal', name: 'Capture signal', tags: ['knowledge', 'company'] }],
       departments: [{ groupId: 'grp_product', name: 'Product', skills: [{ skillUid: 'skl_launch', name: 'Review launch', tags: ['launch', 'review'] }] }],
     } }),
-  }),
+  })),
   agent_session_context: (args) => ({
     sourceSessionId: args?.sessionId === SESSION_ID ? 'session-event-sync' : null,
     sourceTitle: 'Original planning session',
@@ -1805,6 +1739,47 @@ const harnessNotifyPrefs: Record<string, unknown> = {
   addedToChannel: true,
   updatedAt: '2026-09-23T12:00:00.000Z',
 };
+
+/**
+ * DM listing and DM inbox for the default (no persona) shell, so the rail's
+ * direct messages carry real recency and unread counts.
+ */
+function harnessTeamFetch(args?: Record<string, unknown>): { status: number; body: string } | null {
+  if (harnessPersona()) return null;
+  const url = typeof args?.url === 'string' ? args.url : '';
+  const method = typeof args?.method === 'string' ? args.method : 'GET';
+  if (method !== 'GET') return null;
+  const [path, query = ''] = url.split('?');
+  const json = (value: unknown) => ({ status: 200, body: JSON.stringify(value) });
+  if (path === '/v1/files/shared-with-me') return json({ events: sharedWithMe(), nextCursor: null });
+  if (path === '/v1/notify/file-history') return json({ files: fileHistory(), nextCursor: null });
+  if (path === '/v1/telemetry/company') return json(teamTelemetry());
+  const membership = /^\/membership\/company\/([^/]+)(\/pending)?$/.exec(path);
+  if (membership) {
+    if (membership[1] !== 'cmp_indigo') return null;
+    return json(membership[2] ? { pending: [] } : { members: companyMemberships() });
+  }
+  const agent = /^\/v1\/agents\/(agt_[^/]+)\/(status|jobs)$/.exec(path);
+  if (agent) {
+    if (agent[2] === 'jobs') return json({ jobs: botJobs(agent[1]!) });
+    const status = botStatus(agent[1]!);
+    return status ? json(status) : null;
+  }
+  if (path === '/v1/notify/dm-threads') {
+    return { status: 200, body: JSON.stringify({ threads: dmThreadIndex(), nextCursor: null }) };
+  }
+  if (path === '/v1/notify/inbox') {
+    const since = new URLSearchParams(query).get('since');
+    const inbox = dmInbox();
+    if (since) {
+      // An incremental pass only sees what is newer than its cursor.
+      const events = inbox.events.filter((row) => String(row.createdAt) > since);
+      return { status: 200, body: JSON.stringify({ events, nextCursor: null }) };
+    }
+    return { status: 200, body: JSON.stringify({ ...inbox, nextCursor: null }) };
+  }
+  return null;
+}
 
 function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; body: string } | null {
   const url = typeof args?.url === 'string' ? args.url : '';

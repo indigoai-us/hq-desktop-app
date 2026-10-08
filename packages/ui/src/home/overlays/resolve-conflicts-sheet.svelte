@@ -73,7 +73,7 @@
   <header class="rc-h">
     <span>Resolve conflicts</span>
     <span class="sub">{conflicts.length} {conflicts.length === 1 ? "file" : "files"}</span>
-    <button type="button" class="icon" aria-label="Close" data-testid="resolve-conflicts-close" onclick={onclose}>✕</button>
+    <button type="button" class="icon" aria-label="Close" data-testid="resolve-conflicts-close" onclick={onclose}><RailIcon name="x" size={14} /></button>
   </header>
   <div class="rc-tb">
     <input
@@ -160,6 +160,9 @@
   }
   .sub { font-weight: 400; color: var(--v4-text-3); font-size: 13px; }
   .icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     margin-left: auto;
     appearance: none;
     border: 0;
@@ -194,11 +197,11 @@
     font-size: 12px;
     font-weight: 500;
     color: var(--v4-text-2);
-    text-decoration: underline;
-    text-underline-offset: 3px;
+    text-decoration: none;
     cursor: pointer;
     white-space: nowrap;
   }
+  .lnk:hover { opacity: 0.7; }
   .rc-b { flex: 1; min-height: 0; overflow: auto; }
   .rc-row {
     display: grid;

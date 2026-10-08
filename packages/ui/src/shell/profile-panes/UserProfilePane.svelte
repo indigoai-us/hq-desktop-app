@@ -1,10 +1,19 @@
 <script lang="ts">
   import RailIcon from "../../common/button/RailIcon.svelte";
   import ReadLoader from "../../common/ReadLoader.svelte";
+  import IdentityMark from "../../chat/messaging/IdentityMark.svelte";
+  import ProfileBadges from "../../badges/ProfileBadges.svelte";
+  import type { EarnedBadge, ResolvedBadge } from "../../badges/badge-catalog.js";
   import { PROFILE_PANE_WIDTH, profilePhase, type UserProfileSnapshot } from "./profile-pane-model.js";
 
   interface Props {
     snapshot: UserProfileSnapshot | null;
+    /** Earned accomplishment badges; none hides the section. */
+    badges?: readonly EarnedBadge[];
+    /** Opens a badge's detail view. */
+    onbadge?: (badge: ResolvedBadge) => void;
+    /** Opens the Badges page. */
+    onbadges?: () => void;
     onclose?: () => void;
     onmessage?: () => void;
     onatlas?: () => void;
@@ -12,9 +21,8 @@
     onmanage?: () => void;
   }
 
-  let { snapshot, onclose, onmessage, onatlas, onmanage }: Props = $props();
+  let { snapshot, badges = [], onbadge, onbadges, onclose, onmessage, onatlas, onmanage }: Props = $props();
   const phase = $derived(profilePhase(snapshot?.name));
-  const initials = $derived((snapshot?.name ?? "?").slice(0, 2).toUpperCase());
 </script>
 
 <aside
@@ -27,7 +35,7 @@
   <header class="head">
     <span>Profile</span>
     <span class="grow"></span>
-    <button type="button" class="icon" data-testid="user-profile-close" aria-label="Close profile" onclick={() => onclose?.()}>×</button>
+    <button type="button" class="icon" data-testid="user-profile-close" aria-label="Close profile" onclick={() => onclose?.()}><RailIcon name="x" size={14} /></button>
   </header>
   {#if phase === "shimmer" || !snapshot}
     <div class="body" aria-busy="true">
@@ -36,7 +44,8 @@
   {:else}
     <div class="body">
       <div class="idn">
-        <span class="av" aria-hidden="true">{initials}{#if snapshot.live}<i class="ld"></i>{/if}</span>
+        <!-- The same mark as the timeline, so a person looks the same everywhere. -->
+        <span class="av" aria-hidden="true"><IdentityMark kind="person" label={snapshot.name} size="large" />{#if snapshot.live}<i class="ld"></i>{/if}</span>
         <div>
           <div class="nm">{snapshot.name}</div>
           {#if snapshot.email}<div class="em">{snapshot.email}</div>{/if}
@@ -56,6 +65,7 @@
         {#if snapshot.localTime}<span class="k">Local time</span><span>{snapshot.localTime}</span>{/if}
         <span class="k">Last seen</span><span>{snapshot.lastSeen}</span>
       </div>
+      <ProfileBadges {badges} onselect={onbadge} onseeall={onbadges} />
       {#if snapshot.bots.length}
         <div class="k">Bots they own</div>
         {#each snapshot.bots as bot (bot.name)}
@@ -99,11 +109,7 @@
   .icon:hover { background: var(--hover, var(--v4-hover)); color: var(--v4-text-1); }
   .body { overflow: auto; padding: 24px 20px; min-height: 0; }
   .idn { display: flex; gap: 12px; align-items: center; }
-  .av {
-    width: 48px; height: 48px; border-radius: 50%; position: relative; flex: none;
-    display: grid; place-items: center; font-weight: 500;
-    background: var(--v4-control-bg); color: var(--v4-text-1);
-  }
+  .av { position: relative; flex: none; display: block; line-height: 0; }
   .ld {
     position: absolute; right: 0; bottom: 0; width: 11px; height: 11px; border-radius: 50%;
     background: var(--v4-ok); border: 2px solid var(--v4-ground, var(--side-bg));
@@ -111,7 +117,11 @@
   .nm { font-size: 20px; line-height: 1.25; font-weight: 500; }
   .em { color: var(--v4-text-3); margin-top: 2px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .chip { padding: 1px 7px; border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg); color: var(--v4-text-2); }
+  .chip {
+    display: inline-flex; align-items: center; height: 22px; padding: 0 10px;
+    border-radius: var(--v4-radius-pill, 999px); background: var(--v4-control-bg);
+    color: var(--v4-text-2); font-size: 12px; font-weight: 500; white-space: nowrap;
+  }
   .acts { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; margin-top: 16px; }
   .btn {
     height: var(--hq-btn-h); padding: 0 var(--hq-btn-pad-inline);
@@ -122,10 +132,11 @@
   }
   .btn:hover { background: var(--hover, var(--v4-hover)); }
   .btn.primary { background: var(--v4-primary-bg, var(--t1)); color: var(--v4-primary-fg, var(--v4-bg)); border-color: transparent; font-weight: 500; }
-  .btn.primary:hover { filter: brightness(1.08); }
-  .k { font-weight: 500; color: var(--v4-text-2); margin: 20px 0 6px; }
+  .btn.primary:hover { opacity: 0.85; }
+  /* Section labels: the mono caps label style. */
+  .k { font: 500 10px/1.4 var(--font-mono, "Geist Mono", monospace); letter-spacing: 0.1em; text-transform: uppercase; color: var(--v4-text-3); margin: 20px 0 8px; }
   .kv { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 12px; }
-  .kv .k { margin: 0; font-weight: 400; color: var(--v4-text-3); }
+  .kv .k { margin: 0; font: 400 13px/1.45 var(--font-ui, var(--font-sans)); letter-spacing: normal; text-transform: none; color: var(--v4-text-3); }
   .live { display: inline-flex; align-items: center; gap: 6px; color: var(--v4-text-1); }
   .live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-ok); }
   .li { display: flex; gap: 10px; align-items: center; min-height: 31px; }
@@ -138,7 +149,8 @@
   .mm { color: var(--v4-text-3); }
   .chan { display: flex; flex-wrap: wrap; gap: 4px 10px; color: var(--v4-text-2); }
   .chan span::before { content: "#"; color: var(--v4-text-3); margin-right: 2px; }
-  .manage { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--v4-rowline, var(--line)); display: flex; align-items: baseline; gap: 8px; color: var(--v4-text-3); }
-  .link { flex: none; margin-left: auto; padding: 0; border: 0; background: none; font: inherit; color: var(--v4-text-2); white-space: nowrap; cursor: pointer; }
-  .link:hover { color: var(--v4-text-1); text-decoration: underline; text-underline-offset: 3px; }
+  .manage { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--v4-rowline, var(--line)); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; color: var(--v4-text-3); }
+  .link { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; font: inherit; color: var(--v4-text-2); white-space: nowrap; cursor: pointer; }
+  /* Text buttons dim on hover; no underline. */
+  .link:hover { color: var(--v4-text-3); }
 </style>

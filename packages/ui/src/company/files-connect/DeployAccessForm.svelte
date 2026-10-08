@@ -1,6 +1,7 @@
 <script lang="ts">
   import ReadLoader from "../../common/ReadLoader.svelte";
   import RailButton from "../../common/button/RailButton.svelte";
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Who can open one deployment (QA-059). Reads the app's hq-deploy access
    * policy and allowlist, edits a draft, and applies it after a confirmation
@@ -195,10 +196,10 @@
         <span class="lb">People</span>
         <div class="grants" data-testid="access-grants">
           {#each draft.users as id (id)}
-            <span class="chip">{nameFor(id)}<button class="x" type="button" aria-label={`Remove ${nameFor(id)}`} onclick={() => draft && (draft.users = draft.users.filter((u) => u !== id))}>×</button></span>
+            <span class="chip">{nameFor(id)}<button class="x" type="button" aria-label={`Remove ${nameFor(id)}`} onclick={() => draft && (draft.users = draft.users.filter((u) => u !== id))}><RailIcon name="x" size={12} /></button></span>
           {/each}
           {#each draft.groups as id (id)}
-            <span class="chip"><span class="mono">{id}</span><button class="x" type="button" aria-label={`Remove group ${id}`} onclick={() => draft && (draft.groups = draft.groups.filter((g) => g !== id))}>×</button></span>
+            <span class="chip"><span class="mono">{id}</span><button class="x" type="button" aria-label={`Remove group ${id}`} onclick={() => draft && (draft.groups = draft.groups.filter((g) => g !== id))}><RailIcon name="x" size={12} /></button></span>
           {/each}
           {#if draft.users.length + draft.groups.length === 0}<span class="none">No one yet</span>{/if}
           <span class="add">
@@ -215,7 +216,7 @@
         <span class="lb">Allowlist</span>
         <div class="grants" data-testid="access-grants">
           {#each draft.emails as email (email)}
-            <span class="chip">{email}<button class="x" type="button" aria-label={`Remove ${email}`} onclick={() => draft && (draft.emails = draft.emails.filter((e) => e !== email))}>×</button></span>
+            <span class="chip">{email}<button class="x" type="button" aria-label={`Remove ${email}`} onclick={() => draft && (draft.emails = draft.emails.filter((e) => e !== email))}><RailIcon name="x" size={12} /></button></span>
           {/each}
           {#if draft.emails.length === 0}<span class="none">No one yet</span>{/if}
           <span class="add">
@@ -261,7 +262,7 @@
   .mode-why { color: var(--t3, var(--v4-text-3)); }
   .grants { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 8px; border-radius: 980px; background: var(--btn-bg, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); max-width: 100%; overflow-wrap: anywhere; }
-  .x { width: 18px; height: 18px; border: 0; border-radius: 999px; background: transparent; color: var(--t3, var(--v4-text-3)); padding: 0; cursor: pointer; line-height: 1; }
+  .x { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 0; border-radius: 999px; background: transparent; color: var(--t3, var(--v4-text-3)); padding: 0; cursor: pointer; line-height: 1; }
   .x:hover { background: var(--hover, var(--v4-hover)); color: var(--t1, var(--v4-text-1)); }
   .none { color: var(--t3, var(--v4-text-3)); }
   .add { display: flex; gap: 6px; width: 100%; }

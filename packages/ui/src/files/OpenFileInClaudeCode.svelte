@@ -24,6 +24,7 @@
    */
   import type { ShellApi } from "@hq/platform";
   import { buildClaudeCodeUrl } from "./claude-code-link.js";
+  import RailIcon from "../common/button/RailIcon.svelte";
 
   interface Props {
     /** Platform shell seam (desktop-only capability: canLaunchApps). The
@@ -142,38 +143,9 @@
     {#if dispatching}
       <span class="button-spinner" aria-hidden="true"></span>
     {:else if dispatched}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-      >
-        <path
-          d="M3.5 8.5l3 3 6-6.5"
-          stroke="currentColor"
-          stroke-width="1.8"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="check" size={12} />
     {:else}
-      <svg
-        width="12"
-        height="12"
-        viewBox="0 0 16 16"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-      >
-        <path
-          d="M8 2.5l1.4 3.6 3.6 1.4-3.6 1.4L8 12.5 6.6 8.9 3 7.5l3.6-1.4L8 2.5z"
-          stroke="currentColor"
-          stroke-width="1.3"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <RailIcon name="sparkle" size={12} />
     {/if}
     <span class="open-claude-label">
       {#if dispatching}

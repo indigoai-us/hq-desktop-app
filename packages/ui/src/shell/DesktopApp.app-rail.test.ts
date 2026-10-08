@@ -186,7 +186,9 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
     await mountShell();
     const button = host.querySelector<HTMLButtonElement>('[data-testid="rail-marketplace"]')!;
     expect(button.getAttribute("aria-label")).toBe("Marketplace");
-    expect(button.querySelector("svg")?.getAttribute("viewBox")).toBe("0 0 24 24");
+    const icon = button.querySelector("svg");
+    expect(icon?.getAttribute("data-rail-icon")).toBe("storefront");
+    expect(icon?.getAttribute("viewBox")).toBe("0 0 256 256");
     click("rail-marketplace");
     await settle();
     expect(current()).toBe("marketplace");

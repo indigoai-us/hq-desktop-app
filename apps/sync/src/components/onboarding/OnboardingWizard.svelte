@@ -4819,11 +4819,7 @@
         <div class="ready-notes">
           {#if launchEscape}
             <div class="setup-caution" role="note" data-testid="onboarding-escape" aria-label={launchEscape.title}>
-              <svg class="setup-caution-icon" viewBox="0 0 20 20" aria-hidden="true">
-                <path d="M10 2.4 18 17H2L10 2.4Z"></path>
-                <path d="M10 7v4.5"></path>
-                <circle cx="10" cy="14.2" r=".7"></circle>
-              </svg>
+              <span class="setup-caution-icon" aria-hidden="true"><RailIcon name="warning" size={15} /></span>
               <div class="setup-caution-copy">
                 <strong>{launchEscape.title}</strong>
                 <span>{launchEscape.body}</span>
@@ -5105,7 +5101,7 @@
 {#snippet ToolIcon(kind: LaunchKind | 'desktop')}
   {#if kind === 'desktop'}
     <!-- a window -->
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M3.5 9.5h17" /></svg>
+    <RailIcon name="desktop" size={20} />
   {:else if kind === 'codex'}
     <!-- a terminal prompt -->
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7.5 9.5 12 5 16.5" /><path d="M12.5 16.5H19" /></svg>
@@ -5120,7 +5116,7 @@
 {/snippet}
 
 {#snippet CheckSmall()}
-  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 6 10.5 11 4"/></svg>
+  <RailIcon name="check" size={12} />
 {/snippet}
 
 {#snippet LocalChipIcon()}
@@ -5224,13 +5220,14 @@
     padding: 0;
     font: inherit;
     color: inherit;
-    text-decoration: underline;
+    text-decoration: none;
     cursor: pointer;
   }
   .hq-anywhere-retry {
     opacity: 0.68;
     font-size: 11px;
   }
+  .link-inline:hover { opacity: 0.7; }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays
      here is scoped to the post-ready walkthrough's product mockups. */

@@ -122,7 +122,7 @@
     </div>
     <button type="button" class="btn primary" disabled={!url} title="Opens the meeting link in your browser" onclick={() => url && openExternal?.(url)}><RailIcon name="arrow-right" />Join</button>
     <button type="button" class="btn" disabled={!url} title="Copies the link" onclick={() => url && oncopy?.(url)}><RailIcon name="link" />Copy link</button>
-    <button type="button" class="icon-btn" aria-label="More" title="Agenda and notetaker" onclick={() => onmore?.()}>⋯</button>
+    <button type="button" class="icon-btn" aria-label="More" title="Agenda and notetaker" onclick={() => onmore?.()}><RailIcon name="dots-three" size={16} /></button>
   </div>
 
   <div class="room" data-testid="meeting-room-strip">
@@ -353,6 +353,9 @@
   }
 
   .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 26px;
     height: 26px;
     border: 0;
@@ -457,7 +460,7 @@
     overflow-y: auto;
     contain: layout paint;
     padding: 12px 16px 20px;
-    scrollbar-width: thin;
+    /* Bar comes from the shell's shared rule (chat/scrollbars.css). */
   }
 
   .col + .col {

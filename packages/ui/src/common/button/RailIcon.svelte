@@ -10,6 +10,40 @@
 
   let { name, size = 14 }: Props = $props();
   const brand = $derived(isBrandIcon(name) ? BRAND_ICONS[name as keyof typeof BRAND_ICONS] : null);
+
+  /**
+   * Marks an icon that is the only visible content of its parent (an icon-only
+   * button), so the leading-icon gap in rail-type.css does not push it off
+   * centre, and an icon whose parent already spaces its children with `gap`
+   * (data-gapped), so the gap is not applied twice. Labels are text or in-flow elements; tooltips that are absolutely
+   * positioned or hidden do not count.
+   */
+  function solo(node: SVGSVGElement) {
+    const check = () => {
+      const parent = node.parentElement;
+      if (!parent) return;
+      const labelled = Array.from(parent.childNodes).some((child) => {
+        if (child === node) return false;
+        if (child.nodeType === Node.TEXT_NODE) return Boolean(child.textContent?.trim());
+        if (!(child instanceof Element)) return false;
+        const style = getComputedStyle(child);
+        return style.display !== "none" && style.position !== "absolute" && style.position !== "fixed";
+      });
+      node.toggleAttribute("data-solo", !labelled);
+      // A flex/grid button that spaces its own children already separates the
+      // icon from the label; the shared leading-icon margin would double it.
+      const style = getComputedStyle(parent);
+      const gapped =
+        /flex|grid/.test(style.display) && !["normal", "0px", ""].includes(style.columnGap);
+      node.toggleAttribute("data-gapped", gapped);
+    };
+    check();
+    const parent = node.parentElement;
+    if (!parent || typeof MutationObserver === "undefined") return;
+    const observer = new MutationObserver(check);
+    observer.observe(parent, { childList: true, characterData: true, subtree: true });
+    return { destroy: () => observer.disconnect() };
+  }
 </script>
 
 <svg
@@ -17,9 +51,10 @@
   data-rail-icon={name}
   width={size}
   height={size}
-  viewBox={brand ? brand.viewBox : "0 0 16 16"}
+  viewBox={brand ? brand.viewBox : "0 0 256 256"}
   aria-hidden="true"
   focusable="false"
+  use:solo
 >
   {#if brand}
     <path
@@ -29,14 +64,8 @@
       fill-rule="evenodd"
     />
   {:else}
-    <path
-      d={LINE_ICONS[name as keyof typeof LINE_ICONS]}
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
+    <!-- Phosphor Regular: filled outline paths. -->
+    <path d={LINE_ICONS[name as keyof typeof LINE_ICONS]} fill="currentColor" />
   {/if}
 </svg>
 

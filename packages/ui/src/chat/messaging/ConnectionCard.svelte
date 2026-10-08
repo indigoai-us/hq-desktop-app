@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * One connection card (Slack, or Connect your tools) inside a bot's message.
    *
@@ -181,7 +182,7 @@
       <span class="connection-card-title">{view.title}</span>
       {#if view.mark}
         <span class="connection-card-mark" data-testid="connection-card-mark">
-          <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M6.5 11L3.5 8l1-1 2 2 5-5 1 1z" fill="currentColor" /></svg>
+          <RailIcon name="check" size={12} />
           {view.mark}
         </span>
       {/if}
@@ -504,17 +505,17 @@
     overflow-y: auto;
     /* At its end the wheel moves the conversation: the default, kept on purpose. */
     overscroll-behavior: auto;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.26) transparent;
   }
+  /* The shell's 4px bar (chat/scrollbars.css), re-inked for this always-dark
+     surface. No scrollbar-width/-color: the standard properties beat these. */
   .connection-card-scroll::-webkit-scrollbar {
-    width: 6px;
+    width: 4px;
   }
   .connection-card-scroll::-webkit-scrollbar-track {
     background: transparent;
   }
   .connection-card-scroll::-webkit-scrollbar-thumb {
-    border-radius: 3px;
+    border-radius: 2px;
     background: rgba(255, 255, 255, 0.26);
   }
   .connection-card-scroll::-webkit-scrollbar-thumb:hover {
@@ -593,8 +594,7 @@
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.32);
   }
   .connection-card-btn.is-primary:hover:not(:disabled) {
-    background: #fff;
-    border-color: #fff;
+    opacity: 0.85;
   }
   .connection-card-btn.is-quiet {
     color: rgba(250, 250, 250, 0.88);

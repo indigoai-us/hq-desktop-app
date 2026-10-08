@@ -19,6 +19,7 @@
     NOTIFICATIONS_EMPTY_MESSAGE,
     NOTIFICATIONS_UNREAD_EMPTY_MESSAGE,
     NOTIFICATIONS_UNSUPPORTED_MESSAGE,
+    NOTIFICATION_TYPE_RAIL_ICON,
     parseNotificationsResponse,
     reduceAck,
     reduceActionUsed,
@@ -495,113 +496,7 @@
                       data-icon={row.typeIcon}
                       aria-hidden="true"
                     >
-                      <svg
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        width="14"
-                        height="14"
-                      >
-                        {#if row.typeIcon === "mention"}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M5.5 8.5c0 1.5 1 2.5 2.5 2.5s2.5-1 2.5-2.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
-                          <path
-                            d="M10.5 5.5v3.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
-                        {:else if row.typeIcon === "agent"}
-                          <rect
-                            x="3"
-                            y="4"
-                            width="10"
-                            height="8"
-                            rx="1.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <circle
-                            cx="6.25"
-                            cy="8"
-                            r="0.9"
-                            fill="currentColor"
-                          />
-                          <circle
-                            cx="9.75"
-                            cy="8"
-                            r="0.9"
-                            fill="currentColor"
-                          />
-                        {:else if row.typeIcon === "review"}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <path
-                            d="M5.5 8.2l1.7 1.7 3.3-3.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          />
-                        {:else if row.typeIcon === "file"}
-                          <path
-                            d="M5 2.75h4.2L12 5.55V13.25H5V2.75Z"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                          <path
-                            d="M9.1 2.9v2.8H12"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                        {:else if row.typeIcon === "dm"}
-                          <path
-                            d="M2.75 4.25h10.5v7.5H6.5L3.5 13.5V4.25Z"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                        {:else if row.typeIcon === "flag"}
-                          <path
-                            d="M4.25 2.75v10.5"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linecap="round"
-                          />
-                          <path
-                            d="M4.25 3.25h7L9.5 6.25l1.75 3H4.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                            stroke-linejoin="round"
-                          />
-                        {:else}
-                          <circle
-                            cx="8"
-                            cy="8"
-                            r="5.25"
-                            stroke="currentColor"
-                            stroke-width="1.2"
-                          />
-                          <circle cx="8" cy="8" r="1.1" fill="currentColor" />
-                        {/if}
-                      </svg>
+                      <RailIcon name={NOTIFICATION_TYPE_RAIL_ICON[row.typeIcon]} size={14} />
                     </span>
                     {#if row.timestampLabel}
                       <time class="notif-ts" datetime={row.createdAt}>
@@ -630,15 +525,7 @@
                         }}
                         onkeydown={(e) => e.stopPropagation()}
                       >
-                        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-                          <path
-                            d="M6.5 4.25 3 7.5l3.5 3.25M3.4 7.5H9a4 4 0 0 1 4 4v.75"
-                            stroke="currentColor"
-                            stroke-width="1.3"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          />
-                        </svg>
+                        <RailIcon name="arrow-bend-up-left" size={12} />
                       </button>
                     {/if}
                     <!-- stopPropagation: the whole row is a button that opens
@@ -655,14 +542,7 @@
                       }}
                       onkeydown={(e) => e.stopPropagation()}
                     >
-                      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" aria-hidden="true">
-                        <path
-                          d="M4.5 4.5l7 7M11.5 4.5l-7 7"
-                          stroke="currentColor"
-                          stroke-width="1.3"
-                          stroke-linecap="round"
-                        />
-                      </svg>
+                      <RailIcon name="x" size={12} />
                     </button>
                   </span>
                 </div>
@@ -1095,9 +975,9 @@
       border-color 0.12s;
   }
 
+  /* Hover on a row is a fill change only — no neutral outline. */
   .notif-row:hover {
     background: var(--btn-bg);
-    border-color: var(--line2);
   }
 
   .notif-row:focus-visible {

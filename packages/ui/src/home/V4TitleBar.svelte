@@ -339,6 +339,14 @@
   let launchOpen = $state(false);
   let launchContainer: HTMLDivElement | null = $state(null);
   let launchMenuEl: HTMLDivElement | null = $state(null);
+  /**
+   * Titlebar tooltips sit at z-index 10001, above the Launch menu and the
+   * Core popover. While any titlebar menu is open, hovering a NEIGHBOURING
+   * button (Sync or Notifications next to Core) would paint
+   * its bubble over the menu's first rows, so every titlebar tooltip stays
+   * quiet until the menu closes.
+   */
+  const titlebarMenuOpen = $derived(launchOpen || coreOpen);
   let launchFolder = $state<string | null>(null);
   /** Bottom-start by default; flipped to bottom-end when the menu would
    *  overflow the right viewport edge (measured on open). */
@@ -650,18 +658,7 @@
       aria-pressed={!sidebarCollapsed}
       onclick={() => ontogglesidebar?.()}
     >
-      <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <rect
-          x="1.75"
-          y="2.25"
-          width="12.5"
-          height="11.5"
-          rx="2"
-          stroke="currentColor"
-          stroke-width="1.2"
-        />
-        <path d="M5.25 2.5v11" stroke="currentColor" stroke-width="1.2" />
-      </svg>
+      <RailIcon name="sidebar-simple" size={15} />
     </button>
     {/if}
     {#if brandEntitled}
@@ -700,7 +697,7 @@
       data-no-drag
       data-tauri-drag-region="false"
     >
-      <Tooltip label={backHoverLabel} align="start">
+      <Tooltip label={backHoverLabel} align="start" suppressed={titlebarMenuOpen}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -712,19 +709,11 @@
             disabled={!canGoBack}
             onclick={() => onback?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M10 3.5 5.5 8 10 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="caret-left" size={15} />
           </button>
         {/snippet}
       </Tooltip>
-      <Tooltip label={forwardHoverLabel} align="start">
+      <Tooltip label={forwardHoverLabel} align="start" suppressed={titlebarMenuOpen}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -736,15 +725,7 @@
             disabled={!canGoForward}
             onclick={() => onforward?.()}
           >
-            <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path
-                d="M6 3.5 10.5 8 6 12.5"
-                stroke="currentColor"
-                stroke-width="1.6"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <RailIcon name="caret-right" size={15} />
           </button>
         {/snippet}
       </Tooltip>
@@ -760,14 +741,16 @@
   <div class="v4-title-actions" data-no-drag data-tauri-drag-region="false">
     {#if primaryAction}
       <button type="button" class="v4-core-pill" data-testid="titlebar-primary-action" onclick={primaryAction.onselect}>
-        <svg class="v4-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.3" />
-        </svg>
+        <RailIcon name="plus" size={15} />
         {primaryAction.label}
       </button>
     {/if}
     <div class="v4-launch-wrap" bind:this={launchContainer}>
-      <Tooltip label="Open your HQ folder in an AI tool" align="start">
+      <Tooltip
+        label="Open your HQ folder in an AI tool"
+        align="start"
+        suppressed={titlebarMenuOpen}
+      >
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -860,7 +843,7 @@
       {/if}
     </div>
     {#if syncLabel?.text}
-      <Tooltip label={syncLabel.detail}>
+      <Tooltip label={syncLabel.detail} suppressed={titlebarMenuOpen}>
         {#snippet trigger(describedBy: string)}
           <button
             type="button"
@@ -885,7 +868,7 @@
         {/snippet}
       </Tooltip>
     {/if}
-    <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"}>
+    <Tooltip label={hasUnread ? "Notifications (unread)" : "Notifications"} suppressed={titlebarMenuOpen}>
       {#snippet trigger(describedBy: string)}
         <button
           type="button"
@@ -898,25 +881,7 @@
             onopenNotifications?.();
           }}
         >
-          <svg
-            class="v4-icon"
-            viewBox="0 0 16 16"
-            fill="none"
-            aria-hidden="true"
-          >
-            <path
-              d="M8 2.25a3.5 3.5 0 0 0-3.5 3.5v2.1l-1.2 1.8h9.4l-1.2-1.8V5.75A3.5 3.5 0 0 0 8 2.25Z"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-            />
-            <path
-              d="M6.5 12.25a1.5 1.5 0 0 0 3 0"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linecap="round"
-            />
-          </svg>
+          <RailIcon name="bell" size={15} />
           {#if hasUnread}
             <span
               class="v4-notif-dot"
@@ -929,7 +894,11 @@
     </Tooltip>
     {#if showCore}
       <div class="v4-core-wrap" bind:this={coreContainer}>
-        <Tooltip label="HQ Core: sync, packs, and updates" align="end">
+        <Tooltip
+          label="HQ Core: sync, packs, and updates"
+          align="end"
+          suppressed={titlebarMenuOpen}
+        >
           {#snippet trigger(describedBy: string)}
             <button
               type="button"
@@ -1358,18 +1327,21 @@
       background 0.12s;
   }
 
+  /* A soft fill only. The desktop host's shared icon-button rule
+     (desktop-alt.css) also outlines hover/active; the titlebar opts out. */
   .v4-icon-btn:hover,
   .v4-icon-btn.active {
+    border-color: transparent;
     background: var(--hover);
     color: var(--t1);
   }
 
-  /* Pressed global controls stay visibly selected without inheriting the OS
-     accent color. aria-pressed remains the semantic source of truth. */
+  /* Pressed global controls show the same soft fill as hover, with no boxed
+     outline (PR #772 design, owner review 2026-10-08) and no OS accent.
+     aria-pressed remains the semantic source of truth. */
   .v4-icon-btn[aria-pressed="true"] {
-    border-color: var(--v4-control-border);
-    background: color-mix(in srgb, var(--v4-text-1) 8%, transparent);
-    box-shadow: inset 0 0 0 1px var(--v4-hairline);
+    border-color: transparent;
+    background: var(--hover);
     color: var(--v4-text-1);
   }
 
@@ -1385,11 +1357,6 @@
   .v4-icon-btn:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--v4-control-border));
     outline-offset: var(--v4-focus-offset, 2px);
-  }
-
-  .v4-icon {
-    width: 15px;
-    height: 15px;
   }
 
   .v4-sync-chip {

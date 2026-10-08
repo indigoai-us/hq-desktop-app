@@ -5,6 +5,7 @@
    * tiles and the More companies popover, so this menu lists none. Sign out
    * confirms through confirm-sign-out.ts before the host ends the session.
    */
+  import RailIcon from "../common/button/RailIcon.svelte";
   import { focusReturn } from "./focus-return.js";
   import { confirmSignOut } from "../settings/confirm-sign-out.js";
   import type { AccountPageId } from "./account-menu.js";
@@ -94,7 +95,7 @@
     {/if}
   </button>
   <button type="button" class="row" role="menuitem" data-testid="account-settings" onclick={() => choose("settings")}>
-    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></svg>
+    <span class="row-ico" aria-hidden="true"><RailIcon name="settings" size={15} /></span>
     <span class="t">Settings</span>
   </button>
   <div class="foot">
@@ -215,15 +216,10 @@
     background: var(--v4-ok);
   }
 
-  .row svg {
+  .row-ico {
     flex: 0 0 auto;
-    width: 15px;
-    height: 15px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.6;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    display: grid;
+    place-items: center;
     color: var(--v4-text-2);
   }
 

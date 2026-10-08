@@ -8,6 +8,10 @@
   import BotSessionPane from "./BotSessionPane.svelte";
   import EditBotSheet from "./EditBotSheet.svelte";
   import UserProfilePane from "./UserProfilePane.svelte";
+  import { badgeProgressFor, badgesFor } from "../../badges/badge-source.js";
+  import BadgeDetailPane from "../../badges/BadgeDetailPane.svelte";
+  import BadgesPane from "../../badges/BadgesPane.svelte";
+  import type { ResolvedBadge } from "../../badges/badge-catalog.js";
   import type { AgentsApi } from "@hq/platform";
   import {
     defaultTelemetryRange,
@@ -196,6 +200,28 @@
     person ?? (name.trim() ? userProfileFromCache({ name, email, role, live, company }) : null),
   );
 
+  const badges = $derived(
+    badgesFor({ kind, name: kind === "bot" ? botName : name, email }),
+  );
+  /** A badge opened from the profile; cleared when the profile changes. */
+  let openBadge = $state<ResolvedBadge | null>(null);
+  /**
+   * The Badges page ("See all"). A badge opened from it comes back to it, on
+   * the tab it was opened from.
+   */
+  let badgesPage = $state(false);
+  let badgesTab = $state<"badges" | "cards">("badges");
+  $effect(() => {
+    void kind;
+    void name;
+    openBadge = null;
+    badgesPage = false;
+    badgesTab = "badges";
+  });
+  const badgeProgress = $derived(
+    badgesPage ? badgeProgressFor({ kind, name: kind === "bot" ? botName : name, email }) : [],
+  );
+
   const totals: SessionTotals = $derived({
     elapsed: phase === "ended" ? "22:41" : "14:02",
     tokensIn: phase === "ended" ? "71.4k" : "18.2k",
@@ -214,7 +240,25 @@
 </script>
 
 <div class="host" data-testid="profile-pane-host" data-kind={kind} data-mode={mode}>
-  {#if kind === "bot" && mode === "session" && botView}
+  {#if openBadge}
+    <BadgeDetailPane
+      badge={openBadge}
+      owner={kind === "bot" ? botName : name}
+      onback={() => (openBadge = null)}
+      backLabel={badgesPage ? "Back to badges" : "Back to profile"}
+      {onclose}
+    />
+  {:else if badgesPage}
+    <BadgesPane
+      {badges}
+      progress={badgeProgress}
+      owner={kind === "bot" ? botName : name}
+      bind:tab={badgesTab}
+      onselect={(b) => (openBadge = b)}
+      onback={() => (badgesPage = false)}
+      {onclose}
+    />
+  {:else if kind === "bot" && mode === "session" && botView}
     <BotSessionPane
       {name}
       context={botView.nowTitle}
@@ -235,6 +279,9 @@
       {paused}
       busy={controlBusy}
       {actionError}
+      {badges}
+      onbadge={(b) => (openBadge = b)}
+      onbadges={() => (badgesPage = true)}
       onsession={() => (mode = "session")}
       onedit={openEdit}
       onpause={() => void setPaused(true)}
@@ -242,7 +289,7 @@
       onstop={stopSession}
     />
   {:else}
-    <UserProfilePane snapshot={personView} {onclose} {onmessage} {onatlas} {onmanage} />
+    <UserProfilePane snapshot={personView} {badges} onbadge={(b) => (openBadge = b)} onbadges={() => (badgesPage = true)} {onclose} {onmessage} {onatlas} {onmanage} />
   {/if}
   {#if editing}
     <EditBotSheet {name} initialTab={editTab} onclose={() => (editing = false)} onsave={() => (editing = false)} />

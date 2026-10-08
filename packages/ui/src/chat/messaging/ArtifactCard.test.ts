@@ -96,13 +96,18 @@ describe("ArtifactCard collapsed summary", () => {
     ).toBe("Just a heading");
   });
 
-  it("renders a kind-tinted mesh tile with an icon", () => {
+  // The card shares `doc-card.css` with the file attachment card — the two
+  // say the same thing to the reader, so they are the same object. It used to
+  // carry an animated gradient mesh tile, the only gradient in the shell.
+  it("uses the shared document-card shell and icon well, not a mesh tile", () => {
     mountCard({ text: LONG, kind: "prompt" });
-    expect(host.querySelector(".artifact-tile .artifact-tile-mesh")).not.toBeNull();
-    expect(host.querySelector(".artifact-tile svg")).not.toBeNull();
+    const card = host.querySelector("[data-artifact-card='true']");
+    expect(card?.classList.contains("doc-card")).toBe(true);
     expect(
-      host.querySelector("[data-artifact-card='true']")?.getAttribute("data-kind"),
-    ).toBe("prompt");
+      host.querySelector('.doc-card-icon svg[data-rail-icon="terminal-window"]'),
+    ).not.toBeNull();
+    expect(host.querySelector(".artifact-tile, .artifact-tile-mesh")).toBeNull();
+    expect(card?.getAttribute("data-kind")).toBe("prompt");
   });
 });
 
@@ -184,5 +189,68 @@ describe("ArtifactCard opening", () => {
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith(LONG);
     expect(onopen).not.toHaveBeenCalled();
+  });
+});
+
+describe("ArtifactCard actions", () => {
+  // Copy / Open used to be words; a run of cards read as a toolbar competing
+  // with the titles. They are icon buttons now, named by aria-label + tooltip.
+  it("renders Copy and Open as icon-only buttons", () => {
+    mountCard({ text: LONG });
+    const copy = host.querySelector<HTMLButtonElement>(
+      "[data-testid='message-details-copy']",
+    );
+    const openBtn = host.querySelector<HTMLButtonElement>(
+      "[data-testid='artifact-card-open']",
+    );
+    for (const btn of [copy, openBtn]) {
+      expect(btn?.classList.contains("doc-card-btn")).toBe(true);
+      expect(btn?.textContent?.trim()).toBe("");
+      expect(btn?.querySelector("svg")).not.toBeNull();
+    }
+    expect(copy?.getAttribute("aria-label")).toBe("Copy details");
+    expect(openBtn?.getAttribute("aria-label")).toBe("Open details in side pane");
+    expect(host.querySelector(".doc-card-actions")).not.toBeNull();
+  });
+
+  it("names each icon button with a tooltip on keyboard focus", () => {
+    mountCard({ text: LONG });
+    const copy = host.querySelector<HTMLButtonElement>(
+      "[data-testid='message-details-copy']",
+    )!;
+    copy.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    flushSync();
+    const tip = host.querySelector<HTMLElement>("[data-testid='tooltip-bubble']");
+    expect(tip?.textContent?.trim()).toBe("Copy");
+    expect(copy.getAttribute("aria-describedby")).toBe(tip?.id);
+
+    copy.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    const openBtn = host.querySelector<HTMLButtonElement>(
+      "[data-testid='artifact-card-open']",
+    )!;
+    openBtn.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    flushSync();
+    expect(
+      host.querySelector("[data-testid='tooltip-bubble']")?.textContent?.trim(),
+    ).toBe("Open");
+  });
+
+  // The actions are keyboard reachable, so Enter on one of them must press
+  // that button — not bubble to the card and open the pane instead.
+  it("leaves Enter on the Copy button to the button", () => {
+    const onopen = vi.fn();
+    mountCard({ text: LONG, onopen });
+    const copy = host.querySelector<HTMLButtonElement>(
+      "[data-testid='message-details-copy']",
+    )!;
+    const ev = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    copy.dispatchEvent(ev);
+    flushSync();
+    expect(onopen).not.toHaveBeenCalled();
+    expect(ev.defaultPrevented).toBe(false);
   });
 });

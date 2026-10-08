@@ -141,8 +141,8 @@
 <div class="wd" data-testid="worker-detail">
   <div class="detail-head">
     <h2>{worker.name}</h2>
-    {#if onmore}<button type="button" class="icon-btn" onclick={onmore} aria-label="More">⋯</button>{/if}
-    <button type="button" class="icon-btn" onclick={onclose} aria-label="Close">✕</button>
+    {#if onmore}<button type="button" class="icon-btn" onclick={onmore} aria-label="More"><RailIcon name="dots-three" size={14} /></button>{/if}
+    <button type="button" class="icon-btn" onclick={onclose} aria-label="Close"><RailIcon name="x" size={14} /></button>
   </div>
   <p class="labels">
     <span data-testid="worker-scope">{scopeLabel}</span>
@@ -271,7 +271,7 @@
   .wd { display: grid; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
   .detail-head, .actions, .sec-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .detail-head h2 { flex: 1; min-width: 0; margin: 0; font-size: var(--type-title, 20px); line-height: 1.25; font-weight: 500; }
-  .icon-btn { font: inherit; font-size: 13px; height: 26px; padding: 0 10px; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; background: transparent; color: var(--t1, var(--v4-text-1)); cursor: pointer; }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 13px; height: 26px; padding: 0 10px; border: 1px solid var(--line2, var(--v4-control-border)); border-radius: 6px; background: transparent; color: var(--t1, var(--v4-text-1)); cursor: pointer; }
   .labels { display: flex; gap: 12px; margin: 0; color: var(--t2, var(--v4-text-2)); }
   .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok, var(--v4-ok)); vertical-align: 1px; }
   .path { font-family: var(--font-mono); color: var(--t3, var(--v4-text-3)); margin: 0; }
@@ -291,7 +291,8 @@
   .skill { display: flex; align-items: flex-start; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--v4-rowline); }
   .skill-text { display: grid; gap: 2px; flex: 1; min-width: 0; }
   .name { color: var(--t1, var(--v4-text-1)); }
-  .link { background: none; border: 0; padding: 0; color: inherit; text-align: left; text-decoration: underline; cursor: pointer; font: inherit; }
+  .link { background: none; border: 0; padding: 0; color: inherit; text-align: left; text-decoration: none; cursor: pointer; font: inherit; }
+  .link:hover { opacity: 0.7; }
   .link.path { font-family: var(--font-mono); color: var(--t3, var(--v4-text-3)); }
   .tree { height: 280px; min-width: 0; border: 1px solid var(--line, var(--v4-rowline)); border-radius: 6px; overflow: hidden; }
   .policy { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 6px 0; border: 0; border-bottom: 1px solid var(--v4-rowline); background: transparent; font: inherit; text-align: left; cursor: pointer; }

@@ -696,7 +696,8 @@
   @keyframes og-pulse { 50% { opacity: 0.55; } }
   @media (prefers-reduced-motion: reduce) { .og-wait { animation: none; } }
   .og-failed { display: flex; align-items: center; gap: 8px; color: var(--t3); }
-  .link { border: 0; padding: 0; background: transparent; color: var(--t2); font: inherit; text-decoration: underline; cursor: pointer; }
+  .link { border: 0; padding: 0; background: transparent; color: var(--t2); font: inherit; text-decoration: none; cursor: pointer; }
+  .link:hover { opacity: 0.7; }
   .link:focus-visible { outline: 2px solid var(--v4-focus, currentColor); outline-offset: 2px; border-radius: 3px; }
   .preview-note { margin: -6px 0 0; color: var(--t3); font-size: 13px; }
   .prog { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--raised); }
