@@ -12,10 +12,12 @@ describe("sync adapter HQ Anywhere person setting", () => {
 
     await expect(adapter.settings.getHqAnywherePersonSetting?.()).resolves.toEqual(ok(false));
     await expect(adapter.settings.putHqAnywherePersonSetting?.(true)).resolves.toEqual(ok(undefined));
+    await expect(adapter.settings.syncHqAnywhereGlobal?.(true)).resolves.toEqual(ok(undefined));
 
     expect(invoke.mock.calls).toEqual([
       ["get_hq_anywhere_person_setting", undefined],
       ["put_hq_anywhere_person_setting", { value: true }],
+      ["set_hq_anywhere_global_install", { enabled: true }],
     ]);
   });
 });

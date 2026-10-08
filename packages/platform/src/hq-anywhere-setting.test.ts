@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { failure, ok, type PlatformAdapter } from "./adapter.js";
 import {
+  ensureHqAnywhereGlobalRuntime,
   hqAnywhereRuntimeEnabled,
   retryHqAnywhereRequest,
+  setHqAnywhereGlobalRuntime,
+  subscribeHqAnywhereGlobalRuntimeStatus,
 } from "./hq-anywhere-setting.js";
 
 describe("HQ Anywhere setting support", () => {
@@ -57,5 +60,102 @@ describe("HQ Anywhere setting support", () => {
       retryHqAnywhereRequest(request, { pause }),
     ).resolves.toEqual(failure("network", "private transport detail"));
     expect(request).toHaveBeenCalledTimes(3);
+  });
+
+  it("installs on startup only when the flag and saved person setting are on", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(true)),
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    expect(settings.getHqAnywherePersonSetting).toHaveBeenCalledTimes(1);
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true);
+  });
+
+  it("applies a saved opt-out during startup reconciliation", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(false)),
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false);
+  });
+
+  it("does not read or change global files while the runtime flag is off", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const getHqAnywherePersonSetting = vi.fn(async () => ok(true));
+    const settings = {
+      getHqAnywherePersonSetting,
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: false, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(setHqAnywhereGlobalRuntime(identity, settings, false, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    await expect(ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }))
+      .resolves.toEqual(ok(undefined));
+    expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
+  });
+
+  it("clears pending setup when the flag turns off before global files are touched", async () => {
+    const syncHqAnywhereGlobal = vi.fn(async () => ok(undefined));
+    const settings = {
+      getHqAnywherePersonSetting: vi.fn(async () => ok(true)),
+      syncHqAnywhereGlobal,
+    } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi
+        .fn()
+        .mockResolvedValueOnce(ok({ enabled: true, configured: true }))
+        .mockResolvedValueOnce(ok({ enabled: false, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+    const statuses: Array<{ state: string }> = [];
+    const unsubscribe = subscribeHqAnywhereGlobalRuntimeStatus((status) => {
+      statuses.push(status);
+    });
+
+    try {
+      await expect(
+        ensureHqAnywhereGlobalRuntime(identity, settings, { pause: async () => {} }),
+      ).resolves.toEqual(ok(undefined));
+      expect(statuses).toContainEqual({ state: "running", enabled: null });
+      expect(statuses.at(-1)).toEqual({ state: "idle" });
+      expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("retries a global runtime change three times with backoff", async () => {
+    const pause = vi.fn(async (_milliseconds: number) => {});
+    const syncHqAnywhereGlobal = vi
+      .fn()
+      .mockResolvedValueOnce(failure("network", "private runtime detail"))
+      .mockResolvedValueOnce(failure("network", "private runtime detail"))
+      .mockResolvedValueOnce(ok(undefined));
+    const settings = { syncHqAnywhereGlobal } as unknown as PlatformAdapter["settings"];
+    const identity = {
+      resolveFeatureFlagStatus: vi.fn(async () => ok({ enabled: true, configured: true })),
+    } as unknown as PlatformAdapter["identity"];
+
+    await expect(setHqAnywhereGlobalRuntime(identity, settings, true, { pause }))
+      .resolves.toEqual(ok(undefined));
+    expect(syncHqAnywhereGlobal).toHaveBeenCalledTimes(3);
+    expect(pause.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([250, 750]);
   });
 });

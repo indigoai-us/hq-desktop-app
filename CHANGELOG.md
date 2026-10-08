@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- When HQ Anywhere is on, the desktop app installs HQ context for Claude Code and Codex runtimes found on the computer. Turning it off removes that setup; sign-in restores it when the saved setting is enabled.
+
 ### Fixed
 
 - HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.

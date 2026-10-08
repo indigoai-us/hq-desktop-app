@@ -784,6 +784,7 @@ fn main() {
             commands::personal::ensure_person_entity,
             commands::personal::get_hq_anywhere_person_setting,
             commands::personal::put_hq_anywhere_person_setting,
+            commands::hq_anywhere::set_hq_anywhere_global_install,
             commands::folder_picker::pick_folder,
             commands::install_directory::resolve_hq_path,
             commands::install_directory::set_hq_install_path,

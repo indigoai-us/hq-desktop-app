@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import {
     createSyncPlatformAdapter,
+    ensureHqAnywhereGlobalRuntime,
     POST_READY_ACTION_TELEMETRY_FLAG,
     POST_READY_DROP_REASON_FLAG,
     type Json,
@@ -2037,6 +2038,24 @@
     }, 5000);
   }
 
+  let hqAnywhereRuntimeSetupInFlight: Promise<void> | null = null;
+  function reconcileHqAnywhereGlobalRuntime(): void {
+    if (hqAnywhereRuntimeSetupInFlight) return;
+    hqAnywhereRuntimeSetupInFlight = ensureHqAnywhereGlobalRuntime(
+      traySyncAdapter.identity,
+      traySyncAdapter.settings,
+    )
+      .then((result) => {
+        if (!result.ok) console.warn('[hq-anywhere] startup runtime setup failed:', result);
+      })
+      .catch((error) => {
+        console.warn('[hq-anywhere] startup runtime setup failed:', error);
+      })
+      .finally(() => {
+        hqAnywhereRuntimeSetupInFlight = null;
+      });
+  }
+
   async function checkAuth() {
     const outcome = await resolveStartupState(probeStartupState, {
       onRetry: (attempt, err) =>
@@ -2109,8 +2128,10 @@
       }
     }
 
-    if (authenticated) void loadUnreadSummary();
-    else resetUnreadSummary();
+    if (authenticated) {
+      void loadUnreadSummary();
+      reconcileHqAnywhereGlobalRuntime();
+    } else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
     // whether this person's recorded consent is stale and should be re-asked.
     // Non-blocking and fail-quiet — the window renders immediately; if a
@@ -2187,6 +2208,7 @@
       await handleSyncNow();
     }
     if (auth.authenticated) {
+      reconcileHqAnywhereGlobalRuntime();
       void invoke('open_desktop_alt_window').catch((e) => {
         console.error('open_desktop_alt_window after sign-in failed:', e);
       });

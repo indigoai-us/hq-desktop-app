@@ -247,7 +247,7 @@ code: 'ERR_DLOPEN_FAILED'";
         fs::write(prefix.join("qmd.cmd"), "@echo off\n").unwrap();
         assert_eq!(
             qmd_package_dir_from_bin(&prefix.join("qmd.cmd")).unwrap(),
-            pkg
+            pkg.canonicalize().unwrap()
         );
     }
 
