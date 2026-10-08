@@ -1896,6 +1896,12 @@ export interface AppShellApi {
   consumePendingRoute(): AdapterPromise<string | null>;
   takePendingMessagesTarget(): AdapterPromise<Json | null>;
   setActiveCompany(slug: string): AdapterPromise<void>;
+  /**
+   * The company the native read gate is bound to, or null. A surface that
+   * binds a company for one read puts this back afterwards. Hosts without a
+   * native gate omit it.
+   */
+  getActiveCompany?(): AdapterPromise<string | null>;
   openDriftDetail(report: Json): AdapterPromise<void>;
   openMeetingPermissionsWindow(): AdapterPromise<void>;
   notificationPermissionState(): AdapterPromise<string>;

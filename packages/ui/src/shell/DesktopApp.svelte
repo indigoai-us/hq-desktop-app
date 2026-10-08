@@ -7041,6 +7041,17 @@
    * Null when the app does not know the company: such a link then goes to the
    * web's front page, never to a page named by the company's uid.
    */
+  /**
+   * The synced folder of a company on this computer, by uid, for a recorded
+   * meeting's document under companies/<slug>/sources/meetings. Null when the
+   * company is not synced here.
+   */
+  function meetingCompanyFolderSlug(companyUid: string): string | null {
+    const uid = companyUid.trim();
+    if (!uid) return null;
+    const row = (companies ?? []).find((w) => w.kind === "company" && (w.cloudUid ?? "").trim() === uid);
+    return row && row.state !== "cloud-only" ? row.slug : null;
+  }
   function companySlugForUid(companyUid: string | null | undefined): string | null {
     const uid = (companyUid ?? "").trim();
     if (!uid) return null;
@@ -12840,6 +12851,7 @@
     accountId={tenantAccountId}
     storage={tenantStorage}
     sessionGeneration={tenantGeneration}
+    companySlugForUid={meetingCompanyFolderSlug}
     onback={() => {
       void leaveCurrentDestination();
     }}
