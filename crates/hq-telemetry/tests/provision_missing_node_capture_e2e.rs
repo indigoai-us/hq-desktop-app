@@ -116,24 +116,24 @@ fn run(diagnosis: RuntimeDiagnosisInput) -> (Vec<sentry::protocol::Event<'static
     )
 }
 
-/// Guard on the guard: if the invocation label ever drifts, the "reported
-/// title" this file asserts against stops describing the real event and every
-/// other test here silently weakens. Pin the composition instead of trusting
-/// the constant.
+/// Guard on the guard: the shared npx invocation retains its existing CLI
+/// range. The higher floor required by HQ Anywhere belongs to its dedicated
+/// resolver and must not leak into this shared invocation.
 #[test]
-fn the_reported_title_is_still_what_this_code_would_compose() {
-    assert_eq!(HQ_CLI_NPM_RANGE, "^5.345.46");
+fn the_shared_invocation_title_uses_the_existing_resolver_range() {
+    assert_eq!(HQ_CLI_NPM_RANGE, "^5.10.0");
     assert_eq!(
         HqInvocation::Npx.sentry_label(),
-        "npx:@indigoai-us/hq-cli@^5.345.46"
+        "npx:@indigoai-us/hq-cli@^5.10.0"
     );
     assert!(expected_title()
-        .starts_with("[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.345.46: "));
+        .starts_with("[provision-cli] spawn `hq` failed: npx:@indigoai-us/hq-cli@^5.10.0: "));
     assert!(expected_title().ends_with("(os error 2)"));
 
-    // On the platform the event actually came from, pin it byte-for-byte.
+    // Keep the original Sentry title as historical evidence. The current
+    // shared resolver intentionally composes its prior, lower CLI range.
     #[cfg(unix)]
-    assert_eq!(expected_title(), REPORTED_TITLE);
+    assert_ne!(expected_title(), REPORTED_TITLE);
 }
 
 /// THE regression: the reported machine can no longer produce the reported
