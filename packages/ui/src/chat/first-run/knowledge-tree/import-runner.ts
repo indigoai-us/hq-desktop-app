@@ -9,11 +9,11 @@
  * test with a fake host.
  */
 
-import { SCANNER_SOURCE, isScanNotRun, parseScanLine, type ScanEvent } from "./scan-stream.js";
+import { SCANNER_OUTDATED, SCANNER_SOURCE, isScanNotRun, parseScanLine, type ScanEvent } from "./scan-stream.js";
 import type { TimedScanEvent } from "./scene-model.js";
 
-/** How a scan ended, as the host reports it. */
-export type ImportScanEndStatus = "done" | "failed" | "cancelled" | "timeout" | "unavailable";
+/** How a scan ended, as the host reports it ("no_hq": there is no HQ folder to read). */
+export type ImportScanEndStatus = "done" | "failed" | "cancelled" | "timeout" | "unavailable" | "no_hq";
 
 export interface ImportScanEnd {
   status: ImportScanEndStatus;
@@ -36,7 +36,14 @@ export interface ImportRunView {
   /** Scene second the scan started; null when idle or skipped. */
   scanStart: number | null;
   events: readonly TimedScanEvent[];
-  failure: { at: number; message: string } | null;
+  /** `retry: false` when running again cannot help (HQ needs an update first). */
+  failure: ImportFailure | null;
+}
+
+export interface ImportFailure {
+  at: number;
+  message: string;
+  retry: boolean;
 }
 
 export const IMPORT_COPY = {
@@ -44,15 +51,20 @@ export const IMPORT_COPY = {
   timeout: "Reading this Mac took too long.",
   /** An hq without the scan, or an HQ whose scanner is too old. */
   update: "Update HQ to bring in your context.",
+  noHq: "HQ isn't set up on this Mac yet.",
 } as const;
 
 /**
  * hq-cli's own failure ("error" from source "scanner", then a "done" with no
- * report) asks for an update when the scanner is missing or too old. Only
- * that one case is told apart, so the screen can say what to do.
+ * report) asks for an update when the scanner is missing or too old: the
+ * `scanner_outdated` code says so, and older CLIs only say "update HQ" in
+ * the message. Only that case is told apart, so the screen can say what to do.
  */
-function scannerFailureCopy(message: string | null): string {
-  return message && /\bupdate hq\b/i.test(message) ? IMPORT_COPY.update : IMPORT_COPY.failed;
+function scannerFailureCopy(error: { message: string; code: string | null } | null): string {
+  if (!error) return IMPORT_COPY.failed;
+  if (error.code === SCANNER_OUTDATED) return IMPORT_COPY.update;
+  if (error.code === null && /\bupdate hq\b/i.test(error.message)) return IMPORT_COPY.update;
+  return IMPORT_COPY.failed;
 }
 
 /** The screen gives up on a scan the host never ends (the host's own bound is 5 minutes). */
@@ -117,21 +129,46 @@ function newScanId(): string {
   return c?.randomUUID ? c.randomUUID() : `scan-${Date.now().toString(36)}-${scanCounter}`;
 }
 
+/** `error` lines still kept once `MAX_SCAN_EVENTS` is reached; `done` always is. */
+const ERROR_EVENTS_PAST_CAP = 64;
+
+/** Run `fn` on the next frame; returns a way to call it off. */
+export type FrameScheduler = (fn: () => void) => () => void;
+
+const nextFrame: FrameScheduler = (fn) => {
+  if (typeof requestAnimationFrame === "function") {
+    const id = requestAnimationFrame(() => fn());
+    return () => cancelAnimationFrame(id);
+  }
+  const id = setTimeout(fn, 16);
+  return () => clearTimeout(id);
+};
+
 export function createImportRunner(
   host: ImportScanHost | null,
   now: () => number,
   onchange: (view: ImportRunView) => void,
-  opts: { timeoutMs?: number; setTimer?: typeof setTimeout; clearTimer?: typeof clearTimeout } = {},
+  opts: {
+    timeoutMs?: number;
+    setTimer?: typeof setTimeout;
+    clearTimer?: typeof clearTimeout;
+    /** When batched lines reach the screen (default: the next animation frame). */
+    schedule?: FrameScheduler;
+  } = {},
 ): ImportRunner {
   const setTimer = opts.setTimer ?? setTimeout;
   const clearTimer = opts.clearTimer ?? clearTimeout;
+  const schedule = opts.schedule ?? nextFrame;
   const timeoutMs = opts.timeoutMs ?? IMPORT_UI_TIMEOUT_MS;
   let view: ImportRunView = { phase: "idle", scanStart: null, events: [], failure: null };
   let active: string | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let sawDone = false;
-  let scannerMessage: string | null = null;
+  let scannerError: { message: string; code: string | null } | null = null;
   let disposed = false;
+  /** Lines stamped on arrival, waiting for the next frame (one copy per frame, not per line). */
+  let pending: TimedScanEvent[] = [];
+  let unschedule: (() => void) | null = null;
 
   const set = (next: ImportRunView) => {
     view = next;
@@ -141,14 +178,29 @@ export function createImportRunner(
     if (timer !== null) clearTimer(timer);
     timer = null;
   };
-  const fail = (scanId: string, message: string) => {
+  const dropPending = () => {
+    unschedule?.();
+    unschedule = null;
+    pending = [];
+  };
+  const flush = () => {
+    unschedule?.();
+    unschedule = null;
+    if (!pending.length) return;
+    const batch = pending;
+    pending = [];
+    set({ ...view, events: view.events.concat(batch) });
+  };
+  const fail = (scanId: string, message: string, retry = true) => {
     if (active !== scanId) return;
+    flush();
     active = null;
     stopTimer();
-    set({ ...view, phase: "failed", failure: { at: now(), message } });
+    set({ ...view, phase: "failed", failure: { at: now(), message, retry } });
   };
   const finish = (scanId: string) => {
     if (active !== scanId) return;
+    flush();
     active = null;
     stopTimer();
     set({ ...view, phase: "done" });
@@ -159,10 +211,11 @@ export function createImportRunner(
     const scanId = newScanId();
     active = scanId;
     sawDone = false;
-    scannerMessage = null;
+    scannerError = null;
+    dropPending();
     set({ phase: "running", scanStart: now(), events: [], failure: null });
     if (!host) {
-      fail(scanId, IMPORT_COPY.update);
+      fail(scanId, IMPORT_COPY.update, false);
       return;
     }
     timer = setTimer(() => {
@@ -172,14 +225,27 @@ export function createImportRunner(
     const onevent = (raw: unknown) => {
       if (active !== scanId || sawDone) return;
       const event: ScanEvent | null = parseScanLine(raw);
-      if (!event || view.events.length >= MAX_SCAN_EVENTS) return;
-      if (event.type === "error" && event.source === SCANNER_SOURCE) scannerMessage ??= event.message;
-      if (event.type === "done") sawDone = true;
-      set({ ...view, events: [...view.events, { at: now(), event }] });
-      if (event.type === "done") {
-        if (isScanNotRun(event)) fail(scanId, scannerFailureCopy(scannerMessage));
-        else finish(scanId);
+      if (!event) return;
+      // The cap holds back progress lines only: `done` always lands, so a very
+      // large HQ still finishes, and a few `error` lines still say why.
+      const stored = view.events.length + pending.length;
+      if (event.type !== "done" && stored >= MAX_SCAN_EVENTS) {
+        if (event.type !== "error" || stored >= MAX_SCAN_EVENTS + ERROR_EVENTS_PAST_CAP) return;
       }
+      if (event.type === "error" && event.source === SCANNER_SOURCE) {
+        scannerError ??= { message: event.message, code: event.code };
+      }
+      pending.push({ at: now(), event });
+      if (event.type !== "done") {
+        unschedule ??= schedule(flush);
+        return;
+      }
+      sawDone = true;
+      flush();
+      if (isScanNotRun(event)) {
+        const copy = scannerFailureCopy(scannerError);
+        fail(scanId, copy, copy !== IMPORT_COPY.update);
+      } else finish(scanId);
     };
     let run: Promise<ImportScanEnd | null | undefined>;
     try {
@@ -189,11 +255,21 @@ export function createImportRunner(
     }
     run.then(
       (end) => {
+        // Not ours any more (cancelled, skipped or restarted here): nothing to do.
         if (active !== scanId) return;
         if (sawDone) return finish(scanId);
-        const status = end?.status;
-        if (status === "cancelled") return; // we asked for it; cancel() already moved on
-        fail(scanId, status === "timeout" ? IMPORT_COPY.timeout : status === "unavailable" ? IMPORT_COPY.update : IMPORT_COPY.failed);
+        // Any other end, including a "cancelled" this screen did not ask for
+        // (another window took the scan), is a failure the person can retry.
+        switch (end?.status) {
+          case "timeout":
+            return fail(scanId, IMPORT_COPY.timeout);
+          case "unavailable":
+            return fail(scanId, IMPORT_COPY.update, false);
+          case "no_hq":
+            return fail(scanId, IMPORT_COPY.noHq);
+          default:
+            return fail(scanId, IMPORT_COPY.failed);
+        }
       },
       () => fail(scanId, IMPORT_COPY.failed),
     );
@@ -202,7 +278,7 @@ export function createImportRunner(
   return {
     start,
     retry() {
-      if (view.phase === "failed") {
+      if (view.phase === "failed" && view.failure?.retry !== false) {
         view = { ...view, phase: "idle" };
         start();
       }
@@ -212,6 +288,7 @@ export function createImportRunner(
       if (scanId === null) return;
       active = null;
       stopTimer();
+      dropPending();
       set({ phase: "idle", scanStart: null, events: [], failure: null });
       if (host) void Promise.resolve(host.cancel(scanId)).catch(() => undefined);
     },
@@ -220,6 +297,7 @@ export function createImportRunner(
       const scanId = active;
       active = null;
       stopTimer();
+      dropPending();
       if (scanId !== null && host) void Promise.resolve(host.cancel(scanId)).catch(() => undefined);
       set({ phase: "skipped", scanStart: null, events: [], failure: null });
     },
@@ -231,6 +309,7 @@ export function createImportRunner(
       }
       active = null;
       stopTimer();
+      dropPending();
       disposed = true;
     },
   };

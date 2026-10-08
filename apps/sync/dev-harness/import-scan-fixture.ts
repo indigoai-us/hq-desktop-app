@@ -118,7 +118,7 @@ function fullScan(k: number, opts: { mover: boolean; codexError: boolean; artifa
       gap: s(200),
       event: v({
         type: 'done',
-        report: '/Users/corey/Documents/HQ/workspace/imports/20261008T090807Z/report.json',
+        report: 'workspace/imports/20261008T090807Z/report.json',
         summary: { companies: 3, projects: opts.mover ? 10 : 9, sessions: opts.codexError ? 432 : 508 },
       }),
     },
@@ -146,7 +146,7 @@ export function importFixture(variant: ImportVariant): ImportFixture {
             gap: 200,
             event: v({
               type: 'done',
-              report: '/Users/corey/Documents/HQ/workspace/imports/20261008T090807Z/report.json',
+              report: 'workspace/imports/20261008T090807Z/report.json',
               summary: { companies: 0, projects: 0, sessions: 0 },
             }),
           },
@@ -166,6 +166,7 @@ export function importFixture(variant: ImportVariant): ImportFixture {
             event: v({
               type: 'error',
               source: 'scanner',
+              code: 'scanner_outdated',
               message: 'The import-context scanner is not installed in this HQ. Update HQ and try again.',
             }),
           },

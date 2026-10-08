@@ -617,16 +617,19 @@ export function generateTree(spec: TreeSpec, seed: number = TREE_SEED): TreeMode
   if (carriers.length) {
     const reach2 = 0.075 * 0.075;
     for (const c of canopyCandidates(seed)) {
-      let carry = Infinity;
-      // The clump stays while any branch that reaches it stays.
+      const reaching = carriers
+        .filter((k) => (k.x - c.x) ** 2 + (k.y - c.y) ** 2 <= reach2)
+        .sort((p, q) => p.t - q.t);
+      if (!reaching.length) continue;
+      const carry = reaching[0]!.t;
+      // The clump stays while the branches that reach it keep it covered, from
+      // its first carrier on. A branch that only arrives after it withered
+      // grows its own foliage; it never brings this clump back.
       let gone = -Infinity;
-      for (const k of carriers) {
-        const d = (k.x - c.x) ** 2 + (k.y - c.y) ** 2;
-        if (d > reach2) continue;
-        if (k.t < carry) carry = k.t;
+      for (const k of reaching) {
+        if (k.t > gone && Number.isFinite(gone)) break;
         if (k.gone > gone) gone = k.gone;
       }
-      if (!Number.isFinite(carry)) continue;
       // The threshold is the clump's own (never which branch is nearest, which
       // new data can change), so a clump's second never moves once known.
       const theta = c.early ? 0.16 + 0.2 * c.rank : 0.3 + 0.7 * c.rank;

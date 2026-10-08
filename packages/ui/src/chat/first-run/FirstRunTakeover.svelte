@@ -226,7 +226,10 @@
   /** A scan still running stops when the person leaves its step, however they leave. */
   function leaveContext(): void {
     if (importRunner.current().phase === "running") importRunner.cancel();
+    importAnnouncement = "";
   }
+  /** What the context step asks the one live region to say (its scan's state). */
+  let importAnnouncement = $state("");
 
   function goTo(next: FirstRunStepId | null): void {
     if (!next) return;
@@ -270,10 +273,13 @@
   /**
    * What the one live region says. It stays mounted for the whole takeover
    * and only its text changes, so screen readers hear every change of the
-   * create, on every screen.
+   * create, on every screen. On the context step it says how the scan is
+   * going (the step has no live region of its own).
    */
   const announcement = $derived(
-    creation.state === "failed"
+    step === "context" && importAnnouncement
+      ? importAnnouncement
+      : creation.state === "failed"
       ? creation.reason
       : creation.state === "creating"
         ? `Getting ${shownName} ready…`
@@ -370,6 +376,7 @@
               onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
               onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
               reducedMotion,
+              onannounce: (text: string) => (importAnnouncement = text),
             }}
           >
             {#snippet skeleton()}

@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use crate::commands::install_directory::resolve_hq_path;
+use crate::commands::install_directory::existing_hq_path;
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -45,7 +45,14 @@ pub const SCAN_TIMEOUT: Duration = Duration::from_secs(300);
 /// A line longer than this is dropped whole.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 /// Lines forwarded per scan at most; a runaway stream stops being forwarded.
+/// The `done` line is always forwarded, and `error` lines get a small allowance
+/// past the cap, so a very large HQ still ends the scan on screen.
 pub const MAX_FORWARDED_LINES: usize = 20_000;
+/// `error` lines still forwarded once the cap is reached.
+const ERROR_LINES_PAST_CAP: usize = 64;
+/// Scan ids cancelled before their scan registered (the webview's cancel can
+/// beat the start); remembered so that start never runs unattended.
+const MAX_PRECANCELLED: usize = 16;
 /// The line types this version of the stream has.
 const KNOWN_TYPES: [&str; 7] = ["start", "source", "count", "company", "project", "error", "done"];
 /// How much stderr is kept to recognise an `hq` without the command.
@@ -54,7 +61,7 @@ const STDERR_KEEP: usize = 8 * 1024;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportScanEnd {
-    /// "done" | "failed" | "cancelled" | "timeout" | "unavailable"
+    /// "done" | "failed" | "cancelled" | "timeout" | "unavailable" | "no_hq"
     pub status: &'static str,
     pub lines: usize,
     pub dropped: usize,
@@ -99,6 +106,38 @@ fn is_done_line(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some("done")
 }
 
+fn is_error_line(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some("error")
+}
+
+fn is_absolute_like(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with('\\')
+        || path.starts_with('~')
+        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+/// The `done` line's report path, relative to the HQ folder: the absolute
+/// path names the person's home folder, and this path ends up in the setup
+/// bot's handoff. A path outside the HQ folder (or one that climbs out with
+/// `..`) becomes null.
+pub fn relativize_report(value: &mut Value, hq_root: &str) {
+    let Some(object) = value.as_object_mut() else { return };
+    let Some(report) = object.get("report").and_then(Value::as_str).map(str::to_string) else { return };
+    let root = hq_root.trim_end_matches(['/', '\\']);
+    let relative = if !root.is_empty() && report.len() > root.len() + 1 && report.starts_with(root) {
+        let rest = &report[root.len()..];
+        rest.strip_prefix('/').or_else(|| rest.strip_prefix('\\')).map(str::to_string)
+    } else if is_absolute_like(&report) {
+        None
+    } else {
+        Some(report)
+    };
+    let safe = relative.filter(|r| !r.is_empty() && !is_absolute_like(r) && !r.split(['/', '\\']).any(|part| part == ".."));
+    object.insert("report".to_string(), safe.map(Value::String).unwrap_or(Value::Null));
+}
+
 /// How reading the stream ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveOutcome {
@@ -139,7 +178,8 @@ async fn read_bounded_line<R: AsyncBufRead + Unpin>(reader: &mut R, buf: &mut Ve
 }
 
 /// Forward the stream's valid lines until it ends, the scan is cancelled, or
-/// the deadline passes. Nothing after a `done` line is forwarded.
+/// the deadline passes. Nothing after a `done` line is forwarded. Past
+/// `MAX_FORWARDED_LINES` only `done` and a few `error` lines still go out.
 pub async fn drive_lines<R, F>(
     reader: R,
     cancel: &mut oneshot::Receiver<()>,
@@ -167,12 +207,19 @@ where
                 if line.trim().is_empty() {
                     continue;
                 }
-                if stats.saw_done || stats.lines >= MAX_FORWARDED_LINES {
+                if stats.saw_done {
                     stats.dropped += 1;
                     continue;
                 }
                 match validate_line(&line) {
                     Some(value) => {
+                        let over_cap = stats.lines >= MAX_FORWARDED_LINES;
+                        let allowed_past_cap = is_done_line(&value)
+                            || (is_error_line(&value) && stats.lines < MAX_FORWARDED_LINES + ERROR_LINES_PAST_CAP);
+                        if over_cap && !allowed_past_cap {
+                            stats.dropped += 1;
+                            continue;
+                        }
                         if is_done_line(&value) {
                             stats.saw_done = true;
                         }
@@ -212,31 +259,51 @@ struct Active {
     cancel: oneshot::Sender<()>,
 }
 
-fn active() -> &'static Mutex<Option<Active>> {
-    static ACTIVE: OnceLock<Mutex<Option<Active>>> = OnceLock::new();
-    ACTIVE.get_or_init(|| Mutex::new(None))
+#[derive(Default)]
+struct Registry {
+    active: Option<Active>,
+    /// Ids cancelled before they started, oldest first.
+    precancelled: Vec<String>,
 }
 
-/// Make this the running scan, cancelling any other. Returns its cancel signal.
-pub fn register_scan(scan_id: &str) -> oneshot::Receiver<()> {
+fn registry() -> &'static Mutex<Registry> {
+    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
+}
+
+/// Make this the running scan, cancelling any other. Returns its cancel
+/// signal, or None when this id was cancelled before it got here (the scan
+/// must not start).
+pub fn register_scan(scan_id: &str) -> Option<oneshot::Receiver<()>> {
     let (tx, rx) = oneshot::channel();
     let previous = {
-        let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
-        slot.replace(Active { scan_id: scan_id.to_string(), cancel: tx })
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = reg.precancelled.iter().position(|id| id == scan_id) {
+            reg.precancelled.remove(at);
+            return None;
+        }
+        reg.active.replace(Active { scan_id: scan_id.to_string(), cancel: tx })
     };
     if let Some(previous) = previous {
         let _ = previous.cancel.send(());
     }
-    rx
+    Some(rx)
 }
 
-/// Cancel the scan with this id, if it is the one running. True if it was.
+/// Cancel the scan with this id. True if it was running; otherwise the id is
+/// remembered, so a start that arrives later does nothing.
 pub fn cancel_scan(scan_id: &str) -> bool {
     let taken = {
-        let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().map(|a| a.scan_id.as_str()) == Some(scan_id) {
-            slot.take()
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if reg.active.as_ref().map(|a| a.scan_id.as_str()) == Some(scan_id) {
+            reg.active.take()
         } else {
+            if !reg.precancelled.iter().any(|id| id == scan_id) {
+                if reg.precancelled.len() >= MAX_PRECANCELLED {
+                    reg.precancelled.remove(0);
+                }
+                reg.precancelled.push(scan_id.to_string());
+            }
             None
         }
     };
@@ -250,36 +317,46 @@ pub fn cancel_scan(scan_id: &str) -> bool {
 }
 
 fn unregister_scan(scan_id: &str) {
-    let mut slot = active().lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().map(|a| a.scan_id.as_str()) == Some(scan_id) {
-        slot.take();
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if reg.active.as_ref().map(|a| a.scan_id.as_str()) == Some(scan_id) {
+        reg.active.take();
     }
 }
 
-/// Ask `hq` to stop (SIGTERM, which it forwards to the scanner), then kill
-/// its whole process group if it is still there after a grace period.
-async fn stop_child(child: &mut tokio::process::Child) {
+/// Stop the scan's whole process group: SIGTERM to the group (hq and the
+/// scanner it started), up to 3 s for hq to exit, then SIGKILL to the group
+/// in every case, since a scanner can outlive hq. `pgid` is hq's pid, taken at
+/// spawn (hq leads its own group); ESRCH (nothing left) is ignored.
+pub async fn stop_child(child: &mut tokio::process::Child, pgid: Option<i32>) {
     #[cfg(unix)]
-    if let Some(id) = child.id() {
-        let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGTERM);
-        if tokio::time::timeout(Duration::from_secs(3), child.wait()).await.is_ok() {
-            return;
-        }
-        // The CLI runs in its own process group, never the app's.
-        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(id as i32), nix::sys::signal::Signal::SIGKILL);
+    if let Some(pgid) = pgid {
+        let group = nix::unistd::Pid::from_raw(pgid);
+        let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGTERM);
+        let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+        kill_group(Some(pgid));
     }
+    #[cfg(not(unix))]
+    let _ = pgid;
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
 }
 
+/// SIGKILL whatever is left of the scan's process group. Never the app's own
+/// group: hq is spawned with `process_group(0)`.
+fn kill_group(pgid: Option<i32>) {
+    #[cfg(unix)]
+    if let Some(pgid) = pgid.filter(|p| *p > 1) {
+        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pgid), nix::sys::signal::Signal::SIGKILL);
+    }
+    #[cfg(not(unix))]
+    let _ = pgid;
+}
+
 async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut oneshot::Receiver<()>) -> ImportScanEnd {
     let unavailable = ImportScanEnd { status: "unavailable", lines: 0, dropped: 0 };
-    let hq_root = match resolve_hq_path() {
-        Ok(root) => root,
-        Err(_) => {
-            log(LOG_TAG, "import scan unavailable: no HQ folder");
-            return unavailable;
-        }
+    let Some(hq_root) = existing_hq_path() else {
+        log(LOG_TAG, "import scan not run: no HQ folder");
+        return ImportScanEnd { status: "no_hq", lines: 0, dropped: 0 };
     };
     let hq = paths::resolve_bin("hq");
     let mut command =
@@ -292,7 +369,9 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // A cancelled or panicking caller never leaves an orphan scan behind.
+        // Kills hq (not its group) if this future is dropped, which happens
+        // only when the app shuts down. A closed window cancels the scan through
+        // its Destroyed event instead (see import_scan_start).
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
@@ -303,8 +382,10 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
             return unavailable;
         }
     };
+    // hq leads its own process group; its id is the group's id.
+    let pgid = child.id().map(|id| id as i32);
     let Some(stdout) = child.stdout.take() else {
-        stop_child(&mut child).await;
+        stop_child(&mut child, pgid).await;
         return ImportScanEnd { status: "failed", lines: 0, dropped: 0 };
     };
     // Keep the head of stderr (to recognise an hq without the command), drain the rest.
@@ -328,7 +409,10 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
     });
 
     let deadline = Instant::now() + SCAN_TIMEOUT;
-    let (outcome, stats) = drive_lines(BufReader::new(stdout), cancel, deadline, |event| {
+    let (outcome, stats) = drive_lines(BufReader::new(stdout), cancel, deadline, |mut event| {
+        if is_done_line(&event) {
+            relativize_report(&mut event, &hq_root);
+        }
         // Only the window that asked hears the lines (a broadcast would wake every webview).
         let _ = app.emit_to(target, IMPORT_SCAN_EVENT, ImportScanEventPayload { scan_id, event });
     })
@@ -338,12 +422,22 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
     match outcome {
         DriveOutcome::Ended => match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
             Ok(Ok(status)) => exit_code = status.code(),
-            _ => stop_child(&mut child).await,
+            _ => stop_child(&mut child, pgid).await,
         },
-        DriveOutcome::Cancelled | DriveOutcome::TimedOut => stop_child(&mut child).await,
+        DriveOutcome::Cancelled | DriveOutcome::TimedOut => stop_child(&mut child, pgid).await,
     }
+    // Anything hq left running in its group (a scanner that outlived it) goes too.
+    kill_group(pgid);
     let stderr = match stderr_task {
-        Some(task) => tokio::time::timeout(Duration::from_secs(2), task).await.ok().and_then(Result::ok).unwrap_or_default(),
+        Some(mut task) => match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
+            Ok(Ok(text)) => text,
+            Ok(Err(_)) => String::new(),
+            Err(_) => {
+                // Something still holds stderr open: stop draining it.
+                task.abort();
+                String::new()
+            }
+        },
         None => String::new(),
     };
     let status = end_status(outcome, stats.saw_done, exit_code, &stderr);
@@ -361,7 +455,18 @@ pub async fn import_scan_start(
 ) -> Result<ImportScanEnd, String> {
     let scan_id = validate_scan_id(&scan_id)?;
     let target = window.label().to_string();
-    let mut cancel = register_scan(&scan_id);
+    let Some(mut cancel) = register_scan(&scan_id) else {
+        // The webview cancelled before this start arrived.
+        return Ok(ImportScanEnd { status: "cancelled", lines: 0, dropped: 0 });
+    };
+    // A command future is not dropped when its window closes, so the window's
+    // Destroyed event cancels the scan (a no-op once it has ended).
+    let watched = scan_id.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            cancel_scan(&watched);
+        }
+    });
     let end = run_scan(&app, &target, &scan_id, &mut cancel).await;
     unregister_scan(&scan_id);
     Ok(end)
@@ -482,9 +587,9 @@ mod tests {
 
     #[test]
     fn one_scan_at_a_time_and_cancel_by_id() {
-        let mut first = register_scan("test-scan-a");
+        let mut first = register_scan("test-scan-a").unwrap();
         // A second scan cancels the first.
-        let mut second = register_scan("test-scan-b");
+        let mut second = register_scan("test-scan-b").unwrap();
         assert!(first.try_recv().is_ok());
         // Only the running scan's id cancels it.
         assert!(!cancel_scan("test-scan-a"));
@@ -510,5 +615,98 @@ mod tests {
         assert_eq!(end_status(DriveOutcome::TimedOut, false, None, ""), "timeout");
         // A done line wins (hq-cli prints one even when the scanner failed, exit 1).
         assert_eq!(end_status(DriveOutcome::Ended, true, Some(1), "unknown command"), "done");
+    }
+
+    #[test]
+    fn a_cancel_that_beats_the_start_stops_it_from_running() {
+        assert!(!cancel_scan("test-scan-early"));
+        assert!(register_scan("test-scan-early").is_none(), "a cancelled id must not start");
+        // Remembered once: the same id can run later.
+        let rx = register_scan("test-scan-early");
+        assert!(rx.is_some());
+        unregister_scan("test-scan-early");
+    }
+
+    #[test]
+    fn the_report_path_becomes_relative_to_the_hq_folder() {
+        let mut done = serde_json::json!({"v":1,"type":"done","report":"/Users/pat/hq/workspace/imports/2026-10-08/report.json","summary":{}});
+        relativize_report(&mut done, "/Users/pat/hq");
+        assert_eq!(done["report"], "workspace/imports/2026-10-08/report.json");
+
+        let mut trailing = serde_json::json!({"type":"done","report":"/Users/pat/hq/r.json"});
+        relativize_report(&mut trailing, "/Users/pat/hq/");
+        assert_eq!(trailing["report"], "r.json");
+
+        for outside in ["/tmp/report.json", "/Users/pat/hqx/report.json", "~/hq/report.json", "C:\\Users\\pat\\r.json", "/Users/pat/hq/../secret.json"] {
+            let mut v = serde_json::json!({"type":"done","report": outside});
+            relativize_report(&mut v, "/Users/pat/hq");
+            assert!(v["report"].is_null(), "{outside} must not leave the machine");
+        }
+        let mut climbing = serde_json::json!({"type":"done","report":"../report.json"});
+        relativize_report(&mut climbing, "/Users/pat/hq");
+        assert!(climbing["report"].is_null());
+        let mut relative = serde_json::json!({"type":"done","report":"workspace/r.json"});
+        relativize_report(&mut relative, "/Users/pat/hq");
+        assert_eq!(relative["report"], "workspace/r.json");
+        let mut none = serde_json::json!({"type":"done","report":null});
+        relativize_report(&mut none, "/Users/pat/hq");
+        assert!(none["report"].is_null());
+    }
+
+    #[tokio::test]
+    async fn done_and_errors_still_go_out_past_the_line_cap() {
+        let mut input = String::new();
+        for i in 0..(MAX_FORWARDED_LINES + 10) {
+            input.push_str(&format!("{{\"v\":1,\"type\":\"count\",\"source\":\"codex\",\"key\":\"sessions\",\"value\":{i}}}\n"));
+        }
+        input.push_str("{\"v\":1,\"type\":\"error\",\"source\":\"codex\",\"message\":\"late\"}\n");
+        input.push_str("{\"v\":1,\"type\":\"done\",\"report\":null,\"summary\":{}}\n");
+        let (_tx, mut rx) = oneshot::channel::<()>();
+        let mut seen = Vec::new();
+        let (outcome, stats) = drive_lines(BufReader::new(input.as_bytes()), &mut rx, far(), |v| seen.push(v)).await;
+        assert_eq!(outcome, DriveOutcome::Ended);
+        assert!(stats.saw_done);
+        assert_eq!(seen.len(), MAX_FORWARDED_LINES + 2);
+        assert_eq!(seen[seen.len() - 2]["type"], "error");
+        assert_eq!(seen[seen.len() - 1]["type"], "done");
+        assert_eq!(stats.dropped, 10);
+    }
+
+    /// A fake hq that exits on SIGTERM, with a scanner child that ignores it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopping_kills_a_scanner_that_ignores_the_signal() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("/bin/sh -c 'trap \"\" TERM; echo $$; exec sleep 30' & trap 'exit 0' TERM; wait")
+            .stdout(Stdio::piped())
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pgid = child.id().map(|id| id as i32);
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), out.read_line(&mut line)).await.unwrap().unwrap();
+        let grandchild: i32 = line.trim().parse().unwrap();
+        // Let the leader reach `wait` so its trap is armed.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        stop_child(&mut child, pgid).await;
+
+        let pid = nix::unistd::Pid::from_raw(grandchild);
+        let mut gone = false;
+        for _ in 0..50 {
+            if nix::sys::signal::kill(pid, None).is_err() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !gone {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+        }
+        assert!(gone, "the scanner grandchild outlived stop_child");
     }
 }

@@ -19,6 +19,7 @@ import {
   firstRunStepsFor,
   firstRunImportJson,
   firstRunImportNotice,
+  handoffReportPath,
   FIRST_RUN_REPORT_PATH_MAX,
   FIRST_RUN_KICKOFF_MAX,
   hasFinishedVisualFirstRun,
@@ -192,7 +193,7 @@ describe("handoff kickoff", () => {
 describe("import handoff (Bring in your context)", () => {
   const imported = {
     summary: { companies: 3, projects: 9, sessions: 508 },
-    report: "/Users/me/HQ/workspace/imports/20261008T090807Z/report.json",
+    report: "workspace/imports/20261008T090807Z/report.json",
   };
   const handoff = { name: "Pickles", runtime: "claude" as const, toolsReady: ["claude"] as const, imported };
 
@@ -208,8 +209,33 @@ describe("import handoff (Bring in your context)", () => {
       report: "/tmp/r.json\nrm -rf /",
     });
     expect(json).toEqual({ companies: 2, ok_key: 5 });
-    const long = firstRunImportJson({ summary: { projects: 1 }, report: `/${"a".repeat(FIRST_RUN_REPORT_PATH_MAX)}` });
+    const long = firstRunImportJson({ summary: { projects: 1 }, report: "a".repeat(FIRST_RUN_REPORT_PATH_MAX + 1) });
     expect(long).toEqual({ projects: 1 });
+  });
+
+  it("never sends an absolute path: the report is HQ-relative or left out", () => {
+    for (const report of [
+      "/Users/pat/hq/workspace/imports/x/report.json",
+      "~/hq/report.json",
+      "C:\\Users\\pat\\hq\\report.json",
+      "\\\\server\\share\\report.json",
+      "workspace/../../etc/report.json",
+    ]) {
+      expect(handoffReportPath(report)).toBeNull();
+      const leaky = { summary: { companies: 1 }, report };
+      const sent = [
+        firstRunHandoffNote({ ...handoff, imported: leaky }),
+        firstRunKickoff({ ...handoff, imported: leaky }, { noun: "Mac" }),
+        firstRunImportNotice(leaky),
+        firstRunHandoffNotice({ ...handoff, imported: leaky }, { noun: "Mac" }),
+      ];
+      for (const text of sent) {
+        expect(text).not.toContain(report);
+        expect(text).not.toMatch(/\/Users\/|~\/|[A-Za-z]:\\/);
+        expect(text).not.toContain('"report"');
+      }
+    }
+    expect(handoffReportPath("workspace/imports/x/report.json")).toBe("workspace/imports/x/report.json");
   });
 
   it("the kickoff says the import is finished and stays inside the CLI limits with the longest path", () => {
@@ -223,7 +249,7 @@ describe("import handoff (Bring in your context)", () => {
         toolsReady: ["claude", "codex", "grok"],
         imported: {
           summary: { companies: 99999, projects: 99999, sessions: 99999, a: 1, b: 2, c: 3, d: 4, e: 5 },
-          report: `/${"r".repeat(FIRST_RUN_REPORT_PATH_MAX - 1)}`,
+          report: "r".repeat(FIRST_RUN_REPORT_PATH_MAX),
         },
       },
       { noun: "computer" },

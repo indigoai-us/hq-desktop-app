@@ -2209,7 +2209,7 @@ export const IMPORT_SCAN_EVENT = "import-scan://event";
 
 /** How a context scan ended, as the host reports it. */
 export interface ImportScanEndView {
-  /** "done" | "failed" | "cancelled" | "timeout" | "unavailable" */
+  /** "done" | "failed" | "cancelled" | "timeout" | "unavailable" | "no_hq" (no HQ folder) */
   status: string;
   lines?: number;
   dropped?: number;

@@ -250,8 +250,21 @@ function hasControlChars(text: string): boolean {
 }
 
 /**
+ * The report path as the setup bot may see it: relative to the HQ folder
+ * (the desktop host strips the HQ folder from the scan's absolute path).
+ * Anything absolute (it would name the person's home folder), home-relative,
+ * or climbing out with `..` is left out.
+ */
+export function handoffReportPath(report: string | null | undefined): string | null {
+  if (!report || report.length > FIRST_RUN_REPORT_PATH_MAX || hasControlChars(report)) return null;
+  if (/^[/\\~]/.test(report) || /^[A-Za-z]:/.test(report)) return null;
+  if (report.split(/[/\\]/).some((part) => part === "..")) return null;
+  return report;
+}
+
+/**
  * The import part of the handoff JSON: whole, non-negative counts under
- * plain keys (at most 6) and the report path, nothing else.
+ * plain keys (at most 6) and the HQ-relative report path, nothing else.
  */
 export function firstRunImportJson(imported: FirstRunImportHandoff): Record<string, number | string> {
   const out: Record<string, number | string> = {};
@@ -263,8 +276,8 @@ export function firstRunImportJson(imported: FirstRunImportHandoff): Record<stri
     out[key] = Math.floor(value);
     n += 1;
   }
-  const report = imported.report;
-  if (report && report.length <= FIRST_RUN_REPORT_PATH_MAX && !hasControlChars(report)) out.report = report;
+  const report = handoffReportPath(imported.report);
+  if (report) out.report = report;
   return out;
 }
 

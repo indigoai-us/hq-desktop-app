@@ -72,6 +72,32 @@ describe("tree model", () => {
     expect(m.branches.filter((b) => b.kind === "trunk").every((b) => b.gone === Infinity)).toBe(true);
   });
 
+  it("foliage that withered stays withered when a later branch reaches it", () => {
+    // Projects that wither, then later projects on the same limbs: the later
+    // branches reach some of the same canopy clumps.
+    const before = spec([
+      { slot: 0, ready: 1, projects: [{ ready: 2, gone: 12 }, { ready: 2, gone: 12 }] },
+      { slot: 1, ready: 1, projects: [{ ready: 2, gone: 12 }, { ready: 2, gone: 12 }] },
+    ]);
+    const after = spec([
+      { slot: 0, ready: 1, projects: [{ ready: 2, gone: 12 }, { ready: 2, gone: 12 }, { ready: 40 }, { ready: 40 }] },
+      { slot: 1, ready: 1, projects: [{ ready: 2, gone: 12 }, { ready: 2, gone: 12 }, { ready: 40 }, { ready: 40 }] },
+    ]);
+    const canopy = (m: ReturnType<typeof generateTree>) =>
+      new Map(m.clumps.filter((k) => k.kind === "leaf").map((k) => [`${k.x.toFixed(6)},${k.y.toFixed(6)}`, k]));
+    const was = canopy(generateTree(before));
+    const now = canopy(generateTree(after));
+    let withered = 0;
+    for (const [at, k] of was) {
+      if (!(k.gone < 40)) continue;
+      const later = now.get(at);
+      if (!later) continue;
+      withered += 1;
+      expect(later.gone).toBe(k.gone);
+    }
+    expect(withered).toBeGreaterThan(0);
+  });
+
   it("the drawing keeps one scale from the reference tree, however much has arrived", () => {
     const box = sceneGeometry(1400, 920).box;
     const scale = treeScale(box);

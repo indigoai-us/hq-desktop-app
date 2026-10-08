@@ -3226,6 +3226,11 @@
   let firstRunImport: FirstRunImportHandoff | null = null;
   /** The setup bot has the import result (in its kickoff or a notice). */
   let firstRunImportDelivered = false;
+  /** A notice send is in flight (one at a time). */
+  let firstRunImportSending = false;
+  /** Sends of the import notice before giving up, and the backoff step between them. */
+  const FIRST_RUN_IMPORT_SEND_TRIES = 3;
+  const FIRST_RUN_IMPORT_RETRY_MS = 2000;
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
     deliverFirstRunImport();
@@ -3236,13 +3241,21 @@
    * a bot-only note, once. A create that has not started yet carries it in
    * its kickoff instead.
    */
-  function deliverFirstRunImport(): void {
+  function deliverFirstRunImport(attempt = 1): void {
     const imported = firstRunImport;
     const bot = firstRunCreatedBot;
-    if (!imported || !bot || firstRunImportDelivered) return;
-    firstRunImportDelivered = true;
+    if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
+    firstRunImportSending = true;
     const key = `first-run-import:${bot.agentUid}`;
-    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, true);
+    // Delivered only once the send succeeds; the idempotency key keeps a retry
+    // from showing the bot the note twice.
+    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, true).then((sent) => {
+      firstRunImportSending = false;
+      if (sent) firstRunImportDelivered = true;
+      else if (attempt < FIRST_RUN_IMPORT_SEND_TRIES) {
+        setTimeout(() => deliverFirstRunImport(attempt + 1), FIRST_RUN_IMPORT_RETRY_MS * attempt);
+      }
+    });
   }
   /** Best effort: a setup bot that already existed takes the confirmed name. */
   async function nameExistingAssistant(bot: SetupBotRef, displayName: string): Promise<void> {

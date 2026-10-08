@@ -14,7 +14,9 @@ export interface ImportScanBus {
   listen(event: string, handler: (event: { payload?: unknown }) => void): Promise<() => void>;
 }
 
-const STATUSES: readonly ImportScanEndStatus[] = ["done", "failed", "cancelled", "timeout", "unavailable"];
+const STATUSES: readonly ImportScanEndStatus[] = ["done", "failed", "cancelled", "timeout", "unavailable", "no_hq"];
+/** Ids remembered as cancelled before their start went out. */
+const MAX_EARLY_CANCELS = 16;
 
 /**
  * How long to keep listening after the command answers "done": the last
@@ -30,6 +32,16 @@ export function createImportScanHost(
   if (!api || !bus) return null;
   const graceMs = opts.graceMs ?? IMPORT_TAIL_GRACE_MS;
   const wait = opts.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  // A cancel can land while run() still awaits the listener, before the start
+  // command goes out: remember it so that start is never sent. (The desktop
+  // command also remembers ids cancelled before they start.)
+  const cancelled: string[] = [];
+  const takeCancelled = (scanId: string) => {
+    const at = cancelled.indexOf(scanId);
+    if (at < 0) return false;
+    cancelled.splice(at, 1);
+    return true;
+  };
   return {
     async run(scanId, onevent): Promise<ImportScanEnd> {
       let unlisten: (() => void) | null = null;
@@ -40,6 +52,10 @@ export function createImportScanHost(
         });
       } catch {
         return { status: "failed" };
+      }
+      if (takeCancelled(scanId)) {
+        unlisten?.();
+        return { status: "cancelled" };
       }
       try {
         const result = await api.scanStart(scanId);
@@ -59,6 +75,10 @@ export function createImportScanHost(
       }
     },
     cancel(scanId) {
+      if (!cancelled.includes(scanId)) {
+        if (cancelled.length >= MAX_EARLY_CANCELS) cancelled.shift();
+        cancelled.push(scanId);
+      }
       return api.scanCancel(scanId);
     },
   };

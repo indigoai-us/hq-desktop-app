@@ -49,7 +49,14 @@ describe("scan stream parser", () => {
       type: "error",
       source: "scanner",
       message: "Update HQ and try again.",
+      code: null,
     });
+    // The CLI's machine-readable code, when it sends one; anything odd is dropped.
+    expect(
+      parseScanLine('{"v":1,"type":"error","source":"scanner","code":"scanner_outdated","message":"Too old."}'),
+    ).toEqual({ type: "error", source: "scanner", message: "Too old.", code: "scanner_outdated" });
+    expect(parseScanLine('{"v":1,"type":"error","source":"a","code":"Not A Code!","message":"x"}')).toMatchObject({ code: null });
+    expect(parseScanLine('{"v":1,"type":"error","source":"a","code":7,"message":"x"}')).toMatchObject({ code: null });
     expect(parseScanLine('{"v":1,"type":"done","report":"/tmp/r.json","summary":{"companies":3,"projects":9,"sessions":508}}')).toEqual({
       type: "done",
       report: "/tmp/r.json",

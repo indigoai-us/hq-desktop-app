@@ -128,7 +128,8 @@ describe("Bring in your context: in the flow", () => {
     expect(q('[data-testid="first-run-next"]')?.textContent).toContain("Next: Done");
     // Context is the last step before Done, so there is nothing for Finish to skip.
     expect(q('[data-testid="first-run-finish"]')).toBeNull();
-    expect(q('[data-testid="first-run-import-live"]')?.textContent).toContain("Reading this Mac");
+    expect(q('[data-testid="first-run-live"]')?.textContent).toContain("Reading this Mac");
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
   });
 
   it("leaving mid-scan (Back or Next) cancels the scan", async () => {
@@ -189,7 +190,7 @@ describe("Bring in your context: in the flow", () => {
     });
     expect(q('[data-testid="first-run-import-title-done"]')?.getAttribute("aria-hidden")).toBe("false");
     expect(q('[data-testid="first-run-import-summary"]')?.textContent).toContain("412");
-    expect(q('[data-testid="first-run-import-live"]')?.textContent).toContain("Pickles knows your world.");
+    expect(q('[data-testid="first-run-live"]')?.textContent).toContain("Pickles knows your world.");
   });
 
   it("a failed scan says so plainly, offers Retry, and Next still works", async () => {
@@ -207,6 +208,8 @@ describe("Bring in your context: in the flow", () => {
     expect(runs).toHaveLength(2);
     runs[1]!.end("unavailable");
     await vi.waitFor(() => expect(q('[data-testid="first-run-import-failed"]')?.textContent).toContain(IMPORT_COPY.update));
+    // Running again cannot help until HQ is updated: no Retry.
+    expect(q('[data-testid="first-run-import-retry"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
     click('[data-testid="first-run-next"]');
     await settle();
@@ -227,6 +230,7 @@ describe("Bring in your context: the step on its own", () => {
       onnext: vi.fn(),
       onfinish: vi.fn(),
       onback: vi.fn(),
+      onannounce: vi.fn(),
     };
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -254,7 +258,7 @@ describe("Bring in your context: the step on its own", () => {
   });
 
   it("an empty scan shows the empty state", async () => {
-    renderStep(
+    const handlers = renderStep(
       {
         phase: "done",
         scanStart: 10,
@@ -269,7 +273,8 @@ describe("Bring in your context: the step on its own", () => {
     );
     await settle();
     expect(q('[data-testid="first-run-import-summary"]')?.textContent).toContain("found no history");
-    expect(q('[data-testid="first-run-import-live"]')?.textContent).toBe("Nothing to bring in yet.");
+    expect(handlers.onannounce).toHaveBeenLastCalledWith("Nothing to bring in yet.");
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(0);
   });
 
   it("a row shows its two largest non-zero counts", async () => {

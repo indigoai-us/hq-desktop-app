@@ -87,6 +87,8 @@
     onfinish: () => void;
     /** Test seam; null follows prefers-reduced-motion. */
     reducedMotion?: boolean | null;
+    /** What to say in the takeover's one live region (this step has none of its own). */
+    onannounce?: ((text: string) => void) | null;
   }
 
   let {
@@ -106,12 +108,28 @@
     onnext,
     onfinish,
     reducedMotion = null,
+    onannounce = null,
   }: Props = $props();
 
   const shownName = $derived(name.trim() || "your assistant");
-  const plan = $derived<ScenePlan>(
-    planScene({ scanStart: run.scanStart, events: run.events, failure: run.failure }),
-  );
+  /**
+   * The plan for the lines so far. The runner hands over lines once per
+   * frame; the plan is rebuilt only when that batch, the start or the failure
+   * changed (a new view object with the same lines reuses the last plan).
+   */
+  let planMemo: { events: number; scanStart: number | null; failure: ImportRunView["failure"]; plan: ScenePlan } | null =
+    null;
+  const plan = $derived.by<ScenePlan>(() => {
+    const memo = planMemo;
+    if (memo && memo.events === run.events.length && memo.scanStart === run.scanStart && memo.failure === run.failure) {
+      return memo.plan;
+    }
+    const next = planScene({ scanStart: run.scanStart, events: run.events, failure: run.failure });
+    planMemo = { events: run.events.length, scanStart: run.scanStart, failure: run.failure, plan: next };
+    return next;
+  });
+  /** Retry helps unless HQ itself needs an update first. */
+  const canRetry = $derived(run.failure?.retry !== false);
   /** Asking first: before "Bring it in" (and after a cancel or a skip). */
   const asking = $derived(run.phase === "idle" || run.phase === "skipped");
   const empty = $derived(plan.outcome === "empty");
@@ -169,6 +187,10 @@
             ? "Nothing to bring in yet."
             : `${shownName} knows your world. ${plan.summary.map((s) => `${s.value} ${s.label}`).join(", ")}.`,
   );
+  $effect(() => {
+    const text = announcement;
+    untrack(() => onannounce?.(text));
+  });
 
   // ── the frame ─────────────────────────────────────────────────────────────
 
@@ -588,7 +610,7 @@
       {#if plan.failure}
         <p class="fr-status" data-fr-status data-testid="first-run-import-failed">
           <span>{plan.failure.message}</span>
-          <button type="button" class="fr-link" data-testid="first-run-import-retry" onclick={onretry}>Retry</button>
+          {#if canRetry}<button type="button" class="fr-link" data-testid="first-run-import-retry" onclick={onretry}>Retry</button>{/if}
         </p>
       {/if}
     {/if}
@@ -645,6 +667,4 @@
       </div>
     {/if}
   </div>
-
-  <p class="fr-live" aria-live="polite" aria-atomic="true" data-testid="first-run-import-live">{announcement}</p>
 </div>

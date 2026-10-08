@@ -123,6 +123,18 @@ fn persisted_install_path() -> Option<PathBuf> {
         .map(|s| expand_tilde(s))
 }
 
+/// The HQ folder when it already exists (the configured one, else `~/hq`),
+/// canonicalised like `resolve_hq_path`. Never creates it: callers that only
+/// read HQ (the first-run context scan) report "no HQ folder" instead.
+pub fn existing_hq_path() -> Option<String> {
+    let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
+    if !hq_path.is_dir() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&hq_path).unwrap_or(hq_path);
+    Some(strip_windows_verbatim_prefix(&canonical.to_string_lossy()))
+}
+
 /// Resolve the HQ install directory, create it if absent, and return its
 /// absolute path.
 ///

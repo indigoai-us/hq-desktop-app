@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { IMPORT_COPY, createImportRunner, importResultOf, type ImportRunView, type ImportScanHost } from "./import-runner.js";
+import { IMPORT_COPY, MAX_SCAN_EVENTS, createImportRunner, importResultOf, type ImportRunView, type ImportScanHost } from "./import-runner.js";
 import { createImportScanHost } from "./import-host.js";
 import { ok, failure, IMPORT_SCAN_EVENT, type ContextImportApi } from "@hq/platform";
 
@@ -170,7 +170,123 @@ describe("import runner", () => {
   });
 });
 
+describe("import runner, after review", () => {
+  it("a scan with more lines than the cap still finishes and hands over its result", async () => {
+    const { host, runs } = fakeHost();
+    const { r, last } = runner(host);
+    r.start();
+    await Promise.resolve();
+    for (let i = 0; i < MAX_SCAN_EVENTS + 50; i += 1) {
+      runs[0]!.emit(line({ type: "count", source: "codex", key: "sessions", value: i + 1 }));
+    }
+    runs[0]!.emit(line({ type: "error", source: "codex", message: "Could not read one file." }));
+    runs[0]!.emit(line({ type: "done", report: "workspace/r.json", summary: { sessions: 5050 } }));
+    expect(last().phase).toBe("done");
+    expect(last().events.length).toBe(MAX_SCAN_EVENTS + 2);
+    expect(last().events.at(-2)!.event.type).toBe("error");
+    expect(importResultOf(last().events)).toEqual({ summary: { sessions: 5050 }, report: "workspace/r.json" });
+  });
+
+  it("hands lines to the screen once per frame, in one batch", async () => {
+    const { host, runs } = fakeHost();
+    const frames: Array<() => void> = [];
+    let t = 1;
+    const views: ImportRunView[] = [];
+    const r = createImportRunner(host, () => (t += 1), (v) => views.push(v), {
+      schedule: (fn) => {
+        frames.push(fn);
+        return () => undefined;
+      },
+    });
+    r.start();
+    await Promise.resolve();
+    const before = views.length;
+    runs[0]!.emit(line({ type: "start", sources: [] }));
+    runs[0]!.emit(line({ type: "count", source: "codex", key: "sessions", value: 1 }));
+    runs[0]!.emit(line({ type: "count", source: "codex", key: "sessions", value: 2 }));
+    expect(views.length).toBe(before);
+    expect(frames).toHaveLength(1);
+    frames[0]!();
+    expect(views.length).toBe(before + 1);
+    // Each line keeps the second it arrived, not the second it was drawn.
+    expect(views.at(-1)!.events.map((e) => e.at)).toEqual([3, 4, 5]);
+  });
+
+  it("the scanner_outdated code asks for an update, with no Retry; another code does not", async () => {
+    const a = fakeHost();
+    const one = runner(a.host);
+    one.r.start();
+    await Promise.resolve();
+    a.runs[0]!.emit(line({ type: "error", source: "scanner", code: "scanner_outdated", message: "The scanner cannot stream." }));
+    a.runs[0]!.emit(line({ type: "done", report: null, summary: { companies: 0, projects: 0, sessions: 0 } }));
+    expect(one.last()).toMatchObject({ phase: "failed", failure: { message: IMPORT_COPY.update, retry: false } });
+    one.r.retry();
+    expect(a.runs).toHaveLength(1);
+
+    const b = fakeHost();
+    const two = runner(b.host);
+    two.r.start();
+    await Promise.resolve();
+    b.runs[0]!.emit(line({ type: "error", source: "scanner", code: "scan_failed", message: "Update HQ later, maybe." }));
+    b.runs[0]!.emit(line({ type: "done", report: null, summary: { companies: 0, projects: 0, sessions: 0 } }));
+    expect(two.last()).toMatchObject({ phase: "failed", failure: { message: IMPORT_COPY.failed, retry: true } });
+  });
+
+  it("a cancel this screen did not ask for is a failure it can retry, never a hang", async () => {
+    const { host, runs } = fakeHost();
+    const { r, last } = runner(host);
+    r.start();
+    await Promise.resolve();
+    runs[0]!.end("cancelled");
+    await vi.waitFor(() => expect(last()).toMatchObject({ phase: "failed", failure: { message: IMPORT_COPY.failed, retry: true } }));
+    r.retry();
+    await Promise.resolve();
+    expect(runs).toHaveLength(2);
+  });
+
+  it("no HQ folder says so", async () => {
+    const { host, runs } = fakeHost();
+    const { r, last } = runner(host);
+    r.start();
+    await Promise.resolve();
+    runs[0]!.end("no_hq");
+    await vi.waitFor(() => expect(last().failure?.message).toBe(IMPORT_COPY.noHq));
+  });
+});
+
 describe("import host (desktop)", () => {
+  it("a cancel that arrives before the start went out stops the start", async () => {
+    let release: () => void = () => undefined;
+    const bus = {
+      listen: vi.fn(
+        () =>
+          new Promise<() => void>((resolve) => {
+            release = () => resolve(() => undefined);
+          }),
+      ),
+    };
+    const api: ContextImportApi = {
+      scanStart: vi.fn(async () => ok({ status: "done" })) as never,
+      scanCancel: vi.fn(async () => ok(false)),
+    };
+    const host = createImportScanHost(api, bus, { graceMs: 0 })!;
+    const running = host.run("scan-early", () => undefined);
+    await host.cancel("scan-early");
+    release();
+    await expect(running).resolves.toEqual({ status: "cancelled" });
+    expect(api.scanStart).not.toHaveBeenCalled();
+    expect(api.scanCancel).toHaveBeenCalledWith("scan-early");
+  });
+
+  it("passes the no-HQ-folder outcome through", async () => {
+    const api: ContextImportApi = {
+      scanStart: vi.fn(async () => ok({ status: "no_hq" })) as never,
+      scanCancel: vi.fn(async () => ok(true)),
+    };
+    const bus = { listen: vi.fn(async () => () => undefined) };
+    await expect(createImportScanHost(api, bus, { graceMs: 0 })!.run("s", () => undefined)).resolves.toEqual({ status: "no_hq" });
+  });
+
   function bus() {
     const handlers = new Set<(e: { payload?: unknown }) => void>();
     return {

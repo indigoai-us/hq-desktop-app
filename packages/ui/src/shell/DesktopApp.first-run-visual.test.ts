@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
+import { failure, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -542,7 +542,7 @@ describe("visual first run with a setup bot that already exists", () => {
 });
 
 describe("visual first run: Bring in your context", () => {
-  it("runs the scan through the host and hands the finished import to the assistant once, as a bot-only note", async () => {
+  it("runs the scan through the host and hands the finished import to the assistant once, as a bot-only note (retrying a failed send)", async () => {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform, sendDm } = adapter({ create, flag: true });
     const handlers = new Set<(e: { payload?: unknown }) => void>();
@@ -557,6 +557,7 @@ describe("visual first run: Bring in your context", () => {
     const scanStart = vi.fn((_scanId: string) => new Promise((resolve) => (finishScan = resolve)));
     const scanCancel = vi.fn(async () => ok(true));
     (platform as unknown as Record<string, unknown>).contextImport = { scanStart, scanCancel };
+    sendDm.mockImplementationOnce((async () => failure("network", "offline")) as never);
 
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -597,24 +598,27 @@ describe("visual first run: Bring in your context", () => {
     const lines = [
       { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
       { type: "source", id: "claude-code", status: "done", counts: { sessions: 12 } },
-      { type: "done", report: "/tmp/HQ/workspace/reports/import.json", summary: { companies: 0, projects: 0, sessions: 12 } },
+      { type: "done", report: "workspace/reports/import.json", summary: { companies: 0, projects: 0, sessions: 12 } },
     ];
     for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
     finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
 
-    const imported = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "/tmp/HQ/workspace/reports/import.json" };
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
-    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
-    expect(to).toBe(SETUP_BOT_UID);
-    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
-    expect(body).toBe(firstRunImportNotice(imported));
+    const imported = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
+    // The first send fails: it is not counted as delivered, and it is sent again.
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    for (const call of sendDm.mock.calls) {
+      const [to, body, extras] = call as unknown as [string, string, Record<string, unknown>];
+      expect(to).toBe(SETUP_BOT_UID);
+      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
+      expect(body).toBe(firstRunImportNotice(imported));
+    }
 
     // Next: Done, then Talk: nothing is sent again.
     q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await settle();
     expect(step()).toBe("done");
     await settle();
-    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(sendDm).toHaveBeenCalledTimes(2);
     expect(scanCancel).not.toHaveBeenCalled();
   });
 });

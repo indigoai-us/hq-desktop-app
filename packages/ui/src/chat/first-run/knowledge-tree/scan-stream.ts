@@ -26,7 +26,8 @@ export type ScanEvent =
   | { type: "count"; source: string; key: string; value: number }
   | { type: "company"; id: string; name: string; basis: CompanyBasis | null }
   | { type: "project"; id: string; name: string; company: string | null; basis: ProjectBasis | null }
-  | { type: "error"; source: string | null; message: string }
+  /** `code`: "scanner_outdated" (an HQ whose scanner is too old) or "scan_failed"; older CLIs send none. */
+  | { type: "error"; source: string | null; message: string; code: string | null }
   | { type: "done"; report: string | null; summary: Record<string, number> };
 
 /** Bounds that keep a hostile or broken stream from flooding the screen. */
@@ -44,6 +45,10 @@ export const SCAN_LIMITS = {
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 const KEY_RE = /^[a-z][a-z0-9_-]*$/;
+/** An error's machine-readable code: a short snake_case word. */
+const ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,39}$/;
+/** The CLI's code for an HQ whose scanner is too old to stream. */
+export const SCANNER_OUTDATED = "scanner_outdated";
 
 /** Collapse whitespace, drop control characters, cap the length. */
 export function cleanText(value: unknown, max: number): string | null {
@@ -157,7 +162,8 @@ export function parseScanEvent(raw: unknown): ScanEvent | null {
       const message = cleanText(o.message, SCAN_LIMITS.messageLength);
       if (!message) return null;
       const source = o.source === null || o.source === undefined ? null : cleanId(o.source);
-      return { type: "error", source, message };
+      const code = typeof o.code === "string" && ERROR_CODE_RE.test(o.code) ? o.code : null;
+      return { type: "error", source, message, code };
     }
     case "done": {
       const report = typeof o.report === "string" && o.report.length <= SCAN_LIMITS.reportLength ? cleanText(o.report, SCAN_LIMITS.reportLength) : null;
