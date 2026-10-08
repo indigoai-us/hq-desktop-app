@@ -739,7 +739,6 @@ fn safe_conflict_backup_path(value: &str) -> bool {
             .all(|part| matches!(part, std::path::Component::Normal(_)))
 }
 
-#[tauri::command]
 fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>) -> Result<PathBuf, String> {
     match scope {
         "personal" if company_slug.is_none() => Ok(hq_root.to_path_buf()),
@@ -764,6 +763,7 @@ fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>)
     }
 }
 
+#[tauri::command]
 pub fn show_conflict_backup(scope: String, company_slug: Option<String>, backup_path: String) -> Result<(), String> {
     if !safe_conflict_backup_path(&backup_path) {
         return Err("Conflict backup path is invalid.".to_string());
