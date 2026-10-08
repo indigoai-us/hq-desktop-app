@@ -246,12 +246,10 @@ export function toCreateBotDraft(
     size: draft.place === "hosted" ? draft.size : "",
     name: draft.name.trim() || base.name,
     handle: draft.handle.trim(),
-    intro: draft.intro.trim(),
     title: draft.description.trim().slice(0, 60),
     scope: home === "local" && company ? "company" : "personal",
     companySlugs: company ? [company.id] : [],
     companyUid: company?.id ?? base.companyUid,
-    model: draft.model,
     autoApprove: draft.slackPost === "auto",
   };
 }
@@ -260,7 +258,15 @@ export function toLocalInput(
   draft: AgentStepperDraft,
   ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">,
 ): LocalBotCreateInput {
-  return toCreateInput(toCreateBotDraft(draft, ctx));
+  // The create-bot draft has no intro or model (the New bot flow asks for
+  // those in the bot's first message); this stepper still takes both.
+  const intro = draft.intro.trim();
+  const model = draft.model.trim();
+  return {
+    ...toCreateInput(toCreateBotDraft(draft, ctx)),
+    ...(model ? { model } : {}),
+    ...(intro ? { intro } : {}),
+  };
 }
 
 export function toCloudDraft(draft: AgentStepperDraft): CloudBotDraft {

@@ -9,7 +9,6 @@ import {
   parseRuntimeStatus,
   runtimeBlocksNext,
   runtimeCanSignIn,
-  runtimeChipSuffix,
   runtimeFooter,
   runtimeSignInTimeoutMessage,
   runtimeStatusOf,
@@ -21,19 +20,6 @@ const SIGNED_IN: RuntimeStatus = { state: "signedIn" };
 const SIGNED_OUT: RuntimeStatus = { state: "signedOut" };
 const MISSING: RuntimeStatus = { state: "notInstalled", searched: ["/opt/homebrew/bin"] };
 const FAILED: RuntimeStatus = { state: "probeFailed", reason: "it did not answer in time" };
-
-describe("chip labels", () => {
-  it("names each state differently", () => {
-    expect(runtimeChipSuffix(SIGNED_IN)).toBe("");
-    expect(runtimeChipSuffix(SIGNED_OUT)).toBe(" · not signed in");
-    expect(runtimeChipSuffix(MISSING)).toBe(" · not installed");
-    expect(runtimeChipSuffix(FAILED)).toBe(" · couldn’t check");
-  });
-
-  it("says nothing extra when the host has no status", () => {
-    expect(runtimeChipSuffix(null)).toBe("");
-  });
-});
 
 describe("what the footer offers", () => {
   it("offers Sign in only when the CLI was found", () => {

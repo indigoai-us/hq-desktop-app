@@ -586,7 +586,8 @@ export function saveOpenBotRemovals(
     }));
   try {
     storage?.setItem(OPEN_BOT_REMOVALS_STORAGE_KEY, JSON.stringify(open));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/create-bot/cancel-model.ts:589", error);
     // best-effort
   }
 }
@@ -614,7 +615,8 @@ export function rememberRemovedBot(
   const next = [uid, ...agentUids].slice(0, 200);
   try {
     storage?.setItem(REMOVED_BOTS_STORAGE_KEY, JSON.stringify(next));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/create-bot/cancel-model.ts:617", error);
     // best-effort
   }
   return next;
@@ -657,7 +659,8 @@ export function loadAccountRemovedBots(
   try {
     account?.setItem(REMOVED_BOTS_STORAGE_KEY, JSON.stringify(merged));
     legacy?.setItem(REMOVED_BOTS_STORAGE_KEY, "[]");
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/create-bot/cancel-model.ts:660", error);
     // best-effort
   }
   return merged;

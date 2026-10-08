@@ -354,7 +354,7 @@ describe('Windows production installer E2E', () => {
       dependencyInstaller.indexOf('fn windows_managed_node_sha256_for'),
     );
 
-    expect(installNodeWindows).toContain('install_managed_node(&app).await');
+    expect(installNodeWindows).toContain('install_managed_node(&app, replace_existing).await');
     expect(installNodeWindows).not.toContain('winget_install');
     expect(installNodeWindows).not.toContain('scoop_install');
   });

@@ -82,7 +82,6 @@
   import AtlasLandingHost from "./AtlasLandingHost.svelte";
   import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
   import ActivityRailHost from "./ActivityRailHost.svelte";
-  import GoalsRailHost from "./GoalsRailHost.svelte";
   import BotsPage from "../company/BotsPage.svelte";
   import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
   import CompanySettingsHost from "./CompanySettingsHost.svelte";
@@ -112,7 +111,7 @@
     companyRowDestination,
     companyRowForPage,
   } from "./company-pane.js";
-  import { paneForEntry } from "./destination-pane.js";
+  import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
     activeRailItemId,
@@ -147,7 +146,14 @@
   } from "./advertised-shortcuts.js";
   import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
   import { updateToastCopy } from "./update-toast.js";
-  import { syncToastCopy } from "./sync-toast.js";
+  import {
+    isSyncToastDismissed,
+    readDismissedSyncToasts,
+    syncToastCopy,
+    withSyncToastDismissed,
+    withSyncToastRestored,
+    writeDismissedSyncToasts,
+  } from "./sync-toast.js";
   import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
   import {
     SIDEBAR_OVERLAY_MAX_PX,
@@ -490,6 +496,7 @@
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
   import {
     botSetupMatchesRow,
+    botSetupAsksAccess,
     botSetupUidFromCardId,
     botSetupWires,
     type BotSetupEntry,
@@ -580,7 +587,11 @@
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
   import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
-  import { applyChannelRoster, parseChannelMembers } from "./mesh-overlay.js";
+  import {
+    applyAuthoritativePresence,
+    applyChannelRoster,
+    parseChannelMembers,
+  } from "./mesh-overlay.js";
   import {
     loadLiveChannelTabs,
     projectIdForRow,
@@ -1667,6 +1678,7 @@
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
       // not what "pull it onto this machine" promises. Matches the old company Overview.
+      restoreSyncToast(target.slug);
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);
@@ -1699,10 +1711,49 @@
   // OWNER-003: one "sync" toast that updates in place while files move and
   // turns into a quiet "Files up to date" when the run ends. Runs that move
   // nothing stay silent; attention states belong to the Core pill.
+  //
+  // Closing it with X sticks (rule in sync-toast.ts): hidden for the rest of
+  // the run and, for that company, on later runs and after a restart, until
+  // the person starts a sync for it. Before, X removed the toast and the next
+  // per-file `sync:progress` pushed it straight back.
   const SYNC_TOAST_KEY = "sync";
   let syncRunMoved = false;
+  // This run: X was pressed, or the busy toast was actually shown. The quiet
+  // "Files up to date" only follows a run whose toast was shown and kept.
+  let syncRunDismissed = $state(false);
+  let syncRunShown = false;
+  const syncToastStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: (self?.uid ?? tenantAccountId ?? "").trim() || null, companyId: "all" },
+    ),
+  );
+  let dismissedSyncToasts = $state<Set<string>>(new Set());
+  $effect(() => {
+    const storage = syncToastStorage;
+    untrack(() => {
+      dismissedSyncToasts = readDismissedSyncToasts(storage);
+    });
+  });
+
+  function handleSyncToastDismiss(): void {
+    const company = syncStatus.company;
+    syncRunDismissed = true;
+    dismissedSyncToasts = withSyncToastDismissed(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
+  /** The person asked for a sync: show its progress again. */
+  function restoreSyncToast(company?: string | null): void {
+    syncRunDismissed = false;
+    dismissedSyncToasts = withSyncToastRestored(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
   $effect(() => {
     const status = syncStatus;
+    const dismissed = dismissedSyncToasts;
+    const runDismissed = syncRunDismissed;
     untrack(() => {
       if (status.phase === "syncing" && (status.planTotal > 0 || status.progressed > 0)) {
         syncRunMoved = true;
@@ -1710,13 +1761,28 @@
       const copy = syncToastCopy(status, syncRunMoved, false, (slug) =>
         railCompanyRoster.find((company) => company.slug === slug)?.label ?? (slug === "personal" ? "Personal" : null),
       );
+      const hidden = runDismissed || isSyncToastDismissed(dismissed, status.company);
       if (copy.state === "busy" && syncRunMoved) {
-        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress });
+        if (hidden) {
+          dismissToastByKey(SYNC_TOAST_KEY);
+          return;
+        }
+        syncRunShown = true;
+        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress, dismissLabel: "Hide sync progress", onDismiss: handleSyncToastDismiss });
       } else if (copy.state === "done") {
+        const show = syncRunShown && !runDismissed;
         syncRunMoved = false;
-        pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+        syncRunShown = false;
+        syncRunDismissed = false;
+        if (show) {
+          pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+        } else {
+          dismissToastByKey(SYNC_TOAST_KEY);
+        }
       } else if (copy.state === "attention") {
         syncRunMoved = false;
+        syncRunShown = false;
+        syncRunDismissed = false;
         dismissToastByKey(SYNC_TOAST_KEY);
       }
     });
@@ -2769,6 +2835,7 @@
       ...botSetupByUid,
       [agentUid]: {
         agentUid,
+        kind: "local",
         name: label,
         email: null,
         companySlug: input.companies?.[0] ?? null,
@@ -6691,6 +6758,17 @@
    * Null when the app does not know the company: such a link then goes to the
    * web's front page, never to a page named by the company's uid.
    */
+  /**
+   * The synced folder of a company on this computer, by uid, for a recorded
+   * meeting's document under companies/<slug>/sources/meetings. Null when the
+   * company is not synced here.
+   */
+  function meetingCompanyFolderSlug(companyUid: string): string | null {
+    const uid = companyUid.trim();
+    if (!uid) return null;
+    const row = (companies ?? []).find((w) => w.kind === "company" && (w.cloudUid ?? "").trim() === uid);
+    return row && row.state !== "cloud-only" ? row.slug : null;
+  }
   function companySlugForUid(companyUid: string | null | undefined): string | null {
     const uid = (companyUid ?? "").trim();
     if (!uid) return null;
@@ -8100,20 +8178,12 @@
     const withPresence = (uid: string): boolean =>
       Boolean(companyUid) && presenceStatus(companyUid, uid) === "online";
     return {
-      ...withRoster,
+      ...applyAuthoritativePresence(withRoster, withPresence),
       activeSessions:
         fromLive?.activeSessions ?? withRoster.activeSessions ?? [],
       liveAgents: fromLive?.liveAgents?.length
         ? fromLive.liveAgents
         : withRoster.liveAgents,
-      members: withRoster.members.map((m) => ({
-        ...m,
-        online: withPresence(m.personUid),
-      })),
-      agents: withRoster.agents.map((a) => ({
-        ...a,
-        online: withPresence(a.personUid),
-      })),
     };
   });
   /** Directory count wins; otherwise the status model (fixture fill) so the pill still opens. */
@@ -8792,6 +8862,7 @@
           ...botSetupByUid,
           [agentUid]: {
             agentUid,
+            kind: "cloud",
             name: draft.name.trim() || "New bot",
             email: null,
             companySlug: companies?.find((c) => c.cloudUid === companyUid)?.slug ?? null,
@@ -9085,7 +9156,9 @@
     const setupUid = botSetupUidFromCardId(event.cardId);
     if (setupUid) {
       const entry = botSetupByUid[setupUid];
-      if (!entry) return;
+      // A local bot never shows the access card, so a stray action from an
+      // older render changes nothing.
+      if (!entry || !botSetupAsksAccess(entry)) return;
       patchBotSetup(setupUid, {
         access:
           event.actionId === "deny"
@@ -9701,6 +9774,49 @@
     return null;
   }
 
+  function rowMatchesDestination(
+    row: ConversationRow,
+    destination: NavigationDestination,
+  ): boolean {
+    if (destination.kind === "channel") {
+      return row.channelId === destination.channelId;
+    }
+    if (destination.kind === "dm") {
+      return row.personUid === destination.personUid && !row.channelId;
+    }
+    return false;
+  }
+
+  /**
+   * Rows this window has opened, newest last. A conversation entry can be
+   * applied after a tenant switch re-keyed the sidebar (a DM a Bots page
+   * synthesized opens in the cross-company list; Back to Bots, then Forward),
+   * and the re-keyed rail may not list that row. Plain map: bookkeeping only.
+   */
+  const openedRows = new Map<string, ConversationRow>();
+  const OPENED_ROWS_CAP = 50;
+  let openedRowsAccount = "";
+
+  /** The remembered rows, dropped whenever the signed-in account changes. */
+  function openedRowsForAccount(): Map<string, ConversationRow> {
+    const account = `${currentNavigationScope().accountId}:${tenantGeneration}`;
+    if (account !== openedRowsAccount) {
+      openedRows.clear();
+      openedRowsAccount = account;
+    }
+    return openedRows;
+  }
+
+  function rememberOpenedRow(row: ConversationRow): void {
+    const openedRows = openedRowsForAccount();
+    openedRows.delete(row.id);
+    openedRows.set(row.id, row);
+    if (openedRows.size > OPENED_ROWS_CAP) {
+      const oldest = openedRows.keys().next().value;
+      if (oldest !== undefined) openedRows.delete(oldest);
+    }
+  }
+
   function rowForDestination(
     destination: NavigationDestination,
   ): ConversationRow | null {
@@ -9708,20 +9824,9 @@
       ...searchRows,
       ...railRows,
       ...(selectedRow ? [selectedRow] : []),
+      ...[...openedRowsForAccount().values()].reverse(),
     ];
-    if (destination.kind === "channel") {
-      return (
-        rows.find((row) => row.channelId === destination.channelId) ?? null
-      );
-    }
-    if (destination.kind === "dm") {
-      return (
-        rows.find(
-          (row) => row.personUid === destination.personUid && !row.channelId,
-        ) ?? null
-      );
-    }
-    return null;
+    return rows.find((row) => rowMatchesDestination(row, destination)) ?? null;
   }
 
   function resolveShellDestination(
@@ -10032,6 +10137,7 @@
   const navigation = createNavigationController({
     history: navigationHistory,
     getScope: () => currentNavigationScope(),
+    entryCompanyUid: entryCompanyUidForCommit,
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
     invalidateScroll: () => navigationScrollTracker.invalidate(),
@@ -10164,6 +10270,7 @@
       selectConversationRow(row, options);
       return;
     }
+    rememberOpenedRow(row);
     if (selectedRow?.id !== row.id) selectedRow = row;
     void navigate(
       destinationFromConversation(row, {
@@ -11675,14 +11782,6 @@
     }
   });
 
-  /**
-   * OWNER-R8: viewers and guests see the objective pane read-only. A role the
-   * roster has not answered yet adds no restriction.
-   */
-  function canEditGoals(role: string | null | undefined): boolean {
-    return !/^(viewer|guest|read[-_ ]?only)$/i.test((role ?? "").trim());
-  }
-
   function selectCompanyPaneRow(rowId: string): void {
     if (!tenantCompanyId) return;
     atlasFilterActor = null;
@@ -12500,6 +12599,7 @@
     accountId={tenantAccountId}
     storage={tenantStorage}
     sessionGeneration={tenantGeneration}
+    companySlugForUid={meetingCompanyFolderSlug}
     onback={() => {
       void leaveCurrentDestination();
     }}
@@ -13001,7 +13101,6 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
-          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}
@@ -13178,15 +13277,6 @@
             companyUid={companyPaneCompany.uid ?? null}
             {avatarByUid}
             onsignin={onsignin ? startReauth : undefined}
-          />
-        {:else if railPlaceholder?.id === "goals" && companyPaneCompany}
-          <GoalsRailHost
-            {adapter}
-            slug={companyPaneCompany.slug ?? ""}
-            canEdit={canEditGoals(companyPaneRole)}
-            onopenproject={(project) => {
-              void navigate({ kind: "projects", company: companyPaneCompany?.slug ?? null, project });
-            }}
           />
         {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
           <LazyDoor
@@ -14055,7 +14145,10 @@
                     onsetupstarted={recordWelcomeSetupRun}
                     readyFirstActionEnabled={readyFirstActionEnabled}
                     {readyFirstActionReady}
-                    onstartsync={() => adapter.sync.startSync()}
+                    onstartsync={() => {
+                      restoreSyncToast();
+                      return adapter.sync.startSync();
+                    }}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
                     installGuide={setupInstallGuide}
@@ -14206,6 +14299,7 @@
                   composerLocked={composerLocked}
                   {onopenurl}
                   channelId={selectedRow.channelId}
+                  peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
                   {hqFolderPath}
                   ontogglereaction={persistReaction}
@@ -14440,6 +14534,7 @@
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
                     channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
+                    companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
                     reactions={rowReactions}

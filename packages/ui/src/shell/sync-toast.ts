@@ -67,3 +67,66 @@ export function syncToastCopy(
         : { state: "none", title: "", detail: "", progress: null };
   }
 }
+
+/**
+ * Companies whose sync toast the person closed with X.
+ *
+ * Rule: X hides the toast for the rest of the current run (every company in
+ * it, through every later progress tick and batch), and keeps it hidden for
+ * that company on later runs and after a restart. The company's toast comes
+ * back only when the person starts a sync for it themselves (Sync now). A
+ * toast closed before the run named its company records the wildcard and
+ * hides every company's toast until the next sync the person starts.
+ *
+ * Stored per account (tenant storage, company scope "all") so another HQ
+ * account on the same computer does not inherit it.
+ */
+export const SYNC_TOAST_DISMISSED_KEY = "hq.syncToast.dismissed.v1";
+export const SYNC_TOAST_ANY_COMPANY = "*";
+
+type DismissStorage = Pick<Storage, "getItem" | "setItem">;
+
+export function readDismissedSyncToasts(storage: DismissStorage | null | undefined): Set<string> {
+  if (!storage) return new Set();
+  try {
+    const raw = storage.getItem(SYNC_TOAST_DISMISSED_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string" && v.length > 0) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeDismissedSyncToasts(storage: DismissStorage | null | undefined, companies: ReadonlySet<string>): void {
+  if (!storage) return;
+  try {
+    storage.setItem(SYNC_TOAST_DISMISSED_KEY, JSON.stringify([...companies].sort()));
+  } catch {
+    // Private mode / quota: the in-memory set still holds for this window.
+  }
+}
+
+/** True when the person has closed this company's sync toast (or every company's). */
+export function isSyncToastDismissed(dismissed: ReadonlySet<string>, company: string | null): boolean {
+  if (dismissed.has(SYNC_TOAST_ANY_COMPANY)) return true;
+  return company !== null && dismissed.has(company);
+}
+
+/** The set after X on a toast naming `company` (null: the run named none yet). */
+export function withSyncToastDismissed(dismissed: ReadonlySet<string>, company: string | null): Set<string> {
+  const next = new Set(dismissed);
+  next.add(company ?? SYNC_TOAST_ANY_COMPANY);
+  return next;
+}
+
+/**
+ * The set after the person starts a sync: a scoped start re-enables that
+ * company (and drops the wildcard); an unscoped start re-enables all.
+ */
+export function withSyncToastRestored(dismissed: ReadonlySet<string>, company?: string | null): Set<string> {
+  if (!company) return new Set();
+  const next = new Set(dismissed);
+  next.delete(company);
+  next.delete(SYNC_TOAST_ANY_COMPANY);
+  return next;
+}
