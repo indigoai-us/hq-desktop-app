@@ -19,6 +19,7 @@
     onmouseenter={() => brief.keepPeek()}
     onmouseleave={() => brief.hidePeekSoon()}
   >
+    {#if p.content.sample}<div class="sample" data-testid="brief-sample">Sample · no live source yet</div>{/if}
     <div class="ttl">{p.content.title}</div>
     {#if p.content.status}<div class="st">{p.content.status}</div>{/if}
     {#each p.content.sections as s, i (i)}

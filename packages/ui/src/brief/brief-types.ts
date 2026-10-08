@@ -51,6 +51,8 @@ export type BriefDecisionAction = "cut" | "go" | "decide" | "reply" | "prep";
 
 export interface BriefDecision {
   id: string;
+  /** Illustrative item with no real source yet; the peek marks it SAMPLE. */
+  sample?: boolean;
   title: string;
   /** One work-level line for the card. */
   summary: string;
@@ -78,6 +80,7 @@ export interface BriefActionItem {
 
 export interface BriefRisk {
   id: string;
+  sample?: boolean;
   title: string;
   summary: string;
   /** incident = live and on fire; watch = a standing risk. */
@@ -91,6 +94,7 @@ export interface BriefRisk {
 
 export interface BriefShipped {
   id: string;
+  sample?: boolean;
   title: string;
   status: string;
   note: string;
@@ -100,16 +104,20 @@ export interface BriefShipped {
 
 export interface BriefWaiting {
   id: string;
+  sample?: boolean;
   who: string;
   what: string;
 }
 
 export interface BriefTeammate {
   id: string;
+  sample?: boolean;
   name: string;
   doing: string;
   /** Status dot: ok = shipping, warn = you wait on them, decision = needs you. */
   tone: BriefTone;
+  /** Fleet agent (agt_ uid) rather than a person. */
+  isAgent?: boolean;
   detail?: {
     status: string;
     between: BriefLine[];
@@ -150,4 +158,10 @@ export interface BriefInput {
   lastBriefAt: string | null;
   /** DMs read for this brief, for the provenance line. */
   dmCount?: number;
+  /** Fleet agents by status, when the sweep read them. */
+  fleet?: { total: number; active: number; dormant: number; provisioning: number } | null;
+  /** PRs across the sweep window. */
+  prWindow?: { from: string; to: string; total: number; merged: number; byRepo: { repo: string; total: number; merged: number }[] } | null;
+  /** The calendar strip is illustrative (no live calendar). */
+  calendarSample?: boolean;
 }

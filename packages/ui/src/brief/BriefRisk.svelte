@@ -13,7 +13,7 @@
   data-testid="brief-risk"
   role="group"
   aria-label={risk.title}
-  use:peek={{ state: brief, content: () => ({ title: risk.title, status: "Watch", sections: [{ label: "Detail", text: risk.summary }], prompt: prompt ? { id: risk.id, text: prompt } : undefined }) }}
+  use:peek={{ state: brief, content: () => ({ sample: risk.sample, title: risk.title, status: "Watch", sections: [{ label: "Detail", text: risk.summary }], prompt: prompt ? { id: risk.id, text: prompt } : undefined }) }}
 >
   <div class="eyebrow" style="color:var(--b-warn)">
     <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4z" /><path d="M12 10v4M12 17v.01" /></svg> Watch

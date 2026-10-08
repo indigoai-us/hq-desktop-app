@@ -20,6 +20,8 @@ export interface PeekContent {
   title: string;
   status?: string;
   sections: { label: string; tone?: string; text?: string; lines?: BriefLine[] }[];
+  /** Illustrative content with no real source yet. */
+  sample?: boolean;
   /** Actionable items show their full prompt and the launch controls. */
   prompt?: { id: string; text: string };
 }

@@ -18,7 +18,7 @@
   <div class="eyebrow">Waiting on</div>
   <div class="big" style="font-size:42px;margin-top:6px" use:countUp={waiting.length}>0</div>
   {#each waiting.slice(0, 3) as w (w.id)}
-    <div class="row" role="group" aria-label={`${w.who} ${w.what}`} use:peek={{ state: brief, content: () => ({ title: `${w.who} ${w.what}`, status: "You are waiting", sections: [], prompt: prompts[w.id] ? { id: w.id, text: prompts[w.id]! } : undefined }) }}>
+    <div class="row" role="group" aria-label={`${w.who} ${w.what}`} use:peek={{ state: brief, content: () => ({ sample: w.sample, title: `${w.who} ${w.what}`, status: "You are waiting", sections: [], prompt: prompts[w.id] ? { id: w.id, text: prompts[w.id]! } : undefined }) }}>
       <span class="bul" style="background:#fff"></span><div>{w.who} <em>{w.what}</em></div>
     </div>
   {/each}

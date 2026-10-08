@@ -376,22 +376,23 @@ describe("DesktopApp app rail (console-rail US-003)", () => {
       );
       await settle();
     };
-    // Daily Brief sits right after Home, so it is ⌘2 and the rest shift by one.
+    // Daily Brief takes no number (owner call pending), so every shortcut
+    // keeps the number it had before the brief joined the rail.
+    const brief = host.querySelector('[data-testid="rail-brief"]')!;
+    expect(brief.getAttribute("aria-keyshortcuts")).toBeNull();
     await press("2");
-    expect(current()).toBe("brief");
-    await press("3");
     expect(current()).toBe("meetings");
-    await press("5");
+    await press("4");
     expect(current()).toBe("library");
     await press("8");
-    expect(current()).toBe("secrets");
-    await press("9");
     expect(current()).toBe("connections");
+    // OWNER-R22: Marketplace sits beneath Connections, so it is ⌘9.
+    await press("9");
+    expect(current()).toBe("marketplace");
     await press("1");
     expect(current()).toBe("home");
     await lazyBodiesLoaded(
       loadOutpost,
-      loadBrief,
       ...meetingsBodies,
     );
   });

@@ -30,6 +30,7 @@
     if (d.detail?.unlocks.length) sections.push({ label: "Clearing it unlocks", lines: d.detail.unlocks });
     if (d.detail?.risk) sections.push({ label: "Watch", tone: "warn", text: d.detail.risk });
     return {
+      sample: d.sample,
       title: d.title,
       status: d.detail?.source ?? d.summary,
       sections,

@@ -3,9 +3,24 @@
   import BriefOrigin from "./BriefOrigin.svelte";
   import { peek, useBrief } from "./brief-context.svelte.js";
   import { countUp } from "./count-up.js";
-  import type { BriefShipped } from "./brief-types.js";
 
-  let { shipped, merged, opened, cols, rows }: { shipped: BriefShipped[]; merged: number | null; opened: number | null; cols: number; rows: number } = $props();
+  import type { BriefInput, BriefShipped } from "./brief-types.js";
+
+  let {
+    shipped,
+    merged,
+    opened,
+    cols,
+    rows,
+    prWindow = null,
+  }: {
+    shipped: BriefShipped[];
+    merged: number | null;
+    opened: number | null;
+    cols: number;
+    rows: number;
+    prWindow?: BriefInput["prWindow"];
+  } = $props();
   const brief = useBrief();
   const n = $derived(cols >= 3 && rows === 1 ? Math.min(3, shipped.length) : rows > 1 ? 6 : Math.min(cols >= 2 ? 3 : 2, shipped.length));
   const shown = $derived(shipped.slice(0, n));
@@ -26,6 +41,22 @@
         <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.5 4.5L19 7" /></svg> Run complete · yesterday
       </div>
       <h3>What you shipped</h3>
+      {#if prWindow}
+        {@const win = prWindow}
+        <div
+          class="win"
+          role="group"
+          aria-label="PRs in the window"
+          use:peek={{
+            state: brief,
+            content: () => ({
+              title: `${win.total} PRs · ${win.merged} merged`,
+              status: `${win.from} to ${win.to}`,
+              sections: [{ label: "By repo", lines: win.byRepo.map((r) => ({ label: r.repo, state: `${r.merged}/${r.total}`, tone: "ok" as const })) }],
+            }),
+          }}
+        >{win.from.slice(5)} to {win.to.slice(5)} · {win.total} PRs · {win.merged} merged</div>
+      {/if}
     </div>
     <div class="tot">
       <div><span class="big" use:countUp={merged ?? shipped.length}>0</span><small>{merged != null ? "merged" : "shipped"}</small></div>
@@ -39,7 +70,7 @@
         role="group"
         aria-label={`${s.title} · ${s.status}`}
         onpointermove={track}
-        use:peek={{ state: brief, content: () => ({ title: `${s.title} · ${s.status}`, status: "Run complete", sections: [{ label: "What landed", lines: s.lines }] }) }}
+        use:peek={{ state: brief, content: () => ({ sample: s.sample, title: `${s.title} · ${s.status}`, status: "Run complete", sections: [{ label: "What landed", lines: s.lines }] }) }}
       >
         <BriefOrigin origin={s.origin} />
         <div class="v">{s.title} · {s.status}</div>
@@ -60,6 +91,13 @@
     justify-content: space-between;
     align-items: flex-start;
     gap: 12px;
+  }
+  .win {
+    margin-top: 4px;
+    font-family: var(--b-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: rgba(255, 255, 255, 0.32);
   }
   .tot {
     display: flex;

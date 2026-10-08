@@ -22,6 +22,7 @@ import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
 import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meetings.js";
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
 import { briefSeed } from "./brief-seed.js";
+import { parseSweep, sweepToInput } from "./brief-sweep.js";
 import type {
   BriefActionItem,
   BriefCalendarEvent,
@@ -43,6 +44,7 @@ export interface BriefAdapter {
     getRecorded?(meetingId: string, companyId?: string | null): AdapterPromise<Json>;
     readRecordedBody?(url: string): AdapterPromise<string>;
   } | null;
+  files?: { getFileContent?(path: string): AdapterPromise<string> } | null;
   notifications?: { fetchDmThreads?(opts?: Json): AdapterPromise<Json> } | null;
   agents?: {
     listLocalSessions?(
@@ -50,6 +52,31 @@ export interface BriefAdapter {
       page?: { offset?: number; limit?: number },
     ): AdapterPromise<Json>;
   } | null;
+}
+
+/**
+ * Reads an HQ-root-relative text file, or resolves null when it is absent.
+ * The desktop host backs it with `files.getFileContent` (the native
+ * get_company_file_content command, which enforces the session read scope).
+ */
+export interface BriefSweepSource {
+  readHqFile(relPath: string): Promise<string | null>;
+}
+
+/** Where the morning sweep writes its output, relative to the HQ root. */
+export function sweepPath(now: Date): string {
+  return `workspace/brief/${localDay(now)}/brief-data.json`;
+}
+
+/** A sweep source over the adapter's HQ file read, when the host has one. */
+export function adapterSweepSource(files: { getFileContent?(path: string): AdapterPromise<string> } | null | undefined): BriefSweepSource | null {
+  if (!files?.getFileContent) return null;
+  return {
+    async readHqFile(relPath) {
+      const res = await files.getFileContent!(relPath);
+      return res.ok ? res.value : null;
+    },
+  };
 }
 
 export interface BriefCompanyRef {
@@ -62,6 +89,10 @@ export interface GatherOptions {
   now?: Date;
   companies: readonly BriefCompanyRef[];
   lastBriefAt?: string | null;
+  /** Reads the morning sweep file when present; merged under adapter data. */
+  sweep?: BriefSweepSource | null;
+  /** Company the sweep's work belongs to; defaults to the first company. */
+  sweepCompanyUid?: string | null;
   log?: (message: string, err?: unknown) => void;
 }
 
@@ -236,8 +267,7 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
     })(),
   ]);
 
-  return {
-    input: {
+  const input: BriefInput = {
       now: now.toISOString(),
       userName,
       companies: companies.flatMap((c) => [c.uid, ...(c.slug ? [c.slug] : [])]),
@@ -254,9 +284,49 @@ export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOption
       sessions,
       lastBriefAt: opts.lastBriefAt ?? null,
       dmCount: dms.count,
-    },
-    failures,
   };
+  const sweep = opts.sweep === undefined ? adapterSweepSource(adapter.files) : opts.sweep;
+  if (sweep) await mergeSweep(input, sweep, opts, now, yesterday, fail);
+  return { input, failures };
+}
+
+/**
+ * Lays the sweep under the adapter's data: the adapter wins for the calendar
+ * and for any list it filled; the sweep fills what the adapter left empty
+ * plus what only it knows (PR totals, fleet, main CI).
+ */
+async function mergeSweep(
+  input: BriefInput,
+  source: BriefSweepSource,
+  opts: GatherOptions,
+  now: Date,
+  yesterday: Date,
+  fail: (name: string, err: unknown) => void,
+): Promise<void> {
+  let text: string | null;
+  try {
+    text = await source.readHqFile(sweepPath(now));
+  } catch (err) {
+    fail("sweep", err);
+    return;
+  }
+  if (text == null) return;
+  const sweep = parseSweep(text);
+  if (!sweep) {
+    fail("sweep", new SourceError("sweep: brief-data.json is not valid JSON"));
+    return;
+  }
+  const s = sweepToInput(sweep, { day: localDay(yesterday), companyUid: opts.sweepCompanyUid ?? opts.companies[0]?.uid ?? null });
+  if (!input.meetingsYesterday.length) input.meetingsYesterday = s.meetingsYesterday;
+  if (!input.shipped.length) input.shipped = s.shipped;
+  if (!input.team.length) input.team = s.team;
+  if (!input.sessions.length) input.sessions = s.sessions;
+  input.risks = [...input.risks, ...s.risks];
+  input.merged = input.merged ?? s.merged;
+  input.opened = input.opened ?? s.opened;
+  input.fleet = input.fleet ?? s.fleet;
+  input.prWindow = input.prWindow ?? s.prWindow;
+  input.dmCount = Math.max(input.dmCount ?? 0, s.dmCount ?? 0);
 }
 
 async function readMeetings(

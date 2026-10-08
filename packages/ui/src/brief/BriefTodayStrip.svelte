@@ -3,7 +3,7 @@
   import type { BriefCalendarEvent } from "./brief-types.js";
   import { clockLabel, hourOf } from "./brief-time.js";
 
-  let { events, now, dateLabel }: { events: BriefCalendarEvent[]; now: string; dateLabel: string } = $props();
+  let { events, now, dateLabel, sample = false }: { events: BriefCalendarEvent[]; now: string; dateLabel: string; sample?: boolean } = $props();
   const H0 = 8;
   const H1 = 20.5;
   const X = (h: number) => Math.max(0, Math.min(100, ((h - H0) / (H1 - H0)) * 100));
@@ -21,7 +21,7 @@
 </script>
 
 <div class="cal" data-testid="brief-today">
-  <div class="lbl">TODAY<b>{dateLabel}</b></div>
+  <div class="lbl">TODAY{#if sample}<span class="sample-tag" title="No live calendar in this preview">Sample</span>{/if}<b>{dateLabel}</b></div>
   <div class="trk">
     {#each [8, 10, 12, 14, 16, 18, 20] as h (h)}
       <div class="hr" style="left:{X(h)}%">{h > 12 ? h - 12 : h}{h >= 12 ? "p" : "a"}</div>

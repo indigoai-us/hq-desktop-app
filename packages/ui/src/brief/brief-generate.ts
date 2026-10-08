@@ -24,6 +24,7 @@ export type BriefWidgetKind =
   | "needs"
   | "team"
   | "incident"
+  | "fleet"
   | "shipped"
   | "waiting"
   | "meetings"
@@ -94,6 +95,7 @@ export const FITS: Record<BriefWidgetKind, BriefSlotSize[]> = {
   needs: ["M", "W"],
   team: ["T"],
   incident: ["T", "S"],
+  fleet: ["T", "S"],
   shipped: ["M", "W", "W3"],
   waiting: ["S"],
   meetings: ["T", "S"],
@@ -187,6 +189,7 @@ export function candidates(input: BriefInput, lead: BriefLead, sessions: BriefSe
     needs: input.decisions.length > 0,
     team: input.team.length > 0,
     incident: incidents(input.risks).length > 0,
+    fleet: (input.fleet?.total ?? 0) > 0,
     shipped: input.shipped.length > 0,
     waiting: input.waitingOn.length > 0,
     meetings: input.meetingsYesterday.length > 0,
@@ -197,9 +200,9 @@ export function candidates(input: BriefInput, lead: BriefLead, sessions: BriefSe
     catchup: true,
   };
   const order: Record<BriefLead, BriefWidgetKind[]> = {
-    decisions: ["sunrise", "needs", "team", "incident", "shipped", "waiting", "meetings", "risk", "otherWork", "agenda"],
-    incident: ["sunrise", "incident", "needs", "team", "shipped", "waiting", "risk", "meetings", "otherWork", "agenda"],
-    momentum: ["sunrise", "shipped", "meetings", "team", "waiting", "needs", "risk", "otherWork", "agenda"],
+    decisions: ["sunrise", "needs", "team", "incident", "shipped", "waiting", "meetings", "fleet", "risk", "otherWork", "agenda"],
+    incident: ["sunrise", "incident", "needs", "team", "shipped", "fleet", "waiting", "risk", "meetings", "otherWork", "agenda"],
+    momentum: ["sunrise", "shipped", "meetings", "team", "fleet", "waiting", "needs", "risk", "otherWork", "agenda"],
     "your-day": ["sunrise", "agenda", "shipped", "meetings", "otherWork", "needs", "team", "waiting", "risk"],
     "catch-up": ["catchup", "needs", "agenda", "team", "oneThing", "shipped", "incident"],
   };

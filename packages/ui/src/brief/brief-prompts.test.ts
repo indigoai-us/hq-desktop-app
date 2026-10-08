@@ -31,9 +31,27 @@ describe("brief prompts", () => {
   });
 
   it("names the measure and the fix PRs on an incident", () => {
-    const p = incidentPrompt(day.risks[0]!);
+    const p = incidentPrompt({
+      id: "fleet",
+      title: "Fleet boxes stuck",
+      summary: "Disks are full.",
+      severity: "incident",
+      measure: { healthy: 9, total: 95, unit: "boxes", cause: "STUCK · DISK FULL" },
+      links: [
+        { label: "hq-cloud/913", origin: { companyUid: null, repo: null } },
+        { label: "hq-pro-agents/1132", origin: { companyUid: null, repo: null } },
+      ],
+      origin: { companyUid: null, repo: "indigoai-us/hq-cloud" },
+    });
     expect(p).toContain("86 of 95 boxes are affected (stuck · disk full).");
     expect(p).toContain("Fixes in review: hq-cloud/913, hq-pro-agents/1132.");
+  });
+
+  it("builds the real red-CI incident prompt from the sweep fixture", () => {
+    const p = incidentPrompt(day.risks[0]!);
+    expect(p).toContain("Investigate the live incident: hq-desktop-app main CI red.");
+    expect(p).toContain("CI failing on main (1 of 3 workflows).");
+    expect(p).toContain("Repo or source: indigoai-us/hq-desktop-app.");
   });
 
   it("works with a bare decision that has no detail", () => {

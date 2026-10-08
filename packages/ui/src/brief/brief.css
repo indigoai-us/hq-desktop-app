@@ -544,3 +544,23 @@
     transition: none !important;
   }
 }
+
+/* SAMPLE marker: content with no real source yet. */
+.daily-brief .peek .sample,
+.daily-brief .sample-tag {
+  display: inline-block;
+  font-family: var(--b-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: #2a1408;
+  background: var(--b-sun);
+  margin-bottom: 8px;
+}
+.daily-brief .sample-tag {
+  margin: 0 0 0 6px;
+  padding: 1px 5px;
+  font-size: 8.5px;
+}

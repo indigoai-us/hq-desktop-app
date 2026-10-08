@@ -8,7 +8,7 @@
    */
   import Tooltip from "../common/Tooltip.svelte";
   import CompanyIcon from "../company/CompanyIcon.svelte";
-  import { railInitials, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
+  import { railInitials, railShortcutItems, railTooltip, type RailItem, type RailItemId } from "./app-rail.js";
 
   interface Props {
     items: RailItem[];
@@ -83,7 +83,7 @@
   }
 
   function shortcutHint(item: RailItem): string | null {
-    const index = items.indexOf(item);
+    const index = railShortcutItems(items).indexOf(item);
     return index >= 0 && index < 9 ? `⌘${index + 1}` : null;
   }
 </script>

@@ -116,6 +116,7 @@
   import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
   import {
     RAIL_SHORTCUT_COUNT,
+    railShortcutItems,
     activeRailItemId,
     railDestination,
     railItems,
@@ -12373,7 +12374,7 @@
   }
 
   function selectRailIndex(index: number): void {
-    const item = railItemList[index];
+    const item = railShortcutItems(railItemList)[index];
     if (item) selectRailItem(item);
   }
 

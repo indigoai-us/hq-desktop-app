@@ -21,7 +21,7 @@
     if (t.detail?.between.length) sections.push({ label: "Between you", lines: t.detail.between });
     if (t.detail?.owns.length) sections.push({ label: "Owns", lines: t.detail.owns.map((o) => ({ label: o, state: "" })) });
     if (t.detail?.next) sections.push({ label: "Suggested", text: t.detail.next });
-    return { title: t.name, status: t.detail?.status ?? t.doing, sections, prompt: { id: `dm:${t.id}`, text: dmPrompt(t) } };
+    return { sample: t.sample, title: t.name, status: t.detail?.status ?? t.doing, sections, prompt: { id: `dm:${t.id}`, text: dmPrompt(t) } };
   }
 
   async function draft(t: BriefTeammate): Promise<void> {

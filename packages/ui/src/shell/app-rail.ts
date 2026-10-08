@@ -274,6 +274,14 @@ export function activeRailItemId(state: RailSelectionState): RailItemId | null {
 export const RAIL_SHORTCUT_COUNT = 9;
 
 /**
+ * Items that take a ⌘ number, in order. The Daily Brief has none for now (an
+ * owner product call is pending), so every existing shortcut keeps its number.
+ */
+export function railShortcutItems<T extends { kind: string }>(items: readonly T[]): T[] {
+  return items.filter((item) => item.kind !== "brief");
+}
+
+/**
  * Two-letter initials for a rail tile or company badge: the first two letters
  * of a one-word name, else the first letter of each of the first two words.
  */

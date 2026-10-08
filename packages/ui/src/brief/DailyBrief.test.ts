@@ -36,7 +36,7 @@ describe("DailyBrief", () => {
       "shipped",
       "waiting",
       "meetings",
-      "risk",
+      "fleet",
     ]);
     expect(target.querySelector('[data-testid="brief-today"]')?.textContent).toContain("Zach and Jeff onboarding");
     expect(target.querySelectorAll('[data-testid="brief-need"]')).toHaveLength(4);

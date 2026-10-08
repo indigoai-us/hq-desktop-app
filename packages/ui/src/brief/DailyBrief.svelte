@@ -11,6 +11,7 @@
   import "./brief.css";
   import BriefAgenda from "./BriefAgenda.svelte";
   import BriefCatchUp from "./BriefCatchUp.svelte";
+  import BriefFleet from "./BriefFleet.svelte";
   import BriefIncident from "./BriefIncident.svelte";
   import BriefMeetings from "./BriefMeetings.svelte";
   import BriefNeedsYou from "./BriefNeedsYou.svelte";
@@ -100,7 +101,7 @@
     </div>
   </header>
 
-  <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} />
+  <BriefTodayStrip events={input.calendarToday} now={input.now} dateLabel={dateLabel.toUpperCase()} sample={input.calendarSample ?? false} />
 
   <main class="b-grid" style="grid-template-areas:{plan.areas.map((a) => `'${a}'`).join(' ')}">
     {#each plan.widgets as w, i (w.kind)}
@@ -122,7 +123,9 @@
         {:else if w.kind === "incident" && incident}
           <BriefIncident risk={incident} prompt={plan.prompts[incident.id]} rows={w.rows} />
         {:else if w.kind === "shipped"}
-          <BriefShipped shipped={input.shipped} merged={input.merged ?? null} opened={input.opened ?? null} cols={w.cols} rows={w.rows} />
+          <BriefShipped shipped={input.shipped} merged={input.merged ?? null} opened={input.opened ?? null} cols={w.cols} rows={w.rows} prWindow={input.prWindow ?? null} />
+        {:else if w.kind === "fleet" && input.fleet}
+          <BriefFleet fleet={input.fleet} />
         {:else if w.kind === "waiting"}
           <BriefWaiting waiting={input.waitingOn} prompts={plan.prompts} />
         {:else if w.kind === "meetings"}

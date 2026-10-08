@@ -19,7 +19,7 @@
   data-testid="brief-incident"
   role="group"
   aria-label={risk.title}
-  use:peek={{ state: brief, content: () => ({ title: risk.title, status: risk.summary, sections: risk.links.length ? [{ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) }] : [], prompt: prompt ? { id: risk.id, text: prompt } : undefined }) }}
+  use:peek={{ state: brief, content: () => ({ sample: risk.sample, title: risk.title, status: risk.summary, sections: risk.links.length ? [{ label: "Fixes in review", lines: risk.links.map((l) => ({ label: l.label, state: "REVIEW", tone: "warn" as const })) }] : [], prompt: prompt ? { id: risk.id, text: prompt } : undefined }) }}
 >
   <div class="eyebrow"><span class="live"></span> {risk.title} · live</div>
   {#if m}

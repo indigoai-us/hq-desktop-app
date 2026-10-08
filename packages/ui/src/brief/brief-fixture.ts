@@ -1,24 +1,34 @@
 /**
- * The approved mockup's Oct 8 day as a `BriefInput`. Used by the dev harness
- * (`pnpm dev:preview`) and by tests. Not read in production.
+ * The preview day: Oct 8, 2026, built from a REAL morning sweep
+ * (`fixtures/sweep-2026-10-08.json`, generated from brief-data.json by
+ * `scripts/brief-sweep-fixture.mjs`). Shipped, PR totals, meetings and their
+ * signal counts, fleet, main CI and DM senders are real. Decision text,
+ * waits, the standing risk and today's calendar have no sweep source yet, so
+ * they are illustrative and carry `sample: true` (shown as SAMPLE).
+ * Used by the dev harness and tests. Not read in production.
  */
 
 import type { BriefInput, BriefOrigin } from "./brief-types.js";
+import { sweepToInput, type BriefSweep } from "./brief-sweep.js";
+import sweepJson from "./fixtures/sweep-2026-10-08.json";
 
+export const FIXTURE_DAY = "2026-10-08";
 const INDIGO = "cmp_indigo";
 const LIVERECOVER = "cmp_liverecover";
 const indigo = (repo: string): BriefOrigin => ({ companyUid: INDIGO, repo });
 
 /** Today at hh:mm local, as ISO, relative to `now`. */
-function at(now: Date, hh: number, mm: number, dayOffset = 0): string {
+function at(now: Date, hh: number, mm: number): string {
   const d = new Date(now);
-  d.setDate(d.getDate() + dayOffset);
   d.setHours(hh, mm, 0, 0);
   return d.toISOString();
 }
 
 export function octoberEightBrief(now: Date = new Date()): BriefInput {
+  const real = sweepToInput(sweepJson as unknown as BriefSweep, { day: FIXTURE_DAY, companyUid: INDIGO, selfName: "Corey Epstein" });
   return {
+    ...real,
+    calendarSample: true,
     now: now.toISOString(),
     userName: "Corey",
     companies: [INDIGO, LIVERECOVER, "indigo", "liverecover"],
@@ -29,14 +39,10 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
       { id: "c4", title: "Cut30 office hours", start: at(now, 13, 0), end: at(now, 14, 0), kind: "learn" },
       { id: "c5", title: "Getting started with HQ", start: at(now, 16, 0), end: at(now, 17, 0), kind: "learn", projected: true },
     ],
-    meetingsYesterday: [
-      { id: "m1", title: "Onboarding", with: "Zach and Jeff", startTime: at(now, 10, 0, -1), companyUid: INDIGO, decisions: 3, actions: 2, risks: 0, questions: 1, summary: "A customer onboarding call you ran. Its decisions and the summary are in HQ meeting notes." },
-      { id: "m2", title: "Sales sync", startTime: at(now, 9, 0, -1), companyUid: INDIGO, decisions: 3, actions: 1, risks: 1, questions: 0, summary: "Weekly pipeline sync with Jacob. Key points and decisions were captured as signals." },
-      { id: "m3", title: "Dev standup", startTime: at(now, 9, 0, -1), companyUid: INDIGO, decisions: 3, actions: 0, risks: 1, questions: 0, summary: "Daily dev standup. Decisions and a summary were captured as signals." },
-    ],
     decisions: [
       {
         id: "d1",
+        sample: true,
         title: "Cut the hq-core release",
         summary: "Carries staging main 703ed75 and the planning merge",
         action: "cut",
@@ -54,6 +60,7 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
       },
       {
         id: "d2",
+        sample: true,
         title: "Release indigo-docs PR 64",
         summary: "Held until that release ships, on your go",
         action: "go",
@@ -68,6 +75,7 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
       },
       {
         id: "d3",
+        sample: true,
         title: "Keep the no-self-merge rule?",
         summary: "Open question from the staging run",
         action: "decide",
@@ -82,6 +90,7 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
       },
       {
         id: "d4",
+        sample: true,
         title: "Reply to 1 X mention",
         summary: "Flagged by Izzy's mentions dry run",
         action: "reply",
@@ -99,124 +108,21 @@ export function octoberEightBrief(now: Date = new Date()): BriefInput {
       { id: "a2", title: "Thank Jacob for the traction deck", origin: indigo("Indigo") },
     ],
     risks: [
-      {
-        id: "r1",
-        title: "Fleet boxes stuck",
-        summary: "Disks are full.",
-        severity: "incident",
-        measure: { healthy: 9, total: 95, unit: "boxes", cause: "STUCK · DISK FULL" },
-        links: [
-          { label: "hq-cloud/913", origin: indigo("indigoai-us/hq-cloud") },
-          { label: "hq-pro-agents/1132", origin: indigo("indigoai-us/hq-pro-agents") },
-        ],
-        origin: indigo("indigoai-us/hq-cloud"),
-      },
+      ...real.risks,
       {
         id: "r2",
+        sample: true,
         title: "Staging can merge green and still break main.",
-        summary: "18 required checks. One is red on main since 1156 and is not required.",
+        summary: "Required checks can pass while a non-required check is red on main.",
         severity: "watch",
         links: [],
         origin: indigo("indigoai-us/hq-core-staging"),
       },
     ],
-    shipped: [
-      {
-        id: "s1",
-        title: "Desktop beta",
-        status: "3 PRs merged",
-        note: "1501, 1502, 1504 open",
-        origin: indigo("indigoai-us/hq-desktop-app"),
-        lines: [
-          { label: "1499 Desktop beta fix", state: "MERGED", tone: "ok" },
-          { label: "1500 Desktop beta fix", state: "MERGED", tone: "ok" },
-          { label: "1477 Desktop beta fix", state: "MERGED", tone: "ok" },
-          { label: "1501, 1502, 1504", state: "OPEN", tone: "warn" },
-        ],
-      },
-      {
-        id: "s2",
-        title: "Staging",
-        status: "3 merges landed",
-        note: "Bot parity measured",
-        origin: indigo("indigoai-us/hq-core-staging"),
-        lines: [
-          { label: "1173 Staging merge", state: "MERGED", tone: "ok" },
-          { label: "1177 Staging merge", state: "MERGED", tone: "ok" },
-          { label: "1174 Staging merge", state: "MERGED", tone: "ok" },
-          { label: "HP-11 bot parity", state: "MEASURED", tone: "ok" },
-        ],
-      },
-      {
-        id: "s3",
-        title: "Investor memo",
-        status: "Live, company-gated",
-        note: "Comment loop on",
-        origin: indigo("Indigo · deploy"),
-        lines: [
-          { label: "Company access on", state: "LIVE", tone: "ok" },
-          { label: "Comment loop", state: "ON", tone: "ok" },
-        ],
-      },
-      {
-        id: "s4",
-        title: "Conduct v16",
-        status: "On by default",
-        note: "PR 1217 open",
-        origin: indigo("indigoai-us/hq-core-staging"),
-        lines: [
-          { label: "1217 Conduct on by default in v16", state: "OPEN", tone: "warn" },
-          { label: "Bot and fleet gate", state: "DESIGNED", tone: "ok" },
-        ],
-      },
-      {
-        id: "s5",
-        title: "Grok hooks",
-        status: "1.0.40 contract",
-        note: "PR 1204 open",
-        origin: indigo("indigoai-us/hq-core-staging"),
-        lines: [{ label: "1204 Grok 1.0.40 hook contract", state: "OPEN", tone: "warn" }],
-      },
-      {
-        id: "s6",
-        title: "Pluto",
-        status: "Now yours",
-        note: "Live in prod, dark",
-        origin: { companyUid: LIVERECOVER, repo: "LiveRecover Supply" },
-        lines: [
-          { label: "Pluto handed from Yousuf", state: "YOURS", tone: "decision" },
-          { label: "LiveRecover Supply", state: "LIVE · DARK", tone: "warn" },
-        ],
-      },
-    ],
-    merged: 6,
-    opened: 8,
     waitingOn: [
-      { id: "w1", who: "Jacob", what: "to take the memo folder" },
-      { id: "w2", who: "Hassaan", what: "to review PR 1201" },
+      { id: "w1", sample: true, who: "Jacob", what: "to take the memo folder" },
+      { id: "w2", sample: true, who: "Hassaan", what: "to review PR 1201" },
     ],
-    team: [
-      { id: "t1", name: "Izzy", doing: "X mentions ready, 1 needs you", tone: "decision", detail: { status: "Needs one thing from you", between: [{ label: "Reply to 1 X mention", state: "YOU", tone: "decision" }, { label: "Investor memo folder moved to Jacob", state: "DONE", tone: "ok" }], owns: ["X mentions dry run (3 found)", "Investor memo distribution"], next: "Send the X reply, then Izzy can run the mentions bot for real." } },
-      { id: "t2", name: "Hassaan", doing: "Reviewing your handoff PR", tone: "warn", detail: { status: "You are waiting on him", between: [{ label: "Review of PR 1201, self-improving handoff", state: "HIS", tone: "warn" }], owns: ["HQ 16 staging cleanup", "Liveops and support decisions"], next: "Ping if 1201 is still in review by noon." } },
-      { id: "t3", name: "Jacob", doing: "Traction deck is live", tone: "ok", detail: { status: "Shipped yesterday", between: [{ label: "Acknowledge memo folder ownership", state: "HIS", tone: "warn" }], owns: ["HQ traction deck, live"], next: "Worth a thank-you for the deck." } },
-      { id: "t4", name: "Stefan", doing: "Took over liveops", tone: "ok", detail: { status: "New role", between: [{ label: "Skill-metadata check red on staging main since 1156", state: "RISK", tone: "red" }], owns: ["Liveops (took over yesterday)", "New-bot sunrise animation in the desktop app"], next: "Ask whether the red check blocks the release you are about to cut." } },
-      { id: "t5", name: "Yousuf", doing: "Handed you Pluto, live and dark", tone: "decision", detail: { status: "Handed you work", between: [{ label: "Pluto advocacy graph is now yours", state: "YOU", tone: "decision" }], owns: ["Advocacy graph, live for LiveRecover Supply, dark"], next: "Decide when Pluto turns on for the customer." } },
-      { id: "t6", name: "Shawon", doing: "Testing the mobile build", tone: "ok", detail: { status: "Heads down", between: [], owns: ["Mobile build testing"], next: "Nothing needs you." } },
-    ],
-    sessions: [
-      ["13:40", "Bot parity + staging merges", "HQ core"],
-      ["14:22", "Self-improving handoff", "HQ core"],
-      ["14:30", "Grok hook contract", "HQ core"],
-      ["14:48", "Fleet rescue", "Fleet"],
-      ["16:07", "Daily brief design", "Design"],
-      ["19:03", "Investor memo", "Investors"],
-      ["19:46", "Conduct on by default", "HQ core"],
-      ["20:30", "Desktop beta fixes", "Desktop"],
-    ].map(([time, title, workstream], i) => {
-      const [h, m] = time!.split(":").map(Number);
-      return { id: `sess-${i}`, title: title!, workstream: workstream!, startedAt: at(now, h!, m!, -1), company: INDIGO };
-    }),
     lastBriefAt: new Date(now.getTime() - 86_400_000).toISOString(),
-    dmCount: 6,
   };
 }

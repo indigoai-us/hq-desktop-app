@@ -92,7 +92,7 @@ describe("generateBrief: density", () => {
       "shipped",
       "waiting",
       "meetings",
-      "risk",
+      "fleet",
     ]);
   });
 
