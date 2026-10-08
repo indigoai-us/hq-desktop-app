@@ -325,6 +325,29 @@ function sourceIdOf(event: ScanEvent): string | null {
  * for a log, cut at any second, schedules nothing before that second that
  * the full log does not.
  */
+/**
+ * `planScene` that reuses its last plan while the input has the same number of
+ * lines, the same start and the same failure. The runner only ever appends
+ * lines (in per-frame batches), so the count says whether anything changed;
+ * a new view object carrying the same lines costs nothing.
+ */
+export function createPlanMemo(): (input: SceneInput) => ScenePlan {
+  let last: { events: number; scanStart: number | null; failure: SceneInput["failure"]; plan: ScenePlan } | null = null;
+  return (input) => {
+    if (
+      last &&
+      last.events === input.events.length &&
+      last.scanStart === input.scanStart &&
+      last.failure === input.failure
+    ) {
+      return last.plan;
+    }
+    const plan = planScene(input);
+    last = { events: input.events.length, scanStart: input.scanStart, failure: input.failure, plan };
+    return plan;
+  };
+}
+
 export function planScene(input: SceneInput): ScenePlan {
   const { scanStart, events, failure } = input;
   const empty: ScenePlan = {

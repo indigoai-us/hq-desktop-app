@@ -6,6 +6,7 @@ import {
   countValue,
   countWord,
   feedingRow,
+  createPlanMemo,
   planScene,
   richnessCrossing,
   richnessValue,
@@ -64,6 +65,22 @@ function fastScan(): TimedScanEvent[] {
 function plan(events: TimedScanEvent[], extra: Partial<SceneInput> = {}) {
   return planScene({ scanStart: 10, events, failure: null, ...extra });
 }
+
+describe("scene model: plan memo", () => {
+  it("reuses the plan while the lines, start and failure are the same, and replans when they change", () => {
+    const planFor = createPlanMemo();
+    const log = fastScan();
+    const first = planFor({ scanStart: 10, events: log.slice(0, 5), failure: null });
+    // A new view object with the same lines: the same plan, not a new one.
+    expect(planFor({ scanStart: 10, events: [...log.slice(0, 5)], failure: null })).toBe(first);
+    const more = planFor({ scanStart: 10, events: log.slice(0, 9), failure: null });
+    expect(more).not.toBe(first);
+    expect(more).toEqual(planScene({ scanStart: 10, events: log.slice(0, 9), failure: null }));
+    const failed = planFor({ scanStart: 10, events: log.slice(0, 9), failure: { at: 12, message: "x" } });
+    expect(failed).not.toBe(more);
+    expect(planFor({ scanStart: 11, events: log.slice(0, 9), failure: null })).not.toBe(failed);
+  });
+});
 
 describe("scene model: pacing", () => {
   it("asks first: nothing is planned before Bring it in", () => {

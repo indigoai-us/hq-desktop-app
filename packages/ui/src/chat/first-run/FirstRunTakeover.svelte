@@ -373,6 +373,7 @@
                 goTo(nextFirstRunStep("context", shownSteps));
               },
               onretry: () => importRunner.retry(),
+              onrecheck: () => importRunner.recheck(),
               onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
               onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
               reducedMotion,

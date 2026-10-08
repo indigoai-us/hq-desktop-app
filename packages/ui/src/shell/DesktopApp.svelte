@@ -3228,9 +3228,14 @@
   let firstRunImportDelivered = false;
   /** A notice send is in flight (one at a time). */
   let firstRunImportSending = false;
-  /** Sends of the import notice before giving up, and the backoff step between them. */
-  const FIRST_RUN_IMPORT_SEND_TRIES = 3;
-  const FIRST_RUN_IMPORT_RETRY_MS = 2000;
+  /** The next try of a failed import notice, cleared when the shell goes away. */
+  let firstRunImportRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstRunImportStopped = false;
+  onDestroy(() => {
+    firstRunImportStopped = true;
+    if (firstRunImportRetryTimer !== null) clearTimeout(firstRunImportRetryTimer);
+    firstRunImportRetryTimer = null;
+  });
   function recordFirstRunImport(result: FirstRunImportHandoff): void {
     firstRunImport = result;
     deliverFirstRunImport();
@@ -3240,21 +3245,33 @@
    * the name step), so its kickoff went out without the import. Tell it with
    * a bot-only note, once. A create that has not started yet carries it in
    * its kickoff instead.
+   *
+   * Delivered only once a send succeeds; the idempotency key keeps a retry
+   * from showing the bot the note twice. The first send is the person's own
+   * doing (the scan they just finished). Later ones go through the notice
+   * ledger like every other notice to a bot: a refusal (a 4xx) is not
+   * repeated, and other failures are tried a few times, further apart.
    */
-  function deliverFirstRunImport(attempt = 1): void {
+  function deliverFirstRunImport(): void {
     const imported = firstRunImport;
     const bot = firstRunCreatedBot;
     if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
-    firstRunImportSending = true;
     const key = `first-run-import:${bot.agentUid}`;
-    // Delivered only once the send succeeds; the idempotency key keeps a retry
-    // from showing the bot the note twice.
-    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, true).then((sent) => {
+    const first = !connectionNoticeFailures.has(key);
+    firstRunImportSending = true;
+    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, first).then((sent) => {
       firstRunImportSending = false;
-      if (sent) firstRunImportDelivered = true;
-      else if (attempt < FIRST_RUN_IMPORT_SEND_TRIES) {
-        setTimeout(() => deliverFirstRunImport(attempt + 1), FIRST_RUN_IMPORT_RETRY_MS * attempt);
+      if (sent) {
+        firstRunImportDelivered = true;
+        return;
       }
+      // null: refused for good, or out of tries. Otherwise wait for the ledger.
+      const nextAt = connectionNoticeFailures.get(key)?.nextAt ?? null;
+      if (nextAt === null || firstRunImportRetryTimer !== null || firstRunImportStopped) return;
+      firstRunImportRetryTimer = setTimeout(() => {
+        firstRunImportRetryTimer = null;
+        deliverFirstRunImport();
+      }, Math.max(0, nextAt - Date.now()));
     });
   }
   /** Best effort: a setup bot that already existed takes the confirmed name. */

@@ -256,6 +256,8 @@ pub fn end_status(outcome: DriveOutcome, saw_done: bool, exit_code: Option<i32>,
 
 struct Active {
     scan_id: String,
+    /// The window that started it (its Destroyed event cancels it).
+    window: String,
     cancel: oneshot::Sender<()>,
 }
 
@@ -264,6 +266,8 @@ struct Registry {
     active: Option<Active>,
     /// Ids cancelled before they started, oldest first.
     precancelled: Vec<String>,
+    /// Windows whose Destroyed event is already watched (one listener each).
+    watched_windows: Vec<String>,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -274,7 +278,7 @@ fn registry() -> &'static Mutex<Registry> {
 /// Make this the running scan, cancelling any other. Returns its cancel
 /// signal, or None when this id was cancelled before it got here (the scan
 /// must not start).
-pub fn register_scan(scan_id: &str) -> Option<oneshot::Receiver<()>> {
+pub fn register_scan(scan_id: &str, window: &str) -> Option<oneshot::Receiver<()>> {
     let (tx, rx) = oneshot::channel();
     let previous = {
         let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
@@ -282,7 +286,7 @@ pub fn register_scan(scan_id: &str) -> Option<oneshot::Receiver<()>> {
             reg.precancelled.remove(at);
             return None;
         }
-        reg.active.replace(Active { scan_id: scan_id.to_string(), cancel: tx })
+        reg.active.replace(Active { scan_id: scan_id.to_string(), window: window.to_string(), cancel: tx })
     };
     if let Some(previous) = previous {
         let _ = previous.cancel.send(());
@@ -323,17 +327,101 @@ fn unregister_scan(scan_id: &str) {
     }
 }
 
+/// True the first time a window is seen, so its Destroyed listener is added once.
+fn watch_window_once(window: &str) -> bool {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if reg.watched_windows.iter().any(|w| w == window) {
+        return false;
+    }
+    reg.watched_windows.push(window.to_string());
+    true
+}
+
+fn unwatch_window(window: &str) {
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    reg.watched_windows.retain(|w| w != window);
+}
+
+/// The window closed: cancel the scan it started, if one is running. Never
+/// remembers anything (a closed window has no scan still to start).
+pub fn cancel_window_scan(window: &str) -> bool {
+    let taken = {
+        let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        if reg.active.as_ref().map(|a| a.window.as_str()) == Some(window) {
+            reg.active.take()
+        } else {
+            None
+        }
+    };
+    match taken {
+        Some(active) => {
+            let _ = active.cancel.send(());
+            true
+        }
+        None => false,
+    }
+}
+
+/// Where hq (the group leader) is, read without reaping it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaderState {
+    Running,
+    /// Exited but not reaped: its zombie still pins the group id, so a
+    /// signal to the group cannot reach a process that reused the id.
+    Exited,
+    /// Already reaped (or never ours): the group id may be reused.
+    Gone,
+}
+
+/// Peek at the leader with `waitid(WNOWAIT)`, which leaves a zombie in place.
+#[cfg(unix)]
+pub fn leader_state(pid: i32) -> LeaderState {
+    // SAFETY: waitid only writes into `info`, a zeroed siginfo_t we own.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
+    let rc = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, flags) };
+    if rc != 0 {
+        return LeaderState::Gone;
+    }
+    #[cfg(target_os = "linux")]
+    let exited_pid = unsafe { info.si_pid() };
+    #[cfg(not(target_os = "linux"))]
+    let exited_pid = info.si_pid;
+    if exited_pid == 0 {
+        LeaderState::Running
+    } else {
+        LeaderState::Exited
+    }
+}
+
+/// Wait up to `limit` for the leader to exit, without reaping it.
+#[cfg(unix)]
+async fn wait_leader_exit(pid: i32, limit: Duration) -> LeaderState {
+    let until = Instant::now() + limit;
+    loop {
+        let state = leader_state(pid);
+        if state != LeaderState::Running || Instant::now() >= until {
+            return state;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// Stop the scan's whole process group: SIGTERM to the group (hq and the
 /// scanner it started), up to 3 s for hq to exit, then SIGKILL to the group
-/// in every case, since a scanner can outlive hq. `pgid` is hq's pid, taken at
+/// in every case, since a scanner can outlive hq. The SIGKILL goes out before
+/// hq is reaped, while its zombie still holds the group id, so it can never
+/// reach a process that later reused that id. `pgid` is hq's pid, taken at
 /// spawn (hq leads its own group); ESRCH (nothing left) is ignored.
 pub async fn stop_child(child: &mut tokio::process::Child, pgid: Option<i32>) {
     #[cfg(unix)]
     if let Some(pgid) = pgid {
         let group = nix::unistd::Pid::from_raw(pgid);
         let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGTERM);
-        let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
-        kill_group(Some(pgid));
+        let state = wait_leader_exit(pgid, Duration::from_secs(3)).await;
+        if state != LeaderState::Gone {
+            kill_group(Some(pgid));
+        }
     }
     #[cfg(not(unix))]
     let _ = pgid;
@@ -341,8 +429,27 @@ pub async fn stop_child(child: &mut tokio::process::Child, pgid: Option<i32>) {
     let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
 }
 
+/// After a normal end: once hq has exited (still unreaped), clear anything it
+/// left in its group, then reap it. Returns hq's exit code, or None when it
+/// did not exit in time (the caller then stops it).
+async fn reap_after_end(child: &mut tokio::process::Child, pgid: Option<i32>) -> Option<Option<i32>> {
+    #[cfg(unix)]
+    if let Some(pgid) = pgid {
+        match wait_leader_exit(pgid, Duration::from_secs(5)).await {
+            LeaderState::Running => return None,
+            LeaderState::Exited => kill_group(Some(pgid)),
+            LeaderState::Gone => {}
+        }
+    }
+    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(status)) => Some(status.code()),
+        _ => None,
+    }
+}
+
 /// SIGKILL whatever is left of the scan's process group. Never the app's own
-/// group: hq is spawned with `process_group(0)`.
+/// group: hq is spawned with `process_group(0)`. Callers send it only while
+/// hq is unreaped.
 fn kill_group(pgid: Option<i32>) {
     #[cfg(unix)]
     if let Some(pgid) = pgid.filter(|p| *p > 1) {
@@ -420,14 +527,14 @@ async fn run_scan(app: &AppHandle, target: &str, scan_id: &str, cancel: &mut one
 
     let mut exit_code = None;
     match outcome {
-        DriveOutcome::Ended => match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
-            Ok(Ok(status)) => exit_code = status.code(),
-            _ => stop_child(&mut child, pgid).await,
+        // Anything hq left running in its group (a scanner that outlived it)
+        // goes too, before hq is reaped.
+        DriveOutcome::Ended => match reap_after_end(&mut child, pgid).await {
+            Some(code) => exit_code = code,
+            None => stop_child(&mut child, pgid).await,
         },
         DriveOutcome::Cancelled | DriveOutcome::TimedOut => stop_child(&mut child, pgid).await,
     }
-    // Anything hq left running in its group (a scanner that outlived it) goes too.
-    kill_group(pgid);
     let stderr = match stderr_task {
         Some(mut task) => match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
             Ok(Ok(text)) => text,
@@ -455,18 +562,23 @@ pub async fn import_scan_start(
 ) -> Result<ImportScanEnd, String> {
     let scan_id = validate_scan_id(&scan_id)?;
     let target = window.label().to_string();
-    let Some(mut cancel) = register_scan(&scan_id) else {
+    let Some(mut cancel) = register_scan(&scan_id, &target) else {
         // The webview cancelled before this start arrived.
         return Ok(ImportScanEnd { status: "cancelled", lines: 0, dropped: 0 });
     };
     // A command future is not dropped when its window closes, so the window's
-    // Destroyed event cancels the scan (a no-op once it has ended).
-    let watched = scan_id.clone();
-    window.on_window_event(move |event| {
-        if matches!(event, tauri::WindowEvent::Destroyed) {
-            cancel_scan(&watched);
-        }
-    });
+    // Destroyed event cancels the scan that window is running. One listener
+    // per window, added the first time it starts a scan.
+    if watch_window_once(&target) {
+        let label = target.clone();
+        window.on_window_event(move |event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                cancel_window_scan(&label);
+                // A window made later under the same label gets its own listener.
+                unwatch_window(&label);
+            }
+        });
+    }
     let end = run_scan(&app, &target, &scan_id, &mut cancel).await;
     unregister_scan(&scan_id);
     Ok(end)
@@ -587,9 +699,10 @@ mod tests {
 
     #[test]
     fn one_scan_at_a_time_and_cancel_by_id() {
-        let mut first = register_scan("test-scan-a").unwrap();
+        let _serial = registry_test_lock();
+        let mut first = register_scan("test-scan-a", "test-window").unwrap();
         // A second scan cancels the first.
-        let mut second = register_scan("test-scan-b").unwrap();
+        let mut second = register_scan("test-scan-b", "test-window").unwrap();
         assert!(first.try_recv().is_ok());
         // Only the running scan's id cancels it.
         assert!(!cancel_scan("test-scan-a"));
@@ -619,12 +732,105 @@ mod tests {
 
     #[test]
     fn a_cancel_that_beats_the_start_stops_it_from_running() {
+        let _serial = registry_test_lock();
         assert!(!cancel_scan("test-scan-early"));
-        assert!(register_scan("test-scan-early").is_none(), "a cancelled id must not start");
+        assert!(register_scan("test-scan-early", "test-window").is_none(), "a cancelled id must not start");
         // Remembered once: the same id can run later.
-        let rx = register_scan("test-scan-early");
+        let rx = register_scan("test-scan-early", "test-window");
         assert!(rx.is_some());
         unregister_scan("test-scan-early");
+    }
+
+    #[test]
+    fn a_closed_window_cancels_only_its_own_running_scan() {
+        let _serial = registry_test_lock();
+        let mut rx = register_scan("test-scan-win", "window-a").unwrap();
+        // Another window closing leaves it running.
+        assert!(!cancel_window_scan("window-b"));
+        assert!(rx.try_recv().is_err());
+        assert!(cancel_window_scan("window-a"));
+        assert!(rx.try_recv().is_ok());
+        // Nothing left to cancel, and nothing remembered: the id can still start.
+        assert!(!cancel_window_scan("window-a"));
+        let again = register_scan("test-scan-win", "window-a");
+        assert!(again.is_some(), "a window close must not block a later start");
+        unregister_scan("test-scan-win");
+    }
+
+    #[test]
+    fn a_window_gets_one_destroyed_listener() {
+        let _serial = registry_test_lock();
+        assert!(watch_window_once("test-window-once"));
+        assert!(!watch_window_once("test-window-once"));
+        assert!(!watch_window_once("test-window-once"));
+        // Once that window is gone, a new window under the label is watched again.
+        unwatch_window("test-window-once");
+        assert!(watch_window_once("test-window-once"));
+        unwatch_window("test-window-once");
+    }
+
+    /// The registry is process-wide; tests that touch it take turns.
+    fn registry_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_leader_is_read_without_reaping_it() {
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg("exit 3")
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap() as i32;
+        let state = wait_leader_exit(pid, Duration::from_secs(5)).await;
+        assert_eq!(state, LeaderState::Exited);
+        // Still unreaped: reading again says the same, and the exit code is intact.
+        assert_eq!(leader_state(pid), LeaderState::Exited);
+        let status = child.wait().await.unwrap();
+        assert_eq!(status.code(), Some(3));
+        assert_eq!(leader_state(pid), LeaderState::Gone);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_normal_end_the_group_is_cleared_before_hq_is_reaped() {
+        // hq exits at once, leaving a scanner child that ignores SIGTERM.
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("/bin/sh -c 'trap \"\" TERM; echo $$; exec sleep 30' & read _ignored; exit 0")
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let pgid = child.id().map(|id| id as i32);
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), out.read_line(&mut line)).await.unwrap().unwrap();
+        let grandchild: i32 = line.trim().parse().unwrap();
+        drop(child.stdin.take());
+
+        let code = reap_after_end(&mut child, pgid).await;
+        assert_eq!(code, Some(Some(0)));
+
+        let pid = nix::unistd::Pid::from_raw(grandchild);
+        let mut gone = false;
+        for _ in 0..50 {
+            if nix::sys::signal::kill(pid, None).is_err() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if !gone {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+        }
+        assert!(gone, "a scanner left behind by hq must not outlive the scan");
     }
 
     #[test]

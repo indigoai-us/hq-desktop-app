@@ -542,7 +542,14 @@ describe("visual first run with a setup bot that already exists", () => {
 });
 
 describe("visual first run: Bring in your context", () => {
-  it("runs the scan through the host and hands the finished import to the assistant once, as a bot-only note (retrying a failed send)", async () => {
+  const IMPORTED = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
+
+  /**
+   * Boot with the flag on, name the assistant, run the scan to its end, and
+   * hand over a finished import. Timers are fake from the scan on, so the
+   * notice ledger's waits can be stepped through.
+   */
+  async function finishAScan(firstSend: () => Promise<unknown>) {
     const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
     const { platform, sendDm } = adapter({ create, flag: true });
     const handlers = new Set<(e: { payload?: unknown }) => void>();
@@ -557,7 +564,7 @@ describe("visual first run: Bring in your context", () => {
     const scanStart = vi.fn((_scanId: string) => new Promise((resolve) => (finishScan = resolve)));
     const scanCancel = vi.fn(async () => ok(true));
     (platform as unknown as Record<string, unknown>).contextImport = { scanStart, scanCancel };
-    sendDm.mockImplementationOnce((async () => failure("network", "offline")) as never);
+    sendDm.mockImplementationOnce(firstSend as never);
 
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -594,6 +601,8 @@ describe("visual first run: Bring in your context", () => {
     await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
     q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
     await vi.waitFor(() => expect(scanStart).toHaveBeenCalledTimes(1));
+    // The ledger reads Date.now(), so the clock moves with the timers.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const scanId = scanStart.mock.calls[0]![0];
     const lines = [
       { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
@@ -602,24 +611,63 @@ describe("visual first run: Bring in your context", () => {
     ];
     for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
     finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
+    // The host's short tail wait, then the notice.
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    return { sendDm, scanCancel };
+  }
 
-    const imported = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
-    // The first send fails: it is not counted as delivered, and it is sent again.
-    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(2), { timeout: 5000 });
+  function expectImportNotices(sendDm: ReturnType<typeof vi.fn>) {
     for (const call of sendDm.mock.calls) {
       const [to, body, extras] = call as unknown as [string, string, Record<string, unknown>];
       expect(to).toBe(SETUP_BOT_UID);
       expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
-      expect(body).toBe(firstRunImportNotice(imported));
+      expect(body).toBe(firstRunImportNotice(IMPORTED));
     }
+  }
 
-    // Next: Done, then Talk: nothing is sent again.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hands the finished import to the assistant once, as a bot-only note, trying a failed send again after the ledger's wait", async () => {
+    const { sendDm, scanCancel } = await finishAScan(async () => failure("network", "offline"));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    // Not before the notice ledger allows it (30 s after a failure that may pass).
+    await vi.advanceTimersByTimeAsync(20_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(2);
+    expectImportNotices(sendDm);
+
+    // Delivered: nothing more goes, however long it waits, and Next: Done sends nothing.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
     q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
     await settle();
     expect(step()).toBe("done");
-    await settle();
     expect(sendDm).toHaveBeenCalledTimes(2);
     expect(scanCancel).not.toHaveBeenCalled();
+  });
+
+  it("a send the server refuses (403) is not tried again", async () => {
+    const { sendDm } = await finishAScan(async () => ({ ok: false, reason: "forbidden", code: "http-403" }));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expectImportNotices(sendDm);
+  });
+
+  it("a pending try is called off when the shell goes away", async () => {
+    const { sendDm } = await finishAScan(async () => failure("network", "offline"));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await unmount(component!);
+    component = null;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(sendDm).toHaveBeenCalledTimes(1);
   });
 });
 

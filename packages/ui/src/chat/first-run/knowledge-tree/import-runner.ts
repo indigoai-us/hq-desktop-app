@@ -75,8 +75,10 @@ export const MAX_SCAN_EVENTS = 5000;
 export interface ImportRunner {
   /** Start a scan, unless one is running or finished. Shows "running" at once. */
   start(): void;
-  /** Run again after a failure. */
+  /** Run again after a failure (not after "Update HQ", where it cannot help). */
   retry(): void;
+  /** Scan once more after any failure, "Update HQ" included ("Check again"). */
+  recheck(): void;
   /** Stop a running scan; the step goes back to asking. */
   cancel(): void;
   /** "Skip for now". */
@@ -279,6 +281,13 @@ export function createImportRunner(
     start,
     retry() {
       if (view.phase === "failed" && view.failure?.retry !== false) {
+        view = { ...view, phase: "idle" };
+        start();
+      }
+    },
+    recheck() {
+      // "Check again" after "Update HQ": the person may have updated HQ since.
+      if (view.phase === "failed") {
         view = { ...view, phase: "idle" };
         start();
       }

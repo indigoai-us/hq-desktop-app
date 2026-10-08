@@ -208,8 +208,26 @@ describe("Bring in your context: in the flow", () => {
     expect(runs).toHaveLength(2);
     runs[1]!.end("unavailable");
     await vi.waitFor(() => expect(q('[data-testid="first-run-import-failed"]')?.textContent).toContain(IMPORT_COPY.update));
-    // Running again cannot help until HQ is updated: no Retry.
+    // Running again cannot help until HQ is updated: no Retry, a quiet "Check again".
     expect(q('[data-testid="first-run-import-retry"]')).toBeNull();
+    const recheck = q<HTMLButtonElement>('[data-testid="first-run-import-recheck"]')!;
+    expect(recheck.textContent).toBe("Check again");
+    recheck.click();
+    recheck.click();
+    await settle();
+    // One press, one scan.
+    expect(runs).toHaveLength(3);
+    runs[2]!.end("unavailable");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-recheck"]')).toBeTruthy());
+    // Still out of date: Check again works again.
+    expect(q<HTMLButtonElement>('[data-testid="first-run-import-recheck"]')!.disabled).toBe(false);
+    click('[data-testid="first-run-import-recheck"]');
+    await settle();
+    expect(runs).toHaveLength(4);
+    for (const line of SCAN) runs[3]!.emit({ v: 1, ...line });
+    runs[3]!.end("done");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-failed"]')).toBeNull());
+    expect(q('[data-testid="first-run-import-title-done"]')?.getAttribute("aria-hidden")).toBe("false");
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(false);
     click('[data-testid="first-run-next"]');
     await settle();
@@ -231,6 +249,7 @@ describe("Bring in your context: the step on its own", () => {
       onfinish: vi.fn(),
       onback: vi.fn(),
       onannounce: vi.fn(),
+      onrecheck: vi.fn(),
     };
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -255,6 +274,22 @@ describe("Bring in your context: the step on its own", () => {
     expect(handlers.onfinish).toHaveBeenCalledTimes(1);
     expect(handlers.onnext).not.toHaveBeenCalled();
     expect(q<HTMLButtonElement>('[data-testid="first-run-next"]')?.disabled).toBe(true);
+  });
+
+  it("Check again shows it is working at once and takes one press", async () => {
+    const handlers = renderStep(
+      { phase: "failed", scanStart: 10, events: [], failure: { at: 11, message: IMPORT_COPY.update, retry: false } },
+      false,
+    );
+    await settle();
+    const recheck = q<HTMLButtonElement>('[data-testid="first-run-import-recheck"]')!;
+    recheck.click();
+    await settle();
+    expect(recheck.textContent).toBe("Checking…");
+    expect(recheck.disabled).toBe(true);
+    expect(recheck.getAttribute("aria-busy")).toBe("true");
+    recheck.click();
+    expect(handlers.onrecheck).toHaveBeenCalledTimes(1);
   });
 
   it("an empty scan shows the empty state", async () => {

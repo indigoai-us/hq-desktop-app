@@ -24,7 +24,7 @@
   import {
     countValue,
     countWord,
-    planScene,
+    createPlanMemo,
     treeSpecFor,
     PACE,
     type PlanLimb,
@@ -83,6 +83,8 @@
     onstart: () => void;
     onskip: () => void;
     onretry: () => void;
+    /** "Check again" on the Update HQ state: scan once more (HQ may have been updated meanwhile). */
+    onrecheck?: (() => void) | null;
     onnext: () => void;
     onfinish: () => void;
     /** Test seam; null follows prefers-reduced-motion. */
@@ -105,6 +107,7 @@
     onstart,
     onskip,
     onretry,
+    onrecheck = null,
     onnext,
     onfinish,
     reducedMotion = null,
@@ -117,17 +120,8 @@
    * frame; the plan is rebuilt only when that batch, the start or the failure
    * changed (a new view object with the same lines reuses the last plan).
    */
-  let planMemo: { events: number; scanStart: number | null; failure: ImportRunView["failure"]; plan: ScenePlan } | null =
-    null;
-  const plan = $derived.by<ScenePlan>(() => {
-    const memo = planMemo;
-    if (memo && memo.events === run.events.length && memo.scanStart === run.scanStart && memo.failure === run.failure) {
-      return memo.plan;
-    }
-    const next = planScene({ scanStart: run.scanStart, events: run.events, failure: run.failure });
-    planMemo = { events: run.events.length, scanStart: run.scanStart, failure: run.failure, plan: next };
-    return next;
-  });
+  const planFor = createPlanMemo();
+  const plan = $derived<ScenePlan>(planFor({ scanStart: run.scanStart, events: run.events, failure: run.failure }));
   /** Retry helps unless HQ itself needs an update first. */
   const canRetry = $derived(run.failure?.retry !== false);
   /** Asking first: before "Bring it in" (and after a cancel or a skip). */
@@ -146,15 +140,20 @@
   const reduced = $derived(reducedMotion ?? prefersReduced);
 
   /** One press per action: Bring it in, Skip, Retry, Next and Finish all hold once pressed. */
-  let pressed = $state<"start" | "skip" | "next" | "finish" | null>(null);
+  let pressed = $state<"start" | "skip" | "next" | "finish" | "recheck" | null>(null);
+  /** The failure "Check again" was pressed on; the press holds until the scan it ran has ended. */
+  let recheckedFailure: ImportRunView["failure"] = null;
   $effect(() => {
     // A new phase is a new decision.
-    void run.phase;
+    const phase = run.phase;
+    const failure = run.failure;
     untrack(() => {
       if (pressed === "start" || pressed === "skip") pressed = null;
+      if (pressed === "recheck" && phase !== "running" && failure !== recheckedFailure) pressed = null;
     });
   });
-  function press(kind: "start" | "skip" | "next" | "finish", fn: () => void): void {
+  function press(kind: "start" | "skip" | "next" | "finish" | "recheck", fn: () => void): void {
+    if (pressed === null && kind === "recheck") recheckedFailure = run.failure;
     if (pressed !== null) return;
     pressed = kind;
     fn();
@@ -610,7 +609,14 @@
       {#if plan.failure}
         <p class="fr-status" data-fr-status data-testid="first-run-import-failed">
           <span>{plan.failure.message}</span>
-          {#if canRetry}<button type="button" class="fr-link" data-testid="first-run-import-retry" onclick={onretry}>Retry</button>{/if}
+          {#if canRetry}<button type="button" class="fr-link" data-testid="first-run-import-retry" onclick={onretry}>Retry</button>{:else if onrecheck}<button
+              type="button"
+              class="fr-link"
+              data-testid="first-run-import-recheck"
+              disabled={pressed === "recheck"}
+              aria-busy={pressed === "recheck" ? "true" : undefined}
+              onclick={() => press("recheck", onrecheck)}
+            >{pressed === "recheck" ? "Checking…" : "Check again"}</button>{/if}
         </p>
       {/if}
     {/if}
