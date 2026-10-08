@@ -244,6 +244,31 @@ describe("Cancel for a bot that exists", () => {
     expect(onclosewaking).not.toHaveBeenCalled();
   });
 
+  it("asks where the next bot should live after a removal, so Local never lands on the cloud plan check", async () => {
+    // Regression: a starting bot's row opens the takeover with no where
+    // question. Removing that bot started clean on the name, and the next
+    // name went straight to the cloud company screen, which loads the
+    // company's plan and price.
+    const loadProvisionOptions = vi.fn(CREATE_PROPS.loadProvisionOptions);
+    const onchooselocal = vi.fn();
+    render({ ...CREATE_PROPS, loadProvisionOptions, oncreate: vi.fn(), onchooselocal, wakingSession: wakingSession(), getStatus: null, oncancelbot: vi.fn() });
+    await settle();
+    click('[data-testid="new-bot-takeover-cancel"]');
+    await settle();
+    click('[data-testid="new-bot-cancel-remove"]');
+    await settle();
+    await typeName("Testy");
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Testy live?");
+    click('[data-testid="new-bot-choice-local"]');
+    await settle();
+    expect(onchooselocal).toHaveBeenCalledWith("Testy");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(loadProvisionOptions).not.toHaveBeenCalled();
+  });
+
   it("keeps the bot when the person backs out, by button or by Escape", async () => {
     const oncancelbot = vi.fn();
     const onclosewaking = vi.fn();

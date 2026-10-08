@@ -442,6 +442,33 @@ describe("The flow's own Cloud or Local question", () => {
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Nova");
   });
 
+  it("Local never loads the company plan, picked first or after Cloud and Back", async () => {
+    const plan = vi.fn(async () => ok(CLOUD_QUOTE));
+    openBoth({ loadCloudProvisionOptions: plan });
+    await settle();
+    await nameIt("Testy");
+    click('[data-testid="new-bot-choice-local"]');
+    await settle(10);
+    expect(step()).toBe("home");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(plan).not.toHaveBeenCalled();
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="new-bot-choice-cloud"]');
+    await settle(10);
+    expect(step()).toBe("details");
+    const checks = plan.mock.calls.length;
+    expect(checks).toBe(1);
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="new-bot-choice-local"]');
+    await settle(10);
+    expect(step()).toBe("home");
+    expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeNull();
+    expect(plan).toHaveBeenCalledTimes(checks);
+  });
+
   it("offers Connect it under the tiles for a bot that runs somewhere else, on its own screen", async () => {
     openBoth();
     await settle();

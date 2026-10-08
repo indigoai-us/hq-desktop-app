@@ -295,6 +295,51 @@ describe("New bot asks the name, then Cloud or Local", () => {
     expect(q<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("Polar");
   });
 
+  it("Local never reaches a cloud screen or the plan check, picked first or after Cloud and Back", async () => {
+    const plan = vi.fn(async () => ok(CLOUD_PROVISION_OPTIONS));
+    mountSidebar({
+      companies: [INDIGO],
+      oncreatebot: localBot(),
+      oncreateagent: vi.fn(async () => okTarget),
+      oncreatenewbot: vi.fn(async () => okTarget),
+      newBotCompanyUids: ["cmp_indigo"],
+      loadCloudProvisionOptions: plan,
+    });
+    await settle();
+    await newBotNamed("Testy");
+    click('[data-testid="new-bot-choice-local"]');
+    await settle(10);
+    const flow = () => q('[data-testid="chat-create-bot-step"]');
+    expect(flow()?.getAttribute("data-home")).toBe("local");
+    expect(flow()?.getAttribute("data-step")).toBe("home");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    // Every local step, and Finish, without one plan check.
+    for (let i = 0; i < 4 && q('[data-testid="create-bot-next"]'); i += 1) {
+      click('[data-testid="create-bot-next"]');
+      await settle();
+      expect(flow()?.getAttribute("data-home")).toBe("local");
+    }
+    expect(plan).not.toHaveBeenCalled();
+
+    // Back to the choice, Cloud (the plan is checked there), Back, then Local.
+    for (let i = 0; i < 5 && !q('[data-testid="new-bot-kind-choice"]'); i += 1) {
+      click('[data-testid="create-bot-back"]');
+      await settle();
+    }
+    click('[data-testid="new-bot-choice-cloud"]');
+    await settle(10);
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    const checks = plan.mock.calls.length;
+    expect(checks).toBeGreaterThan(0);
+    click('[data-testid="new-bot-back-to-choice"]');
+    await settle();
+    click('[data-testid="new-bot-choice-local"]');
+    await settle(10);
+    expect(flow()?.getAttribute("data-home")).toBe("local");
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeNull();
+    expect(plan.mock.calls.length).toBe(checks);
+  });
+
   it("Cloud with a takeover company opens the takeover's own create screen with the name", async () => {
     mountSidebar({
       companies: [INDIGO],

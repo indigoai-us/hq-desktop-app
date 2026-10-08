@@ -188,16 +188,25 @@
   let phase = $state<Phase>(openingPhase());
   /** The bot's name, from the first step. Kept across Back and the other screens. */
   let botName = $state(untrack(() => initialName.trim()));
-  /** The where question is part of this New bot's steps (and its dots). */
-  const asksWhere = $derived(choose || !hasCloudScreen);
   /**
-   * Step dots for the screens the takeover shows: the name, the where
-   * question, then the steps after it. Local continues on one coding tool
-   * step; Cloud on its brain step and, with more than one company, the
-   * company step.
+   * The next bot after a clean start (a cancelled create, a removed bot) is
+   * a new New bot: it asks where it should live again, even when this
+   * takeover was opened on a starting bot's row with no question. Without
+   * this, the name led straight to the cloud create screen and its plan
+   * check, and Local could not be picked.
+   */
+  let askWhereNext = $state(false);
+  /** The where question is part of this New bot's steps (and its dots). */
+  const asksWhere = $derived(choose || askWhereNext || !hasCloudScreen);
+  /**
+   * Step bars for the screens the takeover shows: the name, the where
+   * question, then the steps after it. Cloud continues on its brain step,
+   * the company step when there is more than one company, and the size.
+   * Without the cloud screen the bars count the local steps' shortest walk
+   * (coding tool, who it's for, fine-tune).
    */
   const leadSteps = $derived(asksWhere ? 2 : 1);
-  const totalSteps = $derived(leadSteps + (hasCloudScreen && companies.length > 1 ? 2 : 1));
+  const totalSteps = $derived(leadSteps + (hasCloudScreen ? (companies.length > 1 ? 3 : 2) : 3));
 
   function continueName(name: string): void {
     botName = name;
@@ -350,6 +359,7 @@
   function startClean(): void {
     createScreenKey += 1;
     botName = "";
+    if (onchooselocal) askWhereNext = true;
     phase = "name";
   }
 
