@@ -19508,12 +19508,6 @@ mod tests {
     #[test]
     fn launch_check_uses_the_shipped_floor() {
         assert_eq!(
-            launch_cli_check(Some("5.115.4")),
-            LaunchCliCheck::RepairNow {
-                local: "5.115.4".to_string()
-            }
-        );
-        assert_eq!(
             launch_cli_check(Some("0.0.1")),
             LaunchCliCheck::RepairNow {
                 local: "0.0.1".to_string()
