@@ -176,6 +176,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   handleUpdateInstall: "none",
   handleUpdateDismiss: "none",
   applyUpdateGateStatus: "none",
+  // Sync progress toast: hiding it is not navigation.
+  handleSyncToastDismiss: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [
