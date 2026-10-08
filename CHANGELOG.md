@@ -17,7 +17,8 @@ The release moves it under the version it ships in.
 ### Fixed
 
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
-- Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.51, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
+- Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.52, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
+- Sync no longer keeps re-uploading a file the cloud already has with the same contents. It now marks that file as synced.
 
 ## [0.10.402] — 2026-10-07
 

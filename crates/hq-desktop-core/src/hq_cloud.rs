@@ -728,7 +728,17 @@
 /// no `*_MIN_HQ_CLOUD` floor. It stays on the 6.18 minor line, so
 /// `RESCUE_CONTRACT_FLOOR` stays 6.18.0. Raising the lower bound moves npm's
 /// cache key so installed copies refresh their cached runner.
-pub const HQ_CLOUD_VERSION: &str = "~6.18.51";
+///
+/// `~6.18.51` -> `~6.18.52`: floors the runner at the stale re-push fix
+/// (hq-cloud#898). When a presign was refused because the vault already held
+/// the exact bytes, the runner now records the file as reconciled instead of
+/// retrying the push. 6.18.52 also recovers from malformed journal snapshot
+/// rows (adding an additive `journal-quarantine` runner event the desktop
+/// skips as unknown), counts uploads completed during realtime journal
+/// advancement, and redacts spaced filenames from push telemetry. Runner bug
+/// fixes, not a new desktop-visible capability, so no `*_MIN_HQ_CLOUD` floor;
+/// it stays on the 6.18 minor line, so `RESCUE_CONTRACT_FLOOR` stays 6.18.0.
+pub const HQ_CLOUD_VERSION: &str = "~6.18.52";
 
 /// First `@indigoai-us/hq-cloud` version that ships the post-sync
 /// manifest-upload pass (US-004, sync-reconciliation-audit).
@@ -856,7 +866,7 @@ mod tests {
     /// every pin bump (the name tracks the newest guarantee the pin floors at).
     #[test]
     fn version_pin_is_exactly_current() {
-        assert_eq!(HQ_CLOUD_VERSION, "~6.18.51");
+        assert_eq!(HQ_CLOUD_VERSION, "~6.18.52");
     }
 
     /// Root-`bin/` exclusion floor (hq-cloud#501). Below this floor a personal
