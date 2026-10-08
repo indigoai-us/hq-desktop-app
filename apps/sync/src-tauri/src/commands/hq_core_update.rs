@@ -749,7 +749,7 @@ async fn install_hq_core_update_inner(
                         }
                     ),
                 );
-                if result.refresh_pending {
+                if result.refresh_pending || result.persistence_diagnostic.is_some() {
                     let detail = result
                         .persistence_diagnostic
                         .as_ref()

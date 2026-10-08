@@ -219,6 +219,20 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(tray).toContain('compose_tray_tooltip_with_pause(');
   });
 
+  it('checks unchanged native tray snapshots every two seconds while idle', () => {
+    const swift = read('src-tauri/helper/hq-tray-helper.swift');
+    // The helper's previous 350ms cadence woke about 2.9 times per second to
+    // read these files. The menu remains fresh within two seconds, and the
+    // readers gate AppKit work and JSON parsing on content changes.
+    expect(swift).toContain('withTimeInterval: 2.0, repeats: true');
+    expect(swift).toMatch(
+      /withTimeInterval: 2\.0, repeats: true\)[\s\S]*?refreshBadge\(\)[\s\S]*?refreshStatus\(\)[\s\S]*?kill\(hqPid, 0\)/,
+    );
+    expect(swift).not.toContain('withTimeInterval: 0.35');
+    expect(swift).toMatch(/guard snapshot != lastBadgeSnapshot else \{ return \}/);
+    expect(swift).toMatch(/guard data != lastStatusSnapshot else \{ return \}[\s\S]*?TrayUploadsPausedPresentation\.rows/);
+  });
+
   it('marshals the menu-bar click toggle onto the main thread (no poll-thread deadlock)', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     // The poll thread must NOT call window ops directly — it marshals them.

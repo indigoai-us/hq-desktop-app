@@ -907,11 +907,19 @@ pub fn hq_version_string(bin: &Path) -> Option<String> {
 }
 
 fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionProbeOutcome) {
+    hq_version_string_probe_with_timeout(bin, path, VERSION_PROCESS_TIMEOUT)
+}
+
+fn hq_version_string_probe_with_timeout(
+    bin: &Path,
+    path: &str,
+    timeout: Duration,
+) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
     let out = match output_with_timeout(
         cmd.arg("--version").env("PATH", path),
-        VERSION_PROCESS_TIMEOUT,
+        timeout,
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
@@ -1027,15 +1035,16 @@ fn parse_version_line(stdout: &str) -> (Option<String>, VersionProbeOutcome) {
 /// when [`shebang_names_node`] confirmed the program is a node entrypoint but
 /// the shebang's own interpreter lookup failed.
 #[cfg(unix)]
-fn hq_version_via_node(
+fn hq_version_via_node_with_timeout(
     node: &Path,
     program: &Path,
     path: &str,
+    timeout: Duration,
 ) -> (Option<String>, VersionProbeOutcome) {
     let node = node.to_string_lossy();
     let program = program.to_string_lossy();
     let mut cmd = paths::spawn_command(node.as_ref(), &[program.as_ref(), "--version"]);
-    let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
+    let out = match output_with_timeout(cmd.env("PATH", path), timeout) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_probe_error(&error)),
@@ -1065,10 +1074,11 @@ fn hq_version_via_node(
 /// provisioning a *missing* managed Node is the app check flow's job
 /// (`recover_unreadable_version_once`). Returns the version, the probe outcome,
 /// the projected managed-runtime state, and what the recovery did.
-fn hq_version_with_recovery(
+fn hq_version_with_recovery_timeout(
     hq: Option<&Path>,
     path: &str,
     managed: Option<&crate::toolchain::ManagedRuntime>,
+    timeout: Duration,
 ) -> (
     Option<String>,
     VersionProbeOutcome,
@@ -1084,7 +1094,7 @@ fn hq_version_with_recovery(
         );
     };
 
-    let (local, outcome) = hq_version_string_probe(hq, path);
+    let (local, outcome) = hq_version_string_probe_with_timeout(hq, path, timeout);
     if local.is_some() || !recovery_applicable(outcome) {
         return (
             local,
@@ -1120,7 +1130,8 @@ fn hq_version_with_recovery(
         // Retry 1: put the managed Node's own bin dir first on the child PATH so
         // the shim's `env node` resolves it.
         let widened = paths::path_with_interpreter_hint(path, node_bin);
-        let (recovered, recovered_outcome) = hq_version_string_probe(hq, &widened);
+        let (recovered, recovered_outcome) =
+            hq_version_string_probe_with_timeout(hq, &widened, timeout);
         if recovered.is_some() {
             return (
                 recovered,
@@ -1134,7 +1145,8 @@ fn hq_version_with_recovery(
         // managed Node directly, bypassing the shebang lookup entirely.
         #[cfg(unix)]
         if shebang_names_node(hq) {
-            let (recovered, recovered_outcome) = hq_version_via_node(node, hq, &widened);
+            let (recovered, recovered_outcome) =
+                hq_version_via_node_with_timeout(node, hq, &widened, timeout);
             if recovered.is_some() {
                 return (
                     recovered,
@@ -1257,6 +1269,27 @@ fn probe_local_version(
 }
 
 #[cfg(test)]
+fn probe_local_version_with_timeout(
+    hq: Option<&Path>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
+) -> LocalVersionProbeResult {
+    let kind = match hq {
+        Some(_) => ResolvedProgramKind::Exe,
+        None => ResolvedProgramKind::NotResolved,
+    };
+    probe_local_version_with_managed_and_timeout(
+        hq,
+        kind,
+        None,
+        npm,
+        path,
+        hq_version_timeout,
+    )
+}
+
+#[cfg(test)]
 fn probe_local_version_with_kind(
     hq: Option<&Path>,
     resolved_program_kind: ResolvedProgramKind,
@@ -1279,6 +1312,25 @@ fn probe_local_version_with_managed(
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
+    probe_local_version_with_managed_and_timeout(
+        hq,
+        resolved_program_kind,
+        managed,
+        npm,
+        path,
+        VERSION_PROCESS_TIMEOUT,
+    )
+}
+
+#[cfg(test)]
+fn probe_local_version_with_managed_and_timeout(
+    hq: Option<&Path>,
+    resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
+) -> LocalVersionProbeResult {
     let (local, binary_anchor) = match hq {
         Some(hq) => version_from_hq_binary_probe(hq),
         None => (None, VersionProbeOutcome::NotAttempted),
@@ -1299,7 +1351,7 @@ fn probe_local_version_with_managed(
             },
         };
     }
-    probe_local_version_after_binary(
+    probe_local_version_after_binary_with_timeout(
         hq,
         binary_anchor,
         binary_anchor_shape,
@@ -1307,6 +1359,7 @@ fn probe_local_version_with_managed(
         managed,
         npm,
         path,
+        hq_version_timeout,
     )
 }
 
@@ -1318,6 +1371,28 @@ fn probe_local_version_after_binary(
     managed: Option<&crate::toolchain::ManagedRuntime>,
     npm: Option<&str>,
     path: &str,
+) -> LocalVersionProbeResult {
+    probe_local_version_after_binary_with_timeout(
+        hq,
+        binary_anchor,
+        binary_anchor_shape,
+        resolved_program_kind,
+        managed,
+        npm,
+        path,
+        VERSION_PROCESS_TIMEOUT,
+    )
+}
+
+fn probe_local_version_after_binary_with_timeout(
+    hq: Option<&Path>,
+    binary_anchor: VersionProbeOutcome,
+    binary_anchor_shape: BinaryAnchorShape,
+    resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
 ) -> LocalVersionProbeResult {
     let hq_installed = hq.is_some();
     // The backing sub-case is derived from the binary-anchor outcome already in
@@ -1344,7 +1419,7 @@ fn probe_local_version_after_binary(
     }
 
     let (local, hq_version, managed_runtime, interpreter_recovery) =
-        hq_version_with_recovery(hq, path, managed);
+        hq_version_with_recovery_timeout(hq, path, managed, hq_version_timeout);
     // Make `hq_installed` truthful for the definitively-foreign case. A resolved
     // `hq` we could read NO version from (npm-root and `hq --version` both failed)
     // AND whose backing is a DEFINITIVE package-absent OUTSIDE every managed root
@@ -1409,16 +1484,10 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
 /// Minimum `@indigoai-us/hq-cli` version the desktop app accepts as current
 /// enough to leave alone until the next *scheduled* check.
 ///
-/// Mirrors the `MIN_VERSION` floor in hq-core's
-/// `core/hooks/UserPromptSubmit/30-ensure-hq-cli.sh`, which treats an installed
-/// CLI below this version as missing and reinstalls it on the next prompt. Keep
-/// the two in sync: a CLI hq-core refuses to run with is one the desktop app
-/// should not sit on for the updater's launch stagger or its 6h interval either.
-///
-/// 5.115.4: the create-bot flow passes `--kind`/`--company` for company bots
-/// and relies on the bot-kinds contract (hq-cli #596/#598/#599/#605); an
-/// older CLI answers `unknown option '--kind'`.
-pub const HQ_CLI_MIN_VERSION: &str = "5.115.4";
+/// 5.345.46 adds the Codex hook trust step and `HQ_ROOT` / `CLAUDE_PROJECT_DIR`
+/// environment for global Claude hooks, alongside the `install --global
+/// --runtime` and matching uninstall commands used by HQ Anywhere.
+pub const HQ_CLI_MIN_VERSION: &str = "5.345.46";
 
 /// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
 ///
@@ -5924,6 +5993,10 @@ pub enum InstallFailureKind {
     ExpectedDiskFull,
     UnexpectedLifecycle,
     Unexpected,
+    /// A known native Node crash from HQ's managed runtime while the Node ABI
+    /// and npm version probes both failed. HQ can repair that managed toolchain
+    /// and retry once, so this remains an actionable install failure.
+    NativeCrash,
     /// The user's PATH Node is older than [`MIN_NODE_MAJOR`], so the published
     /// CLI (whose own `engines.node` rules it out) can never install and npm dies
     /// before emitting its structured error block. A permanent per-machine
@@ -6139,6 +6212,41 @@ pub fn classify_install_failure_with_environment(
     final_attempt_forced: bool,
     env: &InstallEnvironment,
 ) -> InstallFailureKind {
+    classify_install_failure_with_environment_and_stderr(
+        exit_code,
+        detail,
+        detail,
+        prefix,
+        final_attempt_forced,
+        env,
+    )
+}
+
+/// Classify a failed install while keeping the actual stderr separate from the
+/// detail shown to the user. `detail` may include stdout as a fallback; native
+/// process-crash evidence must use stderr because Node can emit ordinary stdout
+/// before Windows terminates it with an access violation.
+pub fn classify_install_failure_with_environment_and_stderr(
+    exit_code: Option<i32>,
+    detail: &str,
+    raw_stderr: &str,
+    prefix: Option<&str>,
+    final_attempt_forced: bool,
+    env: &InstallEnvironment,
+) -> InstallFailureKind {
+    if env.toolchain_source == NpmToolchainSource::Managed
+        && env.node_abi.is_none()
+        && env.npm_version.is_none()
+        && is_windows_native_crash_status(exit_code)
+        && node_crash_kind(exit_code, raw_stderr).kind != NodeCrashKind::None
+    {
+        // HQ-DESKTOP-56: a managed Node access violation with failed runtime
+        // probes is evidence that HQ's own extracted toolchain is broken. Keep
+        // the event reportable under a closed crash tag and let the app use its
+        // existing bounded managed repair and one-shot retry.
+        return InstallFailureKind::NativeCrash;
+    }
+
     let base = classify_install_failure_with_final_attempt(
         exit_code,
         detail,
@@ -6183,6 +6291,7 @@ impl InstallFailureKind {
             Self::ExpectedDiskFull => "expected-disk-full",
             Self::UnexpectedLifecycle => "unexpected-lifecycle",
             Self::Unexpected => "unexpected",
+            Self::NativeCrash => "native_crash",
             Self::UnsupportedNode => "unsupported-node",
             Self::MissingGlobalInstallTarget => "missing-global-install-target",
             Self::ForeignRegistryPackageMissing => "foreign-registry-404",
@@ -6342,6 +6451,16 @@ fn node_crash_kind(exit_code: Option<i32>, stderr: &str) -> NodeCrashClassificat
         NodeCrashKind::Abort
     };
     NodeCrashClassification { kind, evidence }
+}
+
+/// Windows NTSTATUS crash exits that the existing Node crash classifier knows
+/// how to attribute. POSIX signal exits stay on their existing classification
+/// path and do not trigger a Windows-only forced replacement.
+fn is_windows_native_crash_status(exit_code: Option<i32>) -> bool {
+    matches!(
+        exit_code,
+        Some(-2_147_483_645 | -1_073_741_819 | -1_073_740_791)
+    )
 }
 
 /// Whether one stderr line is an npm-logger line (`npm error …` / `npm ERR! …`,
@@ -6561,6 +6680,9 @@ fn install_failure_signature_with_environment(
             .unwrap_or_else(|| "unknown".to_string());
         return format!("unsupported-node:{major}");
     }
+    if kind == InstallFailureKind::NativeCrash {
+        return "native-crash".to_string();
+    }
     // A NON-EMPTY markerless `Unexpected` failure (HQ-DESKTOP-56 reopen): npm
     // structured nothing, so the env-blind signature would collapse to the empty
     // `none:unknown:none` bucket where unrelated causes merged into one permanently
@@ -6588,7 +6710,9 @@ fn install_failure_signature_with_exit_code(
     env: &InstallEnvironment,
 ) -> String {
     let crash = node_crash_kind(exit_code, detail);
-    if kind == InstallFailureKind::Unexpected && crash.kind != NodeCrashKind::None {
+    if matches!(kind, InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash)
+        && crash.kind != NodeCrashKind::None
+    {
         return format!("node-crash:{}", crash.kind.tag_value());
     }
     install_failure_signature_with_environment(kind, detail, prefix, env)
@@ -6689,6 +6813,9 @@ pub fn install_failure_detail_with_environment(
         // keeps the "copied command" escape hatch every other arm keeps.
         return "hq could not update because this computer's npm is set to use a package registry that does not carry hq. Point npm at the public npm registry for the @indigoai-us scope (or reconnect to your company VPN if it uses an internal mirror), then run the copied command in a terminal.".to_string();
     }
+    if kind == InstallFailureKind::NativeCrash && detail.trim().is_empty() {
+        return "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails.".to_string();
+    }
     if npm_lifecycle_failure(detail).failed {
         // Cause-specific, actionable wording. Every branch keeps the copyable
         // command escape hatch ("copied command") so the UI fallback is intact
@@ -6728,6 +6855,7 @@ pub fn install_failure_detail_with_environment(
         // Unreachable in practice — `ExpectedDiskFull` returns early above,
         // before the empty-stderr fallback — but the match must stay exhaustive.
         InstallFailureKind::ExpectedDiskFull => DISK_FULL_DETAIL.to_string(),
+        InstallFailureKind::NativeCrash => "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails.".to_string(),
         // `UnsupportedNode`, `MissingGlobalInstallTarget`, and
         // `ForeignRegistryPackageMissing` return their actionable copy early above;
         // these arms keep the match exhaustive without ever being reached for them.
@@ -6812,6 +6940,7 @@ pub fn install_failure_report_with_environment(
             return Some("[hq-cli-update] hq shim collision survived npm --force".to_string())
         }
         InstallFailureKind::Unexpected
+        | InstallFailureKind::NativeCrash
         | InstallFailureKind::UnexpectedLifecycle
         | InstallFailureKind::UnsupportedNode
         | InstallFailureKind::WindowsLockedInstallTarget
@@ -6897,15 +7026,18 @@ pub enum ManagedRetryOutcome {
     /// still could not be resolved on disk — so no retry ran.
     NoManagedNpm,
     /// Armed, but the shared Node repair slot was claimed too recently
-    /// (cooldown deferral) AND no already-present managed npm was available to fall
-    /// back on. A deferral is NOT evidence a managed toolchain is absent, so this is
-    /// only reached when the managed npm is genuinely missing.
+    /// (cooldown deferral), so no repair-dependent retry ran. Ordinary user-path
+    /// recovery may still use an existing managed npm; a managed-crash retry does
+    /// not reuse the runtime that just crashed.
     ProvisionDeferred,
-    /// Armed, but a fresh managed-Node provision failed AND no already-present
-    /// managed npm was available to fall back on.
+    /// Armed, but a fresh managed-Node provision failed, so no repair-dependent
+    /// retry ran. Ordinary user-path recovery may still use an existing managed npm.
     ProvisionFailed,
     /// Armed and a managed npm resolved, but npm itself could not be spawned.
     SpawnFailed,
+    /// The managed runtime was repaired, but the retry could not safely write
+    /// into a user-owned CLI prefix because its Node ABI was unknown or different.
+    UnsafeUserTarget,
 }
 
 impl ManagedRetryOutcome {
@@ -6917,6 +7049,7 @@ impl ManagedRetryOutcome {
             Self::ProvisionDeferred => "provision-deferred",
             Self::ProvisionFailed => "provision-failed",
             Self::SpawnFailed => "spawn-failed",
+            Self::UnsafeUserTarget => "unsafe-user-target",
         }
     }
 }
@@ -7697,6 +7830,26 @@ pub fn managed_retry_start_decision(
     }
 }
 
+/// START decision for repairing a managed toolchain that just suffered a known
+/// native crash. Unlike a retry from the user's PATH, a deferred or failed repair
+/// must not fall back to the same managed runtime that crashed.
+pub fn managed_crash_retry_start_decision(
+    disposition: ManagedRepairDisposition,
+    resolved_managed: Option<(String, String, String)>,
+) -> ManagedRetryStart {
+    match disposition {
+        ManagedRepairDisposition::Repaired => {
+            managed_retry_start_decision(disposition, resolved_managed)
+        }
+        ManagedRepairDisposition::Deferred => {
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionDeferred)
+        }
+        ManagedRepairDisposition::Failed => {
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionFailed)
+        }
+    }
+}
+
 /// Toolchain provenance for a failed hq-CLI install — the evidence the reported
 /// HQ-DESKTOP-4R / HQ-DESKTOP-4S events lacked. Every version field is optional
 /// because the updater probes them best-effort; a missing or malformed value is
@@ -7991,7 +8144,10 @@ pub fn report_install_failure_with_environment(
     // `Some` only for the attributed subclass, so every other event's tags and the
     // diagnostics extra stay byte-identical to today.
     let unattributed_profile = install_failure_unattributed_profile(kind, detail, prefix);
-    let crash_kind = if kind == InstallFailureKind::Unexpected {
+    let crash_kind = if matches!(
+        kind,
+        InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash
+    ) {
         node_crash_kind(exit_code, detail)
     } else {
         NodeCrashClassification::NONE
@@ -8371,7 +8527,10 @@ pub fn install_failure_episode_key_with_environment(
             key
         });
     }
-    if kind == InstallFailureKind::Unexpected {
+    if matches!(
+        kind,
+        InstallFailureKind::Unexpected | InstallFailureKind::NativeCrash
+    ) {
         // A genuinely unexpected install failure with a DISCRIMINATING shape recurs
         // identically on every 6-hourly check — the HQ-DESKTOP-5B ENOTEMPTY wedge is
         // the archetype: its debris survives (root-owned or locked) so the same
@@ -8808,6 +8967,25 @@ pub fn package_use_lease_retry_attempt_tag(attempt: u8) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderRootRelation {
+    Same,
+    Older,
+    Legacy,
+    Unknown,
+}
+
+impl HolderRootRelation {
+    pub const fn as_tag(self) -> &'static str {
+        match self {
+            Self::Same => "same",
+            Self::Older => "older",
+            Self::Legacy => "legacy",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Report a bounded timeout while waiting for active HQ CLI processes to
 /// release the package-use lease. The fixed message, tag, and fingerprint
 /// intentionally exclude local paths and process details.
@@ -8828,6 +9006,14 @@ pub fn report_package_use_lease_timeout(
                 "holder_live_count_bucket",
                 summary.live_holder_count.as_tag(),
             );
+            scope.set_tag(
+                "holder_same_root_live_count_bucket",
+                summary.same_root_live_holder_count.as_tag(),
+            );
+            scope.set_tag(
+                "holder_other_root_live_count_bucket",
+                summary.other_root_live_holder_count.as_tag(),
+            );
             scope.set_tag("holder_version_bucket", summary.holder_version.as_tag());
             scope.set_tag(
                 "oldest_holder_age_bucket",
@@ -8836,6 +9022,11 @@ pub fn report_package_use_lease_timeout(
             scope.set_tag(
                 "oldest_holder_purpose",
                 summary.oldest_holder_purpose.as_tag(),
+            );
+            // This updater currently mutates only the legacy npm-installed root.
+            scope.set_tag(
+                "holder_root_relation",
+                HolderRootRelation::Legacy.as_tag(),
             );
             scope.set_fingerprint(Some(&[
                 "hq-cli-update",
@@ -9807,6 +9998,8 @@ mod tests {
 
         let summary = PackageUseLeaseTimeoutSummary {
             live_holder_count: LiveHolderCountBucket::TwoToThree,
+            same_root_live_holder_count: LiveHolderCountBucket::One,
+            other_root_live_holder_count: LiveHolderCountBucket::TwoToThree,
             holder_version: HolderVersionBucket::Pre53424,
             oldest_holder_age: HolderAgeBucket::From1hTo24h,
             oldest_holder_purpose: HolderPurposeBucket::Daemon,
@@ -9827,9 +10020,12 @@ mod tests {
         );
         assert_eq!(event.tags["lease_retry_attempt"], "0");
         assert_eq!(event.tags["holder_live_count_bucket"], "2-3");
+        assert_eq!(event.tags["holder_same_root_live_count_bucket"], "1");
+        assert_eq!(event.tags["holder_other_root_live_count_bucket"], "2-3");
         assert_eq!(event.tags["holder_version_bucket"], "pre_5_342_4");
         assert_eq!(event.tags["oldest_holder_age_bucket"], "1h-24h");
         assert_eq!(event.tags["oldest_holder_purpose"], "daemon");
+        assert_eq!(event.tags["holder_root_relation"], "legacy");
         let fingerprint: Vec<&str> = event.fingerprint.iter().map(|part| part.as_ref()).collect();
         assert_eq!(
             fingerprint,
@@ -9840,8 +10036,84 @@ mod tests {
             ]
         );
         let message = event.message.as_deref().expect("static event message");
+        assert_eq!(
+            message,
+            "[hq-cli-update] timed out waiting for active HQ CLI package use"
+        );
         assert!(!message.contains('/') && !message.contains('\\'));
         assert!(event.extra.is_empty());
+    }
+
+    #[test]
+    fn holder_root_relation_tags_are_closed() {
+        assert_eq!(HolderRootRelation::Same.as_tag(), "same");
+        assert_eq!(HolderRootRelation::Older.as_tag(), "older");
+        assert_eq!(HolderRootRelation::Legacy.as_tag(), "legacy");
+        assert_eq!(HolderRootRelation::Unknown.as_tag(), "unknown");
+    }
+
+    #[test]
+    fn holder_root_relation_and_failure_tags_match_their_closed_vocabularies() {
+        let holder_root_relation_tags = [
+            HolderRootRelation::Same.as_tag(),
+            HolderRootRelation::Older.as_tag(),
+            HolderRootRelation::Legacy.as_tag(),
+            HolderRootRelation::Unknown.as_tag(),
+        ];
+        assert_eq!(
+            holder_root_relation_tags,
+            ["same", "older", "legacy", "unknown"]
+        );
+
+        let failure_tags = [
+            InstallFailureKind::ExpectedPrefixPermission.fingerprint_component(),
+            InstallFailureKind::ExpectedWindowsAbort.fingerprint_component(),
+            InstallFailureKind::ExpectedWindowsLockedBinary.fingerprint_component(),
+            InstallFailureKind::WindowsLockedInstallTarget.fingerprint_component(),
+            InstallFailureKind::ExpectedTransientRegistry.fingerprint_component(),
+            InstallFailureKind::ExpectedBinCollision.fingerprint_component(),
+            InstallFailureKind::ExpectedDiskFull.fingerprint_component(),
+            InstallFailureKind::UnexpectedLifecycle.fingerprint_component(),
+            InstallFailureKind::Unexpected.fingerprint_component(),
+            InstallFailureKind::UnsupportedNode.fingerprint_component(),
+            InstallFailureKind::MissingGlobalInstallTarget.fingerprint_component(),
+            InstallFailureKind::ForeignRegistryPackageMissing.fingerprint_component(),
+        ];
+        assert_eq!(
+            failure_tags,
+            [
+                "expected-prefix-permission",
+                "expected-windows-abort",
+                "expected-windows-locked-binary",
+                "windows-locked-install-target",
+                "expected-transient-registry",
+                "expected-bin-collision",
+                "expected-disk-full",
+                "unexpected-lifecycle",
+                "unexpected",
+                "unsupported-node",
+                "missing-global-install-target",
+                "foreign-registry-404",
+            ]
+        );
+        // The lease-timeout report uses a separate fixed failure tag, asserted
+        // together with its capture and fingerprint above.
+        let summary = crate::package_use_lease::PackageUseLeaseTimeoutSummary {
+            live_holder_count: crate::package_use_lease::LiveHolderCountBucket::One,
+            same_root_live_holder_count: crate::package_use_lease::LiveHolderCountBucket::One,
+            other_root_live_holder_count: crate::package_use_lease::LiveHolderCountBucket::Zero,
+            holder_version: crate::package_use_lease::HolderVersionBucket::Current,
+            oldest_holder_age: crate::package_use_lease::HolderAgeBucket::Under10m,
+            oldest_holder_purpose: crate::package_use_lease::HolderPurposeBucket::Command,
+        };
+        let events = sentry::test::with_captured_events(|| {
+            report_package_use_lease_timeout(&summary, 0)
+        });
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].tags["install_failure_kind"],
+            "package_use_lease_timeout"
+        );
     }
 
     #[test]
@@ -15886,10 +16158,15 @@ mod tests {
         );
         write_executable(&npm, "#!/bin/sh\nexit 8\n");
 
-        let result = probe_local_version(
+        // This assertion is about PATH-based shebang resolution, not the
+        // production one-second watchdog. The child deliberately crosses env
+        // and a shell, so keep its bounded test deadline independent of runner
+        // scheduling; timeout behavior is covered by the watchdog tests.
+        let result = probe_local_version_with_timeout(
             Some(&hq),
             Some(npm.to_str().unwrap()),
             interpreter_dir.to_str().unwrap(),
+            Duration::from_secs(10),
         );
 
         assert_eq!(
@@ -17818,6 +18095,33 @@ mod tests {
     }
 
     #[test]
+    fn managed_crash_retry_requires_a_successful_fresh_repair() {
+        let triple = Some((
+            "/managed/bin/npm".to_string(),
+            "/managed/bin:/usr/bin".to_string(),
+            "/managed/npm-global".to_string(),
+        ));
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Repaired, triple.clone()),
+            ManagedRetryStart::Proceed {
+                npm: "/managed/bin/npm".to_string(),
+                path: "/managed/bin:/usr/bin".to_string(),
+                prefix: "/managed/npm-global".to_string(),
+            }
+        );
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Deferred, triple.clone()),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionDeferred),
+            "do not retry the same managed runtime while its repair is deferred"
+        );
+        assert_eq!(
+            managed_crash_retry_start_decision(ManagedRepairDisposition::Failed, triple),
+            ManagedRetryStart::Decline(ManagedRetryOutcome::ProvisionFailed),
+            "do not retry the same managed runtime after repair fails"
+        );
+    }
+
+    #[test]
     fn managed_retry_declines_only_when_no_managed_npm_resolves_naming_the_disposition() {
         // With no managed npm on disk, the retry declines — and names WHICH
         // disposition left it absent, so the next occurrence is self-diagnosing
@@ -17845,6 +18149,7 @@ mod tests {
             (ManagedRetryOutcome::ProvisionDeferred, "provision-deferred"),
             (ManagedRetryOutcome::ProvisionFailed, "provision-failed"),
             (ManagedRetryOutcome::SpawnFailed, "spawn-failed"),
+            (ManagedRetryOutcome::UnsafeUserTarget, "unsafe-user-target"),
         ] {
             assert_eq!(outcome.tag_value(), expected);
         }
@@ -19343,6 +19648,141 @@ mod tests {
         assert_eq!(
             node_crash_kind(None, "FATAL ERROR: failure").kind.tag_value(),
             "none"
+        );
+    }
+
+    #[test]
+    fn managed_access_violation_with_failed_version_probes_is_attributed_and_reported() {
+        let env = InstallEnvironment {
+            node_version: Some("v22.12.0".to_string()),
+            node_abi: None,
+            npm_version: None,
+            toolchain_source: NpmToolchainSource::Managed,
+            ..InstallEnvironment::default()
+        };
+        let kind = classify_install_failure_with_environment(
+            Some(-1_073_741_819),
+            "",
+            None,
+            false,
+            &env,
+        );
+        assert_eq!(kind, InstallFailureKind::NativeCrash);
+        assert_eq!(kind.fingerprint_component(), "native_crash");
+        assert_eq!(
+            install_failure_report_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            ),
+            Some("[hq-cli-update] install failed (node-crash:access_violation)".to_string())
+        );
+        assert_eq!(
+            install_failure_detail_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            ),
+            "The Node.js process used to install hq crashed before npm could report an error. HQ's automatic managed-runtime repair and retry did not complete the update. Run the copied command in a terminal if the update still fails."
+        );
+        assert_eq!(
+            install_failure_episode_key_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                "5.343.0",
+                &env,
+            ),
+            Some("5.343.0|node-crash|access_violation".to_string())
+        );
+
+        let events = sentry::test::with_captured_events(|| {
+            report_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &env,
+            );
+        });
+        assert_eq!(events.len(), 1, "the native crash remains reportable");
+        assert_eq!(events[0].tags["install_failure_kind"], "native_crash");
+        assert_eq!(events[0].tags["node_crash_kind"], "access_violation");
+
+        let user_path = InstallEnvironment {
+            toolchain_source: NpmToolchainSource::UserPath,
+            ..env.clone()
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &user_path,
+            ),
+            InstallFailureKind::Unexpected,
+            "only a crash of HQ's managed toolchain uses this refinement"
+        );
+        let healthy_probes = InstallEnvironment {
+            node_abi: Some("127".to_string()),
+            npm_version: Some("10.9.2".to_string()),
+            ..env
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(-1_073_741_819),
+                "",
+                None,
+                false,
+                &healthy_probes,
+            ),
+            InstallFailureKind::Unexpected,
+            "successful ABI and npm probes do not imply a corrupt managed toolchain"
+        );
+        let posix_abort = InstallEnvironment {
+            node_abi: None,
+            npm_version: None,
+            ..healthy_probes
+        };
+        assert_eq!(
+            classify_install_failure_with_environment(
+                Some(134),
+                "",
+                None,
+                false,
+                &posix_abort,
+            ),
+            InstallFailureKind::Unexpected,
+            "POSIX signal-style exits do not use the Windows forced-repair classification"
+        );
+    }
+
+    #[test]
+    fn managed_access_violation_uses_actual_stderr_when_stdout_has_output() {
+        let env = InstallEnvironment {
+            node_version: Some("v22.12.0".to_string()),
+            node_abi: None,
+            npm_version: None,
+            toolchain_source: NpmToolchainSource::Managed,
+            ..InstallEnvironment::default()
+        };
+        assert_eq!(
+            classify_install_failure_with_environment_and_stderr(
+                Some(-1_073_741_819),
+                "node stdout emitted before native exit",
+                "",
+                None,
+                false,
+                &env,
+            ),
+            InstallFailureKind::NativeCrash,
+            "stdout fallback must not hide an empty-stderr Windows access violation"
         );
     }
 

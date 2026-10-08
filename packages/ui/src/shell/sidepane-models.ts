@@ -94,7 +94,6 @@ export const COMPANY_SIDEPANE_SECTIONS: readonly SidepaneSection[] = [
       { id: "atlas", label: "Atlas" },
       { id: "projects", label: "Projects" },
       { id: "activity", label: "Activity" },
-      { id: "goals", label: "Goals" },
     ],
   },
   {

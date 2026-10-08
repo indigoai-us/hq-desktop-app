@@ -343,8 +343,13 @@
                 <div class="it" data-testid="recap-question"><span class="mk"></span><span class="md" use:markdownLinks={{ currentPath: "" }}>{@html renderInline(item.title)}</span><span class="own">{item.owner}</span><span class="chip">{item.status}</span></div>
               {/each}
             {/if}
-            {#if !recapFailed && notesRemaining === 0 && !recap.summary && !recap.decisions.length && !recap.actions.length && !recap.questions.length}
-              <p class="muted" data-testid="meeting-recap-none">There is no recap for this meeting yet.</p>
+            {#if !recap.summary && !recap.decisions.length && !recap.actions.length && !recap.questions.length}
+              <!-- The transcript can show from the synced file while the recap is still being read. -->
+              {#if notesLoading}
+                <div aria-busy="true" aria-label="Loading recap"><ReadLoader testid="meeting-recap-loading" surface="meetings" /></div>
+              {:else if !recapFailed && notesRemaining === 0}
+                <p class="muted" data-testid="meeting-recap-none">There is no recap for this meeting yet.</p>
+              {/if}
             {/if}
             {#if notesRemaining > 0}
               <div class="more" data-testid="recap-more">

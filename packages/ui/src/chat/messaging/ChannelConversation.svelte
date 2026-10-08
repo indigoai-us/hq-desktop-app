@@ -122,6 +122,7 @@
   import type { ConversationMessageWire } from "../chat-api";
   import { isReplyMessage } from "../live-messages";
   import { copyableText } from "./conversation-copy";
+  import { buildMessageLink } from "./message-link";
   import {
     activeMentionQuery,
     applyMentionMarkup,
@@ -351,6 +352,8 @@
     conversationKey?: string | null;
     /** While offline, a successful queue parks the optimistic row instead of failing it. */
     offline?: boolean;
+    /** The other person of a direct message; names the conversation in "Copy link". */
+    peerPersonUid?: string | null;
   }
 
   let {
@@ -405,6 +408,7 @@
     serverHumanView = false,
     conversationKey = null,
     offline = false,
+    peerPersonUid = null,
   }: Props = $props();
 
   /** A message's text and blocks, with any blocks the host put on it. */
@@ -700,23 +704,58 @@
   let reactPickerFor = $state<string | null>(null);
   /** eventId whose "Copy" just succeeded — flips the label to "Copied". */
   let copiedEventId = $state<string | null>(null);
+  /** Which of that message's copy buttons succeeded. */
+  let copiedKind = $state<"text" | "id" | "link">("text");
   let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Copy the visible message text (body + details) to the clipboard. */
-  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
-    const text = copyableText(msg, "body");
-    if (!text) return;
+  async function writeClipboard(
+    msg: ConversationMessageWire,
+    text: string,
+    kind: "text" | "id" | "link",
+  ): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
       return;
     }
     copiedEventId = msg.eventId;
+    copiedKind = kind;
     if (copiedTimer) clearTimeout(copiedTimer);
     copiedTimer = setTimeout(() => {
       copiedEventId = null;
       copiedTimer = null;
     }, 1500);
+  }
+
+  /** Copy the visible message text (body + details) to the clipboard. */
+  async function copyMessage(msg: ConversationMessageWire): Promise<void> {
+    const text = copyableText(msg, "body");
+    if (!text) return;
+    await writeClipboard(msg, text, "text");
+  }
+
+  const linkConversationId = $derived(
+    (channelId ?? peerPersonUid ?? "").trim() || null,
+  );
+  const linkCompanyUid = $derived(
+    (companyUid ?? vaultCompanyUid ?? "").trim() || null,
+  );
+
+  async function copyMessageId(msg: ConversationMessageWire): Promise<void> {
+    await writeClipboard(msg, msg.eventId, "id");
+  }
+
+  async function copyMessageLink(msg: ConversationMessageWire): Promise<void> {
+    if (!linkConversationId || !linkCompanyUid) return;
+    await writeClipboard(
+      msg,
+      buildMessageLink({
+        companyUid: linkCompanyUid,
+        conversationId: linkConversationId,
+        eventId: msg.eventId,
+      }),
+      "link",
+    );
   }
   let dragActive = $state(false);
   let dragDepth = 0;
@@ -2271,8 +2310,32 @@
                       title="Copy message"
                       onclick={() => copyMessage(msg)}
                     ><RailIcon name="copy" />
-                      {copiedEventId === msg.eventId ? "Copied" : "Copy"}
+                      {copiedEventId === msg.eventId && copiedKind === "text" ? "Copied" : "Copy"}
                     </button>
+                  {/if}
+                  {#if !msg.eventId.startsWith("local-")}
+                    <button
+                      type="button"
+                      class="dm-quick-react-btn dm-quick-copy"
+                      data-testid="message-copy-id"
+                      aria-label="Copy message ID"
+                      title="Copy ID"
+                      onclick={() => copyMessageId(msg)}
+                    ><RailIcon name="copy" />
+                      {copiedEventId === msg.eventId && copiedKind === "id" ? "Copied" : "Copy ID"}
+                    </button>
+                    {#if linkConversationId && linkCompanyUid}
+                      <button
+                        type="button"
+                        class="dm-quick-react-btn dm-quick-copy"
+                        data-testid="message-copy-link"
+                        aria-label="Copy message link"
+                        title="Copy link"
+                        onclick={() => copyMessageLink(msg)}
+                      ><RailIcon name="link" />
+                        {copiedEventId === msg.eventId && copiedKind === "link" ? "Copied" : "Copy link"}
+                      </button>
+                    {/if}
                   {/if}
                   {#if onstartsession}
                     <button
