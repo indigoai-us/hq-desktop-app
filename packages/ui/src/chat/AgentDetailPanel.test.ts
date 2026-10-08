@@ -372,7 +372,8 @@ describe("AgentDetailPanel profile endpoint", () => {
     expect(host.querySelector('[data-testid="agent-detail-apps-attention"]')).toBeNull();
     expect(host.querySelector('[data-testid="agent-detail-routine-row"]')?.textContent).toContain("Morning triage");
     expect(host.querySelector('[data-testid="agent-detail-brain-model"]')?.textContent).toContain("grok-4.7");
-    expect(host.querySelector('[data-testid="agent-detail-instructions"]')?.textContent).toBe("You are Izzy.");
+    expect(host.querySelector('[data-testid="agent-detail-instructions"]')).toBeNull();
+    expect(host.querySelector('[data-testid="agent-detail-skills"]')).toBeNull();
     expect(host.querySelector('[data-testid="agent-detail-freshness"]')?.textContent).toContain("saved copy");
   });
 
@@ -420,11 +421,10 @@ describe("AgentDetailPanel profile endpoint", () => {
   });
 });
 
-const SKILL_PROFILE = {
+const EXTENDED_PROFILE = {
   ...PROFILE,
   box: {
     ...PROFILE.box,
-    skills: [{ name: "email-triage", summary: "Sorts the inbox", enabled: true, provenance: "box" }],
     routines: [
       ...PROFILE.box.routines,
       {
@@ -444,56 +444,42 @@ const SKILL_PROFILE = {
   },
 };
 
-describe("AgentDetailPanel skills, routines and apps", () => {
-  async function mountWith(getSkill?: AgentsApi["getSkill"]) {
-    await mountPanel({
-      adapter: { agents: agentsApi({ getProfile: async () => ok(SKILL_PROFILE), getSkill }) },
-    });
+describe("AgentDetailPanel routines and apps", () => {
+  async function mountWith() {
+    await mountPanel({ adapter: { agents: agentsApi({ getProfile: async () => ok(EXTENDED_PROFILE) }) } });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-skill-row"]')).not.toBeNull();
+      expect(host.querySelector('[data-testid="agent-detail-routine-row"]')).not.toBeNull();
     });
   }
-  const toggle = () =>
-    (host.querySelector('[data-testid="agent-detail-skill-toggle"]') as HTMLButtonElement).click();
-
-  it("shows the skill summary and loads the full text as markdown on click", async () => {
-    const getSkill = vi.fn(async () => ok({ name: "email-triage", description: "d", body: "# Triage\n\nDo **it**." }));
-    await mountWith(getSkill);
-    expect(host.querySelector('[data-testid="agent-detail-skill-row"]')?.textContent).toContain("Sorts the inbox");
-    expect(getSkill).not.toHaveBeenCalled();
-    toggle();
+  it("lists only connected platforms and says so when none are connected", async () => {
+    const profile = {
+      ...PROFILE,
+      box: {
+        ...PROFILE.box,
+        platforms: [
+          { name: "slack", state: "connected" },
+          { name: "discord", state: "disconnected" },
+        ],
+      },
+    };
+    await mountPanel({ adapter: { agents: agentsApi({ getProfile: async () => ok(profile) }) } });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-skill-text"] h1')?.textContent).toBe("Triage");
+      expect(host.querySelector('[data-testid="agent-detail-channels"]')).not.toBeNull();
     });
-    expect(getSkill).toHaveBeenCalledWith("agt_izzy", "email-triage");
-    expect(host.querySelector('[data-testid="agent-detail-skill-text"] strong')?.textContent).toBe("it");
+    const rows = [...host.querySelectorAll('[data-testid="agent-detail-channel-row"]')];
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining("slack")]);
+    expect(host.querySelector('[data-testid="agent-detail-channels"]')?.textContent).not.toContain("discord");
   });
 
-  it("says the bot is offline on a 503", async () => {
-    await mountWith(async () => ({ ok: false, reason: "error", code: "http-503", message: "relay" }));
-    toggle();
+  it("shows the empty line when no platform is connected", async () => {
+    const profile = { ...PROFILE, box: { ...PROFILE.box, platforms: [{ name: "slack", state: "error" }] } };
+    await mountPanel({ adapter: { agents: agentsApi({ getProfile: async () => ok(profile) }) } });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-skill-error"]')?.textContent).toBe(
-        "The bot is offline, try again later",
-      );
+      expect(host.querySelector('[data-testid="agent-detail-channels"]')?.textContent).toContain("No connected platforms.");
     });
+    expect(host.querySelector('[data-testid="agent-detail-channel-row"]')).toBeNull();
   });
 
-  it("shows not found on a 404 and a generic error otherwise", async () => {
-    await mountWith(async () => ({ ok: false, reason: "error", code: "http-404" }));
-    toggle();
-    await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-skill-error"]')?.textContent).toContain("not found");
-    });
-  });
-
-  it("shows a generic error on other failures", async () => {
-    await mountWith(async () => ({ ok: false, reason: "error", code: "http-500" }));
-    toggle();
-    await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="agent-detail-skill-error"]')?.textContent).toContain("Could not load");
-    });
-  });
 
   it("tags HQ routines and hides their edit controls", async () => {
     await mountWith();

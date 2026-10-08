@@ -1063,7 +1063,6 @@ export class WebPlatformAdapter implements PlatformAdapter {
     pauseJob: (agentUid, jobId) =>
       this.post(WEB_PATHS.agentPauseJob(agentUid, jobId)),
     getProfile: (agentUid) => this.get(WEB_PATHS.agentProfile(agentUid)),
-    getSkill: (agentUid, name) => this.get(AGENT_PATHS.skill(agentUid, name)),
     runtimeAction: (agentUid, input) =>
       this.post(WEB_PATHS.agentRuntimeActions(agentUid), input),
     updateProfile: (agentUid, patch) =>
