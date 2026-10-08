@@ -298,6 +298,12 @@ export interface SetupBotLauncher {
   needsCodingTool?: boolean;
   /** Open the existing bot's DM, or create it and open the new one. */
   start(): Promise<SetupBotStart>;
+  /**
+   * What the hero says while `starting`, when it differs from the usual
+   * "its conversation opens by itself" (the visual first run's create, which
+   * leaves the person where they are).
+   */
+  startingBody?: string | null;
 }
 
 /** The setup bot among this Mac's local bots, if it exists. */
