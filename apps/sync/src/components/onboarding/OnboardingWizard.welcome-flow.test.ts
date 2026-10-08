@@ -542,3 +542,99 @@ describe('welcome flow: the backdrop', () => {
     expect(root().classList.contains('has-wallpaper')).toBe(false);
   });
 });
+
+describe("welcome flow: Apple's developer tools", () => {
+  const missingTools = { required: true, present: false, installerOpen: false, simulated: false };
+  const installerOpen = { ...missingTools, installerOpen: true };
+  const toolsReady = { ...missingTools, present: true };
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function advance(ms: number) {
+    await vi.advanceTimersByTimeAsync(ms);
+    await flush();
+  }
+
+  it('shows the waiting card before asking macOS to install, then resumes at the same stage', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    let status: Record<string, boolean> = missingTools;
+    let cardUpWhenInstallStarted = false;
+    stubInvoke({
+      command_line_tools_status: () => status,
+      command_line_tools_start_install: () => {
+        cardUpWhenInstallStarted = !!byId('onboarding-clt-card');
+        status = installerOpen;
+        return status;
+      },
+      command_line_tools_show_installer: () => true,
+    });
+    mountAt(2);
+    for (let i = 0; i < 20 && !commands().includes('command_line_tools_start_install'); i += 1) await advance(20);
+
+    expect(cardUpWhenInstallStarted).toBe(true);
+    const card = byId<HTMLElement>('onboarding-clt-card')!;
+    expect(card.dataset.phase).toBe('installing');
+    expect(card.textContent).toContain("Installing Apple's developer tools");
+    expect(card.textContent).toContain('5 to 15 minutes');
+    expect(card.textContent).toContain('continues on its own');
+    expect(byId('onboarding-clt-progress')).not.toBeNull();
+    expect(commands()).toContain('command_line_tools_show_installer');
+    expect(commands()).not.toContain('install_deps');
+    expect(commands()).not.toContain('git_init');
+
+    byId('onboarding-clt-show')!.click();
+    await flush();
+    expect(commands().filter((c) => c === 'command_line_tools_show_installer').length).toBeGreaterThanOrEqual(2);
+
+    status = toolsReady;
+    for (let i = 0; i < 20 && !commands().includes('git_init'); i += 1) await advance(1_000);
+    expect(byId('onboarding-clt-card')).toBeNull();
+    expect(commands()).toContain('install_deps');
+    expect(commands()).toContain('git_init');
+    expect(commands().filter((c) => c === 'fetch_and_extract_template')).toHaveLength(1);
+    expect(commands().filter((c) => c === 'command_line_tools_start_install')).toHaveLength(1);
+  });
+
+  it('offers a plain retry when the Apple install is cancelled, and carries on after it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let status: Record<string, boolean> = missingTools;
+    let starts = 0;
+    stubInvoke({
+      command_line_tools_status: () => status,
+      command_line_tools_start_install: () => {
+        starts += 1;
+        status = starts === 1 ? installerOpen : toolsReady;
+        return status;
+      },
+      command_line_tools_show_installer: () => true,
+    });
+    mountAt(2);
+    for (let i = 0; i < 20 && starts === 0; i += 1) await advance(20);
+    status = missingTools; // the person pressed Cancel or Disagree
+    for (let i = 0; i < 20 && byId<HTMLElement>('onboarding-clt-card')?.dataset.phase !== 'cancelled'; i += 1) {
+      await advance(1_000);
+    }
+    const card = byId<HTMLElement>('onboarding-clt-card')!;
+    expect(card.dataset.phase).toBe('cancelled');
+    expect(card.textContent).toContain("Apple's developer tools are not installed yet");
+    expect(card.textContent).not.toMatch(/error|failed|exit|status \d/i);
+    expect(commands()).not.toContain('install_deps');
+
+    byId('onboarding-clt-retry')!.click();
+    for (let i = 0; i < 20 && !commands().includes('install_deps'); i += 1) await advance(1_000);
+    expect(starts).toBe(2);
+    expect(byId('onboarding-clt-card')).toBeNull();
+    expect(commands()).toContain('install_deps');
+  });
+
+  it('shows nothing and never starts an install when the tools are present', async () => {
+    stubInvoke({ command_line_tools_status: () => toolsReady });
+    mountAt(2);
+    await flushUntil(() => commands().includes('git_init'), 'the git stage');
+    expect(byId('onboarding-clt-card')).toBeNull();
+    expect(commands()).not.toContain('command_line_tools_start_install');
+  });
+});

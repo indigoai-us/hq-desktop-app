@@ -8,7 +8,8 @@ import { earnedFromUrl, sampleBadges, sampleProgress } from './badge-fixtures';
 // undefined in the harness and colors/dark-mode don't render.
 import '../src/styles/design-system.css';
 import '../src/styles/popover.css';
-// The real window loads Geist Mono in src/desktop-alt/main.ts; badge marks draw with it.
+// The desktop shell loads Geist Mono (src/desktop-alt/main.ts); the knowledge
+// tree's ASCII grid, the first-run kickers and the badge marks are drawn in it.
 import '@fontsource-variable/geist-mono/wght.css';
 
 // No badges API yet: the harness shows sample badges on profile panes.

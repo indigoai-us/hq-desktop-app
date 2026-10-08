@@ -917,6 +917,11 @@ describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
     "packages/ui/src/company/TeamPage.svelte",
     "packages/ui/src/company/MemberAccessSection.svelte",
     "packages/ui/src/common/Dropdown.svelte",
+    // Visual first run, "Bring in your context": the knowledge-tree scene
+    // loads behind firstRunImportDoor (lazy-doors.ts).
+    "packages/ui/src/chat/first-run/knowledge-tree/FirstRunImportStep.svelte",
+    "packages/ui/src/chat/first-run/knowledge-tree/scene-renderer.ts",
+    "packages/ui/src/chat/first-run/knowledge-tree/tree-model.ts",
   ];
 
   it("keeps every lazy body out of the shell's static import graph", () => {

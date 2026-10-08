@@ -2230,6 +2230,30 @@ export interface LocalBotsApi {
   restore?(options?: { all?: boolean }): AdapterPromise<BotRestoreResult>;
 }
 
+/** The event every line of a context scan arrives on: `{ scanId, event }`. */
+export const IMPORT_SCAN_EVENT = "import-scan://event";
+
+/** How a context scan ended, as the host reports it. */
+export interface ImportScanEndView {
+  /** "done" | "failed" | "cancelled" | "timeout" | "unavailable" | "no_hq" (no HQ folder) */
+  status: string;
+  lines?: number;
+  dropped?: number;
+}
+
+/**
+ * Desktop-only (visual first run, "Bring in your context"): reads this
+ * computer's coding-tool history with `hq import scan --json --stream`. The
+ * host validates each line and emits it as `IMPORT_SCAN_EVENT` with the
+ * scan's id; nothing leaves the computer. One scan at a time.
+ */
+export interface ContextImportApi {
+  /** Run a scan under this id. Resolves when it ends, however it ends. */
+  scanStart(scanId: string): AdapterPromise<ImportScanEndView>;
+  /** Stop the running scan with this id. */
+  scanCancel(scanId: string): AdapterPromise<boolean>;
+}
+
 /** Input to `LocalBotsApi.configure`. */
 export interface LocalBotSettingsInput {
   model?: string | null;
@@ -2509,6 +2533,8 @@ export interface PlatformAdapter {
   readonly sessions: SessionsApi;
   /** Optional: only the desktop host can run bots on this machine. */
   readonly bots?: LocalBotsApi;
+  /** Optional: only the desktop host can read this computer's context. */
+  readonly contextImport?: ContextImportApi;
   readonly settings: SettingsApi;
   readonly workMesh: WorkMeshApi;
   /** Native calling (US-014). Unsupported hosts implement it as refusals. */

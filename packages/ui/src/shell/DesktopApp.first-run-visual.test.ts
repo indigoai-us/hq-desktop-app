@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import { ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
+import { failure, ok, VISUAL_FIRST_RUN_FLAG, type PlatformAdapter } from "@hq/platform";
 
 import DesktopApp from "./DesktopApp.svelte";
 import ExtraPageProbe from "./ExtraPageProbe.test.svelte";
@@ -23,6 +23,7 @@ import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_GRACE_MS,
   firstRunHandoffNotice,
+  firstRunImportNotice,
   firstRunIntro,
   firstRunKickoff,
 } from "../chat/first-run/visual-first-run.js";
@@ -537,6 +538,136 @@ describe("visual first run with a setup bot that already exists", () => {
     expect(body).toBe(
       firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }, { noun: "computer" }),
     );
+  });
+});
+
+describe("visual first run: Bring in your context", () => {
+  const IMPORTED = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "workspace/reports/import.json" };
+
+  /**
+   * Boot with the flag on, name the assistant, run the scan to its end, and
+   * hand over a finished import. Timers are fake from the scan on, so the
+   * notice ledger's waits can be stepped through.
+   */
+  async function finishAScan(firstSend: () => Promise<unknown>) {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create, flag: true });
+    const handlers = new Set<(e: { payload?: unknown }) => void>();
+    const syncEvents = {
+      listen: vi.fn(async (_event: string, h: (e: { payload?: unknown }) => void) => {
+        handlers.add(h);
+        return () => handlers.delete(h);
+      }),
+      emit: vi.fn(async () => undefined),
+    };
+    let finishScan: (v: unknown) => void = () => undefined;
+    const scanStart = vi.fn((_scanId: string) => new Promise((resolve) => (finishScan = resolve)));
+    const scanCancel = vi.fn(async () => ok(true));
+    (platform as unknown as Record<string, unknown>).contextImport = { scanStart, scanCancel };
+    sendDm.mockImplementationOnce(firstSend as never);
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: platform,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
+        coreFixtures: false,
+        syncEvents: syncEvents as never,
+        extraPages: {
+          sessions: {
+            label: "Sessions",
+            detail: "Local sessions",
+            component: ExtraPageProbe,
+            setupAction: { label: "Run Setup", param: () => "new?draft=x" },
+            setupRun: fakeSetupRun(),
+          },
+        },
+      },
+    });
+    await settle();
+
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("context");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
+    q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
+    await vi.waitFor(() => expect(scanStart).toHaveBeenCalledTimes(1));
+    // The ledger reads Date.now(), so the clock moves with the timers.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const scanId = scanStart.mock.calls[0]![0];
+    const lines = [
+      { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
+      { type: "source", id: "claude-code", status: "done", counts: { sessions: 12 } },
+      { type: "done", report: "workspace/reports/import.json", summary: { companies: 0, projects: 0, sessions: 12 } },
+    ];
+    for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
+    finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
+    // The host's short tail wait, then the notice.
+    await vi.advanceTimersByTimeAsync(1000);
+    await settle();
+    return { sendDm, scanCancel };
+  }
+
+  function expectImportNotices(sendDm: ReturnType<typeof vi.fn>) {
+    for (const call of sendDm.mock.calls) {
+      const [to, body, extras] = call as unknown as [string, string, Record<string, unknown>];
+      expect(to).toBe(SETUP_BOT_UID);
+      expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
+      expect(body).toBe(firstRunImportNotice(IMPORTED));
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("hands the finished import to the assistant once, as a bot-only note, trying a failed send again after the ledger's wait", async () => {
+    const { sendDm, scanCancel } = await finishAScan(async () => failure("network", "offline"));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    // Not before the notice ledger allows it (30 s after a failure that may pass).
+    await vi.advanceTimersByTimeAsync(20_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(2);
+    expectImportNotices(sendDm);
+
+    // Delivered: nothing more goes, however long it waits, and Next: Done sends nothing.
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("done");
+    expect(sendDm).toHaveBeenCalledTimes(2);
+    expect(scanCancel).not.toHaveBeenCalled();
+  });
+
+  it("a send the server refuses (403) is not tried again", async () => {
+    const { sendDm } = await finishAScan(async () => ({ ok: false, reason: "forbidden", code: "http-403" }));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expectImportNotices(sendDm);
+  });
+
+  it("a pending try is called off when the shell goes away", async () => {
+    const { sendDm } = await finishAScan(async () => failure("network", "offline"));
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+    await unmount(component!);
+    component = null;
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(sendDm).toHaveBeenCalledTimes(1);
   });
 });
 

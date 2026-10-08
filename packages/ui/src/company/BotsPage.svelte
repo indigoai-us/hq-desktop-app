@@ -26,6 +26,7 @@
   import {
     BOT_FILTERS,
     filterBots,
+    mergeBotRows,
     metadata,
     type BotFilter,
     type BotListRow,
@@ -82,19 +83,21 @@
       }));
   }
 
-  const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  // A company bot running on this Mac is in both lists; list it once.
+  const merged = $derived(mergeBotRows(localRows(), cloud));
+  const rows = $derived(filterBots(merged, filter));
   // QA-106: the company total, so a filter that hides every bot can say so.
-  const totalBots = $derived(localRows().length + cloud.length);
+  const totalBots = $derived(merged.length);
   const filteredOut = $derived(filter !== "all" && rows.length === 0 && totalBots > 0);
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
-    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
+    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", merged.length);
   });
   const page = $derived(pageRows(rows, pages));
   const current = $derived(
     dismissed ? null : (rows.find((row) => row.uid === selected) ?? rows[0] ?? null),
   );
-  const empty = $derived(cloudPhase === "ready" && !cloudFailed && localRows().length === 0 && cloud.length === 0);
+  const empty = $derived(cloudPhase === "ready" && !cloudFailed && merged.length === 0);
 
   // AUDIT-3-17: a failed cloud read shows the failed-read line and Try again,
   // never "No bots in this company yet."; local rows stay visible.
