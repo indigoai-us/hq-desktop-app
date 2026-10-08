@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
+
 ## [0.10.405] - 2026-10-08
 
 - In a bot's detail panel, each skill now shows a one-line summary, and clicking a skill opens its full text. If the bot is offline, the panel says "The bot is offline, try again later".
