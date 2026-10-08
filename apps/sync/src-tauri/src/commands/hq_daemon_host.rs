@@ -16,7 +16,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
@@ -33,7 +32,7 @@ use hq_desktop_core::hq_daemon::{
     SyncHostMode, HQ_DAEMON_FLAG, HQ_DAEMON_HOST_MIN_CLI,
 };
 use hq_desktop_core::hq_resolver::{resolve_hq, HqInvocation};
-use tauri::{AppHandle, Listener, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Listener, Manager, Runtime};
 
 use crate::commands::daemon::{handle_watch_stdout_line, WatcherPhaseContext};
 use crate::commands::process::{
@@ -591,6 +590,123 @@ pub(crate) async fn run_daemon_sync_command_blocking(args: Vec<String>) -> Resul
         );
         "HQ daemon could not complete that action. Tap to retry.".to_string()
     })?
+}
+
+#[derive(serde::Deserialize)]
+struct ConflictNoticeFile {
+    schema: u8,
+    notices: Vec<serde_json::Value>,
+}
+
+#[tauri::command]
+pub fn get_pending_conflict_notices() -> Result<Vec<serde_json::Value>, String> {
+    let state_dir = conflict_notice_state_dir()?;
+    let notices_path = state_dir.join("conflict-notices.json");
+    let notices: ConflictNoticeFile = match std::fs::read_to_string(&notices_path) {
+        Ok(raw) => serde_json::from_str(&raw)
+            .map_err(|_| "Conflict notices could not be read.".to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("Conflict notices could not be read.".to_string()),
+    };
+    if notices.schema != 1 {
+        return Err("Conflict notices could not be read.".to_string());
+    }
+    let acks_path = state_dir.join("conflict-notice-acks.jsonl");
+    let mut acknowledged = std::collections::HashSet::new();
+    match std::fs::read_to_string(acks_path) {
+        Ok(raw) => {
+            for line in raw.lines() {
+                let row: serde_json::Value = serde_json::from_str(line)
+                    .map_err(|_| "Conflict acknowledgements could not be read.".to_string())?;
+                if let Some(id) = row.get("id").and_then(|value| value.as_str()) {
+                    acknowledged.insert(id.to_string());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Conflict acknowledgements could not be read.".to_string()),
+    }
+    Ok(notices
+        .notices
+        .into_iter()
+        .filter(|notice| {
+            notice
+                .get("id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| !acknowledged.contains(id))
+        })
+        .collect())
+}
+
+fn conflict_notice_state_dir() -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os("HQ_STATE_DIR").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    let home = hq_desktop_core::paths::home_dir()
+        .ok_or_else(|| "HQ state directory could not be resolved.".to_string())?;
+    Ok(home.join(".hq"))
+}
+
+#[tauri::command]
+pub async fn acknowledge_conflict_notice(
+    app: AppHandle,
+    notice_id: String,
+) -> Result<(), String> {
+    run_daemon_sync_command_blocking(vec![
+        "daemon".into(),
+        "sync".into(),
+        "conflicts".into(),
+        "acknowledge".into(),
+        notice_id,
+    ])
+    .await?;
+    let pending = get_pending_conflict_notices()?;
+    app.emit("sync:conflict-notices", &pending)
+        .map_err(|_| "Conflict notice update could not be delivered.".to_string())
+}
+
+fn safe_conflict_backup_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/");
+    normalized.starts_with(".hq/conflict-backups/")
+        && Path::new(&normalized)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)))
+}
+
+#[tauri::command]
+pub fn show_conflict_backup(company_slug: String, backup_path: String) -> Result<(), String> {
+    if !company_slug
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        || !safe_conflict_backup_path(&backup_path)
+    {
+        return Err("Conflict backup path is invalid.".to_string());
+    }
+    let hq_root = PathBuf::from(hq_desktop_core::daemon::resolve_hq_folder_path()?);
+    let company_root = hq_root.join("companies").join(&company_slug);
+    let candidate = company_root.join(&backup_path);
+    let root = company_root
+        .canonicalize()
+        .map_err(|_| "Company folder could not be found.".to_string())?;
+    let backup = candidate
+        .canonicalize()
+        .map_err(|_| "Conflict backup could not be found.".to_string())?;
+    if !backup.starts_with(&root) || !backup.is_file() {
+        return Err("Conflict backup could not be found.".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg("-R").arg(&backup).status();
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", backup.display()))
+        .status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(backup.parent().unwrap_or(&root)).status();
+    result
+        .map_err(|_| "File manager could not open the conflict backup.".to_string())?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "File manager could not open the conflict backup.".to_string())
 }
 
 pub fn parse_daemon_sync_mode(

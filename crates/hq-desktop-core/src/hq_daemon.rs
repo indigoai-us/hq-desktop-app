@@ -241,6 +241,8 @@ pub struct LastPass {
     #[serde(default)]
     pub dropped_progress: u64,
     pub events: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub pending_conflict_notices: Vec<serde_json::Value>,
 }
 
 /// hq-cloud's state folder: `HQ_STATE_DIR` when set and non-empty, else `~/.hq`
@@ -288,5 +290,32 @@ impl LastPassTracker {
         }
         self.seen = Some(pass.pass_id.clone());
         Some(pass)
+    }
+}
+
+#[cfg(test)]
+mod conflict_notice_last_pass_tests {
+    use super::LastPass;
+
+    #[test]
+    fn old_last_pass_records_default_to_no_pending_conflict_notices() {
+        let pass: LastPass = serde_json::from_str(
+            r#"{"passId":"pass-1","events":[],"droppedProgress":0}"#,
+        )
+        .unwrap();
+        assert!(pass.pending_conflict_notices.is_empty());
+    }
+
+    #[test]
+    fn last_pass_decodes_pending_conflict_notices_for_desktop_events() {
+        let pass: LastPass = serde_json::from_str(
+            r#"{"passId":"pass-2","events":[],"droppedProgress":0,"pendingConflictNotices":[{"id":"notice-1","companySlug":"acme","relativePath":"docs/a.md","backupPath":".hq/conflict-backups/docs/a.md","winnerReason":"local-newer","sideKept":"local","parkedAt":"2026-10-08T16:00:00Z"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(pass.pending_conflict_notices.len(), 1);
+        assert_eq!(
+            pass.pending_conflict_notices[0]["backupPath"],
+            ".hq/conflict-backups/docs/a.md"
+        );
     }
 }
