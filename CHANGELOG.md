@@ -8,6 +8,9 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+### Fixed
+
+- On a Mac, the "One shortcut to remember" step of first-run setup now draws a Mac keyboard (fn, control, option, command) with option and shift lit, matching the ⌥ ⇧ O shown under it. It used to draw a Windows keyboard with Alt lit. Windows and Linux keep the Alt Shift O keyboard.
 - On a Mac without Apple's developer tools, first-run setup no longer stalls behind Apple's install prompt. It shows a card explaining the Install and license prompts, brings Apple's window to the front, waits while the tools install, and then carries on from the same step. If the Apple install is closed early, setup offers to try again.
 
 ## [0.10.407] — 2026-10-08
