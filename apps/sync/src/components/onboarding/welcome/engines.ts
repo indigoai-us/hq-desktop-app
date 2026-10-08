@@ -1,4 +1,4 @@
-import { hostComputerNoun } from '@hq/platform';
+import type { ShortcutKeyboardLayout } from '../../../lib/onboarding-platform';
 
 /**
  * The welcome flow's motion, ported from the designer prototype
@@ -789,10 +789,16 @@ export interface KeyDef {
   glyph?: string;
 }
 
-/** KEYBOARD_ROWS from intro-sequence.ts: a compact ANSI Mac layout, widths in key units. */
-export const KEYBOARD_ROWS: KeyDef[][] = (() => {
+/**
+ * A compact ANSI board, widths in key units. The bottom row follows the host:
+ * fn, control, option, command on a Mac; fn, control, Windows, Alt on a PC.
+ * The caller passes the layout from the onboarding UA read. This used to be a
+ * module-level constant read from the shared platform probe, which is empty in
+ * the onboarding window, so a Mac drew the PC board.
+ */
+export function keyboardRowsFor(layout: ShortcutKeyboardLayout): KeyDef[][] {
   const L = (str: string): KeyDef[] => str.split('').map((k) => ({ id: k.toLowerCase(), label: k }));
-  const mac = hostComputerNoun() === 'Mac';
+  const mac = layout === 'mac';
   return [
     [{ id: 'esc', label: 'esc', w: 1.5 }, ...['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'].map((f) => ({ id: f.toLowerCase(), label: f }))],
     [{ id: 'grave', label: '`' }, ...L('1234567890'), { id: 'minus', label: '-' }, { id: 'equal', label: '=' }, { id: 'backspace', label: 'delete', w: 1.5 }],
@@ -803,7 +809,7 @@ export const KEYBOARD_ROWS: KeyDef[][] = (() => {
       ? [{ id: 'fn', label: 'fn' }, { id: 'ctrl', label: 'control', glyph: '⌃' }, { id: 'alt', label: 'option', glyph: '⌥' }, { id: 'cmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'space', label: '', w: 5.5 }, { id: 'rcmd', label: 'command', w: 1.25, glyph: '⌘' }, { id: 'ralt', label: 'option', glyph: '⌥' }, { id: 'left', label: '◂' }, { id: 'updown', label: '▴▾' }, { id: 'right', label: '▸' }]
       : [{ id: 'fn', label: 'fn' }, { id: 'ctrl', label: 'control', glyph: '⌃' }, { id: 'cmd', label: 'Windows', w: 1.25, glyph: '⊞' }, { id: 'alt', label: 'Alt' }, { id: 'space', label: '', w: 5.5 }, { id: 'ralt', label: 'Alt' }, { id: 'rcmd', label: 'Windows', w: 1.25, glyph: '⊞' }, { id: 'left', label: '◂' }, { id: 'updown', label: '▴▾' }, { id: 'right', label: '▸' }],
   ];
-})();
+}
 
 const CHORD = ['alt', 'shift', 'o'] as const;
 

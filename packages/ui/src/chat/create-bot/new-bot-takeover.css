@@ -1124,6 +1124,9 @@
   --v4-control-faint: rgba(255, 255, 255, 0.08);
   --v4-active-row: rgba(255, 255, 255, 0.1);
   --v4-error: #ef4444;
+  /* Inline actions (Sign in, Check again) in the card's ink: a branded
+     accent can be transparent or unreadable on the dark card. */
+  --v4-link: var(--new-bot-ink);
   color-scheme: dark;
 }
 
