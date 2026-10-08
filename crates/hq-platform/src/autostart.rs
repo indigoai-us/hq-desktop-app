@@ -221,6 +221,57 @@ pub fn reconcile_action(
     }
 }
 
+/// Bundle identifier of the installed production HQ. Only a process running
+/// from a bundle with this identifier may write the login LaunchAgent at
+/// launch.
+pub const PRODUCTION_BUNDLE_IDENTIFIER: &str = "ai.indigo.hq-sync-menubar";
+
+/// Env var that turns the updater off for scratch builds. Launch-time
+/// autostart reconciliation honours it too.
+pub const UPDATER_DISABLED_ENV: &str = "HQ_UPDATER_DISABLED";
+
+/// Whether launch-time autostart reconciliation may touch the registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchEnsureGate {
+    /// Production bundle: reconcile as usual.
+    Proceed,
+    /// `HQ_UPDATER_DISABLED` is set: this is a scratch build.
+    SkipUpdaterDisabled,
+    /// The running bundle is not the production bundle (its identifier, or
+    /// None when it could not be read).
+    SkipNonProductionBundle(Option<String>),
+}
+
+/// Same truthy parsing as the updater's `HQ_UPDATER_DISABLED` switch.
+pub fn env_flag_truthy(value: Option<&str>) -> bool {
+    value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+
+/// Pure gate for launch-time autostart reconciliation. A scratch bundle (its
+/// own identifier, or `HQ_UPDATER_DISABLED` set) shares the owner's
+/// LaunchAgent path, so writing it would repoint the owner's login item at the
+/// scratch bundle. Explicit Settings toggles do not go through this gate.
+pub fn launch_ensure_gate(
+    bundle_identifier: Option<&str>,
+    updater_disabled_env: Option<&str>,
+) -> LaunchEnsureGate {
+    if env_flag_truthy(updater_disabled_env) {
+        return LaunchEnsureGate::SkipUpdaterDisabled;
+    }
+    match bundle_identifier {
+        Some(PRODUCTION_BUNDLE_IDENTIFIER) => LaunchEnsureGate::Proceed,
+        other => LaunchEnsureGate::SkipNonProductionBundle(other.map(str::to_string)),
+    }
+}
+
+/// Bundle identifier of the running executable's enclosing `.app`, read from
+/// its Info.plist.
+#[cfg(target_os = "macos")]
+pub fn running_bundle_identifier() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    bundle_identifier_from_exe(&exe.to_string_lossy())
+}
+
 /// Apply a launch-time autostart decision. Refresh writes the new registration
 /// first. A process launched by its LaunchAgent leaves the updated definition
 /// for the next login instead of booting out its own running job; other
@@ -389,7 +440,10 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod launchagent_write_tests {
-    use super::{bundle_identifier_from_exe, generate_plist, write_plist_if_changed};
+    use super::{
+        bundle_identifier_from_exe, generate_plist, launch_ensure_gate, write_plist_if_changed,
+        LaunchEnsureGate,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -402,6 +456,54 @@ mod launchagent_write_tests {
         assert_eq!(
             fs::read_to_string(path).expect("plist contents"),
             "stable plist"
+        );
+    }
+
+    #[test]
+    fn launch_ensure_gate_proceeds_only_for_production_bundle() {
+        assert_eq!(
+            launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), None),
+            LaunchEnsureGate::Proceed
+        );
+        assert_eq!(
+            launch_ensure_gate(Some("ai.indigo.hq-lane-check"), None),
+            LaunchEnsureGate::SkipNonProductionBundle(Some("ai.indigo.hq-lane-check".into()))
+        );
+        assert_eq!(
+            launch_ensure_gate(None, None),
+            LaunchEnsureGate::SkipNonProductionBundle(None)
+        );
+    }
+
+    #[test]
+    fn launch_ensure_gate_skips_when_updater_disabled_env_set() {
+        for value in ["1", "true", "YES", " 1 "] {
+            assert_eq!(
+                launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), Some(value)),
+                LaunchEnsureGate::SkipUpdaterDisabled,
+                "{value:?}"
+            );
+        }
+        for value in ["0", "", "false", "no"] {
+            assert_eq!(
+                launch_ensure_gate(Some("ai.indigo.hq-sync-menubar"), Some(value)),
+                LaunchEnsureGate::Proceed,
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_bundle_identifier_from_info_plist_is_not_production() {
+        let temp = TempDir::new().expect("temp directory");
+        let contents = temp.path().join("HQ Lane Check x.app").join("Contents");
+        let executable = contents.join("MacOS").join("hq-sync-menubar");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("app folders");
+        fs::write(contents.join("Info.plist"), "<plist><dict><key>CFBundleIdentifier</key><string>ai.indigo.hq-lane-check-x</string></dict></plist>").expect("Info.plist");
+        let id = bundle_identifier_from_exe(executable.to_str().expect("path"));
+        assert_eq!(
+            launch_ensure_gate(id.as_deref(), None),
+            LaunchEnsureGate::SkipNonProductionBundle(Some("ai.indigo.hq-lane-check-x".into()))
         );
     }
 
