@@ -1,0 +1,157 @@
+import { describe, expect, it } from "vitest";
+import {
+  FITS,
+  MAX_DENSITY,
+  MIN_DENSITY,
+  TEMPLATES,
+  generateBrief,
+  place,
+  summarizeSessions,
+} from "./brief-generate.js";
+import { octoberEightBrief } from "./brief-fixture.js";
+import type { BriefInput } from "./brief-types.js";
+
+const NOW = new Date("2026-10-08T14:40:00.000Z");
+
+function quietDay(): BriefInput {
+  return {
+    now: NOW.toISOString(),
+    userName: "Corey",
+    companies: ["cmp_indigo"],
+    calendarToday: [],
+    meetingsYesterday: [],
+    decisions: [],
+    actionItems: [],
+    risks: [],
+    shipped: [],
+    waitingOn: [],
+    team: [],
+    sessions: [],
+    lastBriefAt: new Date(NOW.getTime() - 86_400_000).toISOString(),
+  };
+}
+
+const full = () => octoberEightBrief(NOW);
+
+describe("generateBrief: lead", () => {
+  it("leads with decisions when several calls wait, even with an incident", () => {
+    const plan = generateBrief(full());
+    expect(plan.lead).toBe("decisions");
+    expect(plan.reason).toBe("4 calls and a live incident");
+  });
+
+  it("leads with the incident when it is live and few calls wait", () => {
+    const input = { ...full(), decisions: full().decisions.slice(0, 1) };
+    const plan = generateBrief(input);
+    expect(plan.lead).toBe("incident");
+    expect(plan.widgets.map((w) => w.kind)).toContain("incident");
+  });
+
+  it("leads with momentum when nothing is owed and work shipped", () => {
+    const input = { ...full(), decisions: [], risks: [] };
+    const plan = generateBrief(input);
+    expect(plan.lead).toBe("momentum");
+    expect(plan.widgets.map((w) => w.kind)).toContain("shipped");
+  });
+
+  it("leads with your day on a quiet day", () => {
+    const plan = generateBrief(quietDay());
+    expect(plan.lead).toBe("your-day");
+    expect(plan.reason).toBe("a quiet day");
+    expect(plan.widgets.map((w) => w.kind)).toEqual(["sunrise"]);
+  });
+
+  it("switches to catch-up after three or more days away", () => {
+    const input = { ...full(), lastBriefAt: new Date(NOW.getTime() - 5 * 86_400_000).toISOString() };
+    const plan = generateBrief(input);
+    expect(plan.lead).toBe("catch-up");
+    expect(plan.reason).toBe("you were away 5 days");
+    expect(plan.density).toBe(5);
+    expect(plan.widgets[0]).toMatchObject({ kind: "catchup", size: "XL" });
+    expect(plan.daysAway).toBe(5);
+  });
+
+  it("does not catch up after two days away or on a first brief", () => {
+    const two = { ...full(), lastBriefAt: new Date(NOW.getTime() - 2 * 86_400_000).toISOString() };
+    expect(generateBrief(two).lead).toBe("decisions");
+    expect(generateBrief({ ...full(), lastBriefAt: null }).lead).toBe("decisions");
+  });
+});
+
+describe("generateBrief: density", () => {
+  it("caps a busy day at 8 widgets and fills each slot with a widget that fits", () => {
+    const plan = generateBrief(full());
+    expect(plan.density).toBe(MAX_DENSITY);
+    expect(plan.widgets).toHaveLength(8);
+    for (const w of plan.widgets) expect(FITS[w.kind]).toContain(w.size);
+    expect(plan.widgets.map((w) => w.kind)).toEqual([
+      "sunrise",
+      "needs",
+      "team",
+      "incident",
+      "shipped",
+      "waiting",
+      "meetings",
+      "risk",
+    ]);
+  });
+
+  it("never goes below 4 or above 8", () => {
+    const days: BriefInput[] = [quietDay(), full(), { ...full(), decisions: [] }, { ...full(), shipped: [], risks: [] }];
+    for (const day of days) {
+      const plan = generateBrief(day);
+      expect(plan.density).toBeGreaterThanOrEqual(MIN_DENSITY);
+      expect(plan.density).toBeLessThanOrEqual(MAX_DENSITY);
+      expect(plan.areas).toHaveLength(3);
+      for (const row of plan.areas) expect(row.split(" ")).toHaveLength(6);
+    }
+  });
+
+  it("grows with open decisions", () => {
+    const base = { ...full(), risks: [], shipped: full().shipped.slice(0, 1) };
+    const one = generateBrief({ ...base, decisions: base.decisions.slice(0, 2) });
+    const four = generateBrief(base);
+    expect(four.density).toBeGreaterThan(one.density);
+  });
+
+  it("places a template's areas so every widget's span matches its slot", () => {
+    const { areas, widgets } = place(5, ["catchup", "needs", "agenda", "oneThing", "shipped"]);
+    expect(areas).toEqual([
+      "catchup catchup catchup needs needs agenda",
+      "catchup catchup catchup needs needs agenda",
+      "oneThing oneThing shipped shipped shipped agenda",
+    ]);
+    expect(widgets.find((w) => w.kind === "catchup")).toMatchObject({ cols: 3, rows: 2 });
+    expect(widgets.find((w) => w.kind === "shipped")).toMatchObject({ size: "W3", cols: 3, rows: 1 });
+  });
+
+  it("has a template for every density", () => {
+    for (let n = MIN_DENSITY; n <= MAX_DENSITY; n += 1) {
+      expect(Object.keys(TEMPLATES[n]!.cls)).toHaveLength(n);
+    }
+  });
+});
+
+describe("other-company sessions", () => {
+  const sessions = [
+    { id: "1", title: "Bot parity", startedAt: NOW.toISOString(), workstream: "HQ core", company: "cmp_indigo" },
+    { id: "2", title: "Acme pricing secret plan", startedAt: NOW.toISOString(), workstream: "Acme deals", company: "cmp_acme" },
+    { id: "3", title: "Acme launch", startedAt: NOW.toISOString(), workstream: "Acme deals", company: "cmp_acme" },
+  ];
+
+  it("counts sessions outside the brief's companies without their titles or workstreams", () => {
+    const summary = summarizeSessions(sessions, ["cmp_indigo"]);
+    expect(summary.count).toBe(1);
+    expect(summary.otherCompanyCount).toBe(2);
+    const text = JSON.stringify(summary);
+    expect(text).not.toContain("Acme");
+  });
+
+  it("never carries another company's session titles into the plan", () => {
+    const plan = generateBrief({ ...quietDay(), sessions });
+    const text = JSON.stringify(plan);
+    expect(text).not.toContain("Acme");
+    expect(plan.sessions.otherCompanyCount).toBe(2);
+    expect(plan.widgets.map((w) => w.kind)).toContain("otherWork");
+  });
+});
