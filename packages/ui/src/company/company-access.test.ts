@@ -4,10 +4,14 @@ import {
   TREE_PAGE_LIMIT,
   TREE_PAGING_DISABLED,
   TREE_TOO_LARGE,
+  createGroupFailureMessage,
+  createdGroupFromBody,
   grantSections,
   grantsFromTree,
   groupGrantSummaries,
+  groupIdFromName,
   groupsFromBody,
+  newGroupNameProblem,
   readCompanyGrants,
   readFolderGrants,
   topFolderOf,
@@ -69,6 +73,45 @@ describe("groupsFromBody", () => {
   it("throws on a body without a groups list so the pane shows failed, not zero", () => {
     expect(() => groupsFromBody({ error: "nope" })).toThrow();
     expect(() => groupsFromBody(null)).toThrow();
+  });
+});
+
+// hq-pro handleGroupCreate: POST /secrets/{co}/groups { groupId, name, description? } -> 201 { group }.
+describe("group create helpers", () => {
+  it("derives the group id the way the web console does", () => {
+    expect(groupIdFromName("Design Team")).toBe("grp_design-team");
+    expect(groupIdFromName("  R&D / Ops!  ")).toBe("grp_r-d-ops");
+    expect(groupIdFromName("!!!")).toBe("grp_group");
+  });
+
+  it("refuses an empty name and a name or id an existing group has", () => {
+    const existing = groupsFromBody(groupsBody);
+    expect(newGroupNameProblem("   ", existing)).toBe("Enter a group name.");
+    expect(newGroupNameProblem("ops", existing)).toMatch(/already exists/);
+    expect(newGroupNameProblem("OPS", existing)).toMatch(/already exists/);
+    expect(newGroupNameProblem("Bot", existing)).toMatch(/already exists/);
+    expect(newGroupNameProblem("Finance", existing)).toBeNull();
+  });
+
+  it("maps the created group from the 201 body, and falls back to what was sent", () => {
+    const sent = { groupId: "grp_finance", name: "Finance", description: "Money" };
+    expect(createdGroupFromBody({ group: { groupId: "grp_finance", name: "Finance", description: "Money", creatorUid: "prs_a" } }, sent)).toMatchObject({
+      id: "grp_finance",
+      name: "Finance",
+      description: "Money",
+      memberCount: 0,
+    });
+    expect(createdGroupFromBody({}, sent)).toMatchObject({ id: "grp_finance", name: "Finance", description: "Money", memberCount: 0 });
+    expect(createdGroupFromBody(null, { groupId: "grp_x", name: "X" })).toMatchObject({ id: "grp_x", description: "" });
+  });
+
+  it("turns a failed create into plain copy, never the server text", () => {
+    expect(createGroupFailureMessage({ code: "http-409", status: 409 })).toBe("A group with this name already exists. Choose another name.");
+    expect(createGroupFailureMessage({ code: "http-409" })).toMatch(/already exists/);
+    expect(createGroupFailureMessage({ code: "http-403", status: 403 })).toBe("Only the owner, or an admin the owner allows, can create groups.");
+    expect(createGroupFailureMessage({ code: "http-503", status: 503 })).toBe("Could not create the group. Try again.");
+    expect(createGroupFailureMessage({ code: "network" })).toBe("Could not create the group. Try again.");
+    expect(createGroupFailureMessage({})).toBe("Could not create the group. Try again.");
   });
 });
 

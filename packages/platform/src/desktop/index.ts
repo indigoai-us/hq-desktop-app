@@ -82,6 +82,7 @@ export function createDesktopAdapter(
       listVaultPrefix: web.files.listVaultPrefix,
       getAccessTree: web.files.getAccessTree,
       listAccessGroups: web.files.listAccessGroups,
+      createAccessGroup: web.files.createAccessGroup,
       presignVaultGet: web.files.presignVaultGet,
       presignVaultPut: web.files.presignVaultPut,
     },

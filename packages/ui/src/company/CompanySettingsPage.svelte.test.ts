@@ -284,4 +284,206 @@ describe("CompanySettingsPage live Groups and Grants", () => {
     expect(target.querySelector("[data-testid='grant-section']")).toBeNull();
     warn.mockRestore();
   });
+
+  // New group is an inline row on the Groups pane (no new screen).
+  async function openGroups(uid: string, role: string | null, files: Record<string, unknown>) {
+    const target = open("groups", { slug: "acme", companyUid: uid, files, role });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(2);
+    });
+    return target;
+  }
+
+  function q<T extends HTMLElement = HTMLElement>(target: HTMLElement, id: string): T | null {
+    return target.querySelector<T>(`[data-testid='${id}']`);
+  }
+
+  function typeName(target: HTMLElement, value: string): void {
+    const input = q<HTMLInputElement>(target, "group-create-name")!;
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+  }
+
+  function createFiles(impl: (...args: unknown[]) => Promise<unknown>) {
+    const createAccessGroup = vi.fn(impl);
+    return { ...filesApi({ createAccessGroup }), createAccessGroup };
+  }
+
+  it("New group is hidden for members and guests, shown for owners and admins", async () => {
+    const files = createFiles(async () => ({ ok: true as const, value: {} }));
+    for (const role of ["Member", "Guest", null]) {
+      const target = await openGroups(`cmp_create_hidden_${role}`, role, files);
+      expect(q(target, "new-group")).toBeNull();
+      expect(q(target, "group-create-row")).toBeNull();
+      unmount(mounted.pop()!);
+    }
+    for (const role of ["Owner", "Admin"]) {
+      const target = await openGroups(`cmp_create_shown_${role}`, role, files);
+      expect(q(target, "new-group")?.textContent?.trim()).toBe("New group");
+      unmount(mounted.pop()!);
+    }
+  });
+
+  it("New group is hidden when the host cannot create groups", async () => {
+    const target = await openGroups("cmp_create_nohost", "Owner", filesApi());
+    expect(q(target, "new-group")).toBeNull();
+  });
+
+  it("creates a group from the inline row and selects it in the list", async () => {
+    const files = createFiles(async (_uid: unknown, input: unknown) => ({
+      ok: true as const,
+      value: { group: { ...(input as object), companyUid: "cmp_create_ok", creatorUid: "prs_me", createdAt: "2026-10-07T00:00:00Z" } },
+    }));
+    const target = await openGroups("cmp_create_ok", "Owner", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    expect(q(target, "group-create-row")).not.toBeNull();
+    expect(q(target, "new-group")).toBeNull();
+    expect(document.activeElement).toBe(q(target, "group-create-name"));
+    typeName(target, "Design Team");
+    const desc = q<HTMLInputElement>(target, "group-create-description")!;
+    desc.value = "Brand and product design";
+    desc.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    q<HTMLFormElement>(target, "group-create-row")!.requestSubmit();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(3);
+    });
+    expect(files.createAccessGroup).toHaveBeenCalledTimes(1);
+    expect(files.createAccessGroup).toHaveBeenCalledWith("cmp_create_ok", {
+      groupId: "grp_design-team",
+      name: "Design Team",
+      description: "Brand and product design",
+    });
+    expect(q(target, "group-create-row")).toBeNull();
+    const current = target.querySelector("[data-testid='group-row'][aria-current='true']");
+    expect(current?.textContent).toContain("Design Team");
+    expect(text(target, "group-detail")).toContain("grp_design-team");
+    expect(text(target, "group-detail")).toContain("Brand and product design");
+    expect(text(target, "groups-sub")).toMatch(/^3 groups/);
+  });
+
+  it("Enter in the name field submits without a description", async () => {
+    const files = createFiles(async () => ({ ok: true as const, value: { group: { groupId: "grp_ops", name: "Ops" } } }));
+    const target = await openGroups("cmp_create_enter", "Admin", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    typeName(target, "Ops");
+    expect(q<HTMLButtonElement>(target, "group-create-submit")!.type).toBe("submit");
+    q(target, "group-create-name")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(files.createAccessGroup).toHaveBeenCalledWith("cmp_create_enter", { groupId: "grp_ops", name: "Ops" }));
+  });
+
+  it("shows a pending state and blocks a second submit", async () => {
+    let release!: (v: unknown) => void;
+    const files = createFiles(() => new Promise((r) => (release = r)));
+    const target = await openGroups("cmp_create_pending", "Owner", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    typeName(target, "Finance");
+    const form = q<HTMLFormElement>(target, "group-create-row")!;
+    form.requestSubmit();
+    flushSync();
+    const submit = q<HTMLButtonElement>(target, "group-create-submit")!;
+    expect(submit.disabled).toBe(true);
+    expect(submit.getAttribute("aria-busy")).toBe("true");
+    expect(submit.textContent?.trim()).toBe("Creating…");
+    expect(q<HTMLButtonElement>(target, "group-create-cancel")!.disabled).toBe(true);
+    form.requestSubmit();
+    form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(files.createAccessGroup).toHaveBeenCalledTimes(1);
+    expect(q(target, "group-create-row")).not.toBeNull();
+    release({ ok: true, value: { group: { groupId: "grp_finance", name: "Finance" } } });
+    await vi.waitFor(() => {
+      flushSync();
+      expect(q(target, "group-create-row")).toBeNull();
+    });
+    expect(files.createAccessGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed create shows a plain message, keeps the typed name, and can retry", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let attempt = 0;
+    const files = createFiles(async () => {
+      attempt += 1;
+      if (attempt === 1) return { ok: false, reason: "error", code: "http-500", status: 500, message: "Internal Server Error: ddb boom" };
+      if (attempt === 2) return { ok: false, reason: "error", code: "http-409", status: 409, message: "Group cmp:grp_sales already exists" };
+      if (attempt === 3) return { ok: false, reason: "error", code: "http-403", status: 403, message: "Forbidden: manage-groups permission required" };
+      return { ok: true, value: { group: { groupId: "grp_sales", name: "Sales" } } };
+    });
+    const target = await openGroups("cmp_create_fail", "Admin", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    typeName(target, "Sales");
+    const form = q<HTMLFormElement>(target, "group-create-row")!;
+
+    form.requestSubmit();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "group-create-error")).toBe("Could not create the group. Try again.");
+    });
+    expect(q<HTMLInputElement>(target, "group-create-name")!.value).toBe("Sales");
+    expect(q<HTMLButtonElement>(target, "group-create-submit")!.disabled).toBe(false);
+    expect(target.textContent).not.toContain("ddb boom");
+
+    form.requestSubmit();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "group-create-error")).toBe("A group with this name already exists. Choose another name.");
+    });
+    expect(target.textContent).not.toContain("cmp:grp_sales");
+
+    form.requestSubmit();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(text(target, "group-create-error")).toBe("Only the owner, or an admin the owner allows, can create groups.");
+    });
+    expect(target.textContent).not.toContain("Forbidden");
+    expect(q<HTMLInputElement>(target, "group-create-name")!.value).toBe("Sales");
+    expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(2);
+
+    form.requestSubmit();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(3);
+    });
+    expect(q(target, "group-create-error")).toBeNull();
+    warn.mockRestore();
+  });
+
+  it("refuses a name an existing group already has without calling the server", async () => {
+    const files = createFiles(async () => ({ ok: true as const, value: {} }));
+    const target = await openGroups("cmp_create_dupe", "Owner", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    typeName(target, "exec");
+    q<HTMLFormElement>(target, "group-create-row")!.requestSubmit();
+    flushSync();
+    expect(text(target, "group-create-error")).toBe("A group with this name already exists. Choose another name.");
+    expect(files.createAccessGroup).not.toHaveBeenCalled();
+  });
+
+  it("Escape and Cancel close the row without creating", async () => {
+    const files = createFiles(async () => ({ ok: true as const, value: {} }));
+    const target = await openGroups("cmp_create_escape", "Owner", files);
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    typeName(target, "Half typed");
+    q(target, "group-create-name")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    flushSync();
+    expect(q(target, "group-create-row")).toBeNull();
+    expect(q(target, "new-group")).not.toBeNull();
+    q<HTMLButtonElement>(target, "new-group")!.click();
+    flushSync();
+    expect(q<HTMLInputElement>(target, "group-create-name")!.value).toBe("");
+    q<HTMLButtonElement>(target, "group-create-cancel")!.click();
+    flushSync();
+    expect(q(target, "group-create-row")).toBeNull();
+    expect(files.createAccessGroup).not.toHaveBeenCalled();
+    expect(target.querySelectorAll("[data-testid='group-row']")).toHaveLength(2);
+  });
 });

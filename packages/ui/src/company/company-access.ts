@@ -99,6 +99,63 @@ export function groupsFromBody(body: unknown): CompanyGroup[] {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * Group id for a typed name, the way the web console derives one: lower case,
+ * runs of anything else become "-", with the `grp_` prefix hq-pro stores.
+ */
+export function groupIdFromName(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `grp_${slug || "group"}`;
+}
+
+/** Why a typed name cannot be created, or null when it can be sent. */
+export function newGroupNameProblem(name: string, existing: readonly CompanyGroup[]): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return "Enter a group name.";
+  const id = groupIdFromName(trimmed);
+  const lower = trimmed.toLowerCase();
+  if (existing.some((g) => g.id === id || g.name.trim().toLowerCase() === lower)) {
+    return "A group with this name already exists. Choose another name.";
+  }
+  return null;
+}
+
+/**
+ * The group a POST /secrets/{companyUid}/groups answer created. Falls back to
+ * what was sent when the body does not carry the group.
+ */
+export function createdGroupFromBody(
+  body: unknown,
+  sent: { groupId: string; name: string; description?: string },
+): CompanyGroup {
+  const raw = body && typeof body === "object" ? (body as { group?: unknown }).group : null;
+  try {
+    const [group] = groupsFromBody({ groups: raw ? [raw] : [] });
+    if (group) return { ...group, memberCount: group.memberCount ?? 0 };
+  } catch {
+    // Fall through to what was sent.
+  }
+  return {
+    id: sent.groupId,
+    name: sent.name,
+    description: sent.description ?? "",
+    members: [],
+    memberCount: 0,
+    paths: [],
+  };
+}
+
+/** Plain sentence for a failed group create. Server text is never shown. */
+export function createGroupFailureMessage(failure: { code?: string; status?: number }): string {
+  const status = failure.status ?? (failure.code?.startsWith("http-") ? Number(failure.code.slice(5)) : NaN);
+  if (status === 409) return "A group with this name already exists. Choose another name.";
+  if (status === 403) return "Only the owner, or an admin the owner allows, can create groups.";
+  return "Could not create the group. Try again.";
+}
+
 /** Top-level section a grant path belongs to. */
 export function topFolderOf(path: string): string {
   if (!path || path === "*" || path === "/*") return WHOLE_COMPANY;
