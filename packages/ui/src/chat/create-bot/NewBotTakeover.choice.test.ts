@@ -148,6 +148,23 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(local.querySelector(".rail-icon")).toBeNull();
   });
 
+  it("offers Connect it under the tiles, which opens its own screen, with Back to the tiles", async () => {
+    render({ choose: true, ...CLOUD_SCREEN, onchooselocal: vi.fn() });
+    await settle();
+    await nameIt("Nova");
+    const line = q('[data-testid="new-bot-connect-external-line"]')!;
+    expect(line.textContent?.replace(/\s+/g, " ").trim()).toBe("Already have a bot running somewhere else? Connect it");
+    q<HTMLButtonElement>('[data-testid="new-bot-connect-external"]')!.click();
+    await settle();
+    expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
+    expect(q('[data-testid="new-bot-external-step"]')).toBeTruthy();
+    expect(q('[data-testid="chat-bot-where-external"]')?.textContent).toContain("hq agent enroll");
+    expect(q('[data-testid="chat-bot-external-paid"]')).toBeTruthy();
+    q<HTMLButtonElement>('[data-testid="new-bot-external-back"]')!.click();
+    await settle();
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
+  });
+
   it("shows no tags on the Local tile whichever tool is signed in", async () => {
     render({ choose: true, ...CLOUD_SCREEN, runtimeReady: null, onchooselocal: vi.fn() });
     await settle();

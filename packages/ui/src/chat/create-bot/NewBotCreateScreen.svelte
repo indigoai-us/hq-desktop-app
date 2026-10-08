@@ -293,8 +293,9 @@
       if (filteredCompanies.length === 1) selectCompany(filteredCompanies[0]!.companyUid);
       return;
     }
-    if (step < finalStep) go(3);
-    else void submit();
+    // Enter finishes from either step, with the company the screen opened on
+    // when the person has not picked one.
+    void submit();
   }
 </script>
 
@@ -356,17 +357,25 @@
   </div>
 
   <footer class="new-bot-create-foot">
-    {#if nameIssue && step === finalStep}<p class="new-bot-create-error" role="alert" data-testid="new-bot-name-unusable">{nameIssue}</p>{/if}
-    {#if refusal && step === finalStep}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
+    {#if nameIssue}<p class="new-bot-create-error" role="alert" data-testid="new-bot-name-unusable">{nameIssue}</p>{/if}
+    {#if refusal}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
     {#if companyGone && step >= finalStep}
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-company-gone">{NEW_BOT_COMPANY_GONE_REASON}</p>
-    {:else if quoteProblemLine && step === finalStep}
+    {:else if quoteProblemLine}
       <!-- Create bot is off because the company's options did not load. Say
            which of the two reasons it is, and offer another try. -->
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}><RailIcon name="refresh" />Try again</button>
     {/if}
-    {#if step === 2 && !singleCompany}<button type="button" class="new-bot-create-submit" data-testid="new-bot-continue-brain" onclick={() => go(3)}><RailIcon name="arrow-right" />Continue</button>{:else}{#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}<button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}><RailIcon name="plus" />{busy ? "Creating bot..." : "Create bot"}</button>{#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}{/if}
+    {#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}
+    <!-- The brain step with a company still to pick: "Next: Company" and
+         "Finish with defaults" (the company it opened on). Otherwise one
+         button, "Create <Name>". -->
+    <div class="new-bot-foot-actions" class:single={step === finalStep}>
+      {#if step < finalStep}<button type="button" class="new-bot-create-next" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Next: Company<RailIcon name="arrow-right" /></button>{/if}
+      <button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" data-finish={step < finalStep ? "defaults" : undefined} disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : step < finalStep ? "Finish with defaults" : `Create ${name || "bot"}`}</button>
+    </div>
+    {#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}
     {#if step === 2 && onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}
   </footer>
 </div>

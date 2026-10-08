@@ -83,16 +83,31 @@ describe("NewBotCreateScreen", () => {
     // The dots count the takeover's name and where steps too.
     expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 3 of 4");
   });
-  it("preselects the signed-in brain, and Enter moves on to the company", async () => {
+  it("preselects the signed-in brain; Next: Company moves on, and the last step has only Create <Name>", async () => {
     render();
     await settle();
     const codex = document.querySelector<HTMLInputElement>("input[value='codex']")!;
     expect(codex.checked).toBe(true);
-    codex.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // Several companies: "Next: Company" and "Finish with defaults", side by side.
+    expect(document.querySelector("[data-testid='new-bot-continue-brain']")?.textContent?.trim()).toBe("Next: Company");
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")?.textContent?.trim()).toBe("Finish with defaults");
+    expect(document.querySelector(".new-bot-foot-actions")?.children).toHaveLength(2);
+    document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
     await settle();
     expect(document.querySelector("[data-testid='new-bot-step-3']")).toBeTruthy();
     expect(document.querySelector("[data-testid='new-bot-progress']")?.getAttribute("aria-label")).toBe("Step 4 of 4");
     expect(document.querySelector("[data-testid='bot-identity-meta']")?.textContent).toBe("Cloud · Current company");
+    expect(document.querySelector("[data-testid='new-bot-continue-brain']")).toBeNull();
+    expect(document.querySelector("[data-testid='new-bot-create-submit']")?.textContent?.trim()).toBe("Create Polar");
+  });
+
+  it("Enter on the brain step finishes with defaults: the brain shown, in the company it opened on", async () => {
+    const { oncreate } = render();
+    await settle();
+    const codex = document.querySelector<HTMLInputElement>("input[value='codex']")!;
+    codex.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    expect(oncreate).toHaveBeenCalledWith("cmp_current", expect.objectContaining({ name: "Polar", runtime: "codex" }));
   });
   it("counts one step before it when the where question was not asked", async () => {
     render({ leadSteps: 1, companies: [{ companyUid: "cmp_only", label: "Only company" }], currentCompanyUid: "cmp_only" });
@@ -783,8 +798,9 @@ describe("NewBotCreateScreen: which company the bot is created in (review G-1)",
     render({ nameCompany: true });
     await settle();
     await advanceName();
-    // Not on the brain step: the company is chosen on the next one.
-    expect(line()).toBe("");
+    // On the brain step Finish with defaults would create in the company the
+    // screen opened on, so it says which.
+    expect(line()).toBe("Polar will be created in Current company.");
     document.querySelector<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
     await settle();
     expect(line()).toBe("Polar will be created in Current company.");

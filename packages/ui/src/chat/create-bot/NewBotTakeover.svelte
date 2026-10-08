@@ -2,6 +2,7 @@
   import RailIcon from "../../common/button/RailIcon.svelte";
   import { newBotWallpaper } from "./new-bot-wallpapers.js";
   import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
+  import NewBotExternalStep from "./NewBotExternalStep.svelte";
   import NewBotNameStep from "./NewBotNameStep.svelte";
   import { onDestroy, onMount, untrack } from "svelte";
   import { focusOnMount, portal } from "../portal.js";
@@ -178,7 +179,7 @@
    * live?", or the cloud create screen. Read once, at open: a name given
    * earlier skips the name step.
    */
-  type Phase = "name" | "where" | "cloud";
+  type Phase = "name" | "where" | "cloud" | "external";
   function openingPhase(): Phase {
     if (!initialName.trim()) return "name";
     if (openCloud && hasCloudScreen) return "cloud";
@@ -571,6 +572,8 @@
         <div class="new-bot-create" data-testid="new-bot-name-screen" role="group">
           <NewBotNameStep name={botName} total={totalSteps} current={1} oncontinue={continueName} />
         </div>
+      {:else if phase === "external"}
+        <NewBotExternalStep onback={() => (phase = "where")} />
       {:else if phase === "where" || !hasCloudScreen}
         <NewBotKindChoice
           name={botName}
@@ -580,6 +583,7 @@
           current={2}
           onback={() => (phase = "name")}
           onpick={pickKind}
+          onconnectexternal={() => (phase = "external")}
         />
       {:else if oncreate && loadProvisionOptions}
         {#key createScreenKey}

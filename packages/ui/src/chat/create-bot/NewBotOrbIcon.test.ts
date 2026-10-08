@@ -40,7 +40,7 @@ describe("NewBotOrbIcon", () => {
     expect(localSvg.getAttribute("aria-hidden")).toBe("true");
     expect(cloudSvg.getAttribute("width")).toBe("54");
     const stop = (svg: SVGElement) => svg.querySelector("radialGradient stop")?.getAttribute("stop-color");
-    expect(stop(cloudSvg)).toBe("rgba(255, 190, 160, 0.55)");
+    expect(stop(cloudSvg)).toBe("rgba(255, 204, 186, 0.92)");
     expect(stop(localSvg)).toBe("rgba(170, 190, 255, 0.55)");
     // The fill's center sits up and to the left.
     const fill = cloudSvg.querySelector("radialGradient")!;

@@ -24,7 +24,7 @@
   /** Center and edge of the orb's fill: warm for Cloud, cool for Local. */
   const tint = $derived(
     kind === "cloud"
-      ? { center: "rgba(255, 190, 160, 0.55)", edge: "rgba(255, 128, 159, 0.08)" }
+      ? { center: "rgba(255, 204, 186, 0.92)", edge: "rgba(255, 138, 168, 0.2)" }
       : { center: "rgba(170, 190, 255, 0.55)", edge: "rgba(120, 150, 255, 0.08)" },
   );
 </script>
