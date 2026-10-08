@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.406] - 2026-10-08
+
 - The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
 - A bot's detail panel no longer shows its skills or its instructions. The Channels section lists only connected platforms, and says "No connected platforms." when there are none.
 
