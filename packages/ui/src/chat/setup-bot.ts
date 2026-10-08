@@ -288,8 +288,22 @@ export interface SetupBotLauncher {
   starting?: boolean;
   /** Failure from an automatic start, displayed by the same recovery UI. */
   error?: string | null;
+  /**
+   * The host has read this computer's coding tools and none is signed in.
+   * The setup surfaces show the guided install / sign-in path up front, and
+   * the setup bot does not run (or come back) until a tool is ready: a bot
+   * with no coding tool behind it only answers with failures. Unknown
+   * (still checking) is `false`, so nothing flashes on a normal boot.
+   */
+  needsCodingTool?: boolean;
   /** Open the existing bot's DM, or create it and open the new one. */
   start(): Promise<SetupBotStart>;
+  /**
+   * What the hero says while `starting`, when it differs from the usual
+   * "its conversation opens by itself" (the visual first run's create, which
+   * leaves the person where they are).
+   */
+  startingBody?: string | null;
 }
 
 /** The setup bot among this Mac's local bots, if it exists. */
@@ -353,6 +367,15 @@ export function firstSignedInRuntime(
 ): LocalBotRow["runtime"] | null {
   if (!ready) return null;
   return SETUP_BOT_RUNTIME_ORDER.find((runtime) => ready[runtime] === true) ?? null;
+}
+
+/**
+ * True once the host has answered and no coding tool is signed in. Null
+ * (not checked yet) is not "missing": the answer arrives a moment after boot
+ * and the install guide must not flash in front of a person who has one.
+ */
+export function setupNeedsCodingTool(ready: Record<string, boolean> | null | undefined): boolean {
+  return ready != null && firstSignedInRuntime(ready) === null;
 }
 
 /**

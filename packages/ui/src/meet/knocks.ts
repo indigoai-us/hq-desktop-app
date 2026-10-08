@@ -152,10 +152,9 @@ export const KNOCK_FRIENDLY: Readonly<Record<string, string>> = {
 export function knockFailure(result: AdapterResult<unknown>): KnockError {
   const failed = result.ok ? null : result;
   const code = failed?.code ?? "UNKNOWN";
-  return {
-    code,
-    message: KNOCK_FRIENDLY[code] ?? failed?.message ?? "That knock was refused.",
-  };
+  // AUDIT-3: the transport's own text goes to the log, never onto the screen.
+  if (!KNOCK_FRIENDLY[code]) console.warn("[knocks] call failed", code, failed?.message);
+  return { code, message: KNOCK_FRIENDLY[code] ?? "That knock was refused. Try again." };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

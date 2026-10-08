@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { AGENT_PATHS } from "../adapter.js";
+import { AGENT_PATHS, OUTPOST_PATHS } from "../adapter.js";
 import { TauriPlatformAdapter } from "./index.js";
 import { createSyncPlatformAdapter } from "./sync-adapter.js";
 
@@ -215,5 +215,53 @@ describe("a refused bot removal keeps its HTTP status (review A-I9)", () => {
     await expect(sync.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
     const tauri = new TauriPlatformAdapter({ invoke });
     await expect(tauri.agents.deprovision("agt_1")).resolves.toMatchObject({ ok: false, status, code });
+  });
+});
+
+describe("createSyncPlatformAdapter personal Outpost", () => {
+  it("reads the caller's Outpost status and job rows through hq_pro_fetch", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ statuses: [] }) };
+      },
+    });
+    const jobs = await adapter.agents.listMyOutpostJobs?.();
+    await adapter.agents.getMyOutpostStatus?.();
+    expect(jobs).toEqual({ ok: true, value: { statuses: [] } });
+    expect(calls).toEqual([
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.jobsStatus, method: "GET", body: null } },
+      { cmd: "hq_pro_fetch", args: { url: OUTPOST_PATHS.status, method: "POST", body: "{}" } },
+    ]);
+  });
+
+  it("surfaces a missing Outpost as an http-404 failure", async () => {
+    const adapter = createSyncPlatformAdapter({
+      invoke: async () => ({ status: 404, body: JSON.stringify({ error: true, message: "not found" }) }),
+    });
+    const res = await adapter.agents.getMyOutpostStatus?.();
+    expect(res?.ok).toBe(false);
+    expect(res && !res.ok ? res.code : "").toBe("http-404");
+  });
+});
+
+describe("createSyncPlatformAdapter personal integrations", () => {
+  it("reads Google and personal Slack accounts on the console's routes", async () => {
+    const calls: Invocation[] = [];
+    const adapter = createSyncPlatformAdapter({
+      invoke: async (cmd, args) => {
+        calls.push({ cmd, args });
+        return { status: 200, body: JSON.stringify({ accounts: [] }) };
+      },
+    });
+    await adapter.agents.listMyGoogleAccounts?.();
+    await adapter.agents.listMySlackAccounts?.();
+    expect("disconnectMyGoogleAccount" in adapter.agents).toBe(false);
+    expect("disconnectMySlackAccount" in adapter.agents).toBe(false);
+    expect(calls.map((c) => [c.args?.method, c.args?.url])).toEqual([
+      ["GET", "/v1/google/accounts"],
+      ["GET", "/v1/slack/personal/accounts"],
+    ]);
   });
 });

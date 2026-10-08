@@ -52,6 +52,11 @@ import {
   formatFindings,
 } from "./perf/style-budget.js";
 import {
+  findStaticHeavyImports,
+  staticReachable,
+  staticSpecifiers,
+} from "./perf/lazy-import-budget.js";
+import {
   POLL_FLOOR_MS,
   collectNumericConstants,
   findFastPollers,
@@ -163,7 +168,6 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-popover",
   "packages/ui/src/chat/ChatSidebar.svelte::.chat-context-menu",
   "packages/ui/src/common/LinkContextMenu.svelte::.link-context-menu",
-  "packages/ui/src/home/CorePopover.svelte::.core-popover",
   "packages/ui/src/library/LibraryBrowser.svelte::.scope-menu",
   "packages/ui/src/projects/ProjectDetailView.svelte::.status-menu",
   "packages/ui/src/settings/VersionPopout.svelte::.version-popout",
@@ -189,6 +193,11 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   // buttons do not.
   "packages/ui/src/chat/messaging/card-modal.css::.card-modal-plate",
   "packages/ui/src/chat/messaging/card-modal.css::.card-modal-glass",
+  // New bot takeover: a full-window dialog open only while a person is making
+  // a bot, over its own still room illustration. The step panel is frosted
+  // glass; the creating and waking screens, which animate the dawn on every
+  // frame, are excluded by the selector and keep a plain fill.
+  "packages/ui/src/chat/create-bot/new-bot-takeover.css::.new-bot-takeover-card:not(:has(.new-bot-dawn))",
 ]);
 
 describe("backdrop-filter budget (live shell)", () => {
@@ -377,6 +386,14 @@ const SESSIONS_HIDDEN_POLL_FLOOR_SECS = 120;
  */
 const FAST_POLLER_ALLOWLIST = new Map<string, string>([
   [
+    "packages/ui/src/common/ReadLoader.svelte",
+    "4s rotation of the waiting line in the shared loader (BLANK-3, owner " +
+      "2026-10-03). Not a long-lived poller: it starts only after a read has " +
+      "been pending 3s, lives only while that loading placeholder is mounted, " +
+      "is cleared the moment the read answers, writes one string per tick, " +
+      "and skips ticks while the window is hidden.",
+  ],
+  [
     "packages/ui/src/tour/GuidedTour.svelte",
     "250ms re-measure of the spotlight target while the guided tour is on " +
       "screen, so the cutout follows layout shifts that fire no resize or " +
@@ -420,6 +437,13 @@ const FAST_POLLER_ALLOWLIST = new Map<string, string>([
     "packages/ui/src/meetings/meetings-store.svelte.ts",
     "3s connect-provider poll, active only during the OAuth connect flow " +
       "(the steady-state meetings poll is POLL_INTERVAL_MS = 120s).",
+  ],
+  [
+    "packages/ui/src/meetings/live-transcript.svelte.ts",
+    "3s live-transcript poll (a chained setTimeout, never overlapping), " +
+      "active only while a live meeting's Transcript tab is mounted. It backs " +
+      "off to 10s while the window is hidden, stops when the meeting ends, and " +
+      "an unchanged transcript answers 304 with no state write.",
   ],
 ]);
 
@@ -769,6 +793,61 @@ const h = setInterval(tick, options.pollMs);`;
     expect(findFastPollers(sites)).toEqual([]);
   });
 
+  it("static heavy imports: flags a shell import of atlas and ignores import()", () => {
+    const files = [
+      {
+        path: "packages/ui/src/shell/DesktopApp.svelte",
+        content: `
+          import Atlas from "../atlas/Map.svelte";
+          const loadChart = () => import("../telemetry/Chart.svelte");
+        `,
+      },
+      {
+        path: "packages/ui/src/atlas/Map.svelte",
+        content: "",
+      },
+      {
+        path: "packages/ui/src/telemetry/Chart.svelte",
+        content: "",
+      },
+    ];
+    const found = findStaticHeavyImports(files, [
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ]);
+    expect(found.map((f) => f.kind)).toEqual(["atlas"]);
+    expect(staticSpecifiers(files[0].content)).toEqual([
+      "../atlas/Map.svelte",
+    ]);
+  });
+
+  it("static heavy imports: reads multi-line binding lists and skips comments", () => {
+    const content = `
+      /** Keep this off the import graph. */
+      // import nothing from "../atlas/Commented.svelte";
+      import {
+        a,
+        b,
+      } from "../telemetry/telemetry-lazy-value.js";
+      import type {
+        C,
+      } from "@hq/agents";
+    `;
+    expect(staticSpecifiers(content)).toEqual([
+      "../telemetry/telemetry-lazy-value.js",
+    ]);
+  });
+
+  it("static heavy imports: ignores type-only imports, which build away", () => {
+    const content = `
+      import type { MyTelemetryApi } from "../telemetry/telemetry-me.js";
+      export type { Row } from "../atlas/atlas-build.js";
+      import { type Snap, load } from "../telemetry/telemetry-lazy-value.js";
+    `;
+    expect(staticSpecifiers(content)).toEqual([
+      "../telemetry/telemetry-lazy-value.js",
+    ]);
+  });
+
   it("visibility gate: detects both the listener and the state read", () => {
     expect(
       pausesOnVisibility('document.addEventListener("visibilitychange", f);'),
@@ -779,5 +858,131 @@ const h = setInterval(tick, options.pollMs);`;
     expect(pausesOnVisibility("timer = setInterval(refresh, 5000);")).toBe(
       false,
     );
+  });
+});
+
+describe("console rail lazy chunks stay off the shell entry", () => {
+  it("does not statically import packages/ui/src/atlas or telemetry", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const found = findStaticHeavyImports(uiScriptFiles, entries);
+    expect(
+      found,
+      found
+        .map((f) => `${f.file} statically imports ${f.resolved} (${f.kind})`)
+        .join("\n"),
+    ).toEqual([]);
+  });
+});
+
+describe("first-frame-of-Home budget: lazy doors stay lazy", () => {
+  // Each body below loads through packages/ui/src/shell/lazy-doors.ts. A
+  // static import from the shell (or anything it statically pulls in) would
+  // put it back in the initial JS graph. See docs/performance-budgets.md.
+  const LAZY_BODIES = [
+    "packages/ui/src/shell/profile-panes/ProfilePaneHost.svelte",
+    "packages/ui/src/shell/profile-panes/BotProfilePane.svelte",
+    "packages/ui/src/shell/profile-panes/BotSessionPane.svelte",
+    "packages/ui/src/shell/profile-panes/EditBotSheet.svelte",
+    "packages/ui/src/shell/profile-panes/UserProfilePane.svelte",
+    "packages/ui/src/inbox/NotificationsPopover.svelte",
+    "packages/ui/src/shell/MoreCompaniesPopover.svelte",
+    "packages/ui/src/chat/NewMessageSheet.svelte",
+    "packages/ui/src/chat/NewChannelSheet.svelte",
+    "packages/ui/src/chat/PeoplePicker.svelte",
+    // The New bot flow loads when the create modal opens (lazy-doors.ts).
+    "packages/ui/src/chat/create-bot/CreateBotFlow.svelte",
+    "packages/ui/src/agents/agent-stepper-model.ts",
+    // US-040 gate: Atlas, telemetry, meetings, create sheets, company pages
+    // and personal pages load behind their own doors.
+    "packages/ui/src/atlas/index.ts",
+    "packages/ui/src/telemetry/index.ts",
+    "packages/ui/src/meetings/MeetingsStatesBody.svelte",
+    "packages/ui/src/meetings/MeetingCanvas.svelte",
+    "packages/ui/src/meetings/LiveTranscriptBody.svelte",
+    "packages/ui/src/meetings/live-transcript.svelte.ts",
+    "packages/ui/src/meetings/MeetingsSidepane.svelte",
+    "packages/ui/src/shell/new-company/NewCompanySheet.svelte",
+    "packages/ui/src/company/brain/BrainPage.svelte",
+    "packages/ui/src/company/files-connect/FilesConnectPage.svelte",
+    "packages/ui/src/company/CompanySettingsPage.svelte",
+    "packages/ui/src/library/PersonalLibraryPage.svelte",
+    "packages/ui/src/library/PersonalDeploymentsPage.svelte",
+    "packages/ui/src/outpost/OutpostPage.svelte",
+    "packages/ui/src/personal/PersonalRailPage.svelte",
+    // OWNER-R21: the old account pages were removed (Profile and Billing
+    // live in Settings). OWNER-R9: Team and its access section load on demand.
+    "packages/ui/src/company/TeamPage.svelte",
+    "packages/ui/src/company/MemberAccessSection.svelte",
+    "packages/ui/src/common/Dropdown.svelte",
+    // Visual first run, "Bring in your context": the knowledge-tree scene
+    // loads behind firstRunImportDoor (lazy-doors.ts).
+    "packages/ui/src/chat/first-run/knowledge-tree/FirstRunImportStep.svelte",
+    "packages/ui/src/chat/first-run/knowledge-tree/scene-renderer.ts",
+    "packages/ui/src/chat/first-run/knowledge-tree/tree-model.ts",
+  ];
+
+  it("keeps every lazy body out of the shell's static import graph", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const reachable = staticReachable(uiScriptFiles, entries);
+    expect(reachable.has("packages/ui/src/shell/DesktopApp.svelte")).toBe(true);
+    expect(reachable.has("packages/ui/src/chat/ChatSidebar.svelte")).toBe(true);
+    for (const body of LAZY_BODIES) {
+      expect(uiScriptFiles.some((f) => f.path === body), `${body} exists`).toBe(true);
+    }
+    expect(LAZY_BODIES.filter((body) => reachable.has(body))).toEqual([]);
+  });
+
+  it("detector: a static import of a lazy body is reachable, import() is not", () => {
+    const files = [
+      { path: "a/Shell.svelte", content: 'import X from "./Heavy.svelte";\nconst y = () => import("./Lazy.svelte");' },
+      { path: "a/Heavy.svelte", content: "" },
+      { path: "a/Lazy.svelte", content: "" },
+    ];
+    const reachable = staticReachable(files, ["a/Shell.svelte"]);
+    expect(reachable.has("a/Heavy.svelte")).toBe(true);
+    expect(reachable.has("a/Lazy.svelte")).toBe(false);
+  });
+});
+
+describe("cloud bot create stays off the shell entry", () => {
+  // Owner budget: the console-rail Initial JS limit has a few KB of headroom.
+  // The direct cloud create (cloud-create.ts and @hq/agents) loads when the
+  // New bot flow opens, through import(). Type-only imports build away.
+  it("@hq/agents and cloud-create.ts are not in the shell's static import graph", () => {
+    const entries = [
+      "packages/ui/src/index.ts",
+      "packages/ui/src/shell/DesktopApp.svelte",
+    ].filter((path) => uiScriptFiles.some((file) => file.path === path));
+    const reachable = staticReachable(uiScriptFiles, entries);
+    expect(reachable.has("packages/ui/src/shell/DesktopApp.svelte")).toBe(true);
+    const offenders: string[] = [];
+    for (const file of uiScriptFiles) {
+      if (!reachable.has(file.path)) continue;
+      for (const spec of staticSpecifiers(file.content)) {
+        if (spec === "@hq/agents" || spec.startsWith("@hq/agents/") || /create-bot\/cloud-create(\.js|\.ts)?$/.test(spec)) {
+          offenders.push(`${file.path} -> ${spec}`);
+        }
+      }
+    }
+    expect(offenders, offenders.join("\n")).toEqual([]);
+    expect(reachable.has("packages/ui/src/chat/create-bot/cloud-create.ts")).toBe(false);
+  });
+});
+
+describe("work SSR build resolves mqtt builtins", () => {
+  it("externalizes bare node builtins during the work SSR build", async () => {
+    const vite = await readFile(
+      resolve(rootDir, "apps/work/vite.config.ts"),
+      "utf8",
+    );
+    expect(vite).toContain("externalize-node-builtins");
+    expect(vite).toContain('id: `node:${id}`');
+    expect(vite).toContain("options?.ssr");
   });
 });

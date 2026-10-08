@@ -173,7 +173,11 @@ export function notifyLevelErrorMessage(failure: {
     case "http-404":
       return "This server doesn't support channel notification settings yet.";
     default:
-      return failure.message?.trim() || "Couldn't update notifications.";
+      // Unknown codes carry server/transport text: log it, show plain copy.
+      if (failure.message?.trim()) {
+        console.warn("[notify-level] level change failed", failure.message);
+      }
+      return "Couldn't update notifications. Try again.";
   }
 }
 

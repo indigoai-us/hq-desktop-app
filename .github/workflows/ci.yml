@@ -409,9 +409,10 @@ jobs:
       # member is silently untested until it is listed here or gets its own step.
       # `--force` bypasses the turbo cache for these test tasks so a cache replay
       # can never re-report a stale PASS for changed sources.
-      - name: Package tests (@hq/auth, @hq/core, @hq/platform)
+      - name: Package tests (@hq/agents, @hq/auth, @hq/core, @hq/platform)
         run: >-
-          pnpm turbo run test --force
+          pnpm turbo run typecheck test --force
+          --filter=@hq/agents
           --filter=@hq/auth
           --filter=@hq/core
           --filter=@hq/platform

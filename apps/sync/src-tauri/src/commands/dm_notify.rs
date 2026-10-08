@@ -3991,6 +3991,10 @@ mod tests {
             root_event_id: None,
             reply_count: None,
             audience: None,
+            forwarded_from: None,
+            forward_note: None,
+            omitted_attachments: None,
+            rich_content: None,
         };
 
         let payload = thread_reply_wake_payload(

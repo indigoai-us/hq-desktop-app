@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * TeamPanel — company Team tab: mixed humans + agents list/detail (DESKTOP-009).
    *
@@ -294,7 +295,7 @@
         onclick={() => void openInvite()}
         disabled={externalActionBusy !== null}
         aria-busy={externalActionBusy === "invite"}
-      >
+      ><RailIcon name="user-plus" />
         {externalActionBusy === "invite" ? "Opening…" : "Invite"}
       </button>
       <button
@@ -305,7 +306,7 @@
         onclick={() => void openConsole()}
         disabled={externalActionBusy !== null}
         aria-busy={externalActionBusy === "console"}
-      >
+      ><RailIcon name="external" />
         {externalActionBusy === "console" ? "Opening…" : "Open console"}
       </button>
     </div>
@@ -396,7 +397,7 @@
                 data-testid="team-detail-back"
                 aria-label="Back to team list"
                 onclick={clearMemberSelection}
-              >
+              ><RailIcon name="arrow-left" />
                 Team
               </button>
               <div class="team-detail-heading title-stack">
@@ -565,8 +566,8 @@
 
   .team-action-button {
     flex: 0 0 auto;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid transparent;
     border-radius: var(--v4-radius-button);
     background: var(--v4-primary-bg);
@@ -975,8 +976,8 @@
       width: 100%;
       min-width: 0;
       height: auto;
-      min-height: 30px;
-      padding: 6px 10px;
+      min-height: var(--hq-btn-h);
+      padding: 0 var(--hq-btn-pad-inline);
       line-height: 1.2;
       overflow-wrap: anywhere;
       white-space: normal;

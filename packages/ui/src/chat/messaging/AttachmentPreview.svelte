@@ -137,12 +137,8 @@
         text = body.length > 200_000 ? `${body.slice(0, 200_000)}\n…` : body;
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          error =
-            err instanceof Error && err.message
-              ? err.message
-              : "Could not load the file";
-        }
+        console.warn("[attachment-preview] load failed", err);
+        if (!cancelled) error = "Could not load the file. Try again.";
       })
       .finally(() => {
         if (!cancelled) loading = false;
@@ -158,10 +154,8 @@
     try {
       await downloadAttachment(src, item.name);
     } catch (err) {
-      error =
-        err instanceof Error && err.message
-          ? err.message
-          : "Could not download the file";
+      console.warn("[attachment-preview] download failed", err);
+      error = "Could not download the file. Try again.";
     } finally {
       downloading = false;
     }

@@ -119,7 +119,7 @@ describe("DesktopApp first paint for a non-cohort / empty tenant", () => {
         host.querySelector('[data-testid="setup-channel-intro"]'),
       ).toBeTruthy();
     });
-    expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
+    expect(host.querySelector('[data-testid="channel-loading"]')).toBeNull();
     expect(
       host.querySelector(`[data-conversation-id="${SETUP_ROW_ID}"]`),
     ).toBeTruthy();
@@ -142,6 +142,6 @@ describe("DesktopApp first paint for a non-cohort / empty tenant", () => {
         host.querySelector('[data-testid="setup-channel-intro"]'),
       ).toBeTruthy();
     });
-    expect(host.querySelector('[data-testid="channel-skeleton"]')).toBeNull();
+    expect(host.querySelector('[data-testid="channel-loading"]')).toBeNull();
   });
 });

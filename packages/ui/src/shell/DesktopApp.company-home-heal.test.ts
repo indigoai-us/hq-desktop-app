@@ -132,6 +132,7 @@ async function mountShell(): Promise<void> {
       companies: COMPANIES,
       tenantAccountId: ACCOUNT_ID,
       coreFixtures: false,
+      sidebarCompanies: true,
     },
   });
   await settle();

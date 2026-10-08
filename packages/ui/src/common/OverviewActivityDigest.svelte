@@ -1,5 +1,7 @@
 <script lang="ts">
+  import RailIcon from "./button/RailIcon.svelte";
   import Sparkline from "./Sparkline.svelte";
+  import ReadLoader from "./ReadLoader.svelte";
 
   /**
    * Compact recent-activity digest for company Overview (DESKTOP-003).
@@ -164,7 +166,7 @@
       class="digest-link"
       data-testid="overview-open-inbox"
       onclick={() => onopeninbox?.()}
-    >
+    ><RailIcon name="external" />
       Open inbox
     </button>
   </header>
@@ -172,10 +174,7 @@
   {#if !cloudBacked}
     <p class="digest-empty">Connect this company to see recent activity.</p>
   {:else if loading && !hasActivity}
-    <div class="digest-skeleton" aria-hidden="true">
-      {#each [0, 1, 2] as row (row)}<span style={`width: ${78 - row * 18}%`}
-        ></span>{/each}
-    </div>
+    <ReadLoader testid="overview-activity-loading" />
   {:else if !hasActivity}
     <p class="digest-empty">
       No activity yet — it appears here after files sync.
@@ -379,34 +378,5 @@
     color: var(--v4-text-3);
     font-size: var(--type-secondary, var(--text-sm));
     line-height: 1.35;
-  }
-
-  .digest-skeleton {
-    display: grid;
-    gap: 8px;
-    padding: 8px 0;
-  }
-
-  .digest-skeleton span {
-    height: 8px;
-    border-radius: 999px;
-    background: var(--v4-control-faint);
-    animation: digest-pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes digest-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .digest-skeleton span {
-      animation: none;
-    }
   }
 </style>

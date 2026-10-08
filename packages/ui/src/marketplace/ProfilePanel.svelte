@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * ProfilePanel — the desktop-alt **Profile** tab body (US-016).
    *
@@ -166,7 +167,8 @@
         saved = false;
       }
     } else if (picked.reason !== "unavailable") {
-      saveError = picked.message ?? "Could not open the image picker.";
+      console.warn("[marketplace] image picker failed", picked.message);
+      saveError = "Couldn't open the image picker. Try again.";
     }
     choosingAvatar = false;
   }
@@ -221,7 +223,8 @@
       // 3. Refresh the public preview from the public route.
       await loadPreview();
     } catch (err) {
-      saveError = err instanceof Error ? err.message : String(err);
+      console.warn("[marketplace] profile save failed", err);
+      saveError = "Couldn't save your profile. Try again.";
     } finally {
       saving = false;
     }
@@ -236,7 +239,12 @@
       preview = res.value;
     } else {
       preview = null;
-      previewError = res.message ?? "Preview unavailable.";
+      if (res.message === "no public profile yet") {
+        previewError = res.message;
+      } else {
+        console.warn("[marketplace] profile preview failed", res.message);
+        previewError = "Couldn't load the preview. Try again.";
+      }
     }
     previewLoading = false;
   }
@@ -329,7 +337,7 @@
         onclick={claim}
         disabled={!canClaim}
         aria-busy={claiming}
-      >
+      ><RailIcon name="check" />
         {claiming ? "Claiming…" : "Claim handle"}
       </button>
 
@@ -355,7 +363,7 @@
     <!-- ── Edit step (AC1) ───────────────────────────────────────────────── -->
     <header class="profile-head">
       <h2 class="profile-title">
-        Your profile <span
+        Public profile <span
           class="handle-badge"
           data-testid="profile-claimed-handle">@{handle}</span
         >
@@ -394,7 +402,7 @@
                 onclick={chooseAvatar}
                 disabled={saving || choosingAvatar}
                 aria-busy={choosingAvatar}
-              >
+              ><RailIcon name="upload" />
                 {choosingAvatar
                   ? "Choosing…"
                   : pendingAvatarPath || avatarUrl
@@ -406,13 +414,6 @@
                 >{avatarPreviewName}</span
               >
             {/if}
-            {#if avatarUrl && !displayAvatarSrc}
-              <span
-                class="field-hint"
-                data-testid="profile-avatar-preview-unavailable"
-                >Saved avatar preview unavailable in this version.</span
-              >
-            {/if}
             <span class="field-hint"
               >PNG, JPEG, WebP, or GIF · up to 2 MiB.</span
             >
@@ -422,7 +423,7 @@
 
       <!-- Bio -->
       <div class="field">
-        <label class="field-label" for="profile-bio">Bio</label>
+        <label class="field-label" for="profile-bio">Public bio</label>
         <textarea
           id="profile-bio"
           class="input textarea"
@@ -478,13 +479,13 @@
           type="button"
           class="btn btn-secondary add-social"
           data-testid="profile-add-social"
-          onclick={addSocial}>+ Add link</button
+          onclick={addSocial}><RailIcon name="plus" />Add link</button
         >
       </div>
 
       <!-- Tip URL -->
       <div class="field">
-        <label class="field-label" for="profile-tip">Tip / sponsor link</label>
+        <label class="field-label" for="profile-tip">Tip or sponsor link</label>
         <input
           id="profile-tip"
           class="input"
@@ -500,7 +501,7 @@
           </p>
         {:else}
           <p class="field-hint">
-            A plain link shown on your profile — only http(s) URLs.
+            Shown on your public profile. Web links only.
           </p>
         {/if}
       </div>
@@ -513,7 +514,7 @@
           onclick={save}
           disabled={!canSave}
           aria-busy={saving}
-        >
+        ><RailIcon name="save" />
           {saving ? "Saving…" : "Save profile"}
         </button>
         {#if saved}
@@ -545,7 +546,7 @@
           onclick={loadPreview}
           disabled={previewLoading}
           aria-busy={previewLoading}
-        >
+        ><RailIcon name="eye" />
           {previewLoading ? "Loading…" : preview ? "Refresh" : "Load preview"}
         </button>
       </div>
@@ -727,8 +728,6 @@
     color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
   .input {
@@ -918,7 +917,7 @@
   .btn {
     display: inline-flex;
     align-items: center;
-    height: 32px;
+    height: var(--hq-btn-h);
     padding: 0 var(--v4-space-3);
     border-radius: var(--v4-radius-button);
     border: 1px solid var(--v4-hairline);
@@ -926,7 +925,7 @@
     color: var(--v4-text-1);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
     align-self: flex-start;
     transition:
@@ -978,8 +977,6 @@
     color: var(--v4-text-3);
     font-size: var(--text-micro);
     font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
   }
 
   .preview-empty {

@@ -90,6 +90,10 @@ export async function buildHarness() {
       sourcemap: false,
       emptyOutDir: true,
       outDir: HARNESS_OUT_DIR,
+      // Manifest is JSON beside the build. bundleBytes counts only .js, so
+      // this does not change the measured shell. The rail suite uses it to
+      // prove Atlas and telemetry are not in the initial module graph.
+      manifest: true,
       rollupOptions: {
         input: resolve(syncRoot, "dev-harness/index.html"),
       },

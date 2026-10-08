@@ -4,6 +4,9 @@
     type WorkKind,
     type WorkProvenance,
   } from "./provenance";
+  import { resolvePerson, personLabel } from "./people/people.js";
+  import { activePeople } from "./people/people-roster.svelte.js";
+  import PersonName from "./people/PersonName.svelte";
 
   interface Props {
     provenance?: WorkProvenance | null;
@@ -22,6 +25,17 @@
   }: Props = $props();
 
   const view = $derived(provenanceView(provenance, kind, unavailable));
+  // OWNER-R5: every person resolves through the company roster; never an id.
+  const roster = $derived(activePeople());
+  const people = $derived(
+    view.people.map((person) => ({
+      role: person.role,
+      identity: resolvePerson(roster.index, person.label, { loading: roster.loading }),
+    })),
+  );
+  const ariaLabel = $derived(
+    [...people.map((p) => `${p.role} ${personLabel(p.identity)}`), view.origin].filter(Boolean).join(" · "),
+  );
   // The normalizer always supplies this fallback. Keep it explicit here too so
   // a future display-model change can never leave a blank source label.
   const sourceLabel = $derived(
@@ -29,7 +43,7 @@
   );
   const compactSummary = $derived(
     [
-      ...view.people.map((person) => `${person.role} ${person.label}`),
+      ...people.map((person) => `${person.role} ${person.identity.name}`),
       sourceLabel,
     ].join(" · "),
   );
@@ -39,17 +53,17 @@
   class="provenance-line"
   class:is-compact={compact}
   data-testid={testid}
-  aria-label={view.ariaLabel}
-  title={view.ariaLabel}
+  aria-label={ariaLabel}
+  title={ariaLabel}
 >
   {#if compact}
     <span class="compact-summary">{compactSummary}</span>
   {:else}
-    {#if view.people.length > 0}
-      {#each view.people as person (`${person.role}:${person.label}`)}
+    {#if people.length > 0}
+      {#each people as person, i (`${person.role}:${i}`)}
         <span class="person">
           <span class="role">{person.role}</span>
-          <span class="label">{person.label}</span>
+          <span class="label"><PersonName person={person.identity} /></span>
         </span>
       {/each}
     {/if}
@@ -92,7 +106,7 @@
   .label {
     overflow: hidden;
     color: var(--v4-text-2);
-    font-weight: 600;
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mapSignInError } from './onboarding-signin';
 
 describe('mapSignInError', () => {
@@ -51,8 +51,17 @@ describe('mapSignInError', () => {
     );
   });
 
-  it('falls back to the original message or a default', () => {
-    expect(mapSignInError('network unavailable', 'Microsoft')).toBe('network unavailable');
-    expect(mapSignInError('', 'Google')).toBe('Sign-in failed');
+  it('falls back to plain copy, never the raw message, and logs the raw text', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const raw = 'oauth x HTTP 500 Internal Server Error: {"message":"boom"}';
+    expect(mapSignInError('network unavailable', 'Microsoft')).toBe(
+      'Sign-in did not finish. Choose your provider and try again.',
+    );
+    expect(mapSignInError('', 'Google')).toBe('Sign-in did not finish. Choose your provider and try again.');
+    const shown = mapSignInError(raw, 'Google');
+    expect(shown).not.toContain('HTTP 500');
+    expect(shown).toContain('try again');
+    expect(warn).toHaveBeenCalledWith('[signin] sign-in failed', raw);
+    warn.mockRestore();
   });
 });

@@ -11,8 +11,9 @@ export type NotificationActionKind =
 
 /**
  * Inbox route for a banner body-click / open action. DM and share banners
- * resolve the same way native notification clicks do; other kinds do not
- * navigate the inbox.
+ * resolve the same way native notification clicks do. A meeting-detected
+ * banner opens Meetings, where the detected meeting has Start recording
+ * (OWNER-R3). Other kinds do not navigate.
  */
 export function bannerOpenRoute(
   kind: NotificationActionKind,
@@ -21,6 +22,7 @@ export function bannerOpenRoute(
   if (kind === 'dm' || kind === 'share' || kind === 'mention') {
     return routeForNotificationPayload(data);
   }
+  if (kind === 'meeting') return 'meetings';
   return null;
 }
 

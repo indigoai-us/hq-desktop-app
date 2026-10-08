@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Above the composer in a local bot's conversation when its coding tool's
    * sign-in has expired (`runtimeSignIn.state === "expired"` from
@@ -87,7 +88,7 @@
       data-testid="bot-signin-start"
       disabled={phase === "opening"}
       onclick={() => void start()}
-    >
+    ><RailIcon name="refresh" />
       {phase === "opening" ? "Opening sign-in…" : phase === "error" ? "Try again" : copy.action}
     </button>
   {/if}
@@ -119,7 +120,7 @@
   }
   .bot-signin-btn {
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     padding: 4px 12px;
     border: 1px solid var(--line);
     border-radius: 8px;

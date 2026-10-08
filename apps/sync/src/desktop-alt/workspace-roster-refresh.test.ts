@@ -516,13 +516,13 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       await flush();
       await vi.advanceTimersByTimeAsync(15_001);
       await flush();
-      const notice = host.querySelector('[data-testid="hq-work-workspace-error"]');
+      const notice = document.querySelector('[data-testid="hq-work-workspace-error"]');
       expect(notice?.textContent).toContain('Workspaces couldn’t refresh.');
       expect(notice?.textContent).not.toContain('timed out');
       expect(notice?.getAttribute('role')).toBe('status');
       resolveRoster({ workspaces: [ACME] });
       await flush();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     } finally {
       if (component) await unmount(component);
       component = null;
@@ -548,14 +548,14 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
       await flush();
       await vi.advanceTimersByTimeAsync(15_001);
       await flush();
-      const retry = host.querySelector<HTMLButtonElement>('[data-testid="hq-work-workspace-error"] button');
+      const retry = document.querySelector<HTMLButtonElement>('[data-testid="hq-work-workspace-error"] button');
       expect(retry).toBeTruthy();
       retry!.click();
       await flush();
       expect(rosterCalls(calls)).toBe(2);
       resolveOld({ workspaces: [ACME] });
       await flush();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
     } finally {
       if (component) await unmount(component);
       component = null;
@@ -578,14 +578,14 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeTruthy();
     });
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(2);
     });
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     });
   });
 
@@ -627,7 +627,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(3);
     });
-    expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+    expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
   });
 
   it('treats a cloud-unreachable roster envelope as a failed fetch and retries it', async () => {
@@ -646,17 +646,17 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     });
     await flush();
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).toContain(
         'Workspaces couldn’t refresh.',
       );
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).not.toContain('vault unreachable');
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')?.textContent).not.toContain('vault unreachable');
     });
     await vi.waitFor(() => {
       expect(rosterCalls(calls)).toBe(2);
     });
     await vi.waitFor(() => {
       flushSync();
-      expect(host.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
+      expect(document.querySelector('[data-testid="hq-work-workspace-error"]')).toBeNull();
     });
   });
 

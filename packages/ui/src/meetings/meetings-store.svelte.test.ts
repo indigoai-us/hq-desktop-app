@@ -20,6 +20,7 @@ import {
   configureMeetingsApi,
   meetingsStore,
   prefetchMeetings,
+  setRecordedListRetryDelaysForTests,
   startMeetingsStore,
   stopMeetingsStore,
 } from "./meetings-store.svelte";
@@ -60,6 +61,11 @@ function wireApi(
       listMemberships: () => call("listMemberships") as never,
       listUpcoming: () => call("listUpcoming") as never,
       listScheduledBots: () => call("listScheduledBots") as never,
+      listRecorded: (companyId?: string | null) =>
+        call("listRecorded", companyId ?? null) as never,
+      getRecorded: (meetingId: string, companyId?: string | null) =>
+        call("getRecorded", { meetingId, companyId: companyId ?? null }) as never,
+      readRecordedBody: (url: string) => call("readRecordedBody", { url }) as never,
       inviteBot: (payload: Json) => call("inviteBot", payload) as never,
       cancelBot: (id: string) => call("cancelBot", id) as never,
       joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -161,6 +167,7 @@ beforeEach(() => {
   meetingsStore.stopCalendarConnectWatch();
   meetingsStore.clearConnectNotice();
   localStorage.removeItem(SETTINGS_PREFS_KEY);
+  setRecordedListRetryDelaysForTests([0, 0]);
   wireApi();
 });
 
@@ -516,6 +523,9 @@ describe("meetings store recording-company attribution", () => {
         listMemberships: () => call("listMemberships") as never,
         listUpcoming: () => call("listUpcoming") as never,
         listScheduledBots: () => call("listScheduledBots") as never,
+        listRecorded: () => Promise.resolve({ ok: true, value: { meetings: [] } }) as never,
+        getRecorded: () => Promise.resolve({ ok: true, value: { signals: {} } }) as never,
+        readRecordedBody: () => Promise.resolve({ ok: true, value: "" }) as never,
         inviteBot: (payload: Json) => call("inviteBot", payload) as never,
         cancelBot: (id: string) => call("cancelBot", id) as never,
         joinBotNow: (payload: Json) => call("joinBotNow", payload) as never,
@@ -1332,5 +1342,207 @@ describe("meetings store launch prefetch + first-paint provenance (US-010)", () 
 
     expect(meetingsStore.initialLoadPending).toBe(false);
     expect(meetingsStore.hasLiveSnapshot).toBe(false);
+  });
+});
+
+describe("meetings store recorded history", () => {
+  // Real hq-pro GET /v1/meetings row shape (captured 2026-10-02 via
+  // `hq meetings list --json`): no duration, companyId "unknown" when the
+  // meeting is unattributed, and only attributed rows under ?companyId=.
+  const personalRow = {
+    meetingId: "e07dfd9f-a210-4eff-b881-4e0b9fb72ea1",
+    sourceShape: "markdown",
+    title: "Corey<>Aliyya",
+    startTime: "2026-07-01T12:00:00-06:00",
+    channel: "meeting",
+    ingested_at: "2026-07-01T19:00:00.000Z",
+    hasSignals: false,
+    companyId: "unknown",
+    attributed: false,
+  };
+  const indigoRow = {
+    meetingId: "5b1c2d3e-0000-4000-8000-000000000001",
+    sourceShape: "markdown",
+    title: "Emma Hughes and Jacob Posel",
+    startTime: "2026-10-02T16:00:00-04:00",
+    channel: "meeting",
+    ingested_at: "2026-10-02T21:00:00.000Z",
+    hasSignals: true,
+    companyId: "cmp_indigo",
+    attributed: true,
+  };
+
+  const ownBots = [personalRow, indigoRow].map((row) => ({
+    botId: row.meetingId,
+    meetingUrl: "",
+    platform: "zoom",
+    status: "completed",
+    autoScheduled: false,
+  }));
+
+  it("hides company meetings the caller did not attend or record, even as owner", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active", role: "owner" }]),
+        );
+      }
+      // Only the personal meeting was recorded by the caller's notetaker.
+      if (method === "listScheduledBots") return Promise.resolve(ok([ownBots[0]]));
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow] }),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    expect(meetingsStore.recorded.map((m) => m.title)).toEqual(["Corey<>Aliyya"]);
+    expect(saveMeetingsCache.mock.calls.at(-1)?.[0].recorded).toHaveLength(1);
+  });
+
+  it("fans out across personal and every active company, newest first", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([
+            { companyUid: "cmp_indigo", companyName: "Indigo", status: "active" },
+            { companyUid: "cmp_gone", companyName: "Gone", status: "revoked" },
+          ]),
+        );
+      }
+      // The caller's own notetaker recorded both meetings (meetingId = bot id).
+      if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          ok({
+            meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow],
+            nextToken: "x",
+          }),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    const scopes = call.mock.calls
+      .filter(([m]) => m === "listRecorded")
+      .map(([, p]) => p);
+    expect(scopes).toEqual([null, "cmp_indigo"]);
+    expect(meetingsStore.recorded.map((m) => [m.title, m.companyUid])).toEqual([
+      ["Emma Hughes and Jacob Posel", "cmp_indigo"],
+      ["Corey<>Aliyya", null],
+    ]);
+    expect(meetingsStore.recordedError).toBe("");
+    expect(saveMeetingsCache.mock.calls.at(-1)?.[0].recorded).toHaveLength(2);
+  });
+
+  it("keeps the rows that loaded and says so when one scope fails", async () => {
+    call.mockImplementation((method: string, payload?: unknown) => {
+      if (method === "listMemberships") {
+        return Promise.resolve(
+          ok([{ companyUid: "cmp_indigo", companyName: "Indigo", status: "active" }]),
+        );
+      }
+      if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+      if (method === "listRecorded") {
+        return Promise.resolve(
+          payload === "cmp_indigo"
+            ? ok({ meetings: [indigoRow] })
+            : failure("http-500", "meetings HTTP 500"),
+        );
+      }
+      return Promise.resolve(ok([]));
+    });
+
+    await meetingsStore.refresh();
+
+    expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([indigoRow.meetingId]);
+    // OWNER-R1: a 500 is retried quietly first; the line follows the last retry.
+    await vi.waitFor(() => expect(meetingsStore.recordedError).toBe("Some past meetings could not load."));
+  });
+
+  /**
+   * OWNER-R1, from the per-scope reads on 2026-10-03 with the owner's
+   * session: 20 active memberships; 19 lists answered 200 (most with no
+   * meetings); one membership points at a company hq-pro no longer has and
+   * answers 422 company-not-found on every read. The app logged 41 list
+   * network failures that day (15 s bound) and showed "Some past meetings
+   * could not load." on every open.
+   */
+  describe("sources that are not available to this person (OWNER-R1)", () => {
+    const memberships = [
+      { companyUid: "cmp_indigo", companyName: "Indigo", status: "active" },
+      { companyUid: "cmp_empty", companyName: "Empty", status: "active" },
+      { companyUid: "cmp_removed", companyName: "Removed", status: "active" },
+    ];
+
+    it("a company that no longer exists is skipped with no line, and is not asked again", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          if (payload === "cmp_removed") return Promise.resolve(failure("company-not-found", "Company entity not found"));
+          return Promise.resolve(ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : payload === "cmp_empty" ? [] : [personalRow] }));
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      expect(meetingsStore.recorded).toHaveLength(2);
+      expect(warn.mock.calls.some(([m]) => String(m).includes("cmp_removed"))).toBe(true);
+
+      await meetingsStore.refresh();
+      const removedReads = call.mock.calls.filter(([m, p]) => m === "listRecorded" && p === "cmp_removed");
+      expect(removedReads).toHaveLength(1);
+      expect(meetingsStore.recordedError).toBe("");
+      warn.mockRestore();
+    });
+
+    it("a passing failure is retried quietly and the rows show with no line", async () => {
+      let indigoReads = 0;
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships.slice(0, 1)));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          if (payload === "cmp_indigo" && ++indigoReads === 1) {
+            return Promise.resolve(failure("network", "Network error: operation timed out"));
+          }
+          return Promise.resolve(ok({ meetings: payload === "cmp_indigo" ? [indigoRow] : [personalRow] }));
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      await vi.waitFor(() => expect(meetingsStore.recorded.map((m) => m.companyUid)).toContain("cmp_indigo"));
+      expect(indigoReads).toBe(2);
+      expect(meetingsStore.recordedError).toBe("");
+    });
+
+    it("a source that keeps failing after its retries shows the line, with the rows that loaded", async () => {
+      call.mockImplementation((method: string, payload?: unknown) => {
+        if (method === "listMemberships") return Promise.resolve(ok(memberships.slice(0, 1)));
+        if (method === "listScheduledBots") return Promise.resolve(ok(ownBots));
+        if (method === "listRecorded") {
+          return Promise.resolve(
+            payload === "cmp_indigo" ? failure("http-503", "Service Unavailable") : ok({ meetings: [personalRow] }),
+          );
+        }
+        return Promise.resolve(ok([]));
+      });
+
+      await meetingsStore.refresh();
+      expect(meetingsStore.recordedError).toBe("");
+      expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([personalRow.meetingId]);
+      await vi.waitFor(() => expect(meetingsStore.recordedError).toBe("Some past meetings could not load."));
+      expect(call.mock.calls.filter(([m, p]) => m === "listRecorded" && p === "cmp_indigo")).toHaveLength(3);
+      expect(meetingsStore.recorded.map((m) => m.meetingId)).toEqual([personalRow.meetingId]);
+    });
   });
 });

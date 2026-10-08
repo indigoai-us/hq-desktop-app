@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * The camera / microphone permission surface for a call.
    *
@@ -160,7 +161,7 @@
         data-testid="call-permission-primary"
         disabled={busy}
         onclick={primary}
-      >
+      ><RailIcon name="arrow-right" />
         {busy ? "Working…" : primaryLabel}
       </button>
       {#if ondismiss}

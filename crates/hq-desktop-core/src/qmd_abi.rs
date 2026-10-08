@@ -245,8 +245,13 @@ code: 'ERR_DLOPEN_FAILED'";
         let pkg = prefix.join("node_modules/@tobilu/qmd");
         fs::create_dir_all(&pkg).unwrap();
         fs::write(prefix.join("qmd.cmd"), "@echo off\n").unwrap();
+        // Compare canonical paths: on macOS the temp dir is under /var, a
+        // symlink to /private/var, and the resolver returns the real path.
         assert_eq!(
-            qmd_package_dir_from_bin(&prefix.join("qmd.cmd")).unwrap(),
+            qmd_package_dir_from_bin(&prefix.join("qmd.cmd"))
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
             pkg.canonicalize().unwrap()
         );
     }

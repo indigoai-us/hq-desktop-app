@@ -98,6 +98,7 @@ describe("DesktopApp first-run guided tour", () => {
     const markWelcomeTourShown = vi.fn(async () => ok(undefined));
     const createBot = vi.fn(async () => ok({ ok: true, name: "x", agentUid: "agt_x" }));
     const onselectrow = vi.fn();
+    let claudeLoggedIn = false;
     const adapter = {
       kind: "desktop",
       isAvailable: () => false,
@@ -133,6 +134,19 @@ describe("DesktopApp first-run guided tour", () => {
       shell: {
         detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
       },
+      // The setup bot runs on Claude. Setup opens it only once a coding tool
+      // is signed in, so the fixture signs in before the person presses run.
+      sessions: {
+        preflight: async () =>
+          ok({
+            claudeAvailable: true,
+            claudeLoggedIn,
+            codexAvailable: false,
+            codexLoggedIn: false,
+            grokAvailable: false,
+            grokLoggedIn: false,
+          }),
+      },
     } as unknown as PlatformAdapter;
 
     host = document.createElement("div");
@@ -164,7 +178,9 @@ describe("DesktopApp first-run guided tour", () => {
     expect(resolvedSelector(0)).toBe('[data-testid="setup-hero"]');
 
     // Mid-tour the setup bot's DM opens (on a real install the bot does this
-    // by itself). Step 1 now points at its composer.
+    // by itself once a coding tool is signed in). Step 1 now points at its
+    // composer.
+    claudeLoggedIn = true;
     q("setup-run")!.click();
     await settle();
     await vi.waitFor(() => expect(q("channel-name")?.textContent).toContain("setup"), {
@@ -178,10 +194,10 @@ describe("DesktopApp first-run guided tour", () => {
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("1 of 8");
     expect(createBot).not.toHaveBeenCalled();
 
-    // Step 2: the titlebar Files button; the explorer does not open.
+    // Step 2: the rail Library button; the explorer does not open.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Your company's files");
-    expect(resolvedSelector(1)).toBe('[data-testid="titlebar-files"]');
+    expect(resolvedSelector(1)).toBe('[data-testid="rail-library"]');
     expect(q("vault-explorer")).toBeNull();
 
     // Step 3: the sidebar "+" that leads to New bot; the create modal stays shut.
@@ -191,10 +207,10 @@ describe("DesktopApp first-run guided tour", () => {
     expect(resolvedSelector(2)).toBe('[data-testid="chat-new-message"]');
     expect(q("chat-create-modal")).toBeNull();
 
-    // Step 4: invites, pointed at the sidebar's Companies section.
+    // Step 4: invites, pointed at the first company tile on the rail.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("Bring in your team");
-    expect(resolvedSelector(3)).toBe('[data-testid="chat-companies-section"]');
+    expect(resolvedSelector(3)).toBe('[data-testid="rail-company"]');
 
     // Back and forth over steps 2-4 never opens the explorer or the modal.
     q("guided-tour-back")!.click();
@@ -210,7 +226,7 @@ describe("DesktopApp first-run guided tour", () => {
     // Step 5: meetings.
     await next();
     expect(q("guided-tour-card")?.textContent).toContain("HQ can take notes on your calls");
-    expect(resolvedSelector(4)).toBe('[data-testid="titlebar-meetings"]');
+    expect(resolvedSelector(4)).toBe('[data-testid="rail-meetings"]');
 
     // The person opens another conversation themselves mid-tour.
     const other = host.querySelector<HTMLButtonElement>('.chat-row[data-conversation-id^="dm:person-"]')!;
@@ -223,10 +239,10 @@ describe("DesktopApp first-run guided tour", () => {
     );
     expect(q("guided-tour-progress")?.textContent?.trim()).toBe("5 of 8");
 
-    // Step 6: the web console globe.
+    // Step 6: the personal tools on the rail.
     await next();
-    expect(q("guided-tour-card")?.textContent).toContain("Open HQ on the web");
-    expect(resolvedSelector(5)).toBe('[data-testid="titlebar-console"]');
+    expect(q("guided-tour-card")?.textContent).toContain("Your personal tools");
+    expect(resolvedSelector(5)).toBe('[data-testid="rail-deployments"]');
     expect(q("titlebar-launch-menu")).toBeNull();
 
     // Step 7: the Launch menu is held open; a click on the card keeps it.

@@ -16,6 +16,11 @@
       "default": "./src/common/emojiShortcodes.ts"
     },
     "./settings/appearance-seam": "./src/settings/appearance-seam.ts",
+    "./button-standard.css": "./src/common/button/button-standard.css",
+    "./rail-icon": {
+      "svelte": "./src/common/button/RailIcon.svelte",
+      "default": "./src/common/button/RailIcon.svelte"
+    },
     "./brand": {
       "svelte": "./src/brand/index.ts",
       "default": "./src/brand/index.ts"
@@ -36,6 +41,7 @@
     "vitest": "^4.1.5"
   },
   "dependencies": {
+    "@hq/agents": "workspace:*",
     "@hq/core": "workspace:*",
     "@hq/platform": "workspace:*",
     "simple-icons": "^16.33.0"

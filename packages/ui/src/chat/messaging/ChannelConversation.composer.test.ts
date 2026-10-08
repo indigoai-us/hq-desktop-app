@@ -268,7 +268,9 @@ describe("ChannelConversation composer drafts", () => {
       expect(composer.value).toBe("please send me");
     });
     expect(loadDraft(storage, "ch:chn_a")).toBe("please send me");
-    expect(host.textContent).toContain("network down");
+    // Raw error text is logged, not shown (AUDIT-3c).
+    expect(host.textContent).toContain("Could not send the message. Try again.");
+    expect(host.textContent).not.toContain("network down");
   });
 
   it("does not clobber new typing when a slow send finally fails", async () => {
@@ -293,7 +295,8 @@ describe("ChannelConversation composer drafts", () => {
     await tick();
     reject(new Error("timeout"));
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("timeout");
+      // Raw error text is logged, not shown (AUDIT-3c).
+      expect(host.textContent).toContain("Could not send the message. Try again.");
     });
     expect(composer.value).toBe("second thought");
     await vi.waitFor(() => {

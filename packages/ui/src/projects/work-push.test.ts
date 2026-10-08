@@ -132,7 +132,9 @@ describe("work pushes (US-006)", () => {
     });
     const sessions = upsertSessionMarker([], marker);
     expect(sessions[0]?.status).toBe("awaiting_input");
-    expect(sessions[0]?.project).toBe("US-006");
+    // Keyed by project so the board can place it; the story id rides in cwd.
+    expect(sessions[0]?.project).toBe("proj_open");
+    expect(sessions[0]?.cwd).toBe("US-006");
     const cleared = upsertSessionMarker(
       sessions,
       sessionRefFromSessionEvent({

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ArtifactPanel — artifact mode for the host's right side pane (the same
    * `.reply-column` slot the Thread panel uses; there is no second overlay
@@ -111,7 +112,7 @@
         onclick={copy}
         disabled={copying}
         aria-label={copied ? "Artifact copied" : "Copy artifact"}
-      >
+      ><RailIcon name="copy" />
         {copied ? "Copied" : "Copy"}
       </button>
       <button
@@ -257,8 +258,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 26px;
-    height: 26px;
+    min-width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
     padding: 0 9px;
     border: 0;
     border-radius: 6px;

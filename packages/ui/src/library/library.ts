@@ -142,6 +142,20 @@ export function filterLibraryItems(
 }
 
 /**
+ * The selected item, or null when the current results no longer contain it
+ * (QA-102). A search or filter that hides the selection must clear the
+ * inspector instead of leaving the old item and its actions on screen.
+ */
+export function selectionInResults(
+  selected: LibraryItem | null,
+  results: readonly LibraryItem[],
+): LibraryItem | null {
+  if (!selected) return null;
+  const key = libraryItemKey(selected);
+  return results.find((item) => libraryItemKey(item) === key) ?? null;
+}
+
+/**
  * The scope "facet" an item belongs to — `core`, `personal`, or a company slug.
  * Used by the multi-select scope filter so the root (all-scopes) Library can be
  * narrowed to any mix of core / personal / specific companies.

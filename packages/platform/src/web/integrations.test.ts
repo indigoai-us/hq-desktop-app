@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { INTEGRATION_PATHS, REDACTED_SECRET, connectionGrantBody, integrationAppRefBody } from "../adapter.js";
+import { COMPANY_INTEGRATION_PATHS, INTEGRATION_PATHS, REDACTED_SECRET, connectionGrantBody, integrationAppRefBody } from "../adapter.js";
 import { WebPlatformAdapter } from "./index.js";
 
 interface RecordedCall {
@@ -65,6 +65,10 @@ describe("integration paths", () => {
     expect(INTEGRATION_PATHS.oauthStart).toBe("/v1/integrations/factory/oauth/start");
     expect(INTEGRATION_PATHS.install).toBe("/v1/integrations/factory/install");
     expect(INTEGRATION_PATHS.blueprint).toBe("/v1/integrations/factory/blueprint");
+  });
+
+  it("keeps the console's Integrations page on the full view, which it reads creator names from", () => {
+    expect(COMPANY_INTEGRATION_PATHS.list("cmp_acme")).toBe("/v1/integrations/admin?companyUid=cmp_acme");
   });
 
   it("names the catalog with the query encoded and the limit only when given", () => {

@@ -52,3 +52,32 @@
 .msg-body.msg-body-jumbo p {
   margin: 0;
 }
+
+/* Line-by-line reveal for bot replies that arrive while the conversation is
+ * open (see message-reveal.ts). Each paragraph, list item, heading, quote,
+ * table row or code block fades in with a 2px rise, staggered. Lines keep
+ * their final space, so the bubble height never jumps. */
+@keyframes msg-reveal-line {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.msg-body .reveal-line {
+  animation: msg-reveal-line 220ms ease-out both;
+}
+
+.msg-body span.reveal-line {
+  display: inline-block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-body .reveal-line {
+    animation: none;
+  }
+}

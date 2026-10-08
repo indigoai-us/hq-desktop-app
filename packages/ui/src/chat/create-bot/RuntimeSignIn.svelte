@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Inline runtime sign-in for the New bot flow's Home step. Opens the
    * runtime's browser sign-in through the host and polls until connected —
@@ -80,7 +81,14 @@
     clearTimeout(openTimer);
     openTimer = undefined;
     phase = result.state;
-    message = result.message ?? "";
+    // Host and server text (CLI exit lines, transport errors) is logged, never
+    // shown: the line uses plain copy with the retry button beside it.
+    if (result.state === "error") {
+      console.warn("[runtime-signin] sign-in failed", result.message);
+      message = `Could not sign in to ${label}. Try again.`;
+    } else {
+      message = "";
+    }
     if (result.state === "connected") {
       stopPolling();
       await onconnected(runtime);
@@ -92,7 +100,8 @@
   async function poll(token: number): Promise<void> {
     try {
       await apply(await api.loginStatus(runtime), token);
-    } catch {
+    } catch (error) {
+      console.warn("[runtime-signin] sign-in status check failed", error);
       if (token === generation) {
         phase = "error";
         message = "Could not check sign-in. Please try again.";
@@ -123,13 +132,9 @@
         clearTimeout(openTimer);
         openTimer = undefined;
         phase = "error";
-        // The host's own words when it has them — a spawn error or a non-zero
-        // exit says far more than a generic line — and the generic line only
-        // when it does not.
-        const reason = error instanceof Error ? error.message.trim() : "";
-        message = reason
-          ? `Could not open ${label} sign-in — ${reason}`
-          : `Could not open ${label} sign-in. Check that it is installed, then try again.`;
+        // The host's own words go to the log, not the screen.
+        console.warn("[runtime-signin] opening sign-in failed", error);
+        message = `Could not open ${label} sign-in. Check that it is installed, then try again.`;
       }
     } finally {
       // Whatever the outcome, the line stops saying "Opening…": the error
@@ -172,15 +177,15 @@
 <div class="signin" data-testid="runtime-signin" data-runtime={runtime} data-state={phase} aria-live="polite">
   {#if phase === "waiting"}
     <span class="signin-text">Finish signing in to {label} in your browser — HQ will notice on its own.</span>
-    <button type="button" class="signin-btn" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
+    <button type="button" class="signin-btn" data-testid="runtime-signin-cancel" onclick={() => void cancel()}><RailIcon name="x" />Cancel</button>
   {:else if phase === "connected"}
     <span class="signin-text ok">{label} is signed in.</span>
   {:else if busy}
     <span class="signin-text">Opening {label} sign-in…</span>
   {:else}
     <span class="signin-text" class:error={phase === "error"}>{message || "Sign-in did not complete."}</span>
-    <button type="button" class="signin-btn" data-testid="runtime-signin-retry" onclick={() => void start()}>Try again</button>
-    <button type="button" class="signin-btn quiet" data-testid="runtime-signin-cancel" onclick={() => void cancel()}>Cancel</button>
+    <button type="button" class="signin-btn" data-testid="runtime-signin-retry" onclick={() => void start()}><RailIcon name="refresh" />Try again</button>
+    <button type="button" class="signin-btn quiet" data-testid="runtime-signin-cancel" onclick={() => void cancel()}><RailIcon name="x" />Cancel</button>
   {/if}
 </div>
 
@@ -194,24 +199,25 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
     background: var(--v4-control-faint, rgba(127, 127, 127, 0.08));
-    font-size: 12px;
+    font-size: 13px;
     color: var(--t2);
   }
   .signin-text {
     flex: 1 1 200px;
-    line-height: 1.4;
+    line-height: 1.45;
   }
   .signin-text.ok {
-    color: var(--v4-ok, #2e9e5b);
+    color: var(--t1);
   }
   .signin-text.error {
     color: var(--v4-error, #d9534f);
   }
   .signin-btn {
     font: inherit;
-    font-size: 12px;
-    padding: 4px 10px;
-    border: 1px solid var(--v4-control-border, var(--border));
+    font-size: 13px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
+    border: 1px solid var(--panel-border, var(--v4-control-border, var(--border)));
     border-radius: 6px;
     background: var(--v4-control-bg, transparent);
     color: var(--t1);

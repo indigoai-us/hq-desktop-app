@@ -72,7 +72,12 @@ import {
   type FlagClientOptions,
   type FlagSnapshot,
 } from "@indigoai-us/hq-flags-client";
-import { ok, type AdapterPromise, type AdapterResult } from "./adapter.js";
+import {
+  ok,
+  type AdapterPromise,
+  type AdapterResult,
+  type HqProFetch,
+} from "./adapter.js";
 
 export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
@@ -102,12 +107,59 @@ export const PERSONAL_TRANSCRIPTS_FLAG =
 /** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
 export const HQ_ANYWHERE_RUNTIME_FLAG = "hq-anywhere-runtime";
 /**
+ * Visual first-run setup (owner plan, 2026-10-08): with it on, a first run
+ * opens the New bot step-through takeover (name the HQ assistant, coding
+ * tools, done) instead of auto-starting the setup bot's chat. Default off:
+ * a missing, unconfigured or unreadable value keeps today's setup chat.
+ */
+export const VISUAL_FIRST_RUN_FLAG = "desktop.visual-first-run";
+/**
+ * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
+ * Targeted to one company, so it must be read with that company's uid:
+ * `hasFeature(DESKTOP_AGENT_CREATION_FLAG, { companyUid })`. A person-only
+ * read never sees a company override. Absent or unreadable means off.
+ *
+ * It also gates the full-window New Bot flow: the server runs the chat-first
+ * setup order only for a company that has it. Always read it for a company:
+ * `resolveCompanyFeature` with the company's uid, or the scoped `hasFeature`.
+ */
+export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
+/**
  * Desktop value for `desktop.human-only-conversations`. The desktop (Tauri)
  * adapters answer this flag with this constant and do not consult the
  * registry, so a missing, stale, or `false` registry value cannot turn the
  * filter off. Set to `false` in a later release to turn it back off.
  */
 export const HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT = true;
+
+/**
+ * Console-rail surfaces that are Indigo-only until they land (RELEASE-001).
+ * The UI reads them through `isIndigoOnlySurface` in
+ * `packages/ui/src/shell/indigo-only-gates.ts`, keyed to the open company.
+ * A configured registry value of `true` opens a surface to every company;
+ * `false` keeps it Indigo-only. See docs/design-standard-console-rail.md.
+ */
+export const RAIL_TELEMETRY_FLAG = "desktop.rail-telemetry-v1";
+export const RAIL_OUTPOST_FLAG = "desktop.rail-outpost-v1";
+export const RAIL_DEPLOYMENTS_ACTIONS_FLAG =
+  "desktop.rail-deployments-actions-v1";
+export const RAIL_SHORTCUT_EDITING_FLAG = "desktop.rail-shortcut-editing-v1";
+export const RAIL_WORKFORCE_LIMITS_FLAG = "desktop.rail-workforce-limits-v1";
+export const RAIL_ATLAS_FLAG = "desktop.rail-atlas-v1";
+
+/**
+ * Value each rail gate takes for non-Indigo companies when the registry has
+ * no configured row, is unreachable, or has not loaded yet. Atlas is open to
+ * everyone (owner call); the rest stay closed.
+ */
+export const RAIL_GATE_EVERYONE_DEFAULT: Readonly<Record<string, boolean>> = {
+  [RAIL_TELEMETRY_FLAG]: false,
+  [RAIL_OUTPOST_FLAG]: false,
+  [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: false,
+  [RAIL_SHORTCUT_EDITING_FLAG]: false,
+  [RAIL_WORKFORCE_LIMITS_FLAG]: false,
+  [RAIL_ATLAS_FLAG]: true,
+};
 
 /** Caller-visible names that may consult the registry. */
 export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
@@ -127,19 +179,19 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [HQ_ANYWHERE_RUNTIME_FLAG]: HQ_ANYWHERE_RUNTIME_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
+  [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,
   [PERSONAL_TRANSCRIPTS_FLAG]: PERSONAL_TRANSCRIPTS_FLAG,
+  [VISUAL_FIRST_RUN_FLAG]: VISUAL_FIRST_RUN_FLAG,
   "desktop.mirror-quarantine-move-not-deletion":
     "desktop.mirror-quarantine-move-not-deletion",
+  [RAIL_TELEMETRY_FLAG]: RAIL_TELEMETRY_FLAG,
+  [RAIL_OUTPOST_FLAG]: RAIL_OUTPOST_FLAG,
+  [RAIL_DEPLOYMENTS_ACTIONS_FLAG]: RAIL_DEPLOYMENTS_ACTIONS_FLAG,
+  [RAIL_SHORTCUT_EDITING_FLAG]: RAIL_SHORTCUT_EDITING_FLAG,
+  [RAIL_WORKFORCE_LIMITS_FLAG]: RAIL_WORKFORCE_LIMITS_FLAG,
+  [RAIL_ATLAS_FLAG]: RAIL_ATLAS_FLAG,
 };
 
-/**
- * The full-window New Bot flow. A COMPANY flag: the server runs the chat-first
- * setup order only for a company that has it. It is deliberately NOT in
- * `LEGACY_TO_REGISTRY`: that table is read per person, with no company, and a
- * per-person answer says nothing about the company the bot is created in.
- * Read it with `resolveCompanyFeature` and the company's uid.
- */
-export const DESKTOP_AGENT_CREATION_FLAG = "agents.desktop-agent-creation";
 
 export const MEETINGS_LEGACY_FLAG = "meetings";
 export const MEETINGS_REGISTRY_KEY = "desktop.meetings";
@@ -188,6 +240,11 @@ export interface FeatureFlagGate {
 export interface FeatureFlagGateOptions {
   /** hq-pro base URL. Empty when fetch already talks through `hq_pro_fetch`. */
   endpoint: string;
+  /**
+   * Evaluate in this company's context (`/v1/flags/resolve?companyUid=`).
+   * Omit for a person-only evaluation, which ignores company overrides.
+   */
+  companyUid?: string;
   /** Existing adapter token plumbing. Never read tokens from disk here. */
   getToken: () => string | Promise<string>;
   fetch?: typeof fetch;
@@ -242,6 +299,34 @@ export function createHqProFlagFetch(invoke: FlagInvokeFn): typeof fetch {
   };
 }
 
+/**
+ * {@link HqProFetch} over the desktop host's `hq_pro_fetch` command. Unlike
+ * the flag transport above it forwards the method and body. The webview never
+ * holds the bearer: Rust adds it and prefixes the hq-pro base URL.
+ */
+export function createHqProRestFetch(invoke: FlagInvokeFn): HqProFetch {
+  return async (path, init) => {
+    const raw = await invoke("hq_pro_fetch", {
+      url: path,
+      method: init.method,
+      body: init.body ?? null,
+    });
+    const rec =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as { status?: unknown; body?: unknown })
+        : null;
+    if (rec && typeof rec.status === "number") {
+      const body = typeof rec.body === "string" ? rec.body : "";
+      return { status: rec.status, text: async () => body };
+    }
+    // The host always answers `{ status, body }`. Anything else is a broken
+    // bridge, never a success: report it as a bad gateway.
+    console.warn("[hq-desktop] hq_pro_fetch returned no status", { url: path, method: init.method });
+    const body = JSON.stringify({ error: "hq_pro_fetch returned no status" });
+    return { status: 502, text: async () => body };
+  };
+}
+
 export function bearerTokenFromHeaders(
   headers: Readonly<Record<string, string>>,
 ): string {
@@ -275,6 +360,7 @@ export function createFeatureFlagGate(
       const create = options.createClient ?? createFlagClient;
       client = create({
         endpoint: options.endpoint,
+        ...(options.companyUid ? { companyUid: options.companyUid } : {}),
         getToken: options.getToken,
         fetch: options.fetch,
         refreshIntervalMs: FLAG_REFRESH_INTERVAL_MS,
@@ -375,6 +461,34 @@ export function createFeatureFlagGate(
     },
   };
   return gate;
+}
+
+/** A person-scoped gate plus one gate per company, created on first use. */
+export type ScopedFeatureFlagGates = (
+  companyUid?: string | null,
+) => FeatureFlagGate;
+
+/**
+ * `createFeatureFlagGate` per evaluation scope. The person-only gate is the
+ * one adapters have always used; a company uid gets its own gate (and its own
+ * snapshot) because hq-flags resolves company overrides only when the request
+ * names the company.
+ */
+export function createScopedFeatureFlagGates(
+  options: Omit<FeatureFlagGateOptions, "companyUid">,
+): ScopedFeatureFlagGates {
+  const personGate = createFeatureFlagGate(options);
+  const companyGates = new Map<string, FeatureFlagGate>();
+  return (companyUid) => {
+    const uid = companyUid?.trim() ?? "";
+    if (!uid) return personGate;
+    let gate = companyGates.get(uid);
+    if (!gate) {
+      gate = createFeatureFlagGate({ ...options, companyUid: uid });
+      companyGates.set(uid, gate);
+    }
+    return gate;
+  };
 }
 
 /** How long one company flag read may take before it counts as off. */

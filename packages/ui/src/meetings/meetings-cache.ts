@@ -31,11 +31,11 @@ const SCHEMA_VERSION = 2;
  *  harmlessly until the browser evicts them. */
 const STORAGE_KEY = `hq-sync:meetings-window:v${SCHEMA_VERSION}`;
 
-/** Hard upper bound on cache age. Past this we ignore the cache and let
- *  the normal cold-start skeleton render — better than showing meetings
- *  from yesterday when the user opens the window after a weekend. Refresh
- *  still runs in parallel so the user sees fresh data within a beat. */
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Upper bound on cache age. A stale snapshot still paints at once and the
+ *  background refresh upgrades it in place (rows are grouped against the
+ *  current clock, so old events fall into the past sections). A 24h bound
+ *  turned every visit after a missed write into a cold multi-second load. */
+const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export type MeetingsStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -53,7 +53,9 @@ export interface MeetingsSnapshot<
   /** Full scheduled-bot list. Lets recurring instances hydrate against
    *  series-level bots whose calendarEventId belongs to another occurrence. */
   scheduledBots?: TBot[];
-  /** [calendarEventId, bot] entries — deserialized into a Map by the caller. */
+  /** [calendarEventId, bot] entries — deserialized into a Map by the caller.
+   *  Writers may leave this empty: it duplicates scheduledBots and the
+   *  reader rebuilds it from them. */
   botsByEventId: Array<[string, TBot]>;
   /** [companyUid, companyName] entries. */
   companyNamesByUid: Array<[string, string]>;
@@ -67,6 +69,8 @@ export interface MeetingsSnapshot<
   enabledCalIdsByAccount: Array<[string, string[]]>;
   /** [calKey, summary] entries — calKey is `${accountId}|${calendarId}`. */
   calendarSummaryByKey: Array<[string, string]>;
+  /** Recorded meeting history rows (already coerced). */
+  recorded?: unknown[];
 }
 
 interface CacheEnvelope<TSnap> {
@@ -118,17 +122,36 @@ export function saveMeetingsCache<
 >(
   snapshot: MeetingsSnapshot<TEvent, TBot, TAccount, TCalendar>,
   storage: MeetingsStorage | null | undefined = globalThis.localStorage,
-): void {
+): boolean {
+  if (!storage) return false;
+  let raw: string;
   try {
-    const envelope: CacheEnvelope<typeof snapshot> = {
-      version: SCHEMA_VERSION,
-      cachedAt: Date.now(),
-      snapshot,
-    };
-    safeSetItem(storage, STORAGE_KEY, JSON.stringify(envelope));
+    raw = JSON.stringify({ version: SCHEMA_VERSION, cachedAt: Date.now(), snapshot } satisfies CacheEnvelope<typeof snapshot>);
+  } catch (err) {
+    console.warn("[meetings-cache] snapshot not serializable:", err);
+    return false;
+  }
+  // A full origin quota makes setItem fail, and tenant-scoped storage
+  // wrappers swallow that error. Verify by reading back; on a miss drop our
+  // own previous entry (the largest thing we can free) and try once more.
+  if (writeVerified(storage, raw)) return true;
+  try {
+    safeRemoveItem(storage, STORAGE_KEY);
   } catch (error) {
-    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:129", error);
-    // No-op — see function-level comment.
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:saveMeetingsCache", error);
+    // Fall through to the retry; its result is what we report.
+  }
+  if (writeVerified(storage, raw)) return true;
+  console.warn(`[meetings-cache] snapshot write failed (${raw.length} chars); next open will load from the network`);
+  return false;
+}
+
+function writeVerified(storage: MeetingsStorage, raw: string): boolean {
+  try {
+    safeSetItem(storage, STORAGE_KEY, raw);
+    return safeGetItem(storage, STORAGE_KEY)?.length === raw.length;
+  } catch {
+    return false;
   }
 }
 

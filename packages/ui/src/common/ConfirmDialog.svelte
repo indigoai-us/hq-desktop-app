@@ -100,9 +100,9 @@
   .confirm-card {
     width: min(360px, 100%);
     padding: 18px 18px 14px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.14));
+    border: 1px solid var(--overlay-border);
     border-radius: 10px;
-    background: var(--v4-surface-solid, var(--elevated, #1e1e24));
+    background: var(--overlay-bg);
     color: var(--t1);
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   }
@@ -129,7 +129,7 @@
     appearance: none;
     -webkit-appearance: none;
     padding: 6px 12px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.14));
+    border: 1px solid var(--overlay-border);
     border-radius: var(--v4-radius-button, 6px);
     background: color-mix(in srgb, var(--t1) 10%, transparent);
     color: var(--t1);

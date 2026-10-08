@@ -66,10 +66,10 @@ function daemonStatus(running: boolean) {
 
 function daemonLabel(): string | null {
   return (
-    host.querySelector('[data-testid="settings-sync-pane"] .mono.ok')
+    host.querySelector('[data-testid="settings-sync-pane"] .val.ok')
       ?.textContent ??
     host
-      .querySelector('[data-testid="settings-sync-pane"] .set-row .mono')
+      .querySelector('[data-testid="settings-sync-pane"] .set-row .val')
       ?.textContent ??
     null
   );

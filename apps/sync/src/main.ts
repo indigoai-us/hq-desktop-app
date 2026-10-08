@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/svelte";
 import './styles/design-system.css';
+import '@hq/ui/button-standard.css';
 import App from './App.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
 import NewFilesDetail from './components/NewFilesDetail.svelte';

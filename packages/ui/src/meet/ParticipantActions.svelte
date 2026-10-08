@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import type {CallTile} from './call-view-model.js';
   let {tile,disabled=false,onmuterequest,onmuteforce,onremovepeer}:{tile:CallTile;disabled?:boolean;onmuterequest?:(tile:CallTile)=>void|Promise<void>;onmuteforce?:(tile:CallTile)=>void|Promise<void>;onremovepeer?:(tile:CallTile)=>void|Promise<void>}=$props();
   let open=$state(false),confirming=$state(false);
@@ -16,14 +17,14 @@
       {#if confirming}
         <div role="alertdialog" aria-modal="false" aria-label={`Remove ${tile.label}`}>
           <p>Remove {tile.label} from this call?</p>
-          <button bind:this={cancel} onclick={()=>close()}>Cancel</button>
-          <button class="danger" disabled={disabled} data-testid="participant-remove-confirm" onclick={()=>{close();void onremovepeer?.(tile);}}>Remove from call</button>
+          <button bind:this={cancel} onclick={()=>close()}><RailIcon name="x" />Cancel</button>
+          <button class="danger" disabled={disabled} data-testid="participant-remove-confirm" onclick={()=>{close();void onremovepeer?.(tile);}}><RailIcon name="trash" />Remove from call</button>
         </div>
       {:else}
         <strong>{tile.label}</strong>
-        <button disabled={disabled} data-testid="participant-mute-request" onclick={()=>{close();void onmuterequest?.(tile);}}>Ask to mute</button>
-        <button disabled={disabled} data-testid="participant-mute-force" onclick={()=>{close();void onmuteforce?.(tile);}}>Mute microphone</button>
-        <button class="danger" disabled={disabled} data-testid="participant-remove" onclick={()=>confirming=true}>Remove from call…</button>
+        <button disabled={disabled} data-testid="participant-mute-request" onclick={()=>{close();void onmuterequest?.(tile);}}><RailIcon name="stop" />Ask to mute</button>
+        <button disabled={disabled} data-testid="participant-mute-force" onclick={()=>{close();void onmuteforce?.(tile);}}><RailIcon name="stop" />Mute microphone</button>
+        <button class="danger" disabled={disabled} data-testid="participant-remove" onclick={()=>confirming=true}><RailIcon name="trash" />Remove from call…</button>
       {/if}
     </div>
   {/if}

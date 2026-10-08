@@ -1,9 +1,10 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * Core popover (US-016) — opened from the titlebar "● Core ⌄" pill.
    *
    * Contains: conflict rescue card, HQ core version/drift row, desktop app
-   * update row, Library stub, expandable PACKS list + marketplace, and a
+   * update row, Marketplace row, expandable PACKS list + marketplace, and a
    * cloud-paused notice. Model logic lives in core-popover-model.ts.
    */
   import type { PlatformAdapter } from "@hq/platform";
@@ -43,6 +44,8 @@
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
   import "./tokens.css";
+  import ResolveConflictsDoor from "./overlays/resolve-conflicts-door.svelte";
+  import BrowsePacksDoor from "./overlays/browse-packs-door.svelte";
 
   interface Props {
     /** Platform seam — updates/packages slices + capability flags.
@@ -103,7 +106,7 @@
     onclose?: () => void;
     onresolve?: (
       path: string,
-      strategy: "keep-local" | "keep-remote",
+      strategy: "keep-local" | "keep-remote" | "discard",
     ) => void | Promise<void>;
     onopeneditor?: (path: string) => void | Promise<void>;
     onopendrift?: () => void | Promise<void>;
@@ -157,6 +160,8 @@
   }: Props = $props();
 
   let packsExpanded = $state(true);
+  let resolveSheetOpen = $state(false);
+  let browsePacksOpen = $state(false);
   let coreRestoring = $state(false);
   let packs = $state<CorePopoverPack[]>([]);
   let packsLoading = $state(false);
@@ -573,10 +578,10 @@
       <span class="core-return-nudge" data-testid="core-popover-return-nudge">
         Run a sync today to keep your company up to date.
       </span>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-sync" disabled={returnNudgeBusy} aria-busy={returnNudgeBusy} onclick={() => void runReturnNudgeSync()}><RailIcon name="refresh" />
         {returnNudgeBusy ? "Starting sync…" : "Sync now"}
       </button>
-      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}>
+      <button type="button" class="core-btn" data-testid="core-popover-return-nudge-dismiss" disabled={returnNudgeBusy} onclick={dismissReturnNudge}><RailIcon name="x" />
         Dismiss
       </button>
     {/if}
@@ -629,7 +634,7 @@
             onclick={() => {
               if (row.upgradeUrl) onopenurl?.(row.upgradeUrl);
             }}
-          >
+          ><RailIcon name="arrow-right" />
             Upgrade plan
           </button>
         </div>
@@ -661,7 +666,15 @@
         class="core-section-header"
         data-testid="core-popover-conflict-header"
       >
-        {model.conflictHeader}
+        <span>{model.conflictHeader}</span>
+        <button
+          type="button"
+          class="core-link"
+          data-testid="core-popover-resolve-conflicts"
+          onclick={() => (resolveSheetOpen = true)}
+        ><RailIcon name="check" />
+          Resolve conflicts
+        </button>
       </header>
       <ul class="core-conflict-list">
         {#each model.conflictRows as row (row.path)}
@@ -686,7 +699,7 @@
                 data-testid="core-popover-keep-local"
                 disabled={row.actionsDisabled}
                 onclick={() => void onresolve?.(row.path, "keep-local")}
-              >
+              ><RailIcon name="check" />
                 Keep local
               </button>
               <button
@@ -695,7 +708,7 @@
                 data-testid="core-popover-keep-cloud"
                 disabled={row.actionsDisabled}
                 onclick={() => void onresolve?.(row.path, "keep-remote")}
-              >
+              ><RailIcon name="check" />
                 Keep cloud
               </button>
               <button
@@ -704,7 +717,7 @@
                 data-testid="core-popover-open-editor"
                 disabled={row.actionsDisabled}
                 onclick={() => void onopeneditor?.(row.path)}
-              >
+              ><RailIcon name="external" />
                 Open in editor
               </button>
             </div>
@@ -781,7 +794,7 @@
             disabled={coreRestoring}
             aria-busy={coreRestoring}
             onclick={() => void handleRestore()}
-          >
+          ><RailIcon name="refresh" />
             {coreRestoring ? "Restoring…" : "Restore"}
           </button>
         {:else if !useFixtures && canInspectCore && !updateStore.isInstallBusy}
@@ -792,7 +805,7 @@
             disabled={updateStore.checking}
             aria-busy={updateStore.checking}
             onclick={() => void handleCheckUpdates()}
-          >
+          ><RailIcon name="refresh" />
             {updateStore.checking ? "Checking…" : "Check"}
           </button>
         {/if}
@@ -811,7 +824,7 @@
             appStatusLabel === "INSTALLING" ||
             appStatusLabel.startsWith("DOWNLOADING")}
           class:drifted={appStatusLabel === "UPDATE AVAILABLE" ||
-            appStatusLabel === "RESTART TO UPDATE" ||
+            appStatusLabel === "UPDATE READY" ||
             appStatusLabel === "CHECK FAILED" ||
             appStatusLabel === "UPDATE FAILED"}
           data-testid={appStatusLabel === "UP TO DATE"
@@ -828,7 +841,7 @@
               data-testid="core-popover-download-install"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleDownloadInstall()}
-            >
+            ><RailIcon name="download" />
               Download &amp; install
             </button>
           {:else if appActions.showRestart}
@@ -838,7 +851,7 @@
               data-testid="core-popover-restart-update"
               title={updateStore.installError ?? undefined}
               onclick={() => void handleRestartToUpdate()}
-            >
+            ><RailIcon name="refresh" />
               Restart to update
             </button>
           {/if}
@@ -850,7 +863,7 @@
               disabled={updateStore.checking}
               aria-busy={updateStore.checking}
               onclick={() => void handleCheckUpdates()}
-            >
+            ><RailIcon name="refresh" />
               {updateStore.checking ? "Checking…" : "Check for updates"}
             </button>
           {/if}
@@ -872,7 +885,7 @@
         onclose?.();
       }}
     >
-      <span class="core-row-label">Library</span>
+      <span class="core-row-label">Marketplace</span>
       <span class="core-row-chevron" aria-hidden="true">›</span>
     </button>
   </div>
@@ -917,17 +930,27 @@
           {/each}
         {/if}
       </ul>
-      <button
-        type="button"
-        class="core-btn secondary core-marketplace"
-        data-testid="core-popover-open-marketplace"
-        onclick={() => {
-          onopenMarketplace?.();
-          onclose?.();
-        }}
-      >
-        Open marketplace
-      </button>
+      <div class="core-pack-actions">
+        <button
+          type="button"
+          class="core-btn secondary"
+          data-testid="core-popover-browse-packs"
+          onclick={() => (browsePacksOpen = true)}
+        ><RailIcon name="search" />
+          Browse packs
+        </button>
+        <button
+          type="button"
+          class="core-btn secondary core-marketplace"
+          data-testid="core-popover-open-marketplace"
+          onclick={() => {
+            onopenMarketplace?.();
+            onclose?.();
+          }}
+        ><RailIcon name="external" />
+          Open marketplace
+        </button>
+      </div>
     {/if}
   </section>
 
@@ -943,7 +966,28 @@
   {/if}
 </div>
 
+{#if resolveSheetOpen}
+  <ResolveConflictsDoor
+    conflicts={conflicts}
+    onresolve={onresolve}
+    onclose={() => (resolveSheetOpen = false)}
+  />
+{/if}
+{#if browsePacksOpen}
+  <BrowsePacksDoor
+    installed={modelPacks}
+    marketplace={adapter.marketplace}
+    onopenLibrary={onopenLibrary}
+    onclose={() => (browsePacksOpen = false)}
+  />
+{/if}
+
 <style>
+  /* Surface matches the titlebar Launch menu (.v4-launch-menu in
+     V4TitleBar.svelte): near-opaque --v4-popover-strong, hairline border,
+     popover radius and shadow. No backdrop-filter; a nested blur is
+     neutered outside its parent's backdrop root anyway. Only the vertical
+     axis scrolls so long pack lists never add a horizontal scrollbar. */
   .core-popover {
     position: absolute;
     top: calc(100% + 6px);
@@ -952,19 +996,23 @@
     display: flex;
     flex-direction: column;
     gap: 0;
-    width: min(300px, calc(100vw - 24px));
+    box-sizing: border-box;
+    width: 340px;
+    max-width: calc(100vw - 24px);
     max-height: min(70vh, 520px);
-    overflow: auto;
-    padding: 6px;
-    border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    /* Frosted glass panel — Daybook .panel. */
-    background: var(--panel-bg);
-    box-shadow: var(--panel-shadow);
-    color: var(--t1);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 8px;
+    border: 1px solid var(--overlay-border);
+    border-radius: var(--v4-radius-popover, 10px);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
+    color: var(--v4-text-1, var(--t1));
     font: 400 13px/1.45 var(--font-ui);
-    backdrop-filter: blur(40px) saturate(1.5);
-    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  }
+
+  .core-popover > * {
+    min-width: 0;
   }
 
   /* PL-01 status header. Tones reuse the existing --ok / --warn / --ice-ink
@@ -976,7 +1024,7 @@
     padding: 10px 12px 8px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-status-state {
@@ -1004,7 +1052,7 @@
 
   .core-status-last,
   .core-status-caption {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1037,8 +1085,8 @@
   }
 
   .core-notice[data-tone="warn"] {
-    border-color: var(--panel-border);
-    background: var(--raised);
+    border-color: var(--v4-hairline, var(--panel-border));
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-notice-text {
@@ -1049,13 +1097,13 @@
   }
 
   .core-notice-title {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 500;
     color: var(--t1);
   }
 
   .core-notice-body {
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--t2);
   }
@@ -1074,7 +1122,7 @@
     padding: 10px 12px;
     margin-bottom: 6px;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-recovery-sentence {
@@ -1097,7 +1145,7 @@
     margin-bottom: 6px;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
   }
 
   .core-paused-title {
@@ -1107,7 +1155,7 @@
   }
 
   .core-paused-body {
-    font-size: 11px;
+    font-size: 13px;
     color: var(--t2);
     line-height: 1.35;
   }
@@ -1121,9 +1169,9 @@
     flex: 0 0 auto;
     padding: 0;
     border: none;
-    color: var(--ice-ink);
+    color: var(--t2);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-weight: 400;
     letter-spacing: 0;
     line-height: 1.2;
@@ -1141,9 +1189,34 @@
   }
 
   .core-section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 13px;
     font-weight: 500;
     color: var(--t1);
+  }
+
+  .core-link {
+    margin-left: auto;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--v4-text-2, var(--t2));
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+
+  .core-pack-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
   }
 
   .core-conflict-list {
@@ -1170,7 +1243,7 @@
 
   .core-conflict-name {
     overflow: hidden;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
     color: var(--warn-ink);
     text-overflow: ellipsis;
@@ -1181,7 +1254,7 @@
     overflow: hidden;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1189,7 +1262,7 @@
 
   .core-conflict-error {
     color: var(--warn-ink);
-    font-size: 10px;
+    font-size: 13px;
   }
 
   .core-conflict-actions {
@@ -1203,8 +1276,11 @@
     gap: 2px;
   }
 
+  /* Rows wrap at narrow widths so the actions move to their own line
+     instead of clipping at the panel edge (QA-037). */
   .core-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
@@ -1225,14 +1301,14 @@
   }
 
   .core-row-button:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-row-label {
     min-width: 0;
     overflow: hidden;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1240,16 +1316,20 @@
 
   .core-row-actions {
     display: inline-flex;
+    flex-wrap: wrap;
     flex-shrink: 0;
     align-items: center;
+    justify-content: flex-end;
     gap: 4px;
+    max-width: 100%;
+    margin-left: auto;
   }
 
   .core-idle-hint {
     margin: -4px 0 4px;
     padding: 0 2px;
     color: var(--t2);
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -1264,7 +1344,7 @@
     background: transparent;
     color: var(--t2);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
@@ -1290,7 +1370,7 @@
 
   .core-row-chevron {
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1;
     transition: transform 120ms ease;
   }
@@ -1299,20 +1379,23 @@
     transform: rotate(90deg);
   }
 
+  /* Model labels are caps ("NO DRIFT"); the chrome shows sentence case. */
   .core-pill {
-    display: inline-flex;
-    align-items: center;
-    min-height: 18px;
+    display: inline-block;
+    line-height: 18px;
     padding: 0;
     border: 0;
     background: transparent;
-    color: var(--ok-ink);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    color: var(--t2);
+    font-size: 13px;
     font-weight: 400;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    text-transform: lowercase;
     white-space: nowrap;
+  }
+
+  .core-pill::first-letter,
+  .core-packs-meta::first-letter {
+    text-transform: uppercase;
   }
 
   button.core-pill {
@@ -1329,7 +1412,7 @@
   }
 
   .core-pill.ok {
-    color: var(--ok-ink);
+    color: var(--t2);
   }
 
   button.core-pill:hover:not(:disabled) {
@@ -1348,7 +1431,7 @@
     background: var(--btn-bg);
     color: var(--t1);
     font: inherit;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
   }
@@ -1363,8 +1446,8 @@
 
   .core-btn.primary {
     border: none;
-    background: var(--ice-ink);
-    color: var(--badge-fg);
+    background: var(--t1);
+    color: var(--panel-bg, var(--v4-popover));
   }
 
   .core-btn.primary:hover:not(:disabled) {
@@ -1379,7 +1462,7 @@
   }
 
   .core-btn.secondary:hover:not(:disabled) {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
     color: var(--t1);
     border-color: var(--line2);
   }
@@ -1403,7 +1486,7 @@
     gap: 0;
     border: none;
     border-radius: 10px;
-    background: var(--raised);
+    background: var(--v4-raised, var(--raised));
     padding: 4px 0;
     margin-top: 4px;
     transition: background 0.12s;
@@ -1433,7 +1516,7 @@
   }
 
   .core-packs-label {
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--t1);
   }
@@ -1443,10 +1526,9 @@
     min-width: 0;
     margin-left: auto;
     color: var(--t3);
-    font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 13px;
     text-align: right;
-    text-transform: uppercase;
+    text-transform: lowercase;
   }
 
   .core-pack-list {
@@ -1468,11 +1550,11 @@
     padding: 4px 8px 4px 24px;
     border-radius: 6px;
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .core-pack-row:hover {
-    background: var(--hover);
+    background: var(--v4-hover, var(--hover));
   }
 
   .core-pack-name {
@@ -1487,7 +1569,7 @@
     margin-left: auto;
     color: var(--t3);
     font-family: var(--font-mono);
-    font-size: 10px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
   }
 
@@ -1499,13 +1581,6 @@
   .core-load-error {
     margin: 0;
     color: var(--warn-ink);
-    font-size: 11px;
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .core-popover {
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-    }
+    font-size: 13px;
   }
 </style>

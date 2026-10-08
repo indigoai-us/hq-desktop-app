@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount, tick } from "svelte";
 import BoardTab from "./BoardTab.svelte";
+import { dropdownDoor } from "../../shell/lazy-doors.js";
 import type {
   BoardColumnModel,
   BoardStoryPanelModel,
@@ -62,6 +63,33 @@ function renderBoard(
   return host;
 }
 
+// The member picker is the shared dropdown, loaded on demand: load it first.
+beforeAll(async () => {
+  await dropdownDoor.load();
+});
+
+const MEMBER_PICKER = '[data-testid="board-member-uid"]';
+
+/** Open the member picker and return its option for a person, if listed. */
+async function memberOption(root: HTMLElement, personUid: string): Promise<HTMLElement | null> {
+  const picker = root.querySelector<HTMLButtonElement>(MEMBER_PICKER)!;
+  if (picker.getAttribute("aria-expanded") !== "true") picker.click();
+  await tick();
+  flushSync();
+  return root.querySelector<HTMLElement>(`[role="option"][data-value="${personUid}"]`);
+}
+
+/** Pick a person in the member picker once the roster has loaded. */
+async function pickMember(root: HTMLElement, personUid: string): Promise<void> {
+  await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(MEMBER_PICKER)?.disabled).toBe(false));
+  const option = await memberOption(root, personUid);
+  expect(option).not.toBeNull();
+  option!.click();
+  await tick();
+  flushSync();
+  expect(root.querySelector(MEMBER_PICKER)?.getAttribute("data-value")).toBe(personUid);
+}
+
 describe("BoardTab column filter", () => {
   it("adds a member through the host project API callback", async () => {
     const addMember = vi.fn(async () => "added" as const);
@@ -69,13 +97,8 @@ describe("BoardTab column filter", () => {
       companyUid: "cmp_work",
       listCompanyMembers: async () => ({ contacts: [{ personUid: "prs_member", displayName: "Project teammate" }] }),
     });
-    const select = root.querySelector<HTMLSelectElement>("#board-member-uid");
-    expect(select).not.toBeNull();
-    await vi.waitFor(() => expect(select?.options.length).toBeGreaterThan(1));
-    select!.options[1]!.selected = true;
-    select!.dispatchEvent(new Event("change", { bubbles: true }));
-    await tick();
-    expect(select!.value).toBe("prs_member");
+    await vi.waitFor(() => expect(root.querySelector(MEMBER_PICKER)).not.toBeNull());
+    await pickMember(root, "prs_member");
     const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     button.click();
@@ -95,7 +118,9 @@ describe("BoardTab column filter", () => {
       listCompanyMembers,
     });
     await vi.waitFor(() => expect(listCompanyMembers).toHaveBeenCalledWith("cmp_work"));
-    expect(root.querySelector('option[value="prs_member"]')?.textContent).toBe("Project teammate");
+    await vi.waitFor(() => expect(root.querySelector<HTMLButtonElement>(MEMBER_PICKER)?.disabled).toBe(false));
+    const option = await memberOption(root, "prs_member");
+    expect(option?.querySelector(".dd-label")?.textContent).toBe("Project teammate");
   });
 
   it("hides the member form when the server says membership management is not enabled", async () => {
@@ -107,12 +132,8 @@ describe("BoardTab column filter", () => {
       companyUid: "cmp_work",
       listCompanyMembers,
     });
-    await vi.waitFor(() => expect(root.querySelector('option[value="prs_member"]')).not.toBeNull());
-    const select = root.querySelector<HTMLSelectElement>("#board-member-uid")!;
-    select.options[1]!.selected = true;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-    await tick();
-    expect(select.value).toBe("prs_member");
+    await vi.waitFor(() => expect(root.querySelector(MEMBER_PICKER)).not.toBeNull());
+    await pickMember(root, "prs_member");
     const button = root.querySelector<HTMLButtonElement>(".board-member-add button[type=submit]")!;
     await vi.waitFor(() => expect(button.disabled).toBe(false));
     button.click();

@@ -27,8 +27,8 @@
       copyError = null;
       setTimeout(() => (copied = false), 1500);
     } catch (e) {
-      copyError = e instanceof Error ? e.message : String(e);
-      console.error("CopyPromptButton clipboard write failed:", e);
+      copyError = 'Copy failed. Try again.';
+      console.warn('[copy-prompt] clipboard write failed', e);
       setTimeout(() => (copyError = null), 2500);
     } finally {
       copying = false;

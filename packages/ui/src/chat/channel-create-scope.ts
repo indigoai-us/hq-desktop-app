@@ -94,6 +94,7 @@ export function companiesForChannelCreate(
     out.push({
       companyUid,
       label: trimmed(workspace.displayName) || workspace.slug || "Company",
+      slug: trimmed(workspace.slug) || null,
     });
   }
   return out;

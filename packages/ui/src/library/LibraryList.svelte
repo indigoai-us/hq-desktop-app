@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * LibraryList — Foundry/"ops console" card grid of library items (workers +
    * skills), shared by the root Library page and the per-company panel.
@@ -9,6 +10,7 @@
    * pill hierarchy — scope (CORE / PERSONAL / company), worker type + team, or
    * skill pack + tool count.
    */
+  import ListEmptyState from "../common/ListEmptyState.svelte";
   import {
     filterLibraryItems,
     libraryItemKey,
@@ -22,9 +24,11 @@
     query?: string;
     /** Fired when a card is activated by click or keyboard. */
     onselect?: (item: LibraryItem) => void;
+    /** Clears the search from the no-matches state (QA-058). */
+    onclear?: () => void;
   }
 
-  let { items, query = "", onselect }: Props = $props();
+  let { items, query = "", onselect, onclear }: Props = $props();
 
   const RENDER_BATCH = 48;
   let visibleLimit = $state(RENDER_BATCH);
@@ -70,16 +74,14 @@
 </script>
 
 {#if visible.length === 0}
-  <div class="empty-state">
-    <p>No matches</p>
-    <span>
-      {#if (items?.length ?? 0) === 0}
-        Nothing here yet.
-      {:else}
-        Try a different search.
-      {/if}
-    </span>
-  </div>
+  <ListEmptyState
+    total={items?.length ?? 0}
+    shown={0}
+    {query}
+    noun={["item", "items"]}
+    {onclear}
+    testid="library-empty"
+  />
 {:else}
   <div class="library-grid" aria-label="Library items">
     {#each visible as item (libraryItemKey(item))}
@@ -144,7 +146,7 @@
             visibleLimit + RENDER_BATCH,
           ))}
         aria-label={`Show ${Math.min(RENDER_BATCH, remaining)} more library items`}
-      >
+      ><RailIcon name="chevron-down" />
         Show {Math.min(RENDER_BATCH, remaining)} more
       </button>
     </div>
@@ -346,7 +348,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 

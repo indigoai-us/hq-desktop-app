@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import type { Workspace } from "../chat/workspaces.js";
   import type {
     ActivityEntry,
@@ -16,6 +17,7 @@
   import NeedsYouCard from "./NeedsYouCard.svelte";
   import { pendingInviteWorkspaces } from "../chat/workspaces.js";
   import Caret from "../common/Caret.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import {
     formatClock,
     getAggregateConflictCardModel,
@@ -465,10 +467,13 @@
                 onclick={() => onopencompany?.(row.slug)}
               >
                 <span class="home-td-name">
-                  <span class={`home-dot ${row.tone}`} aria-hidden="true"
-                  ></span>
                   <span class="home-name-copy">
-                    <span class="home-name">{row.name}</span>
+                    <span class="home-name"
+                      ><CompanyLabel name={row.name} companyUid={row.slug} />
+                      <!-- Sync status, kept as a trailing signal. -->
+                      <span class={`home-dot ${row.tone}`} aria-hidden="true"
+                      ></span></span
+                    >
                     <span class="home-sub">{row.sub}</span>
                   </span>
                 </span>
@@ -495,7 +500,7 @@
                   <span class="home-agenda-time">{item.time}</span>
                   <span class="home-agenda-copy">
                     <span class="home-agenda-title">{item.title}</span>
-                    <span class="home-agenda-company">{item.company}</span>
+                    <span class="home-agenda-company"><CompanyLabel name={item.company} /></span>
                   </span>
                 </div>
               {/each}
@@ -507,11 +512,8 @@
       </div>
     </div>
   {:else}
-    <div class="home-skeleton" aria-busy="true">
-      {#each [0, 1, 2] as row (row)}
-        <span class="home-skeleton-bar" style={`width: ${78 - row * 14}%`}
-        ></span>
-      {/each}
+    <div class="home-loading" aria-busy="true">
+      <ReadLoader testid="home-loading" onretry={onretry ? () => void onretry() : null} />
     </div>
   {/if}
 </section>
@@ -1034,39 +1036,12 @@
     overflow-wrap: anywhere;
   }
 
-  /* ── First-load skeleton ───────────────────────────────────────────────── */
-  .home-skeleton {
-    display: grid;
-    gap: 10px;
+  /* ── First-load loader ─────────────────────────────────────────────────── */
+  .home-loading {
     padding: 14px 0;
     border: 0;
     border-radius: 0;
     background: transparent;
     box-shadow: none;
-  }
-
-  .home-skeleton-bar {
-    display: block;
-    height: 10px;
-    border-radius: var(--v4-radius-pill);
-    background: var(--v4-control-faint);
-    animation: home-skeleton-pulse 1.2s ease-in-out infinite;
-  }
-
-  @keyframes home-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .home-skeleton-bar {
-      animation: none;
-    }
   }
 </style>

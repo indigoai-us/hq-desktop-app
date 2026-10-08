@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * CompanyBoardPanel — the per-company Overview board (US-011 + DESKTOP-003).
    *
@@ -862,18 +864,14 @@
                   class="section-link"
                   data-testid="overview-view-projects"
                   onclick={() => onopenprojects?.()}
-                >
+                ><RailIcon name="eye" />
                   View projects
                 </button>
               </div>
             </header>
 
             {#if loading}
-              <div class="inflight-skeleton-list" aria-busy="true">
-                {#each [0, 1] as row (row)}
-                  <div class="inflight-skeleton"></div>
-                {/each}
-              </div>
+              <ReadLoader testid="overview-inflight-loading" onretry={() => boardState.retry()} />
             {:else if inFlightProjects.length === 0}
               <p class="empty-inline">Nothing in flight</p>
             {:else}
@@ -969,16 +967,12 @@
                 class="section-link"
                 data-testid="overview-view-goals"
                 onclick={() => onopengoals?.()}
-              >
+              ><RailIcon name="eye" />
                 View all
               </button>
             </header>
             {#if loading}
-              <div class="goals-list" aria-busy="true">
-                {#each [0, 1] as row (row)}
-                  <div class="goal-skeleton"></div>
-                {/each}
-              </div>
+              <ReadLoader testid="overview-goals-loading" onretry={() => boardState.retry()} />
             {:else if objectives.length === 0}
               <div class="empty-inline" data-testid="empty-goals-state">
                 <span>No goals yet</span>
@@ -1389,47 +1383,6 @@
 
   .status-dot.idle {
     background: var(--v4-idle);
-  }
-
-  .goal-skeleton,
-  .inflight-skeleton {
-    border: 0;
-    border-bottom: 1px solid var(--v4-rowline);
-    border-radius: 0;
-    background: var(--v4-control-faint);
-    animation: board-skeleton-pulse 1.3s ease-in-out infinite;
-  }
-
-  .goal-skeleton {
-    height: 64px;
-    margin-bottom: 4px;
-  }
-
-  .inflight-skeleton-list {
-    display: grid;
-    gap: 0;
-    border-top: 1px solid var(--v4-rowline);
-  }
-
-  .inflight-skeleton {
-    height: 48px;
-  }
-
-  @keyframes board-skeleton-pulse {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .goal-skeleton,
-    .inflight-skeleton {
-      animation: none;
-    }
   }
 
   /* Adapt to the canvas after the persistent sidebar has taken its share.
