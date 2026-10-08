@@ -8,12 +8,14 @@
  *
  *   1. a greeting that says what is left,
  *   2. an access request card (Approve read / write, Deny),
- *   3. "Pick my skills", pointing at the profile pane's Capabilities edit,
- *   4. "Verified, I'm ready" once the bot is online.
+ *   3. "Verified, I'm ready" once the bot is online.
  *
  * A local bot gets none of the access or skills rows: picking the company
  * in New bot is the grant, and it runs on this computer with the person's
  * own access. Its thread is a greeting, then the kickoff conversation.
+ *
+ * There is no "pick my skills" line: the profile's Capabilities edit it
+ * pointed at does not render for any bot.
  *
  * These are local rows; nothing here posts to the server. Approving the
  * access card does not pretend to grant anything: the bot answers with the
@@ -111,7 +113,7 @@ export function botSetupWires(entry: BotSetupEntry): ConversationMessageWire[] {
     {
       ...from,
       eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:hello`,
-      body: `Hi, I'm ${entry.name}. Two things before I start: grant me access to the company context, and pick my skills.`,
+      body: `Hi, I'm ${entry.name}. One thing before I start: grant me access to the company context.`,
       createdAt: at(1),
     },
     {
@@ -149,12 +151,6 @@ export function botSetupWires(entry: BotSetupEntry): ConversationMessageWire[] {
       createdAt: at(3),
     });
   }
-  wires.push({
-    ...from,
-    eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:skills`,
-    body: "Pick my skills: open my profile and use Edit next to Capabilities.",
-    createdAt: at(4),
-  });
   if (entry.online) {
     wires.push({
       ...from,

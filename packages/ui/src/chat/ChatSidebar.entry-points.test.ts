@@ -727,14 +727,12 @@ describe("ChatSidebar lifecycle entry points", () => {
     await chooseKind("cloud");
     click('[data-testid="new-bot-takeover-local"]');
     await settle();
-    // The "+" window's own flow, in the takeover shell, asking its own
-    // "Where should it run?" so Local (or another company's Cloud) can be had.
+    // "Create a local bot instead" with no other company to offer: the
+    // "+" window's local steps, in the takeover shell. Cloud or Local is not
+    // asked again.
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(q('[data-testid="chat-create-modal"]')?.getAttribute("data-sunrise")).toBe("true");
-    expect(flowStep()).toBe("where");
-    expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(false);
-    click('[data-testid="new-bot-choice-local"]');
-    await settle();
+    expect(q('[data-testid="new-bot-choice-local"]')).toBeNull();
     expectSunriseFlow("local");
     // The name typed in the takeover came along: the flow is on the coding tool.
     expect(flowStep()).toBe("home");
@@ -1054,7 +1052,7 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
   });
 
-  it("from the takeover, 'create a local bot instead' then Cloud uses the modal's own create", async () => {
+  it("from the takeover, the way to another company asks Cloud or Local, and Cloud there uses the modal's own create", async () => {
     const oncreateagent = vi.fn(async () => okTarget);
     const oncreatenewbot = vi.fn(async () => okTarget);
     const oncreatebot = vi.fn(async () => ({
@@ -1063,7 +1061,9 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
       name: "assistant",
     }));
     mountSidebar({
-      companies: [INDIGO],
+      // Acme has no cloud-bot flag: the takeover does not offer it, the "+"
+      // window does.
+      companies: [INDIGO, ACME],
       oncreateagent,
       oncreatenewbot,
       oncreatebot,
@@ -1079,18 +1079,24 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
     expect(flowStep()).toBe("where");
 
-    // Cloud on the window's own "Where should it run?": its cloud steps.
+    // Cloud on the window's own "Where should it run?": its cloud steps,
+    // starting with the company.
     click('[data-testid="new-bot-choice-cloud"]');
     await settle();
     expectSunriseFlow("cloud");
+    expect(flowStep()).toBe("home");
+    click('[data-company="cmp_acme"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
     expect(flowStep()).toBe("details");
-    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Indigo");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Acme");
     expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toMatch(/^Create /);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledTimes(1);
     expect(oncreateagent).toHaveBeenCalledWith(
-      "cmp_indigo",
+      "cmp_acme",
       expect.objectContaining({ runtime: "codex", size: "basic" }),
     );
     expect(oncreatenewbot).not.toHaveBeenCalled();

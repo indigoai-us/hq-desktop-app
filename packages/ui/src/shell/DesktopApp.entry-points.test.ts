@@ -1238,10 +1238,11 @@ describe("DesktopApp New bot takeover", () => {
     }
   }, 30_000);
 
-  it("in a flagged company, 'create a local bot instead' then Cloud still uses the in-modal create", async () => {
+  it("in a flagged company with no other company, 'create a local bot instead' opens the local steps without asking Cloud or Local again", async () => {
+    // The in-modal cloud create itself is covered above for a company without
+    // the flag; here the person already said Local.
     const server = cardWalkServer();
-    const sendDm = vi.fn(async () => ok({}));
-    const local = adapter({ ...server, sendDm }, { hasCompanyFeature: async () => true });
+    const local = adapter({ ...server }, { hasCompanyFeature: async () => true });
     (local as { bots?: unknown }).bots = {
       list: async () => ok({ bots: [] }),
       create: async () => ok({}),
@@ -1249,44 +1250,20 @@ describe("DesktopApp New bot takeover", () => {
       stop: async () => ok({}),
       remove: async () => ok({}),
     };
-
-    const opened: string[] = [];
-    const onOpen = (event: Event) => {
-      opened.push(String((event as CustomEvent).detail?.channelId ?? ""));
-    };
-    window.addEventListener(OPEN_CHANNEL_EVENT, onOpen);
-    try {
-      mountApp(local, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
-      await openNewBot("Polar");
-      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeTruthy();
-      clickAnywhere('[data-testid="new-bot-takeover-local"]');
-      await settle(10);
-      expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
-      expectInModalFlow();
-      // The "+" modal's flow asks Cloud or Local itself; Cloud takes the
-      // modal's own cloud steps.
-      expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("where");
-      clickAnywhere('[data-testid="new-bot-choice-cloud"]');
-      await settle(10);
-
-      await createInModal("Polar");
-      await vi.waitFor(() => expect(opened).toContain("chn_polar"), {
-        timeout: 10_000,
-        interval: 50,
-      });
-      expect(server.runCardAction).toHaveBeenCalledTimes(3);
-      for (const call of server.runCardAction.mock.calls) {
-        const values = call[0].values ?? {};
-        expect(values).not.toHaveProperty("surface");
-        expect(values).not.toHaveProperty("conversation");
-        expect(values).not.toHaveProperty("deferChannels");
-      }
-      await settle(20);
-      expect(sendDm).not.toHaveBeenCalled();
-      expect(stored(NEW_CLOUD_BOTS_STORAGE_KEY)).not.toContain("agt_polar");
-    } finally {
-      window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
-    }
+    mountApp(local, COMPANY_ROW, { companies: [ACME_WORKSPACE] });
+    await openNewBot("Polar");
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create a local bot instead");
+    clickAnywhere('[data-testid="new-bot-takeover-local"]');
+    await settle(10);
+    expect(document.querySelector('[data-testid="new-bot-takeover"]')).toBeNull();
+    expectInModalFlow();
+    const flow = document.querySelector('[data-testid="chat-create-bot-step"]');
+    expect(flow?.getAttribute("data-home")).toBe("local");
+    expect(flow?.getAttribute("data-step")).toBe("home");
+    expect(document.querySelector('[data-testid="new-bot-choice-cloud"]')).toBeNull();
+    expect(document.querySelector('[data-testid="bot-identity-name"]')?.textContent).toBe("Polar");
+    expect(server.runCardAction).not.toHaveBeenCalled();
   }, 30_000);
 });
 

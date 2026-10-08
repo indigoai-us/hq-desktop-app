@@ -6,7 +6,6 @@
    * here. Who it is for has its own step; the title, avatar and model are
    * asked in the bot's first message (`newBotKickoff`).
    */
-  import { onMount } from "svelte";
   import { hostComputerNoun } from "@hq/platform";
   import {
     botHandle,
@@ -19,13 +18,16 @@
   interface Props {
     draft: CreateBotDraft;
     existingNames: readonly string[];
-    /** Focus the handle field on mount (Finish sent the person here to fix it). */
-    focusHandle?: boolean;
+    /**
+     * Bumped each time Finish sends the person here to fix the handle,
+     * including when they are already here: the field takes focus each time.
+     */
+    focusHandle?: number;
     disabled?: boolean;
     onpatch: (patch: Partial<CreateBotDraft>) => void;
   }
 
-  let { draft, existingNames, focusHandle = false, disabled = false, onpatch }: Props = $props();
+  let { draft, existingNames, focusHandle = 0, disabled = false, onpatch }: Props = $props();
 
   /** "Mac", "PC" or "computer", read once so the copy never renames the machine mid-flow. */
   const hostNoun = hostComputerNoun();
@@ -33,8 +35,8 @@
   const handleError = $derived(localHandleIssue(draft, existingNames));
 
   let handleInput = $state<HTMLInputElement | null>(null);
-  onMount(() => {
-    if (focusHandle) handleInput?.focus();
+  $effect(() => {
+    if (focusHandle > 0) handleInput?.focus();
   });
 </script>
 

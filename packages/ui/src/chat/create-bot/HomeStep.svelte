@@ -8,8 +8,7 @@
    * `cloudAlwaysShown` (agents.desktop-agent-creation), where it stays on
    * screen, disabled, with the reason and the fix.
    *
-   * "Who is it for?" used to live here and now sits on the details step, next
-   * to the name it affects — see DetailsStep.
+   * "Who is it for?" is its own local step (LocalScopeStep).
    */
   import { LOCAL_BOT_RUNTIMES } from "../local-bots.js";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
@@ -421,7 +420,7 @@
         </div>
       </div>
     {/if}
-    <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. You name it on the next step; it gets its own channel once it is set up.</p>
+    <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. It gets its own channel once it is set up.</p>
   {/if}
 </div>
 

@@ -28,16 +28,18 @@ function entry(patch: Partial<BotSetupEntry> = {}): BotSetupEntry {
 }
 
 describe("bot setup thread", () => {
-  it("a cloud bot greets, asks for access with the existing access-request card, and asks for skills", () => {
+  it("a cloud bot greets and asks for access with the existing access-request card, and nothing about skills", () => {
     const wires = botSetupWires(entry());
     expect(wires.every((w) => w.fromPersonUid === "agt_01LEDGER" && w.direction === "in")).toBe(true);
     expect(wires[0]!.body).toBe(
-      "Hi, I'm Ledger. Two things before I start: grant me access to the company context, and pick my skills.",
+      "Hi, I'm Ledger. One thing before I start: grant me access to the company context.",
     );
     const card = parseShareRequestEvent(wires[1]!.systemEvent);
     expect(card).toMatchObject({ kind: "access_request", path: "knowledge/", level: "read", state: "pending", requestedBy: "Ledger" });
     expect(card?.id).toBe(botSetupCardId("agt_01LEDGER"));
-    expect(wires.some((w) => w.body?.startsWith("Pick my skills"))).toBe(true);
+    // The profile's Capabilities edit never renders, so the bot does not point at it.
+    expect(wires.some((w) => /skills|Capabilities/.test(w.body ?? ""))).toBe(false);
+    expect(wires).toHaveLength(2);
     expect(wires.some((w) => w.body?.startsWith("Verified"))).toBe(false);
   });
 

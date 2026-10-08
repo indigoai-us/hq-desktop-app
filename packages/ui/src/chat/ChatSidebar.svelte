@@ -1967,15 +1967,15 @@
   const newBotLocalReason = $derived(
     canMakeLocalBot ? null : "Local bots can't be made from this app.",
   );
+  /** A company the takeover does not offer, where the "+" window can still make a cloud bot. */
+  const takeoverOtherCompanies = $derived(
+    !!oncreateagent &&
+      agentCompanies.some(
+        (company) => !takeoverCompanies.some((offered) => offered.companyUid === company.companyUid),
+      ),
+  );
   const takeoverOtherWayLabel = $derived(
-    newBotOtherWayLabel({
-      local: !!oncreatebot,
-      otherCompanies:
-        !!oncreateagent &&
-        agentCompanies.some(
-          (company) => !takeoverCompanies.some((offered) => offered.companyUid === company.companyUid),
-        ),
-    }),
+    newBotOtherWayLabel({ local: !!oncreatebot, otherCompanies: takeoverOtherCompanies }),
   );
   $effect(() => {
     if (newBotOpen) return;
@@ -2762,8 +2762,13 @@
     createOpen = true;
   }
 
+  /**
+   * The cloud screen's other way. With only a local bot on offer it opens the
+   * local steps; Cloud or Local is not asked again. With other companies on
+   * offer the "+" window asks, since the person may want a cloud bot there.
+   */
   function openLocalBotFromTakeover(name: string): void {
-    openBotFlowFromChoice(null, name);
+    openBotFlowFromChoice(takeoverOtherCompanies ? null : "local", name);
   }
 
   /** Back from the bot flow's first step: "Where should it live?" again, with the name. */

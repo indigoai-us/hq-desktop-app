@@ -327,6 +327,25 @@ describe("Local bot: name, then the coding tool", () => {
     expect(onback).toHaveBeenCalledWith("Nova");
   });
 
+  it("Back on the flow's own Where hands a name the host asked for back to the host", async () => {
+    const onback = vi.fn();
+    open({
+      onback,
+      initialName: "Nova",
+      initialHome: null,
+      onCloudCreate: vi.fn(),
+      agentTargets: [{ companyUid: "cmp_indigo", label: "Indigo" }],
+    });
+    await settle();
+    expect(step()).toBe("where");
+    q<HTMLButtonElement>(".new-bot-back")!.click();
+    await settle();
+    expect(onback).toHaveBeenCalledWith("Nova");
+    // The host asked the name, so the flow does not ask it again.
+    expect(step()).not.toBe("name");
+    expect(q('[data-testid="new-bot-name"]')).toBeNull();
+  });
+
   it("Back from the coding tool returns to the flow's own name step, then to the host, keeping the name", async () => {
     const onback = vi.fn();
     open({ onback });
