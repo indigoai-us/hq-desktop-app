@@ -7,6 +7,7 @@
  */
 
 import type { ConversationRow } from "./sidebar-model.js";
+import { isUnknownPeerLabel } from "./peer-names.js";
 
 export const DIRECT_MESSAGE_PLACEHOLDER = "Direct message";
 export const GROUP_MESSAGE_PLACEHOLDER = "Group message";
@@ -70,7 +71,11 @@ export function resolveConversationTitle(
 ): string {
   if (!row) return "";
   const railTitle = trimOrEmpty(resolveConversationRow(row, railRows)?.title);
-  if (railTitle && !isRawParticipantUid(railTitle)) return railTitle;
+  // The rail titles a peer nothing names "Unknown person" / "Unknown bot".
+  // That label is a last resort: a real name on the open row (a bot made on
+  // this device, a deep link that carried the name) still wins over it.
+  const railUnknown = isUnknownPeerLabel(railTitle);
+  if (railTitle && !isRawParticipantUid(railTitle) && !railUnknown) return railTitle;
   const own = trimOrEmpty(row.title);
   if (row.kind === "channel") {
     if (own === (row.channelId ?? "").trim()) {
@@ -79,6 +84,8 @@ export function resolveConversationTitle(
     }
     return own || row.title;
   }
+  if (own && !isRawParticipantUid(own) && !isUnknownPeerLabel(own)) return own;
+  if (railUnknown) return railTitle;
   if (own && !isRawParticipantUid(own)) return own;
   if (row.kind === "dm") return DIRECT_MESSAGE_PLACEHOLDER;
   if (row.kind === "group") return GROUP_MESSAGE_PLACEHOLDER;

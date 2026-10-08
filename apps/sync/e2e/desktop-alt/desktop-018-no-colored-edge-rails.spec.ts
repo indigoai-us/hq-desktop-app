@@ -167,12 +167,6 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'notification',
       ],
       [
-        'components/messaging/RecipientPicker.svelte',
-        '.suggestion',
-        '.suggestion.active',
-        'recipient suggestion',
-      ],
-      [
         '../../../packages/ui/src/projects/ProjectDetailView.svelte',
         '.task-rail-row',
         '.task-rail-row.is-selected',
@@ -216,6 +210,18 @@ describe('DESKTOP-018: no colored edge rails', () => {
 
     // The V4 secondary sidebar footer went with the unreachable shell; the
     // live shell has no equivalent persistent footer row to hold to the rule.
+  });
+
+  it('marks the highlighted recipient with a fill only, never an edge rail', () => {
+    // The To-field suggestions moved from the Messages-window picker (square
+    // rows, bottom rule) to the shared RecipientPicker, whose rows follow the
+    // Forward dialog: a rounded neutral fill on the highlighted row.
+    const picker = readFileSync(join(UI_ROOT, 'chat/recipient-picker/RecipientPicker.svelte'), 'utf8');
+    const highlight = rule(picker, '.rp-option.highlight');
+    expect(highlight).toMatch(/background:\s*var\(--hover/);
+    expect(highlight).not.toMatch(/box-shadow|border/);
+    expect(rule(picker, '.rp-option')).not.toMatch(/border-left|border:\s*1px/);
+    expect(partialInsetSideRails(picker)).toEqual([]);
   });
 
   it('keeps settings notices and moderation lock states free of partial edge rails', () => {

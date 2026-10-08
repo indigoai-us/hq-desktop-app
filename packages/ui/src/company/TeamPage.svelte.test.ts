@@ -59,6 +59,31 @@ describe("TeamPage clicks (console-rail design lane 4)", () => {
     expect(target.querySelector("[data-testid='team-profile-pane']")).toBeNull();
   });
 
+  it("member rows use the shared avatar: photo, colored initials, bot art; handle on its own line", () => {
+    seed("acme-avatars");
+    const target = render({ slug: "acme-avatars", avatarByUid: { prs_maya: "data:image/png;base64,AAAA" } });
+    const maya = target.querySelector<HTMLElement>("[data-member-id='prs_maya']")!;
+    const mayaAvatar = maya.querySelector<HTMLElement>("[data-testid='team-avatar']")!;
+    expect(mayaAvatar.dataset.face).toBe("photo");
+    // Presence is its own badge element beside the face, not inside the text.
+    expect(mayaAvatar.querySelector("[data-testid='avatar-presence']")).not.toBeNull();
+    expect(maya.querySelector(".who-line .nm")?.textContent).toBe("Maya Chen");
+    expect(maya.querySelector(".who-text > .em")?.textContent).toBe("prs_maya@example.com");
+
+    const lin = target.querySelector<HTMLElement>("[data-member-id='agt_lin']")!;
+    const linAvatar = lin.querySelector<HTMLElement>("[data-testid='team-avatar']")!;
+    expect(["mascot", "glyph"]).toContain(linAvatar.dataset.face);
+    expect(linAvatar.textContent?.trim()).not.toBe("LI");
+  });
+
+  it("a person without a photo gets initials", () => {
+    seed("acme-initials");
+    const target = render({ slug: "acme-initials" });
+    const avatar = target.querySelector<HTMLElement>("[data-member-id='prs_maya'] [data-testid='team-avatar']")!;
+    expect(avatar.dataset.face).toBe("initials");
+    expect(avatar.textContent?.trim()).toBe("MC");
+  });
+
   it("Add agent calls the host's New bot opener instead of navigating", () => {
     seed("acme-b");
     const onaddagent = vi.fn();

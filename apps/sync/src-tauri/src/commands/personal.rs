@@ -2182,7 +2182,10 @@ mod tests {
 
             let app = tauri::test::mock_app();
             let handle = app.handle().clone();
-            let vault = VaultClient::new(&server.uri(), "tok");
+            // Own connection pool: a keep-alive connection left over from an
+            // earlier test's runtime would fail the first send in transport,
+            // and the retry loop would count it without the mock seeing it.
+            let vault = VaultClient::with_own_pool(server.uri(), "tok");
             let r = resolve_or_provision(&handle, &vault).await;
 
             r

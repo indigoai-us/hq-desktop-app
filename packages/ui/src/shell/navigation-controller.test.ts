@@ -458,3 +458,45 @@ describe("native/host destination conversion", () => {
   });
 
 });
+
+describe("entryCompanyUid: the scope a new entry is recorded under", () => {
+  it("is asked with the entry being left and records its answer", () => {
+    const seen: Array<{ kind: string; companyUid: string | null; from: string | null }> = [];
+    const controller = createNavigationController({
+      getScope: () => scope(),
+      entryCompanyUid: (destination, companyUid, from) => {
+        seen.push({
+          kind: destination.kind,
+          companyUid,
+          from: from?.destination.kind ?? null,
+        });
+        return destination.kind === "channel" ? null : companyUid;
+      },
+      apply: () => {},
+    });
+    controller.navigate(dest("settings"));
+    controller.navigate(dest("channel"));
+    expect(seen).toEqual([
+      { kind: "settings", companyUid: "cmp_acme", from: null },
+      { kind: "channel", companyUid: "cmp_acme", from: "settings" },
+    ]);
+    expect(controller.history.current()?.companyUid).toBeNull();
+    controller.back();
+    expect(controller.history.current()?.companyUid).toBe("cmp_acme");
+  });
+
+  it("is not asked when the destination names its own company", () => {
+    let asked = 0;
+    const controller = createNavigationController({
+      getScope: () => scope(),
+      entryCompanyUid: (_destination, companyUid) => {
+        asked += 1;
+        return companyUid;
+      },
+      apply: () => {},
+    });
+    controller.navigate({ kind: "setup-checkout", companyUid: "cmp_other" });
+    expect(asked).toBe(0);
+    expect(controller.history.current()?.companyUid).toBe("cmp_other");
+  });
+});

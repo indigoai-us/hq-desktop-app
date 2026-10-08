@@ -112,11 +112,17 @@ test.describe('console rail: full user path', () => {
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });
     await page.getByTestId('chat-bot-create').click();
     // Lands in the new bot's DM. A local bot runs with the person's own
-    // access, so it greets and never asks for a grant.
+    // access, so it never asks for a grant. The bot's own intro and kickoff
+    // are its greeting; the desktop adds no setup rows of its own (no second
+    // greeting, no access request card, no skills prompt, no early
+    // "Verified").
     await expect(flow).toHaveCount(0);
-    await expect(page.getByText("Hi, I'm Scout. I'll ask a few quick questions to finish my setup.")).toBeVisible();
+    await expect(page.getByTestId('channel-name')).toContainText(/scout/i);
     await expect(page.getByTestId('share-request-card')).toHaveCount(0);
-    await expect(page.getByText('Pick my skills: open my profile')).toHaveCount(0);
+    await expect(page.getByText("I'll ask a few quick questions to finish my setup")).toHaveCount(0);
+    await expect(page.getByText('Two things before I start')).toHaveCount(0);
+    await expect(page.getByText('Pick my skills')).toHaveCount(0);
+    await expect(page.getByText("Verified, I'm ready")).toHaveCount(0);
     if (shots) {
       await page.screenshot({ path: `${shots}/bot-thread.png` });
       await page.locator('.dm-msg-author', { hasText: 'Scout' }).first().click().catch(() => {});

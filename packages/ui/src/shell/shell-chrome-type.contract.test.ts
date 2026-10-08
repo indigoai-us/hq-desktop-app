@@ -17,6 +17,7 @@ const FILES = [
   "../common/CommandPalette.svelte",
   "../chat/CreateModal.svelte",
   "../chat/NewMessageSheet.svelte",
+  "../chat/recipient-picker/RecipientPicker.svelte",
   "../chat/NewChannelSheet.svelte",
   "../chat/PeoplePicker.svelte",
   "../chat/DmRequestsPanel.svelte",

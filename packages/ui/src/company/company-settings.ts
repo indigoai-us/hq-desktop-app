@@ -97,7 +97,7 @@ export interface GroupMember {
 
 export interface GroupPath {
   path: string;
-  level: GrantLevel;
+  level: GrantLevel | "admin";
 }
 
 export interface CompanyGroup {
@@ -105,6 +105,8 @@ export interface CompanyGroup {
   name: string;
   description: string;
   members: GroupMember[];
+  /** Live groups: members (people and bots) when the server sends a count; null when it does not. */
+  memberCount?: number | null;
   paths: GroupPath[];
 }
 
@@ -116,7 +118,10 @@ export interface PathGrant {
   detail: string;
   kind: GrantKind;
   path: string;
-  level: GrantLevel;
+  /** New grants are read or write; existing vault grants can also be admin. */
+  level: GrantLevel | "admin";
+  /** Server grantee id (person, group, email); absent on creator rows. */
+  granteeId?: string;
   expiry: string;
   expiring: boolean;
   grantedBy: string;
@@ -194,8 +199,8 @@ export function filterGrants(grants: readonly PathGrant[], filter: GrantFilter):
   return grants.filter((g) => g.kind === kind);
 }
 
-export function grantLevelLabel(level: GrantLevel): string {
-  return level === "write" ? "write" : "read";
+export function grantLevelLabel(level: GrantLevel | "admin"): string {
+  return level === "admin" ? "admin" : level === "write" ? "write" : "read";
 }
 
 /** Delete runs only after the confirm dialog. Unconfirmed calls keep the list. */
