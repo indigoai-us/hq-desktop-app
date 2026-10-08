@@ -163,6 +163,11 @@ pub mod command {
 
 fn resolve_hq_path_with(create: bool) -> Result<String, String> {
     let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
+    resolve_hq_path_at(hq_path, create)
+}
+
+/// Resolve a known HQ folder path; create it only when `create` is true.
+fn resolve_hq_path_at(hq_path: PathBuf, create: bool) -> Result<String, String> {
     if hq_path.exists() && !hq_path.is_dir() {
         return Err(format!(
             "{} exists but is a file, not a folder",
@@ -327,8 +332,35 @@ mod tests {
         assert!(r.non_empty);
     }
 
+    /// Resolving without `create` returns the path and leaves the folder
+    /// absent; resolving with it creates the folder. Runs on every platform.
+    #[test]
+    fn resolve_hq_path_at_creates_the_folder_only_when_asked() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("hq");
+
+        let resolved = resolve_hq_path_at(root.clone(), false).unwrap();
+        assert_eq!(
+            PathBuf::from(&resolved),
+            PathBuf::from(strip_windows_verbatim_prefix(&root.to_string_lossy()))
+        );
+        assert!(!root.exists());
+
+        let created = resolve_hq_path_at(root.clone(), true).unwrap();
+        assert!(root.is_dir());
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(created)).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+    }
+
     /// The setup wizard's default-folder lookup must not create the folder;
     /// only the install step may. Other callers keep the creating behavior.
+    /// Unix only: the default folder hangs off `$HOME`, which `scoped_home`
+    /// can redirect. On Windows the home folder comes from the known-folder
+    /// API, so this test would resolve (and create) the runner's real
+    /// `%USERPROFILE%\hq`. The test above covers the create switch there.
+    #[cfg(unix)]
     #[test]
     fn resolve_hq_path_command_without_create_leaves_the_folder_absent() {
         let _g = crate::util::test_support::ENV_MUTEX
