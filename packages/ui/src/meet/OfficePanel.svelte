@@ -232,14 +232,16 @@
     void (async () => {
       if (!(await prepare())) return;
       if (cancelled) return;
-      const members = adapter.company?.listMembers
-        ? await adapter.company.listMembers(target).catch((error: unknown) => {
-            console.warn(
-              "office: member list failed",
-              error instanceof Error ? error.message : String(error),
-            );
-            return null;
-          })
+      const members = adapter.messaging?.listContacts
+        ? await adapter.messaging
+            .listContacts({ companyUid: target })
+            .catch((error: unknown) => {
+              console.warn(
+                "office: member list failed",
+                error instanceof Error ? error.message : String(error),
+              );
+              return null;
+            })
         : null;
       if (cancelled) return;
       directory = members?.ok ? parseOfficeMembers(members.value) : [];

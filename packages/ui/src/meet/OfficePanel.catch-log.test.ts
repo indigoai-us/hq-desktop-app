@@ -80,10 +80,11 @@ describe("OfficePanel swallowed fallbacks", () => {
       kind: "desktop",
       capabilities: { nativeCalls: true, osNotifications: true },
       isAvailable: () => true,
-      company: {
-        listMembers: async () => {
+      messaging: {
+        listContacts: async () => {
           throw new Error("members down");
         },
+        sendDm: async () => ok({} as Json),
       },
       calls: {
         preflight: async () => ok({ passed: true } as never),
@@ -112,7 +113,6 @@ describe("OfficePanel swallowed fallbacks", () => {
         respondToKnock: async () => ok({} as Json),
       },
       identity: { whoami: async () => ok({ personUid: SELF } as never) },
-      messaging: { sendDm: async () => ok({} as Json) },
       appShell: {
         showOsNotification: async () => {
           throw new Error("notify down");
@@ -150,5 +150,75 @@ describe("OfficePanel swallowed fallbacks", () => {
     component = null;
     await settle();
     expect(warn).toHaveBeenCalledWith("office: audio close failed", "close blocked");
+  });
+
+  it("loads the office directory from the company-uid-scoped contacts feed", async () => {
+    const listContacts = vi.fn(async () =>
+      ok({
+        contacts: [
+          { personUid: "prs_alex", displayName: "Alex" },
+          { personUid: "prs_blair", displayName: "Blair" },
+        ],
+      } as unknown as Json),
+    );
+    const listMembers = vi.fn(async () =>
+      ok([{ personUid: "prs_wrong" }] as unknown as Json[]),
+    );
+    const adapter = {
+      kind: "desktop",
+      capabilities: { nativeCalls: true, osNotifications: true },
+      isAvailable: () => true,
+      company: { listMembers },
+      messaging: { listContacts },
+      calls: {
+        preflight: async () => ok({ passed: true } as never),
+        discoverOffice: async () =>
+          ok({
+            companyUid: COMPANY,
+            observedAt: Date.now(),
+            people: [person(SELF)],
+          } as unknown as Json),
+        setOfficePreference: async () => ok({} as Json),
+        setOfficeConnectivity: async () => ok({} as Json),
+        createRoom: async () => ok({} as Json),
+        getRoom: async () => ok({} as Json),
+        createKnock: async () => ok({} as Json),
+        listKnocks: async () => ok({ knocks: [] } as unknown as Json),
+        getKnock: async () => ok({} as Json),
+        respondToKnock: async () => ok({} as Json),
+      },
+      identity: { whoami: async () => ok({ personUid: SELF } as never) },
+      appShell: { showOsNotification: async () => ok({} as Json) },
+    };
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(OfficePanel as never, {
+      target: host,
+      props: {
+        adapter,
+        callsHost: {
+          serviceEvidence: {},
+          evidenceMaxAgeMs: 10_000_000,
+          openCallWindow: vi.fn(async () => undefined),
+          resolveDeviceId: async () => "dev_self",
+        },
+        companyUid: COMPANY,
+        visible: true,
+        knockPollMs: 60_000,
+      } as never,
+    });
+    await settle();
+
+    expect(listContacts).toHaveBeenCalledWith({ companyUid: COMPANY });
+    expect(listMembers).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-testid="office-self"]')?.textContent).toContain(
+      "Your office hours",
+    );
+    await vi.waitFor(() => {
+      const status = host
+        .querySelector(".office > .sr-live")
+        ?.textContent?.replace(/\s+/g, " ");
+      expect(status).toContain("Office loaded: 2 other people.");
+    });
   });
 });
