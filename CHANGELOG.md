@@ -10,6 +10,8 @@ The release moves it under the version it ships in.
 
 - Show a notice when sync parks a conflict copy, with actions to reveal the preserved file or dismiss the notice.
 
+## [0.10.407] — 2026-10-08
+
 - HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
 
 ## [0.10.406] - 2026-10-08
