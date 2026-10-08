@@ -141,10 +141,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         app,
         crate::app_version::current(),
     );
-    let from_updater_restart = crate::commands::updater_restart_marker::startup_is_updater_restart(
-        launch_agent_relaunch,
-        marker_matches,
-    );
+    let from_updater_restart = marker_matches;
     let menubar_path = match paths::menubar_json_path() {
         Ok(path) => Some(path),
         Err(e) => {
@@ -324,7 +321,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // fresh installs still reach onboarding immediately when tools are absent.
         let mut resolved_programs = None;
         let tools_present = probe_local_toolchain_for_startup(
-            from_updater_restart,
+            launch_agent_relaunch,
             matches!(
                 classified.state,
                 LifecycleState::SteadyState
@@ -345,14 +342,17 @@ pub fn setup_lifecycle(app: &AppHandle) {
         // The startup probe always performs its initial resolution.
         let (hq_program, node_program, resolver_diagnostics) = resolved_programs
             .expect("startup toolchain probe records its initial resolution");
+        let hq_resolved = hq_program.kind != ResolvedProgramKind::NotResolved;
+        let node_resolved = node_program.kind != ResolvedProgramKind::NotResolved;
         let (bundled_cli_ready, bundled_cli_mode) =
             crate::commands::install_deps::bundled_hq_cli_diagnostics(app);
         let verdict = if evidence_unreadable {
             classified
         } else {
-            hq_desktop_core::lifecycle::require_local_toolchain_after_updater_restart(
+            hq_desktop_core::lifecycle::require_local_toolchain_for_startup(
                 classified,
-                tools_present,
+                hq_resolved,
+                node_resolved,
                 from_updater_restart,
             )
         };

@@ -115,15 +115,16 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
     }
 }
 
-/// During an updater restart, missing tools on a previously installed machine
-/// must resume at setup repair instead of reopening first-run onboarding. Fresh
-/// installs and the consent-only first-run state keep their existing routing.
-pub fn require_local_toolchain_after_updater_restart(
+/// Missing tools must not reopen onboarding after an ordinary launch of a
+/// completed install. Updater restarts retain their repair routing, and fresh
+/// installs or consent-only first runs still require setup.
+pub fn require_local_toolchain_for_startup(
     verdict: LifecycleVerdict,
-    tools_present: bool,
+    hq_resolved: bool,
+    node_resolved: bool,
     updater_restart: bool,
 ) -> LifecycleVerdict {
-    if tools_present {
+    if hq_resolved && node_resolved {
         return verdict;
     }
 
@@ -140,6 +141,10 @@ pub fn require_local_toolchain_after_updater_restart(
             needs_install_backfill: false,
             needs_first_run_backfill: false,
         };
+    }
+
+    if verdict.state == LifecycleState::SteadyState && !hq_resolved && node_resolved {
+        return verdict;
     }
 
     require_local_toolchain(verdict, false)
@@ -1002,6 +1007,64 @@ mod tests {
     }
 
     #[test]
+    fn completed_authenticated_install_with_valid_root_does_not_reopen_onboarding_when_hq_missing() {
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        };
+        let classified = classify_lifecycle(inputs);
+        assert_eq!(classified.state, LifecycleState::SteadyState);
+
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
+        assert_eq!(
+            startup.state,
+            LifecycleState::SteadyState,
+            "a completed authenticated install with a valid HQ root must not reopen onboarding when the hq executable is unresolved"
+        );
+        assert!(!installation_required(startup.state));
+    }
+
+    #[test]
+    fn completed_install_still_routes_to_install_when_node_is_missing() {
+        let classified = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+        let startup = require_local_toolchain_for_startup(classified, true, false, false);
+
+        assert_eq!(startup.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(startup.state));
+    }
+
+    #[test]
+    fn genuinely_uninstalled_authenticated_user_still_routes_to_install_when_hq_missing() {
+        let classified = classify_lifecycle(LifecycleInputs {
+            has_auth: true,
+            ..input()
+        });
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
+
+        assert_eq!(startup.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(startup.state));
+    }
+
+    #[test]
     fn not_installed_routes_only_on_auth_signal() {
         let authenticated = classify_lifecycle(LifecycleInputs {
             has_auth: true,
@@ -1626,7 +1689,7 @@ mod toolchain_readiness_tests {
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);
 
-        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::InstallResume);
         assert!(!verdict.needs_install_backfill && !verdict.needs_first_run_backfill);
         assert!(installation_required(verdict.state));
@@ -1647,7 +1710,7 @@ mod toolchain_readiness_tests {
             hq_root_recorded_by_prior_setup: false,
         };
         let classified = classify_lifecycle(inputs);
-        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 

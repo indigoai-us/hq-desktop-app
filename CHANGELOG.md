@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
+
 ## [0.10.403] - 2026-10-08
 
 - Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
