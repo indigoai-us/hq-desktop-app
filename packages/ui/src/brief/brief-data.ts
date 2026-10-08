@@ -21,6 +21,7 @@
 import type { AdapterPromise, Json, WhoAmI } from "@hq/platform";
 import { parseRecordedMeetings, signalBodyText } from "../meetings/recorded-meetings.js";
 import { localSessionsFromNative } from "../telemetry/telemetry-local-sessions.js";
+import { briefSeed } from "./brief-seed.js";
 import type {
   BriefActionItem,
   BriefCalendarEvent,
@@ -75,12 +76,7 @@ export const MEETINGS_PER_COMPANY = 5;
 export const BODY_READS = 10;
 export const MAX_COMPANIES = 6;
 
-let seed: (() => BriefInput) | null = null;
-
-/** Dev harness only: serve this day instead of reading the adapter. */
-export function configureBriefSeed(next: (() => BriefInput) | null): void {
-  seed = next;
-}
+export { configureBriefSeed } from "./brief-seed.js";
 
 class SourceError extends Error {}
 
@@ -182,6 +178,7 @@ export function signalsByKind(detail: unknown): Record<SignalKind, { title: stri
 
 export async function gatherBriefInput(adapter: BriefAdapter, opts: GatherOptions): Promise<GatherResult> {
   const now = opts.now ?? new Date();
+  const seed = briefSeed();
   if (seed) return { input: seed(), failures: [] };
 
   const log = opts.log ?? ((message: string, err?: unknown) => console.warn(`[daily-brief] ${message}`, err ?? ""));

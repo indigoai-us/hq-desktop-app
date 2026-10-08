@@ -1,0 +1,546 @@
+/*
+  Daily Brief surface. Everything is scoped under .daily-brief.
+
+  OWNER-APPROVED EXCEPTION to the house tokens: inside the brief, colour is
+  earned by meaning and cards carry soft neumorphic depth on a graphite
+  surface. Only these cards get colour: decision (violet), incident (red),
+  waiting and risk (amber), shipped (green). Everything else stays neutral.
+  The few extra colours are the scoped variables below, mapped to the house
+  --ok / --warn / --red where those exist. No backdrop-filter anywhere
+  (WKWebView renders it square on rounded cards). Max font weight 500.
+
+  EFFECT LEGEND: every effect carries a meaning.
+  - Pixel sunrise ........ progress of today's decisions. The sun rises one
+                           step per decision cleared; a ripple marks a clear;
+                           hovering shows a ghost sun at "all clear".
+  - Iridescent sheen ..... the decision row under your cursor.
+  - Hover-revealed actions only on the row under the cursor. Each action has
+                           its own hover. No card lift on hover.
+  - Holographic foil ..... only on shipped cards: things you shipped.
+  - Pulse dot ............ only on live data (incident).
+  - Count-up ............. only on measured numbers.
+  - Neumorphic press ..... buttons sink when you commit.
+  - Hourglass ............ you are waiting on someone.
+  - Peek card ............ hover anything with more behind it for detail and,
+                           on actionable items, the full prompt before launch.
+  - Today strip .......... neutral = team, teal = outside people,
+                           warm = learning and live sessions; the now-line
+                           shows where the brief sits in the day; projected
+                           meetings are outlined.
+  prefers-reduced-motion turns all motion off.
+*/
+.daily-brief {
+  --b-bg: #1b1b1e;
+  --b-card: #222226;
+  --b-card-hi: #26262b;
+  --b-t1: rgba(255, 255, 255, 0.95);
+  --b-t2: rgba(255, 255, 255, 0.56);
+  --b-t3: rgba(255, 255, 255, 0.32);
+  --b-line: rgba(255, 255, 255, 0.07);
+  --b-ok: var(--ok, #34c759);
+  --b-warn: var(--warn, #facc15);
+  --b-red: var(--red, #ff453a);
+  --b-violet: #c084fc;
+  --b-ice: #c9d6e4;
+  --b-sun: #ffb580;
+  --b-sun-2: #ff809f;
+  --b-r: 22px;
+  --b-gap: 14px;
+  --b-raise: -1px -1px 0 rgba(255, 255, 255, 0.035), -12px -12px 28px rgba(255, 255, 255, 0.022),
+    2px 3px 4px rgba(0, 0, 0, 0.35), 16px 22px 44px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35);
+  --b-well: inset 4px 4px 10px rgba(0, 0, 0, 0.55), inset -3px -3px 8px rgba(255, 255, 255, 0.035);
+  --b-ui: var(--font-ui, "Geist", -apple-system, system-ui, sans-serif);
+  --b-mono: var(--font-mono, "Geist Mono", ui-monospace, monospace);
+
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 22px 28px 28px;
+  background: radial-gradient(1200px 700px at 30% -10%, #232327 0%, var(--b-bg) 60%), var(--b-bg);
+  color: var(--b-t1);
+  font-family: var(--b-ui);
+  font-size: 13px;
+  line-height: 1.45;
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+.daily-brief *,
+.daily-brief *::before,
+.daily-brief *::after {
+  box-sizing: border-box;
+}
+.daily-brief button {
+  font-family: inherit;
+}
+.daily-brief .eyebrow {
+  font-family: var(--b-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--b-t3);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.daily-brief .ico {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: none;
+}
+
+/* header */
+.daily-brief .b-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.daily-brief .b-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.daily-brief .b-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: var(--b-card);
+  box-shadow: var(--b-raise);
+  display: grid;
+  place-items: center;
+  color: var(--b-sun);
+}
+.daily-brief .b-mark .ico {
+  width: 18px;
+  height: 18px;
+}
+.daily-brief h1 {
+  margin: 0;
+  font-size: var(--type-title, 20px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.daily-brief .b-prov {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--b-mono);
+  font-size: 11px;
+  color: var(--b-t3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.daily-brief .b-prov b {
+  color: var(--b-t2);
+  font-weight: 500;
+}
+.daily-brief .leadchip {
+  font-family: var(--b-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 5px 9px;
+  border-radius: 8px;
+  box-shadow: var(--b-well);
+  color: var(--b-t2);
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+.daily-brief .leadchip b {
+  color: var(--b-sun);
+}
+
+/* grid */
+.daily-brief .b-grid {
+  display: grid;
+  gap: var(--b-gap);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(196px, 1fr));
+  min-height: 640px;
+  margin-top: 14px;
+}
+.daily-brief .w {
+  position: relative;
+  border-radius: var(--b-r);
+  background: linear-gradient(155deg, var(--b-card-hi), var(--b-card));
+  box-shadow: var(--b-raise);
+  overflow: hidden;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  animation: b-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes b-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+}
+.daily-brief .w::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.daily-brief .w h3 {
+  margin: 8px 0 0;
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  line-height: 1.2;
+}
+.daily-brief .big {
+  font-size: 52px;
+  font-weight: 300;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+}
+.daily-brief .sub {
+  font-size: 12.5px;
+  color: var(--b-t2);
+  line-height: 1.4;
+}
+.daily-brief .foot {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--b-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+}
+.daily-brief .w:not([class*="c-"]) .foot {
+  border-color: var(--b-line);
+  color: var(--b-t3);
+}
+
+/* earned colour */
+.daily-brief .c-violet {
+  background: radial-gradient(120% 90% at 0% 0%, #7c4dd8 0%, #4a2a97 45%, #2a1a5c 100%);
+}
+.daily-brief .c-red {
+  background: radial-gradient(130% 100% at 100% 0%, #ff5a4e 0%, #c1271d 42%, #5e0f0b 100%);
+}
+.daily-brief .c-amber {
+  background: radial-gradient(130% 100% at 0% 0%, #ffb340 0%, #d97706 50%, #6b3302 100%);
+}
+.daily-brief .c-green {
+  background: radial-gradient(130% 100% at 0% 0%, #3ddc84 0%, #15803d 50%, #0b3d1f 100%);
+}
+.daily-brief .c-violet::before,
+.daily-brief .c-red::before,
+.daily-brief .c-amber::before,
+.daily-brief .c-green::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 38%);
+}
+.daily-brief [class*="c-"] .eyebrow {
+  color: rgba(255, 255, 255, 0.62);
+}
+.daily-brief [class*="c-"] .sub {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+/* origin chips: company logo + repo */
+.daily-brief .org {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--b-t3);
+  white-space: nowrap;
+  min-width: 0;
+}
+.daily-brief .org .lgo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 5px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: var(--b-ui);
+  font-size: 7.5px;
+  font-weight: 500;
+  background: linear-gradient(145deg, #5b5bf7, #3730a3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+.daily-brief .org b {
+  font-weight: 500;
+  color: var(--b-t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.daily-brief [class*="c-"] .org {
+  color: rgba(255, 255, 255, 0.6);
+}
+.daily-brief [class*="c-"] .org b {
+  color: rgba(255, 255, 255, 0.9);
+}
+.daily-brief .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--b-mono);
+  font-size: 10.5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* small rows */
+.daily-brief .row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.daily-brief .row .bul {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: none;
+  background: var(--b-t3);
+}
+.daily-brief .row em {
+  font-style: normal;
+  color: var(--b-t2);
+}
+.daily-brief [data-peek] {
+  cursor: default;
+}
+
+/* tones for lines */
+.daily-brief .tone-ok {
+  color: var(--b-ok);
+}
+.daily-brief .tone-warn {
+  color: var(--b-warn);
+}
+.daily-brief .tone-decision {
+  color: var(--b-violet);
+}
+.daily-brief .tone-red {
+  color: var(--b-red);
+}
+.daily-brief .tone-neutral {
+  color: var(--b-t3);
+}
+
+/* launch controls: primary start button, engine switcher, copy prompt */
+.daily-brief .launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.daily-brief .launch .go {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: #2a1a5c;
+  background: #fff;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+  transition: transform 0.15s, box-shadow 0.2s, background 0.2s;
+}
+.daily-brief .launch .go svg {
+  width: 0;
+  height: 12px;
+  opacity: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: width 0.3s, opacity 0.3s;
+}
+.daily-brief .launch .go:hover {
+  background: #f1eaff;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(255, 255, 255, 0.18);
+}
+.daily-brief .launch .go:hover svg {
+  width: 12px;
+  opacity: 1;
+}
+.daily-brief .launch .go:active {
+  transform: translateY(1px) scale(0.97);
+  box-shadow: inset 2px 2px 5px rgba(0, 0, 0, 0.25);
+}
+.daily-brief .launch .eng {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.4);
+}
+.daily-brief .launch .eng button {
+  all: unset;
+  cursor: pointer;
+  font-family: var(--b-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.6);
+  transition: background 0.2s, color 0.2s;
+}
+.daily-brief .launch .eng button:hover {
+  color: #fff;
+}
+.daily-brief .launch .eng button[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.9);
+  color: #2a1a5c;
+}
+.daily-brief .launch .copy {
+  all: unset;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.75);
+  transition: background 0.2s, color 0.2s;
+}
+.daily-brief .launch .copy:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+.daily-brief .launch .copy.copied {
+  color: var(--b-ok);
+}
+.daily-brief .launch .copy svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.daily-brief .launch-note {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.8);
+  margin-top: 6px;
+}
+
+/* peek card */
+.daily-brief .peek {
+  position: fixed;
+  z-index: 50;
+  width: 340px;
+  max-height: min(520px, calc(100vh - 32px));
+  overflow: auto;
+  padding: 18px 18px 16px;
+  border-radius: 20px;
+  background: linear-gradient(160deg, #2c2c32, #232327);
+  color: var(--b-t1);
+  box-shadow: -1px -1px 0 rgba(255, 255, 255, 0.05), 3px 5px 10px rgba(0, 0, 0, 0.45),
+    24px 36px 70px rgba(0, 0, 0, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  animation: b-peek 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes b-peek {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+.daily-brief .peek .ttl {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.daily-brief .peek .st {
+  font-size: 12px;
+  color: var(--b-t2);
+  margin-top: 2px;
+}
+.daily-brief .peek .sec {
+  margin-top: 14px;
+}
+.daily-brief .peek .sec .eyebrow {
+  margin-bottom: 7px;
+}
+.daily-brief .peek p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--b-t2);
+}
+.daily-brief .peek .li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.35;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  margin-top: 4px;
+}
+.daily-brief .peek .li span {
+  font-family: var(--b-mono);
+  font-size: 10px;
+  white-space: nowrap;
+  align-self: center;
+}
+.daily-brief .peek .prompt {
+  font-family: var(--b-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--b-t1);
+  padding: 10px 12px;
+  border-radius: 12px;
+  box-shadow: var(--b-well);
+  background: rgba(0, 0, 0, 0.18);
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+}
+.daily-brief .peek .acts {
+  margin-top: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .daily-brief *,
+  .daily-brief *::before,
+  .daily-brief *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
