@@ -2044,13 +2044,15 @@ mod hq_cloud_cache_use_tests {
             env: None,
         };
         let watcher = SpawnArgs {
+            cmd: "npx".to_string(),
             args: vec![
                 "-y".to_string(),
                 "--package=@indigoai-us/hq-cloud@~6.18.52".to_string(),
                 "hq-sync-runner".to_string(),
                 "--watch".to_string(),
             ],
-            ..manual.clone()
+            cwd: None,
+            env: None,
         };
         let local_override = SpawnArgs {
             cmd: "node".to_string(),
