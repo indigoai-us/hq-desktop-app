@@ -110,13 +110,15 @@ test.describe('console rail: full user path', () => {
     await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     if (shots) await page.screenshot({ path: `${shots}/modal.png` });
     await page.getByTestId('chat-bot-create').click();
-    // Lands in the new bot's DM, where the bot asks for the rest of setup.
+    // Lands in the new bot's DM. The bot's own intro is its greeting; the
+    // desktop adds no setup rows of its own (no second greeting, no access
+    // request card, no skills prompt, no early "Verified").
     await expect(flow).toHaveCount(0);
-    const access = page.getByTestId('share-request-card');
-    await expect(access).toBeVisible();
-    await expect(access).toHaveAttribute('data-kind', 'access_request');
-    await expect(page.getByText("Hi, I'm Scout.")).toBeVisible();
-    await expect(page.getByText('Pick my skills: open my profile')).toBeVisible();
+    await expect(page.getByTestId('channel-name')).toContainText(/scout/i);
+    await expect(page.getByTestId('share-request-card')).toHaveCount(0);
+    await expect(page.getByText('Two things before I start')).toHaveCount(0);
+    await expect(page.getByText('Pick my skills')).toHaveCount(0);
+    await expect(page.getByText("Verified, I'm ready")).toHaveCount(0);
     if (shots) {
       await page.screenshot({ path: `${shots}/bot-thread.png` });
       await page.locator('.dm-msg-author', { hasText: 'Scout' }).first().click().catch(() => {});

@@ -193,6 +193,53 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     );
   });
 
+  it("the new bot's DM has one greeting, the bot's own, and no setup rows the desktop made up", async () => {
+    // Regression (acf10e805, beta only): after create, the desktop appended
+    // its own rows under the bot's intro: a second "Hi, I'm ..." greeting, an
+    // access request card whose Approve granted nothing, "Pick my skills"
+    // pointing at an Edit sheet that saves nothing, and "Verified, I'm ready"
+    // while that request was still pending. Production shows the bot's intro
+    // only, and so does this.
+    const intro = {
+      eventId: "evt_intro",
+      body: "Hi, I'm scout, your HQ bot. What would you like me to do first?",
+      fromPersonUid: "agt_new",
+      fromDisplayName: "scout",
+      createdAt: new Date().toISOString(),
+      direction: "in",
+    };
+    const create = vi.fn(async () => ok({ ok: true, name: "scout", agentUid: "agt_new" }));
+    const value = adapter({ create });
+    (value.messaging as unknown as Record<string, unknown>).fetchDmThread = async () =>
+      ok({ messages: [intro], nextCursor: null });
+    mountApp(value);
+    await openBotFlow();
+    const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+    name.value = "scout";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="create-bot-kind-blank"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="chat-bot-create"]');
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    // Lands in the bot's DM, where the bot's intro is the greeting.
+    await vi.waitFor(() => expect(host.textContent).toContain("What would you like me to do first?"));
+    await settle(20);
+
+    const text = host.textContent ?? "";
+    expect(text.match(/Hi, I'm scout/g)?.length).toBe(1);
+    expect(text).not.toContain("Two things before I start");
+    expect(text).not.toContain("Pick my skills");
+    expect(text).not.toContain("Verified, I'm ready");
+    expect(host.querySelector('[data-testid="share-request-card"]')).toBeNull();
+    const rows = [...host.querySelectorAll('[data-testid="conversation-message"]')];
+    expect(rows.map((row) => row.getAttribute("data-event-id"))).toEqual(["evt_intro"]);
+  });
+
   it("surfaces the CLI's reason and keeps the modal open when creation fails", async () => {
     const create = vi.fn(async () => ({ ok: false as const, reason: "unavailable" as const, message: "You already have 3 local bots." }));
     mountApp(adapter({ create }));

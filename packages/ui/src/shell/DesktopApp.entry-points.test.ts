@@ -1219,6 +1219,12 @@ describe("DesktopApp New bot takeover", () => {
       expect(stored("hq.chat.botSetupChannels.v1")).not.toContain("chn_polar");
       expect(document.querySelector('[data-testid="chat-waking-bot-ring"]')).toBeNull();
       expect(document.querySelector('[data-conversation-id="dm:agt_polar"]')).toBeNull();
+      // Regression (acf10e805): the channel got desktop-made setup rows (a
+      // greeting, an access request that granted nothing, "Pick my skills").
+      const text = document.body.textContent ?? "";
+      expect(text).not.toContain("Two things before I start");
+      expect(text).not.toContain("Pick my skills");
+      expect(document.querySelector('[data-testid="share-request-card"]')).toBeNull();
     } finally {
       window.removeEventListener(OPEN_CHANNEL_EVENT, onOpen);
     }

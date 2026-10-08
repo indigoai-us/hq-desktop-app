@@ -1884,8 +1884,9 @@
               data-event-id={msg.eventId}
             >
               <span class="dm-msg-avatar">
+                <!-- A bot's card shows the bot's avatar, as its messages do. -->
                 <IdentityMark
-                  kind="person"
+                  kind={isAgent(msg) ? "agent" : "person"}
                   label={messageAuthor(msg)}
                   avatarUrl={authorAvatarUrl(msg.fromPersonUid, avatarByUid)}
                   agentUid={msg.fromPersonUid}
