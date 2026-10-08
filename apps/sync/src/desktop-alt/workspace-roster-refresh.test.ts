@@ -278,7 +278,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
     expect(hqProUrls).not.toContain('/v1/billing/usage-limits?companyUid=cmp_acme');
   });
 
-  it('records free warning status once across refreshes', async () => {
+  it('records a files-paused status once across refreshes', async () => {
     host = document.createElement('div');
     document.body.appendChild(host);
     const { invokeFn, hqProUrls } = mockInvoke([() => ({ workspaces: [ACME] })], {
@@ -287,7 +287,8 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: false,
-        agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
+        storageBytes: { used: 10_737_418_240, limit: 10_737_418_240, over: false, pctUsed: 100 },
+        armedStops: ['files.create'],
         upgradeUrl: 'https://hq.computer/companies/acme/billing?upgrade=team',
       },
     });
@@ -307,24 +308,56 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
 
   it.each([
     {
-      name: 'free enforceable over-limit resource',
+      name: 'free enforceable company with an armed files.create stop',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        storageBytes: { used: 10_737_418_240, limit: 10_737_418_240, over: false, pctUsed: 100 },
+        armedStops: ['files.create'],
+      },
+      expectedNotice: true,
+    },
+    {
+      name: 'free enforceable over-limit resource with no armed stop',
       usageBody: {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: false,
         agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
       },
-      expectedNotice: true,
+      expectedNotice: false,
     },
     {
-      name: 'free enforceable resource at 80 percent',
+      name: 'free enforceable resource at 80 percent with no armed stop',
       usageBody: {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: false,
         agents: { used: 8, limit: 10, over: false, pctUsed: 80 },
       },
-      expectedNotice: true,
+      expectedNotice: false,
+    },
+    {
+      name: 'free agents cap read as 100 percent at zero use (2026-10-07 fan-out)',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        agents: { used: 0, limit: 0, over: false, pctUsed: 100 },
+      },
+      expectedNotice: false,
+    },
+    {
+      name: 'free enforceable company armed only on a non-file stop',
+      usageBody: {
+        plan: 'free',
+        cohort: 'enforceable',
+        planLimitsExempt: false,
+        secrets: { used: 10, limit: 10, over: false, pctUsed: 100 },
+        armedStops: ['secrets.create'],
+      },
+      expectedNotice: false,
     },
     {
       name: 'grandfathered cohort',
@@ -332,7 +365,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'grandfathered',
         planLimitsExempt: false,
-        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+        armedStops: ['files.create'],
       },
       expectedNotice: false,
     },
@@ -342,7 +375,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'free',
         cohort: 'enforceable',
         planLimitsExempt: true,
-        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+        armedStops: ['files.create'],
       },
       expectedNotice: false,
     },
@@ -352,7 +385,7 @@ describe('HqWorkWorkShell workspace roster refresh', () => {
         plan: 'team',
         cohort: 'enforceable',
         planLimitsExempt: false,
-        agents: { used: 11, limit: 10, over: true, pctUsed: 110 },
+        armedStops: ['files.create'],
       },
       expectedNotice: false,
     },
