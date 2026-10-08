@@ -305,7 +305,18 @@ const ROLLUP_TAG_TOP_N: usize = 3;
 /// `HQ_CLOUD_IDENTITIES` grows from 57 to 59. `src/bin/sync-runner-events.ts`
 /// is untouched, so `ERROR_TYPES` remains (`error`, `auth-error`). The
 /// source-version marker moves with the runner pin.
-pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.51";
+///
+/// The `~6.18.51` -> `~6.18.52` bump was re-derived from both published runner
+/// trees (`git diff v6.18.51..v6.18.52 -- src`, excluding tests). It adds one
+/// literal `this.name` identity, `PresignAlreadyCurrent` (src/object-io.ts),
+/// which the PUT path catches and turns into an already-current result, so it
+/// never reaches the event surface and is excluded like
+/// `PushScopeForbiddenError`. `HQ_CLOUD_IDENTITIES` remains 59.
+/// `src/bin/sync-runner-events.ts` is untouched, so `ERROR_TYPES` remains
+/// (`error`, `auth-error`). The runner adds an additive `journal-quarantine`
+/// event, which `parse_sync_line` skips as an unknown type. The source-version
+/// marker moves with the runner pin.
+pub const CAUSE_VOCABULARY_SOURCE_VERSION: &str = "~6.18.52";
 
 /// Compile-time byte-equality for two `&str`, used only by the vocabulary-drift
 /// guard below. A stable-Rust `const fn` (a `while` byte loop, no new
@@ -3483,6 +3494,9 @@ mod tests {
             // `TombstoneTimeoutError` assigns; it only rides as the cause of a
             // `TombstoneFetchError`.
             "TimeoutError",
+            // Added at ~6.18.52 (git diff v6.18.51..v6.18.52): caught by the
+            // PUT path in src/object-io.ts.
+            "PresignAlreadyCurrent",
         ];
         for name in EXCLUDED {
             assert!(
