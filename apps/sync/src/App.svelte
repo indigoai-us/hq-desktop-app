@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import {
     createSyncPlatformAdapter,
+    ensureHqAnywhereGlobalRuntime,
     POST_READY_ACTION_TELEMETRY_FLAG,
     POST_READY_DROP_REASON_FLAG,
     type Json,
@@ -45,6 +46,7 @@
   import type { WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
+  import { registerChannelUnreadListeners } from './lib/channelUnreadListeners';
   import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
   import { TrayMessageBadgePublisher } from './lib/trayMessageBadge';
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
@@ -405,7 +407,7 @@
     /** ISO 8601 timestamp when the detection fired. */
     detectedAt: string;
     /** Lifecycle state — drives the Record/Stop button label. */
-    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'finalising' | 'error';
     /** Recall.ai recording id (returned by start_recording). */
     recordingId?: string;
     /** Last error message from a failed start/stop, if any. */
@@ -1109,25 +1111,17 @@
     );
 
     // Exact channel unread snapshots include increases and read/decrement
-    // transitions, so the aggregate and native menu-bar count cannot stick.
-    unlisteners.push(
-      await listen<{ channelId: string; unread: number }>(
-        'channel:unread-changed',
-        (e) => {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        },
-      ),
-    );
-
-    unlisteners.push(
-      await listen<Channel>('channel:updated', (e) => {
-        if (typeof e.payload.unread === 'number') {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        } else {
-          void loadChannelUnreadCount();
-        }
-      }),
-    );
+    // transitions. The directory-change emitter also sends a payload-less
+    // invalidation, which the listener handles by refreshing the full snapshot.
+    const channelUnreadUnlisteners = await registerChannelUnreadListeners({
+      listen: (eventName, handlePayload) =>
+        listen<unknown>(eventName, ({ payload }) => handlePayload(payload)),
+      applyChannelUnread,
+      refreshSnapshot: () => {
+        void loadChannelUnreadCount();
+      },
+    });
+    unlisteners.push(...channelUnreadUnlisteners);
 
     unlisteners.push(
       await listen('tray:replay-intro', () => {
@@ -2051,6 +2045,24 @@
     }, 5000);
   }
 
+  let hqAnywhereRuntimeSetupInFlight: Promise<void> | null = null;
+  function reconcileHqAnywhereGlobalRuntime(): void {
+    if (hqAnywhereRuntimeSetupInFlight) return;
+    hqAnywhereRuntimeSetupInFlight = ensureHqAnywhereGlobalRuntime(
+      traySyncAdapter.identity,
+      traySyncAdapter.settings,
+    )
+      .then((result) => {
+        if (!result.ok) console.warn('[hq-anywhere] startup runtime setup failed:', result);
+      })
+      .catch((error) => {
+        console.warn('[hq-anywhere] startup runtime setup failed:', error);
+      })
+      .finally(() => {
+        hqAnywhereRuntimeSetupInFlight = null;
+      });
+  }
+
   async function checkAuth() {
     const outcome = await resolveStartupState(probeStartupState, {
       onRetry: (attempt, err) =>
@@ -2123,8 +2135,10 @@
       }
     }
 
-    if (authenticated) void loadUnreadSummary();
-    else resetUnreadSummary();
+    if (authenticated) {
+      void loadUnreadSummary();
+      reconcileHqAnywhereGlobalRuntime();
+    } else resetUnreadSummary();
     // US-005: once signed in and NOT in first-run onboarding, ask the server
     // whether this person's recorded consent is stale and should be re-asked.
     // Non-blocking and fail-quiet — the window renders immediately; if a
@@ -2201,6 +2215,7 @@
       await handleSyncNow();
     }
     if (auth.authenticated) {
+      reconcileHqAnywhereGlobalRuntime();
       void invoke('open_desktop_alt_window').catch((e) => {
         console.error('open_desktop_alt_window after sign-in failed:', e);
       });

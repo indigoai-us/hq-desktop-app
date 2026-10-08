@@ -26,14 +26,14 @@ describe("company sidepane (console-rail US-007)", () => {
       "Settings",
     ]);
     expect(rows.flatMap((i) => (i.type === "row" ? [i.row.label] : []))).toEqual([
-      "Atlas", "Projects", "Activity", "Goals",
+      "Atlas", "Projects", "Activity",
       "Team", "Bots", "Groups", "Grants",
       "Knowledge", "Policies", "Skills", "Workers",
       "Vault", "Integrations", "Secrets", "Deployments",
       "General", "Brand", "Billing",
     ]);
     expect(model.footerRow).toBeNull();
-    expect(COMPANY_PANE_ROW_IDS).toHaveLength(19);
+    expect(COMPANY_PANE_ROW_IDS).toHaveLength(18);
   });
 
   it("hides Grants and Billing from people who cannot open them (OWNER-R24)", () => {
@@ -50,6 +50,12 @@ describe("company sidepane (console-rail US-007)", () => {
     expect(companyRowForPage("company-page-company-settings")).toBe("general");
     expect(companyRowForPage("company-page-workforce")).toBe("billing");
     expect(companyRowDestination("company-settings", "co")).toEqual({ kind: "extra", page: "company-page-general", companyUid: "co" });
+  });
+
+  it("drops Goals from the sidebar and sends saved Goals links to Atlas", () => {
+    expect(COMPANY_PANE_ROW_IDS).not.toContain("goals");
+    expect(companyRowForPage("company-page-goals")).toBe("atlas");
+    expect(companyPageId("goals")).toBe("company-page-atlas");
   });
 
   it("fills row counts from the cached summary and the live count on Atlas", () => {

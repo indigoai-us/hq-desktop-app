@@ -19,6 +19,7 @@
   import ArtifactCard from "./ArtifactCard.svelte";
   import type { ChatArtifact } from "./artifact-model.js";
   import ReactionBar from "./ReactionBar.svelte";
+  import { buildMessageLink } from "./message-link";
   import EmojiPicker from "./EmojiPicker.svelte";
   import MentionPicker from "./MentionPicker.svelte";
   import type { LocalBotRow } from "@hq/platform";
@@ -165,6 +166,8 @@
     onreleaseurl?: (url: string) => void;
     /** Fallback company for vault presign when a wire attachment omits it. */
     vaultCompanyUid?: string | null;
+    /** Company of the conversation, for "Copy link". */
+    companyUid?: string | null;
     onclose: () => void;
     onreplycount?: (
       rootEventId: string,
@@ -230,6 +233,7 @@
     onopenartifact = undefined,
     onreleaseurl = undefined,
     vaultCompanyUid = null,
+    companyUid = null,
     onclose,
     onreplycount,
     onactivethreadchange,
@@ -246,6 +250,47 @@
 
   const QUICK_REACT_EMOJI = ["👍", "🎉"] as const;
   let reactPickerFor = $state<string | null>(null);
+
+  /** `id:<eventId>` or `link:<eventId>` whose copy just succeeded. */
+  let copiedKey = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const linkConversationId = $derived(
+    ((scope === "channel" ? channelId : withPersonUid) ?? "").trim() || null,
+  );
+  const linkCompanyUid = $derived(
+    (companyUid ?? vaultCompanyUid ?? "").trim() || null,
+  );
+
+  async function writeClipboard(text: string, key: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedKey = key;
+    if (copiedTimer) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedKey = null;
+      copiedTimer = null;
+    }, 1500);
+  }
+
+  async function copyId(eventId: string): Promise<void> {
+    await writeClipboard(eventId, `id:${eventId}`);
+  }
+
+  async function copyLink(eventId: string): Promise<void> {
+    if (!linkConversationId || !linkCompanyUid) return;
+    await writeClipboard(
+      buildMessageLink({
+        companyUid: linkCompanyUid,
+        conversationId: linkConversationId,
+        eventId,
+      }),
+      `link:${eventId}`,
+    );
+  }
 
   /** Open the author's profile or agent pane. */
   function openAuthorProfile(msg: ConversationMessageWire | null): void {
@@ -1138,6 +1183,28 @@
                   />
                 {/if}
               </span>
+              <button
+                type="button"
+                class="reply-quick-react-btn"
+                data-testid="reply-copy-id"
+                aria-label="Copy message ID"
+                title="Copy ID"
+                onclick={() => copyId(rootId)}
+              >
+                {copiedKey === `id:${rootId}` ? "Copied" : "Copy ID"}
+              </button>
+              {#if linkConversationId && linkCompanyUid}
+                <button
+                  type="button"
+                  class="reply-quick-react-btn"
+                  data-testid="reply-copy-link"
+                  aria-label="Copy message link"
+                  title="Copy link"
+                  onclick={() => copyLink(rootId)}
+                >
+                  {copiedKey === `link:${rootId}` ? "Copied" : "Copy link"}
+                </button>
+              {/if}
             </div>
             <span class="reply-root-label">
               {replyCount}
@@ -1256,6 +1323,28 @@
                       />
                     {/if}
                   </span>
+                  <button
+                    type="button"
+                    class="reply-quick-react-btn"
+                    data-testid="reply-copy-id"
+                    aria-label="Copy message ID"
+                    title="Copy ID"
+                    onclick={() => copyId(msg.eventId)}
+                  >
+                    {copiedKey === `id:${msg.eventId}` ? "Copied" : "Copy ID"}
+                  </button>
+                  {#if linkConversationId && linkCompanyUid}
+                    <button
+                      type="button"
+                      class="reply-quick-react-btn"
+                      data-testid="reply-copy-link"
+                      aria-label="Copy message link"
+                      title="Copy link"
+                      onclick={() => copyLink(msg.eventId)}
+                    >
+                      {copiedKey === `link:${msg.eventId}` ? "Copied" : "Copy link"}
+                    </button>
+                  {/if}
                 </div>
               {/if}
               {#if msg.sendStatus === "sending"}

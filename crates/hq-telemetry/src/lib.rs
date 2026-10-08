@@ -1454,6 +1454,10 @@ const RUNNER_ERROR_CAUSE_TOKENS: &[&str] = &[
     "object_lock_checksum_required",
     "object_body_idle_timeout",
     "sync_device_limit",
+    // The ~6.18.51 pin's additions (kept in lockstep with hq-desktop-core's
+    // RunnerErrorCause::as_str; the cross-crate egress test enumerates ALL).
+    "tombstone_full_reconcile_required",
+    "unsafe_symlink_target",
     "access_denied",
     "no_such_key",
     "no_such_bucket",
@@ -2853,6 +2857,10 @@ fn before_send_with_native_context(
     // runs on a tray/window callback.
     append_native_panic_context(&mut event, phase, history);
 
+    if let Some(path) = event.tags.get_mut("path") {
+        *path = hq_desktop_core::sync_outcome::sentry_path_tag(path).to_string();
+    }
+
     // protocol::Request.headers is a Map<String, String>; wipe sensitive
     // header values in-place. (Rust SDK's header map holds owned strings,
     // unlike JS where request.headers is a generic Record<string, unknown>.)
@@ -3603,6 +3611,29 @@ mod tests {
         assert_eq!(tags["app"], "hq-desktop-app");
         assert_eq!(tags["repo"], "hq-sync");
         assert_eq!(tags["flavor"], "sync");
+    }
+
+    // Path-tag filtering
+    #[test]
+    fn before_send_filters_non_sentinel_path_tags_only() {
+        for path in [
+            "companies/acme/knowledge/plan.md",
+            "/srv/hq/companies/acme/plan.md",
+            r"C:\Users\Ada\HQ\plan.md",
+            r"\\server\share\HQ\plan.md",
+        ] {
+            let mut event = Event::default();
+            event.tags.insert("path".into(), path.into());
+            event.tags.insert("error_class".into(), "eacces".into());
+            let result = before_send(event).unwrap();
+            assert_eq!(result.tags["path"], "[Filtered]", "{path}");
+            assert_eq!(result.tags["error_class"], "eacces");
+            assert!(!result.extra.contains_key("path"));
+        }
+
+        let mut sentinel = Event::default();
+        sentinel.tags.insert("path".into(), "(runner)".into());
+        assert_eq!(before_send(sentinel).unwrap().tags["path"], "(runner)");
     }
 
     // 2. Header strip

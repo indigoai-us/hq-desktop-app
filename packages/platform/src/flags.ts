@@ -104,6 +104,8 @@ export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 export const PERSONAL_TRANSCRIPTS_FLAG =
   "desktop.meetings-personal-transcripts";
+/** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
+export const HQ_ANYWHERE_RUNTIME_FLAG = "hq-anywhere-runtime";
 /**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
@@ -167,6 +169,7 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   [FIRST_WEEK_RETURN_NUDGE_FLAG]: FIRST_WEEK_RETURN_NUDGE_FLAG,
   [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  [HQ_ANYWHERE_RUNTIME_FLAG]: HQ_ANYWHERE_RUNTIME_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,

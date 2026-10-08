@@ -208,6 +208,47 @@ pub struct RunTotals {
     heap_oom: Option<HeapOomEvidence>,
 }
 
+#[cfg(test)]
+mod sentry_path_tag_tests {
+    use super::{remember_runner_exit_error, sentry_path_tag};
+    use std::sync::Mutex;
+
+    #[test]
+    fn sentry_path_tags_keep_only_lowercase_sentinel_tokens() {
+        assert_eq!(sentry_path_tag("(runner)"), "(runner)");
+        assert_eq!(sentry_path_tag("(telemetry-events)"), "(telemetry-events)");
+        for path in [
+            "companies/acme/knowledge/plan.md",
+            "/srv/hq/companies/acme/plan.md",
+            r"C:\Users\Ada\HQ\plan.md",
+            r"\\server\share\HQ\plan.md",
+        ] {
+            assert_eq!(sentry_path_tag(path), "[Filtered]", "{path}");
+        }
+        for invalid in ["(Runner)", "()", "(bad_value)", "(runner/path)"] {
+            assert_eq!(sentry_path_tag(invalid), "[Filtered]", "{invalid}");
+        }
+    }
+
+    #[test]
+    fn runner_exit_error_keeps_recognized_class_after_unknown_candidate() {
+        let current = Mutex::new(None);
+        remember_runner_exit_error(&current, Some("journal-invalid-payload"));
+        remember_runner_exit_error(&current, Some("unknown"));
+        assert_eq!(
+            *current.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("journal-invalid-payload")
+        );
+
+        let empty = Mutex::new(None);
+        remember_runner_exit_error(&empty, Some("unknown"));
+        assert_eq!(
+            *empty.lock().unwrap_or_else(|error| error.into_inner()),
+            Some("unknown")
+        );
+    }
+}
+
 /// Bounded, memory-local heap-OOM evidence. No field ever leaves the process as
 /// text: the banner is a fixed constant, the MB figures are integers, and the
 /// captured `frames` are normalized C++ symbols read only to derive a fixed-token
@@ -1411,6 +1452,12 @@ fn class_for_named_cause(cause: RunnerErrorCause) -> Option<RunnerErrorClass> {
         | RunnerErrorCause::ObjectLockChecksumRequired
         | RunnerErrorCause::ObjectBodyIdleTimeout
         | RunnerErrorCause::SyncDeviceLimit
+        // … the ~6.18.51 pin's additions — a tombstone full-reconcile refusal
+        // is a server-state fault and a refused pull symlink target is a
+        // per-file policy refusal; neither maps unambiguously to a class, so
+        // the keyword fallback stays authoritative …
+        | RunnerErrorCause::TombstoneFullReconcileRequired
+        | RunnerErrorCause::UnsafeSymlinkTarget
         // … AWS S3/STS names with no class analogue …
         | RunnerErrorCause::NoSuchKey
         | RunnerErrorCause::NoSuchBucket
@@ -2136,6 +2183,12 @@ impl RunnerErrorRollup {
         *count = count.saturating_add(1);
     }
 
+    /// Add one message to the fixed-vocabulary class rollup. Exposes the same
+    /// classifier to the Windows app without duplicating its vocabulary.
+    pub fn record_message(&mut self, message: &str) {
+        self.record(message);
+    }
+
     /// True when the only runner error class recorded this pass was disk
     /// exhaustion (`ENOSPC`) — at least one ENOSPC and zero of every other class.
     /// This is the robust, last-wins-immune signal that a terminal exit was
@@ -2251,6 +2304,40 @@ impl RunnerErrorRollup {
         dominant
             .map(RunnerErrorClass::fingerprint_token)
             .unwrap_or("none")
+    }
+}
+
+/// Keep only the fixed sentinel vocabulary used for Sentry path tags. A real
+/// file or vault path is never suitable as a telemetry dimension.
+pub fn sentry_path_tag(path: &str) -> String {
+    let Some(token) = path
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    else {
+        return "[Filtered]".to_string();
+    };
+    if !token.is_empty()
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        path.to_string()
+    } else {
+        "[Filtered]".to_string()
+    }
+}
+
+/// Retain the most informative recognized runner error class seen in a run.
+/// An `unknown` candidate only fills an empty slot, so a later generic error
+/// cannot erase an earlier fixed-vocabulary class.
+pub fn remember_runner_exit_error(
+    current: &std::sync::Mutex<Option<&'static str>>,
+    candidate: Option<&'static str>,
+) {
+    let Some(candidate) = candidate else { return };
+    let mut current = current.lock().unwrap_or_else(|error| error.into_inner());
+    if candidate != "unknown" || current.is_none() {
+        *current = Some(candidate);
     }
 }
 
@@ -2844,6 +2931,17 @@ pub fn termination_fingerprint_token_for_host(
 /// every encoding collapses to this one token. The raw host token is retained in
 /// the `termination_status_raw` extra, so nothing is lost.
 pub const RUNNER_MEMORY_EXHAUSTION_TOKEN: &str = "runner:memory-exhausted";
+
+/// Bounded meaning for a runner exit code. This is diagnostic metadata only;
+/// it must not affect the exit disposition or retry policy.
+pub fn runner_exit_meaning(code: Option<i32>, saw_auth_error: bool) -> &'static str {
+    match (code, saw_auth_error) {
+        (Some(18), true) => "identity_required_pass",
+        (Some(18), false) => "exit_18_unattributed",
+        (Some(_), _) => "other",
+        (None, _) => "no_exit_code",
+    }
+}
 
 /// Evidence that a watcher exit was caused by runner memory exhaustion. Any ONE
 /// is sufficient. Attribution is EVIDENCE-GATED on purpose: a bare SIGKILL, a
@@ -4188,6 +4286,14 @@ pub fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEven
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_exit_meaning_uses_closed_values() {
+        assert_eq!(runner_exit_meaning(Some(18), true), "identity_required_pass");
+        assert_eq!(runner_exit_meaning(Some(18), false), "exit_18_unattributed");
+        assert_eq!(runner_exit_meaning(Some(2), false), "other");
+        assert_eq!(runner_exit_meaning(None, false), "no_exit_code");
+    }
 
     // ── grouping / suppression invariance (attribution must only ADD info) ───────
     //

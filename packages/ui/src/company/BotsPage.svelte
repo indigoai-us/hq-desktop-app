@@ -22,13 +22,22 @@
   import { pageRows } from "../shell/list-paging.js";
   import { cloudBotsFromRoster } from "../settings/cloud-bots.js";
   import { localBotsForCompany } from "../chat/local-bots.js";
+  import { BOT_FILTERS, filterBots, mergeBotRows, metadata, type BotFilter } from "./team-bots-pages.js";
+  import Avatar from "../common/avatar/Avatar.svelte";
   import {
-    BOT_FILTERS,
-    filterBots,
-    metadata,
-    type BotFilter,
-    type BotListRow,
-  } from "./team-bots-pages.js";
+    BOT_COLUMN_GAP,
+    BOT_STATUS_LABEL,
+    cloudRosterExtras,
+    cloudTableRow,
+    gridTemplate,
+    lastSeenLabel,
+    localTableRow,
+    sortBotRows,
+    visibleBotColumns,
+    type BotSortKey,
+    type BotTableRow,
+    type SortDir,
+  } from "./bots-table.js";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
@@ -56,7 +65,7 @@
     onaddbot,
   }: Props = $props();
 
-  let cloud = $state<BotListRow[]>([]);
+  let cloud = $state<BotTableRow[]>([]);
   let cloudPhase = $state<"shimmer" | "ready">("shimmer");
   let filter = $state<BotFilter>("all");
   let selected = $state<string | null>(null);
@@ -65,35 +74,38 @@
   let dismissed = $state(false);
   let pages = $state(1);
   let cloudFailed = $state(false);
+  let sortKey = $state<BotSortKey>("status");
+  let sortDir = $state<SortDir>("asc");
+  let tableWidth = $state(0);
+  // Last-seen labels are relative; one clock per minute is enough.
+  let now = $state(Date.now());
 
-  function localRows(): BotListRow[] {
+  function localRows(): BotTableRow[] {
     // OWNER-014: only bots that are members of (or moving to) this company.
     // A personal bot stays in Personal.
-    return localBotsForCompany(localBots, companyUid, companies)
-      .map((bot) => ({
-        uid: bot.agentUid,
-        name: bot.displayName?.trim() || bot.name,
-        kind: "local" as const,
-        live: bot.state === "running" || bot.online === true || bot.busy === true,
-        status: bot.state || "idle",
-        detail: bot.runtime,
-        canPause: true,
-      }));
+    return localBotsForCompany(localBots, companyUid, companies).map((bot) => localTableRow(bot, ownerName));
   }
 
-  const rows = $derived(filterBots([...localRows(), ...cloud], filter));
+  // A company bot running on this Mac is in both lists; list it once.
+  const merged = $derived(mergeBotRows(localRows(), cloud));
+  const rows = $derived(
+    sortBotRows(filterBots(merged, filter), sortKey, sortDir, { liveFirst: filter === "live" }),
+  );
+  // Row padding is 8px a side; before the first measure assume a wide table.
+  const columns = $derived(visibleBotColumns(tableWidth > 0 ? tableWidth - 16 : 1200, rows));
+  const template = $derived(gridTemplate(columns));
   // QA-106: the company total, so a filter that hides every bot can say so.
-  const totalBots = $derived(localRows().length + cloud.length);
+  const totalBots = $derived(merged.length);
   const filteredOut = $derived(filter !== "all" && rows.length === 0 && totalBots > 0);
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
-    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
+    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", merged.length);
   });
   const page = $derived(pageRows(rows, pages));
   const current = $derived(
     dismissed ? null : (rows.find((row) => row.uid === selected) ?? rows[0] ?? null),
   );
-  const empty = $derived(cloudPhase === "ready" && !cloudFailed && localRows().length === 0 && cloud.length === 0);
+  const empty = $derived(cloudPhase === "ready" && !cloudFailed && merged.length === 0);
 
   // AUDIT-3-17: a failed cloud read shows the failed-read line and Try again,
   // never "No bots in this company yet."; local rows stay visible.
@@ -111,15 +123,9 @@
       const result = await agents.listMobileRoster(companyUid);
       if (cancelled) return;
       if (result.ok) {
-        cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => ({
-          uid: bot.uid,
-          name: bot.displayName,
-          kind: "cloud" as const,
-          live: bot.status === "WORKING",
-          status: bot.phase || bot.status,
-          detail: bot.companyLabel ?? "Cloud",
-          canPause: bot.canManage,
-        }));
+        const extras = cloudRosterExtras(result.value);
+        const at = Date.now();
+        cloud = cloudBotsFromRoster(result.value, { companies }).map((bot) => cloudTableRow(bot, extras.get(bot.uid), at));
       } else {
         console.error("[bots] cloud roster read failed", result.reason);
         cloudFailed = true;
@@ -134,10 +140,28 @@
 
   onMount(() => {
     void loadCloud();
+    const tick = setInterval(() => (now = Date.now()), 60_000);
     return () => {
       cancelled = true;
+      clearInterval(tick);
     };
   });
+
+  /** First click on a column sorts its natural way; a second click flips it. */
+  function sortBy(key: BotSortKey): void {
+    if (sortKey === key) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+      return;
+    }
+    sortKey = key;
+    sortDir = key === "lastSeen" ? "desc" : "asc";
+  }
+
+  function ariaSort(key: BotSortKey | undefined): "ascending" | "descending" | "none" | undefined {
+    if (!key) return undefined;
+    if (sortKey !== key) return "none";
+    return sortDir === "asc" ? "ascending" : "descending";
+  }
 
   $effect(() => {
     if (current && selected !== current.uid) selected = current.uid;
@@ -153,7 +177,7 @@
     dismissed = true;
   }
 
-  function kindLabel(row: BotListRow): string {
+  function kindLabel(row: BotTableRow): string {
     return row.kind === "local" ? "Local" : "Cloud";
   }
 </script>
@@ -197,10 +221,28 @@
     <p class="empty-state" data-testid="bots-empty">No bots in this company yet.</p>
   {:else}
     <div class="split">
-      <div class="roster" role="list">
+      <div class="roster" role="table" aria-label="Bots" bind:clientWidth={tableWidth}>
         {#if cloudPhase === "shimmer"}<ReadLoader testid="bots-loader" onretry={() => void loadCloud()} />{/if}
         {#if filteredOut}
           <ListEmptyState total={totalBots} shown={0} filtered noun={["bot", "bots"]} scope="in this company" clearLabel="Show all bots" onclear={() => (filter = "all")} testid="bots-filter-empty" />
+        {/if}
+        {#if page.rows.length > 0}
+          <div class="thead" role="row" data-testid="bots-head" style:grid-template-columns={template} style:column-gap="{BOT_COLUMN_GAP}px">
+            {#each columns as col (col.key)}
+              {#if col.sortable}
+                <button
+                  type="button"
+                  class="th sort"
+                  role="columnheader"
+                  aria-sort={ariaSort(col.sortable)}
+                  data-testid={`bots-sort-${col.sortable}`}
+                  onclick={() => col.sortable && sortBy(col.sortable)}
+                >{col.label}<span class="arrow" aria-hidden="true">{sortKey === col.sortable ? (sortDir === "asc" ? "↑" : "↓") : ""}</span></button>
+              {:else}
+                <span class="th" role="columnheader">{col.label}</span>
+              {/if}
+            {/each}
+          </div>
         {/if}
         {#each page.rows as row (row.uid)}
           <button
@@ -209,15 +251,36 @@
             class:is-selected={current?.uid === row.uid}
             aria-current={current?.uid === row.uid}
             data-testid="bot-row"
+            data-status={row.status}
+            style:grid-template-columns={template}
+            style:column-gap="{BOT_COLUMN_GAP}px"
             onclick={() => selectRow(row.uid)}
           >
-            <span class="sq" aria-hidden="true">
-              <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
-            </span>
-            <span class="nm">{row.name}</span>
-            <span class="meta">{kindLabel(row)}</span>
-            <span class="meta detail">{row.detail}</span>
-            <span class="state"><i class="dot" class:live={row.live}></i>{row.live ? "Live" : row.status}</span>
+            {#each columns as col (col.key)}
+              {#if col.key === "avatar"}
+                <span class="av"><Avatar kind="bot" name={row.name} id={row.uid} photo={row.avatarUrl} size={20} testid="bot-avatar" /></span>
+              {:else if col.key === "name"}
+                <span class="who"><span class="nm">{row.name}</span>{#if row.handle}<span class="handle">@{row.handle}</span>{/if}</span>
+              {:else if col.key === "kind"}
+                <span class="meta">{kindLabel(row)}</span>
+              {:else if col.key === "host"}
+                <span class="meta">{row.host}</span>
+              {:else if col.key === "engine"}
+                <span class="meta" data-col="engine">{row.engine ?? ""}</span>
+              {:else if col.key === "owner"}
+                <span class="meta">{row.owner ?? ""}</span>
+              {:else if col.key === "role"}
+                <span class="meta">{row.role ?? ""}</span>
+              {:else if col.key === "activity"}
+                <span class="meta">{row.activity ?? ""}</span>
+              {:else if col.key === "presence"}
+                <span class="meta" data-col="presence">{row.live ? "Live" : "Away"}</span>
+              {:else if col.key === "lastSeen"}
+                <span class="meta num" data-col="last-seen">{lastSeenLabel(row.lastSeenAt, now)}</span>
+              {:else if col.key === "status"}
+                <span class="state" data-col="status"><i class="dot {row.status}" aria-hidden="true"></i>{BOT_STATUS_LABEL[row.status]}</span>
+              {/if}
+            {/each}
           </button>
         {/each}
         {#if page.remaining > 0}
@@ -320,8 +383,12 @@
   }
   .icon:hover { background: var(--hover); color: var(--t1); }
   .meta-line { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* Status ladder: ready, waiting, error, offline. */
   .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--t3); flex: none; }
-  .dot.live { background: var(--ok); }
+  .dot.ready { background: var(--ok); }
+  .dot.waiting { background: var(--warn); }
+  .dot.error { background: var(--red); }
+  .dot.offline { background: transparent; box-shadow: inset 0 0 0 1px var(--t3); }
   .sech { margin: 20px 0 4px; padding: 0 8px; color: var(--t2); font-size: 13px; font-weight: 500; }
   .sech:first-child { margin-top: 0; }
   .meta { color: var(--t3); font-size: 13px; }
@@ -360,10 +427,32 @@
   .roster { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; }
   .inspector { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
   .profile-loading { height: 100%; padding: 12px; box-sizing: border-box; }
+  .thead {
+    display: grid;
+    align-items: center;
+    height: 28px;
+    flex: none;
+    padding: 0 8px;
+    color: var(--t3);
+    font-size: 13px;
+    line-height: 17px;
+  }
+  .th { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: left; }
+  .th.sort {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .th.sort:hover, .th.sort[aria-sort="ascending"], .th.sort[aria-sort="descending"] { color: var(--t1); }
+  .arrow { width: 10px; }
   .bot-row {
     display: grid;
-    grid-template-columns: 20px minmax(120px, 2fr) 56px minmax(80px, 2fr) minmax(70px, 1fr);
-    gap: 8px;
     align-items: center;
     width: 100%;
     height: 31px;
@@ -383,15 +472,10 @@
   .bot-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bot-row:hover { background: var(--hover); }
   .bot-row.is-selected { background: var(--sel); }
-  .sq {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 5px;
-    background: var(--line2);
-    color: var(--t2);
-  }
-  .nm { color: var(--t1); }
-  .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); justify-content: flex-end; }
+  .av { display: grid; place-items: center; overflow: visible; }
+  .who { display: flex; align-items: baseline; gap: 6px; }
+  .nm { color: var(--t1); overflow: hidden; text-overflow: ellipsis; }
+  .handle { color: var(--t3); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+  .num { font-variant-numeric: tabular-nums; }
+  .state { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); }
 </style>

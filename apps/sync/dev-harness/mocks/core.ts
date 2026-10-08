@@ -31,6 +31,8 @@ const settings = {
   telemetryEnabled: true,
 };
 
+let harnessHqAnywhereSetting = false;
+
 function harnessPersona(): ShellPersona | null {
   if (typeof window === 'undefined') return null;
   return resolveHarnessPersona(window.location.search);
@@ -290,12 +292,12 @@ const COMPANY_GOALS = {
 };
 
 const COMPANY_PROJECTS = [
-  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3, provenance: { owner: 'Corey Epstein', creator: 'Maya Chen', origin: 'Indigo board' } },
-  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2, provenance: { owner: 'Maya Chen', creator: 'Corey Epstein', origin: 'Indigo board' } },
+  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3, provenance: { owner: 'Corey Epstein', creator: 'Maya Chen', origin: 'Indigo board' }, repos: ['hq-pro', 'hq-desktop-app', 'hq-core'], branchName: 'feature/iot-push' },
+  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2, provenance: { owner: 'Maya Chen', creator: 'Corey Epstein', origin: 'Indigo board' }, repos: ['hq-cloud'], branchName: 'feature/s3-versions' },
   { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', createdAt: '2026-06-03T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z', storyCount: 5, storiesComplete: 1, provenance: { creator: 'Jacob Lee', origin: 'Indigo board' } },
   { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', createdAt: '2026-05-30T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z', storyCount: 12, storiesComplete: 12, provenance: { owner: 'Corey Epstein', creator: 'Corey Epstein', origin: 'Indigo board' } },
   { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', createdAt: '2026-06-04T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z', storyCount: 5, storiesComplete: 5, provenance: { owner: 'Izzy', creator: 'Jacob Lee', origin: 'Indigo board' } },
-  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0, provenance: { creator: 'Maya Chen', origin: 'Indigo board' } },
+  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0, provenance: { creator: 'Maya Chen', origin: 'Indigo board' }, repos: ['hq-desktop-app', 'hq-meet'] },
   { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, createdAt: '2026-06-06T00:00:00Z', updatedAt: '2026-06-07T00:00:00Z', storyCount: 0, storiesComplete: 0, provenance: { creator: 'Corey Epstein', origin: 'Idea bank' } },
 ];
 
@@ -496,6 +498,42 @@ const COMPANY_PRDS: Record<string, unknown> = {
 
 type Handler = (args?: Record<string, unknown>) => unknown;
 
+/**
+ * GET /files/{companyUid}/members/{personUid}/access, shaped like hq-pro.
+ * The owner reaches everything by role and also holds dozens of grants on the
+ * bots they created (the case that used to list every one of them); anyone
+ * else gets a mix of company-wide, group and direct grants.
+ */
+function harnessMemberAccess(url: string): unknown {
+  const personUid = decodeURIComponent(url.split('/')[4] ?? '');
+  const owner = personUid === 'prs_corey';
+  const created = ['a bot', 'Linus', 'Izzy', 'Scout', 'Ranger', 'Ace', 'Big Nuts', 'Botly', 'buddy']
+    .concat(Array.from({ length: 37 }, (_, i) => `helper-${i + 1}`))
+    .map((name) => ({ path: `agents/${name}/*`, permission: 'admin', sources: [{ via: 'creator', permission: 'admin' }] }));
+  const identity = { primaryEmail: `${personUid}@example.com`, secondaryEmails: [], groups: [{ groupId: 'grp_core', name: 'core' }, { groupId: 'grp_dev', name: 'Dev Test' }], isActiveMember: true };
+  if (owner) {
+    return {
+      identity,
+      files: { roleBypass: true, grants: [{ path: '*', permission: 'admin', sources: [{ via: 'person', permission: 'admin' }, { via: 'group', groupName: 'core', permission: 'admin' }] }, ...created] },
+      secrets: { roleBypass: true, grants: [] },
+    };
+  }
+  return {
+    identity,
+    files: {
+      roleBypass: false,
+      grants: [
+        { path: 'knowledge/', permission: 'read', sources: [{ via: 'company-wide', permission: 'read' }] },
+        { path: 'knowledge/public/', permission: 'read', sources: [{ via: 'company-wide', permission: 'read' }] },
+        ...Array.from({ length: 12 }, (_, i) => ({ path: `projects/project-${i + 1}/`, permission: i % 3 === 0 ? 'write' : 'read', sources: [{ via: 'group', groupName: 'Dev Test', permission: 'read' }] })),
+        { path: 'reports/q3.md', permission: 'read', sources: [{ via: 'person', permission: 'read' }] },
+        ...created.slice(0, 3),
+      ],
+    },
+    secrets: { roleBypass: false, grants: [{ path: 'stripe/', permission: 'read', sources: [{ via: 'group', groupName: 'core', permission: 'read' }] }] },
+  };
+}
+
 function minutesAgo(mins: number): string {
   return new Date(Date.now() - mins * 60 * 1000).toISOString();
 }
@@ -668,7 +706,49 @@ function tourPreviewEnabled(): boolean {
  * the New bot modal can finish and land in the new bot's DM (console-rail
  * e2e "Add agent"). Nothing is listed until something is created.
  */
-const previewLocalBots: Array<Record<string, unknown>> = [];
+function previewBotJobs(): Array<Record<string, unknown>> {
+  const at = (min: number) => new Date(Date.now() + min * 60000).toISOString();
+  const tz = 'America/Denver';
+  // Next occurrence of a UTC wall time (9:00 AM MDT is 15:00 UTC), optionally weekdays only,
+  // so next and last runs agree with the schedule the row shows.
+  const nextUtc = (hour: number, weekdays = false): Date => {
+    const d = new Date();
+    d.setUTCHours(hour, 0, 0, 0);
+    if (d.getTime() <= Date.now()) d.setUTCDate(d.getUTCDate() + 1);
+    while (weekdays && (d.getUTCDay() === 0 || d.getUTCDay() === 6)) d.setUTCDate(d.getUTCDate() + 1);
+    return d;
+  };
+  const dayBefore = (d: Date) => new Date(d.getTime() - 86_400_000).toISOString();
+  const inbox = nextUtc(14);
+  const standup = nextUtc(15, true);
+  return [
+    { jobId: 'job_01PREVIEWINBOX', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0 8 * * ? *)', schedule: { kind: 'recurring', cron: '0 8 * * ? *', timezone: tz }, nextRunAt: inbox.toISOString(), lastRunAt: dayBefore(inbox), lastRunOutcome: 'succeeded', prompt: 'Summarize my inbox from the last 24 hours. Group by sender, flag anything that needs a reply today, and DM me the list.' },
+    { jobId: 'job_01PREVIEWSTANDUP', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0 9 ? * MON-FRI *)', schedule: { kind: 'recurring', cron: '0 9 ? * MON-FRI *', timezone: tz }, nextRunAt: standup.toISOString(), lastRunAt: dayBefore(standup), lastRunOutcome: 'failed', prompt: 'Please post the standup notes to #team.\nPull blockers from yesterday\'s threads and list open PRs that are waiting on review.' },
+    { jobId: 'job_01PREVIEWDEPLOYS', scheduleState: 'ENABLED', status: 'active', rate: 'cron(0/30 * * * ? *)', schedule: { kind: 'recurring', cron: '0/30 * * * ? *', timezone: tz }, nextRunAt: at(12), lastRunAt: at(-18), lastRunOutcome: 'succeeded', prompt: 'Check the deploy dashboard for failed builds and post a short note in #ops if anything is red.' },
+    { jobId: 'job_01PREVIEWREVIEW', scheduleState: 'ENABLED', status: 'active', rate: 'at(2026-10-20T16:00:00)', schedule: { kind: 'once', at: '2026-10-20T16:00:00Z', timezone: tz }, nextRunAt: '2026-10-20T16:00:00Z', lastRunAt: null, lastRunOutcome: null, prompt: '/indigo:launch-review for the October release' },
+    { jobId: 'job_01PREVIEWWEEKLY', scheduleState: 'DISABLED', status: 'paused', rate: 'cron(30 16 ? * FRI *)', schedule: { kind: 'recurring', cron: '30 16 ? * FRI *', timezone: tz }, nextRunAt: null, lastRunAt: at(-60 * 24 * 6), lastRunOutcome: 'succeeded', prompt: 'Write the weekly metrics recap: signups, active companies, and revenue, compared with last week.' },
+  ];
+}
+
+function botsTablePreviewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('bots') === 'table';
+}
+
+const minutesAgoIso = (n: number) => new Date(Date.now() - n * 60000).toISOString();
+
+// `?bots=table` fills the Bots table: local bots in every status-ladder step
+// plus cloud bots with runtime, role and last activity. Off by default so the
+// QA-106 guard (no local, no live bots) still holds.
+const previewLocalBots: Array<Record<string, unknown>> = botsTablePreviewEnabled()
+  ? [
+      { name: 'scout', displayName: 'Scout', agentUid: 'agt_preview_local_scout', ownerUid: 'prs_corey', runtime: 'claude', model: 'opus', state: 'running', online: true, busy: true, busySince: minutesAgoIso(2), lastHeartbeatAt: minutesAgoIso(0), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'ledger', displayName: 'Ledger', agentUid: 'agt_preview_local_ledger', ownerUid: 'prs_corey', runtime: 'codex', model: 'gpt-5', state: 'running', online: true, lastHeartbeatAt: minutesAgoIso(1), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'mover', displayName: 'Mover', agentUid: 'agt_preview_local_mover', ownerUid: 'prs_corey', runtime: 'claude', state: 'running', promotionHold: { companyUid: 'cmp_preview' }, lastHeartbeatAt: minutesAgoIso(6), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'nightly', displayName: 'Nightly', agentUid: 'agt_preview_local_nightly', ownerUid: 'prs_corey', runtime: 'grok', state: 'failed', lastHeartbeatAt: minutesAgoIso(95), hosting: 'local', kind: 'company', companies: ['indigo'] },
+      { name: 'archivist', agentUid: 'agt_preview_local_archivist', ownerUid: 'prs_corey', runtime: 'claude', state: 'stopped', online: false, lastHeartbeatAt: minutesAgoIso(60 * 30), hosting: 'local', kind: 'company', companies: ['indigo'] },
+    ]
+  : [];
 
 const handlers: Record<string, Handler> = {
   local_bots_list: () => ({ bots: previewLocalBots }),
@@ -1114,6 +1194,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'run-project', count: 22 }, { skill: 'storyboard', count: 14 }] },
         },
         activeProjects: ['HQ Desktop app', 'Event-driven HQ-Cloud sync'],
+        outcomes: { byType: { storyCompleted: 14, prMerged: 9, deploySucceeded: 3 }, total: 26 },
+        trend: [4, 6, 0, 0, 8, 9, 7, 5, 6, 0, 0, 9, 12, 10, 8, 7, 0, 0, 11, 13, 9, 8, 10, 0, 0, 12, 14, 11, 9, 15],
       },
       {
         personUid: 'agt_izzy',
@@ -1127,6 +1209,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'dm', count: 36 }, { skill: 'hq-sync', count: 19 }] },
         },
         activeProjects: ['Instant DM delivery'],
+        outcomes: { byType: { storyCompleted: 6, prMerged: 4, deploySucceeded: 0 }, total: 10 },
+        trend: [3, 3, 2, 3, 4, 3, 2, 3, 3, 2, 3, 4, 3, 3, 2, 3, 4, 3, 2, 3, 3, 4, 3, 2, 3, 3, 4, 3, 2, 0],
       },
       {
         personUid: 'prs_maya',
@@ -1140,6 +1224,8 @@ This final paragraph verifies spacing after a thematic break.
           skills: { bySkill: [{ skill: 'review', count: 12 }, { skill: 'quality-gate', count: 9 }] },
         },
         activeProjects: ['S3-versioned conflict handling'],
+        outcomes: { byType: { storyCompleted: 5, prMerged: 3, deploySucceeded: 1 }, total: 9 },
+        trend: [0, 0, 0, 2, 3, 0, 0, 4, 5, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 3, 2, 5, 0, 0, 0, 0, 0, 0, 0, 0],
       },
       {
         personUid: 'agt_lin',
@@ -1164,6 +1250,11 @@ This final paragraph verifies spacing after a thematic break.
       throw new Error('Preview: menubar.json could not be read');
     }
     return { ...settings };
+  },
+  get_hq_anywhere_person_setting: () => harnessHqAnywhereSetting,
+  put_hq_anywhere_person_setting: (args) => {
+    harnessHqAnywhereSetting = args?.value === true;
+    return null;
   },
   save_settings: (args) => {
     const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
@@ -1708,11 +1799,24 @@ This final paragraph verifies spacing after a thematic break.
       { name: 'Figma', description: 'Inspect product designs in Figma.', scope: 'package', tags: ['design'], invoke: '/figma' },
     ],
   }),
-  hq_pro_fetch: (args) => String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
+  hq_pro_fetch: (args) => /^\/files\/[^/]+\/members\/[^/]+\/access$/.test(String(args?.url ?? '')) ? ({
+    status: 200,
+    body: JSON.stringify(harnessMemberAccess(String(args?.url ?? ''))),
+  }) : /^\/v1\/agents\/[^/]+\/jobs$/.test(String(args?.url ?? '')) ? ({
+    status: 200,
+    // A bot's scheduled jobs, shaped like hq-pro-agents JobControlListRow:
+    // one failing, one paused, one one-off, two healthy recurring.
+    body: JSON.stringify({ jobs: previewBotJobs() }),
+  }) : String(args?.url ?? '').startsWith('/v1/agents/mobile-roster') ? ({
     status: 200,
     // Two cloud bots, neither local nor live, so Bots' Local and Live filters
     // have nothing to show (QA-106 guard).
-    body: JSON.stringify({ agents: [
+    body: JSON.stringify({ agents: botsTablePreviewEnabled() ? [
+      { agentUid: 'agt_preview_atlas', displayName: 'Atlas', slug: 'atlas', setupPhase: 'ready', status: 'ready', runtimeKind: 'hermes', membershipRole: 'member', lastActiveAt: minutesAgoIso(3) },
+      { agentUid: 'agt_preview_ranger', displayName: 'Ranger', slug: 'ranger', setupPhase: 'ready', status: 'ready', runtimeKind: 'openclaw', membershipRole: 'admin', lastActiveAt: minutesAgoIso(60 * 5) },
+      { agentUid: 'agt_preview_herald', displayName: 'Herald', slug: 'herald', setupPhase: 'provisioning', status: 'provisioning', runtimeKind: 'hermes', membershipRole: 'member', lastActiveAt: null },
+      { agentUid: 'agt_preview_relay', displayName: 'Relay', slug: 'relay-bot', setupPhase: 'ready', status: 'ready', runtimeKind: 'claude', membershipRole: 'member', lastActiveAt: minutesAgoIso(12), external: { lastHeartbeatAt: minutesAgoIso(12) } },
+    ] : [
       { agentUid: 'agt_preview_scout', displayName: 'Scout', setupPhase: 'ready' },
       { agentUid: 'agt_preview_ranger', displayName: 'Ranger', setupPhase: 'ready' },
     ] }),
@@ -1725,8 +1829,25 @@ This final paragraph verifies spacing after a thematic break.
       connections: [
         { id: 'conn_slack', provider: 'slack', status: 'connected', scopes: ['channels:read', 'chat:write'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-30T00:00:00Z' },
         { id: 'conn_linear', provider: 'linear', status: 'needs-reauth', scopes: [], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-29T00:00:00Z' },
+        // Factory installs: raw provider ids the page must never print.
+        { id: 'conn_linear_factory', provider: 'factory:linear', status: 'connected', scopes: ['factory:auth:required', 'factory:remote_mcp'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-03T00:00:00Z', updatedAt: '2026-09-28T00:00:00Z', installation: { displayName: 'Linear', domain: 'mcp.linear.app', status: 'active' } },
+        { id: 'conn_posthog', provider: 'factory:remote_mcp_posthog_com_e755da2a91c4', status: 'error', errorReason: 'upstream_503', fix_path: 'Try again in a few minutes. If it keeps failing, reconnect PostHog from the console.', scopes: ['factory:remote_mcp'], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-04T00:00:00Z', updatedAt: '2026-09-27T00:00:00Z', installation: null },
+        { id: 'conn_acme', provider: 'factory:remote_mcp_acme_io_0a1b2c3d4e', status: 'connected', scopes: ['factory:auth:none'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-05T00:00:00Z', updatedAt: '2026-09-26T00:00:00Z', installation: { displayName: 'Acme CRM', domain: 'mcp.acme.io', status: 'active' } },
       ],
       audit: [],
+    }),
+  }) : String(args?.url ?? '').startsWith('/v1/integrations/factory/catalog') ? ({
+    status: 200,
+    // Apps HQ can connect, shaped like hq-pro listFactoryCatalog.
+    body: JSON.stringify({
+      ok: true,
+      companyUid: 'cmp_preview',
+      entries: [
+        { name: 'Canva', domain: 'canva.com', description: 'Create and edit designs.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_canva' },
+        { name: 'Notion', domain: 'notion.com', description: 'Search and edit pages and databases.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_notion' },
+        { name: 'Sentry', domain: 'sentry.io', description: 'Read issues and releases.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_sentry' },
+        { name: 'Attio', domain: 'attio.com', description: 'Read and update CRM records.', mcpReady: true, authClass: 'key', source: 'hq-discovered', entryId: 'ent_attio' },
+      ],
     }),
   }) : ({
     status: 200,
@@ -1797,6 +1918,15 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/flags/resolve') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        version: 1,
+        flags: { 'hq-anywhere-runtime': true },
+      }),
+    };
+  }
   if (url === '/v1/notify/prefs') {
     if (method === 'PUT' && body && typeof body === 'object') Object.assign(harnessNotifyPrefs, body);
     const until = harnessNotifyPrefs.pausedUntil;

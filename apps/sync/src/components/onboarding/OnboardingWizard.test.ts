@@ -44,13 +44,10 @@ vi.mock('@tauri-apps/api/event', () => ({ listen: eventHarness.listen }));
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: app.getVersion }));
 vi.mock('@tauri-apps/plugin-shell', () => ({ open: tauri.open }));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
-vi.mock('@hq/platform', async (importOriginal) => ({
-  // Rail gate keys and defaults that shared shell modules read at import time.
-  ...Object.fromEntries(
-    Object.entries(await importOriginal<typeof import('@hq/platform')>()).filter(
-      ([name]) => name.startsWith('RAIL_'),
-    ),
-  ),
+vi.mock('@hq/platform', async () => {
+  const platform = await vi.importActual<typeof import('@hq/platform')>('@hq/platform');
+  return {
+  ...platform,
   hostComputerNoun: () => 'computer',
   FIRST_FOLDER_SYNC_STEP_FLAG: 'desktop.first-folder-sync-step-v1',
   COMPANY_NAME_PREFILL_FLAG: 'desktop.company-name-prefill-v1',
@@ -87,11 +84,28 @@ vi.mock('@hq/platform', async (importOriginal) => ({
         return Promise.resolve({ ok: true, value: false });
       },
     },
-    sync: {
-      startSync: () => onboardingFlags.startSync(),
-    },
-  })),
-}));
+      sync: {
+        startSync: () => onboardingFlags.startSync(),
+      },
+      settings: {
+        getHqAnywherePersonSetting: async () => {
+          const value = await tauri.invoke('get_hq_anywhere_person_setting');
+          return { ok: true, value: typeof value === 'boolean' ? value : false };
+        },
+        putHqAnywherePersonSetting: async (value: boolean) => {
+          await tauri.invoke('put_hq_anywhere_person_setting', { value });
+          return { ok: true, value: undefined };
+        },
+        syncHqAnywhereGlobal: async (enabled: boolean) => {
+          await tauri.invoke('set_hq_anywhere_global_install', { enabled });
+          return hqAnywhereRuntimeSetup
+            ? await hqAnywhereRuntimeSetup(enabled)
+            : { ok: true, value: undefined };
+        },
+      },
+    })),
+  };
+});
 
 import { flushSync, mount, tick, unmount } from 'svelte';
 
@@ -123,6 +137,9 @@ const NO_AI_TOOLS = {
 
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
+let hqAnywhereValue = false;
+let hqAnywhereWrite: ((value: boolean) => Promise<unknown>) | null = null;
+let hqAnywhereRuntimeSetup: ((enabled: boolean) => Promise<unknown>) | null = null;
 
 /** The ready screen's HQ Desktop option (Open HQ Desktop). */
 function primaryButton(): HTMLButtonElement {
@@ -172,7 +189,7 @@ function emitTauriEvent(name: string, payload: unknown = {}): void {
 }
 
 async function flushUntil(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
     await flush();
     if (predicate()) return;
   }
@@ -184,12 +201,18 @@ function mountWizard(
   initialStep = CONSENT_STEP_INDEX,
   aiTools = NO_AI_TOOLS,
 ): ReturnType<typeof vi.fn> {
-  tauri.invoke.mockImplementation(async (command: string) => {
+  tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case 'resolve_hq_path':
         return '/Users/test/hq';
       case 'detect_ai_tools':
         return aiTools;
+      case 'get_hq_anywhere_person_setting':
+        return hqAnywhereValue;
+      case 'put_hq_anywhere_person_setting':
+        return hqAnywhereWrite ? hqAnywhereWrite(args?.value === true) : args;
+      case 'set_hq_anywhere_global_install':
+        return undefined;
       default:
         return undefined;
     }
@@ -450,6 +473,9 @@ beforeEach(() => {
     })),
   );
   tauri.invoke.mockReset();
+  hqAnywhereValue = false;
+  hqAnywhereWrite = null;
+  hqAnywhereRuntimeSetup = null;
   tauri.open.mockReset();
   eventHarness.handlers.clear();
   eventHarness.listen.mockReset();
@@ -483,7 +509,9 @@ beforeEach(() => {
   });
   onboardingFlags.hasFeature.mockReset().mockImplementation(async (flag: string) => ({
     ok: true,
-    value: flag === 'desktop.first-folder-sync-step-v1'
+    value: flag === 'hq-anywhere-runtime'
+      ? true
+      : flag === 'desktop.first-folder-sync-step-v1'
       ? onboardingFlags.firstFolderSyncEnabled
       : flag === 'desktop.company-name-prefill-v1'
         ? onboardingFlags.companyNamePrefillEnabled
@@ -520,6 +548,31 @@ describe('onboarding directory selection', () => {
   // The folder scene shows the chosen location in `.lpath` (full path in its
   // title) and the directory notice in `.notice`; "Install here" is its
   // primary button.
+  it('resolves the default folder without creating it before Install here', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'resolve_hq_path'),
+    );
+
+    const resolveCalls = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'resolve_hq_path',
+    );
+    expect(resolveCalls).toEqual([['resolve_hq_path', { create: false }]]);
+    // Nothing that creates the folder runs until the person presses Install here.
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'check_writable')).toBe(false);
+  });
+
   it('moves a populated non-HQ default into a safe child before continuing', async () => {
     const defaultPath = '/Users/test/hq';
     const installPath = `${defaultPath}/hq`;
@@ -1912,50 +1965,146 @@ describe('onboarding launch handoff', () => {
     expect(tauri.invoke.mock.calls.some(([command]) => command === 'put_hq_anywhere_person_setting')).toBe(false);
   });
 
+  it('loads the signed-in person\'s HQ Anywhere value on the ready step', async () => {
+    hqAnywhereValue = true;
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
+      .toBe(true);
+    expect(tauri.invoke).toHaveBeenCalledWith('get_hq_anywhere_person_setting');
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'put_hq_anywhere_person_setting'))
+      .toBe(false);
+  });
+
+  it('hides HQ Anywhere during onboarding when the admin rollout flag is off', async () => {
+    onboardingFlags.hasFeature.mockResolvedValue({ ok: true, value: false });
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-consent-share"]')));
+    await flush();
+
+    expect(host.querySelector('[data-testid="ready-hq-anywhere"]')).toBeNull();
+    expect(tauri.invoke).not.toHaveBeenCalledWith('get_hq_anywhere_person_setting');
+    expect(tauri.invoke).not.toHaveBeenCalledWith('put_hq_anywhere_person_setting', expect.anything());
+    expect(tauri.invoke).not.toHaveBeenCalledWith('set_hq_anywhere_global_install', expect.anything());
+  });
+
   it('writes the HQ Anywhere choice for the signed-in person when enabled', async () => {
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
 
     const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!;
     choice.click();
-    await flush();
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command, args]) =>
+        command === 'set_hq_anywhere_global_install' &&
+        (args as { enabled?: boolean } | undefined)?.enabled === true,
+      ) && !choice.disabled,
+    );
 
     expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: true });
+    expect(tauri.invoke).toHaveBeenCalledWith('set_hq_anywhere_global_install', { enabled: true });
     expect(choice.checked).toBe(true);
     expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
 
     choice.click();
-    await flush();
+    await flushUntil(() => !choice.disabled);
 
-    expect(tauri.invoke).toHaveBeenLastCalledWith('put_hq_anywhere_person_setting', { value: false });
+    expect(tauri.invoke).toHaveBeenCalledWith('put_hq_anywhere_person_setting', { value: false });
+    expect(tauri.invoke).toHaveBeenLastCalledWith('set_hq_anywhere_global_install', { enabled: false });
     expect(choice.checked).toBe(false);
   });
 
-  it('shows a plain retry path when the HQ Anywhere setting write fails', async () => {
-    let attempts = 0;
+  it('shows Setting up while the global runtime setup is pending', async () => {
+    let completeSetup!: (result: unknown) => void;
+    hqAnywhereRuntimeSetup = () =>
+      new Promise((resolve) => {
+        completeSetup = resolve;
+      });
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
-    tauri.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-      if (command === 'put_hq_anywhere_person_setting') {
-        attempts += 1;
-        if (attempts === 1) throw new Error('403 upstream detail must stay private');
-        return args;
-      }
-      return undefined;
-    });
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!;
+    choice.click();
+    await flushUntil(() =>
+      Boolean(host.querySelector('[data-testid="hq-anywhere-setting-up"]')) &&
+      typeof completeSetup === 'function',
+    );
+
+    expect(choice.checked).toBe(true);
+    expect(choice.disabled).toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-saving"]')).toBeNull();
+
+    completeSetup({ ok: true, value: undefined });
+    await flushUntil(() => !choice.disabled);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-up"]')).toBeNull();
+  });
+
+  it('offers Tap to retry after global setup fails and retries setup from the ready row', async () => {
+    let setupAttempts = 0;
+    hqAnywhereRuntimeSetup = async () => {
+      setupAttempts += 1;
+      return setupAttempts <= 3
+        ? { ok: false, kind: 'network', message: 'private runtime detail' }
+        : { ok: true, value: undefined };
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
+    await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
+
+    const choice = host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!;
+    choice.click();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushUntil(() => setupAttempts === 3 && Boolean(
+      host.querySelector('[data-testid="hq-anywhere-setting-retry"]'),
+    ));
+
+    expect(choice.checked).toBe(true);
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')?.textContent)
+      .toContain('Tap to retry');
+    expect(host.textContent).not.toContain('private runtime detail');
+    const preferenceWrites = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'put_hq_anywhere_person_setting',
+    ).length;
+    expect(preferenceWrites).toBe(1);
+
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await flushUntil(() => setupAttempts === 4 && !host.querySelector(
+      '[data-testid="hq-anywhere-setting-retry"]',
+    ));
+    expect(choice.checked).toBe(true);
+    expect(tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'put_hq_anywhere_person_setting',
+    )).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rolls back after automatic retries and offers a plain retry path on write failure', async () => {
+    let attempts = 0;
+    hqAnywhereWrite = async (value) => {
+      attempts += 1;
+      if (attempts <= 3) throw new Error('403 upstream detail must stay private');
+      return { value };
+    };
+    mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, NO_AI_TOOLS);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="ready-hq-anywhere"]')));
 
     host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')!.click();
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushUntil(() => Boolean(host.querySelector('[data-testid="hq-anywhere-setting-error"]')));
 
+    expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
+      .toBe(false);
     expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')?.textContent)
-      .toContain("Couldn't save this setting. Try again.");
+      .toContain('Tap to retry');
     expect(host.textContent).not.toContain('403 upstream detail must stay private');
     expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.disabled)
       .toBe(false);
     host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
     await flush();
 
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(4);
     expect(host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')?.checked)
       .toBe(true);
     expect(host.querySelector('[data-testid="hq-anywhere-setting-error"]')).toBeNull();
@@ -1969,7 +2118,11 @@ describe('onboarding launch handoff', () => {
     };
     mountWizard(vi.fn(), CONNECTOR_IMPORT_STEP_INDEX, claudeDesktopOnly);
     await flushUntil(() =>
-      Boolean(host.querySelector('[data-testid="onboarding-launch-claude"]')),
+      Boolean(
+        host.querySelector('[data-testid="onboarding-launch-claude"]') &&
+          host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')
+            ?.disabled === false,
+      ),
     );
     const cleanCompletion = stableMarkup(
       host.querySelector<HTMLElement>('[data-testid="onboarding-summary"]'),
@@ -2012,7 +2165,9 @@ describe('onboarding launch handoff', () => {
     await flushUntil(() =>
       Boolean(
         host.querySelector('[data-testid="onboarding-summary"]')?.classList.contains('on') &&
-          host.querySelector('[data-testid="onboarding-launch-claude"]'),
+          host.querySelector('[data-testid="onboarding-launch-claude"]') &&
+          host.querySelector<HTMLInputElement>('[data-testid="ready-hq-anywhere"]')
+            ?.disabled === false,
       ),
     );
 

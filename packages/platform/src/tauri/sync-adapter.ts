@@ -774,6 +774,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },
+      resolveRetiredEntities: (uids) => call<Json>('resolve_retired_entities', { uids }),
       listDmRequests: async () => {
         const result = await call<unknown>('list_dm_requests');
         if (!result.ok) return result;
@@ -1267,6 +1268,9 @@ export function createSyncPlatformAdapter(
       listJobs: (agentUid) => hqProJson('GET', AGENT_PATHS.jobs(agentUid)),
       pauseJob: (agentUid, jobId) =>
         hqProJson('POST', AGENT_PATHS.pauseJob(agentUid, jobId)),
+      getProfile: (agentUid) => hqProJson('GET', AGENT_PATHS.profile(agentUid)),
+      runtimeAction: (agentUid, input) =>
+        hqProJson('POST', AGENT_PATHS.runtimeActions(agentUid), input),
       updateProfile: (agentUid, patch) =>
         hqProJson('PATCH', AGENT_PATHS.profile(agentUid), patch),
       stop: (agentUid) => hqProJson('POST', AGENT_PATHS.stop(agentUid)),
@@ -1429,8 +1433,15 @@ export function createSyncPlatformAdapter(
             cursor,
           }),
         ),
-      getAccessTree: (companyUid, prefix) =>
-        hqProJson('GET', withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, { prefix })),
+      getAccessTree: (companyUid, prefix, page) =>
+        hqProJson(
+          'GET',
+          withQuery(`/files/${encodeURIComponent(companyUid)}/acl/tree`, {
+            prefix,
+            limit: page?.limit,
+            cursor: page?.cursor,
+          }),
+        ),
       listAccessGroups: (companyUid) =>
         hqProJson('GET', `/secrets/${encodeURIComponent(companyUid)}/groups`),
       atlasLocal: {
@@ -1601,6 +1612,7 @@ export function createSyncPlatformAdapter(
         call('take_pending_messages_target'),
       setActiveCompany: (slug) =>
         call('set_desktop_active_company', { companySlug: slug }),
+      getActiveCompany: () => call<string | null>('get_desktop_active_company'),
       openDriftDetail: (report) => call('open_drift_detail', { report }),
       openMeetingPermissionsWindow: () =>
         call('open_meeting_permissions_window'),
@@ -1704,6 +1716,11 @@ export function createSyncPlatformAdapter(
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
+      getHqAnywherePersonSetting: () => call('get_hq_anywhere_person_setting'),
+      putHqAnywherePersonSetting: (value) =>
+        call('put_hq_anywhere_person_setting', { value }),
+      syncHqAnywhereGlobal: (enabled) =>
+        call('set_hq_anywhere_global_install', { enabled }),
       updateSettings: async (patch) => {
         const settingsInvoker: SettingsInvoker = <T>(
           command: string,

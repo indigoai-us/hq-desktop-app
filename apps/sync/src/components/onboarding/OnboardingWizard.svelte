@@ -187,6 +187,10 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    getHqAnywherePersonSetting,
+    hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
+    putHqAnywherePersonSetting,
+    setHqAnywhereGlobalRuntime,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
@@ -381,10 +385,17 @@
   // answer was dropped. Consent is now its own step after setup.)
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
+  let hqAnywhereRuntimeEnabled = $state(false);
   let hqAnywhereEnabled = $state(false);
+  let hqAnywhereSettingLoaded = $state(false);
+  let hqAnywhereLoading = $state(false);
   let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingUp = $state(false);
+  let hqAnywhereLoadError = $state(false);
   let hqAnywhereSettingError = $state(false);
   let hqAnywhereRetryValue = $state<boolean | null>(null);
+  let hqAnywhereSetupRetry = $state(false);
+  let hqAnywhereLoadStarted = false;
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
   let readyConsentShown = false;
@@ -1753,7 +1764,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      const path = await invokeCommand<string>('resolve_hq_path');
+      // Resolve only. The folder is created by the install step, after the
+      // person has confirmed where HQ lives.
+      const path = await invokeCommand<string>('resolve_hq_path', { create: false });
       if (directoryCancelled) return;
       homeDir = homeDirFromDefaultHqPath(path);
       acceptPath(path);
@@ -1860,8 +1873,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      // The default path is prepared natively before auth exists. Validate it
-      // here, after sign-in, before allowing setup to use it.
+      // The default path is only resolved before auth exists. Validate it
+      // here, after sign-in, before allowing setup to use it; check_writable
+      // creates the folder, so this Install step is where it first appears.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),
@@ -3024,24 +3038,105 @@
     }
   }
 
+  async function loadHqAnywhereSetting(): Promise<void> {
+    if (hqAnywhereLoading || hqAnywhereSaving) return;
+    hqAnywhereLoading = true;
+    hqAnywhereLoadError = false;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await getHqAnywherePersonSetting(onboardingFeatureFlags.settings);
+      if (result.ok) {
+        hqAnywhereEnabled = result.value;
+        hqAnywhereSettingLoaded = true;
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting read failed:', result);
+        hqAnywhereLoadError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] setting read failed:', error);
+      hqAnywhereLoadError = true;
+    } finally {
+      hqAnywhereLoading = false;
+    }
+  }
+
+  async function prepareHqAnywhereSetting(): Promise<void> {
+    const enabled = await resolveHqAnywhereRuntimeEnabled(onboardingFeatureFlags.identity);
+    if (!enabled) return;
+    hqAnywhereRuntimeEnabled = true;
+    await loadHqAnywhereSetting();
+  }
+
+  async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
+    if (hqAnywhereSettingUp) return;
+    hqAnywhereSettingUp = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await setHqAnywhereGlobalRuntime(
+        onboardingFeatureFlags.identity,
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (!result.ok) {
+        console.warn('[onboarding-hq-anywhere] global runtime setup failed:', result);
+        hqAnywhereRetryValue = value;
+        hqAnywhereSetupRetry = true;
+        hqAnywhereSettingError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] global runtime setup failed:', error);
+      hqAnywhereRetryValue = value;
+      hqAnywhereSetupRetry = true;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSettingUp = false;
+    }
+  }
+
   async function saveHqAnywhereSetting(value: boolean): Promise<void> {
-    if (hqAnywhereSaving) return;
+    if (hqAnywhereSaving || hqAnywhereSettingUp || hqAnywhereLoading || !hqAnywhereSettingLoaded) return;
     const previous = hqAnywhereEnabled;
     hqAnywhereEnabled = value;
     hqAnywhereSaving = true;
+    hqAnywhereLoadError = false;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
     try {
-      await invokeCommand<void>('put_hq_anywhere_person_setting', { value });
+      const result = await putHqAnywherePersonSetting(
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (result.ok) {
+        hqAnywhereSaving = false;
+        await configureHqAnywhereGlobalRuntime(value);
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting write failed:', result);
+        hqAnywhereEnabled = previous;
+        hqAnywhereRetryValue = value;
+        hqAnywhereSettingError = true;
+      }
     } catch (error) {
-      // The raw transport detail stays in diagnostics; setup always shows the
-      // same plain message and leaves a retry path the person can use.
       console.warn('[onboarding-hq-anywhere] setting write failed:', error);
       hqAnywhereEnabled = previous;
       hqAnywhereRetryValue = value;
       hqAnywhereSettingError = true;
     } finally {
       hqAnywhereSaving = false;
+    }
+  }
+
+  function retryHqAnywhereSetting(): void {
+    if (hqAnywhereLoadError) {
+      void loadHqAnywhereSetting();
+    } else if (hqAnywhereRetryValue !== null && hqAnywhereSetupRetry) {
+      void configureHqAnywhereGlobalRuntime(hqAnywhereRetryValue);
+    } else if (hqAnywhereRetryValue !== null) {
+      void saveHqAnywhereSetting(hqAnywhereRetryValue);
     }
   }
 
@@ -3769,6 +3864,13 @@
     if (scene === 'ready' && consentOnReady) {
       readyConsentShown = true;
       markPostReadyActionReady();
+    }
+  });
+
+  $effect(() => {
+    if (scene === 'ready' && consentOnReady && !hqAnywhereLoadStarted) {
+      hqAnywhereLoadStarted = true;
+      void prepareHqAnywhereSetting();
     }
   });
 
@@ -4769,39 +4871,42 @@
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
           <span class="rc-sep" aria-hidden="true">·</span>
-          <label class="rc-check">
-            <input
-              type="checkbox"
-              data-testid="ready-hq-anywhere"
-              checked={hqAnywhereEnabled}
-              disabled={hqAnywhereSaving || finishing}
-              aria-busy={hqAnywhereSaving}
-              onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
-            />
-            <span>Enable HQ Anywhere</span>
-          </label>
-          {#if hqAnywhereSaving}
-            <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+          {#if hqAnywhereRuntimeEnabled}
+            <label class="rc-check">
+              <input
+                type="checkbox"
+                data-testid="ready-hq-anywhere"
+                checked={hqAnywhereEnabled}
+                disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp || finishing}
+                aria-busy={hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp}
+                onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+              />
+              <span>Enable HQ Anywhere</span>
+            </label>
+            {#if hqAnywhereLoading}
+              <span role="status" aria-live="polite">Loading…</span>
+            {:else if hqAnywhereSaving}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+            {:else if hqAnywhereSettingUp}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-up">Setting up…</span>
+            {/if}
+            {#if hqAnywhereLoadError || hqAnywhereSettingError}
+              <span data-testid="hq-anywhere-setting-error">
+                <button
+                  type="button"
+                  class="consent-link hq-anywhere-retry"
+                  data-testid="hq-anywhere-setting-retry"
+                  disabled={hqAnywhereLoading || hqAnywhereSaving || finishing}
+                  aria-busy={hqAnywhereLoading || hqAnywhereSaving}
+                  onclick={retryHqAnywhereSetting}
+                >Tap to retry</button>
+              </span>
+            {/if}
           {/if}
           {#if privacyOpenError}
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
         </div>
-        {#if hqAnywhereSettingError}
-          <div class="ready-setting-error" role="alert" data-testid="hq-anywhere-setting-error">
-            <span>Couldn't save this setting. Try again.</span>
-            <button
-              type="button"
-              class="consent-link"
-              data-testid="hq-anywhere-setting-retry"
-              disabled={hqAnywhereSaving || finishing}
-              aria-busy={hqAnywhereSaving}
-              onclick={() => {
-                if (hqAnywhereRetryValue !== null) void saveHqAnywhereSetting(hqAnywhereRetryValue);
-              }}
-            >{hqAnywhereSaving ? 'Saving…' : 'Retry'}</button>
-          </div>
-        {/if}
         {#if consentFailure}
           <div
             class="note consent-error"
@@ -5120,6 +5225,10 @@
     color: inherit;
     text-decoration: underline;
     cursor: pointer;
+  }
+  .hq-anywhere-retry {
+    opacity: 0.68;
+    font-size: 11px;
   }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays

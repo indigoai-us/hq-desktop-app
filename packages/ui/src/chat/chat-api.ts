@@ -18,6 +18,7 @@ import type { InboxDmActivity } from "./live-catchup";
 import type { DmContactInput, MessageSearchResult } from "./sidebar-model";
 import type { AgentStatusWake, DmAgentStatusWake } from "./agent-thinking";
 import type { NotifyLevel } from "./notify-level";
+import type { RetiredEntitiesResult } from "./retired-entities";
 
 export const MESSAGE_SEARCH_MIN_QUERY_LENGTH = 2;
 export const MESSAGE_SEARCH_MAX_QUERY_LENGTH = 100;
@@ -59,6 +60,12 @@ export interface ChatSidebarApi {
    * confirming on every teammate.
    */
   listCompanyMembers?(companyUid: string): Promise<ContactsResponse>;
+  /**
+   * the desktop `resolve_retired_entities` command: which company / bot uids
+   * no longer have a live cloud entity (see `retired-entities.ts`). Optional:
+   * hosts without it never hide rows of retired companies or bots.
+   */
+  resolveRetiredEntities?(uids: string[]): Promise<RetiredEntitiesResult>;
   /** the desktop `list_dm_requests` command. */
   listDmRequests(): Promise<RequestsResponse>;
   /**

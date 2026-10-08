@@ -8,6 +8,7 @@
 // and lib/recipientPicker.ts. The components own the invoke calls + rendering.
 
 import type { NotifyLevel } from "./notify-level";
+import { readablePeerName } from "./peer-names";
 
 /** A channel's posting policy — who may post into it. Tolerant of server
  * additions: the UI only branches on the values it knows. */
@@ -234,8 +235,9 @@ export function channelDisplayName(
  * label ("Group · N"), then "Group DM" when the server supplied no participant
  * info (older payloads). */
 function groupDmLabel(c: Channel): string {
+  // A member whose name is blank or a raw prs_/agt_ id is left out.
   const names = (c.members ?? [])
-    .map((m) => m.displayName?.trim())
+    .map((m) => readablePeerName(m.displayName))
     .filter((n): n is string => !!n);
   if (names.length > 0) {
     const shown = names.slice(0, 3);

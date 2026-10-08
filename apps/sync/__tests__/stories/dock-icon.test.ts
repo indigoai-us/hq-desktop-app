@@ -130,14 +130,17 @@ describe('Dock icon: on by default, with a Settings opt-out', () => {
       expect(lifecycle).toMatch(/first_run \|\| state\.is_some_and\(lifecycle_keeps_main_window_visible\)/);
     });
 
-    it('does not treat a bundled CLI version mismatch as missing tools at launch', () => {
-      // Feedback #2290: v0.10.260 ANDed bundled_hq_cli_ready into tools_present,
-      // so every auto-update restart re-opened Welcome while hq and node were
-      // already on disk. The version check stays for dependency install.
+    it('keeps LaunchAgent relaunches distinct from updater restarts at startup', () => {
+      // A bundled CLI version mismatch is not executable resolution, and a
+      // normal RunAtLoad/KeepAlive launch is not an updater handoff.
       const lifecycle = readRepo('src-tauri/src/commands/lifecycle.rs');
       const setup = lifecycle.slice(lifecycle.indexOf('pub fn setup_lifecycle'));
       const body = setup.slice(0, setup.indexOf('\n}\n'));
-      expect(body).toMatch(/let from_updater_restart = [\s\S]*?startup_is_updater_restart\([\s\S]*?launch_agent_relaunch,\s*marker_matches,\s*\)[\s\S]*?probe_local_toolchain_for_startup\(\s*from_updater_restart\s*,/);
+      expect(body).toMatch(/let from_updater_restart = marker_matches;/);
+      expect(body).toMatch(/probe_local_toolchain_for_startup\(\s*launch_agent_relaunch\s*,/);
+      expect(body).toMatch(
+        /require_local_toolchain_for_startup\([\s\S]*?hq_resolved,\s*node_resolved,\s*from_updater_restart,/,
+      );
       expect(body).toMatch(
         /tools_present_for_lifecycle_gate\([\s\S]*?hq_program\.kind[\s\S]*?node_program\.kind[\s\S]*?\)/,
       );

@@ -19,6 +19,7 @@ export {
   FIRST_LAUNCH_JOIN_KEY_FLAG,
   FIRST_FOLDER_SYNC_STEP_FLAG,
   FIRST_WEEK_RETURN_NUDGE_FLAG,
+  HQ_ANYWHERE_RUNTIME_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_WORKSPACE_BOARD_FLAG,
@@ -35,6 +36,18 @@ export {
   RAIL_TELEMETRY_FLAG,
   RAIL_WORKFORCE_LIMITS_FLAG,
 } from "./flags.js";
+export {
+  ensureHqAnywhereGlobalRuntime,
+  getHqAnywherePersonSetting,
+  hqAnywhereRuntimeEnabled,
+  putHqAnywherePersonSetting,
+  retryHqAnywhereRequest,
+  setHqAnywhereGlobalRuntime,
+  subscribeHqAnywhereGlobalRuntimeStatus,
+  HQ_ANYWHERE_RETRY_DELAYS_MS,
+  HQ_ANYWHERE_RETRY_ATTEMPTS,
+} from "./hq-anywhere-setting.js";
+export type { HqAnywhereGlobalRuntimeStatus } from "./hq-anywhere-setting.js";
 export {
   compareHumanRecency,
   filterHumanMessages,

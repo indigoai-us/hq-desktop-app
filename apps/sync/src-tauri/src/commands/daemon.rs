@@ -95,8 +95,8 @@ pub use hq_desktop_core::daemon::{
 /// Singleton handle for daemon process.
 const DAEMON_HANDLE: &str = "hq-sync-daemon";
 
-/// SIGKILL delay after SIGTERM when stopping daemon.
-const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+/// SIGKILL delay after SIGTERM when stopping the watch runner.
+const SIGKILL_DELAY: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 
 /// A healthy watch daemon emits protocol progress or completion records on
 /// every pass. If no record arrives for this interval, terminate the process so
@@ -730,8 +730,8 @@ fn terminate_daemon_once(category: DaemonFailureCategory) -> bool {
     terminate_daemon_once_with_delay(category, SIGKILL_DELAY)
 }
 
-/// Testable core of [`terminate_daemon_once`]. Production always supplies the
-/// five-second grace period; native process tests shorten only the wait while
+/// Testable core of [`terminate_daemon_once`]. Production supplies the shared
+/// runner grace period; native process tests shorten only the wait while
 /// exercising the identical cancellation and lifecycle path.
 fn terminate_daemon_once_with_delay(
     category: DaemonFailureCategory,
@@ -1204,6 +1204,11 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
+    // Setup gate, ahead of every other check: until HQ is installed on this
+    // computer no origin may start sync, resolve a watch root, or run spawn
+    // preflight. The only HQ folder known at that point is the default one,
+    // which the person has not chosen yet.
+    ensure_setup_allows_sync()?;
     match crate::commands::hq_daemon_host::current_phase() {
         crate::commands::hq_daemon_host::HostPhase::Daemon => {
             // hq daemon runs sync; turn its sync service on instead of spawning a runner.
@@ -1870,10 +1875,14 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
                                                 DaemonFailureCategory::None,
                                             );
                                         }
-                                        sentry::capture_message(
-                                            "auto-sync watcher exited with a live watch-owner lease",
-                                            sentry::Level::Warning,
-                                        );
+                                        if hq_desktop_core::watch_owner::should_emit_busy_watch_exit_warning(
+                                            plan,
+                                        ) {
+                                            sentry::capture_message(
+                                                "auto-sync watcher exited with a live watch-owner lease",
+                                                sentry::Level::Warning,
+                                            );
+                                        }
                                         RunnerReportDirDisposition::DeleteOnExitPath
                                     }
                                 },
@@ -2155,6 +2164,8 @@ struct WatcherExitCaptureContext {
     /// alertable fault must win over durable-record attribution, exactly as at
     /// the manual-sync boundary.
     saw_alertable_error: bool,
+    /// Snapshot of the existing auth-error signal for watcher-exit diagnostics.
+    saw_auth_error: bool,
     /// The content half of the shared disk-exhaustion recognizer (gates a/b/c,
     /// signal-independent) computed at the exit boundary from the SAME `RunTotals`
     /// the manual route reads. Combined with the exit signal by
@@ -2345,6 +2356,7 @@ impl Default for WatcherExitCaptureContext {
             cancellation_record_cause: None,
             cancellation_termination_effected: false,
             saw_alertable_error: false,
+            saw_auth_error: false,
             runner_disk_exhaustion_content: false,
             runner_file_lock_content: false,
             runner_stderr_line_count: None,
@@ -2603,6 +2615,7 @@ fn watcher_exit_capture_context(
             .map(|record| record.termination_effected)
             .unwrap_or(false),
         saw_alertable_error: totals.saw_alertable_error,
+        saw_auth_error: totals.saw_auth_error,
         // Content half of the shared disk-exhaustion recognizer, from the SAME
         // RunTotals the manual route reads. The exit-signal gate is applied later
         // by `attributed_to_disk_exhaustion` (the signal is not known here).
@@ -5076,7 +5089,7 @@ fn record_unexpected_watcher_exit<E: WatcherProcessEffects>(
         }
     }
 
-    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen);
+    let mut extras = watcher_exit_context_extras(context, runner_fatal_class_seen, code);
     if !context.runner_fatal_lines.is_empty() {
         let lines = hq_telemetry::redact_runner_fatal_lines(&context.runner_fatal_lines);
         if !lines.is_empty() {
@@ -5288,6 +5301,7 @@ fn safe_runner_error_site_fingerprint_token(candidate: &'static str) -> &'static
 fn watcher_exit_context_extras(
     context: &WatcherExitCaptureContext,
     runner_fatal_class_seen: bool,
+    code: Option<i32>,
 ) -> Vec<(&'static str, sentry::protocol::Value)> {
     let mut extras = vec![
         (
@@ -5319,6 +5333,17 @@ fn watcher_exit_context_extras(
         (
             "runner_fatal_class_seen",
             sentry::protocol::Value::Bool(runner_fatal_class_seen),
+        ),
+        (
+            "runner_identity_error_seen",
+            sentry::protocol::Value::Bool(context.saw_auth_error),
+        ),
+        (
+            "runner_exit_meaning",
+            sentry::protocol::Value::String(
+                hq_desktop_core::sync_outcome::runner_exit_meaning(code, context.saw_auth_error)
+                    .to_string(),
+            ),
         ),
         (
             "runner_error_companies",
@@ -7039,6 +7064,64 @@ struct TreeRssSample {
     largest_child_kind: Option<WatcherProcessKind>,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessGroupRssMember {
+    pid: u32,
+    rss_kb: u64,
+    kind: WatcherProcessKind,
+}
+
+#[cfg(target_os = "macos")]
+fn sum_process_group_rss_kb(members: &[ProcessGroupRssMember], root: u32) -> Option<TreeRssSample> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let mut total_kb = 0_u64;
+    let mut pid_count = 0_u32;
+    let mut largest_member_kb = 0_u64;
+    let mut largest_node_member_kb = 0_u64;
+    let mut largest_node_member_pid = None;
+    let mut largest_child_member_kb = 0_u64;
+    let mut largest_child_kind = None;
+    let mut root_member_kb = None;
+
+    for member in members {
+        if !seen.insert(member.pid) {
+            continue;
+        }
+        total_kb = total_kb.saturating_add(member.rss_kb);
+        pid_count = pid_count.saturating_add(1);
+        if member.pid == root {
+            root_member_kb = Some(member.rss_kb);
+        }
+        if member.rss_kb > largest_member_kb {
+            largest_member_kb = member.rss_kb;
+        }
+        if member.kind == WatcherProcessKind::Node && member.rss_kb > largest_node_member_kb {
+            largest_node_member_kb = member.rss_kb;
+            largest_node_member_pid = Some(member.pid);
+        }
+        if member.pid != root && member.rss_kb > largest_child_member_kb {
+            largest_child_member_kb = member.rss_kb;
+            largest_child_kind = Some(member.kind);
+        }
+    }
+
+    Some(TreeRssSample {
+        total_kb,
+        pid_count,
+        largest_member_kb,
+        root_member_kb: root_member_kb?,
+        largest_node_member_kb: largest_node_member_pid
+            .is_some()
+            .then_some(largest_node_member_kb),
+        largest_node_member_pid,
+        largest_child_member_kb: (pid_count > 1).then_some(largest_child_member_kb),
+        largest_child_kind,
+    })
+}
+
 /// Sum RSS (KB) over `root` and its transitive descendants in a captured
 /// `ps -eo pid=,ppid=,rss=,comm=` table, and decompose it into the PID count,
 /// largest member, largest Node process, and largest descendant kind. Cycle-safe
@@ -7123,27 +7206,115 @@ fn sum_pid_tree_rss_kb(ps_table: &str, root: u32) -> Option<TreeRssSample> {
     })
 }
 
-/// Best-effort whole-tree RSS decomposition for the registered watcher PID: one
-/// bounded `ps -eo pid=,ppid=,rss=,comm=` invocation summed by
-/// [`sum_pid_tree_rss_kb`].
-/// `None` on spawn/exit/parse failure or a missing root, so the caller falls back
-/// to the single-PID sample.
+/// Best-effort whole-tree RSS decomposition for the registered watcher PID.
+/// macOS reads only the watcher's process group with libproc; other Unix targets
+/// retain the bounded `ps` snapshot. `None` on read/parse failure or a missing
+/// root, so the caller falls back to a single-PID sample.
 #[cfg(not(target_os = "windows"))]
 fn sample_pid_tree_rss_kb(root: u32) -> Option<TreeRssSample> {
-    let mut cmd = std::process::Command::new("ps");
-    paths::no_window(&mut cmd);
-    let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "macos")]
+    {
+        return sample_process_group_rss_kb(root);
     }
-    sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        #[cfg(test)]
+        PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
+        let mut cmd = std::process::Command::new("ps");
+        paths::no_window(&mut cmd);
+        let out = cmd.args(["-eo", "pid=,ppid=,rss=,comm="]).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        sum_pid_tree_rss_kb(&String::from_utf8_lossy(&out.stdout), root)
+    }
 }
 
-/// Best-effort RSS (KB) of the registered watcher. On Unix this uses `ps`,
-/// which reports RSS in 1-KB units. Returns `None` on any failure; diagnostic
-/// sampling never changes whether a crash is captured.
-#[cfg(not(target_os = "windows"))]
+#[cfg(test)]
+static PS_TREE_SAMPLE_SPAWNS: AtomicU64 = AtomicU64::new(0);
+
+/// Sample only the watcher's dedicated process group with libproc. The watcher
+/// is launched with `process_group(0)` in `process.rs`, so its PID is also the
+/// group ID inherited by its children. This avoids spawning `ps` and parsing a
+/// system-wide process table on every 30-second supervisor tick.
+#[cfg(target_os = "macos")]
+fn sample_process_group_rss_kb(root: u32) -> Option<TreeRssSample> {
+    let root_pid = libc::pid_t::try_from(root).ok()?;
+    if unsafe { libc::getpgid(root_pid) } != root_pid {
+        return None;
+    }
+
+    // proc_listpgrppids returns a PID count (unlike proc_listpids, which
+    // returns bytes). Leave room for process churn between the sizing and fill
+    // calls; the reported count still bounds the initialized prefix.
+    let needed = unsafe { libc::proc_listpgrppids(root_pid, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return None;
+    }
+    let capacity = (needed as usize).saturating_add(16);
+    let mut pids = vec![0_i32; capacity];
+    let listed = unsafe {
+        libc::proc_listpgrppids(
+            root_pid,
+            pids.as_mut_ptr().cast(),
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    if listed <= 0 {
+        return None;
+    }
+
+    let mut members = Vec::with_capacity((listed as usize).min(pids.len()));
+    for pid in pids.into_iter().take(listed as usize) {
+        if pid <= 0 {
+            continue;
+        }
+        let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+        let task_size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let task_read = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTASKINFO,
+                0,
+                task.as_mut_ptr().cast(),
+                task_size,
+            )
+        };
+        if task_read != task_size {
+            continue;
+        }
+        let rss_kb = unsafe { task.assume_init().pti_resident_size / 1024 };
+
+        let mut name = [0_u8; 64];
+        let name_len = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        let kind = if name_len > 0 {
+            let name_end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(name.len());
+            let name = String::from_utf8_lossy(&name[..name_end]);
+            classify_watcher_process_kind(&name)
+        } else {
+            WatcherProcessKind::Unknown
+        };
+        members.push(ProcessGroupRssMember {
+            pid: pid as u32,
+            rss_kb,
+            kind,
+        });
+    }
+
+    sum_process_group_rss_kb(&members, root)
+}
+
+/// Best-effort RSS (KB) of the registered watcher. On macOS this uses libproc;
+/// other Unix targets use `ps`, which reports RSS in 1-KB units. Returns `None`
+/// on any failure; diagnostic sampling never changes whether a crash is captured.
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    #[cfg(test)]
+    PS_TREE_SAMPLE_SPAWNS.fetch_add(1, Ordering::Relaxed);
     let mut cmd = std::process::Command::new("ps");
     paths::no_window(&mut cmd);
     let out = cmd
@@ -7154,6 +7325,23 @@ fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
         return None;
     }
     parse_ps_rss_kb(&String::from_utf8_lossy(&out.stdout))
+}
+
+#[cfg(target_os = "macos")]
+fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    let pid = libc::pid_t::try_from(pid).ok()?;
+    let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    (read == size).then(|| unsafe { task.assume_init().pti_resident_size / 1024 })
 }
 
 /// Best-effort Windows working-set sample for the app-owned watcher PID. The
@@ -7280,7 +7468,7 @@ fn render_last_rss(kb: u64, age: Option<Duration>, rss_scope: &str) -> String {
 /// `start_daemon` run first) and the interval between checks thereafter.
 const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
 const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
-const WATCH_OWNER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const WATCH_OWNER_TERMINATION_GRACE: Duration = crate::commands::process::SYNC_RUNNER_STOP_GRACE;
 static ORPHAN_TAKEOVER_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
@@ -7466,6 +7654,24 @@ fn terminate_external_watch_runner(
     })
 }
 
+/// Refuse a sync start while HQ is not installed on this computer yet.
+pub(crate) fn ensure_setup_allows_sync() -> Result<(), String> {
+    if crate::commands::lifecycle::sync_held_for_setup() {
+        return Err(crate::commands::lifecycle::SYNC_HELD_FOR_SETUP_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+/// Whether a supervisor tick may inspect, preflight, or respawn the watcher.
+/// The hq daemon supervises sync when it hosts it, nothing may start before
+/// the launch choice is made, and nothing may start before setup finishes.
+fn supervisor_tick_may_run(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    held_for_setup: bool,
+) -> bool {
+    crate::commands::hq_daemon_host::legacy_services_enabled(phase) && !held_for_setup
+}
+
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
@@ -7482,9 +7688,11 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
             // hq daemon supervises sync when it hosts it; before the launch
-            // choice is made nothing may start.
-            if !crate::commands::hq_daemon_host::legacy_services_enabled(
+            // choice is made nothing may start, and before setup finishes
+            // the watcher must not fill the default HQ folder.
+            if !supervisor_tick_may_run(
                 crate::commands::hq_daemon_host::current_phase(),
+                crate::commands::lifecycle::sync_held_for_setup(),
             ) {
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
@@ -7950,6 +8158,57 @@ mod tests {
         // later unpaused start is never wedged by a paused attempt. Not
         // asserted via `try_register_handle` here because DAEMON_HANDLE is
         // process-global and other tests exercise it concurrently.
+    }
+
+    /// First-run VM report (v0.10.395): before setup finished, the app-launch
+    /// start and the supervisor respawn both reached sync preflight and the
+    /// runner pulled the cloud company into the default HQ folder. While HQ
+    /// is not installed every origin must refuse at the setup gate, before it
+    /// resolves a root, runs preflight, or writes anything under home.
+    #[test]
+    fn start_daemon_refuses_every_origin_while_setup_is_unfinished() {
+        use crate::commands::lifecycle::{
+            publish_sync_setup_gate, sync_held_for_setup, SYNC_HELD_FOR_SETUP_MESSAGE,
+        };
+        use hq_desktop_core::lifecycle::LifecycleState;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let _home = scoped_home(tmp.path());
+        publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        assert!(sync_held_for_setup());
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        for result in [
+            start_daemon(handle.clone()),
+            start_daemon_for_app_launch(handle.clone()),
+            start_daemon_for_supervisor_respawn(handle.clone()),
+        ] {
+            assert_eq!(result.unwrap_err(), SYNC_HELD_FOR_SETUP_MESSAGE);
+        }
+        assert_eq!(
+            crate::commands::sync::start_sync_gates(),
+            Err(SYNC_HELD_FOR_SETUP_MESSAGE.to_string())
+        );
+        // No default HQ folder, and nothing else, was created under home.
+        assert!(!tmp.path().join("hq").exists());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+
+        publish_sync_setup_gate(LifecycleState::SteadyState);
+        assert!(!sync_held_for_setup());
+    }
+
+    /// The supervisor's tick does nothing (no owner inspection, preflight or
+    /// respawn) while setup is unfinished, and runs again once it finishes.
+    #[test]
+    fn supervisor_tick_waits_for_setup_and_runs_once_it_finishes() {
+        use crate::commands::hq_daemon_host::HostPhase;
+        assert!(!supervisor_tick_may_run(HostPhase::Legacy, true));
+        assert!(supervisor_tick_may_run(HostPhase::Legacy, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Pending, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, true));
     }
 
     /// Auto-sync is the path most conflicts arrive on — the user never
@@ -8784,7 +9043,19 @@ mod tests {
 
     #[test]
     fn test_sigkill_delay_constant() {
-        assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
+        assert_eq!(SIGKILL_DELAY, Duration::from_secs(9));
+    }
+
+    #[test]
+    fn watcher_stop_graces_exceed_runner_shutdown_deadline() {
+        let runner_deadline = Duration::from_millis(7_500);
+        assert!(SIGKILL_DELAY > runner_deadline);
+        assert!(WATCH_OWNER_TERMINATION_GRACE > runner_deadline);
+        assert_eq!(SIGKILL_DELAY, crate::commands::process::SYNC_RUNNER_STOP_GRACE);
+        assert_eq!(
+            WATCH_OWNER_TERMINATION_GRACE,
+            crate::commands::process::SYNC_RUNNER_STOP_GRACE
+        );
     }
 
     // ── Crash-vs-teardown decision (HQ-SYNC-5) ───────────────────────────
@@ -15349,7 +15620,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[test]
     fn sample_watcher_rss_scoped_reports_tree_for_the_live_process() {
         // The live test process is always in the `ps` table, so the scoped sampler
@@ -15366,6 +15637,42 @@ mod tests {
             sample.tree_largest_member_kb.unwrap_or(0) > 0,
             "a comparable tree sample carries a largest-member RSS"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sample_watcher_rss_scoped_uses_libproc_without_spawning_ps() {
+        use std::os::unix::process::CommandExt;
+
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut child = ChildGuard(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .expect("start process-group fixture"),
+        );
+        let before = PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed);
+        let sample = sample_watcher_rss_scoped(child.0.id())
+            .expect("the live process group must be sampleable");
+
+        assert!(sample.kb > 0);
+        assert_eq!(sample.kind, RssSampleKind::Tree);
+        assert!(sample.tree_pid_count.unwrap_or(0) >= 1);
+        assert_eq!(
+            PS_TREE_SAMPLE_SPAWNS.load(Ordering::Relaxed),
+            before,
+            "sampling a live watcher process group must not spawn `ps`"
+        );
+        child.0.kill().expect("stop process-group fixture");
+        child.0.wait().expect("reap process-group fixture");
     }
 
     /// The minimal heap-OOM stderr both wiring tests feed through the shared

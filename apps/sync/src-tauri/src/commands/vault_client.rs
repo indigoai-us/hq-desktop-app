@@ -40,6 +40,44 @@ impl From<reqwest::Error> for VaultClientError {
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
+/// Whether `GET /entity/{uid}` still has a live entity behind a uid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityLiveness {
+    /// 404, or a row stamped `deleted: true` (soft tombstone).
+    Gone,
+    /// A live entity. For a bot (`agt_*`) `company_uids` lists the companies
+    /// its agent config names (`companyMemberships`, plus the host
+    /// `companyUid`); empty for companies and for bots with no company.
+    Live { company_uids: Vec<String> },
+}
+
+/// Read an entity body from `GET /entity/{uid}` as [`EntityLiveness`].
+/// Anything that is not an explicit tombstone is live, so a body shape this
+/// client does not recognize can never hide a company or bot.
+pub fn entity_liveness_from_json(entity: &serde_json::Value) -> EntityLiveness {
+    if entity.get("deleted").and_then(|v| v.as_bool()) == Some(true) {
+        return EntityLiveness::Gone;
+    }
+    let config = entity.get("metadata").and_then(|m| m.get("agentConfig"));
+    let mut company_uids: Vec<String> = Vec::new();
+    let mut push = |value: Option<&serde_json::Value>| {
+        if let Some(uid) = value.and_then(|v| v.as_str()).map(str::trim) {
+            if uid.starts_with("cmp_") && !company_uids.iter().any(|known| known == uid) {
+                company_uids.push(uid.to_string());
+            }
+        }
+    };
+    if let Some(config) = config {
+        if let Some(list) = config.get("companyMemberships").and_then(|v| v.as_array()) {
+            for item in list {
+                push(Some(item));
+            }
+        }
+        push(config.get("companyUid"));
+    }
+    EntityLiveness::Live { company_uids }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityInfo {
@@ -532,6 +570,31 @@ impl VaultClient {
             .map_err(|e| VaultClientError::Json(e.to_string()))
     }
 
+    /// `GET /entity/{uid}` read as a liveness answer for a company or bot uid
+    /// that another server list referenced (a channel's `companyUid`, a DM
+    /// peer's `agt_*` uid, a manifest `cloud_uid`).
+    ///
+    /// hq-pro answers a tombstoned (`hq cloud retire company`) or purged
+    /// entity with 404, and `/membership/me` silently drops tombstoned
+    /// companies, so this read is the only place the desktop can learn that a
+    /// uid it was handed no longer has a live entity. 404 or `deleted: true`
+    /// is [`EntityLiveness::Gone`]; any other success is live. Transport and
+    /// non-404 HTTP errors are returned as errors so callers never hide
+    /// something on a failed read.
+    pub async fn entity_liveness(&self, uid: &str) -> Result<EntityLiveness, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/entity/{}", self.base_url, uid))
+            .bearer_auth(&self.auth_token)
+            .send_retrying()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(EntityLiveness::Gone);
+        }
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        Ok(entity_liveness_from_json(&wrapper["entity"]))
+    }
+
     /// `GET /membership/person/{personUid}` — list memberships for a person.
     ///
     /// Returns all memberships (`active` + `pending`); the caller filters as
@@ -764,7 +827,7 @@ impl VaultClient {
             ))
             .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
-            .send_retrying()
+            .send()
             .await?;
         self.handle_response(resp).await
     }
@@ -784,7 +847,7 @@ impl VaultClient {
             .query(&[("setting", "hq-anywhere")])
             .bearer_auth(&self.auth_token)
             .json(&serde_json::json!({ "value": value }))
-            .send_retrying()
+            .send()
             .await?;
         self.handle_response(resp).await
     }
@@ -1595,6 +1658,34 @@ mod tests {
         assert_eq!(requests[1].url.query(), Some("setting=hq-anywhere"));
         let body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert_eq!(body, json!({ "value": true }));
+    }
+
+    #[tokio::test]
+    async fn hq_anywhere_person_setting_returns_transient_responses_after_one_attempt() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/bot/auto-schedule"))
+            .and(query_param("setting", "hq-anywhere"))
+            .respond_with(
+                ResponseTemplate::new(503).insert_header("retry-after", "0"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client(&server.uri());
+        assert!(client.get_hq_anywhere_person_setting().await.is_err());
+        assert!(client.put_hq_anywhere_person_setting(true).await.is_err());
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "one native request per operation");
     }
 
     #[tokio::test]
