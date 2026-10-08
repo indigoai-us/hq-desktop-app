@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+## [0.10.405] - 2026-10-08
+
 - In a bot's detail panel, each skill now shows a one-line summary, and clicking a skill opens its full text. If the bot is offline, the panel says "The bot is offline, try again later".
 - Routines that HQ manages are tagged "HQ" and have no pause, run, edit or delete buttons. Apps show only connected apps as connected, and other featured apps get a Connect button that does not do anything yet.
 
