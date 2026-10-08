@@ -70,8 +70,10 @@
     flushReceipts,
     FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
     launchReceipt,
+    progressReceipt,
     recordReceipt,
     shouldSendFirstLaunchReceipt,
+    type ContinuationOutcome,
   } from '../../lib/desktop-session-continuation';
   import {
     NO_AI_TOOLS,
@@ -185,6 +187,10 @@
   import {
     createSyncPlatformAdapter,
     dispatchPostReadyAction,
+    getHqAnywherePersonSetting,
+    hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
+    putHqAnywherePersonSetting,
+    setHqAnywhereGlobalRuntime,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
@@ -194,7 +200,6 @@
   } from '@hq/platform';
   import { markPostReadyActionReady } from '../../lib/post-ready-action-telemetry';
   import {
-    resolveFirstLaunchSignInReachFlag,
     recordFirstLaunchSignInReachOutcome,
   } from '../../lib/first-launch-signin-reach-telemetry';
   import { resolveFirstLaunchPublicFlag } from '../../lib/first-launch-public-flag';
@@ -309,10 +314,12 @@
       }>
     | null = null;
   let onboardingIdentityPrepared = false;
+  let continuationContextPromise: Promise<ContinuationContext | null> | null = null;
+  const manualOAuthReceiptTails = new Map<string, Promise<void>>();
   let firstLaunchStatusKnown: boolean | null = null;
   let firstLaunchJoinKeyEnabled: boolean | null = null;
+  let firstLaunchJoinKeyArm: 'on' | 'off' | 'unknown' = 'unknown';
   let firstLaunchJoinKeyFlagPromise: Promise<boolean> | null = null;
-  let firstLaunchSignInReachFlagPromise: Promise<boolean> | null = null;
   let firstLaunchDownloadJoinFlagPromise: Promise<boolean> | null = null;
   const queuedOnboardingStepRecords: Array<{
     step: number;
@@ -378,6 +385,17 @@
   // answer was dropped. Consent is now its own step after setup.)
   // Sharing is the default; the person can still pick "Don't share".
   let telemetryChoice = $state<'share' | 'decline' | null>('share');
+  let hqAnywhereRuntimeEnabled = $state(false);
+  let hqAnywhereEnabled = $state(false);
+  let hqAnywhereSettingLoaded = $state(false);
+  let hqAnywhereLoading = $state(false);
+  let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingUp = $state(false);
+  let hqAnywhereLoadError = $state(false);
+  let hqAnywhereSettingError = $state(false);
+  let hqAnywhereRetryValue = $state<boolean | null>(null);
+  let hqAnywhereSetupRetry = $state(false);
+  let hqAnywhereLoadStarted = false;
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
   let readyConsentShown = false;
@@ -1043,8 +1061,10 @@
     loadingProvider = provider;
     signInError = '';
     const telemetryProvider = provider === 'Google' ? 'google' : 'microsoft';
+    const progressSessionId = crypto.randomUUID();
     let authStep: DesktopAuthProgressStep = 'sign_in_started';
-    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+    void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+    recordManualOAuthReceipt(progressSessionId, 'started');
     recordStep(WELCOME_SIGNIN_STEP_INDEX, 'started', { provider: telemetryProvider });
 
     try {
@@ -1062,7 +1082,8 @@
       }
       await openExternal(authorizeUrl);
       authStep = 'provider_page_opened';
-      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+      recordManualOAuthReceipt(progressSessionId, 'browser_opened');
       if (!isCurrentSignInCall(call)) return;
 
       const { code } = await invokeCommand<{ code: string }>(
@@ -1070,7 +1091,8 @@
         { state },
       );
       authStep = 'callback_received';
-      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+      void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+      recordManualOAuthReceipt(progressSessionId, 'callback_received');
       recordStep(WELCOME_SIGNIN_STEP_INDEX, 'callback_received', {
         provider: telemetryProvider,
       });
@@ -1085,7 +1107,8 @@
 
       if (result.authenticated) {
         authStep = 'token_exchange_ok';
-        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep });
+        void emitDesktopAuthProgress({ provider: telemetryProvider, step: authStep, sessionId: progressSessionId });
+        recordManualOAuthReceipt(progressSessionId, 'identity_verified');
         await completeAuthenticatedSignIn(call, { provider: telemetryProvider });
       } else {
         void emitDesktopAuthFailure({
@@ -1098,12 +1121,18 @@
           provider: telemetryProvider,
           outcome: 'authentication_rejected',
         });
+        recordManualOAuthReceipt(progressSessionId, 'failed');
       }
     } catch (err) {
       if (!isCurrentSignInCall(call)) return;
+      const errorKind = classifyContinuationError(err);
+      recordManualOAuthReceipt(
+        progressSessionId,
+        errorKind === 'cancelled' ? 'cancelled' : 'failed',
+        errorKind,
+      );
       void emitDesktopAuthFailure({ provider: telemetryProvider, step: authStep, error: err });
       console.error('[onboarding-signin] sign-in failed:', err);
-      const errorKind = classifyContinuationError(err);
       if (!stateRecoveryAttempt && (errorKind === 'expired' || errorKind === 'state_mismatch')) {
         console.warn('[onboarding-signin] restarting once after an expired or mismatched attempt');
         void handleSignIn(provider, true);
@@ -1119,6 +1148,43 @@
       if (isCurrentSignInCall(call)) {
         loadingProvider = null;
       }
+    }
+  }
+
+  function getContinuationContextForReceipt(): Promise<ContinuationContext | null> {
+    continuationContextPromise ??= loadContinuationContext();
+    return continuationContextPromise;
+  }
+
+  function recordManualOAuthReceipt(
+    sessionId: string,
+    outcome: ContinuationOutcome,
+    errorKind?: ReturnType<typeof classifyContinuationError>,
+  ): void {
+    // This side channel is best-effort and deliberately never awaited by the
+    // sign-in flow. The same session id also rides on the existing operational
+    // progress event so its durable auth hold can be deduped against receipts.
+    const previous = manualOAuthReceiptTails.get(sessionId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const context = await getContinuationContextForReceipt();
+      if (!context || context.suppressFirstLaunchTelemetry) return;
+      const deps = continuationDeps(context);
+      const receipt = progressReceipt(deps, {
+        sessionId,
+        outcome,
+        variant: 'control',
+        flow: 'manual_oauth',
+        ...(errorKind ? { errorKind } : {}),
+      });
+      await recordReceipt(deps, receipt);
+    }).catch((error) => {
+      console.warn('onboarding: anonymous sign-in receipt context unavailable', error);
+    });
+    manualOAuthReceiptTails.set(sessionId, next);
+    if (outcome === 'identity_verified' || outcome === 'failed' || outcome === 'cancelled') {
+      void next.then(() => {
+        if (manualOAuthReceiptTails.get(sessionId) === next) manualOAuthReceiptTails.delete(sessionId);
+      });
     }
   }
 
@@ -1150,16 +1216,17 @@
           console.warn('onboarding: installer visitor key unavailable; launch receipt unchanged');
         }
       }
-      void recordReceipt(deps, launchReceipt(deps)).catch(() => undefined);
+      void recordReceipt(deps, launchReceipt(deps, firstLaunchJoinKeyArm)).catch(() => undefined);
     }
   }
 
   function resolveFirstLaunchDownloadJoinEnabled(installAttemptId: string): Promise<boolean> {
     if (!firstLaunchDownloadJoinFlagPromise) {
-      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(
-        resolveFirstLaunchPublicFlag(FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG, installAttemptId),
-        2_000,
-      );
+      const downloadJoinFlag = resolveFirstLaunchPublicFlag(
+        FIRST_LAUNCH_DOWNLOAD_JOIN_FLAG,
+        installAttemptId,
+      ).then((enabled) => enabled === true);
+      firstLaunchDownloadJoinFlagPromise = resolveFlagWithTimeout(downloadJoinFlag, 2_000);
     }
     return firstLaunchDownloadJoinFlagPromise;
   }
@@ -1168,9 +1235,15 @@
     if (!firstLaunchJoinKeyFlagPromise) {
       const flag = visitorId
         ? resolveFirstLaunchPublicFlag(FIRST_LAUNCH_JOIN_KEY_FLAG, visitorId)
-        : Promise.resolve(false);
-      firstLaunchJoinKeyFlagPromise = resolveFlagWithTimeout(flag, 2_000).then(
-        (enabled) => {
+        : Promise.resolve(null);
+      firstLaunchJoinKeyFlagPromise = resolveFlagStatusWithTimeout(flag, 2_000).then(
+        (status) => {
+          const enabled = status === 'enabled';
+          firstLaunchJoinKeyArm = status === 'enabled'
+            ? 'on'
+            : status === 'disabled'
+              ? 'off'
+              : 'unknown';
           firstLaunchJoinKeyEnabled = enabled;
           if (!enabled) flushQueuedOnboardingStepRecords();
           return enabled;
@@ -1181,25 +1254,13 @@
             error,
           );
           firstLaunchJoinKeyEnabled = false;
+          firstLaunchJoinKeyArm = 'unknown';
           flushQueuedOnboardingStepRecords();
           return false;
         },
       );
     }
     return firstLaunchJoinKeyFlagPromise;
-  }
-
-  function resolveFirstLaunchSignInReachEnabled(visitorId: string): Promise<boolean> {
-    if (!firstLaunchSignInReachFlagPromise) {
-      const flag = resolveFirstLaunchSignInReachFlag(visitorId);
-      firstLaunchSignInReachFlagPromise = resolveFlagWithTimeout(flag, 2_000)
-        .then((enabled) => enabled)
-        .catch((error) => {
-          console.warn('onboarding: sign-in reach flag resolution failed; leaving telemetry off', error);
-          return false;
-        });
-    }
-    return firstLaunchSignInReachFlagPromise;
   }
 
   function prepareOnboardingTelemetryIdentity(): Promise<{
@@ -1216,7 +1277,7 @@
             if (!firstLaunch) flushQueuedOnboardingStepRecords();
             return firstLaunch;
           });
-        const contextPromise = loadContinuationContext();
+        const contextPromise = getContinuationContextForReceipt();
         const reachVisitorIdPromise = firstLaunchPromise.then((firstLaunch) =>
           firstLaunch ? loadInstallAttemptId() : null,
         );
@@ -1226,14 +1287,10 @@
         ]).then(([firstLaunch, visitorId]) =>
           firstLaunch ? resolveFirstLaunchJoinKeyEnabled(visitorId) : false,
         );
-        const firstLaunchSignInReachEnabledPromise = reachVisitorIdPromise.then((visitorId) =>
-          visitorId ? resolveFirstLaunchSignInReachEnabled(visitorId) : false,
-        );
-        const [firstLaunch, context, joinKeyEnabled, signInReachEnabled, reachVisitorId] = await Promise.all([
+        const [firstLaunch, context, joinKeyEnabled, reachVisitorId] = await Promise.all([
           firstLaunchPromise,
           contextPromise,
           firstLaunchJoinKeyEnabledPromise,
-          firstLaunchSignInReachEnabledPromise,
           reachVisitorIdPromise,
         ]);
         const installAttemptId = await resolveFirstLaunchJoinKey({
@@ -1251,19 +1308,17 @@
           | 'missing-root-recovery-skip'
           | 'consent-only-skip'
           | undefined;
-        if (signInReachEnabled) {
-          reachInstallAttemptId = installAttemptId ?? reachVisitorId;
-          if (reachInstallAttemptId) {
-            signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
-              ? 'reached-signin'
-              : mode === 'consent'
-                ? 'consent-only-skip'
-                : recoveringMissingRoot
-                  ? 'missing-root-recovery-skip'
-                  : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
-                    ? 'setup-resume-skip'
-                    : 'existing-session-skip';
-          }
+        reachInstallAttemptId = installAttemptId ?? reachVisitorId;
+        if (reachInstallAttemptId) {
+          signInReachOutcome = launchInitialStep === WELCOME_SIGNIN_STEP_INDEX
+            ? 'reached-signin'
+            : mode === 'consent'
+              ? 'consent-only-skip'
+              : recoveringMissingRoot
+                ? 'missing-root-recovery-skip'
+                : onboardingFlow === 'resume' || launchInitialStep === SETUP_STEP_INDEX
+                  ? 'setup-resume-skip'
+                  : 'existing-session-skip';
         }
         const receiptReachOutcome = signInReachOutcome;
         const receiptReachInstallAttemptId = receiptReachOutcome ? reachInstallAttemptId ?? undefined : undefined;
@@ -2980,6 +3035,108 @@
     }
   }
 
+  async function loadHqAnywhereSetting(): Promise<void> {
+    if (hqAnywhereLoading || hqAnywhereSaving) return;
+    hqAnywhereLoading = true;
+    hqAnywhereLoadError = false;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await getHqAnywherePersonSetting(onboardingFeatureFlags.settings);
+      if (result.ok) {
+        hqAnywhereEnabled = result.value;
+        hqAnywhereSettingLoaded = true;
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting read failed:', result);
+        hqAnywhereLoadError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] setting read failed:', error);
+      hqAnywhereLoadError = true;
+    } finally {
+      hqAnywhereLoading = false;
+    }
+  }
+
+  async function prepareHqAnywhereSetting(): Promise<void> {
+    const enabled = await resolveHqAnywhereRuntimeEnabled(onboardingFeatureFlags.identity);
+    if (!enabled) return;
+    hqAnywhereRuntimeEnabled = true;
+    await loadHqAnywhereSetting();
+  }
+
+  async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
+    if (hqAnywhereSettingUp) return;
+    hqAnywhereSettingUp = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await setHqAnywhereGlobalRuntime(
+        onboardingFeatureFlags.identity,
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (!result.ok) {
+        console.warn('[onboarding-hq-anywhere] global runtime setup failed:', result);
+        hqAnywhereRetryValue = value;
+        hqAnywhereSetupRetry = true;
+        hqAnywhereSettingError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] global runtime setup failed:', error);
+      hqAnywhereRetryValue = value;
+      hqAnywhereSetupRetry = true;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSettingUp = false;
+    }
+  }
+
+  async function saveHqAnywhereSetting(value: boolean): Promise<void> {
+    if (hqAnywhereSaving || hqAnywhereSettingUp || hqAnywhereLoading || !hqAnywhereSettingLoaded) return;
+    const previous = hqAnywhereEnabled;
+    hqAnywhereEnabled = value;
+    hqAnywhereSaving = true;
+    hqAnywhereLoadError = false;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await putHqAnywherePersonSetting(
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (result.ok) {
+        hqAnywhereSaving = false;
+        await configureHqAnywhereGlobalRuntime(value);
+      } else {
+        console.warn('[onboarding-hq-anywhere] setting write failed:', result);
+        hqAnywhereEnabled = previous;
+        hqAnywhereRetryValue = value;
+        hqAnywhereSettingError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] setting write failed:', error);
+      hqAnywhereEnabled = previous;
+      hqAnywhereRetryValue = value;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSaving = false;
+    }
+  }
+
+  function retryHqAnywhereSetting(): void {
+    if (hqAnywhereLoadError) {
+      void loadHqAnywhereSetting();
+    } else if (hqAnywhereRetryValue !== null && hqAnywhereSetupRetry) {
+      void configureHqAnywhereGlobalRuntime(hqAnywhereRetryValue);
+    } else if (hqAnywhereRetryValue !== null) {
+      void saveHqAnywhereSetting(hqAnywhereRetryValue);
+    }
+  }
+
   /**
    * US-005: dismiss the re-prompt WITHOUT answering. This marks the prompt
    * "shown" for this person+version so it is not shown again this version — but
@@ -3704,6 +3861,13 @@
     if (scene === 'ready' && consentOnReady) {
       readyConsentShown = true;
       markPostReadyActionReady();
+    }
+  });
+
+  $effect(() => {
+    if (scene === 'ready' && consentOnReady && !hqAnywhereLoadStarted) {
+      hqAnywhereLoadStarted = true;
+      void prepareHqAnywhereSetting();
     }
   });
 
@@ -4703,6 +4867,39 @@
             aria-busy={privacyOpening}
             onclick={() => void handleOpenPrivacy()}
           >{privacyOpening ? 'Opening…' : privacyOpenError ? 'Retry opening what’s collected' : 'What’s collected'}</button>
+          <span class="rc-sep" aria-hidden="true">·</span>
+          {#if hqAnywhereRuntimeEnabled}
+            <label class="rc-check">
+              <input
+                type="checkbox"
+                data-testid="ready-hq-anywhere"
+                checked={hqAnywhereEnabled}
+                disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp || finishing}
+                aria-busy={hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp}
+                onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
+              />
+              <span>Enable HQ Anywhere</span>
+            </label>
+            {#if hqAnywhereLoading}
+              <span role="status" aria-live="polite">Loading…</span>
+            {:else if hqAnywhereSaving}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+            {:else if hqAnywhereSettingUp}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-up">Setting up…</span>
+            {/if}
+            {#if hqAnywhereLoadError || hqAnywhereSettingError}
+              <span data-testid="hq-anywhere-setting-error">
+                <button
+                  type="button"
+                  class="consent-link hq-anywhere-retry"
+                  data-testid="hq-anywhere-setting-retry"
+                  disabled={hqAnywhereLoading || hqAnywhereSaving || finishing}
+                  aria-busy={hqAnywhereLoading || hqAnywhereSaving}
+                  onclick={retryHqAnywhereSetting}
+                >Tap to retry</button>
+              </span>
+            {/if}
+          {/if}
           {#if privacyOpenError}
             <span class="consent-link-error" role="alert">Couldn’t open the page.</span>
           {/if}
@@ -5025,6 +5222,10 @@
     color: inherit;
     text-decoration: underline;
     cursor: pointer;
+  }
+  .hq-anywhere-retry {
+    opacity: 0.68;
+    font-size: 11px;
   }
   /* The welcome flow's own styles live in ./welcome/welcome.css (plain CSS,
      because its motion engines add classes Svelte cannot see). What stays

@@ -115,7 +115,8 @@ export function loadBotsByAccount(storage: AskedStorage | null | undefined): Bot
 export function saveBotsByAccount(storage: AskedStorage | null | undefined, all: BotsByAccount): void {
   try {
     storage?.setItem(BOT_HELLO_ASKED_STORAGE_KEY, JSON.stringify({ v: 2, accounts: all }));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/cloud-bot-hello-asked.ts:118", error);
     // best-effort
   }
 }

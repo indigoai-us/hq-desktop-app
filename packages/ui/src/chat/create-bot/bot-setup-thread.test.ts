@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseShareRequestEvent } from "../messaging/share-request-card.js";
 import {
+  botSetupAsksAccess,
   botSetupCardId,
   botSetupMatchesRow,
   botSetupShareCommand,
@@ -12,6 +13,7 @@ import {
 function entry(patch: Partial<BotSetupEntry> = {}): BotSetupEntry {
   return {
     agentUid: "agt_01LEDGER",
+    kind: "cloud",
     name: "Ledger",
     email: null,
     companySlug: "indigo",
@@ -26,15 +28,41 @@ function entry(patch: Partial<BotSetupEntry> = {}): BotSetupEntry {
 }
 
 describe("bot setup thread", () => {
-  it("greets, asks for access with the existing access-request card, and asks for skills", () => {
+  it("a cloud bot greets and asks for access with the existing access-request card, and nothing about skills", () => {
     const wires = botSetupWires(entry());
     expect(wires.every((w) => w.fromPersonUid === "agt_01LEDGER" && w.direction === "in")).toBe(true);
-    expect(wires[0]!.body).toContain("Hi, I'm Ledger");
+    expect(wires[0]!.body).toBe(
+      "Hi, I'm Ledger. One thing before I start: grant me access to the company context.",
+    );
     const card = parseShareRequestEvent(wires[1]!.systemEvent);
     expect(card).toMatchObject({ kind: "access_request", path: "knowledge/", level: "read", state: "pending", requestedBy: "Ledger" });
     expect(card?.id).toBe(botSetupCardId("agt_01LEDGER"));
-    expect(wires.some((w) => w.body?.startsWith("Pick my skills"))).toBe(true);
+    // The profile's Capabilities edit never renders, so the bot does not point at it.
+    expect(wires.some((w) => /skills|Capabilities/.test(w.body ?? ""))).toBe(false);
+    expect(wires).toHaveLength(2);
     expect(wires.some((w) => w.body?.startsWith("Verified"))).toBe(false);
+  });
+
+  it("a local bot never asks for access: no card, no grant lines, no skills line, a plain hello", () => {
+    // Picking the company in New bot is the grant; a local bot runs with the
+    // person's own access. Any access state it carries changes nothing.
+    for (const access of [
+      { state: "pending", level: "read" },
+      { state: "approved", level: "write" },
+      { state: "denied", level: "read" },
+    ] as const) {
+      const wires = botSetupWires(entry({ kind: "local", access }));
+      expect(wires.map((w) => w.body)).toEqual(["Hi, I'm Ledger. I'll ask a few quick questions to finish my setup."]);
+      expect(wires.some((w) => w.systemEvent)).toBe(false);
+      expect(wires.some((w) => w.eventId === botSetupCardId("agt_01LEDGER"))).toBe(false);
+      expect(JSON.stringify(wires)).not.toMatch(/access|grant|hq files share|Pick my skills/i);
+    }
+    expect(botSetupWires(entry({ kind: "local", online: true })).map((w) => w.body)).toEqual([
+      "Hi, I'm Ledger. I'll ask a few quick questions to finish my setup.",
+      "Verified, I'm ready. Send me a first task here.",
+    ]);
+    expect(botSetupAsksAccess({ kind: "local" })).toBe(false);
+    expect(botSetupAsksAccess({ kind: "cloud" })).toBe(true);
   });
 
   it("answers an approval with the real share command and never an agent uid as the grantee", () => {

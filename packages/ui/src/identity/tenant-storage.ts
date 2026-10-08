@@ -55,7 +55,8 @@ export function createTenantStorage(
       if (!next || !storage) return;
       try {
         storage.setItem(next, value);
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] best-effort failure at packages/ui/src/identity/tenant-storage.ts:58", error);
         // Private mode / quota does not affect the tenant boundary.
       }
     },
@@ -64,7 +65,8 @@ export function createTenantStorage(
       if (!next || !storage) return;
       try {
         storage.removeItem(next);
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] best-effort failure at packages/ui/src/identity/tenant-storage.ts:67", error);
         // Best-effort persistence cleanup only.
       }
     },

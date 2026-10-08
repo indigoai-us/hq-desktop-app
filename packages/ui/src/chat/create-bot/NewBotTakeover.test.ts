@@ -71,18 +71,28 @@ describe("NewBotTakeover", () => {
     expect(dialog.querySelectorAll(".new-bot-takeover-card")).toHaveLength(1);
   });
 
-  it("keeps Cancel and the local-route link keyboard reachable", async () => {
+  it("keeps Cancel, the name and the local-route link keyboard reachable", async () => {
     const oncancel = vi.fn();
     const onopenlocal = vi.fn();
-    render({ canCreateLocalBot: true, oncancel, onopenlocal });
+    render({
+      canCreateLocalBot: true,
+      oncancel,
+      onopenlocal,
+      companies: [{ companyUid: "cmp_acme", label: "Acme" }],
+      currentCompanyUid: "cmp_acme",
+      runtimeReady: { codex: true },
+      loadProvisionOptions: async () => ({
+        ok: true as const,
+        value: { defaultInstanceType: "t4g.medium", catalogVersion: "test", options: [] },
+      }),
+      oncreate: async () => ({ ok: false as const, blocked: false, reason: "" }),
+    });
     await settle();
 
     const cancel = document.querySelector<HTMLButtonElement>(
       '[data-testid="new-bot-takeover-cancel"]',
     )!;
-    const local = document.querySelector<HTMLButtonElement>(
-      '[data-testid="new-bot-takeover-local"]',
-    )!;
+    const name = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
     cancel.focus();
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -91,7 +101,18 @@ describe("NewBotTakeover", () => {
         cancelable: true,
       }),
     );
-    expect(document.activeElement).toBe(local);
+    expect(document.activeElement).toBe(name);
+    name.value = "Nova";
+    name.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settle();
+    // The create screen's second way out carries the name to the local steps.
+    const local = document.querySelector<HTMLButtonElement>(
+      '[data-testid="new-bot-takeover-local"]',
+    )!;
+    local.click();
+    expect(onopenlocal).toHaveBeenCalledWith("Nova");
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Escape",
@@ -100,8 +121,6 @@ describe("NewBotTakeover", () => {
       }),
     );
     expect(oncancel).toHaveBeenCalledOnce();
-    local.click();
-    expect(onopenlocal).toHaveBeenCalledOnce();
   });
 
   it("removes the arrival animation for people who reduce motion", () => {

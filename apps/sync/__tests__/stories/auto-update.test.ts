@@ -335,8 +335,23 @@ describe('master automatic-updates switch', () => {
     // Every new pnpm verification subprocess is bounded — a hung pnpm is killed
     // instead of wedging the install and the CLI-update single-flight forever.
     expect(cliUpdate).toContain('const PNPM_PROBE_TIMEOUT: Duration');
-    expect(cliUpdate).toContain('tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())');
+    expect(cliUpdate).toContain('run_bounded_pnpm_probe(cmd, PNPM_PROBE_TIMEOUT)');
+    expect(cliUpdate).toContain('tokio::time::timeout(timeout, child.wait_with_output())');
     expect(cliUpdate).toContain('.kill_on_drop(true)');
+    // The deadline covers the probe's whole process tree: it runs in its own
+    // process group and a timeout kills the group, so a pnpm that re-invokes
+    // itself cannot keep forking after the deadline.
+    expect(cliUpdate).toContain('cmd.process_group(0);');
+    expect(cliUpdate).toContain('nix::sys::signal::killpg(');
+    expect(cliUpdate).not.toContain('tokio::time::timeout(PNPM_PROBE_TIMEOUT, cmd.output())');
+    // Every pnpm child (install and probes) runs with Corepack settings that
+    // cannot rewrite the user's default pnpm, and with the hq update guard.
+    expect(cliUpdate).toContain('("COREPACK_DEFAULT_TO_LATEST", "0")');
+    expect(cliUpdate).toContain('("COREPACK_ENABLE_PROJECT_SPEC", "0")');
+    expect(cliUpdate).toContain('("COREPACK_ENABLE_AUTO_PIN", "0")');
+    expect(cliUpdate).toContain('("HQ_RESCUE_SELF_UPDATED", "1")');
+    expect(normalize(cliUpdate)).toContain('.envs(PNPM_UPDATE_CHILD_ENV.iter().copied())');
+    expect(normalize(cliUpdate)).not.toMatch(/corepack\W+(prepare|use|enable|install)\b/);
 
     // The `pnpm bin -g` probe runs only when the install did not converge...
     expect(pnpmBranch).toContain(
@@ -451,9 +466,9 @@ describe('master automatic-updates switch', () => {
     // Classification is now environment-aware (so an unsupported user Node is
     // recognised), but still receives the final-attempt context that lets the
     // classifier tell a post-force collision from an initial EEXIST.
-    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdate).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(normalize(cliUpdate)).toContain(
-      'install_run.final_attempt_forced, &install_env,',
+      '&raw_stderr, prefix.as_deref(), install_run.final_attempt_forced, &install_env,',
     );
     // Failures now report through the repeat-guarded episode entrypoint, which
     // still receives the final-attempt context — so the classifier can tell a
@@ -521,7 +536,7 @@ describe('master automatic-updates switch', () => {
 
     // The app classifies WITH the probed environment, arms the SAME one-shot
     // managed-Node retry for the new kind, and shows the environment-aware copy.
-    expect(cliUpdate).toContain('classify_install_failure_with_environment(');
+    expect(cliUpdate).toContain('classify_install_failure_with_environment_and_stderr(');
     expect(cliUpdate).toContain('kind == InstallFailureKind::UnsupportedNode');
     expect(cliUpdate).toContain('install_failure_detail_with_environment(');
   });

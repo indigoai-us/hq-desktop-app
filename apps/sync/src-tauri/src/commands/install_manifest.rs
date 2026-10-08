@@ -538,6 +538,7 @@ mod tests {
             install_in_progress: manifest_indicates_install_in_progress(&manifest),
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
@@ -593,6 +594,7 @@ mod tests {
             install_in_progress,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);

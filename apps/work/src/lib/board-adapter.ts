@@ -82,16 +82,29 @@ async function getJson(
         error instanceof Error
           ? /^\[http-(\d+)\]/.exec(error.message)?.[1]
           : undefined;
+      const event = timeoutElapsed
+        ? "timeout"
+        : status
+          ? "http-error"
+          : phase === "body"
+            ? "body-error"
+            : "transport-error";
+      const name =
+        error instanceof Error && /^[A-Za-z][A-Za-z0-9_.]*$/.test(error.name)
+          ? error.name
+          : "UnknownError";
       console.warn("[hq-work-board] thread request failed", {
         endpoint: options.diagnostic,
-        event: timeoutElapsed
-          ? "timeout"
-          : status
-            ? "http-error"
-            : phase === "body"
-              ? "body-error"
-              : "transport-error",
+        event,
         ...(status ? { status: Number(status) } : {}),
+        name,
+        message: timeoutElapsed
+          ? "Board thread request timed out"
+          : status
+            ? `HTTP ${status} GET failed`
+            : phase === "body"
+              ? "Board thread response body failed"
+              : "Board thread transport failed",
       });
     }
     throw error;
