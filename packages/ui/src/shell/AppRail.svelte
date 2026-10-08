@@ -75,9 +75,9 @@
     if (from !== item.companyUid) onreorderpins?.(from, item.companyUid);
   }
 
-  /** Hairline groups: Home+Meetings | companies+More | personal pages. */
+  /** Hairline groups: Home+Daily Brief+Meetings | companies+More | personal pages. */
   function railGroup(item: RailItem): number {
-    if (item.kind === "home" || item.kind === "meetings") return 0;
+    if (item.kind === "home" || item.kind === "brief" || item.kind === "meetings") return 0;
     if (item.kind === "company" || item.kind === "more-companies") return 1;
     return 2;
   }
@@ -134,6 +134,8 @@
         {#if item.kind === "home"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5" /><path d="M5 10v10h5v-6h4v6h5V10" /></svg>
           {#if unreadCount > 0}<span class="badge" data-testid="rail-home-badge" aria-hidden="true"></span>{/if}
+        {:else if item.kind === "brief"}
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17h18M6 17a6 6 0 0 1 12 0M12 5v2M5.6 8.6l1.4 1.4M18.4 8.6 17 10" /></svg>
         {:else if item.kind === "meetings"}
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="13" height="10" rx="2" /><path d="m16 11 5-3v8l-5-3" /></svg>
         {:else if item.kind === "company"}

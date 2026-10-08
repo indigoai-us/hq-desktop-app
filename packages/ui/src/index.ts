@@ -334,3 +334,7 @@ export { VISUAL_FIRST_RUN_DONE_KEY } from "./chat/first-run/visual-first-run.js"
 export { loadAtlas } from "./shell/atlas-lazy.js";
 // Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
 export { loadTelemetry } from "./shell/telemetry-lazy.js";
+// Daily Brief: lazy door plus the dependency-free dev-harness seed seam and fixture.
+export { loadBrief } from "./shell/brief-lazy.js";
+export { configureBriefSeed } from "./brief/brief-seed.js";
+export { octoberEightBrief } from "./brief/brief-fixture.js";

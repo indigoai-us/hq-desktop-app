@@ -24,7 +24,7 @@ export type RailPersonalId =
   | "connections"
   | "outpost";
 
-export type RailPlaceholderId = RailPersonalId | "more-companies" | "library";
+export type RailPlaceholderId = RailPersonalId | "more-companies" | "library" | "brief";
 
 export interface RailPlaceholder {
   id: RailPlaceholderId;
@@ -35,6 +35,12 @@ export interface RailPlaceholder {
 }
 
 export const RAIL_PLACEHOLDERS: Record<RailPlaceholderId, RailPlaceholder> = {
+  brief: {
+    id: "brief",
+    title: "Daily Brief",
+    story: "daily-brief",
+    summary: "Your day at a glance: what needs you, what shipped, and today's calendar.",
+  },
   "more-companies": {
     id: "more-companies",
     title: "More companies",
@@ -105,6 +111,7 @@ export interface RailCompany {
 
 export type RailItem =
   | { kind: "home"; id: "home"; label: "Home" }
+  | { kind: "brief"; id: "brief"; label: "Daily Brief" }
   | { kind: "meetings"; id: "meetings"; label: "Meetings" }
   | {
       kind: "company";
@@ -132,7 +139,7 @@ const PERSONAL_ORDER: readonly RailPersonalId[] = [
 ];
 
 /**
- * The decided order: Home, Meetings, pinned company tiles (max six), More
+ * The decided order: Home, Daily Brief, Meetings, pinned company tiles (max six), More
  * companies, Library, Deployments, Telemetry, Secrets, Connections,
  * Marketplace (OWNER-R22: beneath Connections, the integrations entry),
  * Outpost, then (after the spacer) the You avatar.
@@ -155,6 +162,7 @@ export function railItems(
     }));
   return [
     { kind: "home", id: "home", label: "Home" },
+    { kind: "brief", id: "brief", label: "Daily Brief" },
     { kind: "meetings", id: "meetings", label: "Meetings" },
     ...tiles,
     { kind: "more-companies", id: "more-companies", label: "More companies" },
@@ -186,6 +194,8 @@ export function railDestination(
       return companyRowDestination("atlas", item.companyUid);
     case "meetings":
       return { kind: "meetings" };
+    case "brief":
+      return { kind: "extra", page: railPlaceholderPage("brief") };
     case "library":
       // US-031: the rail opens personal files and Shared with me.
       // The skills overlay stays available as { kind: "library" }.
@@ -216,6 +226,7 @@ export function railTooltip(item: RailItem, counts: { unread?: number } = {}): s
     return extra ? `${item.label} · ${extra}` : item.label;
   }
   if (item.kind === "library") return "Library · your files & vault";
+  if (item.kind === "brief") return "Daily Brief · your day at a glance";
   if (item.kind === "you") return `${item.label} · Profile`;
   return item.label;
 }

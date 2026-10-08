@@ -64,6 +64,7 @@
   import type { LocalOnlyCompany } from "../company/company-display-map.js";
   import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
   import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import BriefRailHost from "./BriefRailHost.svelte";
   import {
     RAIL_ATLAS_FLAG,
     RAIL_DEPLOYMENTS_ACTIONS_FLAG,
@@ -4940,6 +4941,29 @@
   /** The company `/startwork` orients on after setup: the first company in the roster. */
   const startworkCompany = $derived(setupCompanies(companies).find((c) => c.kind === "company")?.slug ?? null);
   const startworkPrompt = $derived(startworkCompany ? `/startwork ${startworkCompany}` : "/startwork");
+  /**
+   * Daily Brief actions: open a Claude, Codex or Grok session in the HQ folder
+   * with the item's prompt pre-filled, through the same launch cascade as the
+   * setup finish buttons. Grok's terminal launch takes no prompt argument, so
+   * the prompt is copied first and the person pastes it.
+   */
+  async function launchBriefPrompt(engine: "claude" | "codex" | "grok", prompt: string): Promise<string | null> {
+    const res = await adapter.settings.getSetupStatus();
+    const folder = res.ok ? ((res.value as { hqFolderPath?: string } | null)?.hqFolderPath?.trim() ?? "") : "";
+    if (!folder) return "HQ folder is not ready yet.";
+    const actions = createLaunchActions({ shell: adapter.shell, hqFolderPath: folder, prompt });
+    if (engine === "claude") return actions.launchClaude();
+    if (engine === "codex") return actions.launchCodex();
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      copied = true;
+    } catch (err) {
+      console.warn("[daily-brief] copy before Grok launch failed", err);
+    }
+    const error = await actions.launchGrok();
+    return error ?? (copied ? "Prompt copied. Paste it into Grok." : null);
+  }
   /** The finish buttons: open the HQ folder in a coding tool with `/startwork` ready to go. */
   async function launchSetupIn(key: "claude" | "codex"): Promise<void> {
     setupLaunchError = null;
@@ -12108,6 +12132,7 @@
       (extraPageId === "rail-library" ||
         extraPageId === "rail-deployments" ||
         accountPlaceholderForPage(extraPageId) != null ||
+        railPlaceholder?.id === "brief" ||
         railPlaceholder?.id === "telemetry" ||
         railPlaceholder?.id === "secrets" ||
         railPlaceholder?.id === "connections" ||
@@ -12118,6 +12143,7 @@
   const pageHasNoSidepane = $derived(
     view === "extra" &&
       (extraPageId === "rail-deployments" ||
+        railPlaceholder?.id === "brief" ||
         railPlaceholder?.id === "telemetry" ||
         railPlaceholder?.id === "secrets" ||
         railPlaceholder?.id === "connections"),
@@ -13835,6 +13861,12 @@
               </div>
             {/snippet}
           </LazyDoor>
+        {:else if railPlaceholder?.id === "brief"}
+          <BriefRailHost
+            {adapter}
+            companies={railCompanyRoster.map((company) => ({ uid: company.uid, slug: company.slug, label: company.label, iconUrl: company.iconUrl }))}
+            onlaunch={launchBriefPrompt}
+          />
         {:else if railPlaceholder?.id === "telemetry"}
           {#if telemetryVisible}
             <TelemetryRailHost
