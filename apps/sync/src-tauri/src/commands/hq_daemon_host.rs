@@ -602,30 +602,61 @@ struct ConflictNoticeFile {
 #[tauri::command]
 pub fn get_pending_conflict_notices() -> Result<Vec<serde_json::Value>, String> {
     let state_dir = conflict_notice_state_dir()?;
+    read_pending_conflict_notices_from_state_dir(&state_dir)
+}
+
+fn read_pending_conflict_notices_from_state_dir(
+    state_dir: &Path,
+) -> Result<Vec<serde_json::Value>, String> {
     let notices_path = state_dir.join("conflict-notices.json");
     let notices: ConflictNoticeFile = match std::fs::read_to_string(&notices_path) {
-        Ok(raw) => serde_json::from_str(&raw)
-            .map_err(|_| "Conflict notices could not be read.".to_string())?,
+        Ok(raw) => match serde_json::from_str(&raw) {
+            Ok(notices) => notices,
+            Err(error) => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "conflict notice file could not be parsed; treating as empty: {error}"
+                    ),
+                );
+                return Ok(Vec::new());
+            }
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err("Conflict notices could not be read.".to_string()),
     };
     if notices.schema != 1 {
-        return Err("Conflict notices could not be read.".to_string());
+        log(
+            LOG_TAG,
+            &format!(
+                "conflict notice schema {} is unsupported; treating as empty",
+                notices.schema
+            ),
+        );
+        return Ok(Vec::new());
     }
     let acks_path = state_dir.join("conflict-notice-acks.jsonl");
     let mut acknowledged = std::collections::HashSet::new();
     match std::fs::read_to_string(acks_path) {
         Ok(raw) => {
-            for line in raw.lines() {
-                let row: serde_json::Value = serde_json::from_str(line)
-                    .map_err(|_| "Conflict acknowledgements could not be read.".to_string())?;
-                if let Some(id) = row.get("id").and_then(|value| value.as_str()) {
-                    acknowledged.insert(id.to_string());
-                }
+            let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
+            acknowledged = ids;
+            if malformed_lines > 0 {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "skipped {malformed_lines} malformed conflict acknowledgement line(s)"
+                    ),
+                );
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("Conflict acknowledgements could not be read.".to_string()),
+        Err(error) => {
+            log(
+                LOG_TAG,
+                &format!("conflict acknowledgement file could not be read: {error}"),
+            );
+        }
     }
     Ok(notices
         .notices
@@ -637,6 +668,36 @@ pub fn get_pending_conflict_notices() -> Result<Vec<serde_json::Value>, String> 
                 .is_some_and(|id| !acknowledged.contains(id))
         })
         .collect())
+}
+
+fn parse_conflict_notice_ack_ids(raw: &str) -> (std::collections::HashSet<String>, usize) {
+    let mut ids = std::collections::HashSet::new();
+    let mut malformed_lines = 0;
+    for line in raw.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(row) => match row.get("id").and_then(|value| value.as_str()) {
+                Some(id)
+                    if id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                        && row
+                            .get("acknowledgedAt")
+                            .and_then(|value| value.as_str())
+                            .is_some() =>
+                {
+                    ids.insert(id.to_string());
+                }
+                None => malformed_lines += 1,
+                Some(_) => malformed_lines += 1,
+            },
+            Err(_) => malformed_lines += 1,
+        }
+    }
+    (ids, malformed_lines)
 }
 
 fn conflict_notice_state_dir() -> Result<PathBuf, String> {
@@ -1445,6 +1506,54 @@ mod tests {
 
     use crate::events::{EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
     use hq_desktop_core::hq_daemon::{DaemonState, LastPass};
+
+    #[test]
+    fn pending_conflict_ack_parser_keeps_valid_rows_after_a_torn_line() {
+        let valid_id = "a".repeat(64);
+        let raw = format!(
+            "{{\"id\":\"torn\n{{\"id\":\"{valid_id}\",\"acknowledgedAt\":\"2026-10-08T15:00:00Z\"}}\n"
+        );
+
+        let (ids, malformed_lines) = parse_conflict_notice_ack_ids(&raw);
+
+        assert_eq!(malformed_lines, 1);
+        assert!(ids.contains(&valid_id));
+    }
+
+    #[test]
+    fn pending_conflict_notices_survive_a_torn_final_ack_line() {
+        let state_dir = TempDir::new().unwrap();
+        let notice_id = "b".repeat(64);
+        std::fs::write(
+            state_dir.path().join("conflict-notices.json"),
+            serde_json::json!({
+                "schema": 1,
+                "notices": [{"id": notice_id.clone(), "companySlug": "indigo", "relativePath": "boards/a.md"}]
+            }).to_string(),
+        ).unwrap();
+        std::fs::write(
+            state_dir.path().join("conflict-notice-acks.jsonl"),
+            "{\"id\":\"torn",
+        )
+        .unwrap();
+
+        let pending = read_pending_conflict_notices_from_state_dir(state_dir.path()).unwrap();
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["id"], notice_id);
+    }
+
+    #[test]
+    fn corrupt_conflict_notice_file_is_treated_as_empty() {
+        let state_dir = TempDir::new().unwrap();
+        std::fs::write(state_dir.path().join("conflict-notices.json"), "{torn").unwrap();
+
+        assert!(
+            read_pending_conflict_notices_from_state_dir(state_dir.path())
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     // ── which services run ───────────────────────────────────────────────
 
