@@ -178,7 +178,9 @@
     -webkit-appearance: none;
     display: inline-grid;
     place-items: center;
-    height: 28px;
+    /* The app's one button height (button-standard.css), shared with the
+       header's tabs and member count. */
+    height: var(--hq-btn-h);
     padding: 0;
     border: 0;
     background: transparent;
@@ -187,7 +189,7 @@
   }
 
   .mute-toggle {
-    width: 28px;
+    width: var(--hq-btn-h);
     border-radius: 8px 0 0 8px;
   }
 

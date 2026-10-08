@@ -15605,13 +15605,13 @@
   }
 
   /* The header's filled controls (these tabs, the notify pill, the member
-     count) share one 28px height so they line up as a set. */
+     count) share the app's one button height so they line up as a set. */
   .project-tabs {
     box-sizing: border-box;
     display: flex;
     align-items: stretch;
     gap: 2px;
-    height: 28px;
+    height: var(--hq-btn-h);
     background: var(--raised);
     border: none;
     border-radius: 8px;
@@ -15665,7 +15665,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 28px;
+    height: var(--hq-btn-h);
     padding: 0 12px;
     border: 1px solid transparent;
     border-radius: 8px;
