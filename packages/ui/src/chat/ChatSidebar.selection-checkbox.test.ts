@@ -10,7 +10,7 @@
  * rail, so resting rows keep their geometry.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, tick, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 
 import ChatSidebar from "./ChatSidebar.svelte";
 import type { ChatSidebarApi } from "./chat-api";
@@ -32,13 +32,13 @@ function seedRow(id: string, name: string): ChannelDirectoryRow {
 
 const rows = [seedRow("chn_a", "alpha"), seedRow("chn_b", "bravo")];
 
-function stubApi(): ChatSidebarApi {
+function stubApi(directory: ChannelDirectoryRow[] = rows): ChatSidebarApi {
   return {
     fetchChannelDirectory: async () => ({
       snapshot: true,
       cursor: "cur_1",
       cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      rows,
+      rows: directory,
     }),
     listContacts: async () => ({ contacts: [] }),
     listDmRequests: async () => ({ requests: [] }),
@@ -73,10 +73,36 @@ function gutterOpen(id: string): boolean {
   return boxFor(id).closest(".chat-li")!.classList.contains("gutter-open");
 }
 
-async function mountRail(): Promise<void> {
+/**
+ * A real pointer click runs a microtask checkpoint after each listener, so
+ * Svelte's batched DOM update lands while the event is still dispatching and
+ * before the browser settles the checkbox's activation. `el.click()` from a
+ * test drains microtasks only after dispatch ends, which hid the bug where a
+ * cancelled click flipped the box back to empty after Svelte had ticked it.
+ * Flushing from a document listener reproduces the browser's ordering.
+ */
+function realClick(el: HTMLElement, init: MouseEventInit = {}): boolean {
+  const flush = () => flushSync();
+  document.addEventListener("click", flush);
+  try {
+    return el.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, ...init }),
+    );
+  } finally {
+    document.removeEventListener("click", flush);
+  }
+}
+
+function selectionCount(): string {
+  return (
+    document.querySelector('[data-testid="chat-selection-count"]')?.textContent ?? ""
+  ).trim();
+}
+
+async function mountRail(seed: ChannelDirectoryRow[] = rows): Promise<void> {
   component = mount(ChatSidebar, {
     target: host,
-    props: { api: stubApi(), seedDirectory: rows },
+    props: { api: stubApi(seed), seedDirectory: seed },
   });
   await vi.waitFor(() =>
     expect(host.querySelector('[data-conversation-id="ch:chn_a"]')).toBeTruthy(),
@@ -219,5 +245,93 @@ describe("ChatSidebar checkbox selection", () => {
     await tick();
     expect(boxFor("ch:chn_a").checked).toBe(false);
     expect(gutterOpen("ch:chn_a")).toBe(false);
+  });
+
+  it("keeps a clicked box ticked under real browser event ordering", async () => {
+    await mountRail();
+    const box = boxFor("ch:chn_a");
+    // The click must not be cancelled: a cancelled checkbox click is undone by
+    // the browser after Svelte has already drawn the tick.
+    expect(realClick(box)).toBe(true);
+    await tick();
+    expect(boxFor("ch:chn_a").checked).toBe(true);
+    expect(boxFor("ch:chn_a").getAttribute("aria-checked")).toBe("true");
+    expect(rowFor("ch:chn_a").classList.contains("selected")).toBe(true);
+    expect(selectionCount()).toContain("1 selected");
+
+    realClick(boxFor("ch:chn_b"));
+    await tick();
+    expect(boxFor("ch:chn_a").checked).toBe(true);
+    expect(boxFor("ch:chn_b").checked).toBe(true);
+    expect(selectionCount()).toContain("2 selected");
+
+    // Unticking one row keeps the other.
+    realClick(boxFor("ch:chn_a"));
+    await tick();
+    expect(boxFor("ch:chn_a").checked).toBe(false);
+    expect(boxFor("ch:chn_a").getAttribute("aria-checked")).toBe("false");
+    expect(boxFor("ch:chn_b").checked).toBe(true);
+    expect(selectionCount()).toContain("1 selected");
+  });
+
+  it("toggles a row on a plain row click in selection mode instead of replacing", async () => {
+    const onselect = vi.fn();
+    component = mount(ChatSidebar, {
+      target: host,
+      props: { api: stubApi(), seedDirectory: rows, selectedId: "ch:chn_a", onselect },
+    });
+    await vi.waitFor(() =>
+      expect(host.querySelector('[data-conversation-id="ch:chn_a"]')).toBeTruthy(),
+    );
+    realClick(boxFor("ch:chn_a"));
+    await tick();
+
+    realClick(rowFor("ch:chn_b"));
+    await tick();
+    expect(boxFor("ch:chn_a").checked).toBe(true);
+    expect(boxFor("ch:chn_b").checked).toBe(true);
+    expect(rowFor("ch:chn_b").getAttribute("aria-selected")).toBe("true");
+    expect(selectionCount()).toContain("2 selected");
+
+    // A second plain click takes the row back out.
+    realClick(rowFor("ch:chn_b"));
+    await tick();
+    expect(boxFor("ch:chn_b").checked).toBe(false);
+    expect(boxFor("ch:chn_a").checked).toBe(true);
+    expect(selectionCount()).toContain("1 selected");
+    // Selection mode never opens the conversation.
+    expect(onselect).not.toHaveBeenCalled();
+  });
+
+  it("archives exactly the selected rows and clears the selection", async () => {
+    await mountRail([...rows, seedRow("chn_c", "charlie")]);
+    realClick(boxFor("ch:chn_a"));
+    await tick();
+    realClick(rowFor("ch:chn_c"));
+    await tick();
+    expect(selectionCount()).toContain("2 selected");
+
+    host
+      .ownerDocument.querySelector<HTMLButtonElement>(
+        '[data-testid="chat-selection-archive"]',
+      )!
+      .click();
+    await tick();
+
+    expect(host.querySelector('[data-conversation-id="ch:chn_a"]')).toBeNull();
+    expect(host.querySelector('[data-conversation-id="ch:chn_c"]')).toBeNull();
+    expect(host.querySelector('[data-conversation-id="ch:chn_b"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="chat-selection-bar"]')).toBeNull();
+    expect(boxFor("ch:chn_b").checked).toBe(false);
+  });
+
+  it("lets the selection bar wrap so Archive and Done stay reachable in a narrow rail", async () => {
+    await mountRail();
+    const css = Array.from(document.querySelectorAll("style"))
+      .map((node) => node.textContent ?? "")
+      .join("\n");
+    const rule = /\.chat-selection-bar[^{,]*\{([^}]*)\}/.exec(css);
+    expect(rule, "no .chat-selection-bar rule found").toBeTruthy();
+    expect(rule![1]).toMatch(/flex-wrap:\s*wrap/);
   });
 });

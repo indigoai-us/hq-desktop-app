@@ -129,7 +129,6 @@ hq-desktop-app/
     hq-sync-core/
 
   imports/
-    hq-installer-react/          # temporary port source, git-moved from apps/installer
     hq-sync-win/                 # temporary port source, current imports/hq-sync-win
 
   scripts/

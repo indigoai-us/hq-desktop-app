@@ -1,5 +1,3 @@
-import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
-import { FIRST_LAUNCH_SIGNIN_REACH_FLAG } from '@hq/platform';
 import type { StartupSetupEvidence } from './unexpected-startup-surface';
 import { isMissingRootRecovery } from './onboarding-wizard';
 import { pingInstallerStep } from './installer-step-telemetry';
@@ -18,38 +16,6 @@ export type { FirstLaunchSignInReachOutcome } from './first-launch-signin-reach-
 
 const INSTALL_ATTEMPT_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PUBLIC_FLAGS_RESOLVE_URL = 'https://hqapi.hq.computer/v1/flags/resolve-public';
-
-type PublicFlagResponse = Pick<Response, 'ok' | 'json'>;
-export type PublicFlagFetch = (
-  input: RequestInfo | URL,
-  init?: RequestInit,
-) => Promise<PublicFlagResponse>;
-
-export async function resolveFirstLaunchSignInReachFlag(
-  visitorId: string,
-  fetchPublic: PublicFlagFetch = tauriFetch,
-  warn: (message: string, error?: unknown) => void = (message) => console.warn(message),
-): Promise<boolean> {
-  if (!INSTALL_ATTEMPT_ID_RE.test(visitorId)) return false;
-  try {
-    const url = new URL(PUBLIC_FLAGS_RESOLVE_URL);
-    url.searchParams.set('key', FIRST_LAUNCH_SIGNIN_REACH_FLAG);
-    url.searchParams.set('visitorId', visitorId);
-    const response = await fetchPublic(url, {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-    });
-    if (!response.ok) return false;
-    const payload: unknown = await response.json();
-    return typeof payload === 'object' && payload !== null &&
-      'key' in payload && payload.key === FIRST_LAUNCH_SIGNIN_REACH_FLAG &&
-      'enabled' in payload && payload.enabled === true;
-  } catch (error) {
-    warn('first-launch sign-in reach flag unavailable; staying off', error);
-    return false;
-  }
-}
 
 export function startupOutcomeForLifecycle(
   lifecycleState: string | null,
@@ -68,7 +34,6 @@ export function startupOutcomeForLifecycle(
 export interface FirstLaunchSignInReachReporterOptions {
   isFirstRun: () => Promise<boolean>;
   isSuppressed?: () => Promise<boolean>;
-  isEnabled: (visitorId: string) => Promise<boolean>;
   getInstallAttemptId: () => Promise<string | null>;
   queue?: Pick<FirstLaunchSignInReachQueueOptions, 'storage' | 'now' | 'warn'>;
   sendAnonymousStep?: FirstLaunchSignInReachQueueOptions['send'];
@@ -99,8 +64,8 @@ export function createFirstLaunchSignInReachReporter(
 
   function prepare(): Promise<{ installAttemptId: string } | null> {
     if (ready) return ready;
-    // Prior outcomes were already gated when they were recorded. Drain them on
-    // ordinary launches even if the flag service is currently unavailable.
+        // Earlier outcomes were recorded only for eligible first launches. Drain
+        // them on ordinary launches.
     ready = (async () => {
       try {
         if (await options.isSuppressed?.()) return null;
@@ -110,7 +75,6 @@ export function createFirstLaunchSignInReachReporter(
         if (!firstRun) return null;
         const installAttemptId = await options.getInstallAttemptId();
         if (!installAttemptId || !INSTALL_ATTEMPT_ID_RE.test(installAttemptId)) return null;
-        if (!await options.isEnabled(installAttemptId)) return null;
         return { installAttemptId };
       } catch (error) {
         warn('first-launch sign-in reach telemetry unavailable; staying off', error);

@@ -94,6 +94,7 @@
   import { isRecordingWorkspace } from "../meetings/recording-membership.js";
   import { HQ_CONSOLE_INTEGRATIONS_URL } from "../common/hq-console";
   import { missingMeetingPermissions } from "../meetings/meeting-permissions";
+  import HqAnywhereSettingRow from "./HqAnywhereSettingRow.svelte";
 
   import "../chat/tokens.css";
   import "../chat/chat-tokens.css";
@@ -1257,6 +1258,7 @@
     </p>
   {/if}
   {#if section === "general"}
+    <HqAnywhereSettingRow {adapter} />
     {#if canTray}
       <div class="set-row">
         <div>

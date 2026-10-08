@@ -1,16 +1,19 @@
 /**
  * Pure state for the New bot flow (bots-v2 step 2).
  *
- * Three steps — kind → home → details — and one draft. Everything the steps
- * need to decide "can I advance / can I create" lives here so the Svelte
- * components stay thin and the rules are unit-testable without a DOM.
+ * The bot is named first, then the person picks Cloud or Local, then the
+ * steps for that home, all on one draft. Everything the steps need to decide
+ * "can I advance / can I create" lives here so the Svelte components stay
+ * thin and the rules are unit-testable without a DOM.
  *
- * Every AI teammate is a bot. Both homes walk all three steps: the details
- * a Local bot needs (name, title, avatar, who it is for, advanced) and the
- * three a Cloud bot needs (name, @handle and title). The company channel's
- * "Create a bot" card is retired, so this flow is the ONLY place a cloud bot
- * is named — a suggested name is a prefill the person can see and change,
- * never a silent default.
+ * Every AI teammate is a bot. A Local bot picks its coding tool; who it is
+ * for, a template and the fine-tuning (handle, permissions, memory) are
+ * optional steps after it, each on its own screen, and "Finish with
+ * defaults" creates from any of them. Its title, avatar and model are asked
+ * in its first message instead (`newBotKickoff`). A Cloud bot is named, sized and given a
+ * brain. The company channel's "Create a bot" card is retired, so this flow
+ * is the ONLY place a cloud bot is named. A suggested name is a prefill the
+ * person can see and change, never a silent default.
  */
 
 import type {
@@ -19,11 +22,16 @@ import type {
   LocalBotKind,
   LocalBotWorkerOption,
 } from "@hq/platform";
-import type { AvatarSelection } from "../../avatars/types.js";
 import { LOCAL_BOT_RUNTIMES, isValidLocalBotName } from "../local-bots.js";
 import { runtimeBlocksNext, runtimeStatusOf, runtimeStepIssue, type RuntimeStatus } from "./runtime-status.js";
 
-export type CreateBotStep = "kind" | "home" | "details";
+/**
+ * A step after the name and the Cloud or Local question. Local: "home" (the
+ * coding tool, required), then the optional "scope" (who it is for),
+ * "template" (start from) and "tune" (handle, permissions, memory). Cloud:
+ * "home" (the company, when there is a choice) and "details".
+ */
+export type CreateBotStep = "home" | "details" | "scope" | "template" | "tune";
 export type BotKindChoice = "blank" | "template";
 export type BotHome = "local" | "cloud";
 export type BotRuntime = LocalBotCreateInput["runtime"];
@@ -45,11 +53,11 @@ export interface CreateBotDraft {
   companySlugs: string[];
   name: string;
   /**
-   * Optional job title ("Ad account analyst"). Neither create path takes one:
-   * the bot CLI has no `--title` flag, and the cloud `create_agent` card
-   * sequence asks only for name, handle, runtime and size. So for both homes
-   * the host PATCHes it onto the agent profile once the bot has a uid, the
-   * same way the avatar pick is.
+   * Optional job title ("Ad account analyst"), asked on the cloud details
+   * step only. The cloud `create_agent` card sequence asks only for name,
+   * handle, runtime and size, so the host PATCHes it onto the agent profile
+   * once the bot has a uid. A Local bot asks for its title in its first
+   * message (`newBotKickoff`).
    */
   title: string;
   /**
@@ -59,10 +67,7 @@ export interface CreateBotDraft {
    * and only edited by hand when the derived one collides or is empty.
    */
   handle: string;
-  intro: string;
-  avatar?: AvatarSelection;
   autoApprove: boolean;
-  model: string;
   memory: BotMemory;
 }
 
@@ -123,7 +128,6 @@ export function botScopeCopy(opts: { noun?: string } = {}): Record<BotScope, { t
   };
 }
 
-export const INTRO_MAX = 500;
 /** Display names are a label, not a description. */
 export const NAME_MAX = 60;
 /** Agent-profile titles are a one-line label, not a description. */
@@ -154,6 +158,8 @@ export function initialDraft(
    * Honoured only when that home can be used; otherwise the usual default.
    */
   preferredHome: "local" | "cloud" | null = null,
+  /** The name the person already gave on the first New bot step. */
+  preferredName: string | null = null,
 ): CreateBotDraft {
   // Opened from a company's page: start on that company, not the first one.
   const preferred = preferredCompanyUid
@@ -177,12 +183,10 @@ export function initialDraft(
     companyUid: preferred?.companyUid ?? ctx.companies[0]?.companyUid,
     scope: ownerSlug ? "company" : "personal",
     companySlugs: ownerSlug ? [ownerSlug] : [],
-    name: suggestBotName(ctx.existingNames),
+    name: preferredName?.trim() || suggestBotName(ctx.existingNames),
     title: "",
     handle: "",
-    intro: "",
     autoApprove: true,
-    model: "",
     memory: "synced",
   };
 }
@@ -291,10 +295,10 @@ export function localHandleIssue(
 ): string | null {
   const handle = botHandle(draft);
   if (!handle) {
-    return "That name has no letters or digits \u2014 give the bot a handle, for example \u201cscout-2\u201d.";
+    return "That name has no letters or digits. Give the bot a handle, for example \u201cscout-2\u201d.";
   }
   if (!isValidLocalBotName(handle)) {
-    return "Handles are lowercase letters, digits, and single hyphens \u2014 for example \u201cscout-2\u201d.";
+    return "Handles are lowercase letters, digits, and single hyphens, for example \u201cscout-2\u201d.";
   }
   if (taken(handle, existing)) return `You already have a bot with the handle @${handle}.`;
   return null;
@@ -309,7 +313,7 @@ export function botHandle(draft: Pick<CreateBotDraft, "name" | "handle">): strin
 /**
  * Validation for a Cloud bot's display name. A cloud bot's name is a label the
  * company sees ("Polar"), not the @handle, so it is not held to the handle's
- * character rules \u2014 `handleIssue` covers those.
+ * character rules; `handleIssue` covers those.
  */
 export function cloudNameIssue(name: string): string | null {
   return displayNameIssue(name);
@@ -318,12 +322,24 @@ export function cloudNameIssue(name: string): string | null {
 /** Validation for the @handle a Cloud bot is created under; null when fine. */
 export function handleIssue(draft: Pick<CreateBotDraft, "name" | "handle">): string | null {
   const handle = botHandle(draft);
-  if (!handle) return "Give your bot a handle — letters and digits.";
+  if (!handle) return "Give your bot a handle with letters and digits.";
   if (!isValidLocalBotName(handle)) {
-    return "Lowercase letters, digits, and single hyphens — for example “scout-2”.";
+    return "Lowercase letters, digits, and single hyphens, for example “scout-2”.";
   }
   return null;
 }
+
+/**
+ * What the first New bot step says about the name typed there, or null. The
+ * name is asked before Cloud or Local, so it must suit both: a label the
+ * person can read, with letters or digits a handle can be made from.
+ */
+export function newBotNameIssue(name: string): string | null {
+  return displayNameIssue(name) ?? (handleIssue({ name, handle: "" }) ? NEW_BOT_NAME_UNUSABLE : null);
+}
+
+/** Same words as the cloud create's refusal of such a name. */
+export const NEW_BOT_NAME_UNUSABLE = "That name can't be used for a bot. Try letters and numbers.";
 
 /** First free name from the suggestion list; a numbered fallback otherwise. */
 export function suggestBotName(existing: readonly string[], pool: readonly string[] = BOT_NAME_SUGGESTIONS): string {
@@ -349,15 +365,30 @@ export function titleIssue(title: string): string | null {
   return null;
 }
 
-// ── intro ──────────────────────────────────────────────────────────────────
+// ── kickoff ────────────────────────────────────────────────────────────────
 
-export function introIssue(intro: string): string | null {
-  if (intro.length > INTRO_MAX) return `Keep the intro under ${INTRO_MAX} characters.`;
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(intro)) {
-    return "The intro can’t contain control characters.";
-  }
-  return null;
+/**
+ * The first task a new Local bot runs by itself right after its hello
+ * (`hq bot create --kickoff`, at most 2000 characters, one line). The create
+ * screens no longer ask for a title, an avatar or a model: the bot asks for
+ * them in its first message, so setup goes on in the conversation. A bot
+ * made from a template already has a role, so it only checks that role.
+ */
+export function newBotKickoff(opts: { template?: boolean } = {}): string {
+  const role = opts.template
+    ? "whether the role your template gives you fits, or what I would change"
+    : "what your role is, as a short job title like \"Ad account analyst\"";
+  return (
+    "Kickoff: you were just created in HQ. If you already said hello, do not greet again. " +
+    "Finish your setup with me in one short message that asks three things as a numbered list: " +
+    `1) ${role}, ` +
+    "2) what avatar or look I want for you, " +
+    "3) whether I have a model preference, or the default is fine. " +
+    "End the message with that question and nothing else. " +
+    "When I answer, keep my answers in your notes and use them from then on, " +
+    "and tell me in one line anything I need to set myself in HQ. " +
+    "Do not ask me to grant you access: you run on my computer and already work with what I can reach."
+  );
 }
 
 // ── templates ──────────────────────────────────────────────────────────────
@@ -521,26 +552,48 @@ export function templateBringsLine(card: TemplateCard | null): string {
 // ── steps ──────────────────────────────────────────────────────────────────
 
 /**
- * The steps this draft walks, one question per screen. A local bot is named
- * first, then starts blank or from a template, then picks its coding tool. A
- * cloud bot picks its company first when there is a choice (the price is that
- * company's), then is named and sized on one screen.
+ * The steps this draft walks after the name and the Cloud or Local question,
+ * one question per screen. A local bot picks its coding tool, then may go on
+ * to who it is for, a template (only when there are templates) and the
+ * fine-tuning. A cloud bot picks its company first when there is a choice
+ * (the price is that company's), then its brain and size.
  */
 export function stepsFor(draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep[] {
-  if (draft.home === "local") return LOCAL_STEPS;
+  if (draft.home === "local") {
+    return opts.hasTemplates === false ? LOCAL_STEPS.filter((step) => step !== "template") : LOCAL_STEPS;
+  }
   return opts.pickCompany ? ["home", "details"] : ["details"];
 }
 
 /**
  * `pickCompany`: a cloud bot gets a "Pick the company" step. Off when there is
- * one company and it is already selected.
+ * one company and it is already selected. `hasTemplates`: false drops the
+ * local "Start from" step, which would offer only Blank.
  */
 export interface StepOptions {
   pickCompany?: boolean;
+  hasTemplates?: boolean;
 }
 
-/** Local steps, in the order the cloud flow asks: name first. */
-export const LOCAL_STEPS: CreateBotStep[] = ["details", "kind", "home"];
+/** Local steps after the name and the Cloud or Local question. Only the first is required. */
+export const LOCAL_STEPS: CreateBotStep[] = ["home", "scope", "template", "tune"];
+
+/** Local steps "Finish with defaults" may skip. */
+export const OPTIONAL_LOCAL_STEPS: readonly CreateBotStep[] = ["scope", "template", "tune"];
+
+/** What "Next: ..." calls each step. */
+export const STEP_NAMES: Record<CreateBotStep, string> = {
+  home: "Coding tool",
+  scope: "Who it's for",
+  template: "Start from",
+  tune: "Fine-tune",
+  details: "Details",
+};
+
+/** "Next: Who it's for". Cloud's company step comes before its details. */
+export function nextStepLabel(step: CreateBotStep | null): string {
+  return step ? `Next: ${STEP_NAMES[step]}` : "";
+}
 
 export interface StepTitle {
   kicker: string;
@@ -551,14 +604,23 @@ export interface StepTitle {
 }
 
 /**
- * Each step's heading: a plain lead and the word that matters set apart
- * ("Enter a <name.>"). The copy names "this computer"; the flow swaps in
- * the host's own noun.
+ * Each step's heading: a plain lead and the word that matters set apart.
+ * Local steps set the bot's name apart ("Which tool should <Nova> think
+ * with?"); `{name}` in `em` is replaced with it.
  */
-export const LOCAL_STEP_TITLES: Record<CreateBotStep, StepTitle> = {
-  details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "This is how your new teammate will appear in HQ." },
-  kind: { kicker: "Where it starts", lead: "Start", em: "blank", tail: "or from a template.", copy: "A blank bot is a general helper. A template starts from a worker your company already has." },
-  home: { kicker: "How it thinks", lead: "Pick the", em: "coding tool.", copy: "Your bot thinks with a coding tool signed in on this computer." },
+export const LOCAL_STEP_TITLES: Record<"home" | "scope" | "template" | "tune", StepTitle> = {
+  home: { kicker: "How it thinks", lead: "Which tool should", em: "{name}", tail: "think with?", copy: "It uses your own plan for the tool you pick." },
+  scope: { kicker: "Who it's for", lead: "Who is", em: "{name}", tail: "for?", copy: "You can keep it to yourself or share it with a team." },
+  template: { kicker: "Start from", lead: "Where should", em: "{name}", tail: "start?", copy: "Blank, or a worker your company already has." },
+  tune: { kicker: "Fine-tune", lead: "Fine-tune", em: "{name}.", copy: "These keep their defaults unless you change them." },
+};
+
+/** The first New bot step, the same on every path. */
+export const NAME_STEP_TITLE: StepTitle = {
+  kicker: "A new teammate",
+  lead: "Enter a",
+  em: "name.",
+  copy: "This is how your new teammate will appear in HQ.",
 };
 
 export const CLOUD_STEP_TITLES: Record<"home" | "details", StepTitle> = {
@@ -566,10 +628,13 @@ export const CLOUD_STEP_TITLES: Record<"home" | "details", StepTitle> = {
   details: { kicker: "A new teammate", lead: "Enter a", em: "name.", copy: "It runs in your company's cloud and stays on when this computer is asleep." },
 };
 
-/** Headings for the step on screen. */
-export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"]): StepTitle {
-  if (home === "cloud" && step !== "kind") return CLOUD_STEP_TITLES[step];
-  return LOCAL_STEP_TITLES[step];
+/** Headings for the step on screen, with the bot's name set apart on the local steps. */
+export function stepTitle(step: CreateBotStep, home: CreateBotDraft["home"], name = ""): StepTitle {
+  if (home === "cloud") return step === "home" || step === "details" ? CLOUD_STEP_TITLES[step] : NAME_STEP_TITLE;
+  if (step === "details") return NAME_STEP_TITLE;
+  const title = LOCAL_STEP_TITLES[step];
+  const shown = name.trim() || "your bot";
+  return { ...title, em: title.em.replace("{name}", shown) };
 }
 
 export function nextStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home">, opts: StepOptions = {}): CreateBotStep | null {
@@ -587,9 +652,12 @@ export function prevStep(step: CreateBotStep, draft: Pick<CreateBotDraft, "home"
 /** Why this step cannot advance yet; null when it can. */
 export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): string | null {
   switch (step) {
-    case "kind":
-      if (draft.kind === "template" && !draft.templateId) return "Pick a template.";
-      return null;
+    case "scope":
+      return scopeIssue(draft, ctx);
+    case "template":
+      return draft.kind === "template" && !draft.templateId ? "Pick a template." : null;
+    case "tune":
+      return displayNameIssue(draft.name) ?? localHandleIssue(draft, ctx.existingNames);
     case "home":
       if (draft.home === "local") {
         const host = ctx.hostNoun?.trim() || "computer";
@@ -633,15 +701,24 @@ export function stepIssue(step: CreateBotStep, draft: CreateBotDraft, ctx: Creat
         }
         return null;
       }
-      // "Who is it for?" is answered here now, so its rule is checked here.
-      return (
-        displayNameIssue(draft.name) ??
-        localHandleIssue(draft, ctx.existingNames) ??
-        titleIssue(draft.title) ??
-        introIssue(draft.intro) ??
-        scopeIssue(draft, ctx)
-      );
+      return localSettingsIssue(draft, ctx);
   }
+}
+
+/**
+ * What stops a Local draft's name, handle, template or "who is it for?" from
+ * being used, or null. The coding tool is judged separately.
+ */
+export function localSettingsIssue(
+  draft: CreateBotDraft,
+  ctx: Pick<CreateBotContext, "existingNames" | "ownerCompanies">,
+): string | null {
+  return (
+    displayNameIssue(draft.name) ??
+    localHandleIssue(draft, ctx.existingNames) ??
+    (draft.kind === "template" && !draft.templateId ? "Pick a template." : null) ??
+    scopeIssue(draft, ctx)
+  );
 }
 
 /** A company bot needs at least one of the owner's companies; personal needs nothing. */
@@ -650,7 +727,7 @@ export function scopeIssue(
   ctx: Pick<CreateBotContext, "ownerCompanies">,
 ): string | null {
   if (draft.scope !== "company") return null;
-  if (ctx.ownerCompanies.length === 0) return "You are not in a company yet — make it personal for now.";
+  if (ctx.ownerCompanies.length === 0) return "You are not in a company yet. Make it personal for now.";
   const known = new Set(ctx.ownerCompanies.map((c) => c.slug));
   if (!draft.companySlugs.some((slug) => known.has(slug))) return "Pick at least one company.";
   return null;
@@ -661,7 +738,7 @@ export function canAdvance(step: CreateBotStep, draft: CreateBotDraft, ctx: Crea
   return stepIssue(step, draft, ctx, opts) === null;
 }
 
-/** Every step the draft walks is valid → Cmd-Enter may create from anywhere. */
+/** Every step the draft walks is valid: Finish may create from anywhere. */
 export function canCreate(draft: CreateBotDraft, ctx: CreateBotContext, opts: StepOptions = {}): boolean {
   return stepsFor(draft, opts).every((step) => stepIssue(step, draft, ctx, opts) === null);
 }
@@ -672,22 +749,33 @@ export function firstBlockingStep(draft: CreateBotDraft, ctx: CreateBotContext, 
 }
 
 /**
- * The CLI input for a Local draft (Cloud drafts never reach the CLI).
- * `title` is deliberately absent: `hq bot create` has no `--title` flag, so
- * the host writes it to the agent profile after the bot exists.
+ * A Local draft ready for "Finish with defaults". A handle that is only
+ * taken (the name is fine, another bot here already has its slug) gets the
+ * first free numbered one, "scout-2", from the same helper that suggests
+ * names. Anything else is left for the Fine-tune step to say. The draft is
+ * returned unchanged when there is nothing to fix.
+ */
+export function withFreeHandle(draft: CreateBotDraft, existing: readonly string[]): CreateBotDraft {
+  if (draft.home !== "local") return draft;
+  const handle = botHandle(draft);
+  if (!handle || !isValidLocalBotName(handle) || !taken(handle, existing)) return draft;
+  return { ...draft, handle: suggestBotName(existing, [handle]) };
+}
+
+/**
+ * The CLI input for a Local draft (Cloud drafts never reach the CLI). It
+ * carries a kickoff, so the bot's first message asks for the title, avatar
+ * and model the create screens no longer ask for.
  */
 export function toCreateInput(draft: CreateBotDraft): LocalBotCreateInput {
-  const model = draft.model.trim();
-  const intro = draft.intro.trim();
   const worker = draft.kind === "template" ? (draft.templateId ?? "").trim() : "";
   const companies = draft.scope === "company" ? [...new Set(draft.companySlugs.map((c) => c.trim()).filter(Boolean))] : [];
   return {
     name: botHandle(draft),
     runtime: draft.runtime,
     autoApprove: draft.autoApprove,
-    ...(model ? { model } : {}),
     ...(worker ? { worker } : {}),
-    ...(intro ? { intro } : {}),
+    kickoff: newBotKickoff({ template: !!worker }),
     ...(draft.memory !== "synced" ? { memory: draft.memory } : {}),
     // Personal is the CLI's default, so it is not passed: a desktop build
     // against an hq that predates `--kind` keeps creating personal/setup bots.
@@ -724,8 +812,7 @@ export function thinksWithLine(draft: CreateBotDraft, ctx: Pick<CreateBotContext
     return company ? `hosted by ${company.label}` : "hosted in the cloud";
   }
   const runtime = LOCAL_BOT_RUNTIMES.find((r) => r.id === draft.runtime)?.label ?? draft.runtime;
-  const model = draft.model.trim();
-  return model ? `thinks with ${runtime} · ${model}` : `thinks with ${runtime}`;
+  return `thinks with ${runtime}`;
 }
 
 

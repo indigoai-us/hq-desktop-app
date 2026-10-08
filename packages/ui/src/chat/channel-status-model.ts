@@ -81,6 +81,7 @@ export interface StatusPresenceInput {
   actorUid: string;
   status: "online" | "offline";
   actorType?: "human" | "agent";
+  displayName?: string | null;
 }
 
 /**
@@ -200,6 +201,8 @@ export interface ProjectStatusBlock {
 
 export interface StatusPersonRow {
   personUid: string;
+  /** True only when this actor appears in the selected channel's member roster. */
+  isChannelMember?: boolean;
   displayName: string;
   /** Account email, when the roster carried one — shown under the name. */
   email: string | null;
@@ -215,6 +218,13 @@ export interface StatusPersonRow {
    * from last-activity timestamps.
    */
   online: boolean;
+}
+
+/** Presence rows remain visible but do not offer channel membership actions. */
+export function canOfferMembershipActions(
+  row: Pick<StatusPersonRow, "isChannelMember">,
+): boolean {
+  return row.isChannelMember !== false;
 }
 
 /**
@@ -752,6 +762,7 @@ export function buildChannelStatusModel(
     const online = presenceOnlineFor(presence, m.personUid);
     const row: StatusPersonRow = {
       personUid: m.personUid,
+      isChannelMember: true,
       displayName: memberDisplayName(m),
       email: m.email?.trim() || null,
       avatarUrl: m.avatarUrl?.trim() || null,
@@ -769,6 +780,32 @@ export function buildChannelStatusModel(
     }
   }
 
+  // The company live read can contain online participants who are not on this
+  // channel's roster. Keep them visible in the presence view while leaving
+  // offline, unrostered company participants out of the project channel.
+  for (const participant of presence) {
+    const uid = (participant.actorUid ?? "").trim();
+    if (!uid || participant.status !== "online") continue;
+    if (
+      humans.some((row) => row.personUid === uid) ||
+      agents.some((row) => row.personUid === uid)
+    ) {
+      continue;
+    }
+    const isAgent = participant.actorType === "agent";
+    (isAgent ? agents : humans).push({
+      personUid: uid,
+      isChannelMember: false,
+      displayName: optionalString(participant.displayName) || uid,
+      email: null,
+      avatarUrl: null,
+      description: null,
+      role: isAgent ? "agent" : "member",
+      statusIcon: isAgent && liveByKey.has(uid) ? "running" : "idle",
+      online: true,
+    });
+  }
+
   // Actors present only via live read (not yet in roster) still appear.
   for (const session of liveReadSessions) {
     const uid = (session.actorUid ?? "").trim();
@@ -779,6 +816,7 @@ export function buildChannelStatusModel(
     const online = presenceOnlineFor(presence, uid);
     list.push({
       personUid: uid,
+      isChannelMember: false,
       displayName:
         optionalString(session.displayName) ||
         optionalString(session.harness) ||

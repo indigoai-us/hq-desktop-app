@@ -930,6 +930,7 @@ dependencies = [
  "ignore",
  "libc",
  "minisign-verify",
+ "regex",
  "reqwest",
  "rustix",
  "same-file",
