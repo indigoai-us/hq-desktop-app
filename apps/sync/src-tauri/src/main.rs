@@ -39,6 +39,9 @@ macro_rules! print {
     ($($arg:tt)*) => { ::hq_desktop_core::best_effort_print!($($arg)*) };
 }
 
+#[cfg(not(feature = "meet-native-webdriver"))]
+mod launchd_task;
+
 #[cfg(feature = "meet-native-webdriver")]
 mod meet_native;
 
@@ -335,6 +338,9 @@ fn main() {
 
 #[cfg(not(feature = "meet-native-webdriver"))]
 fn main() {
+    // LaunchAgent work is delegated to the user's node installation while
+    // launchd sees this Indigo-signed, stable app executable as argv[0].
+    launchd_task::run_if_requested();
     // The copied Windows update helper must run before Sentry, Tauri, and the
     // single-instance plugin. It waits for the real app to exit, then launches
     // the verified NSIS package from outside the install directory.
