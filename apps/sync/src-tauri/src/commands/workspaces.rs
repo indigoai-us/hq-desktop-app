@@ -75,72 +75,73 @@ pub use hq_desktop_core::workspaces::{
     ManifestLoad, Workspace, WorkspaceKind, WorkspaceState, WorkspacesResult,
 };
 
-/// Detect manifest entries whose `cloud_uid` points at an entity that's no
-/// longer in the cloud (deleted from hq-console), and strip the cloud pointers
-/// so the workspace becomes LocalOnly instead of Broken.
+/// Manifest `cloud_uid`s the cloud roster could not place: the folder exists,
+/// the manifest says it is connected, but no membership/entity came back for
+/// that uid. These are the only local companies whose liveness is in question,
+/// so they are the only ones `GET /entity/{uid}` is asked about.
+pub(crate) fn unplaced_manifest_cloud_uids(
+    local_companies: &[LocalCompanyEntry],
+    company_entities: &BTreeMap<String, EntityInfo>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in local_companies {
+        if !entry.dir_exists {
+            continue;
+        }
+        let Some(uid) = entry.cloud_uid.as_deref().map(str::trim) else {
+            continue;
+        };
+        if uid.is_empty() || company_entities.contains_key(uid) || out.iter().any(|u| u == uid) {
+            continue;
+        }
+        out.push(uid.to_string());
+    }
+    out
+}
+
+/// Drop local companies whose manifest `cloud_uid` belongs to a retired
+/// (tombstoned) cloud company, so the folder does not come back in the rail as
+/// a Broken row or in More companies as a local-only row.
 ///
-/// Only triggers when cloud is reachable and the manifest UID appears in the
-/// explicit tombstone set. A missing entity can also mean that the caller does
-/// not have a membership for it, so absence from `company_entities` is not
-/// proof of deletion.
+/// `hq cloud retire company` leaves the local folder and the manifest
+/// pointers in place on purpose (`hq cloud demote company` is the step that
+/// turns the folder into a local-only company), so this pass hides the entry
+/// without editing the manifest. After a demote the manifest no longer names
+/// the uid and the folder shows again as local-only.
 ///
-/// The disagree-on-UID case (cloud has slug but a different UID) is left as
-/// Broken so Connect can repoint the manifest in a single step.
+/// Only uids in `retired_company_uids` are hidden: that set holds explicit
+/// tombstone answers from the server. A uid that is merely absent from the
+/// caller's memberships is not proof of retirement and stays visible (Broken),
+/// and nothing is hidden while the cloud is unreachable.
 ///
-/// Mutates `local_companies` in place: stripped entries have their
-/// `cloud_uid` / `bucket_name` cleared so the assemble pass produces
-/// LocalOnly. Best-effort: per-entry write failures are logged and the entry
-/// is left untouched (it'll show as Broken until the next pass).
-///
-/// Returns the number of entries successfully stripped.
-pub(crate) fn prune_dangling_cloud_uids(
-    hq_root: &Path,
-    local_companies: &mut [LocalCompanyEntry],
-    tombstoned_company_uids: &HashSet<String>,
+/// Returns the number of entries hidden.
+pub(crate) fn hide_retired_local_companies(
+    local_companies: &mut Vec<LocalCompanyEntry>,
+    retired_company_uids: &HashSet<String>,
     cloud_reachable: bool,
 ) -> usize {
-    if !cloud_reachable {
+    if !cloud_reachable || retired_company_uids.is_empty() {
         return 0;
     }
-    let manifest_path = hq_root.join("companies").join("manifest.yaml");
-    if !manifest_path.exists() {
-        return 0;
-    }
-
-    let mut pruned = 0usize;
-    for entry in local_companies.iter_mut() {
-        if entry.cloud_uid.is_none() {
-            continue;
-        }
-        let is_tombstoned = entry
+    let before = local_companies.len();
+    local_companies.retain(|entry| {
+        let retired = entry
             .cloud_uid
-            .as_ref()
-            .is_some_and(|uid| tombstoned_company_uids.contains(uid));
-        if !is_tombstoned {
-            continue;
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|uid| retired_company_uids.contains(uid));
+        if retired {
+            log(
+                "workspaces",
+                &format!(
+                    "hide retired company '{}' (cloud uid {:?})",
+                    entry.slug, entry.cloud_uid
+                ),
+            );
         }
-        match strip_manifest_cloud_info(&manifest_path, &entry.slug) {
-            Ok(()) => {
-                log(
-                    "workspaces",
-                    &format!(
-                        "prune: stripped manifest cloud_uid for '{}' (cloud entity gone)",
-                        entry.slug
-                    ),
-                );
-                entry.cloud_uid = None;
-                entry.bucket_name = None;
-                pruned += 1;
-            }
-            Err(e) => {
-                log(
-                    "workspaces",
-                    &format!("prune: strip '{}' failed: {e}", entry.slug),
-                );
-            }
-        }
-    }
-    pruned
+        !retired
+    });
+    before - local_companies.len()
 }
 
 /// Reconcile the manifest with the local `companies/*/` folder reality after a
@@ -329,6 +330,8 @@ where
             None
         };
         let home_channel_id = membership_for_slug.and_then(|m| m.home_channel_id.clone());
+        // Website favicon (presigned). Every plan; not gated on branding.
+        let icon_url = membership_for_slug.and_then(|m| m.icon_url.clone());
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -401,6 +404,7 @@ where
                 branding_enabled,
                 brand,
                 home_channel_id,
+                icon_url,
             },
         );
     }
@@ -450,6 +454,7 @@ where
             None
         };
         let home_channel_id = mem.home_channel_id.clone();
+        let icon_url = mem.icon_url.clone();
         by_slug.insert(
             entity.slug.clone(),
             Workspace {
@@ -471,6 +476,7 @@ where
                 branding_enabled,
                 brand,
                 home_channel_id,
+                icon_url,
             },
         );
     }
@@ -512,6 +518,7 @@ where
         branding_enabled: false,
         brand: None,
         home_channel_id: None,
+        icon_url: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -619,6 +626,7 @@ pub(crate) async fn fetch_cloud_roster(
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         });
     }
 
@@ -758,8 +766,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         )
         .await?;
         let vault = VaultClient::new(&vault_url, &tokens.access_token);
-        let (person, memberships, entities, tombstoned_company_uids) =
+        let (person, memberships, entities, mut tombstoned_company_uids) =
             fetch_cloud_roster(&vault, token_email_verified(&tokens)).await?;
+        // `/membership/me` drops a retired company without saying so, which
+        // left its local folder rendering as a Broken company with the old
+        // cloud uid. Ask `GET /entity/{uid}` about each manifest uid the
+        // roster could not place; only an explicit tombstone answer counts.
+        let unplaced = unplaced_manifest_cloud_uids(&local_companies, &entities);
+        if !unplaced.is_empty() {
+            let probed = crate::commands::retired_entities::classify_entities(unplaced, |uid| {
+                crate::commands::retired_entities::cached_entity_liveness(&vault, uid)
+            })
+            .await;
+            tombstoned_company_uids.extend(probed.retired_company_uids);
+        }
         Ok((
             person,
             memberships,
@@ -810,11 +830,11 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         }
     };
 
-    // Auto-clean manifest entries whose cloud_uid points at a cloud entity
-    // that's no longer there (deleted via hq-console). Stripping the manifest
-    // pointers lets the entry render as LocalOnly instead of Broken.
-    prune_dangling_cloud_uids(
-        &hq_root,
+    // A retired (tombstoned) company is hidden everywhere, including its
+    // local folder: it must not come back as a Broken rail company or a
+    // local-only More companies row. The manifest is left as the CLI wrote
+    // it; `hq cloud demote company` is what turns the folder local-only.
+    hide_retired_local_companies(
         &mut local_companies,
         &tombstoned_company_uids,
         cloud_reachable,
@@ -1961,6 +1981,7 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 
@@ -2538,6 +2559,46 @@ mod tests {
         );
     }
 
+    /// Regression (OWNER-010): `/membership/me` sends `iconUrl` on each row,
+    /// but `MembershipInfo` had no field for it, so serde dropped it and every
+    /// rail tile fell back to initials. Parse the live payload shape and check
+    /// the icon reaches the serialized workspace row on both branches.
+    #[test]
+    fn membership_icon_url_reaches_the_workspace_row() {
+        let wire = serde_json::json!({
+            "uid": "mem_1",
+            "personUid": "prs_x",
+            "companyUid": "cmp_b",
+            "status": "active",
+            "companyName": "Amass",
+            "brandingEnabled": false,
+            "brand": {},
+            "iconUrl": "https://hq-marketplace-assets-hq-prod.s3.us-east-1.amazonaws.com/icons/cmp_b.png?X-Amz-Signature=abc"
+        });
+        let mem: MembershipInfo = serde_json::from_value(wire).expect("live row shape parses");
+        assert!(mem.icon_url.as_deref().unwrap_or("").contains("hq-marketplace-assets"));
+
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_b".to_string(), company_entity("cmp_b", "amass", None));
+        // Cloud-only branch.
+        let result = assemble_workspaces(
+            tmp.path(), Some(&p), &[mem.clone()], &entities, &[], true, |_| None,
+        );
+        assert_eq!(result[1].icon_url, mem.icon_url);
+        let json = serde_json::to_value(&result[1]).unwrap();
+        assert_eq!(json["iconUrl"].as_str(), mem.icon_url.as_deref());
+
+        // Membership without an icon serializes no key (initials fallback).
+        let mut bare = mem.clone();
+        bare.icon_url = None;
+        let result = assemble_workspaces(
+            tmp.path(), Some(&p), &[bare], &entities, &[], true, |_| None,
+        );
+        assert!(serde_json::to_value(&result[1]).unwrap().get("iconUrl").is_none());
+    }
+
     /// Regression: a website-created company whose entity carries no name
     /// rendered as "Hqtestco" on the welcome screen; the owner typed
     /// "HQTestCo", which the membership row still carries.
@@ -2722,10 +2783,39 @@ mod tests {
         assert_eq!(company.display_name, "Cloud Company Name");
     }
 
-    // ── prune_dangling_cloud_uids ───────────────────────────────────────
+    // ── retired (tombstoned) local companies ───────────────────────────
 
     #[test]
-    fn prune_does_not_strip_when_cloud_has_no_entity_for_slug() {
+    fn unplaced_uids_are_manifest_uids_the_roster_did_not_return() {
+        let tmp = TempDir::new().unwrap();
+        let entries = vec![
+            local_full("live", tmp.path(), true, None, Some("cmp_LIVE"), None),
+            local_full("retired", tmp.path(), true, None, Some("cmp_GONE"), None),
+            local_full("again", tmp.path(), true, None, Some("cmp_GONE"), None),
+            local_full(
+                "phantom",
+                tmp.path(),
+                false,
+                None,
+                Some("cmp_PHANTOM"),
+                None,
+            ),
+            local("plain", tmp.path(), true, None),
+        ];
+        let entities: BTreeMap<String, EntityInfo> = [(
+            "cmp_LIVE".to_string(),
+            company_entity("cmp_LIVE", "live", None),
+        )]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            unplaced_manifest_cloud_uids(&entries, &entities),
+            vec!["cmp_GONE".to_string()]
+        );
+    }
+
+    #[test]
+    fn retired_company_folder_is_hidden_from_every_company_list() {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
@@ -2738,109 +2828,109 @@ companies:
     bucket_name: "hq-vault-cmp-gone"
 "#,
         );
-        let mut entries = vec![local_full(
-            "alpha",
+        let mut entries = vec![
+            local_full(
+                "alpha",
+                tmp.path(),
+                true,
+                Some("Alpha"),
+                Some("cmp_GONE"),
+                Some("hq-vault-cmp-gone"),
+            ),
+            local("beta", tmp.path(), true, Some("Beta")),
+        ];
+        let retired = ["cmp_GONE".to_string()].into_iter().collect();
+
+        let hidden = hide_retired_local_companies(&mut entries, &retired, true);
+
+        assert_eq!(hidden, 1);
+        let rows = assemble_workspaces(
             tmp.path(),
+            None,
+            &[],
+            &BTreeMap::new(),
+            &entries,
             true,
-            Some("Alpha"),
-            Some("cmp_GONE"),
-            Some("hq-vault-cmp-gone"),
-        )];
-
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &HashSet::new(), true);
-        assert_eq!(pruned, 0, "an absent entity is not proof of a tombstone");
-        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
-        assert_eq!(entries[0].bucket_name.as_deref(), Some("hq-vault-cmp-gone"));
-
+            |_| None,
+        );
+        // Neither a Broken rail row carrying the old uid nor a local-only row.
+        assert!(rows.iter().all(|w| w.slug != "alpha"));
+        assert!(rows
+            .iter()
+            .all(|w| w.cloud_uid.as_deref() != Some("cmp_GONE")));
+        // Live local companies are unaffected.
+        assert!(rows
+            .iter()
+            .any(|w| w.slug == "beta" && w.state == WorkspaceState::LocalOnly));
+        // The manifest is left as the CLI wrote it (demote is the CLI's step).
         let (reread, _) = discover_local_companies(tmp.path());
         let alpha = reread.iter().find(|e| e.slug == "alpha").unwrap();
         assert_eq!(alpha.cloud_uid.as_deref(), Some("cmp_GONE"));
     }
 
     #[test]
-    fn prune_strips_only_when_cloud_uid_is_explicitly_tombstoned() {
+    fn absent_membership_alone_does_not_hide_a_company() {
         let tmp = TempDir::new().unwrap();
-        write_manifest(
-            tmp.path(),
-            r#"
-companies:
-  alpha:
-    name: "Alpha"
-    path: "companies/alpha"
-    cloud_uid: "cmp_GONE"
-    bucket_name: "hq-vault-cmp-gone"
-"#,
-        );
         let mut entries = vec![local_full(
             "alpha",
             tmp.path(),
             true,
             Some("Alpha"),
             Some("cmp_GONE"),
-            Some("hq-vault-cmp-gone"),
+            None,
         )];
-        let tombstones = ["cmp_GONE".to_string()].into_iter().collect();
 
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &tombstones, true);
+        let hidden = hide_retired_local_companies(&mut entries, &HashSet::new(), true);
 
-        assert_eq!(pruned, 1);
-        assert!(entries[0].cloud_uid.is_none());
-        assert!(entries[0].bucket_name.is_none());
+        assert_eq!(hidden, 0, "an absent entity is not proof of a tombstone");
+        let rows = assemble_workspaces(
+            tmp.path(),
+            None,
+            &[],
+            &BTreeMap::new(),
+            &entries,
+            true,
+            |_| None,
+        );
+        let alpha = rows.iter().find(|w| w.slug == "alpha").unwrap();
+        assert_eq!(alpha.state, WorkspaceState::Broken);
     }
 
     #[test]
-    fn prune_skips_when_cloud_unreachable() {
+    fn nothing_is_hidden_while_cloud_is_unreachable() {
         let tmp = TempDir::new().unwrap();
-        write_manifest(
-            tmp.path(),
-            r#"
-companies:
-  alpha:
-    name: "Alpha"
-    path: "companies/alpha"
-    cloud_uid: "cmp_GONE"
-    bucket_name: "hq-vault-cmp-gone"
-"#,
-        );
         let mut entries = vec![local_full(
             "alpha",
             tmp.path(),
             true,
             None,
             Some("cmp_GONE"),
-            Some("hq-vault-cmp-gone"),
+            None,
         )];
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &HashSet::new(), false);
-        assert_eq!(pruned, 0);
-        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
+        let retired = ["cmp_GONE".to_string()].into_iter().collect();
+        assert_eq!(
+            hide_retired_local_companies(&mut entries, &retired, false),
+            0
+        );
+        assert_eq!(entries.len(), 1);
     }
 
     #[test]
-    fn prune_skips_when_cloud_has_slug_with_different_uid() {
+    fn only_the_retired_uid_is_hidden() {
         let tmp = TempDir::new().unwrap();
-        write_manifest(
-            tmp.path(),
-            r#"
-companies:
-  alpha:
-    name: "Alpha"
-    path: "companies/alpha"
-    cloud_uid: "cmp_OLD"
-    bucket_name: "hq-vault-cmp-old"
-"#,
-        );
         let mut entries = vec![local_full(
             "alpha",
             tmp.path(),
             true,
             None,
             Some("cmp_OLD"),
-            Some("hq-vault-cmp-old"),
+            None,
         )];
-
-        let tombstones = ["cmp_NEW".to_string()].into_iter().collect();
-        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &tombstones, true);
-        assert_eq!(pruned, 0);
+        let retired = ["cmp_NEW".to_string()].into_iter().collect();
+        assert_eq!(
+            hide_retired_local_companies(&mut entries, &retired, true),
+            0
+        );
         assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_OLD"));
     }
 }

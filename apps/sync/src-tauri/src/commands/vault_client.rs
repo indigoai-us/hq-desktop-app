@@ -40,6 +40,44 @@ impl From<reqwest::Error> for VaultClientError {
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
+/// Whether `GET /entity/{uid}` still has a live entity behind a uid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityLiveness {
+    /// 404, or a row stamped `deleted: true` (soft tombstone).
+    Gone,
+    /// A live entity. For a bot (`agt_*`) `company_uids` lists the companies
+    /// its agent config names (`companyMemberships`, plus the host
+    /// `companyUid`); empty for companies and for bots with no company.
+    Live { company_uids: Vec<String> },
+}
+
+/// Read an entity body from `GET /entity/{uid}` as [`EntityLiveness`].
+/// Anything that is not an explicit tombstone is live, so a body shape this
+/// client does not recognize can never hide a company or bot.
+pub fn entity_liveness_from_json(entity: &serde_json::Value) -> EntityLiveness {
+    if entity.get("deleted").and_then(|v| v.as_bool()) == Some(true) {
+        return EntityLiveness::Gone;
+    }
+    let config = entity.get("metadata").and_then(|m| m.get("agentConfig"));
+    let mut company_uids: Vec<String> = Vec::new();
+    let mut push = |value: Option<&serde_json::Value>| {
+        if let Some(uid) = value.and_then(|v| v.as_str()).map(str::trim) {
+            if uid.starts_with("cmp_") && !company_uids.iter().any(|known| known == uid) {
+                company_uids.push(uid.to_string());
+            }
+        }
+    };
+    if let Some(config) = config {
+        if let Some(list) = config.get("companyMemberships").and_then(|v| v.as_array()) {
+            for item in list {
+                push(Some(item));
+            }
+        }
+        push(config.get("companyUid"));
+    }
+    EntityLiveness::Live { company_uids }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityInfo {
@@ -195,6 +233,11 @@ pub struct MembershipInfo {
     /// responses while the server rolls this field out.
     #[serde(default)]
     pub home_channel_id: Option<String>,
+    /// Presigned company website favicon on the assets host. Every plan;
+    /// absent when the company has no website. Without this field serde
+    /// dropped the server's value and the rail fell back to initials.
+    #[serde(default)]
+    pub icon_url: Option<String>,
 }
 
 impl MembershipInfo {
@@ -413,6 +456,27 @@ impl VaultClient {
         }
     }
 
+    /// Test-only: a client with its own connection pool.
+    ///
+    /// `new` hands out the process-wide shared client, so in the test binary
+    /// every `#[tokio::test]` (each on its own runtime) shares one keep-alive
+    /// pool. wiremock's pooled servers keep their ports across tests, so a test
+    /// can pick up an idle connection opened on an earlier test's runtime,
+    /// which is gone. That first send then fails in transport and, in a retry
+    /// loop, counts as an attempt the mock never saw. Tests that count requests
+    /// use this so every send reaches the server.
+    #[cfg(test)]
+    pub(crate) fn with_own_pool(
+        base_url: impl Into<String>,
+        auth_token: impl Into<String>,
+    ) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            auth_token: auth_token.into(),
+            client: Client::new(),
+        }
+    }
+
     /// `POST /entity` — create a new entity; returns the created EntityInfo.
     pub async fn create_entity(
         &self,
@@ -525,6 +589,31 @@ impl VaultClient {
         serde_json::from_value(wrapper["entity"].clone())
             .map(Some)
             .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /entity/{uid}` read as a liveness answer for a company or bot uid
+    /// that another server list referenced (a channel's `companyUid`, a DM
+    /// peer's `agt_*` uid, a manifest `cloud_uid`).
+    ///
+    /// hq-pro answers a tombstoned (`hq cloud retire company`) or purged
+    /// entity with 404, and `/membership/me` silently drops tombstoned
+    /// companies, so this read is the only place the desktop can learn that a
+    /// uid it was handed no longer has a live entity. 404 or `deleted: true`
+    /// is [`EntityLiveness::Gone`]; any other success is live. Transport and
+    /// non-404 HTTP errors are returned as errors so callers never hide
+    /// something on a failed read.
+    pub async fn entity_liveness(&self, uid: &str) -> Result<EntityLiveness, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/entity/{}", self.base_url, uid))
+            .bearer_auth(&self.auth_token)
+            .send_retrying()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(EntityLiveness::Gone);
+        }
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        Ok(entity_liveness_from_json(&wrapper["entity"]))
     }
 
     /// `GET /membership/person/{personUid}` — list memberships for a person.

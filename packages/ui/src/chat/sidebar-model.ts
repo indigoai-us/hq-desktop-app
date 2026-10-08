@@ -19,6 +19,12 @@ import { isAgentUid } from "./agent-thinking";
 import { agentAvatarFor } from "./messaging/agent-avatars";
 import { paintableAvatarSrc } from "../avatars/csp-image-src.js";
 import { isSetupChannel } from "./setup-channel";
+import {
+  dmPeerLabel,
+  isUnknownPeerLabel,
+  readablePeerName,
+  type PeerDirectory,
+} from "./peer-names";
 import type { NotifyLevel } from "./notify-level";
 
 // ── Row shape ────────────────────────────────────────────────────────────────
@@ -357,6 +363,8 @@ export function isStrictlyRicherConversationRow(
 export interface ScopeCompany {
   companyUid: string;
   label: string;
+  /** Configured company slug (the `companies/<slug>/` folder). Never derive it from `label`. */
+  slug?: string | null;
   /** Presigned company icon, when the membership row carried one. */
   iconUrl?: string | null;
 }
@@ -406,6 +414,12 @@ export interface GroupedConversations {
   lastWeek: ConversationRow[];
   /** Full filtered list (for "Show all history…" view). */
   all: ConversationRow[];
+  /**
+   * Company channels known to hold no messages (`messageActivityAt === 0`),
+   * listed last under "No messages yet". Only filled when `groupByDay` is
+   * asked to (the All scope).
+   */
+  noMessages?: ConversationRow[];
 }
 
 export const PINS_STORAGE_KEY = "hq.chat.pins";
@@ -857,6 +871,12 @@ export interface NormalizeOptions {
     title?: string | null;
     name?: string | null;
   }>;
+  /**
+   * uid → name/email from every roster the sidebar has (contacts, channel
+   * members, company members, thread messages). DM rows and group DM members
+   * missing a name read it from here. Absent-safe.
+   */
+  peerDirectory?: PeerDirectory | null;
 }
 
 function toIdSet(
@@ -864,6 +884,29 @@ function toIdSet(
 ): Set<string> {
   if (!value) return new Set();
   return value instanceof Set ? new Set(value) : new Set(value);
+}
+
+/**
+ * Group DM rosters can carry a member whose displayName is blank or a raw id.
+ * Swap in the directory's name when one is known; otherwise leave it for
+ * `channelDisplayName` to skip.
+ */
+function withNamedMembers(
+  channel: Channel,
+  directory: PeerDirectory | null | undefined,
+): Channel {
+  if (channel.scope !== "group" || !channel.members?.length) return channel;
+  let changed = false;
+  const members = channel.members.map((member) => {
+    if (readablePeerName(member.displayName)) return member;
+    const name = readablePeerName(
+      directory?.get(member.personUid?.trim() ?? "")?.displayName,
+    );
+    if (!name) return member;
+    changed = true;
+    return { ...member, displayName: name };
+  });
+  return changed ? { ...channel, members } : channel;
 }
 
 /** Channel / group DM → ConversationRow. */
@@ -918,7 +961,7 @@ export function normalizeChannel(
     ...(isGroup ? {} : { isCompanyHome }),
     title:
       (isCompanyHome ? companyDisplayName?.trim() : "") ||
-      channelDisplayName(channel, {
+      channelDisplayName(withNamedMembers(channel, options.peerDirectory), {
         projectTitles: options.projectTitles,
       }),
     companyUid:
@@ -968,8 +1011,8 @@ export function normalizeDm(
   const pinnedIds = toIdSet(options.pinnedIds);
   const dmDots = toIdSet(options.dmDots);
   const id = `dm:${contact.personUid}`;
-  const title =
-    contact.displayName?.trim() || contact.email?.trim() || contact.personUid;
+  // Never the raw prs_/agt_ id: name, else email, else "Unknown person".
+  const title = dmPeerLabel(contact, options.peerDirectory);
   const activity = Math.max(
     parseActivityMs(contact.lastMessageAt),
     parseActivityMs(contact.lastActivityAt),
@@ -1125,7 +1168,13 @@ export function collapseDuplicateDmRows(
       continue;
     }
     const email = (row.email ?? "").trim().toLowerCase();
-    const key = email || `name:${row.title.trim().toLowerCase()}`;
+    // Rows nothing names share the "Unknown person" label; they are still
+    // different people, so key them by uid instead of by title.
+    const key =
+      email ||
+      (isUnknownPeerLabel(row.title) && row.personUid
+        ? `uid:${row.personUid}`
+        : `name:${row.title.trim().toLowerCase()}`);
     const prev = byKey.get(key);
     if (!prev) {
       byKey.set(key, row);
@@ -1656,11 +1705,19 @@ export function applySidebarFilters(
 export function groupByDay(
   rows: ConversationRow[],
   now: number = Date.now(),
-  options: { humanOnly?: boolean } = {},
+  options: { humanOnly?: boolean; emptyChannelsLast?: boolean } = {},
 ): GroupedConversations {
   const humanOnly = options.humanOnly === true;
   const pinned = rows.filter((r) => r.pinned);
-  const unpinned = rows.filter((r) => !r.pinned);
+  const noMessages: ConversationRow[] = [];
+  const unpinned = rows.filter((r) => {
+    if (r.pinned) return false;
+    if (options.emptyChannelsLast === true && isEmptyCompanyChannel(r)) {
+      noMessages.push(r);
+      return false;
+    }
+    return true;
+  });
 
   const todayStart = startOfLocalDay(now);
   // Anything with activity strictly before (todayStart - 6 days) is older than
@@ -1701,7 +1758,34 @@ export function groupByDay(
     sections,
     lastWeek,
     all: rows.slice(),
+    ...(options.emptyChannelsLast === true ? { noMessages } : {}),
   };
+}
+
+/**
+ * A company channel the server says has never been talked in. Rows from an
+ * older cache carry no `messageActivityAt`; those stay dated by
+ * `lastActivityAt` rather than guessing they are empty.
+ */
+export function isEmptyCompanyChannel(row: ConversationRow): boolean {
+  return isCompanyScopedChannel(row) && row.messageActivityAt === 0;
+}
+
+/**
+ * Rail rows for the All scope: company channels join DMs and project
+ * channels in the date buckets. They skip the rail's channel budget so a
+ * company channel is never hidden just because there are many of them.
+ */
+export function takeAllScopeRailRows(
+  rows: readonly ConversationRow[],
+  options: Parameters<typeof takeRailConversations>[1] = {},
+): ConversationRow[] {
+  const keep = new Set(
+    takeRailConversations(omitCompanyScopedChannels(rows), options).map(
+      (row) => row.id,
+    ),
+  );
+  return rows.filter((row) => keep.has(row.id) || isCompanyScopedChannel(row));
 }
 
 const TYPE_SECTION_ORDER: ReadonlyArray<{
@@ -1759,6 +1843,51 @@ function rowMustStayOnRail(
   if (row.kind === "dm" || row.kind === "group") return true;
   if (row.personUid && recentPersonUids.has(row.personUid)) return true;
   return false;
+}
+
+/**
+ * A team channel owned by a company (`channelScope === "company"`).
+ * Home's inbox omits these; they live in that company's pane under Activity.
+ * Project channels and DMs are not company-scoped.
+ */
+export function isCompanyScopedChannel(row: ConversationRow): boolean {
+  return row.kind === "channel" && (row.channelScope ?? "").trim() === "company";
+}
+
+/** Home inbox rows: everything except company-scoped channels. */
+export function omitCompanyScopedChannels(
+  rows: readonly ConversationRow[],
+): ConversationRow[] {
+  return rows.filter((row) => !isCompanyScopedChannel(row));
+}
+
+/** Company-scoped channels for one company, newest activity first. */
+export function companyScopedChannels(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): ConversationRow[] {
+  const uid = companyUid.trim();
+  if (!uid) return [];
+  return sortConversations(
+    rows.filter(
+      (row) => isCompanyScopedChannel(row) && (row.companyUid ?? "").trim() === uid,
+    ),
+    "recent",
+  );
+}
+
+/** Unread on a company's channels, for the rail tile badge. */
+export function companyChannelUnread(
+  rows: readonly ConversationRow[],
+  companyUid: string,
+): number {
+  let total = 0;
+  for (const row of rows) {
+    if (!isCompanyScopedChannel(row)) continue;
+    if ((row.companyUid ?? "").trim() !== companyUid.trim()) continue;
+    total += row.unreadCount ?? (row.unreadDot ? 1 : 0);
+  }
+  return total;
 }
 
 export function isProjectConversationRow(row: ConversationRow): boolean {
@@ -1950,6 +2079,7 @@ export function flattenGrouped(
   const out: ConversationRow[] = [...grouped.pinned];
   for (const section of grouped.sections) out.push(...section.rows);
   if (includeLastWeek) out.push(...grouped.lastWeek);
+  out.push(...(grouped.noMessages ?? []));
   return out;
 }
 
@@ -2671,8 +2801,14 @@ export function railRowScopeLabel(
     duplicateHumanTitles?: ReadonlySet<string>;
   },
 ): RailScopeLabel | null {
-  if (!options.enabled) return null;
   const allCompanies = options.scope === "all";
+  // All scope: a company channel always names its company, even with scope
+  // labels off, since channel names repeat across companies.
+  if (allCompanies && isCompanyScopedChannel(row)) {
+    const name = resolveRailCompanyName(row.companyUid, options.companies);
+    return name ? { kind: "company", text: name } : null;
+  }
+  if (!options.enabled) return null;
 
   if (row.kind === "channel" || row.kind === "group" || isAgentDmRow(row)) {
     if (!allCompanies) return null;
@@ -2747,6 +2883,7 @@ export function searchHitSnippet(hit: MessageSearchHit): string {
 export function resolveSearchHitRow(
   hit: MessageSearchHit,
   rows: ConversationRow[],
+  peerDirectory?: PeerDirectory | null,
 ): ConversationRow {
   if (hit.scope === "dm" && hit.counterpartyUid) {
     const existing = rows.find(
@@ -2756,7 +2893,7 @@ export function resolveSearchHitRow(
     return {
       id: `dm:${hit.counterpartyUid}`,
       kind: "dm",
-      title: hit.counterpartyUid,
+      title: dmPeerLabel({ personUid: hit.counterpartyUid }, peerDirectory),
       companyUid: hit.companyUid ?? null,
       unreadDot: false,
       lastActivityAt: parseActivityMs(hit.createdAt),

@@ -11,6 +11,8 @@ use hq_desktop_core::lifecycle::{
 };
 use hq_desktop_core::paths::ResolvedProgramKind;
 use serde_json::{Map, Value};
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
 use tauri::{AppHandle, Manager, State};
@@ -30,6 +32,64 @@ impl LifecycleStateHandle {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// True while HQ is not installed on this computer yet (the lifecycle verdict
+/// is `NeedsInstall`, `InstallResume` or `NeedsAuthForInstall`).
+///
+/// Background sync must not run in that window. The watch runner, the
+/// supervisor respawn, sync-on-launch and the hq daemon's sync service all
+/// write into the HQ folder they resolve, and before the location step has
+/// run that is the default folder. A first-run sync there filled the default
+/// folder with the cloud company, and the location step then offered a
+/// nested `hq/hq` folder to a brand-new user. Starts `false` so a process
+/// that never classified its lifecycle keeps the existing sync behavior.
+#[cfg(not(test))]
+static SYNC_HELD_FOR_SETUP: AtomicBool = AtomicBool::new(false);
+
+// Unit tests run in parallel inside one process; a per-thread gate keeps a
+// test that holds sync from changing what unrelated tests observe.
+#[cfg(test)]
+thread_local! {
+    static SYNC_HELD_FOR_SETUP_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(not(test))]
+fn swap_sync_held(hold: bool) -> bool {
+    SYNC_HELD_FOR_SETUP.swap(hold, Ordering::AcqRel)
+}
+
+#[cfg(test)]
+fn swap_sync_held(hold: bool) -> bool {
+    SYNC_HELD_FOR_SETUP_TEST.with(|held| held.replace(hold))
+}
+
+/// Returned when a sync start is refused because setup is unfinished.
+pub const SYNC_HELD_FOR_SETUP_MESSAGE: &str =
+    "HQ setup is not finished on this computer yet; sync starts once it is";
+
+/// Whether background sync is held because HQ is not installed yet.
+#[cfg(not(test))]
+pub fn sync_held_for_setup() -> bool {
+    SYNC_HELD_FOR_SETUP.load(Ordering::Acquire)
+}
+
+#[cfg(test)]
+pub fn sync_held_for_setup() -> bool {
+    SYNC_HELD_FOR_SETUP_TEST.with(|held| held.get())
+}
+
+/// Sync waits while the lifecycle verdict says install is still required.
+pub fn lifecycle_holds_sync(state: LifecycleState) -> bool {
+    hq_desktop_core::lifecycle::installation_required(state)
+}
+
+/// Publish the sync gate for `state`. Returns true when this call released a
+/// gate that was held, so the caller can start what setup kept off.
+pub(crate) fn publish_sync_setup_gate(state: LifecycleState) -> bool {
+    let hold = lifecycle_holds_sync(state);
+    let was_held = swap_sync_held(hold);
+    was_held && !hold
 }
 
 /// Current lifecycle verdict for the running process, if one was resolved.
@@ -129,6 +189,13 @@ pub fn set_lifecycle_state(app: &AppHandle, state: LifecycleState) {
             &format!("lifecycle state advanced to {}", lifecycle_state_str(state)),
         );
     }
+    if publish_sync_setup_gate(state) {
+        log(
+            "lifecycle",
+            "setup finished; starting the sync services held during setup",
+        );
+        crate::commands::hq_daemon_host::start_sync_services_after_setup(app.clone());
+    }
 }
 
 /// Resolve lifecycle inputs at startup, classify, backfill legacy install
@@ -167,6 +234,7 @@ pub fn setup_lifecycle(app: &AppHandle) {
             "lifecycle",
             "settings state unavailable; preserving the existing launch surface",
         );
+        publish_sync_setup_gate(LifecycleState::SteadyState);
         app.manage(LifecycleStateHandle(RwLock::new(
             LifecycleState::SteadyState,
         )));
@@ -519,6 +587,13 @@ pub fn setup_lifecycle(app: &AppHandle) {
         ),
     );
 
+    publish_sync_setup_gate(verdict.state);
+    if lifecycle_holds_sync(verdict.state) {
+        log(
+            "lifecycle",
+            "HQ is not installed yet; background sync waits until setup finishes",
+        );
+    }
     app.manage(LifecycleStateHandle(RwLock::new(verdict.state)));
     app.manage(LifecycleInputsHandle {
         inputs,
@@ -926,6 +1001,48 @@ mod tests {
         assert_eq!(handle.current(), LifecycleState::NeedsInstall);
         *handle.0.write().unwrap() = LifecycleState::SteadyState;
         assert_eq!(handle.current(), LifecycleState::SteadyState);
+    }
+
+    /// Sync waits for every state where install is still required and runs
+    /// for every installed state, so installed users keep their sync.
+    #[test]
+    fn sync_is_held_only_while_install_is_required() {
+        for state in [
+            LifecycleState::NeedsInstall,
+            LifecycleState::InstallResume,
+            LifecycleState::NeedsAuthForInstall,
+        ] {
+            assert!(lifecycle_holds_sync(state), "{state:?} must hold sync");
+        }
+        for state in [
+            LifecycleState::InstalledFirstRun,
+            LifecycleState::InstalledLegacyUpdate,
+            LifecycleState::SteadyState,
+        ] {
+            assert!(!lifecycle_holds_sync(state), "{state:?} must not hold sync");
+        }
+    }
+
+    /// The gate reports a release exactly once, when setup finishes, which is
+    /// what starts the sync services that launch kept off.
+    #[test]
+    fn publishing_the_gate_reports_the_release_once() {
+        assert!(
+            !sync_held_for_setup(),
+            "a process that never classified keeps sync"
+        );
+        assert!(!publish_sync_setup_gate(LifecycleState::NeedsInstall));
+        assert!(sync_held_for_setup());
+        assert!(!publish_sync_setup_gate(LifecycleState::InstallResume));
+        assert!(sync_held_for_setup());
+        assert!(publish_sync_setup_gate(LifecycleState::SteadyState));
+        assert!(!sync_held_for_setup());
+        assert!(!publish_sync_setup_gate(LifecycleState::SteadyState));
+        // An installed launch never holds and never reports a release.
+        assert!(!publish_sync_setup_gate(
+            LifecycleState::InstalledLegacyUpdate
+        ));
+        assert!(!sync_held_for_setup());
     }
 
     #[test]

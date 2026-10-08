@@ -1,4 +1,7 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
+  import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
    * 30-day usage, and owner/admin settings. Data comes from adapter.agents
@@ -16,7 +19,6 @@
     defaultTelemetryRange,
     draftFromRoutine,
     emptyRoutineDraft,
-    formatTokenCount,
     freshnessNote,
     groupRoutines,
     headerFromMobileRoster,
@@ -37,10 +39,28 @@
     type AgentUsageView,
     type LoadState,
     type RoutineActionId,
+    type RoutineCadence,
     type RoutineDraft,
   } from "./agent-detail-model.js";
   import "./tokens.css";
   import "./chat-tokens.css";
+
+  const ROUTINE_CADENCE_OPTIONS: { value: RoutineCadence; label: string }[] = [
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "interval", label: "Every few minutes" },
+    { value: "once", label: "One time" },
+    { value: "custom", label: "Custom (cron)" },
+  ];
+  const WEEKDAY_OPTIONS = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ].map((day, i) => ({ value: String(i), label: day }));
 
   interface Props {
     agentUid: string;
@@ -331,7 +351,8 @@
     const res = await adapter.agents.updateProfile(agentUid, patch);
     saveBusy = false;
     if (!res.ok) {
-      saveError = res.message ?? "Could not save profile.";
+      console.warn("[agent-detail] save profile failed", res.message);
+      saveError = "Could not save profile. Try again.";
       return;
     }
     header = {
@@ -346,7 +367,8 @@
   async function pauseJob(jobId: string): Promise<void> {
     const res = await adapter.agents.pauseJob(agentUid, jobId);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the job.";
+      console.warn("[agent-detail] pause the job failed", res.message);
+      actionError = "Could not pause the job. Try again.";
       return;
     }
     if (jobsState.status === "ready") {
@@ -435,7 +457,8 @@
   async function pauseAgent(): Promise<void> {
     const res = await adapter.agents.stop(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not pause the bot.";
+      console.warn("[agent-detail] pause the bot failed", res.message);
+      actionError = "Could not pause the bot. Try again.";
       return;
     }
     header = { ...header, status: "IDLE", runtimeStatus: "stopped" };
@@ -444,7 +467,8 @@
   async function removeAgent(): Promise<void> {
     const res = await adapter.agents.deprovision(agentUid);
     if (!res.ok) {
-      actionError = res.message ?? "Could not remove the bot.";
+      console.warn("[agent-detail] remove the bot failed", res.message);
+      actionError = "Could not remove the bot. Try again.";
       return;
     }
     onclose?.();
@@ -494,7 +518,7 @@
       <div class="ad-identity-copy">
         <h2 class="ad-name" data-testid="agent-detail-name">{header.displayName}</h2>
         <p class="ad-status" data-testid="agent-detail-status">
-          BOT · {header.status}
+          Bot · {header.status}
         </p>
         <BotKindChip
           kind={botKindFor(header.uid, localBots, ownedLocalBotUids) ?? "cloud"}
@@ -534,7 +558,7 @@
             data-testid="agent-detail-uid"
             title="Copy uid"
             onclick={() => void copyUid()}
-          >
+          ><RailIcon name="copy" />
             {header.uid}
             <span class="ad-uid-hint">{copied ? "copied" : "copy"}</span>
           </button>
@@ -730,16 +754,16 @@
             </label>
             <label class="ad-field">
               <span>Repeats</span>
-              <select
-                data-testid="agent-detail-routine-cadence"
-                bind:value={routineDraft.cadence}
-              >
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="interval">Every few minutes</option>
-                <option value="once">One time</option>
-                <option value="custom">Custom (cron)</option>
-              </select>
+              <Dropdown
+                block
+                testid="agent-detail-routine-cadence"
+                label="Repeats"
+                value={routineDraft.cadence}
+                options={ROUTINE_CADENCE_OPTIONS}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.cadence = v as RoutineCadence;
+                }}
+              />
             </label>
             {#if routineDraft.cadence === "daily" || routineDraft.cadence === "weekly"}
               <label class="ad-field">
@@ -750,11 +774,16 @@
             {#if routineDraft.cadence === "weekly"}
               <label class="ad-field">
                 <span>Day</span>
-                <select bind:value={routineDraft.weekday}>
-                  {#each ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as day, i (day)}
-                    <option value={i}>{day}</option>
-                  {/each}
-                </select>
+                <Dropdown
+                  block
+                  testid="agent-detail-routine-weekday"
+                  label="Day"
+                  value={String(routineDraft.weekday)}
+                  options={WEEKDAY_OPTIONS}
+                  onchange={(v) => {
+                    if (routineDraft) routineDraft.weekday = Number(v);
+                  }}
+                />
               </label>
             {/if}
             {#if routineDraft.cadence === "interval"}
@@ -781,14 +810,24 @@
             {/if}
             <label class="ad-field">
               <span>Send results to</span>
-              <select bind:value={routineDraft.deliver}>
-                {#if routineEditId}<option value="">Keep as is</option>{/if}
-                <option value="origin">Where it was asked</option>
-                <option value="local">Keep on the bot</option>
-                {#each view.deliverOptions as option (option.value)}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
+              <Dropdown
+                block
+                testid="agent-detail-routine-deliver"
+                label="Send results to"
+                value={routineDraft.deliver}
+                options={[
+                  ...(routineEditId ? [{ value: "", label: "Keep as is" }] : []),
+                  { value: "origin", label: "Where it was asked" },
+                  { value: "local", label: "Keep on the bot" },
+                  ...view.deliverOptions.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  })),
+                ]}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.deliver = v;
+                }}
+              />
             </label>
             <div class="ad-row-actions">
               <button
@@ -890,7 +929,7 @@
           data-testid="agent-detail-save"
           disabled={saveBusy}
           onclick={() => void saveProfile()}
-        >
+        ><RailIcon name="save" />
           {saveBusy ? "Saving…" : "Save"}
         </button>
       </section>
@@ -953,7 +992,7 @@
                     pendingJobId = job.jobId;
                     confirm = "pause-job";
                   }}
-                >
+                ><RailIcon name="stop" />
                   Pause
                 </button>
               {/if}
@@ -983,7 +1022,7 @@
           <div>
             <dt>Tokens</dt>
             <dd data-testid="agent-detail-usage-tokens">
-              {formatTokenCount(usage.tokens)}
+              {compactNumber(usage.tokens)}
             </dd>
           </div>
           <div>
@@ -1027,7 +1066,7 @@
                 <span class="ad-bar" aria-hidden="true"
                   ><i style={`width:${model.pct}%`}></i></span
                 >
-                <span class="ad-model-n">{formatTokenCount(model.tokens)}</span>
+                <span class="ad-model-n">{compactNumber(model.tokens)}</span>
               </li>
             {/each}
           </ul>
@@ -1100,7 +1139,7 @@
             data-testid="agent-detail-save"
             disabled={saveBusy}
             onclick={() => void saveProfile()}
-          >
+          ><RailIcon name="save" />
             {saveBusy ? "Saving…" : "Save"}
           </button>
         {/if}
@@ -1110,7 +1149,7 @@
             class="ad-text-btn"
             data-testid="agent-detail-pause-agent"
             onclick={() => (confirm = "pause-agent")}
-          >
+          ><RailIcon name="stop" />
             Pause agent
           </button>
           <button
@@ -1118,7 +1157,7 @@
             class="ad-text-btn danger"
             data-testid="agent-detail-remove"
             onclick={() => (confirm = "remove-agent")}
-          >
+          ><RailIcon name="trash" />
             Remove from company
           </button>
         </div>
@@ -1218,7 +1257,7 @@
   .ad-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ad-close {
@@ -1232,7 +1271,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -1263,17 +1302,15 @@
   .ad-name {
     margin: 0;
     color: var(--t1);
-    font-size: 16px;
-    font-weight: 650;
-    line-height: 1.3;
+    font-size: 20px;
+    font-weight: 500;
+    line-height: 1.25;
   }
 
   .ad-status {
     margin: 2px 0 0;
     color: var(--t3);
-    font: 500 10px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.3 var(--font-ui);
   }
 
   .ad-desc {
@@ -1309,9 +1346,7 @@
   .ad-sub,
   .ad-field span {
     color: var(--t3);
-    font: 500 10px/1.2 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font: 500 13px/1.2 var(--font-ui);
   }
 
   .ad-meta dd,
@@ -1330,15 +1365,13 @@
     border: 0;
     background: transparent;
     color: inherit;
-    font: 500 11px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 500 13px/1.3 var(--font-mono, ui-monospace, Menlo, monospace);
     cursor: pointer;
   }
 
   .ad-uid-hint {
     color: var(--t3);
-    font-size: 10px;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .ad-section {
@@ -1361,7 +1394,7 @@
   .ad-note {
     margin: 0;
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-jobs {
@@ -1396,20 +1429,19 @@
   .ad-job-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 550;
+    font-weight: 500;
   }
 
   .ad-job-cadence,
   .ad-job-meta {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-badge {
     justify-self: end;
     color: var(--t3);
-    font: 500 9px/1 var(--font-mono, ui-monospace, Menlo, monospace);
-    letter-spacing: 0.08em;
+    font: 500 13px/1 var(--font-ui);
   }
 
   .ad-prompt {
@@ -1418,7 +1450,7 @@
     padding: 8px 0 0;
     border-top: 1px solid var(--line);
     color: var(--t2);
-    font: 400 12px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
+    font: 400 13px/1.45 var(--font-mono, ui-monospace, Menlo, monospace);
     white-space: pre-wrap;
   }
 
@@ -1454,7 +1486,7 @@
   .ad-model-name {
     overflow: hidden;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -1474,7 +1506,7 @@
 
   .ad-model-n {
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
     text-align: right;
   }
 
@@ -1486,7 +1518,7 @@
 
   .ad-chips span {
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-field {
@@ -1516,7 +1548,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 12px;
+    font-size: 13px;
     cursor: pointer;
   }
 
@@ -1556,7 +1588,7 @@
 
   .ad-row-meta {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
     text-align: right;
   }
 
@@ -1578,16 +1610,6 @@
     align-self: flex-start;
   }
 
-  .ad-field select {
-    width: 100%;
-    padding: 6px 8px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-  }
-
   .ad-danger-row {
     display: flex;
     flex-wrap: wrap;
@@ -1597,7 +1619,7 @@
   .ad-error {
     margin: 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .ad-close:focus-visible,
@@ -1606,8 +1628,7 @@
   .ad-btn:focus-visible,
   .ad-text-btn:focus-visible,
   .ad-field input:focus-visible,
-  .ad-field textarea:focus-visible,
-  .ad-field select:focus-visible {
+  .ad-field textarea:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
   }

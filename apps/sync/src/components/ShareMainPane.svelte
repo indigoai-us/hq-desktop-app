@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { safeUnlisten } from '../lib/listener-registry';
@@ -230,7 +231,7 @@
             aria-busy={pendingAction === `${evt.eventId}:copy`}
             aria-label="Copy prompt to clipboard"
           >
-            {pendingAction === `${evt.eventId}:copy`
+            <RailIcon name="copy" />{pendingAction === `${evt.eventId}:copy`
               ? 'Copying…'
               : copyFeedback === evt.eventId
                 ? 'Copied'
@@ -243,7 +244,7 @@
             aria-busy={pendingAction === `${evt.eventId}:claude`}
             aria-label="Open in Claude Code with prompt"
           >
-            {pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude ↗'}
+            <RailIcon name="external" />{pendingAction === `${evt.eventId}:claude` ? 'Opening…' : 'Open in Claude ↗'}
           </button>
           <button
             class="btn btn-console"
@@ -252,7 +253,7 @@
             aria-busy={pendingAction === `${evt.eventId}:message`}
             aria-label={`Message ${evt.issuerDisplayName}`}
           >
-            {pendingAction === `${evt.eventId}:message`
+            <RailIcon name="send" />{pendingAction === `${evt.eventId}:message`
               ? 'Opening…'
               : `Message ${evt.issuerDisplayName.split(/\s+/)[0] || 'sharer'}`}
           </button>
@@ -267,7 +268,7 @@
               disabled={pendingAction !== null}
               aria-busy={pendingAction === `${evt.eventId}:${failure.action}`}
             >
-              {pendingAction === `${evt.eventId}:${failure.action}` ? 'Retrying…' : 'Retry'}
+              <RailIcon name="refresh" />{pendingAction === `${evt.eventId}:${failure.action}` ? 'Retrying…' : 'Retry'}
             </button>
           </div>
         {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
@@ -1781,7 +1782,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      const path = await invokeCommand<string>('resolve_hq_path');
+      // Resolve only. The folder is created by the install step, after the
+      // person has confirmed where HQ lives.
+      const path = await invokeCommand<string>('resolve_hq_path', { create: false });
       if (directoryCancelled) return;
       homeDir = homeDirFromDefaultHqPath(path);
       acceptPath(path);
@@ -1888,8 +1891,9 @@
     directoryBusy = true;
     directoryNotice = null;
     try {
-      // The default path is prepared natively before auth exists. Validate it
-      // here, after sign-in, before allowing setup to use it.
+      // The default path is only resolved before auth exists. Validate it
+      // here, after sign-in, before allowing setup to use it; check_writable
+      // creates the folder, so this Install step is where it first appears.
       const [detection, writable] = await Promise.all([
         invokeCommand<DetectHqResult>('detect_hq', { path: selectedPath }),
         invokeCommand<boolean>('check_writable', { path: selectedPath }),
@@ -4240,7 +4244,7 @@
                     type="submit"
                     data-testid="microsoft-email-continue"
                     disabled={loadingProvider !== null || microsoftEmail.trim() === ''}
-                  >Continue</button>
+                  ><RailIcon name="arrow-right" />Continue</button>
                 </form>
               {/if}
             {/if}
@@ -4267,7 +4271,7 @@
     </div>
     {#if replay}
       <div class="nav" class:on={scene === 'welcome' && navRevealed} bind:this={refs.navWelcome}>
-        <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
+        <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
       </div>
     {/if}
   </section>
@@ -4358,7 +4362,7 @@
     <div class="corelabel" bind:this={refs.corelabel} aria-hidden="true">company cloud</div>
     <div class="copy" bind:this={refs.cloudCopy}>
       <h2 class="h h-lg" id="welcome-title-cloud" tabindex="-1" data-scene-heading>Your folder is local. Your team is not.</h2>
-      <p class="body">Every machine syncs to the same company cloud. People and agents share one context.</p>
+      <p class="body">Every machine syncs to the same company cloud. People and bots share one context.</p>
     </div>
     {#each ORBIT_INNER as name, i (name)}
       <div class="pill tool" aria-hidden="true" bind:this={innerChips[i]}>{name}</div>
@@ -4376,7 +4380,7 @@
       {/each}
     </ul>
     <div class="nav" class:on={scene === 'cloud' && navRevealed} bind:this={refs.navCloud}>
-      <button class="btn btn-primary" type="button" onclick={forward}>Next</button>
+      <button class="btn btn-primary" type="button" onclick={forward}><RailIcon name="arrow-right" />Next</button>
     </div>
   </section>
 
@@ -4559,7 +4563,7 @@
               disabled={consentSubmitting || finishing}
               data-testid="consent-finish-offline"
               onclick={() => void finishOffline()}
-            >Finish setup, send later</button>
+            ><RailIcon name="check" />Finish setup, send later</button>
           {/if}
         {:else}
           <button
@@ -4580,7 +4584,7 @@
               data-testid="consent-dismiss"
               disabled={consentSubmitting || finishing}
               onclick={() => void dismissReprompt()}
-            >Not now</button>
+            ><RailIcon name="x" />Not now</button>
           {/if}
         {/if}
       </div>
@@ -4653,7 +4657,7 @@
                 type="button"
                 data-testid="onboarding-first-folder-sync-skip"
                 onclick={() => advanceTo(nextAfterFirstFolderSync(), 'skipped')}
-              >Skip for now</button>
+              ><RailIcon name="arrow-right" />Skip for now</button>
             </div>
           </div>
         {/if}
@@ -4835,7 +4839,7 @@
               data-testid="onboarding-ai-tools-recheck-button"
               onclick={() => void probeAiTools()}
             >
-              <span class="tp-name">Check again</span>
+              <RailIcon name="refresh" /><span class="tp-name">Check again</span>
             </button>
           </div>
         {:else if installedToolSlots.length > 0}
@@ -4891,7 +4895,7 @@
                 type="button"
                 data-testid="consent-deferred-retry"
                 onclick={() => void flushDeferredConsent()}
-              >Retry</button>
+              ><RailIcon name="refresh" />Retry</button>
             </div>
           </div>
         {/if}
@@ -5021,7 +5025,7 @@
                   data-testid="consent-finish-offline"
                   disabled={consentSubmitting || finishing}
                   onclick={() => void finishOffline()}
-                >Finish setup, send later</button>
+                ><RailIcon name="check" />Finish setup, send later</button>
               {/if}
             </div>
           </div>
@@ -5035,7 +5039,7 @@
         <div class="graphic" aria-hidden="true">{@render TrustMock()}</div>
         <h2 class="h h-md" id="onboarding-title-trust" tabindex="-1" data-scene-heading>Trust your workspace</h2>
         <p class="body">Claude Code will open with your hq folder selected and /setup ready to run. Choose “Yes, trust this workspace.” Just check that hq is still the folder it’s pointing at.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(READY_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
       </div>
     </section>
 
@@ -5044,7 +5048,7 @@
         <div class="graphic" aria-hidden="true">{@render SettingsMock()}</div>
         <h2 class="h h-md" id="onboarding-title-settings" tabindex="-1" data-scene-heading>Dial in your settings</h2>
         <p class="body">For the best results, use the latest models (Opus 4.8 or GPT-5.5), set thinking to “High” or above, and turn on auto mode (bypass permissions). You might need to flip that last one on in settings.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(TRUST_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
       </div>
     </section>
 
@@ -5053,7 +5057,7 @@
         <div class="graphic" aria-hidden="true">{@render SetupPromptMock()}</div>
         <h2 class="h h-md" id="onboarding-title-run-setup" tabindex="-1" data-scene-heading>Press enter to run /setup</h2>
         <p class="body">Hit ⏎ in the message box to start setup.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(SETTINGS_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(HANDOFF_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
       </div>
     </section>
 
@@ -5062,7 +5066,7 @@
         <div class="graphic" aria-hidden="true">{@render HandoffMock()}</div>
         <h2 class="h h-md" id="onboarding-title-handoff" tabindex="-1" data-scene-heading>Answer, then run /handoff</h2>
         <p class="body">Work through every question until it says setup is finished, then send “/handoff” to save everything to HQ’s memory. You’ll do this at the end of every session.</p>
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}>Continue</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(RUN_SETUP_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={() => advanceTo(BUILD_STEP_INDEX)}><RailIcon name="arrow-right" />Continue</button></div>
       </div>
     </section>
 
@@ -5076,7 +5080,7 @@
             Setup is saved on disk. Tap Retry to close this window.
           </p>
         {/if}
-        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(HANDOFF_STEP_INDEX)}>Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}>{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
+        <div class="btns split"><button class="btn btn-secondary" type="button" onclick={() => goBackTo(HANDOFF_STEP_INDEX)}><RailIcon name="arrow-left" />Back</button><button class="btn btn-primary" type="button" onclick={handleFinish} disabled={finishing} aria-busy={finishing}><RailIcon name="check" />{finishing ? 'Finishing…' : finishError ? 'Retry' : 'Done'}</button></div>
       </div>
     </section>
   {/if}
@@ -5095,7 +5099,7 @@
         <span class="sr-only">Screen {chrome.currentTick + 2} of {chrome.tickCount + 1}</span>
       {/if}
       {#if chrome.skip}
-        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" onclick={skipIntro}>Skip intro</button>
+        <button class="btn btn-ghost skip" type="button" data-testid="welcome-skip" onclick={skipIntro}><RailIcon name="arrow-right" />Skip intro</button>
       {/if}
     </div>
     <button

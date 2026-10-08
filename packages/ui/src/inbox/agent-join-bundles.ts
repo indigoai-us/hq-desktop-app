@@ -9,7 +9,7 @@
  *
  *  - a viewer who does not run the fleet sees none of them;
  *  - a viewer who does sees one row per company per 10-minute window
- *    ("3 agents joined Indigo").
+ *    ("3 bots joined Indigo").
  *
  * Pure — applied at the view layer, so the underlying feed rows and their ack
  * targets are untouched.
@@ -80,7 +80,7 @@ export function companyFromJoinNotice(body: string): string | null {
  *
  * Input may be in any order; output preserves the caller's ordering by putting
  * each bundle where its newest member sat. A lone join row for a fleet owner
- * stays as-is, so nothing reads "1 agents joined".
+ * stays as-is, so nothing reads "1 bots joined".
  */
 export function bundleAgentJoinNotifications(
   items: readonly NotificationItem[],
@@ -128,11 +128,11 @@ export function bundleAgentJoinNotifications(
       const company = companyFromJoinNotice(anchor.contextLine);
       bundleByAnchor.set(anchor.id, {
         ...anchor,
-        actorName: "Agents",
+        actorName: "Bots",
         actorInitials: "AG",
         verbText: company
-          ? `${run.length} agents joined ${company}`
-          : `${run.length} agents joined`,
+          ? `${run.length} bots joined ${company}`
+          : `${run.length} bots joined`,
         contextLine: run
           .map((item) => item.actorName)
           .filter(Boolean)

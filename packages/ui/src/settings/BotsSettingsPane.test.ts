@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { newBotKickoff } from "../chat/create-bot/create-bot-model.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -107,12 +108,12 @@ function fakeAdapter(input: {
 let host: HTMLDivElement;
 let component: ReturnType<typeof mount> | null = null;
 
-async function mountPane(adapter: PlatformAdapter) {
+async function mountPane(adapter: PlatformAdapter, extra: Record<string, unknown> = {}) {
   host = document.createElement("div");
   document.body.appendChild(host);
   component = mount(BotsSettingsPane, {
     target: host,
-    props: { adapter, companies: COMPANIES as never },
+    props: { adapter, companies: COMPANIES as never, ...extra },
   });
   await tick();
 }
@@ -123,6 +124,14 @@ async function settleFlow(times = 6): Promise<void> {
     await tick();
     await Promise.resolve();
   }
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: resolve! };
 }
 
 afterEach(async () => {
@@ -157,7 +166,7 @@ describe("Settings → Bots (Work shell)", () => {
     expect(pane).not.toContain("fetch(");
   });
 
-  it("New bot opens the same three-step flow the sidebar uses and creates through the adapter", async () => {
+  it("New bot opens the same flow the sidebar uses (name, then coding tool) and creates through the adapter", async () => {
     const create = vi.fn(async () => ok({}));
     const adapter = fakeAdapter({ bots: { create, workers: vi.fn(async () => ok({ workers: [] })) } });
     await mountPane(adapter);
@@ -167,25 +176,114 @@ describe("Settings → Bots (Work shell)", () => {
 
     host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
     await settleFlow();
-    expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).not.toBeNull();
-    // The flow itself, not a one-off form.
-    expect(host.querySelector('[data-testid="create-bot-kind-step"]')).not.toBeNull();
-
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await settleFlow();
-    expect(host.querySelector('[data-testid="create-bot-home-step"]')).not.toBeNull();
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await settleFlow();
+    // The shell is portalled out of the pane, so read the whole document.
+    expect(document.querySelector('[data-testid="settings-bots-create-dialog"]')).not.toBeNull();
+    // The flow itself, not a one-off form: name → coding tool.
+    const step = () => document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step");
+    expect(step()).toBe("name");
     // "assistant" is taken by the bot already on this Mac, so the flow moved on.
-    expect(host.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("scout");
+    expect(document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("scout");
 
-    host.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("home");
+    expect(document.querySelector('[data-testid="create-bot-kind-step"]')).toBeNull();
+
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
-    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true });
+    expect(create).toHaveBeenCalledWith({ name: "scout", runtime: "claude", autoApprove: true, kickoff: newBotKickoff() });
     await vi.waitFor(() => {
-      expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
+      expect(document.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
     });
     expect(host.querySelector('[data-testid="settings-bots-status"]')?.textContent).toContain("scout");
+  });
+
+  it("New bot opens the shared step flow in the takeover shell; Cancel and Escape close it; name → coding tool with a template creates", async () => {
+    const create = vi.fn(async () => ok({}));
+    const workers = vi.fn(async () =>
+      ok({
+        workers: [{ id: "analyst", path: "workers/analyst", company: "acme", source: "company" as const, name: "Analyst", summary: "Reads the numbers." }],
+      }),
+    );
+    const adapter = fakeAdapter({ bots: { create, workers } });
+    await mountPane(adapter);
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-button"]')).not.toBeNull();
+    });
+    const dialog = () => document.querySelector<HTMLElement>('[data-testid="settings-bots-create-dialog"]');
+    const step = () => document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step");
+    const open = async () => {
+      host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
+      await settleFlow();
+    };
+
+    await open();
+    const shell = dialog();
+    expect(shell).not.toBeNull();
+    expect(shell!.getAttribute("data-sunrise")).toBe("true");
+    const card = shell!.querySelector('[data-testid="new-bot-sunrise-flow"]');
+    expect(card).not.toBeNull();
+    // Settings has no cloud create, so there is no Cloud/Local question.
+    expect(card!.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("name");
+    // Name, coding tool, then the optional who it's for, start from and fine-tune.
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBe(5);
+    expect(card!.querySelector('[data-testid="new-bot-step-name"]')).not.toBeNull();
+    // The old wizard's crumbs are gone.
+    expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
+
+    // Cancel closes it and creates nothing.
+    shell!.querySelector<HTMLButtonElement>('[data-testid="new-bot-takeover-cancel"]')!.click();
+    await settleFlow();
+    expect(dialog()).toBeNull();
+
+    // Escape closes it too.
+    await open();
+    expect(dialog()).not.toBeNull();
+    document
+      .querySelector<HTMLElement>('[data-testid="new-bot-name"]')!
+      .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settleFlow();
+    expect(dialog()).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+
+    // Name → coding tool → Next to Start from, a template → Finish with defaults.
+    await open();
+    const name = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    name.value = "ledger";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await settleFlow();
+    document.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settleFlow();
+    expect(step()).toBe("home");
+    for (const next of ["scope", "template"]) {
+      document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+      await settleFlow();
+      expect(step()).toBe(next);
+    }
+    const analyst = '[data-testid="create-bot-template-card"][data-template="analyst"]';
+    await vi.waitFor(() => expect(document.querySelector(analyst)).not.toBeNull());
+    document.querySelector<HTMLButtonElement>(analyst)!.click();
+    await settleFlow();
+    expect(step()).toBe("template");
+    expect(document.querySelector('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
+    document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "ledger", runtime: "claude", worker: "analyst" }));
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+  });
+
+  it("with a host modal, New bot opens the shared Messages modal instead of its own dialog", async () => {
+    const onnewbot = vi.fn();
+    const adapter = fakeAdapter({ bots: { workers: vi.fn(async () => ok({ workers: [] })) } });
+    await mountPane(adapter, { onnewbot });
+    await vi.waitFor(() => {
+      expect(host.querySelector('[data-testid="settings-bots-create-button"]')).not.toBeNull();
+    });
+    host.querySelector<HTMLButtonElement>('[data-testid="settings-bots-create-button"]')!.click();
+    await settleFlow();
+    expect(onnewbot).toHaveBeenCalledOnce();
+    expect(host.querySelector('[data-testid="settings-bots-create-dialog"]')).toBeNull();
+    expect(host.querySelector('[data-testid="create-bot-kind-step"]')).toBeNull();
   });
 
   it("labels a local bot with its display name, falling back to the handle", async () => {
@@ -213,7 +311,10 @@ describe("Settings → Bots (Work shell)", () => {
       expect(host.querySelector('[data-testid="settings-bot-assistant"]')).not.toBeNull();
       expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).not.toBeNull();
     });
-    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith(null);
+    // QA-080: one scoped request per company, never the unscoped all-company scan.
+    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith("cmp_indigo");
+    expect(adapter.agents.listMobileRoster).toHaveBeenCalledWith("cmp_other");
+    expect(adapter.agents.listMobileRoster).not.toHaveBeenCalledWith(null);
 
     const local = host.querySelector('[data-testid="settings-bots-local"]')!;
     // No display name stored → the row reads as its handle, as it always did.
@@ -264,39 +365,322 @@ describe("Settings → Bots (Work shell)", () => {
     expect(host.querySelector('[data-testid="settings-bot-assistant-kind"]')).toBeNull();
   });
 
-  it("pauses, resumes, and removes a managed cloud bot through adapter.agents", async () => {
+  function removeDialog(): HTMLElement {
+    const dialog = document.querySelector<HTMLElement>('[data-testid="settings-bot-remove-dialog"]');
+    expect(dialog).not.toBeNull();
+    return dialog!;
+  }
+
+  function removeConfirm(): HTMLButtonElement {
+    const button = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-confirm"]');
+    expect(button).not.toBeNull();
+    return button!;
+  }
+
+  it("opens a themed removal dialog and returns focus when Escape cancels", async () => {
     const adapter = fakeAdapter({});
     await mountPane(adapter);
-    const pause = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    pause.click();
-    await vi.waitFor(() => expect(adapter.agents.stop).toHaveBeenCalledWith(CLOUD_UID));
-    const resume = await vi.waitFor(() => {
-      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
-      expect(el).not.toBeNull();
-      return el!;
-    });
-    expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)?.textContent).toContain("Paused");
-    resume.click();
-    await vi.waitFor(() => expect(adapter.agents.start).toHaveBeenCalledWith(CLOUD_UID));
-
-    // Remove needs an explicit confirm (wait for the resume round-trip to settle first).
     const remove = await vi.waitFor(() => {
       const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
       expect(el).not.toBeNull();
-      expect(el!.disabled).toBe(false);
       return el!;
     });
+    remove.focus();
     remove.click();
     await tick();
-    expect(adapter.agents.deprovision).not.toHaveBeenCalled();
-    host
-      .querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-confirm-remove"]`)!
-      .click();
-    await vi.waitFor(() => expect(adapter.agents.deprovision).toHaveBeenCalledWith(CLOUD_UID));
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe("Say goodbye to Izzy?");
+    expect(removeDialog().textContent).toContain("Izzy runs on its own cloud machine");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-keep"]')?.textContent).toBe("Keep Izzy");
+    expect(removeConfirm().textContent).toBe("Remove Izzy");
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog-avatar"]')?.textContent).toBe("I");
+    expect(document.querySelector<HTMLElement>('[data-testid="card-modal"]')?.dataset.appearance).toBe("surface");
+    expect(document.querySelectorAll('.card-modal-art')).toHaveLength(2);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(document.querySelector('[data-testid="settings-bot-remove-dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(remove);
+  });
+
+  it("confirms cloud removal, switches the same dialog for a protected machine, and sends its id", async () => {
+    const instanceId = "i-0abc1234def567890";
+    const deprovision = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: "error" as const, code: "AGENTS_V2_BOX_PROTECTED", instanceId })
+      .mockResolvedValueOnce(ok({}));
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => expect(removeDialog().dataset.machine).toBe("true"));
+    expect(removeDialog().textContent).toContain("runs on its own cloud machine");
+    expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID);
+    removeConfirm().click();
+    await vi.waitFor(() => expect(deprovision).toHaveBeenLastCalledWith(CLOUD_UID, { confirmDestroyInstanceId: instanceId }));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("keeps the dialog open while removing and leaves a friendly retry in it on failure", async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
+    const deprovision = vi.fn(() => pending.promise);
+    await mountPane(fakeAdapter({ agents: { deprovision } }));
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => {
+      expect(removeConfirm().textContent).toBe("Removing Izzy…");
+      expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(true);
+      expect(removeConfirm().disabled).toBe(true);
+    });
+    pending.resolve({ ok: false as const, reason: "error" as const, message: "raw transport failure" });
+    await vi.waitFor(() =>
+      expect(removeDialog().querySelector('[data-testid="card-modal-status"]')?.textContent?.trim()).toBe(
+        "Couldn't remove Izzy. Check your connection.",
+      ),
+    );
+    // The line names the cause; only the button says "Try again".
+    expect(removeDialog().textContent).not.toContain("Try again");
+    expect(removeDialog().textContent).not.toContain("raw transport failure");
+    expect(removeConfirm().textContent).toBe("Try again");
+    expect(removeConfirm().classList.contains("is-danger")).toBe(true);
+    expect(removeConfirm().disabled).toBe(false);
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')?.disabled).toBe(false);
+    removeConfirm().click();
+    await vi.waitFor(() => expect(deprovision).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps the full bot name accessible while constraining a long dialog action label", async () => {
+    const longName = "Scout with an exceptionally long name that must not stretch the dialog";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: longName }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    (await vi.waitFor(() => {
+      const button = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(button).not.toBeNull();
+      return button!;
+    })).click();
+    await tick();
+    expect(document.querySelector('[data-testid="card-modal-title"]')?.textContent).toBe(`Say goodbye to ${longName}?`);
+    expect(removeConfirm().getAttribute("aria-label")).toBe(`Remove ${longName}`);
+    // One truncating label per button, so the words keep a single space and
+    // the ellipsis comes from the label's own overflow.
+    expect(removeConfirm().querySelectorAll(".remove-dialog-button-label")).toHaveLength(1);
+    expect(removeConfirm().querySelector(".remove-dialog-button-label")?.textContent).toBe(`Remove ${longName}`);
+    const keep = document.querySelector<HTMLButtonElement>('[data-testid="settings-bot-remove-dialog-keep"]')!;
+    expect(keep.querySelector(".remove-dialog-button-label")?.textContent).toBe(`Keep ${longName}`);
+    // Both actions share one row container.
+    expect(keep.parentElement).toBe(removeConfirm().parentElement);
+    expect(keep.parentElement?.classList.contains("remove-dialog-actions")).toBe(true);
+  });
+
+  it("uses the same roster avatar in the row and removal dialog", async () => {
+    const avatarUrl = "data:image/png;base64,AA==";
+    const adapter = fakeAdapter({
+      agents: {
+        listMobileRoster: vi.fn(async () =>
+          ok({ agents: [{ ...ROSTER.agents[0], displayName: "Scout", avatarUrl }] }),
+        ),
+      },
+    });
+    await mountPane(adapter);
+    const rowAvatar = await vi.waitFor(() => {
+      const image = host.querySelector<HTMLImageElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}"] .bot-avatar`);
+      expect(image).not.toBeNull();
+      return image!;
+    });
+    host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+    await tick();
+    const dialogAvatar = document.querySelector<HTMLImageElement>('[data-testid="settings-bot-remove-dialog-avatar"] img');
+    expect(dialogAvatar?.getAttribute("src")).toBe(rowAvatar.getAttribute("src"));
+  });
+
+  it("uses the same dialog for local removal and hides the row after a successful refresh", async () => {
+    let localBots = [LOCAL_BOT];
+    const remove = vi.fn(async () => ok({}));
+    await mountPane(fakeAdapter({ bots: { list: vi.fn(async () => ok({ bots: localBots })), remove } }));
+    const row = await vi.waitFor(() => {
+      const element = host.querySelector<HTMLElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    row.querySelector<HTMLButtonElement>(`[data-testid="settings-bot-${LOCAL_BOT.name}-remove"]`)!.click();
+    await tick();
+    expect(removeDialog().textContent).toContain("assistant will stop working and leave your bots.");
+    localBots = [];
+    removeConfirm().click();
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith(LOCAL_BOT.name));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`)).toBeNull());
+  });
+
+  it("keeps pause and resume failures on the cloud bot row", async () => {
+    const stop = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const adapter = fakeAdapter({ agents: { stop } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not pause Izzy. Try again.");
+    });
+
+    const start = vi.fn(async () => ({ ok: false as const, reason: "error" as const }));
+    const resumeAdapter = fakeAdapter({ agents: { stop: vi.fn(async () => ok({})), start } });
+    await unmount(component!);
+    component = null;
+    host.remove();
+    await mountPane(resumeAdapter);
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await vi.waitFor(() => {
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}-action-status"]`)?.textContent).toBe("Could not resume Izzy. Try again.");
+    });
+  });
+
+  it("treats a 404 cloud delete as already removed", async () => {
+    const deprovision = vi.fn(async () => ({ ok: false as const, reason: "error" as const, status: 404 }));
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows Removing in the same dialog after the protected-machine confirmation", async () => {
+    const pending = deferred<Awaited<ReturnType<NonNullable<NonNullable<PlatformAdapter["agents"]>["deprovision"]>>>>();
+    const deprovision = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        reason: "error" as const,
+        code: "AGENTS_V2_BOX_PROTECTED",
+        instanceId: "i-0abc1234def567890",
+      })
+      .mockImplementationOnce(() => pending.promise);
+    const adapter = fakeAdapter({ agents: { deprovision } });
+    await mountPane(adapter);
+
+    (await vi.waitFor(() => {
+      const el = host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`);
+      expect(el).not.toBeNull();
+      return el!;
+    })).click();
+    await tick();
+    removeConfirm().click();
+    const confirm = await vi.waitFor(() => {
+      expect(removeDialog().dataset.machine).toBe("true");
+      return removeConfirm();
+    });
+    confirm.click();
+    await vi.waitFor(() => expect(confirm.textContent).toBe("Removing Izzy…"));
+    pending.resolve(ok({}));
+    await vi.waitFor(() => expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull());
+  });
+
+  it("shows a row again when a later roster still contains the removed bot", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      const adapter = fakeAdapter({});
+      await mountPane(adapter);
+      await settleFlow();
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-remove"]`)!.click();
+      await tick();
+      removeConfirm().click();
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).toBeNull();
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settleFlow();
+      expect(host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears successful start, stop, pause, and resume notes after a few seconds", async () => {
+    const adapter = fakeAdapter({});
+    await mountPane(adapter);
+    vi.useFakeTimers();
+    try {
+      const localRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      localRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(localRow.textContent).toContain("Stopped.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(localRow.textContent).not.toContain("Stopped.");
+
+      await unmount(component!);
+      component = null;
+      host.remove();
+      await mountPane(
+        fakeAdapter({
+          bots: { list: vi.fn(async () => ok({ bots: [{ ...LOCAL_BOT, processAlive: false }] })) },
+        }),
+      );
+      const stoppedLocalRow = await vi.waitFor(() => {
+        const el = host.querySelector(`[data-testid="settings-bot-${LOCAL_BOT.name}"]`);
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      stoppedLocalRow.querySelector<HTMLButtonElement>("button")!.click();
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).toContain("Started.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(stoppedLocalRow.textContent).not.toContain("Started.");
+
+      host.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-pause"]`)!.click();
+      await settleFlow();
+      const cloudRow = host.querySelector(`[data-testid="settings-cloud-bot-${CLOUD_UID}"]`)!;
+      expect(cloudRow.textContent).toContain("Paused.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Paused.");
+
+      cloudRow.querySelector<HTMLButtonElement>(`[data-testid="settings-cloud-bot-${CLOUD_UID}-resume"]`)!.click();
+      await settleFlow();
+      expect(cloudRow.textContent).toContain("Resumed.");
+      await vi.advanceTimersByTimeAsync(4_000);
+      await settleFlow();
+      expect(cloudRow.textContent).not.toContain("Resumed.");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the Cloud group alone on the web adapter (no adapter.bots)", async () => {

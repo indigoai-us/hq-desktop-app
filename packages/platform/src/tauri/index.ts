@@ -36,6 +36,7 @@ import { WEB_PATHS } from "../web/index.js";
 import { localBotSettingsArgs } from "./local-bot-settings.js";
 import { withCreateAgentsAdmins } from "./provision-refusal.js";
 import { hqProFailure, parseHqProErrorBody } from "../plan-limit.js";
+import { scrubTransportFailure } from "../api-error.js";
 import { createCallsApi } from "../calls/api.js";
 import {
   isLambdaInvokeServiceErrorBody,
@@ -44,11 +45,14 @@ import {
 } from "../request-policy.js";
 import {
   CLAUDE_PROVIDER_FLAG,
+  DESKTOP_AGENT_CREATION_FLAG,
   HUMAN_ONLY_CONVERSATIONS_FLAG,
   HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT,
   PERSONAL_TRANSCRIPTS_FLAG,
-  createFeatureFlagGate,
   createHqProFlagFetch,
+  createHqProRestFetch,
+  createScopedFeatureFlagGates,
+  type ScopedFeatureFlagGates,
   resolveCompanyFeature,
   type FeatureFlagGate,
 } from "../flags.js";
@@ -108,11 +112,11 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   private readonly invokeFn: InvokeFn;
   /** Serializes get-settings → merge → save across generic desktop callers. */
   private settingsMutationTail: Promise<void> = Promise.resolve();
-  private readonly flags: FeatureFlagGate;
+  private readonly flagsFor: ScopedFeatureFlagGates;
 
   constructor(config: TauriPlatformAdapterConfig) {
     this.invokeFn = config.invoke;
-    this.flags = createFeatureFlagGate({
+    this.flagsFor = createScopedFeatureFlagGates({
       // Rust `hq_pro_fetch` already prefixes the hq-pro base URL.
       endpoint: "",
       getToken: () => "",
@@ -203,7 +207,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
         body: body === undefined ? null : JSON.stringify(body),
       });
     }
-    if (!raw.ok) return { result: raw, status: null };
+    if (!raw.ok) return { result: scrubTransportFailure(raw), status: null };
     const rec =
       raw.value && typeof raw.value === "object" && !Array.isArray(raw.value)
         ? (raw.value as Record<string, unknown>)
@@ -212,8 +216,10 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       const text = typeof rec.body === "string" ? rec.body : "";
       if (rec.status < 200 || rec.status >= 300) {
         return {
-          result: hqProFailure(
-            parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+          result: scrubTransportFailure(
+            hqProFailure(
+              parseHqProErrorBody(rec.status, text, `${method} ${path} failed`),
+            ),
           ),
           status: rec.status,
           body: text,
@@ -271,12 +277,14 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   readonly identity: PlatformAdapter["identity"] = {
     whoami: () => this.hqProJson("GET", "/v1/identity/whoami"),
     isAdmin: () => this.call("is_admin"),
-    hasFeature: (flag) =>
+    hasFeature: (flag, scope) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? // Pinned per release; the registry cannot turn it off.
           Promise.resolve(ok(HUMAN_ONLY_CONVERSATIONS_DESKTOP_DEFAULT))
-        : this.flags.resolve(flag, () =>
-            flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
+        : this.flagsFor(scope?.companyUid).resolve(flag, () =>
+            flag === CLAUDE_PROVIDER_FLAG ||
+            flag === DESKTOP_AGENT_CREATION_FLAG ||
+            flag === PERSONAL_TRANSCRIPTS_FLAG
               ? Promise.resolve(ok(false))
               : this.call("has_feature", { flag }),
           ),
@@ -289,10 +297,12 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     subscribeFeature: (flag, onChange) =>
       flag === HUMAN_ONLY_CONVERSATIONS_FLAG
         ? () => {}
-        : this.flags.subscribe(
+        : this.flagsFor(null).subscribe(
             flag,
             () =>
-              flag === CLAUDE_PROVIDER_FLAG || flag === PERSONAL_TRANSCRIPTS_FLAG
+              flag === CLAUDE_PROVIDER_FLAG ||
+              flag === DESKTOP_AGENT_CREATION_FLAG ||
+              flag === PERSONAL_TRANSCRIPTS_FLAG
                 ? Promise.resolve(ok(false))
                 : this.call("has_feature", { flag }),
             onChange,
@@ -536,6 +546,9 @@ export class TauriPlatformAdapter implements PlatformAdapter {
     listMemberships: async () => MEETINGS_USE_CLOUD,
     listUpcoming: async () => MEETINGS_USE_CLOUD,
     listScheduledBots: async () => MEETINGS_USE_CLOUD,
+    listRecorded: async () => MEETINGS_USE_CLOUD,
+    getRecorded: async () => MEETINGS_USE_CLOUD,
+    readRecordedBody: async () => MEETINGS_USE_CLOUD,
     inviteBot: async () => MEETINGS_USE_CLOUD,
     cancelBot: async () => MEETINGS_USE_CLOUD,
     joinBotNow: async () => MEETINGS_USE_CLOUD,
@@ -579,6 +592,7 @@ export class TauriPlatformAdapter implements PlatformAdapter {
   };
 
   readonly agents: PlatformAdapter["agents"] = {
+    fetch: createHqProRestFetch((cmd, args) => this.invokeFn(cmd, args)),
     // A refusal keeps its HTTP status and the people the server says to ask
     // (`admins`), so the New Bot screen can say why Create is off.
     getProvisionOptions: async (companyUid) => {
@@ -629,6 +643,8 @@ export class TauriPlatformAdapter implements PlatformAdapter {
       this.hqProJson("GET", AGENT_PATHS.owners(companyUid, agentUid)),
     getCompanyTelemetry: (companyUid, from, to) =>
       this.hqProJson("GET", AGENT_PATHS.companyTelemetry(companyUid, from, to)),
+    getMyTelemetry: (from, to) =>
+      this.hqProJson("GET", AGENT_PATHS.myTelemetry(from, to)),
   };
 
   readonly integrations: PlatformAdapter["integrations"] = {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * ReplyPanel — Slack-style reply column (port of hq-desktop-app ThreadPanel).
    * Chrome says “Thread” (Slack). Overlay vs third-column lives in the
@@ -47,7 +48,13 @@
     withHereMention,
     type MentionTarget,
   } from "../mentions.js";
-  import { parseMessageAttachments } from "./channelMessageModels";
+  import {
+    parseMessageAttachments,
+    parseForwardedFrom,
+    parseOmittedAttachments,
+    forwardNoteText,
+  } from "./channelMessageModels";
+  import ForwardedBlock from "./ForwardedBlock.svelte";
   import type { FileAttachmentModel } from "./channelMessageModels";
   import {
     CHAT_ATTACHMENT_ACCEPT,
@@ -77,7 +84,7 @@
   import { isJumboEmojiBody } from "../../common/emojiShortcodes.js";
   import PlainMessageBody from "./PlainMessageBody.svelte";
   import RichMessageContent from "./RichMessageContent.svelte";
-  import { richContentForMessage } from "./richMessageContent";
+  import { richContentForMessage, type ExtractedRichContent } from "./richMessageContent";
   import type { DecisionOption } from "./richMessageContent";
   import { decisionAnswersFromMessages } from "./decision-answers";
   import LinkContextMenu from "../../common/LinkContextMenu.svelte";
@@ -129,6 +136,8 @@
     withPersonUid?: string | null;
     /** Display name of the DM counterpart (the agent in an agent DM). */
     withPersonName?: string | null;
+    /** Channel display name for the header and the "Also send to #channel" switch. */
+    channelName?: string | null;
     /** Timeline root for instant pin while GET /threads is in flight. */
     seedRoot?: ConversationMessageWire | null;
     /** Host wake bus. Matching `reply:new` re-fetches; other roots are ignored. */
@@ -210,6 +219,7 @@
     channelId = null,
     withPersonUid = null,
     withPersonName = null,
+    channelName = null,
     seedRoot = null,
     wakes = null,
     reactions = {},
@@ -623,12 +633,9 @@
       emitCount(view.replyCount ?? ordered.length, ordered);
     } catch (err) {
       if (generation !== loadGeneration || rootEventId !== requested) return;
-      loadError =
-        typeof err === "string"
-          ? err
-          : err instanceof Error
-            ? err.message
-            : "Could not load replies";
+      // Thrown text is transport/server output: log it, show plain copy.
+      console.warn("[reply-panel] load replies failed", err);
+      loadError = "Could not load replies. Try again.";
     } finally {
       if (generation === loadGeneration) loading = false;
     }
@@ -688,6 +695,17 @@
     return onpresign(companyUid, item.vaultPath);
   }
 
+  /**
+   * "Also send to #channel" (scene home-thread). Off by default and reset
+   * after each send, matching Slack: a thread reply is echoed to the channel
+   * only when the sender asks for it on that reply.
+   */
+  let alsoSendToChannel = $state(false);
+  const canAlsoSend = $derived(scope === "channel" && Boolean(channelId?.trim()));
+  const channelLabel = $derived(
+    (channelName?.trim() || "channel").replace(/^#/, ""),
+  );
+
   async function deliver(
     body: string,
     attachments?: ChatAttachmentWire[],
@@ -728,6 +746,7 @@
       try {
         attachments = await onuploadfiles([...pendingFiles]);
       } catch (err) {
+        // raw-error-ok: formatComposerSendError maps it to plain copy
         const raw = err instanceof Error ? err.message.trim() : "";
         attachError = formatComposerSendError(raw, true);
         attachUpgradeUrl = uploadErrorUpgradeUrl(err);
@@ -758,11 +777,26 @@
     pendingFiles = [];
     attachError = null;
     attachUpgradeUrl = null;
+    const echoToChannel = alsoSendToChannel && canAlsoSend;
+    alsoSendToChannel = false;
     try {
       await deliver(text, attachments, mentions);
       replies = replies.map((row) =>
         row.eventId === localId ? { ...row, sendStatus: undefined } : row,
       );
+      if (echoToChannel && channelId && text) {
+        // The reply landed; the channel echo is best-effort and never turns a
+        // delivered reply into a failed row.
+        void api
+          .sendChannelMessage({
+            channelId,
+            body: text,
+            ...(mentions.length > 0 ? { mentions } : {}),
+          })
+          .catch((err) => {
+            console.error("ReplyPanel: also-send to channel failed", err);
+          });
+      }
       emitCount(replyCount + 1, replies);
       startThinkingForMentions(mentions);
       startThinkingForThreadAgent(mentions);
@@ -789,6 +823,7 @@
     err: unknown,
     mentions: readonly MentionTarget[],
   ): { sendError: string; sendFatal: boolean } {
+    // raw-error-ok: formatComposerSendError maps it to plain copy
     const raw = err instanceof Error ? err.message.trim() : "";
     return {
       sendError: formatComposerSendError(
@@ -952,6 +987,71 @@
   });
 </script>
 
+{#snippet replyBodyText(msg: ConversationMessageWire, text: string)}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="reply-md msg-body"
+    class:msg-body-jumbo={isJumboEmojiBody(text)}
+    onclick={(e) => {
+      if (onBodyLinkActivate(e)) return;
+      onMentionActivate(e, e.target);
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        if (onBodyLinkActivate(e)) return;
+        onMentionActivate(e, e.target);
+      }
+    }}
+  >
+    {#if isHeavyMessageBody(text)}
+      <PlainMessageBody body={text} />
+    {:else}
+      {@html applyMentionMarkup(
+        renderMessageBodyMarkdown(text),
+        storedMentions(msg),
+      )}
+    {/if}
+  </div>
+{/snippet}
+
+{#snippet replyContent(msg: ConversationMessageWire, rich: ExtractedRichContent, withArtifacts: boolean)}
+  {#if rich.text.trim()}
+    {@render replyBodyText(msg, rich.text)}
+  {/if}
+  {#if rich.rich}
+    <RichMessageContent
+      content={rich.rich}
+      ondecision={handleDecision}
+      {answeredQuestionIds}
+      {answeredChoices}
+    />
+  {/if}
+  {#if withArtifacts && msg.details?.trim()}
+    <ArtifactCard
+      kind="details"
+      text={msg.details}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  {#if withArtifacts && msg.prompt?.trim()}
+    <ArtifactCard
+      kind="prompt"
+      text={msg.prompt}
+      eventId={msg.eventId}
+      onopen={onopenartifact}
+    />
+  {/if}
+  <MessageAttachments
+    {previewCache}
+    {vaultCompanyUid}
+    attachments={parseMessageAttachments(msg)}
+    onopen={onopenattachment}
+    resolveUrl={resolveAttachmentUrl}
+    {onreleaseurl}
+  />
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -968,7 +1068,12 @@
   }}
 >
   <header class="reply-header">
-    <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
+    <div class="reply-heading">
+      <h2 class="reply-title" data-testid="reply-panel-title">Thread</h2>
+      {#if canAlsoSend && channelName?.trim()}
+        <span class="reply-sub" data-testid="reply-panel-sub">#{channelLabel}</span>
+      {/if}
+    </div>
     <button
       class="reply-close"
       type="button"
@@ -989,6 +1094,8 @@
         {#if root}
           {@const rootId = root.eventId}
           {@const rootRich = richContentForMessage(root)}
+          {@const rootForwarded = parseForwardedFrom(root.forwardedFrom)}
+          {@const rootForwardNote = rootForwarded ? forwardNoteText(root.forwardNote) : ""}
           <span class="reply-avatar" aria-hidden="true">
             <IdentityMark
               kind={isAgent(root) ? "agent" : "person"}
@@ -1014,64 +1121,19 @@
               <span class="reply-time">{formatTime(root.createdAt)}</span>
             </div>
             <div class="reply-root-body">
-              {#if rootRich.text.trim()}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="reply-md msg-body"
-                  class:msg-body-jumbo={isJumboEmojiBody(rootRich.text)}
-                  onclick={(e) => {
-                    if (onBodyLinkActivate(e)) return;
-                    onMentionActivate(e, e.target);
-                  }}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e)) return;
-                      onMentionActivate(e, e.target);
-                    }
-                  }}
+              {#if rootForwarded}
+                {#if rootForwardNote}
+                  {@render replyBodyText(root, rootForwardNote)}
+                {/if}
+                <ForwardedBlock
+                  forwardedFrom={rootForwarded}
+                  omittedAttachments={parseOmittedAttachments(root.omittedAttachments)}
                 >
-                  {#if isHeavyMessageBody(rootRich.text)}
-                    <PlainMessageBody body={rootRich.text} />
-                  {:else}
-                    {@html applyMentionMarkup(
-                      renderMessageBodyMarkdown(rootRich.text),
-                      storedMentions(root),
-                    )}
-                  {/if}
-                </div>
+                  {@render replyContent(root, rootRich, true)}
+                </ForwardedBlock>
+              {:else}
+                {@render replyContent(root, rootRich, true)}
               {/if}
-              {#if rootRich.rich}
-                <RichMessageContent
-                  content={rootRich.rich}
-                  ondecision={handleDecision}
-                  {answeredQuestionIds}
-                  {answeredChoices}
-                />
-              {/if}
-              {#if root.details?.trim()}
-                <ArtifactCard
-                  kind="details"
-                  text={root.details}
-                  eventId={root.eventId}
-                  onopen={onopenartifact}
-                />
-              {/if}
-              {#if root.prompt?.trim()}
-                <ArtifactCard
-                  kind="prompt"
-                  text={root.prompt}
-                  eventId={root.eventId}
-                  onopen={onopenartifact}
-                />
-              {/if}
-              <MessageAttachments
-                        {previewCache}
-                        {vaultCompanyUid}
-                attachments={parseMessageAttachments(root)}
-                onopen={onopenattachment}
-                resolveUrl={resolveAttachmentUrl}
-                {onreleaseurl}
-              />
             </div>
             {#if reactionsFor(rootId).length > 0}
               <ReactionBar
@@ -1166,6 +1228,8 @@
       {:else}
         {#each visibleReplies as msg (msg.eventId)}
           {@const replyRich = richContentForMessage(msg)}
+          {@const replyForwarded = parseForwardedFrom(msg.forwardedFrom)}
+          {@const replyForwardNote = replyForwarded ? forwardNoteText(msg.forwardNote) : ""}
           <div
             class="reply-row"
             data-testid="reply-panel-message"
@@ -1196,48 +1260,19 @@
                 {/if}
                 <span class="reply-time">{formatTime(msg.createdAt)}</span>
               </div>
-              {#if replyRich.text.trim()}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="reply-md msg-body"
-                  class:msg-body-jumbo={isJumboEmojiBody(replyRich.text)}
-                  onclick={(e) => {
-                    if (onBodyLinkActivate(e)) return;
-                    onMentionActivate(e, e.target);
-                  }}
-                  onkeydown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      if (onBodyLinkActivate(e)) return;
-                      onMentionActivate(e, e.target);
-                    }
-                  }}
+              {#if replyForwarded}
+                {#if replyForwardNote}
+                  {@render replyBodyText(msg, replyForwardNote)}
+                {/if}
+                <ForwardedBlock
+                  forwardedFrom={replyForwarded}
+                  omittedAttachments={parseOmittedAttachments(msg.omittedAttachments)}
                 >
-                  {#if isHeavyMessageBody(replyRich.text)}
-                    <PlainMessageBody body={replyRich.text} />
-                  {:else}
-                    {@html applyMentionMarkup(
-                      renderMessageBodyMarkdown(replyRich.text),
-                      storedMentions(msg),
-                    )}
-                  {/if}
-                </div>
+                  {@render replyContent(msg, replyRich, true)}
+                </ForwardedBlock>
+              {:else}
+                {@render replyContent(msg, replyRich, false)}
               {/if}
-              {#if replyRich.rich}
-                <RichMessageContent
-                  content={replyRich.rich}
-                  ondecision={handleDecision}
-                  {answeredQuestionIds}
-                  {answeredChoices}
-                />
-              {/if}
-              <MessageAttachments
-                    {previewCache}
-                    {vaultCompanyUid}
-                attachments={parseMessageAttachments(msg)}
-                onopen={onopenattachment}
-                resolveUrl={resolveAttachmentUrl}
-                {onreleaseurl}
-              />
               {#if !msg.eventId.startsWith("local-") && reactionsFor(msg.eventId).length > 0}
                 <ReactionBar
                     {selfPersonUid}
@@ -1328,7 +1363,7 @@
                   class="reply-send-state failed"
                   data-testid="reply-panel-retry"
                   onclick={() => void retrySend(msg.eventId)}
-                >
+                ><RailIcon name="refresh" />
                   {msg.sendError
                     ? `${msg.sendError} Tap to retry.`
                     : "Failed — tap to retry"}
@@ -1349,6 +1384,19 @@
       <AgentTaskStrip {tasks} />
     </div>
 
+    {#if canAlsoSend}
+      <label class="reply-also" data-testid="reply-panel-also-send">
+        <input
+          type="checkbox"
+          role="switch"
+          class="reply-also-input"
+          aria-checked={alsoSendToChannel}
+          bind:checked={alsoSendToChannel}
+        />
+        <span class="reply-also-switch" aria-hidden="true"></span>
+        Also send to #{channelLabel}
+      </label>
+    {/if}
     <div class="reply-composer">
       {#if showMentionPicker}
         <MentionPicker
@@ -1468,7 +1516,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 12px 16px;
+    height: 52px;
+    box-sizing: border-box;
+    padding: 0 10px 0 16px;
     border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.12));
     flex-shrink: 0;
   }
@@ -1481,6 +1531,84 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .reply-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .reply-sub {
+    font-size: 12px;
+    color: var(--t3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .reply-also {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 12px 8px;
+    font-size: 12px;
+    color: var(--t2);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .reply-also-input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+  }
+
+  .reply-also-switch {
+    position: relative;
+    flex: none;
+    width: 26px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--v4-control-border, var(--line));
+    transition: background-color 0.12s ease;
+  }
+
+  .reply-also-switch::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--t1);
+    opacity: 0.7;
+    transition: transform 0.12s ease;
+  }
+
+  .reply-also-input:checked + .reply-also-switch {
+    background: var(--ice);
+  }
+
+  .reply-also-input:checked + .reply-also-switch::after {
+    transform: translateX(10px);
+    opacity: 1;
+  }
+
+  .reply-also-input:focus-visible + .reply-also-switch {
+    outline: 2px solid var(--ice);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reply-also-switch,
+    .reply-also-switch::after {
+      transition: none;
+    }
   }
 
   .reply-close {

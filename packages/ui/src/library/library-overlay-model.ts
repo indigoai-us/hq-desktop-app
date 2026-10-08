@@ -1,19 +1,9 @@
 /**
- * Pure model for the Library full-screen overlay (US-017).
- *
- * Nav counts, search filtering, marketplace badge derivation, and tab
- * resolution from the existing library route tabs. No Svelte / Tauri.
+ * Pure model for the Marketplace page (OWNER-R33; was the Library overlay,
+ * US-017): left-list rows, tab resolution from the library route tabs, and
+ * marketplace badge derivation. No Svelte / Tauri.
  */
 
-import {
-  filterLibraryItems,
-  libraryItemHaystack,
-  toLibraryItems,
-  type LibraryItem,
-  type LibraryItems,
-  type LibrarySkill,
-  type LibraryWorker,
-} from "./library.js";
 import {
   filterListings,
   listingAuthorHandle,
@@ -34,33 +24,24 @@ export type LibraryTab =
   | "submit"
   | "profile";
 
-/** Every supported Library destination has its own overlay tab. */
-export type LibraryOverlayTab =
-  | "skills"
-  | "workers"
-  | "installed"
-  | "marketplace"
-  | "submit"
-  | "profile";
+/**
+ * OWNER-R33: the page is the Marketplace. Its left list is Browse, Installed
+ * and Submit; Skills and Workers live in each company's Brain panes, and the
+ * creator profile in Settings. Legacy `skills` / `workers` route tabs land on
+ * Browse.
+ */
+export type LibraryOverlayTab = "marketplace" | "installed" | "submit";
 
 /**
- * The desktop host can read local workers and their details. The web host
- * deliberately cannot: its cloud shelf returns skills only.
+ * Installed packs and publishing need a host that installs locally (desktop).
+ * Browse reads the shared listings API on every host.
  */
 export function libraryOverlayCapabilities(
   capabilities: Pick<Capabilities, "canInstallLocally">,
 ): {
-  workers: boolean;
   marketplace: boolean;
 } {
-  // Both gate on the same thing: a host with local install can read the local
-  // worker tree. This used to read `canSpawnSessions` as a stand-in for "is
-  // desktop"; that flag went false with the in-app Sessions runtime, and
-  // browsing workers never depended on running one.
-  return {
-    workers: capabilities.canInstallLocally,
-    marketplace: capabilities.canInstallLocally,
-  };
+  return { marketplace: capabilities.canInstallLocally };
 }
 
 export type MarketplaceBadge = "installed" | "update" | "get";
@@ -74,73 +55,41 @@ export interface InstalledPackRef {
   updateAvailable?: boolean | null;
 }
 
-export interface LibraryNavCounts {
-  skills: number;
-  workers: number;
-}
-
 export interface LibraryNavRow {
   id: LibraryOverlayTab;
   label: string;
-  /** Count badge text (skills/workers) or null for Marketplace. */
+  /** Count badge text, or null when the row carries no count. */
   count: number | null;
 }
 
 /**
- * Map a routed LibraryTab onto the overlay's visible tabs.
- * Installed packs, publishing, and creator profile are account-management
- * surfaces, never aliases for Marketplace discovery.
+ * Map a routed LibraryTab onto the Marketplace page's tabs. Installed and
+ * Submit are account-management surfaces; everything else is Browse.
  */
 export function resolveOverlayTab(
   tab: LibraryTab | undefined | null,
-  opts?: { workers?: boolean; marketplace?: boolean },
+  opts?: { marketplace?: boolean },
 ): LibraryOverlayTab {
-  if (tab === "workers") return opts?.workers === false ? "skills" : "workers";
-  if (tab === "installed") return "installed";
-  if (tab === "submit") return "submit";
-  if (tab === "profile") return "profile";
-  if (tab === "marketplace") {
-    return opts?.marketplace === false ? "skills" : "marketplace";
+  if (opts?.marketplace !== false) {
+    if (tab === "installed") return "installed";
+    if (tab === "submit") return "submit";
   }
-  return "skills";
+  return "marketplace";
 }
 
 /** Inverse: overlay tab → route LibraryTab for navigation. */
 export function overlayTabToLibraryTab(tab: LibraryOverlayTab): LibraryTab {
-  if (tab === "workers") return "workers";
-  if (tab === "installed") return "installed";
-  if (tab === "marketplace") return "marketplace";
-  if (tab === "submit") return "submit";
-  if (tab === "profile") return "profile";
-  return "skills";
+  return tab;
 }
 
-export function libraryNavCounts(
-  items: LibraryItems | null | undefined,
-): LibraryNavCounts {
-  return {
-    skills: items?.skills?.length ?? 0,
-    workers: items?.workers?.length ?? 0,
-  };
-}
-
-/** Left-nav rows with live counts. */
+/** Left-list rows: Browse first (the default), then Installed and Submit. */
 export function buildLibraryNavRows(
-  items: LibraryItems | null | undefined,
-  opts?: { workers?: boolean; marketplace?: boolean },
+  opts?: { marketplace?: boolean },
 ): LibraryNavRow[] {
-  const counts = libraryNavCounts(items);
-  const rows: LibraryNavRow[] = [
-    { id: "skills", label: "Skills", count: counts.skills },
-  ];
-  if (opts?.workers !== false) {
-    rows.push({ id: "workers", label: "Workers", count: counts.workers });
-  }
+  const rows: LibraryNavRow[] = [{ id: "marketplace", label: "Browse", count: null }];
   if (opts?.marketplace !== false) {
     rows.push({ id: "installed", label: "Installed", count: null });
-    rows.push({ id: "marketplace", label: "Marketplace", count: null });
     rows.push({ id: "submit", label: "Submit", count: null });
-    rows.push({ id: "profile", label: "Profile", count: null });
   }
   return rows;
 }
@@ -148,120 +97,6 @@ export function buildLibraryNavRows(
 export function formatNavLabel(row: LibraryNavRow): string {
   if (row.count == null) return row.label;
   return `${row.label} ${row.count}`;
-}
-
-/** Skills as card view-models (name, slug-ish path tail, tag). */
-export interface SkillCardModel {
-  key: string;
-  name: string;
-  slug: string;
-  tag: string;
-  description: string;
-  path: string;
-}
-
-export function skillSlug(skill: LibrarySkill): string {
-  const parts = skill.path?.split(/[/\\]/).filter(Boolean) ?? [];
-  let candidate = skill.name || "skill";
-  if (parts.length >= 2 && /^SKILL\.md$/i.test(parts[parts.length - 1]!)) {
-    // Prefer the skill directory name over the SKILL.md filename.
-    candidate = parts[parts.length - 2]!;
-  } else if (parts.length > 0) {
-    candidate = parts[parts.length - 1]!.replace(/\.md$/i, "");
-  }
-  const raw = candidate.trim().toLowerCase();
-  return (
-    raw
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 64) || "skill"
-  );
-}
-
-export function skillTag(skill: LibrarySkill): string {
-  if (skill.pack?.trim()) return skill.pack.trim();
-  if (skill.scope === "personal") return "personal";
-  if (skill.scope === "company") return skill.company?.trim() || "company";
-  return "core";
-}
-
-export function toSkillCards(skills: LibrarySkill[]): SkillCardModel[] {
-  return (skills ?? []).map((skill) => ({
-    key: skill.path || skill.name,
-    name: skill.name,
-    slug: skillSlug(skill),
-    tag: skillTag(skill),
-    description: skill.description ?? "",
-    path: skill.path,
-  }));
-}
-
-export interface WorkerCardModel {
-  key: string;
-  name: string;
-  type: string;
-  description: string;
-  status: string;
-  path: string;
-  team: string | null;
-}
-
-export function toWorkerCards(workers: LibraryWorker[]): WorkerCardModel[] {
-  return (workers ?? []).map((worker) => ({
-    key: worker.path || worker.id,
-    name: worker.name,
-    type: worker.type,
-    description: worker.description ?? "",
-    status: worker.status,
-    path: worker.path,
-    team: worker.team ?? null,
-  }));
-}
-
-/** Filter skill cards by free-text query. */
-export function filterSkillCards(
-  cards: SkillCardModel[],
-  query: string,
-): SkillCardModel[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return cards;
-  return cards.filter((c) =>
-    [c.name, c.slug, c.tag, c.description].join(" ").toLowerCase().includes(q),
-  );
-}
-
-/** Filter worker cards by free-text query. */
-export function filterWorkerCards(
-  cards: WorkerCardModel[],
-  query: string,
-): WorkerCardModel[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return cards;
-  return cards.filter((c) =>
-    [c.name, c.type, c.description, c.status, c.team ?? ""]
-      .join(" ")
-      .toLowerCase()
-      .includes(q),
-  );
-}
-
-/**
- * Filter library items for the active overlay tab + search query.
- * Skills/workers use library helpers; empty query returns full slice.
- */
-export function filterOverlayLibraryItems(
-  items: LibraryItems,
-  tab: LibraryOverlayTab,
-  query: string,
-): LibraryItem[] {
-  const all = toLibraryItems(items);
-  const byKind =
-    tab === "skills"
-      ? all.filter((i) => i.kind === "skill")
-      : tab === "workers"
-        ? all.filter((i) => i.kind === "worker")
-        : all;
-  return filterLibraryItems(byKind, query);
 }
 
 /** Build a lookup of installed pack identity → update flag. */
@@ -337,5 +172,4 @@ export function toMarketplaceCards(
   }));
 }
 
-/** Re-export haystack for tests that assert search composition. */
-export { libraryItemHaystack, filterListings };
+export { filterListings };

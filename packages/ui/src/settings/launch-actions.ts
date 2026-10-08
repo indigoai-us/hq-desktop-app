@@ -90,7 +90,9 @@ function failureMessage(res: FailedLaunch, what: string): string {
   if (res.reason === "unavailable") {
     return `${what} isn't available in this app. Use the HQ desktop app.`;
   }
-  return `Could not open ${what}: ${res.message ?? "the command failed."}`;
+  // The adapter's failure text is logged, never shown.
+  console.warn(`[launch] open ${what} failed`, res.message);
+  return `Could not open ${what}. Try again.`;
 }
 
 function claudeNotDetectedMessage(prefill: string | undefined): string {

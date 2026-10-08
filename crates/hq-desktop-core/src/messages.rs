@@ -49,6 +49,11 @@ pub struct Contact {
     /// Absent/null on older servers or people without a photo.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    /// Company membership role ("owner" | "admin" | "member" | "guest") on the
+    /// company-scoped roster. Profile and Team both read it (QA-048); without
+    /// this field serde dropped it and both pages had no role to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 /// Clear the conversation preview fields on contacts whose last message is
@@ -458,6 +463,17 @@ pub struct ChannelMessage {
     /// `participantUid`, never a `personUid` key. Absent-safe for older rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mentions: Option<Vec<MessageMention>>,
+    /// Origin of a forwarded message (`{ senderUid, senderName, sourceKind,
+    /// originalCreatedAt }`). Raw JSON so the webview owns validation. Absent
+    /// on ordinary rows and older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<serde_json::Value>,
+    /// The forwarder's own note, when the server returns it separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_note: Option<String>,
+    /// Count of source files left out of a forward.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_attachments: Option<u32>,
 }
 
 /// One structured mention on a channel message. Live wire shape:
@@ -1671,7 +1687,7 @@ mod esc_query_tests {
 
 #[cfg(test)]
 mod contact_preview_filter_tests {
-    use super::{apply_contact_preview_filter, Contact};
+    use super::{apply_contact_preview_filter, Contact, ContactsResponse};
 
     fn make_contact(audience: Option<&str>) -> Contact {
         Contact {
@@ -1690,6 +1706,7 @@ mod contact_preview_filter_tests {
             last_message_direction: Some("inbound".into()),
             last_message_audience: audience.map(str::to_string),
             avatar_url: None,
+            role: None,
         }
     }
 
@@ -1735,5 +1752,44 @@ mod contact_preview_filter_tests {
         let mut contacts = vec![make_contact(Some("AGENT"))];
         apply_contact_preview_filter(&mut contacts, false);
         assert!(contacts[0].last_message_body.is_none());
+    }
+
+    #[test]
+    fn channel_message_forward_fields_round_trip() {
+        let raw = serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "a@b.c",
+            "fromDisplayName": "A", "body": "note", "createdAt": "2026-10-06T00:00:00Z",
+            "direction": "in",
+            "forwardedFrom": {"senderUid": "p2", "senderName": "Bea", "sourceKind": "dm", "originalCreatedAt": "2026-10-05T00:00:00Z"},
+            "forwardNote": "fyi",
+            "omittedAttachments": 2
+        });
+        let msg: crate::messages::ChannelMessage = serde_json::from_value(raw.clone()).unwrap();
+        let back = serde_json::to_value(&msg).unwrap();
+        assert_eq!(back["forwardedFrom"], raw["forwardedFrom"]);
+        assert_eq!(back["forwardNote"], "fyi");
+        assert_eq!(back["omittedAttachments"], 2);
+        let plain: crate::messages::ChannelMessage = serde_json::from_value(serde_json::json!({
+            "eventId": "e1", "fromPersonUid": "p1", "fromEmail": "", "fromDisplayName": "",
+            "body": "x", "createdAt": "t", "direction": "in"
+        })).unwrap();
+        let out = serde_json::to_value(&plain).unwrap();
+        assert!(out.get("forwardedFrom").is_none());
+        assert!(out.get("forwardNote").is_none());
+        assert!(out.get("omittedAttachments").is_none());
+    }
+
+    #[test]
+    fn contact_keeps_company_role_qa048() {
+        let raw = serde_json::json!({ "contacts": [
+            { "personUid": "prs_me", "email": "me@x.com", "displayName": "Me", "role": "owner" },
+            { "personUid": "prs_b", "email": "b@x.com", "displayName": "B" }
+        ]});
+        let parsed: ContactsResponse = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.contacts[0].role.as_deref(), Some("owner"));
+        assert_eq!(parsed.contacts[1].role, None);
+        let out = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(out["contacts"][0]["role"], "owner");
+        assert!(out["contacts"][1].get("role").is_none());
     }
 }

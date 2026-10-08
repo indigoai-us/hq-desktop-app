@@ -147,7 +147,7 @@ afterEach(async () => {
 
 describe("ChatSidebar rail — company channel marks", () => {
   it("renders the company favicon on a company channel row", async () => {
-    component = mountSidebar();
+    component = mountSidebar({ scopeUid: "cmp_indigo" });
     await vi.waitFor(() => {
       expect(mark("chn_company_indigo")).toBeTruthy();
     });
@@ -164,7 +164,7 @@ describe("ChatSidebar rail — company channel marks", () => {
   });
 
   it("renders the building glyph for a company with no icon", async () => {
-    component = mountSidebar();
+    component = mountSidebar({ scopeUid: "cmp_noicon", selectedId: "ch:chn_company_noicon" });
     await vi.waitFor(() => {
       expect(mark("chn_company_noicon")).toBeTruthy();
     });
@@ -207,6 +207,7 @@ describe("ChatSidebar rail — company channel marks", () => {
         companies: [{ ...INDIGO, iconUrl: ICON }, NOICON],
         self: { uid: "prs_stefan", displayName: "Stefan" },
         selectedId: "ch:chn_company_indigo",
+        scopeUid: "cmp_indigo",
       },
     });
     await vi.waitFor(() => {
@@ -214,6 +215,7 @@ describe("ChatSidebar rail — company channel marks", () => {
         "image",
       );
     });
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeTruthy();
   });
 
   it("renders every row against a v-old server that serves NO icons at all", async () => {
@@ -236,6 +238,7 @@ describe("ChatSidebar rail — company channel marks", () => {
         companies: [INDIGO, NOICON],
         self: { uid: "prs_stefan", displayName: "Stefan" },
         selectedId: "ch:chn_company_indigo",
+        scopeUid: "cmp_indigo",
       },
     });
     await vi.waitFor(() => {
@@ -244,9 +247,32 @@ describe("ChatSidebar rail — company channel marks", () => {
     expect(mark("chn_company_indigo")?.getAttribute("data-company-icon")).toBe(
       "glyph",
     );
+    expect(host.querySelector('[data-testid="company-activity-channels"]')).toBeTruthy();
+    await unmount(component);
+    component = mount(ChatSidebar, {
+      target: host,
+      props: {
+        api: {
+          ...stubApi(),
+          fetchChannelDirectory: async () => ({
+            snapshot: true,
+            cursor: "cur_company_icon_00000000000000000002",
+            cursorExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            rows: rowsWithoutIcons,
+          }),
+        },
+        seedDirectory: rowsWithoutIcons,
+        companies: [INDIGO, NOICON],
+        self: { uid: "prs_stefan", displayName: "Stefan" },
+        selectedId: "ch:chn_company_noicon",
+        scopeUid: "cmp_noicon",
+      },
+    });
+    await vi.waitFor(() => {
+      expect(mark("chn_company_noicon")).toBeTruthy();
+    });
     expect(mark("chn_company_noicon")?.getAttribute("data-company-icon")).toBe(
       "glyph",
     );
-    expect(hash("chn_project")?.textContent).toBe("#");
   });
 });

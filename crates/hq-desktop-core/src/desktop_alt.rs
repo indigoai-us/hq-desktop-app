@@ -552,6 +552,39 @@ pub fn deployments_url(base: &str) -> String {
     format!("{}/api/apps", base.trim_end_matches('/'))
 }
 
+/// Validate one hq-deploy access request from the Deployments Access form and
+/// return its full URL. Only the access routes are reachable: `access-policy`
+/// (GET/PUT), `access-mode` (POST) and `allowed-emails` (GET/POST, DELETE with
+/// one URL-encoded pattern key). Anything else is refused before the network.
+pub fn deploy_access_url(base: &str, method: &str, path: &str) -> Result<String, String> {
+    let rest = path
+        .strip_prefix("/api/apps/")
+        .ok_or_else(|| "deploy access: path must start with /api/apps/".to_string())?;
+    let mut parts = rest.splitn(3, '/');
+    let app_id = parts.next().unwrap_or("");
+    let route = parts.next().unwrap_or("");
+    let key = parts.next();
+    if app_id.is_empty() || !is_url_safe_id(app_id) {
+        return Err("deploy access: invalid app id".to_string());
+    }
+    let allowed = match (method, route, key) {
+        ("GET" | "PUT", "access-policy", None) => true,
+        ("POST", "access-mode", None) => true,
+        ("GET" | "POST", "allowed-emails", None) => true,
+        ("DELETE", "allowed-emails", Some(k)) => {
+            !k.is_empty()
+                && k.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'%' | b'-' | b'_' | b'.' | b'~')
+                })
+        }
+        _ => false,
+    };
+    if !allowed {
+        return Err(format!("deploy access: {method} {path} is not an access route"));
+    }
+    Ok(format!("{}{}", base.trim_end_matches('/'), path))
+}
+
 pub fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
     if !is_url_safe_id(company_uid) {
         return Err(format!(
@@ -923,6 +956,37 @@ pub fn parse_deployments_response(
     }
 
     parse_deployment_entries(text, selected_slug)
+}
+
+/// Raw `/api/apps` rows for the personal Deployments page. Unlike
+/// `parse_deployments_response`, rows pass through untouched so fields such as
+/// `views30d`, `lastVisitAt`, `accessMode` and `ownerId` reach the UI. Auth
+/// failures stay errors; a scope with no deploy org yet is an empty list.
+pub fn parse_deploy_apps_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: deploy apps (HTTP {status})"));
+    }
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND && is_deployments_not_provisioned(text) {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(format!("deploy apps HTTP {status}"));
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("deploy apps parse: {e}"))?;
+    deployment_rows(&value)
+        .map(|rows| rows.iter().filter(|row| row.is_object()).cloned().collect())
+        .ok_or_else(|| "deploy apps parse: missing apps array".to_string())
 }
 
 pub fn parse_deployment_entries(
@@ -2771,6 +2835,26 @@ pub fn dir_has_visible_children(abs: &Path) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deploy_access_url_allows_only_access_routes() {
+        use super::deploy_access_url;
+        let base = "https://api.example.test/";
+        assert_eq!(
+            deploy_access_url(base, "GET", "/api/apps/app_1/access-policy").unwrap(),
+            "https://api.example.test/api/apps/app_1/access-policy"
+        );
+        assert!(deploy_access_url(base, "PUT", "/api/apps/app_1/access-policy").is_ok());
+        assert!(deploy_access_url(base, "POST", "/api/apps/app_1/access-mode").is_ok());
+        assert!(deploy_access_url(base, "GET", "/api/apps/app_1/allowed-emails").is_ok());
+        assert!(deploy_access_url(base, "POST", "/api/apps/app_1/allowed-emails").is_ok());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1/allowed-emails/a%40b.co").is_ok());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1").is_err());
+        assert!(deploy_access_url(base, "PATCH", "/api/apps/app_1/access-policy").is_err());
+        assert!(deploy_access_url(base, "DELETE", "/api/apps/app_1/allowed-emails/../x").is_err());
+        assert!(deploy_access_url(base, "GET", "/api/apps/a b/access-policy").is_err());
+        assert!(deploy_access_url(base, "GET", "/api/orgs/x").is_err());
+    }
+
     use chrono::TimeZone;
 
     use crate::feature_gate::email_present;
@@ -3728,6 +3812,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deploy_apps_pass_through_visit_fields_and_owner() {
+        let rows = super::parse_deploy_apps_response(
+            reqwest::StatusCode::OK,
+            r#"{"apps":[
+                {"id":"a1","name":"one","subdomain":"one","status":"active","views30d":null,
+                 "lastVisitAt":"2026-09-28T17:23:25.798Z","accessMode":"company","ownerId":"u1"},
+                {"id":"a2","name":"two","subdomain":"two","status":"sleeping","views30d":12},
+                "not-an-object"
+            ]}"#,
+        )
+        .expect("apps parse");
+        assert_eq!(rows.len(), 2, "non-object rows drop; real rows survive");
+        assert!(rows[0]["views30d"].is_null(), "null views stays null, not 0");
+        assert_eq!(rows[0]["ownerId"], "u1");
+        assert_eq!(rows[0]["lastVisitAt"], "2026-09-28T17:23:25.798Z");
+        assert_eq!(rows[1]["views30d"], 12);
+    }
+
+    #[test]
+    fn deploy_apps_auth_errors_and_unprovisioned_scope() {
+        let err = super::parse_deploy_apps_response(reqwest::StatusCode::UNAUTHORIZED, "{}")
+            .expect_err("401 is an auth error");
+        assert!(err.starts_with("AUTH_REQUIRED"));
+        let empty = super::parse_deploy_apps_response(reqwest::StatusCode::NOT_FOUND, "")
+            .expect("unprovisioned scope is empty");
+        assert!(empty.is_empty());
+        let err = super::parse_deploy_apps_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "secret-ish body",
+        )
+        .expect_err("5xx is an error");
+        assert!(!err.contains("secret-ish"), "error text never carries the body");
+    }
+
     fn company_workspace(
         slug: &str,
         state: WorkspaceState,
@@ -3753,6 +3872,7 @@ mod tests {
             branding_enabled: false,
             brand: None,
             home_channel_id: None,
+            icon_url: None,
         }
     }
 
@@ -4469,6 +4589,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             }
         }
 
@@ -4500,6 +4621,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             };
             let workspaces = vec![personal];
 
@@ -4540,6 +4662,7 @@ mod tests {
                 branding_enabled: false,
                 brand: None,
                 home_channel_id: None,
+                icon_url: None,
             };
             assert!(workspace_grants_company_file_access(
                 &[personal.clone()],

@@ -91,15 +91,10 @@
 
 .new-bot-takeover-card {
   width: min(480px, 100%);
-  border: 1px solid var(--new-bot-line);
-  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
   padding: clamp(30px, 7vw, 42px);
-  /* A static fill, no backdrop-filter: the dawn behind this card redraws on
-     every animation frame (NewBotDawn.svelte), so a blur here would be
-     computed again for the whole card on every one of them
-     (scripts/perf-budget-contract.test.ts). The extra alpha carries the
-     frost instead. */
-  background: rgba(17, 17, 19, 0.8);
+  background: rgba(14, 14, 18, 0.78);
   box-shadow:
     0 30px 80px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -169,23 +164,42 @@
   animation: new-bot-step-arrive 180ms ease-out both;
 }
 
-.new-bot-progress {
+/* Back on the left, the step bars on the right, on one line. */
+.new-bot-step-top {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 22px;
   margin-bottom: 4px;
 }
 
+.new-bot-progress {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  margin-left: auto;
+}
+
 .new-bot-progress span {
-  width: 6px;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.24);
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.new-bot-progress span.done {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .new-bot-progress span.active {
-  background: rgba(255, 255, 255, 0.88);
+  background: #ffb580;
 }
 
 .new-bot-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   justify-self: start;
   border: 0;
   padding: 0;
@@ -194,6 +208,10 @@
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+
+.new-bot-back:hover:not(:disabled) {
+  color: var(--new-bot-ink);
 }
 
 .new-bot-create h1 {
@@ -207,6 +225,10 @@
   color: var(--new-bot-muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.new-bot-plan-line {
+  min-height: 1.5em;
 }
 
 .new-bot-create-label {
@@ -225,7 +247,7 @@
 .new-bot-create-input {
   min-width: 0;
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 10px;
   padding: 10px 12px;
   background: rgba(9, 9, 11, 0.5);
   color: var(--new-bot-ink);
@@ -268,7 +290,7 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 12px;
   padding: 9px 10px;
   background: rgba(9, 9, 11, 0.36);
   color: var(--new-bot-ink);
@@ -329,7 +351,7 @@
 
 .new-bot-create-submit {
   border: 1px solid rgba(255, 255, 255, 0.82);
-  border-radius: 0;
+  border-radius: 12px;
   padding: 11px 14px;
   background: rgba(255, 255, 255, 0.92);
   color: #111113;
@@ -488,6 +510,24 @@
   }
 }
 
+/* Frosted glass over the still room illustration on the step screens. The
+   takeover is a transient full-window dialog, so the blur is in the perf
+   budget's allowlist (scripts/perf-budget-contract.test.ts). The creating
+   and waking screens draw the dawn on every animation frame (NewBotDawn),
+   so the card drops the blur there and keeps the plain fill. */
+.new-bot-takeover-card:not(:has(.new-bot-dawn)) {
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .new-bot-takeover-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: rgba(14, 14, 18, 0.96);
+  }
+}
+
 /* The card never grows past the window. Head and foot stay put; the middle scrolls. */
 .new-bot-takeover-stage {
   min-height: 0;
@@ -526,8 +566,10 @@
   overflow: hidden;
 }
 
-.new-bot-takeover-card:has([data-testid="new-bot-step-3"]) {
-  width: min(640px, 100%);
+/* Every cloud step is as wide as the Where card, so the card does not jump
+   between steps. */
+.new-bot-takeover-card:has(.new-bot-create) {
+  width: min(560px, 100%);
 }
 
 .new-bot-create {
@@ -608,9 +650,12 @@
   outline-offset: 2px;
 }
 
+/* A gradient border that follows the rounded corners (border-image cannot). */
 .new-bot-company.selected {
-  border-image: linear-gradient(90deg, #ff809f, #ffb580) 1;
-  background: rgba(255, 255, 255, 0.1);
+  border-color: transparent;
+  background:
+    linear-gradient(#26232a, #26232a) padding-box,
+    linear-gradient(90deg, #ff809f, #ffb580) border-box;
 }
 
 .new-bot-company-monogram {
@@ -619,6 +664,7 @@
   place-items: center;
   width: 26px;
   height: 26px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.09);
   color: rgba(255, 255, 255, 0.82);
   font-size: 12px;
@@ -892,7 +938,7 @@
   gap: 12px;
   width: min(400px, 100%);
   border: 1px solid var(--new-bot-line);
-  border-radius: 0;
+  border-radius: 16px;
   padding: 24px;
   background: #111113;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
@@ -924,7 +970,7 @@
 
 .new-bot-confirm-remove {
   border: 1px solid #fecaca;
-  border-radius: 0;
+  border-radius: 12px;
   padding: 10px 13px;
   background: transparent;
   color: #fecaca;
@@ -935,4 +981,522 @@
 
 .new-bot-confirm-remove:hover {
   background: rgba(254, 202, 202, 0.1);
+}
+
+/* Where the bot lives: Cloud or Local, two equal glass tiles side by side.
+   Each tile is an orb, a title and one line, with a soft glow at its top
+   behind the orb (warm for Cloud, cool for Local). Hover and focus lift the tile, brighten its fill and warm its
+   border; there are no edge stripes. */
+.new-bot-takeover-card:has(.new-bot-choice) {
+  width: min(560px, 100%);
+}
+/* "Where should <Name> live?" reads on one line for most names. */
+.new-bot-choice h1 {
+  max-width: none;
+}
+.new-bot-choice-sub {
+  margin: 2px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+.new-bot-choice-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 12px;
+  margin-top: 24px;
+}
+@media (max-width: 460px) {
+  .new-bot-choice-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.new-bot-choice-option {
+  --choice-glow: rgba(255, 170, 140, 0.16);
+  --choice-edge: rgba(255, 181, 128, 0.55);
+  --choice-ring: rgba(255, 181, 128, 0.75);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  padding: 20px 20px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background:
+    radial-gradient(120px 90px at 45px 30px, var(--choice-glow), transparent 70%),
+    rgba(255, 255, 255, 0.04);
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+.new-bot-choice-option[data-kind="local"] {
+  --choice-glow: rgba(150, 170, 255, 0.16);
+  --choice-edge: rgba(170, 190, 255, 0.5);
+  --choice-ring: rgba(170, 190, 255, 0.75);
+}
+.new-bot-choice-option > .new-bot-orb {
+  flex: none;
+  margin-bottom: 10px;
+}
+.new-bot-choice-option:hover:not(:disabled),
+.new-bot-choice-option:focus-visible {
+  background:
+    radial-gradient(130px 100px at 45px 30px, var(--choice-glow), transparent 72%),
+    rgba(255, 255, 255, 0.07);
+  border-color: var(--choice-edge);
+  transform: translateY(-2px);
+}
+.new-bot-choice-option:active:not(:disabled) {
+  background:
+    radial-gradient(130px 100px at 45px 30px, var(--choice-glow), transparent 72%),
+    rgba(255, 255, 255, 0.09);
+  transform: translateY(0);
+}
+.new-bot-choice-option:focus-visible {
+  outline: 2px solid var(--choice-ring);
+  outline-offset: 3px;
+}
+.new-bot-choice-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .new-bot-choice-option,
+  .new-bot-choice-option:hover:not(:disabled),
+  .new-bot-choice-option:focus-visible,
+  .new-bot-choice-option:active:not(:disabled) {
+    transform: none;
+    transition: none;
+  }
+}
+.new-bot-choice-title {
+  font-family: "New Bot Fraunces", Fraunces, Georgia, serif;
+  font-size: 22px;
+  font-style: italic;
+  font-weight: 400;
+  line-height: 1.15;
+}
+.new-bot-choice-body {
+  color: var(--new-bot-muted);
+  font-size: 13px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+/* The "+" window's bot step worn inside the takeover shell (opened from the
+   Cloud or Local choice). The card widens for the flow's preview rail, and
+   the flow's chat tokens are set to the takeover's dark ink so it reads on
+   the card whatever the app theme is. */
+.new-bot-takeover-card.new-bot-takeover-card--flow {
+  width: min(880px, 100%);
+  --new-bot-card-pad: clamp(18px, 3vw, 26px);
+  display: flex;
+  flex-direction: column;
+  --t1: rgba(255, 255, 255, 0.95);
+  --t2: rgba(255, 255, 255, 0.62);
+  --t3: rgba(255, 255, 255, 0.4);
+  --line: rgba(255, 255, 255, 0.08);
+  --line2: rgba(255, 255, 255, 0.12);
+  --border: rgba(255, 255, 255, 0.14);
+  --hover: rgba(255, 255, 255, 0.06);
+  --sel: rgba(255, 255, 255, 0.1);
+  --btn-bg: rgba(255, 255, 255, 0.08);
+  --panel-bg: rgba(36, 36, 36, 0.96);
+  --panel-border: rgba(255, 255, 255, 0.1);
+  --v4-hairline: rgba(255, 255, 255, 0.12);
+  --v4-text-1: #f2f2f2;
+  --v4-text-2: rgba(250, 250, 250, 0.84);
+  --v4-text-3: rgba(250, 250, 250, 0.68);
+  --v4-idle: rgba(250, 250, 250, 0.42);
+  --v4-control-bg: rgba(255, 255, 255, 0.1);
+  --v4-control-border: rgba(255, 255, 255, 0.16);
+  --v4-control-faint: rgba(255, 255, 255, 0.08);
+  --v4-active-row: rgba(255, 255, 255, 0.1);
+  --v4-error: #ef4444;
+  /* Inline actions (Sign in, Check again) in the card's ink: a branded
+     accent can be transparent or unreadable on the dark card. */
+  --v4-link: var(--new-bot-ink);
+  color-scheme: dark;
+}
+
+/* The local flow on the cloud flow's step screens: the card keeps the cloud
+   card's width and padding, and the bot-step pieces (rows, pills, fields)
+   take the takeover's rounded rows and quiet ink. */
+.new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps {
+  width: min(560px, 100%);
+  --new-bot-card-pad: clamp(30px, 7vw, 42px);
+}
+
+@media (max-height: 780px) {
+  .new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps {
+    --new-bot-card-pad: 26px;
+  }
+}
+
+.new-bot-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--new-bot-ink);
+  font-size: 13px;
+  min-width: 0;
+}
+
+.new-bot-identity-mark {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+}
+
+.new-bot-identity-mark .identity {
+  width: 20px;
+  height: 20px;
+}
+
+.new-bot-identity-name {
+  font-weight: 500;
+}
+
+.new-bot-identity-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--new-bot-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-bot-chord {
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.new-bot-chord-hint {
+  text-align: center;
+}
+
+.new-bot-takeover-card--steps .cb-step {
+  gap: 14px;
+}
+
+.new-bot-takeover-card--steps .cb-cards {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.new-bot-takeover-card--steps .cb-card,
+.new-bot-takeover-card--steps .cb-pill,
+.new-bot-takeover-card--steps .cb-input,
+.new-bot-takeover-card--steps .cb-search,
+.new-bot-takeover-card--steps .cb-switch,
+.new-bot-takeover-card--steps .cb-advanced,
+.new-bot-takeover-card--steps .cb-library {
+  border-color: var(--new-bot-line);
+  border-radius: 10px;
+}
+
+.new-bot-takeover-card--steps .cb-card {
+  background: rgba(9, 9, 11, 0.36);
+  box-shadow: none;
+}
+
+.new-bot-takeover-card--steps .cb-card[aria-checked="true"],
+.new-bot-takeover-card--steps .cb-card[aria-selected="true"],
+.new-bot-takeover-card--steps .cb-pill[aria-checked="true"] {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.new-bot-takeover-card--steps .cb-label {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.new-bot-takeover-card--steps .cb-linkish {
+  color: var(--new-bot-muted);
+}
+
+/* The local coding tool step's folded parts: a template and Advanced. */
+.new-bot-local-more {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 4px;
+}
+
+/* ── The step-through New bot (owner, after the live review) ──────────────
+   One question per screen, and the card never scrolls inside: a step that
+   does not fit is doing too much. Options are equal cards like the Where
+   tiles; the selected one takes the same warm border and tint. */
+.new-bot-step.new-bot-step--fit {
+  min-height: 0;
+  gap: 12px;
+}
+
+.new-bot-step-body {
+  display: grid;
+  gap: 12px;
+}
+
+.new-bot-options {
+  display: grid;
+  gap: 10px;
+}
+
+.new-bot-options--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-bot-options--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 460px) {
+  .new-bot-options--2,
+  .new-bot-options--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.new-bot-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 14px 14px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.new-bot-option:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.new-bot-option[aria-checked="true"] {
+  background: rgba(255, 181, 128, 0.1);
+  border-color: rgba(255, 181, 128, 0.55);
+}
+
+.new-bot-option:focus-visible {
+  outline: 2px solid rgba(255, 181, 128, 0.75);
+  outline-offset: 2px;
+}
+
+.new-bot-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.new-bot-option-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.new-bot-option-sub {
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.new-bot-option-sub--clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.new-bot-option-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+}
+
+.new-bot-option-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.new-bot-option-status.ready .new-bot-option-dot {
+  background: #7ee2a8;
+}
+
+.new-bot-option-note {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+}
+
+.new-bot-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.new-bot-step-meta:empty {
+  display: none;
+}
+
+.new-bot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.new-bot-chip {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-bot-chip[aria-checked="true"] {
+  background: rgba(255, 181, 128, 0.12);
+  border-color: rgba(255, 181, 128, 0.55);
+}
+
+.new-bot-chip:focus-visible {
+  outline: 2px solid rgba(255, 181, 128, 0.75);
+  outline-offset: 2px;
+}
+
+/* Two equal buttons side by side: "Next: <step>" and the primary. */
+.new-bot-foot-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.new-bot-foot-actions.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.new-bot-create-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 12px;
+  padding: 11px 14px;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.new-bot-create-next:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.new-bot-create-next:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.new-bot-create-next:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+.new-bot-foot-actions .new-bot-create-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Optional steps' bars are shorter, so the required path reads apart. */
+.new-bot-progress span.optional {
+  width: 10px;
+}
+
+/* Where: the quiet way to bring in a bot that already runs elsewhere. */
+.new-bot-choice-external {
+  margin: 16px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+}
+
+.new-bot-inline-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.new-bot-inline-link:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+/* Step headings use the card's width and break evenly over two lines. */
+.new-bot-takeover-card--steps h1,
+.new-bot-takeover-card:has(.new-bot-external-steps) h1 {
+  max-width: none;
+  text-wrap: balance;
+}
+
+.new-bot-external-steps li {
+  text-wrap: pretty;
+}
+
+.new-bot-external-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--new-bot-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-external-steps code,
+.new-bot-mono {
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 13px;
 }

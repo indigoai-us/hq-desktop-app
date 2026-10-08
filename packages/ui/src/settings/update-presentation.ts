@@ -2,7 +2,7 @@
  * Pure labels and action flags for the shared desktop-app update row.
  *
  * The Core mini-menu and Settings › Updates both render from this so a
- * CHECKING / UPDATE AVAILABLE / DOWNLOADING 42% / RESTART TO UPDATE pill can
+ * CHECKING / UPDATE AVAILABLE / DOWNLOADING 42% / UPDATE READY pill can
  * never disagree between the two surfaces.
  */
 import type { UpdateRowStatus } from "./update-orchestration";
@@ -40,7 +40,9 @@ export function appRowStatusLabel(input: {
     case "queued":
       return "QUEUED";
     case "ready":
-      return "RESTART TO UPDATE";
+      // The Restart to update button sits beside this status, so the status
+      // names the state rather than repeating the button.
+      return "UPDATE READY";
     case "deferred":
       return "WAITING TO RESTART";
     case "installing":
@@ -99,7 +101,7 @@ export function isInstallAlreadyInProgress(message?: string | null): boolean {
   return (message ?? "").toLowerCase().includes("already in progress");
 }
 
-/** Hint under RESTART TO UPDATE while auto-install waits for a sync-idle gap. */
+/** Hint under UPDATE READY while auto-install waits for a sync-idle gap. */
 export function appRowIdleHint(remainingSecs: number | null): string | null {
   if (remainingSecs == null || remainingSecs < 0) return null;
   if (remainingSecs === 0) {

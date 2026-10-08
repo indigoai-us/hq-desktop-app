@@ -1,4 +1,8 @@
 <script lang="ts">
+  import { untrack } from "svelte";
+  import RailIcon from "../common/button/RailIcon.svelte";
+  import { isDropdownOpen } from "../common/dropdown-open.js";
+  import Dropdown from "../common/LazyDropdown.svelte";
   /**
    * The unified create modal — one search-first dialog behind the sidebar "+".
    *
@@ -26,9 +30,12 @@
   import { hostComputerNoun } from "@hq/platform";
   import { formatShortcut } from "../common/keyboard-shortcuts";
   import type { LocalBotEntryResult } from "./local-bots.js";
-  import type { AvatarPack } from "../avatars/types.js";
-  import CreateBotFlow, { type CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import type { CreateBotExtras } from "./create-bot/CreateBotFlow.svelte";
+  import LazyDoor from "../shell/LazyDoor.svelte";
+  import { createBotFlowDoor } from "../shell/lazy-doors.js";
   import type { BotRuntime } from "./create-bot/create-bot-model.js";
+  import type { DirectCloudFlowSeam } from "./create-bot/direct-cloud-lazy.js";
+  import type { CreateErrorFix } from "@hq/agents";
   import type { RuntimeSignInApi } from "./create-bot/RuntimeSignIn.svelte";
   import type { ChatSidebarApi } from "./chat-api.js";
   import type {
@@ -71,7 +78,6 @@
     parseCreateChannelError,
     rosterFromMembers,
     slugInputValue,
-    stripRawUids,
     suggestFreeSlug,
     type CompanyRoster,
     type FindRow,
@@ -91,6 +97,8 @@
     type ChannelCreateMember,
   } from "./channel-create-scope.js";
   import "./tokens.css";
+  import "./create-bot/new-bot-takeover.css";
+  import { newBotWallpaper } from "./create-bot/new-bot-wallpapers.js";
   import "./chat-tokens.css";
 
   interface Props {
@@ -140,10 +148,12 @@
           draft: CloudBotDraft,
         ) => Promise<EntryPointResult>)
       | null;
-    /** Opens Desktop's cloud-only New Bot takeover. */
+    /** Opens Desktop's New Bot takeover, which starts on the Cloud or Local choice. */
     onnewcloudbot?: (() => void) | null;
     loadClaudeProviderFlag?: (() => AdapterPromise<boolean>) | null;
     loadCloudProvisionOptions?: ((companyUid: string) => AdapterPromise<AgentProvisionOptionsView>) | null;
+    /** `agents.desktop-agent-creation` seam for the New bot flow. */
+    directCloud?: DirectCloudFlowSeam | null;
     /** Companies an agent can be added to (cloud companies the user is in). */
     agentCompanies?: ScopeCompany[] | null;
     /**
@@ -188,9 +198,6 @@
     botSignIn?: RuntimeSignInApi | null;
     /** A runtime just signed in — the host refreshes `botRuntimeReady`. */
     onbotsignedin?: ((runtime: BotRuntime) => void | Promise<void>) | null;
-    /** Avatar packs for the Details step; `loadAvatarPacks` fetches lazily. */
-    avatarPacks?: AvatarPack[] | null;
-    loadAvatarPacks?: (() => Promise<AvatarPack[]>) | null;
     /**
      * What to create inside a company: a plain team channel (default —
      * `scope: "company"` for name uniqueness, but never the company's home)
@@ -204,6 +211,22 @@
      * opens straight on its second step, with no name typed yet.
      */
     initialStep?: "find" | "company" | "bot";
+    /** Company the New bot flow was opened from; its Cloud step starts there. */
+    botCompanyUid?: string | null;
+    /** Slug of that company, so a Local bot starts as its company bot. */
+    botCompanySlug?: string | null;
+    /**
+     * Opened from the New bot "Cloud or Local?" choice: the bot step wears
+     * the New bot takeover's shell (wallpaper, header, centered card) in
+     * place of the plain window card.
+     */
+    sunrise?: boolean;
+    /** The home picked on that choice; the bot flow opens with it selected. */
+    initialBotHome?: "local" | "cloud" | null;
+    /** The name given on the takeover's first step; the bot flow does not ask it again. */
+    initialBotName?: string | null;
+    /** Back from the bot flow's first step when opened from the choice: return to it, with the name. */
+    onsunriseback?: ((name: string) => void) | null;
   }
 
   let {
@@ -223,6 +246,7 @@
     onnewcloudbot = null,
     loadClaudeProviderFlag = null,
     loadCloudProvisionOptions = null,
+    directCloud = null,
     agentCompanies = null,
     oncreatebot = null,
     botRuntimeReady = null,
@@ -238,10 +262,14 @@
     botCompanies = null,
     botSignIn = null,
     onbotsignedin = null,
-    avatarPacks = null,
-    loadAvatarPacks = null,
     initialKind = "channel",
     initialStep = "find",
+    botCompanyUid = null,
+    botCompanySlug = null,
+    sunrise = false,
+    initialBotHome = null,
+    initialBotName = null,
+    onsunriseback = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -269,6 +297,8 @@
   );
   let entryBusy = $state<"company" | "agent" | "bot" | null>(null);
   let entryError = $state<string | null>(null);
+  /** The fix for `entryError`, when the direct cloud create named one. */
+  let entryFix = $state<CreateErrorFix | null>(null);
 
   async function runEntry(
     kind: "company" | "agent" | "bot",
@@ -277,6 +307,7 @@
     if (entryBusy) return;
     entryBusy = kind;
     entryError = null;
+    entryFix = null;
     try {
       const result = await run();
       if (result.ok) {
@@ -284,8 +315,10 @@
         return;
       }
       entryError = result.reason;
+      entryFix = "fix" in result ? (result.fix ?? null) : null;
     } catch (err) {
-      entryError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] entry failed", err);
+      entryError = "That didn't work. Try again.";
     } finally {
       entryBusy = null;
     }
@@ -426,7 +459,8 @@
       companyValues = seeded;
       startCompanySlugWatch(result.form, seeded);
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyOpening = false;
     }
@@ -509,7 +543,8 @@
       }
       onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -531,7 +566,8 @@
       companyUnprovisionedUid = null;
       if (companyInviteFailures.length === 0) onclose();
     } catch (err) {
-      companyError = err instanceof Error ? err.message : String(err);
+      console.warn("[create-modal] company step failed", err);
+      companyError = "That didn't work. Try again.";
     } finally {
       companyCreating = false;
     }
@@ -565,7 +601,9 @@
   // ── New bot: the create-bot flow (kind → home → details) ──────────────────
   function newBot(): void {
     if (!canCreateLocalBot && !canCreateCloudBot) return;
-    if (canCreateCloudBot && onnewcloudbot) {
+    // The host's New bot takeover asks "Cloud or Local?" first, for every
+    // New bot entry; it hands Local (and companies it does not list) back here.
+    if (onnewcloudbot) {
       onnewcloudbot();
       return;
     }
@@ -645,16 +683,39 @@
     return { ...partial, resolved: null, pending: false, error: null };
   }
 
-  let step = $state<Step>("find");
+  // Opened from the New bot choice: start on the bot step itself, so the
+  // takeover shell paints at once instead of the search window flashing first.
+  let step = $state<Step>(
+    untrack(() => (sunrise && initialStep === "bot" && (canCreateLocalBot || canCreateCloudBot) ? "bot" : "find")),
+  );
+  /**
+   * The bot step is always shown in the New bot takeover's shell, on its step
+   * screens: from the choice (`sunrise`) and from this window's own search.
+   */
+  const sunriseBot = $derived(step === "bot");
   // Opened as "New company" (sidebar switcher): go straight to the second
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
   let initialStepApplied = false;
+  // True while the bot step is the one the modal opened on (Messages > New >
+  // New bot, Settings > Bots > New bot). Escape then closes the modal instead
+  // of dropping the person on a search step they never saw; the back arrow
+  // still returns to search, and clears this so later visits step back.
+  let botOpenedDirect = false;
   $effect(() => {
     if (initialStepApplied) return;
     initialStepApplied = true;
     if (initialStep === "company" && companyCreate) void enterCompanyStep("");
-    else if (initialStep === "bot") step = "bot";
+    else if (initialStep === "bot") {
+      // Opened straight on the bot step: the rail's "New bot" item when no
+      // company has the takeover, or the takeover's own "local bot instead".
+      // Show the step itself; `newBot()` would hand back to the takeover.
+      botOpenedDirect = true;
+      if (canCreateLocalBot || canCreateCloudBot) {
+        entryError = null;
+        step = "bot";
+      }
+    }
   });
   let query = $state("");
   let queryDebounced = $state("");
@@ -1338,12 +1399,11 @@
         personUid: outcome?.personUid?.trim() || null,
       };
     } catch (err) {
+      // raw-error-ok: logged and classified; the screen gets fixed copy
       const raw = err instanceof Error ? err.message : String(err ?? "");
-      // Bridges prefix the machine code (`[http-429] …`); the person reading
-      // this wants the sentence, not the code.
-      const cleaned = stripRawUids(raw.replace(/^\[[^\]]+\]\s*/, "")).trim();
-      emailError = cleaned
-        ? `Couldn't send: ${cleaned}`
+      console.warn("[create-modal] email send failed", raw);
+      emailError = /\[http-429\]|\b429\b/.test(raw)
+        ? "Couldn't send: you've hit the daily invite limit. Try again tomorrow."
         : "Couldn't send. Check your connection and try again.";
     } finally {
       emailSending = false;
@@ -1427,6 +1487,8 @@
         return;
       }
       if (event.key !== "Escape") return;
+      // OWNER-R6: Escape in an open dropdown closes only the menu.
+      if (isDropdownOpen()) return;
       event.preventDefault();
       event.stopPropagation();
       if (confirmSubject) {
@@ -1440,6 +1502,10 @@
       }
       if (step === "bot") {
         if (entryBusy) return;
+        if (botOpenedDirect) {
+          closeAll();
+          return;
+        }
         entryError = null;
         step = "find";
         return;
@@ -1854,7 +1920,10 @@
         const exists = await createdChannelAlreadyExists(name);
         createUnconfirmed = exists;
         createError = unconfirmedCreateMessage({
-          detail: failure.message.replace(/\.$/, ""),
+          detail:
+            failure.code === "unknown"
+              ? "the request did not go through"
+              : failure.message.replace(/\.$/, ""),
           name,
           exists,
         });
@@ -1990,11 +2059,10 @@
    * in-flight guard every impatient click fired another request.
    */
   function markRetryFailed(key: string, err: unknown): void {
-    const raw = err instanceof Error ? err.message : String(err ?? "");
-    const cleaned = stripRawUids(raw);
+    console.warn("[create-modal] retry failed", err);
     patchIssue(key, {
       pending: false,
-      error: cleaned ? `Still failing: ${cleaned}` : "That didn't work either.",
+      error: "That didn't work either. Try again.",
     });
   }
 
@@ -2093,8 +2161,99 @@
     if (issue.reason === "member-other") return true;
     return issue.reason === "member-unreachable" && !offersEmailFallback(issue);
   }
+
+  // Start loading the New bot flow as soon as the modal opens, so the bot
+  // step usually paints with it already loaded.
+  createBotFlowDoor.preload();
 </script>
 
+{#snippet botFlow()}
+    <!-- The flow loads on first open (preloaded when this modal mounts), so
+         it stays out of the shell's startup JS. -->
+    <LazyDoor
+      door={createBotFlowDoor}
+      props={{
+        botRuntimeReady,
+        botRuntimeStatus,
+        onrecheckruntimes,
+        aiTools,
+        hqFolderPath,
+        onopenassistant,
+        onassistedinstall,
+        onrequestaitools,
+        botWorkers,
+        existingNames: existingBotNames,
+        botCompanies,
+        agentTargets: canCreateCloudBot ? agentTargets : [],
+        initialCompanyUid: botCompanyUid,
+        initialCompanySlug: botCompanySlug,
+        initialHome: initialBotHome,
+        initialName: initialBotName,
+        onCloudCreate: canCreateCloudBot ? newAgentFor : null,
+        loadClaudeProviderFlag,
+        loadCloudProvisionOptions,
+        directCloud,
+        oncreate: canCreateLocalBot ? submitLocalBot : null,
+        onback: sunrise && onsunriseback
+          ? (name: string) => {
+              if (entryBusy) return;
+              onsunriseback?.(name);
+            }
+          : () => {
+              botOpenedDirect = false;
+              entryError = null;
+              step = "find";
+            },
+        entryBusy,
+        entryError,
+        entryFix,
+        signInApi: botSignIn,
+        onsignedin: onbotsignedin,
+      }}
+    />
+{/snippet}
+
+{#if sunriseBot}
+  <!-- The New bot takeover's shell around the bot flow (opened from the
+       "Cloud or Local?" choice, or this window's own search). Same classes
+       and stylesheet as NewBotTakeover. It covers the whole window and the
+       card shrinks and scrolls with it, so a small window fits it too. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="new-bot-takeover chat-shell"
+    data-testid="chat-create-modal"
+    data-sunrise="true"
+    role="presentation"
+    style={`--new-bot-wallpaper: url("${newBotWallpaper(0)}")`}
+    use:portal
+    onkeydown={onDialogKey}
+  >
+    <div class="new-bot-takeover-shade" aria-hidden="true"></div>
+    <header class="new-bot-takeover-header">
+      <span class="new-bot-takeover-wordmark">HQ</span>
+      <button
+        type="button"
+        class="new-bot-takeover-cancel"
+        data-testid="new-bot-takeover-cancel"
+        disabled={entryBusy !== null}
+        onclick={closeAll}
+      ><RailIcon name="x" />Cancel</button>
+    </header>
+    <main class="new-bot-takeover-stage">
+      <div
+        bind:this={dialogEl}
+        class="new-bot-takeover-card new-bot-takeover-card--flow new-bot-takeover-card--steps"
+        data-testid="new-bot-sunrise-flow"
+        role="dialog"
+        aria-modal="true"
+        aria-label="New bot"
+        tabindex="-1"
+      >
+        {@render botFlow()}
+      </div>
+    </main>
+  </div>
+{:else}
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="create-overlay chat-shell"
@@ -2106,7 +2265,6 @@
   <div
     bind:this={dialogEl}
     class="create-card"
-    class:create-card--wide={step === "bot"}
     role="dialog"
     aria-modal="true"
     aria-labelledby="create-modal-title"
@@ -2165,6 +2323,7 @@
             disabled={creating || emailSending || entryBusy !== null || companyBusy}
             onclick={() => {
               if (step === "bot") {
+                botOpenedDirect = false;
                 entryError = null;
                 step = "find";
               } else if (step === "company") backFromCompany();
@@ -2172,7 +2331,7 @@
               else backToFind();
             }}
           >
-            <span aria-hidden="true">‹</span>
+            <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.5 3.5 5 7l3.5 3.5" /></svg>
           </button>
         {/if}
         <h2 id="create-modal-title" class="create-title">
@@ -2199,7 +2358,7 @@
         disabled={creating || emailSending}
         onclick={closeAll}
       >
-        <span aria-hidden="true">×</span>
+        <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7" /></svg>
       </button>
     </div>
 
@@ -2261,7 +2420,7 @@
                 onmouseenter={() => (activeIndex = item.index)}
                 onclick={() => enterCreate(query)}
               >
-                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                 <span class="create-row-name"
                   >Create channel #{findResults.createSlug}</span
                 >
@@ -2279,7 +2438,7 @@
                 onmouseenter={() => (activeIndex = item.index)}
                 onclick={() => newCompany(item.name)}
               >
-                <span class="create-glyph" aria-hidden="true">+</span>
+                <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                 <span class="create-row-name">Create company {item.name}</span>
               </button>
             {/if}
@@ -2425,19 +2584,15 @@
                 >{field.label}</span
               >
               {#if field.control === "select"}
-                <select
-                  class="create-select"
-                  data-testid={`chat-create-company-field-${field.id}`}
-                  aria-labelledby={`create-company-${field.id}-label`}
+                <Dropdown
+                  block
+                  testid={`chat-create-company-field-${field.id}`}
+                  label={field.label}
                   disabled={companyBusy}
                   value={companyValues[field.id] ?? ""}
-                  onchange={(event) =>
-                    setCompanyValue(field.id, event.currentTarget.value)}
-                >
-                  {#each field.options as option (option.id)}
-                    <option value={option.id}>{option.label}</option>
-                  {/each}
-                </select>
+                  options={field.options.map((option) => ({ value: option.id, label: option.label }))}
+                  onchange={(v) => setCompanyValue(field.id, v)}
+                />
               {:else}
                 <input
                   class="create-input"
@@ -2473,7 +2628,7 @@
                     data-testid="chat-create-company-slug-suggestion"
                     disabled={companyBusy}
                     onclick={acceptCompanySlugSuggestion}
-                  >
+                  ><RailIcon name="check" />
                     Use {companySlugState.suggestion}
                   </button>
                 {/if}
@@ -2524,16 +2679,14 @@
             </div>
             <div class="create-field">
               <span class="create-label" id="create-company-role-label">Role</span>
-              <select
-                class="create-select"
-                data-testid="chat-create-company-role"
-                aria-labelledby="create-company-role-label"
+              <Dropdown
+                block
+                testid="chat-create-company-role"
+                label="Role"
                 disabled={companyBusy}
                 bind:value={companyRole}
-              >
-                <option value="member">Member</option>
-                <option value="owner">Owner</option>
-              </select>
+                options={[{ value: "member", label: "Member" }, { value: "owner", label: "Owner" }]}
+              />
             </div>
             <p class="create-help">
               Each address gets an invite once the company exists. Nobody is
@@ -2568,13 +2721,13 @@
             disabled={companyCreating || !companyCreate?.provision}
             aria-busy={companyCreating}
             onclick={() => void retryCompanyProvision()}
-          >
+          ><RailIcon name="refresh" />
             {companyCreating ? "Setting up cloud storage…" : "Try again"}
           </button>
         {:else if companyInviteFailures.length > 0}
           <!-- The company is made; only the invites failed. The one thing left
                to do here is leave. -->
-          <button type="button" class="create-submit" onclick={() => onclose()}>
+          <button type="button" class="create-submit" onclick={() => onclose()}><RailIcon name="check" />
             Done
           </button>
         {:else if companyForm}
@@ -2584,7 +2737,7 @@
             data-testid="chat-create-company-submit"
             disabled={companySubmitDisabled}
             onclick={submitCompany}
-          >
+          ><RailIcon name="plus" />
             {companyCreating
               ? companyPhase === "provisioning"
                 ? "Setting up cloud storage…"
@@ -2601,40 +2754,11 @@
             class="create-submit"
             data-testid="chat-create-company-retry"
             onclick={() => void enterCompanyStep(companyName)}
-          >
+          ><RailIcon name="refresh" />
             Try again
           </button>
         {/if}
       </div>
-    {:else if step === "bot"}
-      <CreateBotFlow
-        {botRuntimeReady}
-        {botRuntimeStatus}
-        {onrecheckruntimes}
-        {aiTools}
-        {hqFolderPath}
-        {onopenassistant}
-        {onassistedinstall}
-        {onrequestaitools}
-        {botWorkers}
-        existingNames={existingBotNames}
-        {botCompanies}
-        agentTargets={canCreateCloudBot ? agentTargets : []}
-        onCloudCreate={canCreateCloudBot ? newAgentFor : null}
-        {loadClaudeProviderFlag}
-        {loadCloudProvisionOptions}
-        oncreate={canCreateLocalBot ? submitLocalBot : null}
-        onback={() => {
-          entryError = null;
-          step = "find";
-        }}
-        {entryBusy}
-        {entryError}
-        signInApi={botSignIn}
-        onsignedin={onbotsignedin}
-        {avatarPacks}
-        {loadAvatarPacks}
-      />
     {:else if step === "email"}
       {#if emailOutcome}
         <div
@@ -2696,7 +2820,7 @@
             disabled={emailSubmitDisabled}
             aria-busy={emailSending}
             onclick={() => void sendEmailMessage()}
-          >
+          ><RailIcon name="send" />
             {emailSending ? "Sending…" : emailError ? "Try again" : "Send"}
           </button>
         </div>
@@ -2829,24 +2953,17 @@
         {#if scopeMode === "company"}
           <div class="create-field">
             <span class="create-label" id="create-company-label">Company</span>
-            <select
-              class="create-select"
-              data-testid="chat-channel-scope"
-              aria-labelledby="create-company-label"
+            <Dropdown
+              block
+              testid="chat-channel-scope"
+              label="Company"
               disabled={creating}
               bind:value={companyUid}
-            >
-              {#each targetCompanies as company (company.companyUid)}
-                {@const blocked = scopeUnavailable.find(
-                  (row) => row.company.companyUid === company.companyUid,
-                )}
-                <option value={company.companyUid} disabled={Boolean(blocked)}>
-                  {blocked
-                    ? `${company.label} — ${blocked.reason}`
-                    : company.label}
-                </option>
-              {/each}
-            </select>
+              options={targetCompanies.map((company) => {
+                const blocked = scopeUnavailable.find((row) => row.company.companyUid === company.companyUid);
+                return { value: company.companyUid, label: company.label, detail: blocked?.reason ?? null, disabled: Boolean(blocked) };
+              })}
+            />
           </div>
         {/if}
         {#if scopeMode === "company" && scopeUnavailable.length > 0}
@@ -2988,7 +3105,7 @@
                     onclick={() => pickCandidate(candidate)}
                   >
                     {#if candidate.type === "email"}
-                      <span class="create-glyph" aria-hidden="true">+</span>
+                      <span class="create-glyph" aria-hidden="true"><RailIcon name="plus" /></span>
                       <span class="create-row-name">Invite {candidate.label}</span>
                     {:else}
                       <span
@@ -3045,7 +3162,7 @@
             data-testid="chat-channel-message-directly"
             disabled={creating}
             onclick={messageSoleMemberDirectly}
-          >
+          ><RailIcon name="send" />
             Message {soleHumanMember.label} directly
           </button>
         {/if}
@@ -3054,7 +3171,7 @@
             >{blockReason}</span
           >
         {:else}
-          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} TO CREATE</span>
+          <span class="create-hint" aria-hidden="true">{formatShortcut("Mod+Enter")} to create</span>
         {/if}
         <button
           type="button"
@@ -3064,7 +3181,7 @@
           aria-busy={creating}
           aria-describedby={blockReason ? "create-submit-reason" : undefined}
           onclick={() => void submitCreate()}
-        >
+        ><RailIcon name="plus" />
           {creating
             ? "Creating…"
             : createUnconfirmed
@@ -3176,6 +3293,7 @@
     {/if}
   </div>
 </div>
+{/if}
 
 <style>
   .create-overlay {
@@ -3202,17 +3320,12 @@
     border-radius: 14px;
     /* Never --v4-ground here — that token is glass and lets timeline text
        bleed through. */
-    background: var(--v4-surface-solid, #fff);
+    background: var(--overlay-bg);
     box-shadow: var(--v4-shadow-window, var(--panel-shadow));
     outline: none;
   }
 
   /* The bot flow needs room for three cards and a preview rail. */
-  .create-card--wide {
-    width: min(880px, 100%);
-    max-height: min(88vh, 720px);
-  }
-
   .create-head {
     display: flex;
     align-items: center;
@@ -3246,8 +3359,8 @@
   .create-title {
     margin: 0;
     color: var(--t1);
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .create-spacer {
@@ -3261,7 +3374,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 15px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3273,13 +3386,13 @@
   .create-close {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
     line-height: 1;
     cursor: pointer;
   }
@@ -3345,10 +3458,8 @@
 
   .create-group {
     padding: 10px 10px 4px;
-    color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    color: var(--t2);
+    font: 500 13px/17px var(--font-ui);
   }
 
   .create-row {
@@ -3385,7 +3496,7 @@
     place-items: center;
     width: 22px;
     color: var(--t3);
-    font-size: 14px;
+    font-size: 13px;
   }
 
   /* Round monogram = person. Square (6px) monogram = agent — that pairing
@@ -3398,8 +3509,8 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t2);
-    font-size: 9px;
-    font-weight: 600;
+    font-size: 10px;
+    font-weight: 500;
   }
 
   .create-mono.agent {
@@ -3420,7 +3531,7 @@
     flex: 0 0 auto;
     margin-left: auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-note {
@@ -3432,7 +3543,7 @@
 
   .create-email-note {
     padding: 14px 16px 0;
-    font-size: 12px;
+    font-size: 13px;
   }
 
   /* Lifecycle entry points: a hairline, a mono label, ghost rows. */
@@ -3483,13 +3594,13 @@
   .create-entry-hint {
     flex: 0 0 auto;
     color: var(--t3);
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .create-entry-error {
     padding: 6px 10px 2px;
     color: var(--danger, #e5484d);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-field {
@@ -3535,7 +3646,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     outline: none;
   }
 
@@ -3561,7 +3672,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-echo {
@@ -3581,7 +3692,7 @@
     margin: 0;
     padding: 0 16px 8px 96px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-slug-status[data-status="available"] {
@@ -3613,7 +3724,7 @@
     appearance: none;
     -webkit-appearance: none;
     padding: 6px 8px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 8px;
     background: transparent;
     color: var(--t1);
@@ -3628,7 +3739,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--v4-text-2, inherit);
-    font: 500 12px/1 var(--font-ui, system-ui);
+    font: 500 13px/1 var(--font-ui, system-ui);
     cursor: pointer;
   }
 
@@ -3659,7 +3770,7 @@
     border-radius: 999px;
     background: var(--v4-control-bg);
     color: var(--t1);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-chip-mono {
@@ -3670,8 +3781,8 @@
     border-radius: 999px;
     background: var(--hover);
     color: var(--t2);
-    font-size: 7px;
-    font-weight: 600;
+    font-size: 8px;
+    font-weight: 500;
   }
 
   .create-chip-mono.agent {
@@ -3707,9 +3818,7 @@
      the 3:1 non-text floor. --t2 measures 5.29:1. */
   .create-tag {
     color: var(--t2);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* D10's primary signal — agent vs person — gets a pill and full contrast. */
@@ -3744,23 +3853,23 @@
     max-height: calc(100% - 24px);
     overflow-y: auto;
     padding: 14px 16px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.12));
+    border: 1px solid var(--overlay-border);
     border-radius: 12px;
-    background: var(--v4-surface-solid, #fff);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .create-confirm-title {
     margin: 0 0 6px;
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .create-confirm-body {
     margin: 0 0 6px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3781,7 +3890,7 @@
     background: transparent;
     color: var(--t1);
     font: inherit;
-    font-size: 14px;
+    font-size: 13px;
     line-height: 1.4;
     outline: none;
     resize: none;
@@ -3796,7 +3905,7 @@
     margin: 0;
     padding: 6px 16px 0;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
   }
 
   .create-footer {
@@ -3809,17 +3918,13 @@
 
   .create-hint {
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    font: 400 13px/1 var(--font-ui);
   }
 
   /* A disabled button with no explanation is a dead end — say why. */
   .create-hint-block {
     color: var(--t2);
-    font: 400 12px/1.4 var(--font-ui);
-    letter-spacing: 0;
-    text-transform: none;
+    font: 400 13px/1.4 var(--font-ui);
   }
 
   .create-submit {
@@ -3850,7 +3955,7 @@
     border: 0;
     background: transparent;
     color: var(--t1);
-    font: 500 12px/1.4 var(--font-ui);
+    font: 500 13px/1.4 var(--font-ui);
     text-decoration: underline;
     text-underline-offset: 2px;
     cursor: pointer;
@@ -3873,7 +3978,7 @@
   .create-summary-copy {
     flex: 1 1 auto;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
   }
 
@@ -3881,7 +3986,7 @@
     margin: 0;
     padding: 0 16px 10px;
     color: var(--t2);
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.5;
     white-space: pre-wrap;
     user-select: text;
@@ -3891,13 +3996,13 @@
   :global(:root[data-force-theme="dark"]) .create-confirm,
   :global(.dark) .create-card,
   :global(.dark) .create-confirm {
-    background: var(--v4-surface-solid, #303030);
+    background: var(--overlay-bg);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root:not([data-force-theme="light"])) .create-card,
     :global(:root:not([data-force-theme="light"])) .create-confirm {
-      background: var(--v4-surface-solid, #303030);
+      background: var(--overlay-bg);
     }
   }
 </style>

@@ -44,7 +44,7 @@ afterEach(async () => {
 });
 
 describe("ProfilePanel CSP-safe avatar fallback", () => {
-  it("shows initials and an explicit unavailable state for presigned remote avatars", async () => {
+  it("shows the initial, with no apology line, for presigned remote avatars", async () => {
     const adapter = fakeAdapter({
       marketplace: {
         getMyCreator: vi.fn(async () =>
@@ -87,10 +87,11 @@ describe("ProfilePanel CSP-safe avatar fallback", () => {
       host.querySelector('[data-testid="profile-avatar-fallback"]')
         ?.textContent,
     ).toBe("C");
+    // OWNER-R23: the initial stands in; no apology line.
     expect(
-      host.querySelector('[data-testid="profile-avatar-preview-unavailable"]')
-        ?.textContent,
-    ).toContain("preview unavailable");
+      host.querySelector('[data-testid="profile-avatar-preview-unavailable"]'),
+    ).toBeNull();
+    expect(host.textContent).not.toContain("unavailable in this version");
     expect(host.querySelector('img[src^="http"]')).toBeNull();
 
     host

@@ -215,6 +215,12 @@ mac-notification-sys = "0.6"
 # Encode-able type for. Already in the lock tree (transitive via objc2-app-kit);
 # pinned as a direct dep so the glass bridge can name the geometry type.
 objc2-core-foundation = "0.3"
+# commands/deploy_snapshot.rs: WKWebView takeSnapshot for the Deployments
+# side-panel page preview, and NSBitmapImageRep to encode it as a fixed-size
+# PNG. All three are already in the lock tree through wry.
+objc2-web-kit = { version = "0.3", features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKWebView", "WKSnapshotConfiguration"] }
+objc2-app-kit = { version = "0.3", features = ["std", "objc2-core-foundation", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics"] }
+objc2-foundation = { version = "0.3", features = ["std", "NSData", "NSDictionary", "NSError", "NSValue", "NSString"] }
 
 [features]
 # Explicit opt-in for packaged native QA only. Never enable for distribution.
@@ -249,6 +255,12 @@ e2e-automation = []
 name = "emit-sample-journal"
 path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
+
+[[test]]
+# Real WKWebView capture of a local fixture page. Needs the main thread for
+# AppKit, so it runs without the libtest harness.
+name = "deploy_snapshot_capture"
+harness = false
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

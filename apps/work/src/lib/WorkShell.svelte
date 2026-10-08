@@ -22,6 +22,8 @@
     createRosterRefresher,
     createTenantStorage,
     resolveShellCompanies,
+    localOnlyCompaniesFromRows,
+    type LocalOnlyCompany,
     subscribeRosterRefreshEvents,
     settingsProfileFromSelf,
     statusForRow,
@@ -480,6 +482,8 @@
       authed: false,
     }),
   );
+  /** Company folders on this Mac with no cloud id (company switcher only). */
+  let localCompanies = $state<LocalOnlyCompany[]>([]);
   /**
    * Where this session is in loading `companies`: `loading` until the first
    * fetch settles, then `ready` (applied) or `failed` (retry budget spent).
@@ -548,6 +552,7 @@
     selfHydrated = false;
     shallow = readShallowCache("");
     companies = resolveShellCompanies({ authed: false });
+    localCompanies = [];
     rosterStatus = "loading";
     workThreads = [];
     selectedCompanyUid = null;
@@ -597,6 +602,13 @@
       membershipRows: res.value,
     });
     if (!sameRoster(companies, roster)) companies = roster;
+    const local = localOnlyCompaniesFromRows(res.value);
+    if (
+      local.length !== localCompanies.length ||
+      local.some((c, i) => c.slug !== localCompanies[i]?.slug || c.name !== localCompanies[i]?.name)
+    ) {
+      localCompanies = local;
+    }
 
     const threads = await loadWorkThreads(roster, workFetch);
     if (!ownsTenant(expectedGeneration, hydration)) return true;
@@ -975,6 +987,7 @@
       onDesktopSignedOut: () => {
         self = null;
         companies = resolveShellCompanies({ authed: false });
+        localCompanies = [];
         workThreads = [];
       },
     });
@@ -1017,6 +1030,7 @@
       {onopenhostnotification}
       {wakes}
       {companies}
+      {localCompanies}
       onhomechannelresolved={handleHomeChannelResolved}
       {syncEvents}
       onsignin={startReauth}

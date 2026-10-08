@@ -18,6 +18,7 @@ import {
   type MeetingEvent,
   type RowButtonKind,
   type ScheduledBot,
+  isListableMeeting,
 } from "./meetings-model";
 
 export type MeetingsAgendaTab = "upcoming" | "past";
@@ -102,6 +103,23 @@ export function slimMeetingEvent(event: MeetingEvent): MeetingEvent {
     next.sourceCompanyUid = event.sourceCompanyUid;
   if (event.sourceAccountId != null)
     next.sourceAccountId = event.sourceAccountId;
+  // US-021: the live canvas reads these; attendees are capped to stay small.
+  if (event.signals != null) next.signals = event.signals;
+  if (event.attendees?.length)
+    next.attendees = event.attendees.slice(0, 24).map((a) => ({
+      email: a.email,
+      displayName: a.displayName,
+      responseStatus: a.responseStatus,
+      self: a.self,
+      resource: a.resource,
+    }));
+  // Kept so cached snapshots still pass isListableMeeting on hydrate.
+  if (event.location != null) next.location = event.location;
+  const video = event.conferenceData?.entryPoints?.find((p) => p.uri);
+  if (video) next.conferenceData = { entryPoints: [{ entryPointType: video.entryPointType, uri: video.uri }] };
+  if (event.room != null) next.room = event.room;
+  if (event.outline?.length) next.outline = event.outline;
+  if (event.notes?.length) next.notes = event.notes;
   return next;
 }
 
@@ -111,7 +129,7 @@ export function takeAgendaWindow(
   now: Date = new Date(),
 ): MeetingEvent[] {
   const horizon = now.getTime() + AGENDA_HORIZON_MS;
-  const { upcoming, past } = partitionUpcomingPast([...events], now);
+  const { upcoming, past } = partitionUpcomingPast(events.filter(isListableMeeting), now);
   const near = upcoming.filter((event) => {
     const start = eventStart(event)?.getTime();
     return start == null || start <= horizon;

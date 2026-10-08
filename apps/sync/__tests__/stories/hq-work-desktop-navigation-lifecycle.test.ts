@@ -6,7 +6,7 @@
  * reach the rendered @hq/ui surface rather than merely call a route helper.
  */
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const nativeListeners = vi.hoisted(
   () => new Map<string, (event: { payload: unknown }) => void>(),
@@ -139,6 +139,7 @@ vi.mock('@tauri-apps/plugin-shell', () => ({ open: openExternal }));
 
 import { flushSync, mount, unmount } from 'svelte';
 import HqWorkWorkShell from '../../src/desktop-alt/HqWorkWorkShell.svelte';
+import { loadShellSettings } from '../../../../packages/ui/src/shell/settings-lazy';
 import type { SyncInvokeFn } from '@hq/platform';
 
 const WHOAMI = {
@@ -403,6 +404,15 @@ afterEach(async () => {
   tauriCommands.length = 0;
 });
 
+
+// Settings is a lazy chunk (packages/ui/src/shell/settings-lazy.ts, 7e9692ab).
+// Its first dynamic import needs a real module transform, which microtask
+// flushes cannot wait out. Load the memoized chunk once up front so the
+// `{#await loadShellSettings()}` branch resolves deterministically.
+beforeAll(async () => {
+  await loadShellSettings();
+});
+
 describe('embedded Work navigation and lifecycle', () => {
   it('shows a truthful initial loading state before identity settles', async () => {
     host = document.createElement('div');
@@ -504,12 +514,20 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
     ).toBe('page');
 
+    // OWNER-R33: the retired Library Workers tab lands on Marketplace Browse.
     warmRoute('library:workers');
     await flush();
     expect(
-      host.querySelector('[data-testid="library-nav-workers"]')?.getAttribute('aria-current'),
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
-    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-workers-panel"]')).toBeNull();
+
+    warmRoute('marketplace:installed');
+    await flush();
+    expect(
+      host.querySelector('[data-testid="library-nav-installed"]')?.getAttribute('aria-current'),
+    ).toBe('page');
 
     warmRoute('library:marketplace');
     await flush();
@@ -525,18 +543,19 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
     expect(host.querySelector('[data-testid="library-submit-panel"]')).toBeTruthy();
 
+    // OWNER-R23: the creator profile moved to Settings > Public profile.
     warmRoute('library:profile');
     await flush();
-    expect(
-      host.querySelector('[data-testid="library-nav-profile"]')?.getAttribute('aria-current'),
-    ).toBe('page');
-    expect(host.querySelector('[data-testid="library-profile-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-profile"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-overlay"]')).toBeNull();
 
+    // OWNER-R33: bare Library (was Skills) redirects to Marketplace Browse.
     warmRoute('library');
     await flush();
     expect(
-      host.querySelector('[data-testid="library-nav-skills"]')?.getAttribute('aria-current'),
+      host.querySelector('[data-testid="library-nav-marketplace"]')?.getAttribute('aria-current'),
     ).toBe('page');
+    expect(host.querySelector('[data-testid="library-nav-skills"]')).toBeNull();
 
     warmRoute('settings');
     await flush();
@@ -710,7 +729,7 @@ describe('embedded Work navigation and lifecycle', () => {
     expect(hqProPaths.some((path) => path.startsWith('/v1/files/shared-with-me'))).toBe(true);
   });
 
-  it('shows Workers only through the Sync host and opens its real native detail command', async () => {
+  it('the old Library Workers route opens Marketplace Browse and reads no worker tree', async () => {
     const invocations: Array<{ command: string; args?: Record<string, unknown> }> = [];
     await mountShell({
       invocations,
@@ -740,16 +759,15 @@ describe('embedded Work navigation and lifecycle', () => {
       },
     });
 
+    // OWNER-R33: Workers left this page (company Brain panes own them), so the
+    // old route lands on Marketplace Browse and reads no local worker tree.
     warmRoute('library:workers');
     await flush(64);
-    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeTruthy();
-    (host.querySelector('[data-testid="library-worker-card"]') as HTMLButtonElement).click();
-    await flush(64);
-
-    expect(
-      invocations.find((entry) => entry.command === 'get_library_worker_detail')?.args,
-    ).toEqual({ workerPath: 'workers/planner' });
-    expect(host.querySelector('[data-testid="library-detail-panel"]')).toBeTruthy();
+    expect(host.querySelector('[data-testid="library-nav-workers"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-worker-card"]')).toBeNull();
+    expect(host.querySelector('[data-testid="library-marketplace-panel"]')).toBeTruthy();
+    expect(invocations.some((entry) => entry.command === 'get_library_root')).toBe(false);
+    expect(invocations.some((entry) => entry.command === 'get_library_worker_detail')).toBe(false);
   });
 
   it('preserves Submit and Profile mutations through the mounted Sync-to-Tauri seam', async () => {
@@ -804,7 +822,11 @@ describe('embedded Work navigation and lifecycle', () => {
     await fill('[data-testid="submit-application-handle"]', 'ada');
     (host.querySelector('[data-testid="submit-request-access-button"]') as HTMLButtonElement).click();
     await flush(64);
+    // AUDIT-3c: the server's own sentence goes to the log; the panel shows plain copy.
     expect(host.querySelector('[data-testid="submit-request-error"]')?.textContent).toContain(
+      "Couldn't send your request. Try again",
+    );
+    expect(host.querySelector('[data-testid="submit-request-error"]')?.textContent).not.toContain(
       'application service unavailable',
     );
     expect(invocations.find((entry) => entry.command === 'request_creator_access')?.args).toEqual({
@@ -1018,7 +1040,9 @@ describe('embedded Work navigation and lifecycle', () => {
     });
     await flush(128);
 
-    expect(host.querySelector('[data-testid="chat-user-card"]')?.textContent).toContain('Blaise');
+    expect(host.querySelector('[data-testid="rail-you"]')?.getAttribute('aria-label')).toContain(
+      'Blaise',
+    );
     expect(host.querySelector('[data-testid="titlebar-notifications-badge"]')).toBeTruthy();
     expect(host.querySelector('[data-testid="notifications-unread"]')?.textContent?.trim()).toBe(
       '1 unread',
@@ -1144,10 +1168,12 @@ describe('embedded Work navigation and lifecycle', () => {
       host.querySelector('[data-testid="notifications-view"]')?.parentElement?.classList.contains('is-active'),
     ).toBe(true);
 
-    // The "+" opens the unified create modal directly. Create a channel whose
-    // first message is answered late by the host.
-    (host.querySelector('[data-testid="chat-new-message"]') as HTMLButtonElement).click();
+    // The native "New chat" accelerator (shortcut:invoke chat.new) opens the
+    // unified create modal; the sidebar "+" is a create menu since c7de0843.
+    // Create a channel whose first message is answered late by the host.
+    nativeWake('shortcut:invoke', { id: 'chat.new' });
     await flush();
+    expect(document.querySelector('[data-testid="chat-create-query"]')).toBeTruthy();
     setInput('chat-create-query', '#release');
     await new Promise((resolve) => setTimeout(resolve, 150));
     await flush();
@@ -1266,7 +1292,7 @@ describe('embedded Work navigation and lifecycle', () => {
     // route must be queued for the next mounted host rather than dispatched
     // into an unmounted shell and lost.
     warmRoute('settings:appearance');
-    (host.querySelector('[data-testid="hq-work-signed-out"] .secondary') as HTMLButtonElement).click();
+    (host.querySelector('[data-testid="hq-work-signed-out"] [data-testid="sign-in-session-retry"]') as HTMLButtonElement).click();
     await flush(64);
     expect(host.querySelector('[data-testid="settings-host"]')).toBeTruthy();
     expect(
@@ -1274,18 +1300,16 @@ describe('embedded Work navigation and lifecycle', () => {
     ).toBe('page');
   });
 
-  it('opens approved Console, company, calendar, OAuth, integration, and meeting-join handoffs', async () => {
+  it('opens approved Console, calendar, OAuth, integration, and meeting-join handoffs', async () => {
     await mountShell({ pendingRoute: 'settings' });
 
     (host.querySelector('[data-testid="settings-open-console"]') as HTMLButtonElement).click();
     await flush();
     expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/');
 
-    (host.querySelector('[data-testid="settings-nav-companies"]') as HTMLButtonElement).click();
-    await flush();
-    (host.querySelector('[data-testid="settings-company-row"] button') as HTMLButtonElement).click();
-    await flush();
-    expect(openExternal).toHaveBeenLastCalledWith('https://hq.computer/companies/indigo');
+    // Settings no longer lists companies; they are reached from the rail
+    // tiles and the More companies popover.
+    expect(host.querySelector('[data-testid="settings-nav-companies"]')).toBeNull();
 
     warmRoute('meetings');
     await flush();
@@ -1479,7 +1503,7 @@ describe('embedded Work navigation and lifecycle', () => {
       reason: null,
     };
     const retry = host.querySelector(
-      '[data-testid="hq-work-signed-out"] button.secondary',
+      '[data-testid="hq-work-signed-out"] [data-testid="sign-in-session-retry"]',
     ) as HTMLButtonElement;
     retry.click();
     await flush(64);

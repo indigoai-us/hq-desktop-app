@@ -61,7 +61,7 @@ describe("ShellSettings profile pane load states", () => {
       host.querySelector('[data-testid="settings-profile-empty"]'),
     ).toBeNull();
     expect(
-      host.querySelector('[data-testid="settings-profile-skeleton"]'),
+      host.querySelector('[data-testid="settings-profile-loading"]'),
     ).toBeNull();
 
     await vi.advanceTimersByTimeAsync(PROFILE_SKELETON_DELAY_MS);
@@ -71,7 +71,7 @@ describe("ShellSettings profile pane load states", () => {
       host.querySelector('[data-testid="settings-profile-empty"]'),
     ).toBeNull();
     expect(
-      host.querySelector('[data-testid="settings-profile-skeleton"]'),
+      host.querySelector('[data-testid="settings-profile-loading"]'),
     ).not.toBeNull();
   });
 

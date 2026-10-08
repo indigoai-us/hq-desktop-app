@@ -68,6 +68,23 @@ pub fn allow_navigation<R: Runtime>(app: &AppHandle<R>, url: &Url) -> bool {
     false
 }
 
+/// Hidden deploy-snapshot windows load the deployed site on purpose. The
+/// app-wide hook must not route those loads to the OS browser (owner report:
+/// selecting a Deployments row opened the site in the browser); the snapshot
+/// window's own navigation handler restricts them instead.
+pub fn is_snapshot_webview(label: &str) -> bool {
+    label.starts_with(crate::commands::deploy_snapshot::SNAPSHOT_LABEL_PREFIX)
+}
+
+/// App-wide plugin hook: snapshot windows defer to their own handler, every
+/// other webview goes through [`allow_navigation`].
+pub fn allow_webview_navigation<R: Runtime>(app: &AppHandle<R>, label: &str, url: &Url) -> bool {
+    if is_snapshot_webview(label) {
+        return true;
+    }
+    allow_navigation(app, url)
+}
+
 /// Deny `window.open` / `target=_blank` webviews; route allowed URLs out.
 pub fn deny_webview_new_windows<'a, R: Runtime, M: Manager<R>>(
     builder: tauri::WebviewWindowBuilder<'a, R, M>,
@@ -106,6 +123,15 @@ mod tests {
         assert!(is_app_navigation(&parse("about:blank")));
         assert!(!is_app_navigation(&parse("https://example.com/docs")));
         assert!(!is_app_navigation(&parse("mailto:ada@example.com")));
+    }
+
+    #[test]
+    fn snapshot_windows_skip_the_external_browser_handoff() {
+        assert!(is_snapshot_webview("deploy-snapshot-0"));
+        assert!(is_snapshot_webview("deploy-snapshot-42"));
+        assert!(!is_snapshot_webview("desktop-alt"));
+        assert!(!is_snapshot_webview("main"));
+        assert!(!is_snapshot_webview("snapshot-deploy-1"));
     }
 
     #[test]

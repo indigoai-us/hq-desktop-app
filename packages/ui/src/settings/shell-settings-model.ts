@@ -19,7 +19,7 @@ import {
 } from "./appearance-seam.js";
 import type { SettingsUiSize } from "./settings-prefs.js";
 
-const THEME_STORAGE_KEY = "hq-work-color-theme";
+export const THEME_STORAGE_KEY = "hq-work-color-theme";
 
 export const APPEARANCE_THEMES: ReadonlyArray<{
   id: ColorTheme;
@@ -198,6 +198,38 @@ export function applyColorTheme(
   } catch (error) {
     console.warn("[hq-ui] best-effort failure at packages/ui/src/settings/shell-settings-model.ts:198", error);
     /* private mode */
+  }
+  return next;
+}
+
+/**
+ * Apply a theme choice and hand it to the desktop appearance host.
+ *
+ * `applyColorTheme` alone only flips `data-force-theme` in this WebView and
+ * writes this module's key. The desktop host owns the shared preference
+ * (`hq-sync.appearance.v1`): it sets the native window theme, so
+ * `prefers-color-scheme` rules, native controls, and the title bar follow,
+ * and it is what every HQ window re-applies on launch. Without the request
+ * the window keeps the macOS appearance natively and the next launch drops
+ * the choice. The request detail is a WHOLE preference (see
+ * `applyWindowOpacity`), so the live transparency is sent unchanged.
+ */
+export function requestColorTheme(
+  theme: ColorTheme,
+  root: HTMLElement | null = globalThis.document?.documentElement ?? null,
+  target: EventTarget | null = typeof window === "undefined" ? null : window,
+  storage:
+    Pick<Storage, "setItem"> | null | undefined = globalThis.localStorage,
+): ColorTheme {
+  const next = applyColorTheme(theme, root, storage);
+  const raw = root?.dataset?.[WINDOW_TRANSPARENCY_DATASET_KEY];
+  const transparency = raw === undefined ? NaN : Number(raw);
+  if (target && Number.isFinite(transparency)) {
+    target.dispatchEvent(
+      new CustomEvent(APPEARANCE_REQUEST_EVENT, {
+        detail: { colorTheme: next, windowTransparency: transparency },
+      }),
+    );
   }
   return next;
 }

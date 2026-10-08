@@ -102,12 +102,33 @@ pub fn resolve_request_url(url: &str, vault_base: &str) -> Result<String, String
     Err("hq-pro fetch URL must be a /path or https URL".to_string())
 }
 
+/// The request path for the fetch log: no host, no query string and no
+/// fragment, so a query-carried value (or a presigned signature) never
+/// reaches the log file.
+pub fn fetch_log_path(full_url: &str) -> String {
+    match url::Url::parse(full_url) {
+        Ok(parsed) => parsed.path().to_string(),
+        Err(_) => full_url.split(['?', '#']).next().unwrap_or("").to_string(),
+    }
+}
+
+/// Longest per-request bound a caller may ask `hq_pro_fetch` for.
+const HQ_PRO_FETCH_MAX_TIMEOUT_SECS: u64 = 60;
+
+/// OWNER-019: a caller-requested request bound, clamped to 1..=60 s. `None`
+/// keeps the shared client's 15 s bound. Some hq-pro reads (a company
+/// meeting detail with signals) answer in 14-16 s, so 15 s cut them off.
+pub fn fetch_timeout(timeout_secs: Option<u64>) -> Option<std::time::Duration> {
+    timeout_secs.map(|s| std::time::Duration::from_secs(s.clamp(1, HQ_PRO_FETCH_MAX_TIMEOUT_SECS)))
+}
+
 /// Authenticated hq-pro request. Token is attached here and never returned.
 #[tauri::command]
 pub async fn hq_pro_fetch(
     url: String,
     method: String,
     body: Option<String>,
+    timeout_secs: Option<u64>,
 ) -> Result<HqProHttpResponse, String> {
     let method = normalize_method(&method)?;
     let token = cognito::get_valid_access_token().await.map_err(|e| {
@@ -126,6 +147,9 @@ pub async fn hq_pro_fetch(
         .request(method.clone(), &full)
         .header("authorization", format!("Bearer {token}"))
         .header("accept", "application/json");
+    if let Some(bound) = fetch_timeout(timeout_secs) {
+        req = req.timeout(bound);
+    }
     if method != Method::GET {
         if let Some(payload) = body.as_deref() {
             req = req
@@ -134,13 +158,25 @@ pub async fn hq_pro_fetch(
         }
     }
 
+    // Path and elapsed time make slow hq-pro calls measurable from the log.
+    let log_path = fetch_log_path(&full);
+    let started = std::time::Instant::now();
     let resp = req.send().await.map_err(|e| {
-        log(LOG_TAG, &format!("HQ_PRO_FETCH_NETWORK_FAIL {e}"));
-        format!("Network error: {e}")
+        let ms = started.elapsed().as_millis();
+        let message = format!("Network error: {e}");
+        // reqwest's error text can carry the full URL with its query; the log
+        // line names the path only.
+        let e = e.without_url();
+        log(
+            LOG_TAG,
+            &format!("HQ_PRO_FETCH_NETWORK_FAIL method={method} path={log_path} ms={ms} {e}"),
+        );
+        message
     })?;
     let status = resp.status().as_u16();
     let retry_after = retry_after_header(resp.headers());
     let text = resp.text().await.unwrap_or_default();
+    let ms = started.elapsed().as_millis();
     let outcome = if (200..300).contains(&status) {
         "OK"
     } else {
@@ -148,7 +184,7 @@ pub async fn hq_pro_fetch(
     };
     log(
         LOG_TAG,
-        &format!("HQ_PRO_FETCH_{outcome} method={method} status={status}"),
+        &format!("HQ_PRO_FETCH_{outcome} method={method} status={status} path={log_path} ms={ms}"),
     );
     Ok(HqProHttpResponse {
         status,
@@ -176,7 +212,7 @@ pub(crate) async fn feature_flag_enabled_for_company(
         flag,
         company_uid,
         &COMPANY_SCOPED_FLAG_RESOLVE_UNSUPPORTED,
-        |path| async move { hq_pro_fetch(path, "GET".to_string(), None).await },
+        |path| async move { hq_pro_fetch(path, "GET".to_string(), None, None).await },
     )
     .await
 }
@@ -214,7 +250,12 @@ where
 
     let evaluation = feature_flag_enabled_with_fetch_and_status(flag, || fetch(scoped_path)).await;
     if matches!(evaluation.status, Some(400 | 403)) {
-        scoped_resolve_unsupported.store(true, Ordering::Release);
+        // A malformed request means an older server does not understand the
+        // company parameter. A 403 is scoped authorization, which must not
+        // disable correctly authorized companies for the rest of the process.
+        if evaluation.status == Some(400) {
+            scoped_resolve_unsupported.store(true, Ordering::Release);
+        }
         return feature_flag_enabled_with_fetch(flag, || fetch("/v1/flags/resolve".to_string()))
             .await;
     }
@@ -284,7 +325,7 @@ where
 /// outage keeps the shipped default.
 pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
     feature_flag_value_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
 }
@@ -294,7 +335,7 @@ pub(crate) async fn feature_flag_value(flag: &str) -> Option<bool> {
 /// key; `Err(())` means the request or response could not be trusted.
 pub(crate) async fn feature_flag_read(flag: &str) -> Result<Option<bool>, ()> {
     feature_flag_read_with_fetch(flag, || {
-        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None)
+        hq_pro_fetch("/v1/flags/resolve".to_string(), "GET".to_string(), None, None)
     })
     .await
 }
@@ -369,6 +410,37 @@ fn parse_feature_flag_response(status: u16, body: &str) -> Option<HashMap<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_timeout_keeps_default_and_clamps_caller_bounds() {
+        use std::time::Duration;
+        assert_eq!(fetch_timeout(None), None);
+        assert_eq!(fetch_timeout(Some(45)), Some(Duration::from_secs(45)));
+        assert_eq!(fetch_timeout(Some(0)), Some(Duration::from_secs(1)));
+        assert_eq!(fetch_timeout(Some(3600)), Some(Duration::from_secs(60)));
+    }
+
+    /// The fetch log names the path only: no host, no query string (which
+    /// can carry ids or a presigned signature), no fragment.
+    #[test]
+    fn fetch_log_path_keeps_the_path_and_drops_the_query() {
+        assert_eq!(
+            fetch_log_path("https://api.example.com/v1/meetings/bot_123?companyId=cmp_1"),
+            "/v1/meetings/bot_123"
+        );
+        assert_eq!(
+            fetch_log_path(
+                "https://api.example.com/v1/files/x.md?X-Amz-Signature=secret&X-Amz-Credential=k#frag"
+            ),
+            "/v1/files/x.md"
+        );
+        assert_eq!(
+            fetch_log_path("/v1/flags/resolve?companyUid=cmp_1"),
+            "/v1/flags/resolve"
+        );
+        let line = fetch_log_path("https://api.example.com/v1/meetings?token=abc");
+        assert!(!line.contains("token") && !line.contains("abc"), "{line}");
+    }
 
     #[test]
     fn company_scoped_flag_resolution_includes_company_uid() {
@@ -486,7 +558,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scoped_403_falls_back_to_unscoped_and_remembers_the_fallback() {
+    async fn scoped_403_falls_back_without_disabling_later_company_scopes() {
         use std::cell::RefCell;
         use std::sync::atomic::AtomicBool;
 
@@ -530,12 +602,12 @@ mod tests {
                 "/v1/flags/resolve"
             ]
         );
-        assert!(unsupported.load(Ordering::Acquire));
+        assert!(!unsupported.load(Ordering::Acquire));
 
         paths.borrow_mut().clear();
         let next_tick = feature_flag_enabled_for_company_with_fetch(
             flag,
-            Some("cmp_stale"),
+            Some("cmp_fresh"),
             &unsupported,
             |path| {
                 paths.borrow_mut().push(path.clone());
@@ -556,6 +628,63 @@ mod tests {
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
+            vec!["/v1/flags/resolve?companyUid=cmp_fresh"]
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_400_disables_later_company_scopes_for_legacy_servers() {
+        use std::cell::RefCell;
+        use std::sync::atomic::AtomicBool;
+
+        let flag = "desktop.push-events";
+        let unsupported = AtomicBool::new(false);
+        let paths = RefCell::new(Vec::new());
+        let enabled = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("cmp_stale"),
+            &unsupported,
+            |path| {
+                paths.borrow_mut().push(path.clone());
+                async move {
+                    Ok(HqProHttpResponse {
+                        status: if path.contains("companyUid=") { 400 } else { 200 },
+                        body: format!(r#"{{"version":1,"flags":{{"{flag}":true}}}}"#),
+                        retry_after: None,
+                    })
+                }
+            },
+        )
+        .await;
+
+        assert!(enabled);
+        assert!(unsupported.load(Ordering::Acquire));
+        assert_eq!(
+            paths.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["/v1/flags/resolve?companyUid=cmp_stale", "/v1/flags/resolve"]
+        );
+
+        paths.borrow_mut().clear();
+        let next_tick = feature_flag_enabled_for_company_with_fetch(
+            flag,
+            Some("cmp_fresh"),
+            &unsupported,
+            |path| {
+                paths.borrow_mut().push(path.clone());
+                async move {
+                    Ok(HqProHttpResponse {
+                        status: 200,
+                        body: format!(r#"{{"version":1,"flags":{{"{flag}":false}}}}"#),
+                        retry_after: None,
+                    })
+                }
+            },
+        )
+        .await;
+
+        assert!(!next_tick);
+        assert_eq!(
+            paths.borrow().iter().map(String::as_str).collect::<Vec<_>>(),
             vec!["/v1/flags/resolve"]
         );
     }

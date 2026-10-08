@@ -366,6 +366,7 @@ pub fn shell_ready(app: AppHandle) -> Result<(), String> {
         let app = app.clone();
         tauri::async_runtime::spawn(async move { open_updates_settings(app).await });
     }
+    crate::commands::vault_explorer::prewarm_after_shell_ready(app);
     Ok(())
 }
 

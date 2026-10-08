@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   // Run-complete card for the channel timeline (US-004, ported from the hq-sync
   // desktop source). Markup + CSS are verbatim; the one platform touch — opening
   // preview/diff URLs in the system browser — is routed through an injected
@@ -41,7 +42,7 @@
           type="button"
           class="run-card-btn"
           onclick={() => openUrl(model.previewUrl)}
-        >
+        ><RailIcon name="external" />
           Open preview
         </button>
       {/if}
@@ -50,7 +51,7 @@
           type="button"
           class="run-card-btn"
           onclick={() => openUrl(model.diffUrl)}
-        >
+        ><RailIcon name="eye" />
           View diff
         </button>
       {/if}

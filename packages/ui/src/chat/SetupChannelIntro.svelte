@@ -66,6 +66,7 @@
     SETUP_BOT_GENERIC_FAILURE,
     isSetupBotNoRuntimeMessage,
     setupBotActionLabel,
+    setupBotNoRuntime,
     type SetupBotLauncher,
   } from "./setup-bot";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
@@ -269,7 +270,8 @@
       const result = await oncreatecompany();
       if (!result.ok) createAnotherError = result.reason;
     } catch (err) {
-      createAnotherError = err instanceof Error ? err.message : String(err);
+      console.warn("[setup-intro] create company failed", err);
+      createAnotherError = "Could not start a new company. Try again.";
     } finally {
       createAnotherBusy = false;
     }
@@ -330,7 +332,15 @@
   /** Creating the setup bot, or opening the one that is already here. */
   let botBusy = $state(false);
   let botError = $state<string | null>(null);
-  const visibleBotError = $derived(botError ?? setupBot?.error);
+  /**
+   * No coding tool is signed in on this computer, known before anyone clicks.
+   * The guided install path shows up front, in the same place a failed start
+   * would put it, instead of the setup bot starting and failing every turn.
+   */
+  const needsCodingTool = $derived(Boolean(setupBot?.needsCodingTool));
+  const visibleBotError = $derived(
+    botError ?? setupBot?.error ?? (needsCodingTool ? setupBotNoRuntime({ noun: hostNoun }) : null),
+  );
   /**
    * No coding tool is signed in and the host can install and sign one in:
    * the install guide owns the next step, so the hero's own Open Setup Agent
@@ -350,7 +360,7 @@
   const heroBody = $derived(
     setupBot && !scriptedFallback && !rosterLoading
       ? setupBot.starting && !setupBot.existing
-        ? copy.bodyStarting
+        ? setupBot.startingBody || copy.bodyStarting
         : setupBot.existing
         ? copy.bodyExisting
         : copy.body
@@ -835,7 +845,7 @@
 
   .hero-actions :global(.setup-btn) {
     border-radius: 8px;
-    min-height: 32px;
+    min-height: var(--hq-btn-h);
     padding-inline: 14px;
   }
 

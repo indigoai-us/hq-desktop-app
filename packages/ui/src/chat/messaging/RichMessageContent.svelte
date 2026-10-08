@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
   /**
    * Trusted renderer for structured agent message content (stat / table /
    * chart / markdown blocks). See richMessageContent.ts for the security model:
@@ -115,7 +116,8 @@
     const out: Array<{ key: string; view: ConnectionCardView }> = [];
     for (const item of items) {
       if (item.app) {
-        const view = cards.views[item.app];
+        // A built-in item that carries the bot's own state draws from it when the host says how.
+        const view = (cards.builtin ? cards.builtin(item) : null) ?? cards.views[item.app];
         if (view) out.push({ key: item.app, view });
       } else if (item.domain && cards.integration) {
         const view = cards.integration({
@@ -123,6 +125,9 @@
           ...(item.why ? { why: item.why } : {}),
           // The app's own pick names its connection (appChosenItems). A bot's block never carries one.
           ...(item.connectionId ? { connectionId: item.connectionId } : {}),
+          // The bot's state for the app, when its runtime sent one.
+          ...(item.state ? { state: item.state } : {}),
+          ...(item.asOf ? { asOf: item.asOf } : {}),
         });
         if (view) out.push({ key: `domain:${item.domain}`, view });
       }
@@ -526,7 +531,7 @@
               disabled={answered}
               data-testid="rich-decision-other"
               onclick={() => pickDecision(block, blockIndex, null)}
-            >
+            ><RailIcon name="pencil" />
               Other…
             </button>
           {/if}
@@ -944,7 +949,7 @@
     background: color-mix(in srgb, var(--vio-ink) 22%, transparent);
     box-shadow: inset 0 0 0 1px var(--vio-ink);
     opacity: 1;
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-check {
     display: inline-flex;
@@ -965,7 +970,7 @@
     font-weight: 500;
   }
   .rich-decision-btn.is-chosen .rich-decision-btn-label {
-    font-weight: 600;
+    font-weight: 500;
   }
   .rich-decision-tag {
     font-size: 11px;

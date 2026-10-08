@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ReadLoader from "../common/ReadLoader.svelte";
   /**
    * FilePreviewPane — preview the selected company file beside the file tree
    * (Files mode + Knowledge tab).
@@ -16,8 +17,9 @@
    * company membership before reading or dispatching anything.
    */
   import type { PlatformAdapter } from "@hq/platform";
-  import { isMac } from "../common/platform.js";
+  import { platformStrings } from "../common/platform-strings.js";
   import { renderMarkdownDocument } from "../common/markdown.js";
+  import { markdownLinks } from "../common/markdown-links.js";
   import { filePreviewKind } from "./file-preview-kind.js";
   import OpenFileInClaudeCode from "./OpenFileInClaudeCode.svelte";
   import UnavailableNote from "../common/UnavailableNote.svelte";
@@ -29,6 +31,12 @@
     adapter: PlatformAdapter;
     /** HQ-folder-relative, forward-slash path of the selected file. */
     path: string;
+    /** Open another file from a relative Markdown link (QA-094). Links only
+     *  resolve to files under `scopeRoot` when it is set. */
+    onopenpath?: (path: string) => void;
+    scopeRoot?: string | null;
+    /** Noun for the missing-link note: "isn't in this {scopeLabel}". */
+    scopeLabel?: string;
   }
 
   interface AuthorizedFilePreview {
@@ -36,7 +44,9 @@
     dataBase64: string;
   }
 
-  let { adapter, path }: Props = $props();
+  let { adapter, path, onopenpath, scopeRoot = null, scopeLabel = "project" }: Props = $props();
+  /** Plain-language note when a relative link points at a missing file. */
+  let linkNote = $state<string | null>(null);
 
   // Desktop-only affordances render only when the platform offers them —
   // otherwise nothing (never a dead button).
@@ -61,7 +71,7 @@
   let copyGeneration = 0;
 
   const fileName = $derived(path.split("/").pop() ?? path);
-  const fileManagerName = $derived(isMac() ? "Finder" : "file manager");
+  const fileManagerName = $derived(platformStrings().fileManager);
   const kind = $derived(filePreviewKind(path));
   const isMarkdown = $derived(kind === "markdown");
   const isImage = $derived(kind === "image");
@@ -99,6 +109,7 @@
     pathCopied = false;
     copyingPath = false;
     copyError = null;
+    linkNote = null;
     revealGeneration += 1;
     copyGeneration += 1;
     previewUnavailable = false;
@@ -170,6 +181,37 @@
       cancelled = true;
     };
   });
+
+  function inScope(target: string): boolean {
+    const root = scopeRoot?.replace(/\/$/, "");
+    return !root || target === root || target.startsWith(`${root}/`);
+  }
+
+  async function linkTargetExists(target: string): Promise<boolean> {
+    const targetKind = filePreviewKind(target);
+    if (targetKind === "unknown") return true;
+    const res =
+      targetKind === "image" || targetKind === "pdf"
+        ? await adapter.files.getAuthorizedPreview(target)
+        : await adapter.files.getFileContent(target);
+    if (!res.ok && res.reason !== "unavailable") {
+      console.warn("Markdown link target unreadable:", target, res.message);
+    }
+    return res.ok;
+  }
+
+  async function openLinkedFile(target: string): Promise<void> {
+    const from = path;
+    const name = target.split("/").pop() ?? target;
+    linkNote = null;
+    const exists = inScope(target) && (await linkTargetExists(target));
+    if (path !== from) return;
+    if (!exists) {
+      linkNote = `${name} isn't in this ${scopeLabel}`;
+      return;
+    }
+    onopenpath?.(target);
+  }
 
   async function revealInFinder(): Promise<void> {
     if (!path || revealing) return;
@@ -343,11 +385,7 @@
         testid="file-preview-unavailable"
       />
     {:else if loading}
-      <div class="preview-skeleton" aria-label="Loading preview">
-        {#each Array(6) as _, index (index)}
-          <span style={`width: ${92 - index * 9}%`}></span>
-        {/each}
-      </div>
+      <ReadLoader testid="file-preview-loading" />
     {:else if unsupported || mediaError}
       <div class="preview-unsupported" data-testid="file-preview-unsupported">
         <svg
@@ -398,7 +436,14 @@
       </object>
     {:else if content !== null && isMarkdown}
       <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-      <article class="markdown-body" data-testid="file-preview-markdown">
+      {#if linkNote}
+        <p class="link-note" role="status" data-testid="file-preview-link-note">{linkNote}</p>
+      {/if}
+      <article
+        class="markdown-body"
+        data-testid="file-preview-markdown"
+        use:markdownLinks={{ currentPath: path, onopenfile: (target) => void openLinkedFile(target) }}
+      >
         {@html markdownHtml}
       </article>
     {:else if content !== null}
@@ -423,9 +468,10 @@
     flex: 0 0 auto;
     align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-3, 10px);
+    flex-wrap: wrap;
+    gap: 8px 10px;
     min-width: 0;
-    padding: 11px 13px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--v4-hairline, var(--border));
     background: transparent;
   }
@@ -446,8 +492,8 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-section, var(--text-section, var(--text-base)));
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -457,7 +503,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3, var(--muted));
-    font-size: var(--type-metadata, var(--text-micro));
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -466,8 +512,8 @@
 
   .preview-actions {
     display: flex;
-    flex: 0 0 auto;
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    max-width: 100%;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
@@ -483,14 +529,15 @@
     flex-shrink: 0;
     align-items: center;
     gap: var(--space-1, 4px);
-    padding: 2px 8px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 1px solid var(--v4-control-border, var(--border));
     border-radius: var(--v4-radius-button, var(--radius-sm, 6px));
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-2, var(--muted-2));
     font: inherit;
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
     white-space: nowrap;
     cursor: pointer;
     transition:
@@ -582,25 +629,6 @@
     background: var(--v4-inset, var(--bg-subtle, transparent));
   }
 
-  .preview-skeleton {
-    display: grid;
-    gap: 10px;
-    width: 100%;
-  }
-
-  .preview-skeleton span {
-    height: 16px;
-    border-radius: 5px;
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: preview-skeleton 1.2s ease-in-out infinite;
-  }
-
   .preview-unsupported {
     display: flex;
     flex-direction: column;
@@ -617,14 +645,14 @@
 
   .preview-unsupported strong {
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-body, var(--text-base));
-    font-weight: 600;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .preview-unsupported span {
     max-width: 320px;
     color: var(--v4-text-2, var(--muted));
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    font-size: 13px;
     line-height: 1.35;
   }
 
@@ -632,16 +660,20 @@
     margin: 0;
     color: var(--v4-text-2, var(--muted));
     font-family: var(--font-mono);
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.55;
     white-space: pre;
     overflow-wrap: normal;
   }
 
   /* ---- markdown typography (mirrors LibraryDetailPanel .markdown-body) ----- */
+  .link-note {
+    margin: 0 0 8px;
+    color: var(--t2, inherit);
+  }
   .markdown-body {
     color: var(--v4-text-1, var(--fg));
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
     line-height: 1.6;
   }
 
@@ -653,20 +685,20 @@
   .markdown-body :global(h6) {
     margin: var(--space-5, 16px) 0 var(--space-2, 6px);
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1.3;
   }
 
   .markdown-body :global(h1) {
-    font-size: var(--type-detail, var(--text-lg));
+    font-size: 13px;
   }
   .markdown-body :global(h2) {
     padding-bottom: var(--space-1, 4px);
     border-bottom: 1px solid var(--v4-hairline, var(--border));
-    font-size: var(--type-section, var(--text-section));
+    font-size: 13px;
   }
   .markdown-body :global(h3) {
-    font-size: var(--type-body, var(--text-base));
+    font-size: 13px;
   }
 
   .markdown-body :global(p) {
@@ -722,7 +754,7 @@
     background: var(--v4-control-faint, var(--row-active));
     color: var(--v4-text-1, var(--fg));
     font-family: var(--font-mono);
-    font-size: var(--type-secondary, var(--text-sm));
+    font-size: 13px;
   }
 
   .markdown-body :global(pre) {
@@ -754,7 +786,7 @@
 
   .markdown-body :global(strong) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(del) {
@@ -784,7 +816,7 @@
     border-spacing: 0;
     border-collapse: collapse;
     color: var(--v4-text-2, var(--muted));
-    font-size: var(--type-secondary, var(--text-sm, var(--text-base)));
+    font-size: 13px;
     line-height: 1.45;
   }
 
@@ -814,7 +846,7 @@
 
   .markdown-body :global(th) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .markdown-body :global(.markdown-align-center) {
@@ -842,7 +874,7 @@
 
   .markdown-body :global(summary) {
     color: var(--v4-text-1, var(--fg));
-    font-weight: 600;
+    font-weight: 500;
     cursor: pointer;
   }
 
@@ -855,15 +887,6 @@
     margin-bottom: 0;
   }
 
-  @keyframes preview-skeleton {
-    from {
-      background-position: 0 0;
-    }
-    to {
-      background-position: -200% 0;
-    }
-  }
-
   @keyframes preview-action-spin {
     to {
       transform: rotate(360deg);
@@ -871,10 +894,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .preview-skeleton span {
-      animation: none;
-    }
-
     .reveal-btn {
       transition: none;
     }

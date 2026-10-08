@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   /**
    * MemberProfilePanel — Slack-style right-side profile panel for a channel
    * member. Opened by clicking a name in the conversation, a row in the members
@@ -127,7 +128,7 @@
             // it just opened is what the person wants to look at.
             onclose?.();
           }}
-        >
+        ><RailIcon name="send" />
           Message
         </button>
       {/if}
@@ -195,7 +196,7 @@
   .pp-title {
     color: var(--t1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .pp-close {
@@ -209,7 +210,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--t2);
-    font-size: 18px;
+    font-size: 13px;
     line-height: 1;
     cursor: pointer;
   }
@@ -246,8 +247,8 @@
   .pp-avatar {
     background: var(--ice-ink, #c9d6e4);
     color: var(--badge-fg, #10151b);
-    font-size: 44px;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 500;
   }
 
   .pp-name-row {
@@ -259,18 +260,19 @@
   .pp-name {
     margin: 0;
     color: var(--t1);
-    font-size: 18px;
-    font-weight: 700;
+    font-size: 20px;
+    line-height: 1.25;
+    font-weight: 500;
   }
 
   .pp-you {
     color: var(--t3);
-    font: 500 10px/1 var(--font-mono);
+    font-size: 13px;
   }
 
   .pp-role {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
     text-transform: capitalize;
   }
 
@@ -280,7 +282,7 @@
     display: flex;
     align-items: stretch;
     width: 100%;
-    height: 32px;
+    height: var(--hq-btn-h);
     margin-top: 6px;
   }
 
@@ -292,7 +294,7 @@
     color: var(--v4-primary-fg, var(--v4-bg, #0c0c0c));
     font-family: inherit;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 500;
     line-height: 1;
     cursor: pointer;
   }
@@ -328,10 +330,7 @@
 
   .pp-field dt {
     color: var(--t3);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    font-size: 13px;
   }
 
   .pp-field dd {

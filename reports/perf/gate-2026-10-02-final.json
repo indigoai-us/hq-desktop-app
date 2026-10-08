@@ -1,0 +1,249 @@
+{
+  "recordedAt": "2026-10-02T12:28:17.294Z",
+  "reps": 5,
+  "idleSeconds": 30,
+  "frameBudgetMs": 16.666666666666668,
+  "machine": {
+    "platform": "darwin 25.4.0",
+    "arch": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "totalMemGb": 128,
+    "loadAvg1m": 6.22,
+    "powerSource": "ac",
+    "node": "v26.0.0",
+    "chromium": "151.0.7922.34"
+  },
+  "metrics": {
+    "coldLoad.firstContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 132,
+      "p95": 132,
+      "min": 132,
+      "max": 132,
+      "stdev": 0,
+      "samples": [
+        132,
+        132,
+        132,
+        132
+      ]
+    },
+    "coldLoad.largestContentfulPaintMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 132,
+      "p95": 132,
+      "min": 132,
+      "max": 132,
+      "stdev": 0,
+      "samples": [
+        132,
+        132,
+        132,
+        132
+      ]
+    },
+    "coldLoad.shellReadyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 136.30000007152557,
+      "p95": 136.89999985694885,
+      "min": 135.40000009536743,
+      "max": 136.89999985694885,
+      "stdev": 0.6238321570527184,
+      "samples": [
+        136.40000009536743,
+        135.40000009536743,
+        136.89999985694885,
+        136.20000004768372
+      ]
+    },
+    "scroll.messages.avgMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 8.381052631578948,
+      "p95": 8.419047619047621,
+      "min": 8.367894736842105,
+      "max": 8.419047619047621,
+      "stdev": 0.022579968880170494,
+      "samples": [
+        8.375263157894738,
+        8.367894736842105,
+        8.419047619047621,
+        8.386842105263158
+      ]
+    },
+    "scroll.messages.worstMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 17.5,
+      "p95": 25.100000000000364,
+      "min": 16.399999999999636,
+      "max": 25.100000000000364,
+      "stdev": 4.037635446644745,
+      "samples": [
+        17,
+        18,
+        25.100000000000364,
+        16.399999999999636
+      ]
+    },
+    "scroll.messages.droppedPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0.5263157894736842,
+      "p95": 0.5291005291005291,
+      "min": 0,
+      "max": 0.5291005291005291,
+      "stdev": 0.26362528646146177,
+      "samples": [
+        0.5263157894736842,
+        0.5263157894736842,
+        0.5291005291005291,
+        0
+      ]
+    },
+    "interaction.switchConversation": {
+      "n": 4,
+      "discarded": 1,
+      "median": 31.950000047683716,
+      "p95": 39.90000009536743,
+      "min": 28.800000190734863,
+      "max": 39.90000009536743,
+      "stdev": 4.801735782693009,
+      "samples": [
+        39.90000009536743,
+        31,
+        28.800000190734863,
+        32.90000009536743
+      ]
+    },
+    "interaction.commandPalette": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.busyMs": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.busyPct": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "idle.renderBatchesPerMinute": {
+      "n": 4,
+      "discarded": 1,
+      "median": 0,
+      "p95": 0,
+      "min": 0,
+      "max": 0,
+      "stdev": 0,
+      "samples": [
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "bundle.jsBytes": {
+      "n": 1,
+      "discarded": 0,
+      "median": 3140395,
+      "p95": 3140395,
+      "min": 3140395,
+      "max": 3140395,
+      "stdev": 0,
+      "samples": [
+        3140395
+      ]
+    }
+  },
+  "skipped": {
+    "scroll.sidebar.avgMs": "[data-testid=\"chat-conversation-list\"] has no overflow",
+    "scroll.sidebar.worstMs": "[data-testid=\"chat-conversation-list\"] has no overflow",
+    "scroll.sidebar.droppedPct": "[data-testid=\"chat-conversation-list\"] has no overflow",
+    "interaction.composerKeystroke": "not measured"
+  },
+  "baselineRecordedAt": "2026-09-08T18:30:37.148Z",
+  "rail": {
+    "companySwitch": {
+      "summary": {
+        "n": 4,
+        "discarded": 1,
+        "median": 51.450000047683716,
+        "p95": 60.5,
+        "min": 43.89999985694885,
+        "max": 60.5,
+        "stdev": 9.00865328810463,
+        "samples": [
+          58.700000047683716,
+          60.5,
+          43.89999985694885,
+          44.200000047683716
+        ]
+      }
+    },
+    "sidepaneSwitch": {
+      "summary": {
+        "n": 4,
+        "discarded": 1,
+        "median": 37.049999952316284,
+        "p95": 41.299999952316284,
+        "min": 32.799999952316284,
+        "max": 41.299999952316284,
+        "stdev": 4.85008596429312,
+        "samples": [
+          41.200000047683716,
+          32.89999985694885,
+          32.799999952316284,
+          41.299999952316284
+        ]
+      }
+    },
+    "lazyChunks": {
+      "manifest": true,
+      "atlasInInitialJs": false,
+      "telemetryInInitialJs": false,
+      "atlasBytes": 34831,
+      "telemetryBytes": 37373,
+      "initialJsBytes": 2731645,
+      "atlasInitial": [],
+      "telemetryInitial": []
+    }
+  }
+}

@@ -1,3 +1,5 @@
+import "./common/button/button-standard.css";
+import "./common/inline-banner.css";
 export { default as Button } from "./Button.svelte";
 export { classNames } from "./class-names.js";
 
@@ -22,7 +24,11 @@ export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 // leaf components — RunCompleteCard, ReactionBar, IdentityMark, SystemEventLine
 // — composed as a fixture-driven, ZERO-NETWORK ChannelConversation).
 export * from "./chat/messaging/index.js";
+export { default as RecipientPicker } from "./chat/recipient-picker/RecipientPicker.svelte";
+export * from "./chat/recipient-picker/recipient-picker-model.js";
+export { recipientItemsFromDirectory } from "./chat/recipient-picker/candidates.js";
 export * from "./chat/chat-api.js";
+export * from "./chat/retired-entities.js";
 export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
 export * from "./chat/live-directory.js";
@@ -173,6 +179,16 @@ export { default as LinkContextMenu } from "./common/LinkContextMenu.svelte";
 export * from "./common/external-links.js";
 
 export { default as DesktopApp } from "./shell/DesktopApp.svelte";
+export { default as ToastStack } from "./shell/ToastStack.svelte";
+export {
+  dismissToast,
+  dismissToastByKey,
+  pushToast,
+  toastItems,
+  type ToastAction,
+  type ToastInput,
+  type ToastItem,
+} from "./shell/toast-stack.svelte.js";
 export * from "./shell/embedded-navigation.js";
 export * from "./shell/notification-recovery.js";
 export { default as NotificationActionRecovery } from "./shell/NotificationActionRecovery.svelte";
@@ -195,6 +211,7 @@ export {
   reportInstallFailed,
   reportIdleWait,
   applyAvailableUpdate,
+  setBackgroundUpdatesOff,
   applyRecommendBanner,
   dismissRecommendBanner,
   clearRecommendBanner,
@@ -277,9 +294,11 @@ export { bindLiveRefresh, requestLiveRefresh } from "./mesh/live-refresh.js";
 export {
   buildCompanyDisplayMap,
   companyDisplayName,
+  localOnlyCompaniesFromRows,
   looksLikeCompanyUid,
   membershipRowsFrom,
   workspacesFromMembershipRows,
+  type LocalOnlyCompany,
 } from "./company/company-display-map.js";
 export * as agency from "./agency/index.js";
 export * as files from "./files/index.js";
@@ -309,3 +328,9 @@ export {
 } from "./chat/tasks/task-feed-controller.svelte";
 export * from "./chat/tasks/visible-tasks";
 export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";
+export { VISUAL_FIRST_RUN_DONE_KEY } from "./chat/first-run/visual-first-run.js";
+
+// Atlas map (US-012): lazy door only — never re-export ./atlas statically.
+export { loadAtlas } from "./shell/atlas-lazy.js";
+// Personal telemetry (US-032): lazy door only — never re-export ./telemetry statically.
+export { loadTelemetry } from "./shell/telemetry-lazy.js";

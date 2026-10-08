@@ -109,6 +109,7 @@
         action,
         ...(connectionId ? { connectionId } : {}),
         ...(view.domain ? { domain: view.domain } : {}),
+        ...(view.fromState ? { fromState: true } : {}),
       });
     } catch {
       done();

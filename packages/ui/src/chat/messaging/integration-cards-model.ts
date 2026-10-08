@@ -35,7 +35,7 @@
  */
 
 import { brandMarkFor } from "./app-brand-marks.js";
-import type { ConnectItem, ConnectTarget } from "./richMessageContent.js";
+import type { ConnectItem, ConnectItemSlack, ConnectItemState, ConnectTarget } from "./richMessageContent.js";
 import { isSlackConnectDomain, normalizeConnectDomain } from "./richMessageContent.js";
 import {
   CONNECTING_TIMEOUT_MS,
@@ -46,6 +46,7 @@ import {
   type ConnectionCardPrimaryAction,
   type ConnectionCardView,
   type IntegrationAuthClass,
+  type SlackFacts,
 } from "./connection-card-model.js";
 
 /** How long a row waits for the company's list before it draws what it can without it (ms). */
@@ -487,6 +488,196 @@ export function integrationCardView(
     declineLabel: "Not now",
     note,
   };
+}
+
+// ── Cards from the bot's own state ───────────────────────────────────────
+//
+// A runtime with `show_connection_cards` state sends each item with what it
+// looked up when it wrote the message (richMessageContent.ts, `state` and
+// `slack`). Such a card draws from that alone: no list read, no catalog
+// lookup. What the card offers the person comes from the state plus what the
+// app knows about the person looking (who they are, whether they may add
+// apps). The server checks every press, so a stale state cannot widen
+// access; the app reads the live state again only when the person presses
+// the card, or when a connection-changed notice for the bot arrives (the
+// host's part, DesktopApp.svelte).
+
+/** What the app knows about the person looking at a card drawn from the bot's state. */
+export interface StateCardInput {
+  /** The bot's display name, written into the copy. */
+  botName: string;
+  /** The signed-in person's uid, or null when unknown. */
+  viewerUid: string | null;
+  /**
+   * Whether the person may add apps to the company (owner or admin). Null
+   * when unknown: the card offers Connect, and the press reads the truth.
+   */
+  canManage: boolean | null;
+  record?: BotConnectionRecord | null;
+  /** What the catalog said about the domain, when it was asked. Only names the card and picks the button. */
+  lookup?: CatalogLookup | null;
+  now: number;
+  /** When the message carrying the card was written (ms). A card newer than a "Not now" is a new offer. */
+  messageAt?: number | null;
+  inFlight?: ReadonlySet<string> | null;
+  note?: string | null;
+}
+
+/** The note under a card whose app HQ cannot connect from the card. */
+export const APP_NOT_CONNECTABLE_NOTE = (name: string): string => `${name} could not be connected from here. Try it from ${CONNECT_ELSEWHERE_LINK}.`;
+
+/**
+ * Build an integration card from the bot's state for it. Null only for a
+ * domain that is not an app (Slack's, or not a domain at all).
+ *
+ * - The bot can use it (or the person let it, from this device): "{bot} can use it."
+ * - Connected by the person looking: "Let {bot} use it?", with the button.
+ * - Connected by someone else: "A teammate connected this. Ask them to share it with {bot}."
+ * - Not connected: Connect, for a person who may add apps; else ask an admin.
+ *   A "Not now" or a Connect pressed on this device shows as it does on any card.
+ */
+export function integrationCardViewFromState(
+  item: { domain: string; why?: string; state: ConnectItemState },
+  input: StateCardInput,
+): ConnectionCardView | null {
+  const domain = normalizeConnectDomain(item.domain);
+  if (!domain || isSlackConnectDomain(domain)) return null;
+  const bot = input.botName.trim() || "your bot";
+  const match = input.lookup && typeof input.lookup === "object" ? input.lookup : null;
+  const name = match?.name || defaultAppName(domain);
+  const state = item.state;
+  const connectionId = state.connectionId ?? null;
+  const hostNote = input.note?.trim() || null;
+  const pending = (action: ConnectionCardPrimaryAction, id?: string | null): boolean =>
+    Boolean(input.inFlight?.has(connectionActionKey("integration", action, id, domain)));
+  const base = {
+    target: "integration" as const,
+    kind: "integration" as const,
+    domain,
+    logo: appLogo(domain),
+    authClass: match?.authClass ?? null,
+    connectionId,
+    title: name,
+    usable: [] as string[],
+    waiting: [],
+    moreWaiting: null,
+    declineLabel: null,
+    mark: null,
+    primaryPending: false,
+    fromState: true,
+  };
+  if (state.connected) {
+    const usable = state.usableByBot || (connectionId !== null && Boolean(input.record?.granted?.[connectionId]));
+    if (usable) {
+      return { ...base, state: "connected", line: `${bot} can use it.`, primaryLabel: null, primaryAction: "allow", mark: "Connected", note: hostNote };
+    }
+    const viewer = input.viewerUid?.trim() ?? "";
+    if (viewer !== "" && state.createdByPersonUid === viewer) {
+      return {
+        ...base,
+        state: "connected",
+        line: `Let ${bot} use it?`,
+        primaryLabel: `Let ${bot} use it`,
+        primaryAction: "allow",
+        primaryPending: pending("allow", connectionId),
+        mark: "Connected",
+        note: hostNote,
+      };
+    }
+    return {
+      ...base,
+      state: "connected",
+      line: `A teammate connected this. Ask them to share it with ${bot}.`,
+      primaryLabel: null,
+      primaryAction: "allow",
+      mark: "Connected",
+      note: hostNote,
+    };
+  }
+  const action = match ? connectActionFor(match.authClass) : "connect";
+  const entry = input.record?.apps?.[domain];
+  if (entry?.state === "declined" && declineStands(entry.since, input.messageAt)) {
+    return { ...base, state: "declined", line: `Not connected. Ask ${bot} any time.`, primaryLabel: null, primaryAction: action, note: null };
+  }
+  const connecting = entry?.state === "connecting";
+  const timedOut = connecting && input.now - entry.since > CONNECTING_TIMEOUT_MS;
+  if (connecting && !timedOut) {
+    return {
+      ...base,
+      state: "connecting",
+      line: `Finish in your browser. This card updates when ${name} is connected.`,
+      primaryLabel: "Open again",
+      primaryAction: action,
+      primaryPending: pending(action),
+      declineLabel: "Not now",
+      note: hostNote,
+    };
+  }
+  if (input.canManage === false) {
+    return { ...base, state: "offered", line: `Ask a company admin to connect ${name}.`, primaryLabel: null, primaryAction: action, note: hostNote };
+  }
+  const note = hostNote ?? (timedOut ? APP_TIMEOUT_NOTE(name) : null);
+  const why = item.why?.trim() ?? "";
+  return {
+    ...base,
+    state: "offered",
+    line: `Connect ${name} so ${bot} can use it.`,
+    reason: why && !note ? botReason(bot, why) : null,
+    primaryLabel: `Connect ${name}`,
+    primaryAction: action,
+    primaryPending: pending(action),
+    declineLabel: "Not now",
+    note,
+  };
+}
+
+/** The Slack card's facts from the bot's own Slack state. */
+export function slackFactsFromItem(slack: ConnectItemSlack): SlackFacts {
+  if (slack.installed === "installed") return { state: "connected" };
+  if (slack.installed === "pending") return { state: "pending" };
+  return { state: "none" };
+}
+
+/**
+ * When an item's state was looked up (ms): its `asOf`, else the time of the
+ * message carrying it. Null when neither can be read.
+ */
+export function connectItemStateAt(item: { asOf?: string }, messageAt: number | null | undefined): number | null {
+  const asOf = item.asOf ? Date.parse(item.asOf) : Number.NaN;
+  if (Number.isFinite(asOf)) return asOf;
+  return typeof messageAt === "number" && Number.isFinite(messageAt) ? messageAt : null;
+}
+
+/**
+ * Whether a card draws from the bot's state rather than from what the app
+ * read live. The live read wins only when there is one, made because the
+ * person pressed a card or a connection-changed notice arrived (`liveAt`),
+ * and it is newer than the state.
+ */
+export function stateIsCurrent(stateAt: number | null, liveAt: number | null | undefined): boolean {
+  if (typeof liveAt !== "number" || !Number.isFinite(liveAt)) return true;
+  return stateAt !== null && stateAt >= liveAt;
+}
+
+/**
+ * The live connection a card drawn from the bot's state stands for: the one
+ * with the state's connection id, when the list has it and its listed domain
+ * is the card's, else the one the domain names. A bot's id never ties a card
+ * titled one app to another app's connection, nor to one with no listed domain.
+ */
+export function connectionForStateItem(
+  facts: CompanyConnections | null | undefined,
+  item: { domain: string; connectionId?: string | null },
+): CompanyConnection | null {
+  if (!facts) return null;
+  const domain = normalizeConnectDomain(item.domain);
+  if (!domain) return null;
+  const id = item.connectionId?.trim();
+  const byId = id ? facts.connections.find((c) => c.id === id) : undefined;
+  // A connection the list gives no domain for is reached by id only from the
+  // app's own picks (`connectionForDomain`), never from a bot's id.
+  if (byId && byId.domain !== null && sameSite(byId.domain, domain)) return byId;
+  return connectionForDomain(facts, domain);
 }
 
 /** The bot's reason as the card shows it: the bot's name, then its words. */

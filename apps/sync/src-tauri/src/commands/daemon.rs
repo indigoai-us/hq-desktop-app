@@ -1204,6 +1204,11 @@ fn start_daemon_with_origin<R: tauri::Runtime>(
     app: AppHandle<R>,
     launch_origin: WatcherLaunchOrigin,
 ) -> Result<String, String> {
+    // Setup gate, ahead of every other check: until HQ is installed on this
+    // computer no origin may start sync, resolve a watch root, or run spawn
+    // preflight. The only HQ folder known at that point is the default one,
+    // which the person has not chosen yet.
+    ensure_setup_allows_sync()?;
     match crate::commands::hq_daemon_host::current_phase() {
         crate::commands::hq_daemon_host::HostPhase::Daemon => {
             // hq daemon runs sync; turn its sync service on instead of spawning a runner.
@@ -7649,6 +7654,24 @@ fn terminate_external_watch_runner(
     })
 }
 
+/// Refuse a sync start while HQ is not installed on this computer yet.
+pub(crate) fn ensure_setup_allows_sync() -> Result<(), String> {
+    if crate::commands::lifecycle::sync_held_for_setup() {
+        return Err(crate::commands::lifecycle::SYNC_HELD_FOR_SETUP_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
+/// Whether a supervisor tick may inspect, preflight, or respawn the watcher.
+/// The hq daemon supervises sync when it hosts it, nothing may start before
+/// the launch choice is made, and nothing may start before setup finishes.
+fn supervisor_tick_may_run(
+    phase: crate::commands::hq_daemon_host::HostPhase,
+    held_for_setup: bool,
+) -> bool {
+    crate::commands::hq_daemon_host::legacy_services_enabled(phase) && !held_for_setup
+}
+
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
@@ -7665,9 +7688,11 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
             // hq daemon supervises sync when it hosts it; before the launch
-            // choice is made nothing may start.
-            if !crate::commands::hq_daemon_host::legacy_services_enabled(
+            // choice is made nothing may start, and before setup finishes
+            // the watcher must not fill the default HQ folder.
+            if !supervisor_tick_may_run(
                 crate::commands::hq_daemon_host::current_phase(),
+                crate::commands::lifecycle::sync_held_for_setup(),
             ) {
                 thread::sleep(SUPERVISOR_INTERVAL);
                 continue;
@@ -8133,6 +8158,57 @@ mod tests {
         // later unpaused start is never wedged by a paused attempt. Not
         // asserted via `try_register_handle` here because DAEMON_HANDLE is
         // process-global and other tests exercise it concurrently.
+    }
+
+    /// First-run VM report (v0.10.395): before setup finished, the app-launch
+    /// start and the supervisor respawn both reached sync preflight and the
+    /// runner pulled the cloud company into the default HQ folder. While HQ
+    /// is not installed every origin must refuse at the setup gate, before it
+    /// resolves a root, runs preflight, or writes anything under home.
+    #[test]
+    fn start_daemon_refuses_every_origin_while_setup_is_unfinished() {
+        use crate::commands::lifecycle::{
+            publish_sync_setup_gate, sync_held_for_setup, SYNC_HELD_FOR_SETUP_MESSAGE,
+        };
+        use hq_desktop_core::lifecycle::LifecycleState;
+
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let _home = scoped_home(tmp.path());
+        publish_sync_setup_gate(LifecycleState::NeedsInstall);
+        assert!(sync_held_for_setup());
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        for result in [
+            start_daemon(handle.clone()),
+            start_daemon_for_app_launch(handle.clone()),
+            start_daemon_for_supervisor_respawn(handle.clone()),
+        ] {
+            assert_eq!(result.unwrap_err(), SYNC_HELD_FOR_SETUP_MESSAGE);
+        }
+        assert_eq!(
+            crate::commands::sync::start_sync_gates(),
+            Err(SYNC_HELD_FOR_SETUP_MESSAGE.to_string())
+        );
+        // No default HQ folder, and nothing else, was created under home.
+        assert!(!tmp.path().join("hq").exists());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+
+        publish_sync_setup_gate(LifecycleState::SteadyState);
+        assert!(!sync_held_for_setup());
+    }
+
+    /// The supervisor's tick does nothing (no owner inspection, preflight or
+    /// respawn) while setup is unfinished, and runs again once it finishes.
+    #[test]
+    fn supervisor_tick_waits_for_setup_and_runs_once_it_finishes() {
+        use crate::commands::hq_daemon_host::HostPhase;
+        assert!(!supervisor_tick_may_run(HostPhase::Legacy, true));
+        assert!(supervisor_tick_may_run(HostPhase::Legacy, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Pending, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, false));
+        assert!(!supervisor_tick_may_run(HostPhase::Daemon, true));
     }
 
     /// Auto-sync is the path most conflicts arrive on — the user never

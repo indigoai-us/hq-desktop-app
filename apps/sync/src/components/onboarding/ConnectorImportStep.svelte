@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import type {
@@ -130,7 +131,7 @@
       disabled={status === 'importing'}
       aria-busy={status === 'importing'}
       onclick={() => void importConnectors()}
-    >{#if status === 'importing'}<span class="spinner" aria-hidden="true"></span>Importing…{:else}Import{/if}</button>
+    >{#if status === 'importing'}<span class="spinner" aria-hidden="true"></span>Importing…{:else}<RailIcon name="download" />Import{/if}</button>
     <button
       class="btn btn-secondary"
       type="button"
@@ -145,7 +146,7 @@
         });
         complete();
       }}
-    >Skip</button>
+    ><RailIcon name="arrow-right" />Skip</button>
   </div>
 {:else if status === 'success'}
   <h2 class="h" id="onboarding-title-connector-import">Imported</h2>
@@ -158,7 +159,7 @@
       type="button"
       data-testid="connector-import-continue"
       onclick={() => complete()}
-    >Continue</button>
+    ><RailIcon name="arrow-right" />Continue</button>
   </div>
 {:else if status === 'failure'}
   <h2 class="h" id="onboarding-title-connector-import">Couldn’t import</h2>
@@ -171,7 +172,7 @@
       type="button"
       data-testid="connector-import-continue"
       onclick={() => complete()}
-    >Continue</button>
+    ><RailIcon name="arrow-right" />Continue</button>
   </div>
 {/if}
 

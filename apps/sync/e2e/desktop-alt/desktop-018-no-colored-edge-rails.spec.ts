@@ -45,6 +45,7 @@ function expectOpenPersistentSelection(
   baseSelector: string,
   selectedSelector: string,
   label: string,
+  selection: 'bottom-rule' | 'background' = 'bottom-rule',
 ): void {
   const base = rule(source, baseSelector);
   const selected = rule(source, selectedSelector);
@@ -58,12 +59,21 @@ function expectOpenPersistentSelection(
   );
 
   expect(selected, `${label} selected selector should exist`).not.toBe('');
-  expect(selected, `${label} selected row should not paint an opaque slab`).toContain(
-    'background: transparent',
-  );
-  expect(selected, `${label} selected row needs a neutral bottom rule`).toMatch(
-    /box-shadow:\s*inset\s+0\s+-1px\s+0\s+var\(--[^)]+\)/,
-  );
+  if (selection === 'background') {
+    // Console-rail lists mark selection with the neutral active-row highlight
+    // alone: no edge of any kind.
+    expect(selected, `${label} selected row uses the neutral row highlight`).toContain(
+      'background: var(--v4-active-row)',
+    );
+    expect(selected, `${label} selected row has no edge`).toContain('box-shadow: none');
+  } else {
+    expect(selected, `${label} selected row should not paint an opaque slab`).toContain(
+      'background: transparent',
+    );
+    expect(selected, `${label} selected row needs a neutral bottom rule`).toMatch(
+      /box-shadow:\s*inset\s+0\s+-1px\s+0\s+var\(--[^)]+\)/,
+    );
+  }
   expect(
     partialInsetSideRails(`.selected { ${selected} }`),
     `${label} selected row should not use a side rail`,
@@ -125,7 +135,7 @@ describe('DESKTOP-018: no colored edge rails', () => {
   });
 
   it('uses transparent neutral bottom rules for persistent row selection', () => {
-    for (const [path, baseSelector, selectedSelector, label] of [
+    for (const entry of [
       // The V4 sidebar went with the unreachable shell; the live primary
       // navigation is the chat sidebar.
       // The V4 sidebar this rule was written against went with the
@@ -148,6 +158,7 @@ describe('DESKTOP-018: no colored edge rails', () => {
         '.ft-row',
         '.ft-row.selected',
         'company file tree',
+        'background',
       ],
       [
         'components/NotificationRow.svelte',
@@ -156,16 +167,11 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'notification',
       ],
       [
-        'components/messaging/RecipientPicker.svelte',
-        '.suggestion',
-        '.suggestion.active',
-        'recipient suggestion',
-      ],
-      [
         '../../../packages/ui/src/projects/ProjectDetailView.svelte',
         '.task-rail-row',
         '.task-rail-row.is-selected',
         'project task rail',
+        'background',
       ],
       [
         '../../../packages/ui/src/projects/CompanyGoalsPage.svelte',
@@ -186,16 +192,36 @@ describe('DESKTOP-018: no colored edge rails', () => {
         'operations navigation',
       ],
     ] as const) {
+      const [path, baseSelector, selectedSelector, label, selection] = entry as readonly [
+        string,
+        string,
+        string,
+        string,
+        ('bottom-rule' | 'background')?,
+      ];
       expectOpenPersistentSelection(
         readFileSync(join(SOURCE_ROOT, path), 'utf8'),
         baseSelector,
         selectedSelector,
         label,
+        selection,
       );
     }
 
     // The V4 secondary sidebar footer went with the unreachable shell; the
     // live shell has no equivalent persistent footer row to hold to the rule.
+  });
+
+  it('marks the highlighted recipient with a fill only, never an edge rail', () => {
+    // The To-field suggestions moved from the Messages-window picker (square
+    // rows, bottom rule) to the shared RecipientPicker, whose rows follow the
+    // Forward dialog: a rounded neutral fill on the highlighted row.
+    const picker = readFileSync(join(UI_ROOT, 'chat/recipient-picker/RecipientPicker.svelte'), 'utf8');
+    const highlight = rule(picker, '.rp-option.highlight');
+    expect(highlight).toMatch(/background:\s*var\(--hover/);
+    expect(highlight).not.toMatch(/box-shadow|border/);
+    expect(rule(picker, '.rp-option')).not.toMatch(/border-left|border:\s*1px/);
+    expect(partialInsetSideRails(picker)).toEqual([]);
   });
 
   it('keeps settings notices and moderation lock states free of partial edge rails', () => {

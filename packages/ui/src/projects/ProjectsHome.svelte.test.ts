@@ -68,6 +68,24 @@ async function render(props: Record<string, unknown>) {
 const shown = (el: HTMLElement) => el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-slug");
 
 describe("ProjectsHome", () => {
+  it("gives New project the rail's member companies, Personal first, not local folders (QA-050)", async () => {
+    const companies = [
+      ws({ slug: "zeta", displayName: "Zeta", cloudUid: "cmp_zeta" }),
+      ws({ slug: "magical-moments", displayName: "Magical Moments", cloudUid: null }),
+      ws({ slug: "getindigo", displayName: "Getindigo", cloudUid: "cmp_gi", hasLocalFolder: false }),
+      ws({ slug: "acme", displayName: "Acme" }),
+      ws({ slug: "personal", displayName: "Personal", kind: "personal" }),
+    ];
+    const el = await render({ companies });
+    const picker = el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-picker");
+    expect(picker?.split(",")).toEqual(["personal", "zeta", "getindigo", "acme"]);
+  });
+
+  it("uses the shell's roster when given one", async () => {
+    const el = await render({ pickerCompanies: ["personal", "indigo"] });
+    expect(el.querySelector('[data-testid="projects-stub"]')?.getAttribute("data-picker")).toBe("personal,indigo");
+  });
+
   it("shows the channel's company first and passes its cloud id to the board", async () => {
     const el = await render({ preferredSlug: "zeta" });
     expect(shown(el)).toBe("zeta");
@@ -85,7 +103,7 @@ describe("ProjectsHome", () => {
     el.querySelector<HTMLButtonElement>('[data-testid="projects-company-switcher"]')!.click();
     flushSync();
     const items = [...el.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
-    expect(items.map((i) => i.textContent?.trim().replace(/^\w\s*/, ""))).toEqual(["Acme", "Zeta"]);
+    expect(items.map((i) => i.querySelector(".company-label-name")?.textContent)).toEqual(["Acme", "Zeta"]);
     items[1].click();
     expect(onslugchange).toHaveBeenCalledWith("zeta");
   });
@@ -106,6 +124,17 @@ describe("ProjectsHome", () => {
     localStorage.setItem("hq.projects.lastCompany", "zeta");
     const el = await render({ preferredSlug: "acme" });
     expect(shown(el)).toBe("acme");
+  });
+
+  it("hides its own switcher when the shell pins the company", async () => {
+    const el = await render({ slug: "zeta", preferredSlug: "zeta" });
+    expect(shown(el)).toBe("zeta");
+    expect(el.querySelector('[data-testid="projects-company-switcher"]')).toBeNull();
+  });
+
+  it("keeps the switcher when the caller asks for it", async () => {
+    const el = await render({ slug: "zeta", preferredSlug: "zeta", pinned: false });
+    expect(el.querySelector('[data-testid="projects-company-switcher"]')).not.toBeNull();
   });
 
   it("says so when no company has synced to this Mac", async () => {

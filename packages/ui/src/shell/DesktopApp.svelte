@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from "../common/button/RailIcon.svelte";
   import {
     parseMeshProjectView,
     projectViewToBoard,
@@ -28,6 +29,7 @@
     DESKTOP_AGENT_CREATION_FLAG,
     HUMAN_ONLY_CONVERSATIONS_FLAG,
     READY_FIRST_ACTION_FLAG,
+    VISUAL_FIRST_RUN_FLAG,
     dispatchSetupToolOffer,
     failure,
     hostComputerNoun,
@@ -36,8 +38,97 @@
     type UpdateGateStatus,
 } from "@hq/platform";
   import V4TitleBar from "../home/V4TitleBar.svelte";
-  import ChannelSkeleton from "./ChannelSkeleton.svelte";
+  import ReadLoader from "../common/ReadLoader.svelte";
   import SidebarResizeHandle from "./SidebarResizeHandle.svelte";
+  import AppRail from "./AppRail.svelte";
+  import LazyDoor from "./LazyDoor.svelte";
+  import { callerRole, loadCallerRole } from "../company/company-roles.svelte.js";
+  import {
+    brainPageDoor,
+    teamPageDoor,
+    vaultExplorerDoor,
+    filesConnectDoor,
+    meetingCanvasDoor,
+    meetingsSidepaneDoor,
+    moreCompaniesDoor,
+    newCompanyDoor,
+    notificationsPopoverDoor,
+    preloadDoorsWhenIdle,
+    profilePaneDoor,
+  } from "./lazy-doors.js";
+  import {
+    localCompanyKey,
+    pinCompany,
+    type MoreCompany,
+  } from "./more-companies.js";
+  import type { LocalOnlyCompany } from "../company/company-display-map.js";
+  import type { NewCompanyPlan, ProjectTemplate } from "./new-company/new-company.js";
+  import TelemetryRailHost from "./TelemetryRailHost.svelte";
+  import {
+    RAIL_ATLAS_FLAG,
+    RAIL_DEPLOYMENTS_ACTIONS_FLAG,
+    RAIL_OUTPOST_FLAG,
+    RAIL_TELEMETRY_FLAG,
+    RAIL_WORKFORCE_LIMITS_FLAG,
+    isIndigoCompany,
+    isIndigoOnlySurface,
+    watchIndigoOnlyGates,
+    type GateCompany,
+    type GateRegistryValues,
+    type IndigoOnlyGateKey,
+  } from "./indigo-only-gates.js";
+  import DeploymentsRailHost from "./DeploymentsRailHost.svelte";
+  import PersonalRailHost from "./PersonalRailHost.svelte";
+  import OutpostRailHost from "./OutpostRailHost.svelte";
+  import AtlasLandingHost from "./AtlasLandingHost.svelte";
+  import type { AtlasLocalSource, AtlasVaultSource } from "./atlas-landing.js";
+  import ActivityRailHost from "./ActivityRailHost.svelte";
+  import BotsPage from "../company/BotsPage.svelte";
+  import { botSubjectName, profileViewingCompanyUid } from "./profile-panes/bot-subject-name.js";
+  import CompanySettingsHost from "./CompanySettingsHost.svelte";
+  import {
+    atlasLiveActors,
+    atlasRoster,
+    atlasWorkingNow,
+    rosterNamesFromRows,
+  } from "./atlas-landing.js";
+  import AccountMenu from "./AccountMenu.svelte";
+  import {
+    accountPageId,
+    accountPlaceholderForPage,
+    accountRoleRows,
+    selfRoleFromRoster,
+    readRosterRolesCache,
+    writeRosterRolesCache,
+    ownLiveWork,
+    type AccountPageId,
+  } from "./account-menu.js";
+  import Sidepane from "./Sidepane.svelte";
+  import { SidepaneScrollMemory, sidepaneModelKey } from "./sidepane-models.js";
+  import CompanySidepane from "./CompanySidepane.svelte";
+  import { configureCompanyApi } from "../company/company-store.svelte.js";
+  import {
+    companyPagePlaceholderForPage,
+    companyRowDestination,
+    companyRowForPage,
+  } from "./company-pane.js";
+  import { entryCompanyUidForCommit, paneForEntry } from "./destination-pane.js";
+  import {
+    RAIL_SHORTCUT_COUNT,
+    activeRailItemId,
+    railDestination,
+    railItems,
+    railPlaceholderForPage,
+    type RailItem,
+  } from "./app-rail.js";
+  import {
+    companyLiveCount,
+    rememberCompanyId,
+    reorderPinnedIds,
+    seedPinnedCompanyIds,
+    memberCompanies,
+    companyPickerSlugs,
+  } from "./pinned-companies.js";
   import ChatSidebar, {
     type ChatSidebarActions,
   } from "../chat/ChatSidebar.svelte";
@@ -51,6 +142,21 @@
     type ShortcutBinding,
   } from "../common/keyboard-shortcuts.js";
   import {
+    advertisedShortcut,
+    atlasShortcutTarget,
+  } from "./advertised-shortcuts.js";
+  import { dismissToastByKey, pushToast } from "./toast-stack.svelte.js";
+  import { updateToastCopy } from "./update-toast.js";
+  import {
+    isSyncToastDismissed,
+    readDismissedSyncToasts,
+    syncToastCopy,
+    withSyncToastDismissed,
+    withSyncToastRestored,
+    writeDismissedSyncToasts,
+  } from "./sync-toast.js";
+  import { CREATE_MENU_ITEMS, type CreateMenuAction } from "../chat/create-menu.js";
+  import {
     SIDEBAR_OVERLAY_MAX_PX,
     sidebarLayout,
   } from "./sidebar-layout.js";
@@ -58,13 +164,24 @@
   import { createImagePreviewStore } from "../chat/messaging/image-preview-store";
   import { parseMessageAttachments } from "../chat/messaging/channelMessageModels";
   import ChannelConversation from "../chat/messaging/ChannelConversation.svelte";
+  import ForwardPicker from "../chat/messaging/ForwardPicker.svelte";
+  import {
+    adminCompaniesOf,
+    buildForwardHttpRequest,
+    forwardConfirmation,
+    forwardSourceFrom,
+    parseForwardResponse,
+    type ForwardRequest,
+    type ForwardResult,
+    type ForwardSource,
+  } from "../chat/messaging/forward-model.js";
   import IdentityMark from "../chat/messaging/IdentityMark.svelte";
   import BotKindChip from "../chat/BotKindChip.svelte";
   import { botKindFor } from "../chat/bot-kind.js";
-  import { presenceStatus } from "../chat/presence-store.svelte.js";
+  import { presenceSnapshot, presenceStatus } from "../chat/presence-store.svelte.js";
   import { authorAvatarUrl } from "../chat/messaging/agent-avatars.js";
   import AgentThinkingRow from "../chat/messaging/AgentThinkingRow.svelte";
-  import BotSyncWidget from "../chat/BotSyncWidget.svelte";
+  import BotSyncStatus from "../chat/BotSyncStatus.svelte";
   import AgentTaskStrip from "../chat/tasks/AgentTaskStrip.svelte";
   import type { AgentTask } from "../chat/tasks/agent-tasks";
   import {
@@ -72,12 +189,19 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import SetupInstallGuide from "../settings/SetupInstallGuide.svelte";
+  import {
+    botNeedsCodingToolNotice,
+    localBotNeedsCodingTool,
+    withPlainBotFailureReplies,
+  } from "../chat/bot-runtime-failure.js";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
   import SetupBotFinale from "../chat/SetupBotFinale.svelte";
   import SetupToolOffer from "../chat/SetupToolOffer.svelte";
   import {
+    connectItemCarriesState,
     continueInToolForMessage,
     HOST_PLACED_BLOCK_KINDS,
     messageHasConnectBlock,
@@ -132,7 +256,14 @@
     connectionForDomain,
     domainsToLookUp,
     integrationCardView,
+    integrationCardViewFromState,
     readCompanyConnections,
+    slackFactsFromItem,
+    connectItemStateAt,
+    stateIsCurrent,
+    connectionForStateItem,
+    APP_NOT_CONNECTABLE_NOTE,
+    defaultAppName,
     type CatalogLookup,
     type CompanyConnection,
     type CompanyConnections,
@@ -149,6 +280,24 @@
   import type { SetupRunApi } from "../chat/setup-run.js";
   import { SetupAgent, SETUP_AGENT_NAME, SETUP_AGENT_UID } from "../chat/setup-agent.svelte";
   import { createLaunchActions } from "../settings/launch-actions";
+  import FirstRunTakeover from "../chat/first-run/FirstRunTakeover.svelte";
+  import {
+    assistantNameIssue,
+    createFirstRunAssistantStarter,
+    firstRunHandoffNotice,
+    firstRunImportNotice,
+    firstRunIntro,
+    firstRunKickoff,
+    firstRunRoute,
+    hasFinishedVisualFirstRun,
+    normalizeAssistantName,
+    VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+    markVisualFirstRunFinished,
+    type FirstRunAssistantResult,
+    type FirstRunCreation,
+    type FirstRunImportHandoff,
+  } from "../chat/first-run/visual-first-run.js";
+  import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import {
     hasRunWelcomeSetup,
     isSetupChannel,
@@ -164,6 +313,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
+    setupNeedsCodingTool,
     setupFinaleDue,
     setupFinaleOffersSlack,
     setupSlackOfferText,
@@ -183,6 +333,7 @@
     SETUP_BOT_NAME,
     SETUP_BOT_WORKER,
     SETUP_BOT_UNAVAILABLE,
+    SETUP_BOT_RUNTIME_ORDER,
     singleFlightStart,
     type SetupBotLauncher,
     type SetupBotRef,
@@ -198,13 +349,17 @@
     type EntryPointTarget,
     type CloudBotDraft,
   } from "../chat/lifecycle-entry-points.js";
+  import { lazyDirectCloudCreate } from "../chat/create-bot/direct-cloud-lazy.js";
   import { createNewBotCompanyFlags } from "../chat/create-bot/new-bot-companies.js";
   import { helloRequestKey } from "../chat/create-bot/waking-model.js";
   import {
     openCreateCompanyDraft,
+    sendCompanyInvites,
+    slugFieldOf,
     submitCreateCompany,
     provisionCompanyCloud,
     type CompanyCreateSeam,
+    type CompanyInvite,
   } from "../chat/create-company/create-company-flow.js";
   import {
     patchLifecycleCardState,
@@ -222,6 +377,7 @@
     agentHelloArrived,
     agentHelloEventId,
     agentHelloEventIdByAskTime,
+    connectionNoticeAfter,
     dmPageHoldsStart,
     isCloudBotDm,
     buildAgentHelloRequest,
@@ -236,6 +392,7 @@
     type AgentChatReadiness,
   } from "../chat/agent-channel.js";
   import { composeCloudBotHello } from "../chat/cloud-bot-hello.js";
+  import { roleIsAdminOrOwner } from "../chat/channel-admin.js";
   import {
     noteNoticeFailure,
     noteNoticeSent,
@@ -292,22 +449,25 @@
   } from "../chat/tabs/tab-model.js";
   import type { OfficeCallsHost } from "../meet/office-host.js";
   import NotificationsView from "../inbox/NotificationsView.svelte";
+  import ToastStack from "./ToastStack.svelte";
   import SharedFilesOverlay from "../inbox/SharedFilesOverlay.svelte";
-  import VaultExplorer from "../files/explorer/VaultExplorer.svelte";
   import PageHeader from "./PageHeader.svelte";
   import ProjectsHome from "../projects/ProjectsHome.svelte";
   import CompanyProjectsPage from "../projects/CompanyProjectsPage.svelte";
+  import {
+    configureProjectsApi,
+    loadLocalProjects,
+  } from "../projects/local-projects.js";
+  import type { Project } from "../projects/projects-model.js";
   import CommandPalette, {
     type CommandPaletteItem,
   } from "../common/CommandPalette.svelte";
-  import ShellSettings, {
-    type ShellSettingsProfile,
-  } from "../settings/ShellSettings.svelte";
+  import type { ShellSettingsProfile } from "../settings/ShellSettings.svelte";
+  import { loadShellSettings } from "./settings-lazy.js";
   import RecommendedUpdateBanner from "../settings/RecommendedUpdateBanner.svelte";
   import MembershipSyncBanner from "./MembershipSyncBanner.svelte";
   import SessionExpiredBanner from "./SessionExpiredBanner.svelte";
   import NotificationActionRecovery from "./NotificationActionRecovery.svelte";
-  import UpdateAvailableCard from "./UpdateAvailableCard.svelte";
   import {
     cacheLogoAssets,
     readBrandCache,
@@ -329,14 +489,21 @@
     type SyncStatusState,
   } from "../home/sync-status.js";
   import {
+    applyAvailableUpdate,
     dismissRecommendBanner,
     installRecommendedUpdate,
     orchestrationAdapterFrom,
+    setUpdateHoldReasons,
     updateStore,
     type UpdateStoreAdapter,
   } from "../settings/update-store.svelte";
   import type { AdapterResult } from "../settings/update-orchestration";
   import ChannelStatusPopover from "../chat/ChannelStatusPopover.svelte";
+  import {
+    liveMemberCount,
+    memberCountLabel,
+    pinnedNoteText,
+  } from "../chat/channel-header.js";
   import ChannelMuteControl from "../chat/ChannelMuteControl.svelte";
   import {
     changeNotifyLevel,
@@ -403,10 +570,10 @@
     destinationLabel,
     extraParamCompanyKey,
     historyNeighbor,
-    priorNonLibraryIndex,
     type NavigationDestination,
     type NavigationEntry,
     type NavigationScrollState,
+    type ProjectsFocusTab,
   } from "./navigation-history.js";
   import {
     createNavigationScrollTracker,
@@ -427,13 +594,16 @@
     type Component,
   } from "svelte";
   import {
-    applyColorTheme,
     applyUiSize,
     applyWindowOpacity,
     hasAppearanceHost,
-    readStoredTheme,
   } from "../settings/shell-settings-model.js";
-  import { readSettingsPrefs } from "../settings/settings-prefs.js";
+  import { restoreStoredColorTheme } from "../settings/settings-theme-seam.js";
+  import {
+    readSettingsPrefs,
+    readStoredUiSize,
+    writeSettingsPrefs,
+  } from "../settings/settings-prefs.js";
   import {
     EMPTY_LIVE_SYNC,
     lastSyncLabelFromLive,
@@ -447,7 +617,7 @@
     type ChannelStatusModel,
     type StatusPersonRow,
   } from "../chat/channel-status-model.js";
-  import { liveInputsForCompanyProject } from "../chat/live-read-store.svelte.js";
+  import { liveInputsForCompanyProject, liveReadFor } from "../chat/live-read-store.svelte.js";
   import {
     applyAuthoritativePresence,
     applyChannelRoster,
@@ -468,6 +638,7 @@
   import LinkContextMenu from "../common/LinkContextMenu.svelte";
   import {
     handleLinkActivate,
+    setHostOpenUrl,
     type LinkMenuAnchor,
   } from "../common/external-links.js";
   import {
@@ -542,6 +713,7 @@
     LOCAL_BOT_BUSY_POLL_MS,
     LOCAL_BOTS_POLL_MS,
     localBotForRow,
+    localBotInCompany,
     localBotNeedsOfflineNotice,
     localBotOfflineNotice,
     localBotPresence,
@@ -681,6 +853,7 @@
     type PutChatAttachment,
   } from "../chat/messaging/upload-chat-attachments.js";
   import {
+    companyChannelUnread,
     findCompanyHomeRow,
     isStrictlyRicherConversationRow,
     stepConversation,
@@ -742,8 +915,15 @@
   } from "../chat/pending-conversation.js";
   import type { ChannelDirectoryRow } from "../chat/channel-directory-reconciler.js";
   import {
+    NO_RETIRED_ENTITIES,
+    liveCompanyUidSet,
+    withoutRetiredRows,
+    type RetiredEntities,
+  } from "../chat/retired-entities.js";
+  import {
     mergePaletteRows,
     paletteConversationItems,
+    paletteProjectItems,
   } from "./palette-rows.js";
   import {
     joinableMemberships,
@@ -758,6 +938,7 @@
     companyIconUrl,
   } from "../company/company-display-map.js";
   import CompanyIcon from "../company/CompanyIcon.svelte";
+  import { setCompanyIconRegistry } from "../company/company-icon-registry.svelte.js";
   import { SETUP_HERO_ART } from "../chat/setup-welcome-art.js";
   import { formatReadonlyTimestamp } from "../chat/messaging/channelMessageModels.js";
   import {
@@ -810,6 +991,11 @@
     wakes?: ChatWakeBus | null;
     /** Workspace memberships → sidebar company scopes. */
     companies?: Workspace[] | null;
+    /**
+     * Company folders on this Mac with no cloud id. Listed in the company
+     * switcher only; they cannot be opened until they sync.
+     */
+    localCompanies?: readonly LocalOnlyCompany[];
     /**
      * A company's home channel was just created/adopted client-side
      * (`ensureCompanyHomeChannel`, from a Companies-row click) and the
@@ -902,6 +1088,12 @@
      * card / packs / update). MUST stay false on real-data paths.
      */
     coreFixtures?: boolean;
+    /**
+     * Keep the sidebar's legacy Companies block. Off in the console-rail
+     * shell, where companies live on the rail only; the company-home heal
+     * tests still drive that block.
+     */
+    sidebarCompanies?: boolean;
     onsignout?: () => Promise<void> | void;
     onOpenSettings?: () => void;
     /** Open HQ Console externally (Settings → Manage account). */
@@ -965,7 +1157,7 @@
     /**
      * Bound for first-paint optional fetches (directory, contacts, DM
      * threads). Tests pass a short value so a hung/404 call cannot leave the
-     * conversation pane on a skeleton.
+     * conversation pane on its loader.
      */
     bootTimeoutMs?: number;
     /** First successful conversation/empty paint — host reports `shell_ready`. */
@@ -1088,6 +1280,7 @@
     oncardaction,
     wakes = null,
     companies = null,
+    localCompanies = [],
     onhomechannelresolved,
     syncEvents = null,
     rosterStatus = null,
@@ -1110,6 +1303,7 @@
     identities = null,
     mentionCandidates = [],
     coreFixtures = false,
+    sidebarCompanies = false,
     onsignout,
     onOpenSettings,
     onOpenConsole,
@@ -1269,15 +1463,16 @@
   // ── Update gate card ────────────────────────────────────────────────────────
 
   const UPDATE_GATE_EVENT = "update-gate://deferred";
-  const DISMISSED_KEY = "hq.update.dismissedVersion";
+  // OWNER-003: "Later" snoozes the update toast for this app session only.
+  const SNOOZED_KEY = "hq.update.snoozedVersion";
+  const UPDATE_TOAST_KEY = "app-update";
 
   let updatePendingVersion = $state<string | null>(null);
-  let updateHoldReasons = $state<string[]>([]);
   let updateInstalling = $state(false);
   let updateInstallError = $state<string | null>(null);
 
   function dismissedVersion(): string | null {
-    try { return localStorage.getItem(DISMISSED_KEY); } catch { return null; }
+    try { return sessionStorage.getItem(SNOOZED_KEY); } catch { return null; }
   }
 
   function isDismissed(v: string): boolean {
@@ -1287,9 +1482,14 @@
   function applyUpdateGateStatus(status: UpdateGateStatus): void {
     const v = status.pendingVersion;
     if (!v) return;
+    // QA-051: Settings → About reads the update store, so the version the
+    // Home banner offers must land there too, dismissed or not.
+    applyAvailableUpdate(v);
+    // Item 8: the hold reasons live in the shared update store so Settings >
+    // Updates names the same reason as this toast, snoozed or not.
+    setUpdateHoldReasons(status.reasons);
     if (isDismissed(v)) return;
     const isNew = v !== updatePendingVersion;
-    updateHoldReasons = status.reasons ?? [];
     if (isNew) {
       // Version changed: update and allow aria-live to announce.
       updatePendingVersion = v;
@@ -1350,22 +1550,80 @@
     try {
       const res = await adapter.updates.installPendingUpdate();
       if (!res.ok) {
+        console.warn("[update] install pending update failed", res.message ?? res.reason);
         updateInstallError = res.message ?? res.reason ?? "Could not restart.";
         updateInstalling = false;
       }
     } catch (err) {
+      console.warn("[update] install pending update failed", err);
+      // raw-error-ok: update-toast plainError maps it to plain copy
       updateInstallError = err instanceof Error ? err.message : "Could not restart.";
       updateInstalling = false;
     }
   }
 
+  // Session snooze, mirrored in state so the toast effect re-runs on Later.
+  let snoozedUpdateVersion = $state<string | null>(dismissedVersion());
+
   function handleUpdateDismiss(): void {
-    if (!updatePendingVersion) return;
-    try { localStorage.setItem(DISMISSED_KEY, updatePendingVersion); } catch {}
+    const version = updatePendingVersion ?? updateStore.availableVersion;
+    if (!version) return;
+    try { sessionStorage.setItem(SNOOZED_KEY, version); } catch (err) {
+      console.error("update toast: could not record the session snooze:", err);
+    }
+    snoozedUpdateVersion = version;
     updatePendingVersion = null;
-    updateHoldReasons = [];
     updateInstallError = null;
   }
+
+  // OWNER-003: the update notice is a sticky toast on the shared layer. It
+  // follows the gate (ready / held) and the shared update store (download
+  // and install progress), so the bar fills while bytes land and "Restart
+  // to update" unlocks only once the package is ready.
+  $effect(() => {
+    const phase = updateStore.installPhase;
+    const storeBusy = phase === "downloading" || phase === "queued" || phase === "installing";
+    const version = updatePendingVersion ?? (storeBusy || phase === "ready" ? updateStore.availableVersion : null);
+    const snoozed = version !== null && version === snoozedUpdateVersion && !updateInstalling && phase !== "installing";
+    if (!version || snoozed) {
+      untrack(() => dismissToastByKey(UPDATE_TOAST_KEY));
+      return;
+    }
+    const copy = updateToastCopy({
+      version,
+      reasons: [...updateStore.holdReasons],
+      installing: updateInstalling,
+      installError: updateInstallError,
+      phase: storeBusy ? phase : undefined,
+      downloadPercent: updateStore.downloadPercent,
+    });
+    untrack(() => pushToast({
+      key: UPDATE_TOAST_KEY,
+      kind: "sticky",
+      tone: "neutral",
+      testId: "update-available-card",
+      title: copy.title,
+      detail: copy.detail,
+      error: copy.error,
+      progress: copy.progress,
+      dismissLabel: "Dismiss update notice",
+      onDismiss: handleUpdateDismiss,
+      actions: [
+        {
+          label: copy.installLabel,
+          // A disabled action is never drawn as the filled primary button.
+          primary: !copy.installDisabled,
+          disabled: copy.installDisabled,
+          keepOpen: true,
+          testId: "update-install",
+          title: copy.installTitle ?? undefined,
+          onAction: () => void handleUpdateInstall(),
+        },
+        { label: "Later", testId: "update-later", keepOpen: true, onAction: handleUpdateDismiss },
+      ],
+    }));
+  });
+  $effect(() => () => dismissToastByKey(UPDATE_TOAST_KEY));
 
   /**
    * White-label brand for the title bar (PL-04). Resolved from the same
@@ -1456,12 +1714,12 @@
       }
       // Scoped to the company the banner names — an unscoped call is
       // SyncRunScope::All, which syncs every workspace on the machine and is
-      // not what "pull it onto this machine" promises. Matches CompanyPage.
+      // not what "pull it onto this machine" promises. Matches the old company Overview.
+      restoreSyncToast(target.slug);
       const result = await adapter.sync.startSync(target.slug);
       if (!result.ok) {
         console.error("membership sync failed:", result.reason, result.message);
-        membershipSyncError =
-          result.message?.trim() || "Sync could not be started.";
+        membershipSyncError = "Sync could not be started. Try again.";
         membershipSyncPending = false;
       } else if (!syncEvents) {
         // No event bridge on this platform: the run was dispatched, but this
@@ -1471,10 +1729,7 @@
       }
     } catch (err) {
       console.error("membership sync failed:", err);
-      membershipSyncError =
-        err instanceof Error && err.message.trim()
-          ? err.message
-          : "Sync could not be started.";
+      membershipSyncError = "Sync could not be started. Try again.";
       membershipSyncPending = false;
     }
   }
@@ -1489,6 +1744,87 @@
    * filters to one company and this one deliberately watches every run.
    */
   let syncStatus = $state<SyncStatusState>(emptySyncStatus());
+
+  // OWNER-003: one "sync" toast that updates in place while files move and
+  // turns into a quiet "Files up to date" when the run ends. Runs that move
+  // nothing stay silent; attention states belong to the Core pill.
+  //
+  // Closing it with X sticks (rule in sync-toast.ts): hidden for the rest of
+  // the run and, for that company, on later runs and after a restart, until
+  // the person starts a sync for it. Before, X removed the toast and the next
+  // per-file `sync:progress` pushed it straight back.
+  const SYNC_TOAST_KEY = "sync";
+  let syncRunMoved = false;
+  // This run: X was pressed, or the busy toast was actually shown. The quiet
+  // "Files up to date" only follows a run whose toast was shown and kept.
+  let syncRunDismissed = $state(false);
+  let syncRunShown = false;
+  const syncToastStorage = $derived(
+    createTenantStorage(
+      typeof window !== "undefined" ? window.localStorage : null,
+      { accountId: (self?.uid ?? tenantAccountId ?? "").trim() || null, companyId: "all" },
+    ),
+  );
+  let dismissedSyncToasts = $state<Set<string>>(new Set());
+  $effect(() => {
+    const storage = syncToastStorage;
+    untrack(() => {
+      dismissedSyncToasts = readDismissedSyncToasts(storage);
+    });
+  });
+
+  function handleSyncToastDismiss(): void {
+    const company = syncStatus.company;
+    syncRunDismissed = true;
+    dismissedSyncToasts = withSyncToastDismissed(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
+  /** The person asked for a sync: show its progress again. */
+  function restoreSyncToast(company?: string | null): void {
+    syncRunDismissed = false;
+    dismissedSyncToasts = withSyncToastRestored(dismissedSyncToasts, company);
+    writeDismissedSyncToasts(syncToastStorage, dismissedSyncToasts);
+  }
+
+  $effect(() => {
+    const status = syncStatus;
+    const dismissed = dismissedSyncToasts;
+    const runDismissed = syncRunDismissed;
+    untrack(() => {
+      if (status.phase === "syncing" && (status.planTotal > 0 || status.progressed > 0)) {
+        syncRunMoved = true;
+      }
+      const copy = syncToastCopy(status, syncRunMoved, false, (slug) =>
+        railCompanyRoster.find((company) => company.slug === slug)?.label ?? (slug === "personal" ? "Personal" : null),
+      );
+      const hidden = runDismissed || isSyncToastDismissed(dismissed, status.company);
+      if (copy.state === "busy" && syncRunMoved) {
+        if (hidden) {
+          dismissToastByKey(SYNC_TOAST_KEY);
+          return;
+        }
+        syncRunShown = true;
+        pushToast({ key: SYNC_TOAST_KEY, kind: "sticky", tone: "neutral", testId: "sync-toast", title: copy.title, detail: copy.detail, progress: copy.progress, dismissLabel: "Hide sync progress", onDismiss: handleSyncToastDismiss });
+      } else if (copy.state === "done") {
+        const show = syncRunShown && !runDismissed;
+        syncRunMoved = false;
+        syncRunShown = false;
+        syncRunDismissed = false;
+        if (show) {
+          pushToast({ key: SYNC_TOAST_KEY, kind: "quiet", tone: "ok", testId: "sync-toast", title: copy.title, detail: copy.detail });
+        } else {
+          dismissToastByKey(SYNC_TOAST_KEY);
+        }
+      } else if (copy.state === "attention") {
+        syncRunMoved = false;
+        syncRunShown = false;
+        syncRunDismissed = false;
+        dismissToastByKey(SYNC_TOAST_KEY);
+      }
+    });
+  });
+  $effect(() => () => dismissToastByKey(SYNC_TOAST_KEY));
 
   /**
    * Per-file conflict rows for the Core popover. Separate from the reducer
@@ -1660,7 +1996,10 @@
           (e) => !membershipSyncTarget || e.company === membershipSyncTarget,
         );
         membershipSyncPending = false;
-        if (mine) membershipSyncError = mine.message?.trim() || "Sync failed.";
+        if (mine) {
+          console.warn("[membership-sync] sync run failed", mine.message);
+          membershipSyncError = "Sync failed. Try again.";
+        }
       }),
     );
     // NOTE: deliberately NOT listening to `sync:error`. That event is PER FILE
@@ -1716,6 +2055,27 @@
    * same-origin proxy; desktop uses the bounded Rust byte hop passed by its
    * host.
    */
+  /** OWNER-R17: reads for the Files and Vault right pane's Access section (read-only). */
+  const filesAccess = $derived({
+    companyUidFor: (v: { kind: string; slug: string | null }) =>
+      (companies ?? []).find((w) => (v.kind === "company" ? w.slug === v.slug : w.kind === "personal"))?.cloudUid ?? null,
+    readTree: adapter.files?.getAccessTree ? (uid: string, prefix: string) => adapter.files.getAccessTree!(uid, prefix) : null,
+    readGroups: adapter.files?.listAccessGroups ? (uid: string) => adapter.files.listAccessGroups!(uid) : null,
+  });
+
+  /** OWNER-R13: a vault file that is not on this Mac, read through the vault. */
+  async function vaultCloudRead(companyUid: string | null, key: string): Promise<string | null> {
+    const files = adapter.files;
+    if (!companyUid || !files?.presignVaultGet) return null;
+    const signed = await files.presignVaultGet(companyUid, key);
+    if (!signed.ok) throw new Error(`vault presign ${signed.code ?? signed.reason}`);
+    const url = presignUrlFromResult(signed.value)?.url;
+    if (!url) return null;
+    const res = await getVaultBytesForHost(url, MAX_CHANNEL_FILE_PREVIEW_BYTES);
+    if (!res.ok) throw new Error(`vault read http ${res.status}`);
+    return await res.text();
+  }
+
   async function getVaultBytesForHost(
     url: string,
     maxBytes = MAX_CHANNEL_FILE_PREVIEW_BYTES,
@@ -1732,6 +2092,53 @@
     throw new Error("No authorized Vault byte transport is available.");
   }
 
+  /**
+   * Atlas in the native app (QA-016): the Console atlas endpoint needs a web
+   * session the app does not have, so the map is built from the vault through
+   * this adapter, signed in with the app's own HQ account. The web harness
+   * keeps the Console session fetch (null here).
+   */
+  const atlasVaultSource = $derived.by((): AtlasVaultSource | null => {
+    const files = adapter.files;
+    if (adapter.kind === "web" || !files?.listVaultPrefix) return null;
+    return {
+      async listPage(company, prefix, cursor) {
+        const res = await files.listVaultPrefix(company, prefix, cursor);
+        if (!res.ok) throw new Error(`vault list ${res.code ?? res.reason}`);
+        return res.value;
+      },
+      async readText(company, key) {
+        if (!files.presignVaultGet) return null;
+        const signed = await files.presignVaultGet(company, key);
+        if (!signed.ok) throw new Error(`vault presign ${signed.code ?? signed.reason}`);
+        const url = presignUrlFromResult(signed.value)?.url;
+        if (!url) return null;
+        const res = await getVaultBytesForHost(url, MAX_CHANNEL_FILE_PREVIEW_BYTES);
+        if (!res.ok) throw new Error(`vault read http ${res.status}`);
+        return await res.text();
+      },
+    };
+  });
+
+  /**
+   * Atlas from the company folder synced to this machine (QA-016): the vault
+   * listing above took ~42 s cold for Indigo; the local folder paints the
+   * district roots at once. Null on the web harness.
+   */
+  const atlasLocalSource = $derived.by((): AtlasLocalSource | null => {
+    const local = adapter.files?.atlasLocal;
+    if (adapter.kind === "web" || !local) return null;
+    const unwrap = <T,>(what: string, res: { ok: true; value: T } | { ok: false; code?: string; reason: string }): T => {
+      if (!res.ok) throw new Error(`atlas local ${what} ${res.code ?? res.reason}`);
+      return res.value;
+    };
+    return {
+      firstPage: async (slug) => unwrap("first page", await local.firstPage(slug)),
+      listing: async (slug) => unwrap("listing", await local.listing(slug)),
+      readText: async (slug, key) => unwrap("read", await local.readText(slug, key)),
+    };
+  });
+
   type ChannelTab = "chat" | "board" | "files";
   const CHANNEL_TABS: ReadonlyArray<{ id: ChannelTab; label: string }> = [
     { id: "chat", label: "Chat" },
@@ -1744,6 +2151,8 @@
   ] as const;
   type AgentChannelTab = (typeof AGENT_CHANNEL_TABS)[number]["id"];
 
+  // Bumped by the Settings retry control to re-run a failed chunk load.
+  let settingsLoadAttempt = $state(0);
   let view = $state<
     | "conversation"
     | "notifications"
@@ -1758,6 +2167,8 @@
   >("conversation");
   /** Company shown on the Projects page; null follows the selected channel. */
   let projectsCompany = $state<string | null>(null);
+  /** Project the Projects page opens on arrival, and its tab (QA-066). */
+  let projectsFocus = $state<{ project: string; tab: ProjectsFocusTab | null } | null>(null);
   /** Files explorer location (vault id + HQ-relative file). */
   let explorerVault = $state<string | null>(null);
   let explorerPath = $state<string | null>(null);
@@ -1765,7 +2176,7 @@
   let extraPageParam = $state<string | null>(null);
   /** Which pending request the Requests panel should bring into view first. */
   let dmRequestsFocusPairKey = $state<string | null>(null);
-  let libraryTab = $state<LibraryTab>("skills");
+  let libraryTab = $state<LibraryTab>("marketplace");
   let libraryItemId = $state<string | null>(null);
   let settingsSection = $state<EmbeddedSettingsSection | null>(null);
   let meetingFocusRequest = $state<{
@@ -1775,6 +2186,10 @@
   let meetingFocusSequence = 0;
   let embeddedNavigationError = $state<string | null>(null);
   let inboxRouteNotice = $state<string | null>(null);
+  /** Open Forward picker (US-009); null when closed. */
+  let forwardSource = $state<ForwardSource | null>(null);
+  let forwardNotice = $state<string | null>(null);
+  let forwardNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   let navigationPending = $state(false);
   let navigationUnavailable = $state<{
     destination: NavigationDestination;
@@ -1782,7 +2197,6 @@
   } | null>(null);
   let navigationCanGoBack = $state(false);
   let navigationCanGoForward = $state(false);
-  let libraryBackTargetIndex = $state<number | null>(null);
   let navigationBackLabel = $state("");
   let navigationForwardLabel = $state("");
   let pendingRestoreScroll = $state<NavigationScrollState | null>(null);
@@ -1884,10 +2298,18 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  /**
+   * Retired companies and gone bots the sidebar learned about. The sidebar's
+   * own rows are already filtered; this drops the same rows from the cached
+   * `searchRows` the palette also indexes.
+   */
+  let retiredEntities = $state<RetiredEntities>(NO_RETIRED_ENTITIES);
   /** Rail rows in display order (pinned → days → expanded last week). */
   let displayRows = $state<ConversationRow[]>([]);
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
   let sidebarActions = $state<ChatSidebarActions | null>(null);
+  // US-006: one scroll memory for the sidepane host, outliving collapse.
+  const sidepaneScrollMemory = new SidepaneScrollMemory();
   let cheatSheetOpen = $state(false);
 
   /**
@@ -1956,6 +2378,18 @@
       cancelled = true;
       unsubscribe?.();
     };
+  });
+
+  // RELEASE-001: Indigo-only rail gates. Registry answers keep each key
+  // current; until they arrive every key uses its everyone-default.
+  let railGateValues = $state<GateRegistryValues>({});
+  $effect(() => {
+    const identity = adapter?.identity;
+    return untrack(() =>
+      watchIndigoOnlyGates(identity, (values) => {
+        railGateValues = values;
+      }),
+    );
   });
 
   // ── Personal local bots (local-bots US-009) ────────────────────────────────
@@ -2030,7 +2464,7 @@
     if (!api) return;
     const result = await api.list();
     if (!result.ok) return;
-    const bots = result.value.bots ?? [];
+    const bots = result.value?.bots ?? [];
     // A BOT THAT DROPPED OFF THIS MAC'S LISTING IS THE WIPE, AS IT HAPPENS.
     // The account's own listing is what turns that into the honest notice,
     // and on the VM it was on a 120 s timer that had stopped — so the DM
@@ -2269,6 +2703,17 @@
       botRecheckBusy = false;
     }
   }
+  // Lazy surfaces (profile panes, popovers, create sheets) warm once the first
+  // frame is up, so the first click rarely shows their loader.
+  // The Files explorer is its own chunk; fetch it at once so Files still
+  // opens in the click frame.
+  onMount(() => vaultExplorerDoor.preload());
+  onMount(() => preloadDoorsWhenIdle());
+  // Markdown previews route http(s) links through the host opener (QA-094).
+  onMount(() => {
+    setHostOpenUrl(onopenurl ?? null);
+    return () => setHostOpenUrl(null);
+  });
   onMount(() => {
     if (!adapter.bots) return;
     void refreshLocalBots();
@@ -2331,7 +2776,7 @@
     const workers = adapter.bots?.workers;
     if (!workers || localBotWorkers) return;
     const result = await workers();
-    if (result.ok) localBotWorkers = result.value.workers ?? [];
+    if (result.ok) localBotWorkers = result.value?.workers ?? [];
   }
   onMount(() => {
     if (!adapter.bots) return;
@@ -2377,7 +2822,11 @@
     delete next[uid];
     botProgressByUid = next;
   }
-  async function createBotEntry(input: LocalBotCreateInput, extras: CreateBotExtras = {}): Promise<LocalBotEntryResult> {
+  async function createBotEntry(
+    input: LocalBotCreateInput,
+    extras: CreateBotExtras = {},
+    options: { select?: boolean } = {},
+  ): Promise<LocalBotEntryResult> {
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
     const result = await api.create(input);
@@ -2420,7 +2869,14 @@
       pinned: false,
       personUid: agentUid,
     };
-    handleSelect(row);
+    // The new bot's DM opens with the progress card above; the bot's own
+    // intro is its greeting. The desktop adds no setup rows of its own: it
+    // has no call that grants vault access, and a Local bot already works
+    // with the person's own permissions.
+    // The visual first run selects on Done ("Talk to <Name>"), so a create
+    // that lands behind the takeover, or after the person left it for
+    // #welcome, does not move them.
+    if (options.select !== false) handleSelect(row);
     void saveNewBotProfile(agentUid, extras);
     return { ok: true, agentUid, name: input.name };
   }
@@ -2484,7 +2940,19 @@
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
-      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
+      ? {
+          existing: Boolean(existingSetupBot),
+          ready: setupBotRuntimeReady,
+          starting: setupBotStarting,
+          error: setupBotStartError,
+          // Known and empty: #welcome shows the install guide before the bot runs.
+          needsCodingTool: setupNeedsCodingTool(localBotRuntimeReady),
+          start: startSetupBot,
+          // The first-run create does not open its conversation by itself.
+          ...(firstRunCreateRunning && firstRunConfirmedName
+            ? { startingBody: `${firstRunConfirmedName} is starting on this ${hostComputerNoun()}. Open it here once it's ready.` }
+            : {}),
+        }
       : null,
   );
   /**
@@ -2529,6 +2997,23 @@
     setupBotStarting = true;
     setupBotStartError = null;
     try {
+      // The visual first run may be creating the setup bot right now (the
+      // person left its takeover for #welcome mid-create). Its bot is not on
+      // any list yet, so a second create would make a second setup bot: wait
+      // for it and open that one instead.
+      // A bot it already made this session is used too: the local list can
+      // lag behind a create that just answered.
+      const firstRun =
+        firstRunCreateInFlight ??
+        (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null);
+      if (firstRun) {
+        const created = await firstRun;
+        if (created.ok) {
+          setupBotAutoStarted = true;
+          openSetupBotDm(created.bot);
+          return { ok: true, existing: true };
+        }
+      }
       const result = await runSetupBotStart();
       if (!result.ok) setupBotStartError = result.reason;
       return result;
@@ -2569,17 +3054,21 @@
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
-    const existing = await findExistingSetupBot();
-    if (existing) {
-      openSetupBotDm(existing);
-      return { ok: true, existing: true };
-    }
     // Re-read sign-in state: the Connect step signs in through the setup run's
     // own API, so a readiness answer cached at boot can be a click out of date.
     localBotRuntimeReady = null;
     await loadLocalBotRuntimeReady();
     const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    // No coding tool signed in: say so (the install guide renders under this
+    // sentence) before opening OR creating the setup bot. An existing setup
+    // bot with no tool behind it answers every message with a failure, which
+    // is what a freshly wiped Mac showed when it opened one straight away.
     if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
+    const existing = await findExistingSetupBot();
+    if (existing) {
+      openSetupBotDm(existing);
+      return { ok: true, existing: true };
+    }
     // `intro` is sent by the runtime on start, so the first message is
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
@@ -2594,7 +3083,10 @@
     } catch (err) {
       console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
     }
-    const displayName = pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+    // A name the person confirmed in the visual first run (then left it for
+    // chat) is kept; otherwise a friendly free one.
+    const displayName =
+      firstRunConfirmedName ?? pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
     const created = await createBotEntry(
       {
         name: SETUP_BOT_NAME,
@@ -2639,6 +3131,10 @@
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
+    // `desktop.visual-first-run`: nothing starts by itself until the flag has
+    // answered, and nothing at all while the visual first run is on screen.
+    // Flag off is "legacy" the moment it answers, and this runs as before.
+    if (firstRunRouteNow !== "legacy" || visualFirstRunOpen) return;
     // Wait for the shell's first conversation to be chosen, so opening the
     // bot's DM is not undone by the boot selection landing afterwards.
     if (!selectedRow) return;
@@ -2650,6 +3146,359 @@
       })
       .catch((err) => console.warn("[hq-desktop] setup bot did not start by itself:", err));
   });
+  /**
+   * VISUAL FIRST-RUN SETUP (`desktop.visual-first-run`, default off; slice 1).
+   * With the flag on, a first run opens the New bot step-through takeover
+   * (name your HQ assistant, coding tools, done) instead of the automatic
+   * start above. The assistant IS the setup bot, created under the name the
+   * person confirms, in the background while they finish the screens. Done
+   * opens its DM; "Continue in chat" leaves for #welcome. Either one marks
+   * the takeover finished on this computer, so it never opens again.
+   */
+  /**
+   * The flag; null until it answers. Unreadable counts as off, and so does
+   * slow: the read starts at mount, alongside the host's "setup owed" check
+   * below, and once that check has answered the flag gets at most
+   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more. So with the flag off a first run
+   * waits for the later of the two answers, never their sum, and no more than
+   * the grace past the wait it already had.
+   */
+  let visualFirstRunFlag = $state<boolean | null>(null);
+  let visualFirstRunFinished = $state(hasFinishedVisualFirstRun());
+  function settleVisualFirstRunFlag(value: boolean): void {
+    if (visualFirstRunFlag === null) visualFirstRunFlag = value;
+  }
+  onMount(() => {
+    const identity = adapter.identity;
+    // Only a first run needs the answer: no read at all otherwise.
+    if (!adapter.bots || welcomeSetupRun || visualFirstRunFinished || !identity || typeof identity.hasFeature !== "function") {
+      visualFirstRunFlag = false;
+      return;
+    }
+    let active = true;
+    void Promise.resolve()
+      .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
+      .then(
+        (result) => {
+          if (active) settleVisualFirstRunFlag(result.ok && result.value === true);
+        },
+        (err: unknown) => {
+          console.warn("[hq-desktop] visual first-run flag lookup failed:", err);
+          if (active) settleVisualFirstRunFlag(false);
+        },
+      );
+    return () => {
+      active = false;
+    };
+  });
+  // The "setup owed" answer is in and the flag is not: the flag has the grace
+  // left, then counts as off.
+  $effect(() => {
+    if (visualFirstRunFlag !== null || welcomeSetupOwed === null) return;
+    const timer = window.setTimeout(() => settleVisualFirstRunFlag(false), VISUAL_FIRST_RUN_FLAG_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  });
+  const firstRunRouteNow = $derived.by(() =>
+    firstRunRoute({
+      hasBots: Boolean(adapter.bots) && SETUP_BOT_MODE,
+      welcomeSetupRun,
+      welcomeSetupOwed,
+      flag: visualFirstRunFlag,
+      finished: visualFirstRunFinished,
+    }),
+  );
+  /** Latched: once open it stays until Done or Continue in chat. */
+  let visualFirstRunOpen = $state(false);
+  /** The name the name step opens with, picked when the takeover opens. */
+  let firstRunSuggestedName = $state("");
+  $effect(() => {
+    if (firstRunRouteNow !== "visual" || untrack(() => visualFirstRunOpen)) return;
+    untrack(() => {
+      firstRunSuggestedName = firstRunInitialName();
+      visualFirstRunOpen = true;
+    });
+  });
+  /** A setup bot already here keeps its name; otherwise a friendly free one. */
+  function firstRunInitialName(): string {
+    const existing = findSetupBot(localBotRecords);
+    const known = existing ? (botDisplayNames[existing.agentUid] ?? "").trim() : "";
+    if (known && !assistantNameIssue(known)) return known;
+    return pickSetupBotName(takenBotNames(null, Object.values(botDisplayNames)));
+  }
+  let firstRunCreation = $state<FirstRunCreation>({ state: "idle" });
+  /** The confirmed name, waiting for a signed-in coding tool to start. */
+  let firstRunPendingName = $state<string | null>(null);
+  /** The coding tool picked on the tools step, when it is signed in. */
+  let firstRunRuntime: LocalBotRow["runtime"] | null = null;
+  /**
+   * The name the person confirmed in the takeover. Kept after "Continue in
+   * chat" so #welcome's start creates the setup bot under it. Null on the
+   * flag-off path.
+   */
+  let firstRunConfirmedName: string | null = null;
+  /** The first-run create while it runs, so #welcome's start can wait for it. */
+  let firstRunCreateInFlight: Promise<FirstRunAssistantResult> | null = null;
+  /** True while the first-run create runs (drives #welcome's starting line). */
+  let firstRunCreateRunning = $state(false);
+  /** The setup bot the first run made (or adopted) this session. */
+  let firstRunCreatedBot: SetupBotRef | null = null;
+  /**
+   * The first-run create, visible to #welcome as the setup bot starting (its
+   * button holds) and to `setupBotStartGate`, which waits for it.
+   */
+  function runFirstRunAssistantCreateTracked(name: string): Promise<FirstRunAssistantResult> {
+    setupBotStarting = true;
+    firstRunCreateRunning = true;
+    setupBotStartError = null;
+    const run = runFirstRunAssistantCreate(name)
+      .then((result) => {
+        if (result.ok) {
+          firstRunCreatedBot = result.bot;
+          // A scan that finished while the create ran: its kickoff missed it.
+          deliverFirstRunImport();
+        } else setupBotStartError = result.reason;
+        return result;
+      })
+      .finally(() => {
+        if (firstRunCreateInFlight === run) firstRunCreateInFlight = null;
+        setupBotStarting = false;
+        firstRunCreateRunning = false;
+      });
+    firstRunCreateInFlight = run;
+    return run;
+  }
+  const firstRunStarter = createFirstRunAssistantStarter(
+    (name) => runFirstRunAssistantCreateTracked(name),
+    (state) => {
+      firstRunCreation = state;
+    },
+  );
+  function confirmFirstRunName(typed: string, runtime: LocalBotRow["runtime"]): void {
+    // The host's display-name rule collapses spaces; send what it checks.
+    const name = normalizeAssistantName(typed);
+    if (!name) return;
+    firstRunRuntime = runtime;
+    firstRunPendingName = name;
+    firstRunConfirmedName = name;
+    if (firstSignedInRuntime(localBotRuntimeReady)) firstRunStarter.start(name);
+  }
+  // A tool signed in after the name was confirmed: start then.
+  $effect(() => {
+    const name = firstRunPendingName;
+    if (!visualFirstRunOpen || !name || firstRunCreation.state !== "idle") return;
+    if (!firstSignedInRuntime(localBotRuntimeReady)) return;
+    untrack(() => firstRunStarter.start(name));
+  });
+  /**
+   * "Bring in your context" (slice 4). The scan runs inside the takeover; the
+   * host supplies the command (`adapter.contextImport`) and the event bus.
+   * Without either the flow has no context step.
+   */
+  const firstRunImportHost = createImportScanHost(adapter.contextImport, syncEvents);
+  /** The finished scan's counts and report path, for the setup bot's handoff. */
+  let firstRunImport: FirstRunImportHandoff | null = null;
+  /** The setup bot has the import result (in its kickoff or a notice). */
+  let firstRunImportDelivered = false;
+  /** A notice send is in flight (one at a time). */
+  let firstRunImportSending = false;
+  /** The next try of a failed import notice, cleared when the shell goes away. */
+  let firstRunImportRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstRunImportStopped = false;
+  onDestroy(() => {
+    firstRunImportStopped = true;
+    if (firstRunImportRetryTimer !== null) clearTimeout(firstRunImportRetryTimer);
+    firstRunImportRetryTimer = null;
+  });
+  function recordFirstRunImport(result: FirstRunImportHandoff): void {
+    firstRunImport = result;
+    deliverFirstRunImport();
+  }
+  /**
+   * The assistant is usually created before the scan finishes (it starts at
+   * the name step), so its kickoff went out without the import. Tell it with
+   * a bot-only note, once. A create that has not started yet carries it in
+   * its kickoff instead.
+   *
+   * Delivered only once a send succeeds; the idempotency key keeps a retry
+   * from showing the bot the note twice. The first send is the person's own
+   * doing (the scan they just finished). Later ones go through the notice
+   * ledger like every other notice to a bot: a refusal (a 4xx) is not
+   * repeated, and other failures are tried a few times, further apart.
+   */
+  function deliverFirstRunImport(): void {
+    const imported = firstRunImport;
+    const bot = firstRunCreatedBot;
+    if (!imported || !bot || firstRunImportDelivered || firstRunImportSending) return;
+    const key = `first-run-import:${bot.agentUid}`;
+    const first = !connectionNoticeFailures.has(key);
+    firstRunImportSending = true;
+    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, first).then((sent) => {
+      firstRunImportSending = false;
+      if (sent) {
+        firstRunImportDelivered = true;
+        return;
+      }
+      // null: refused for good, or out of tries. Otherwise wait for the ledger.
+      const nextAt = connectionNoticeFailures.get(key)?.nextAt ?? null;
+      if (nextAt === null || firstRunImportRetryTimer !== null || firstRunImportStopped) return;
+      firstRunImportRetryTimer = setTimeout(() => {
+        firstRunImportRetryTimer = null;
+        deliverFirstRunImport();
+      }, Math.max(0, nextAt - Date.now()));
+    });
+  }
+  /** Best effort: a setup bot that already existed takes the confirmed name. */
+  async function nameExistingAssistant(bot: SetupBotRef, displayName: string): Promise<void> {
+    if ((botDisplayNames[bot.agentUid] ?? "").trim() === displayName) return;
+    botDisplayNames = rememberBotDisplayName(botDisplayNames, bot.agentUid, displayName);
+    try {
+      await adapter.identity.updateAgentProfile(bot.agentUid, { displayName });
+    } catch (err) {
+      console.warn("[hq-desktop] could not rename the setup bot:", err);
+    }
+  }
+  /**
+   * A setup bot that already existed ran its kickoff long ago. Tell it what
+   * the takeover settled with a bot-only DM (the same lane and retry ledger
+   * as the app's other notices to bots), once per bot.
+   */
+  function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
+    const ready = localBotRuntimeReady;
+    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+    const runtime =
+      localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
+    const key = `first-run-handoff:${bot.agentUid}`;
+    const imported = firstRunImport;
+    if (imported) firstRunImportDelivered = true;
+    void sendBotNotice(
+      bot.agentUid,
+      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported }, { noun: hostComputerNoun() }),
+      key,
+      key,
+      true,
+    );
+  }
+  /**
+   * Create the assistant (the setup bot, under the person's name), or adopt
+   * the one this account already has. The kickoff tells it which setup steps
+   * the takeover settled, so it does not ask them again.
+   */
+  async function runFirstRunAssistantCreate(displayName: string): Promise<FirstRunAssistantResult> {
+    if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
+    await refreshLocalBots();
+    const existing = await findExistingSetupBot();
+    if (existing) {
+      void nameExistingAssistant(existing, displayName);
+      sendFirstRunHandoffNotice(existing, displayName);
+      return { ok: true, bot: { ...existing, name: displayName } };
+    }
+    // Asked again (the readiness on screen can be a sign-in out of date), but
+    // the old reading stays on screen while it runs.
+    await loadLocalBotRuntimeReady(true);
+    const ready = localBotRuntimeReady;
+    const picked = firstRunRuntime;
+    const runtime = picked && ready?.[picked] === true ? picked : firstSignedInRuntime(ready);
+    if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
+    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+    const noun = hostComputerNoun();
+    // A scan already finished (the name was confirmed late) rides in the kickoff.
+    const imported = firstRunImport;
+    if (imported) firstRunImportDelivered = true;
+    const created = await createBotEntry(
+      {
+        name: SETUP_BOT_NAME,
+        displayName,
+        worker: SETUP_BOT_WORKER,
+        runtime,
+        intro: firstRunIntro({ name: displayName, runtime }, { noun }),
+        kickoff: firstRunKickoff({ name: displayName, runtime, toolsReady, imported }, { noun }),
+      },
+      // The progress card and the DM row carry the person's name for it.
+      { displayName },
+      { select: false },
+    );
+    if (created.ok) {
+      if (created.agentUid) {
+        botDisplayNames = rememberBotDisplayName(botDisplayNames, created.agentUid, displayName);
+        firstRunCreatedUids.add(created.agentUid);
+        // The ref's name titles the DM row: the person's name for it.
+        return { ok: true, bot: { agentUid: created.agentUid, name: displayName } };
+      }
+      // An older hq that answered without a uid: find it on the list.
+      const listed = findSetupBot(localBotRecords);
+      return listed ? { ok: true, bot: { ...listed, name: displayName } } : { ok: false, reason: SETUP_BOT_GENERIC_FAILURE };
+    }
+    if (isAlreadyExistsFailure(created.raw ?? created.reason)) {
+      await refreshLocalBots();
+      const adopted = await findExistingSetupBot();
+      if (adopted) {
+        void nameExistingAssistant(adopted, displayName);
+        sendFirstRunHandoffNotice(adopted, displayName);
+        return { ok: true, bot: { ...adopted, name: displayName } };
+      }
+      return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
+    }
+    // The CLI's generic fallback names the reserved handle ("setup"); the
+    // person knows the assistant by the name they just gave it.
+    const generic = `Could not create ${SETUP_BOT_NAME}.`;
+    return { ok: false, reason: created.reason === generic ? `Couldn't start ${displayName}. Try again in a moment.` : created.reason };
+  }
+  /** The takeover is done on this computer: it never opens again. */
+  function closeVisualFirstRun(): void {
+    // Leaving must not set off the automatic start above in this session.
+    setupBotAutoStarted = true;
+    markVisualFirstRunFinished();
+    visualFirstRunFinished = true;
+    visualFirstRunOpen = false;
+    // Nothing starts from the takeover once it is closed.
+    firstRunPendingName = null;
+  }
+  /** Bots this takeover created in this session (their DM and progress card are already set up). */
+  const firstRunCreatedUids = new Set<string>();
+  /**
+   * Done: "Talk to <Name>" opens the assistant's DM. One created here opens
+   * like any new bot (the progress card covers its start); one that already
+   * existed opens through the setup bot's own path, with its runnability check.
+   */
+  function talkToFirstRunAssistant(): void {
+    const creation = firstRunCreation;
+    if (creation.state !== "ready") return;
+    closeVisualFirstRun();
+    const bot = creation.bot;
+    if (!firstRunCreatedUids.has(bot.agentUid)) {
+      openSetupBotDm(bot);
+      return;
+    }
+    const existing = railRows.find((row) => row.kind === "dm" && row.personUid === bot.agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${bot.agentUid}`,
+        kind: "dm",
+        title: bot.name,
+        companyUid: null,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: bot.agentUid,
+      },
+    );
+    recordWelcomeSetupRun();
+  }
+  /**
+   * "Continue in chat": the assistant's DM when it is ready, else #welcome,
+   * whose setup chat start (and its sign-in step) takes over from here.
+   */
+  function continueFirstRunInChat(): void {
+    if (firstRunCreation.state === "ready") {
+      talkToFirstRunAssistant();
+      return;
+    }
+    closeVisualFirstRun();
+    if (selectedRow && isSetupChannel(selectedRow.channelId)) return;
+    const welcome = railRows.find((row) => row.kind === "channel" && isSetupChannel(row.channelId));
+    if (welcome) handleSelect(welcome);
+    else requestChannelOpen(SETUP_CHANNEL_ID);
+  }
   /** Retry from the progress card: start the bot if it exists, else re-run the same create. */
   async function retryBotProgress(uid: string): Promise<void> {
     const entry = botProgressByUid[uid];
@@ -2905,6 +3754,21 @@
       Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /**
+   * The open bot runs on a coding tool that is not installed or not signed in
+   * here (an expired sign-in has its own banner above). The DM says so in one
+   * line and offers the same guided install the setup channel uses, instead
+   * of letting each message come back as a failure.
+   */
+  const selectedLocalBotNeedsCodingTool = $derived(
+    !selectedLocalBotNeedsSignIn && localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady),
+  );
+  /** The install guide's Continue: re-read the tools, then start the bot again. */
+  async function continueBotAfterCodingTool(): Promise<void> {
+    await onBotRuntimeSignedIn();
+    if (localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady)) return;
+    await startSelectedLocalBot();
+  }
   /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
   const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
   /**
@@ -3371,7 +4235,7 @@
    */
   async function resolveConflictFile(
     path: string,
-    strategy: "keep-local" | "keep-remote",
+    strategy: "keep-local" | "keep-remote" | "discard",
   ): Promise<void> {
     if (!adapter.isAvailable("canSync")) return;
     if (typeof adapter.sync?.resolveConflict !== "function") return;
@@ -3383,16 +4247,12 @@
       result = await adapter.sync.resolveConflict(path, strategy);
     } catch (err) {
       console.error("resolve_conflict threw:", err);
-      setConflictStatus(path, "error", "Could not resolve this file.");
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     if (!result.ok) {
       console.error("resolve_conflict failed:", result.reason, result.message);
-      setConflictStatus(
-        path,
-        "error",
-        result.message?.trim() || "Could not resolve this file.",
-      );
+      setConflictStatus(path, "error", "Could not resolve this file. Try again.");
       return;
     }
     // Resolved files leave the list; the row disappearing IS the confirmation.
@@ -3500,6 +4360,19 @@
   const lastSyncLabel = $derived(lastSyncLabelFromLive(liveSync));
   /** ⌘K / sidebar-search overlay (fixture typeahead, zero-network). */
   let paletteOpen = $state(false);
+  // US-040: mount the palette hidden on idle after shell-ready, so the first
+  // Cmd-K only flips visibility instead of rendering the whole list.
+  let paletteMounted = $state(false);
+  function premountPaletteWhenIdle() {
+    const run = () => {
+      paletteMounted = true;
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      setTimeout(run, 1500);
+    }
+  }
   let linkMenu = $state<LinkMenuAnchor | null>(null);
   /** Channel-header member pill → status/members popover. */
   let membersOpen = $state(false);
@@ -3521,7 +4394,12 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
-        iconUrl: w.iconUrl ?? null,
+        // Same resolved icon the rail and More companies use.
+        iconUrl: companyIconUrl(
+          (w.cloudUid as string).trim(),
+          companyIcons,
+          w.iconUrl ?? null,
+        ),
       })),
   );
 
@@ -3531,7 +4409,59 @@
    * the sidebar was still showing (and vice versa) — a conversation could be in
    * one surface and missing from the other.
    */
-  const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
+  const paletteRows = $derived(
+    mergePaletteRows(
+      railRows,
+      withoutRetiredRows(searchRows, retiredEntities, liveCompanyUidSet(companies)),
+    ),
+  );
+
+  /**
+   * Projects the palette indexes (QA-079): the same local list the Projects
+   * page loads. Cache-first — the last list stays searchable while a refresh
+   * runs on each palette open, so an open project is never missing.
+   */
+  // OWNER-R32: the company store backs personal Secrets and the company
+  // Files, Secrets and Deployments reads. Configure it for the whole window,
+  // not only while the company sidepane is mounted (collapsed sidebar, personal scope).
+  $effect.pre(() => {
+    if (adapter.company) configureCompanyApi(adapter.company);
+  });
+
+  let paletteProjects = $state<Project[]>([]);
+  let paletteProjectsLoading = false;
+  async function refreshPaletteProjects(): Promise<void> {
+    if (adapter.kind === "web" || paletteProjectsLoading) return;
+    paletteProjectsLoading = true;
+    try {
+      configureProjectsApi(adapter.projects);
+      paletteProjects = await loadLocalProjects();
+    } catch (err) {
+      console.warn("Palette project index refresh failed:", err);
+    } finally {
+      paletteProjectsLoading = false;
+    }
+  }
+  $effect(() => {
+    if (paletteOpen) untrack(() => void refreshPaletteProjects());
+  });
+
+  /** Personal + member companies: the Projects page's company set. */
+  const paletteProjectCompanies = $derived([
+    ...(companies ?? [])
+      .filter((w) => w.kind === "personal")
+      .map((w) => ({
+        slug: w.slug,
+        companyUid: (w.cloudUid ?? "").trim() || null,
+        label: w.displayName?.trim() || w.slug,
+        personal: true,
+      })),
+    ...memberCompanies(companies).map((w) => ({
+      slug: w.slug,
+      companyUid: (w.cloudUid ?? "").trim() || null,
+      label: w.displayName?.trim() || w.slug,
+    })),
+  ]);
 
   /** Palette `shortcut` label for a registered binding id. */
   function shortcutLabel(id: string): string | undefined {
@@ -3546,6 +4476,9 @@
       .map((w) => ({
         companyUid: (w.cloudUid as string).trim(),
         label: w.displayName?.trim() || w.slug,
+        // Carry the roster favicon so pickers built from this list (New bot
+        // company chips, scope pill) show the company icon, not initials.
+        iconUrl: companyIconUrl((w.cloudUid as string).trim(), companyIcons, w.iconUrl ?? null),
       })),
   );
 
@@ -3599,13 +4532,17 @@
         },
       });
     }
-    nav.push({
-      id: "command-go-library",
-      label: "Library",
-      detail: "Open skills available to you",
-      shortcut: shortcutLabel("view.library"),
-      action: () => openLibrary("skills"),
-    });
+    // OWNER-R33: the Library page is the Marketplace. Desktop lists it once
+    // as command-go-marketplace below; web has no install, so it lists it here.
+    if (isWeb) {
+      nav.push({
+        id: "command-go-library",
+        label: "Marketplace",
+        detail: "Browse packs from creators",
+        shortcut: shortcutLabel("view.library"),
+        action: () => openLibrary("marketplace"),
+      });
+    }
     nav.push({
       id: "command-go-settings",
       label: "Settings",
@@ -3614,6 +4551,7 @@
       action: () => openSettings(),
     });
     for (const [id, page] of Object.entries(extraPages ?? {})) {
+      if (!telemetryVisible && railPlaceholderForPage(id)?.id === "telemetry") continue;
       nav.push({
         id: `command-go-${id}`,
         label: page.label,
@@ -3625,7 +4563,7 @@
       nav.push({
         id: "command-go-marketplace",
         label: "Marketplace",
-        detail: "Open marketplace in the library",
+        detail: "Browse packs and see what you have installed",
         shortcut: shortcutLabel("view.marketplace"),
         action: () => openLibrary("marketplace"),
       });
@@ -3679,6 +4617,9 @@
       detail: item.detail,
       keywords: item.keywords,
       lastActivityAt: item.lastActivityAt,
+      section: item.section,
+      companyUid: item.companyUid,
+      personal: item.personal,
       // Company channels carry their company's mark so a palette full of
       // `#`-prefixed labels is scannable by company at a glance.
       iconUrl: item.iconUrl,
@@ -3687,7 +4628,26 @@
         (item.row.channelScope ?? "").trim() === "company",
       action: () => handleSelect(item.row),
     }));
-    return [...nav, ...conversations];
+    const projectItems: CommandPaletteItem[] = paletteProjectItems(
+      paletteProjects,
+      paletteProjectCompanies,
+    ).map((item) => ({
+      id: item.id,
+      label: item.label,
+      detail: item.detail,
+      keywords: item.keywords,
+      section: item.section,
+      companyUid: item.companyUid,
+      personal: item.personal,
+      action: () => {
+        void navigate({
+          kind: "projects",
+          company: item.companySlug,
+          project: item.projectId,
+        });
+      },
+    }));
+    return [...projectItems, ...nav, ...conversations];
   });
 
   /**
@@ -3727,6 +4687,18 @@
   const companyNames = $derived(buildCompanyDisplayMap(effectiveCompanies ?? []));
   /** uid/slug → presigned company icon, for the header + member popover. */
   const companyIcons = $derived(buildCompanyIconMap(effectiveCompanies ?? []));
+  // Publish the roster icons so every CompanyLabel can find a favicon by uid.
+  $effect(() => {
+    const byKey = new Map(companyIcons);
+    for (const c of effectiveCompanies ?? []) {
+      const uid = (c.cloudUid ?? "").trim();
+      const icon = companyIconUrl(uid, companyIcons, c.iconUrl ?? null);
+      const name = c.displayName?.trim();
+      if (icon && name && !byKey.has(name)) byKey.set(name, icon);
+      if (icon && c.slug && !byKey.has(c.slug)) byKey.set(c.slug, icon);
+    }
+    setCompanyIconRegistry(byKey);
+  });
   /**
    * channelId → company, built straight from the roster's own
    * `homeChannelId` (never from the selected row). A channel opened through
@@ -4033,8 +5005,8 @@
   /**
    * Cloud bots made in the new bot flow on this device whose company files
    * may still be downloading. Their conversation is a direct message; the
-   * sync widget at the bottom of it says the bot can chat while the files
-   * arrive. A bot leaves the list once its files are there.
+   * sync status in its header says the files are still arriving while the
+   * bot can already chat. A bot leaves the list once its files are there.
    */
   const NEW_CLOUD_BOTS_STORAGE_KEY = "hq.chat.newCloudBots.v1";
   function loadNewCloudBots(): string[] {
@@ -4089,16 +5061,17 @@
   );
   const dmNewCloudBotUid = $derived(dmAgentUid && isNewCloudBotHere(dmAgentUid) ? dmAgentUid : null);
 
-  // ── Sync widget in a cloud bot's direct message ─────────────────────────
+  // ── Sync status in a cloud bot's direct message ─────────────────────────
   //
-  // A slim strip under the conversation header while the bot's copy of the
-  // company's files is being brought up to date. It is drawn from plain facts
-  // per bot (bot-sync-model.ts). Today the facts come from the bot's status:
-  // the first download after the bot was made, and any later full download
-  // the server reports. Anything else that knows about a sync can set them
-  // with `setBotSyncFacts`.
+  // A still sync glyph and one short line in the conversation header, to the
+  // right of "Direct message", while the bot's copy of the company's files is
+  // being brought up to date (BotSyncStatus.svelte). It is drawn from plain
+  // facts per bot (bot-sync-model.ts). Today the facts come from the bot's
+  // status: the first download after the bot was made, and any later full
+  // download the server reports. Anything else that knows about a sync can
+  // set them with `setBotSyncFacts`.
 
-  /** What is known about each cloud bot's file sync. No entry: no widget. */
+  /** What is known about each cloud bot's file sync. No entry: no status. */
   let botSyncByUid = $state.raw<Record<string, BotSyncFacts>>({});
   function setBotSyncFacts(agentUid: string, facts: BotSyncFacts | null): void {
     const current = botSyncByUid[agentUid] ?? null;
@@ -4130,7 +5103,7 @@
    * outside have one too. It takes a positive sign (`isCloudBotDm`): the bot
    * was made in the New Bot flow on this device, or the server answered this
    * person's read of its status. Everything a cloud bot's conversation adds
-   * (cards, suggestions, the sync strip, notices to the bot) hangs off this.
+   * (cards, suggestions, the sync status, notices to the bot) hangs off this.
    */
   const dmCloudBotUid = $derived(
     dmAgentUid &&
@@ -4189,8 +5162,8 @@
   // Ask the bot's status while its direct message is open, and stop when it
   // is closed: every few seconds until a new bot can chat, then on a slow
   // timer. Only owners and admins may read the status. For anyone else the
-  // server refuses the read, which means no widget and never an error in the
-  // chat. The first answer is also what says the bot is a cloud bot.
+  // server refuses the read, which means no sync status and never an error
+  // in the chat. The first answer is also what says the bot is a cloud bot.
   //
   // Only a refusal ends the asking. A read that fails any other way is tried
   // again, sooner at first and less often each time, and at once when the
@@ -4907,7 +5880,12 @@
         // the timeline built from any page: for those the first message is
         // found by the time the request was sent (the effect under
         // `helloAskedAtByUid`).
-        if (res.ok) rememberCloudBotHello(row.personUid, normalizeConversationMessages(res.value));
+        if (res.ok) {
+          const fetched = normalizeConversationMessages(res.value);
+          rememberCloudBotHello(row.personUid, fetched);
+          // The timeline leaves the app's notices to the bot out; the page does not.
+          noteConnectionNotice(row.personUid, fetched);
+        }
         return res.ok ? res.value : null;
       }
       if (row.channelId) {
@@ -5371,6 +6349,26 @@
   }
   let botConnectionFacts = $state.raw<Record<string, BotConnectionFacts>>({});
   /**
+   * When the app last read a bot's live state because the person pressed a
+   * card drawn from the bot's state, or a connection-changed notice for the
+   * bot arrived (ms), per kind: `slack` for the bot's status, `apps` for the
+   * company's list. A card drawn from the bot's state draws from the live
+   * read instead only when that read is newer than the state
+   * (integration-cards-model.ts, `stateIsCurrent`). No other read counts: a
+   * list read for an old message's cards does not replace a bot's state.
+   */
+  let liveCheckedAt = $state.raw<Record<string, { slack?: number; apps?: number }>>({});
+  /**
+   * Whether the signed-in person may add apps to a company, from their role
+   * in it (owner or admin), else the host's admin flag. Null when neither says.
+   */
+  function viewerMayManageIntegrations(companyUid: string | null): boolean | null {
+    const uid = (companyUid ?? "").trim();
+    const workspace = uid ? (companies ?? []).find((c) => (c.cloudUid ?? "").trim() === uid) : undefined;
+    if (workspace?.role) return roleIsAdminOrOwner(workspace.role);
+    return typeof isAdmin === "boolean" ? isAdmin : null;
+  }
+  /**
    * A sentence under a card after a press that did not work, per bot and
    * card: "slack", "tools", or `app:{domain}` for an integration card.
    */
@@ -5478,13 +6476,18 @@
    * go one after the other, and the cards waited for both. When the status
    * then names another company, or no company was known, the list is read
    * for the status's company after it.
+   *
+   * `list: false` reads the status alone: every card on screen draws from
+   * the bot's own state, so the list is not needed. What is known of the
+   * list, and its failure flag, stay as they were.
    */
   async function refreshBotConnectionFacts(
     agentUid: string,
     rowCompanyUid: string | null,
-    options: { status?: BotStatusSource } = {},
+    options: { status?: BotStatusSource; list?: boolean } = {},
   ): Promise<BotConnectionsOutcome> {
     const before = botConnectionFacts[agentUid] ?? null;
+    const wantList = options.list !== false;
     const wanted: BotStatusSource = options.status ?? "read";
     const source: BotStatusSource = wanted === "keep" && before?.status == null ? "poll" : wanted;
     const readStatus = async (): Promise<{ value: unknown | null; failed: boolean; denied: boolean; refused: boolean }> => {
@@ -5519,10 +6522,16 @@
     // The company learned from an earlier answer first: it is the status's
     // own, so a later refresh reads the right list once, whatever the row says.
     const earlyCompanyUid = before?.companyUid || rowCompanyUid?.trim() || null;
-    const earlyList = earlyCompanyUid ? readList(earlyCompanyUid) : null;
+    const earlyList = wantList && earlyCompanyUid ? readList(earlyCompanyUid) : null;
     const status = await readStatus();
     const companyUid = companyUidFromStatus(status.value ?? before?.status ?? null) ?? earlyCompanyUid;
-    const list = earlyList && companyUid === earlyCompanyUid ? await earlyList : companyUid ? await readList(companyUid) : null;
+    const list = !wantList
+      ? null
+      : earlyList && companyUid === earlyCompanyUid
+        ? await earlyList
+        : companyUid
+          ? await readList(companyUid)
+          : null;
     // What is known may have moved while the reads were out (the hello's own
     // reads, another refresh): a read that failed keeps the newest, not the
     // copy from before it started.
@@ -5535,9 +6544,10 @@
         companyUid,
         slackFailed: status.failed,
         slackDenied: status.denied,
-        toolsFailed: list?.value == null,
+        toolsFailed: wantList ? list?.value == null : (latest?.toolsFailed ?? false),
       },
     };
+    if (!wantList) return status.failed && !status.refused ? "retry" : "ok";
     if (list?.value != null) return "ok";
     // The list was asked for and refused, or there is no company to ask
     // about and the status will not name one: asking again changes nothing.
@@ -5596,17 +6606,24 @@
     const company = facts?.connections != null ? readCompanyConnections(facts.connections) : null;
     const rowCompanyUid = selectedRow?.kind === "dm" && selectedRow.personUid === uid ? (selectedRow.companyUid?.trim() ?? "") : "";
     const lookups = catalogLookups[uid] ?? {};
+    const companyUid = facts?.companyUid ?? (rowCompanyUid || null);
     return {
       uid,
       botName,
       record,
+      /** The signed-in person, for a card drawn from the bot's state. */
+      viewerUid: self?.uid?.trim() || company?.viewerUid || null,
+      /** Whether the person may add apps: the list says, else their role in the bot's company. */
+      canManage: company ? company.canManage : viewerMayManageIntegrations(companyUid),
+      /** When the app last read the live state for a press or a notice (ms), per kind. */
+      liveAt: liveCheckedAt[uid] ?? {},
       slack: facts?.status != null ? slackFactsFromStatus(facts.status) : null,
       /** The server refused this person the bot's status: only an admin may connect it to Slack. */
       slackDenied: facts?.slackDenied === true,
       tools: facts?.connections != null ? toolFacts(facts.connections, record) : null,
       /** The company's connections as the integration cards read them. */
       company,
-      companyUid: facts?.companyUid ?? (rowCompanyUid || null),
+      companyUid,
       /** What the catalog said about a domain. A member cannot ask it: an unknown domain is not found. */
       lookupFor: (domain: string): CatalogLookup => lookups[domain] ?? (company && !company.canManage ? "not-found" : "unknown"),
       appNotes: pressed,
@@ -5644,24 +6661,69 @@
           slack: connectionCardView("slack", { ...input, messageAt }),
           tools: connectionCardView("tools", { ...input, messageAt }),
         };
+        /** The live card of an app, from the company's list (the path of a message with no state). */
+        const liveIntegration = (item: { domain: string; why?: string; connectionId?: string }): ConnectionCardView | null =>
+          integrationCardView(item, {
+            botName: input.botName,
+            record: input.record,
+            facts: input.company,
+            lookup: input.lookupFor(item.domain),
+            now: input.now,
+            messageAt,
+            inFlight: input.inFlight,
+            note: input.appNotes[appNoteKey(item.domain)] ?? null,
+          });
+        /**
+         * An app item whose state the bot sent draws from that state, unless
+         * a live read made for a press or a notice is newer and the list it
+         * read is known.
+         */
+        const drawsFromState = (item: ConnectItem): boolean =>
+          !input.company || stateIsCurrent(connectItemStateAt(item, messageAt), input.liveAt.apps);
         return {
           views,
-          integration: (item) =>
-            integrationCardView(item, {
-              botName: input.botName,
-              record: input.record,
-              facts: input.company,
-              lookup: input.lookupFor(item.domain),
-              now: input.now,
-              messageAt,
-              inFlight: input.inFlight,
-              note: input.appNotes[appNoteKey(item.domain)] ?? null,
-            }),
+          // The bot's own Slack card from the Slack state the bot sent, unless
+          // the bot's status was read for a press or a notice since.
+          builtin: (item) => {
+            if (item.app !== "slack" || !item.slack) return null;
+            if (input.slack && !stateIsCurrent(connectItemStateAt(item, messageAt), input.liveAt.slack)) return null;
+            return { ...connectionCardView("slack", { ...input, messageAt, slack: slackFactsFromItem(item.slack) }), fromState: true };
+          },
+          integration: (item) => {
+            if (!item.state) return liveIntegration(item);
+            if (!drawsFromState(item)) {
+              // The live read is newer. The bot's connection id is used only
+              // when the list says it is this app's (`connectionForStateItem`).
+              const connection = connectionForStateItem(input.company, { domain: item.domain, connectionId: item.state.connectionId });
+              const view = liveIntegration({
+                domain: item.domain,
+                ...(item.why ? { why: item.why } : {}),
+                ...(connection ? { connectionId: connection.id } : {}),
+              });
+              if (view) return view;
+            }
+            return integrationCardViewFromState(
+              { domain: item.domain, ...(item.why ? { why: item.why } : {}), state: item.state },
+              {
+                botName: input.botName,
+                viewerUid: input.viewerUid,
+                canManage: input.canManage,
+                record: input.record,
+                lookup: input.lookupFor(item.domain),
+                now: input.now,
+                messageAt,
+                inFlight: input.inFlight,
+                note: input.appNotes[appNoteKey(item.domain)] ?? null,
+              },
+            );
+          },
           // A row draws as one unit (owner, 2026-10-05): it waits for the
           // company's list and for the catalog's answer on each app it names,
           // up to the settle time counted from when this row first waited.
           // After that it draws what it can; a late card joins at the end.
-          rowReady: (items) => {
+          // An app drawn from the bot's state waits for nothing.
+          rowReady: (rowItems) => {
+            const items = rowItems.filter((item) => !(item.domain && item.state && drawsFromState(item)));
             if (!rowAwaitsList(items, input.company, input.lookupFor)) return true;
             const key = `${input.uid}|${items.map((item) => item.domain ?? "").filter(Boolean).sort().join(",")}`;
             let since = connectRowSince.get(key);
@@ -5788,6 +6850,115 @@
     }
     return items;
   });
+  /**
+   * Whether the open bot's cards need the company's list and the bot's
+   * status read when its conversation opens: yes when a card on screen
+   * carries no state of the bot's (an old message, an old runtime, the app's
+   * own picks), or when no card is on screen yet (as before, so a card that
+   * comes later is known with its message). No when every card carries the
+   * bot's state. Null while the conversation is still loading, so a
+   * conversation of state cards is not read for at open.
+   */
+  const cloudBotListWanted = $derived.by((): boolean | null => {
+    const row = selectedRow;
+    if (!dmCloudBotUid || !row) return null;
+    const items = cloudBotConnectItems;
+    if (items.some((item) => !connectItemCarriesState(item))) return true;
+    if (items.length > 0) return false;
+    const loaded = (liveTimelineId === row.id && !timelineHydrating) || (messagesByRow?.(row)?.length ?? 0) > 0;
+    return loaded ? true : null;
+  });
+  /** When the newest state the open bot sent with a card was looked up (ms), or null. */
+  const cloudBotNewestStateAt = $derived.by((): number | null => {
+    const uid = dmCloudBotUid;
+    if (!uid) return null;
+    let newest: number | null = null;
+    for (const message of timeline) {
+      if (message.fromPersonUid !== uid) continue;
+      const at = Date.parse(message.createdAt ?? "");
+      for (const block of richContentForMessage(message).rich?.blocks ?? []) {
+        if (block.kind !== "connect") continue;
+        for (const item of block.items) {
+          if (!connectItemCarriesState(item)) continue;
+          const stateAt = connectItemStateAt(item, Number.isFinite(at) ? at : null);
+          if (stateAt !== null && (newest === null || stateAt > newest)) newest = stateAt;
+        }
+      }
+    }
+    return newest;
+  });
+  /**
+   * Read a bot's live state for a card drawn from the bot's state: its status
+   * (`slack`), the company's list (`apps`). Each read that answered is noted
+   * in {@link liveCheckedAt}, so the cards it covers draw from it.
+   */
+  async function recheckLive(agentUid: string, kinds: { slack?: boolean; apps?: boolean }): Promise<void> {
+    const outcome = await refreshBotConnectionFacts(agentUid, cardCompanyUid(agentUid), {
+      status: kinds.slack ? "read" : "poll",
+      list: kinds.apps === true,
+    });
+    const facts = botConnectionFacts[agentUid] ?? null;
+    const at = Date.now();
+    const next = { ...(liveCheckedAt[agentUid] ?? {}) };
+    // The status answered, or was refused (the card then says who can connect Slack).
+    if (kinds.slack && facts && (!facts.slackFailed || facts.slackDenied)) next.slack = at;
+    if (kinds.apps && outcome === "ok" && facts?.connections != null) next.apps = at;
+    liveCheckedAt = { ...liveCheckedAt, [agentUid]: next };
+    connectionClock = at;
+  }
+  /**
+   * The newest connection-changed notice to each bot the app has seen on a
+   * page of its conversation (agent-channel.ts, `connectionNoticeAfter`). The
+   * timeline leaves these rows out, so they are noted as pages come in. A
+   * page filtered for people has none; a catch-up page after a new message
+   * has them.
+   */
+  let connectionNoticeByBot = $state.raw<Record<string, { eventId: string; at: number }>>({});
+  function noteConnectionNotice(agentUid: string, rows: ReadonlyArray<ConversationMessageWire>): void {
+    const uid = agentUid.trim();
+    if (!uid.startsWith("agt_")) return;
+    const known = connectionNoticeByBot[uid];
+    const notice = connectionNoticeAfter(rows, { agentUid: uid, afterMs: known?.at ?? Number.NEGATIVE_INFINITY });
+    if (notice) connectionNoticeByBot = { ...connectionNoticeByBot, [uid]: notice };
+  }
+  // The host's stored thread can carry notices too.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const row = selectedRow;
+    if (!uid || !row) return;
+    const injected = messagesByRow?.(row) ?? [];
+    if (injected.length > 0) untrack(() => noteConnectionNotice(uid, injected));
+  });
+  /** Connection-changed notices already read for, by bot and event id. */
+  const noticeRechecks = new Set<string>();
+  // A connection-changed notice to the bot newer than the newest state it
+  // sent with a card: that state may be out of date, so the live state is
+  // read once for it.
+  $effect(() => {
+    const uid = dmCloudBotUid;
+    const newest = cloudBotNewestStateAt;
+    if (!uid || newest === null) return;
+    const notice = connectionNoticeByBot[uid];
+    if (!notice || notice.at <= newest) return;
+    const key = `${uid}:${notice.eventId}`;
+    if (noticeRechecks.has(key)) return;
+    noticeRechecks.add(key);
+    untrack(() => void recheckLive(uid, { slack: true, apps: true }));
+  });
+  /**
+   * Whether the wait-poll below reads the list too. Not when every card
+   * draws from the bot's state and nothing waits on the list: a Slack setup
+   * is followed through the status alone.
+   */
+  function cloudBotPollWantsList(): boolean {
+    if (cloudBotListWanted !== false) return true;
+    if (openCardModal?.target === "integration") return true;
+    const record = cloudBotCardInput?.record ?? null;
+    const now = Date.now();
+    if (record?.tools?.state === "connecting") return true;
+    return Object.values(record?.apps ?? {}).some((entry) => entry.state === "connecting" && now - entry.since <= CONNECTING_TIMEOUT_MS);
+  }
+
   // Look up, once per bot and domain, every app on screen that is not a
   // connection. Only an owner or admin may ask the catalog: for anyone else
   // an unknown app simply draws no card. The row waits for these, up to the
@@ -5841,9 +7012,12 @@
   // A list read that fails is tried again, further apart each time, and at
   // once when the network returns. It used to stay failed until the person
   // left the conversation and came back.
+  //
+  // When every card on screen carries the bot's own state, nothing is read:
+  // those cards draw from what the bot sent (`cloudBotListWanted`).
   $effect(() => {
     const uid = dmCloudBotUid;
-    if (!uid) return;
+    if (!uid || cloudBotListWanted !== true) return;
     const rowCompanyUid = untrack(() => selectedRow?.companyUid ?? null);
     let stopped = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -5884,7 +7058,7 @@
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const recheck = async (): Promise<void> => {
-      await refreshBotConnectionFacts(uid, rowCompanyUid);
+      await refreshBotConnectionFacts(uid, rowCompanyUid, { list: cloudBotPollWantsList() });
       // A card that has waited too long goes back to offered on this tick.
       if (!stopped) connectionClock = Date.now();
     };
@@ -6026,6 +7200,17 @@
    * Null when the app does not know the company: such a link then goes to the
    * web's front page, never to a page named by the company's uid.
    */
+  /**
+   * The synced folder of a company on this computer, by uid, for a recorded
+   * meeting's document under companies/<slug>/sources/meetings. Null when the
+   * company is not synced here.
+   */
+  function meetingCompanyFolderSlug(companyUid: string): string | null {
+    const uid = companyUid.trim();
+    if (!uid) return null;
+    const row = (companies ?? []).find((w) => w.kind === "company" && (w.cloudUid ?? "").trim() === uid);
+    return row && row.state !== "cloud-only" ? row.slug : null;
+  }
   function companySlugForUid(companyUid: string | null | undefined): string | null {
     const uid = (companyUid ?? "").trim();
     if (!uid) return null;
@@ -6237,11 +7422,13 @@
     }
   }
   /** A button on a card was pressed. A press already under way is ignored. */
-  async function handleConnectionAction(agentUid: string, detail: ConnectionCardActionDetail): Promise<void> {
-    const key = connectionActionKey(detail.target, detail.action, detail.connectionId, detail.domain);
+  async function handleConnectionAction(agentUid: string, pressed: ConnectionCardActionDetail): Promise<void> {
+    const key = connectionActionKey(pressed.target, pressed.action, pressed.connectionId, pressed.domain);
     if (connectionInFlight[agentUid]?.has(key)) return;
     setConnectionInFlight(agentUid, key, true);
     try {
+      const detail = pressed.fromState && pressed.action !== "decline" ? await liveStatePress(agentUid, pressed) : pressed;
+      if (!detail) return;
       if (detail.target === "integration") {
         const domain = detail.domain;
         if (!domain) return;
@@ -6270,6 +7457,58 @@
     } finally {
       setConnectionInFlight(agentUid, key, false);
     }
+  }
+
+  /**
+   * A press on a card drawn from the bot's state. The live state is read
+   * first: the bot's status for Slack, the company's list for an app (there
+   * is no read of one connection). Hands back what to do then, or null when
+   * there is nothing to do: the card now draws from the live read and says
+   * what is true (connected, shared, ask an admin), or a note says why not.
+   * The server checks the press itself whatever the card said.
+   */
+  async function liveStatePress(agentUid: string, detail: ConnectionCardActionDetail): Promise<ConnectionCardActionDetail | null> {
+    if (detail.target === "slack") {
+      await recheckLive(agentUid, { slack: true });
+      const facts = botConnectionFacts[agentUid] ?? null;
+      if (facts?.slackDenied) return null;
+      // A failed recheck retains the previous status for the card, but that
+      // stale value must not prevent the person opening the Slack flow.
+      if (!facts?.slackFailed && facts?.status != null && slackFactsFromStatus(facts.status).state === "connected") return null;
+      return detail;
+    }
+    if (detail.target !== "integration" || !detail.domain) return detail;
+    const domain = detail.domain;
+    const noteKey = appNoteKey(domain);
+    await recheckLive(agentUid, { apps: true });
+    const input = cloudBotCardInput;
+    const company = input && input.uid === agentUid ? input.company : null;
+    if (!input || !company || liveCheckedAt[agentUid]?.apps === undefined) {
+      setConnectionNote(agentUid, noteKey, "Could not check this app right now. Try again.");
+      return null;
+    }
+    setConnectionNote(agentUid, noteKey, null);
+    const connection = connectionForStateItem(company, { domain, connectionId: detail.connectionId ?? null });
+    if (detail.action === "allow") {
+      if (!connection) return null;
+      // The live card with the old path's checks: act only if it still offers
+      // "Let {bot} use it" (the person looking made it, the bot cannot use it yet).
+      const live = integrationCardView(
+        { domain, connectionId: connection.id },
+        { botName: input.botName, record: input.record, facts: company, lookup: input.lookupFor(domain), now: Date.now() },
+      );
+      const offersAllow = live?.primaryAction === "allow" && live.primaryLabel !== null && live.connectionId === connection.id;
+      return offersAllow ? { target: "integration", action: "allow", domain, connectionId: connection.id } : null;
+    }
+    // Connect (or its modal): not when it is connected now, or the person may not add apps.
+    if (connection || !company.canManage) return null;
+    if (input.lookupFor(domain) === "unknown" && input.companyUid) await lookUpCatalog(agentUid, input.companyUid, domain);
+    const lookup = cloudBotCardInput?.lookupFor(domain) ?? "not-found";
+    if (typeof lookup !== "object") {
+      setConnectionNote(agentUid, noteKey, APP_NOT_CONNECTABLE_NOTE(defaultAppName(domain)));
+      return null;
+    }
+    return { target: "integration", action: lookup.authClass === "key" ? "open" : "connect", domain };
   }
 
   /**
@@ -6496,7 +7735,9 @@
       rows =
         setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
     }
-    return coalesceWorkSessionWires(rows);
+    // A bot's failure reply quotes its coding tool's own error; show the
+    // plain sentence instead (chat/bot-runtime-failure.ts).
+    return withPlainBotFailureReplies(coalesceWorkSessionWires(rows), { noun: hostComputerNoun() });
   });
 
   /**
@@ -6563,17 +7804,6 @@
   let contactAvatarByUid = $state<Record<string, string>>({});
   let avatarOverridesByUid = $state<Record<string, string>>({});
   let rosterWakeSeq = $state(0);
-  const BOT_TOGGLE_KEY = 'hq:messages:show-bot-messages';
-  let showBotMessages = $state(
-    typeof localStorage !== 'undefined' && localStorage.getItem(BOT_TOGGLE_KEY) === 'true',
-  );
-  function handleShowBotMessagesChange(value: boolean) {
-    showBotMessages = value;
-    if (typeof localStorage !== 'undefined') {
-      if (value) localStorage.setItem(BOT_TOGGLE_KEY, 'true');
-      else localStorage.removeItem(BOT_TOGGLE_KEY);
-    }
-  }
   let agentAvatarSaving = $state(false);
   let agentAvatarSaveError = $state<string | null>(null);
   let loadedAvatarPacks = $state<AvatarPack[] | null>(null);
@@ -6763,12 +7993,79 @@
     );
   }
 
+  /**
+   * Bots / Team / Atlas "Message": open (or create) the 1:1 DM with a UID in
+   * the viewing company. A bare `navigate({ kind: "dm" })` only resolves when
+   * the rail already lists that DM, so a bot nobody has messaged yet fell
+   * through to "This destination is no longer available" (QA-090). With cold
+   * caches the DM opens from a synthesized row and the conversation hydrates.
+   */
+  /** Company each DM was opened from (Bots / Team / Atlas Message), by UID. */
+  let dmOriginCompany = $state<Record<string, string>>({});
+  const profileCompanyUid = $derived(
+    profileViewingCompanyUid(selectedRow?.companyUid, selectedRow?.personUid, dmOriginCompany),
+  );
+
+  function messagePersonByUid(
+    personUid: string,
+    options: { name?: string | null; companyUid?: string | null } = {},
+  ): void {
+    const uid = personUid.trim();
+    if (!uid) return;
+    const bot = localBots.find((b) => b.agentUid === uid);
+    // OWNER-014: a local bot carries the open company only when it is a
+    // member of it; a personal bot's DM and profile stay in Personal.
+    const requested = options.companyUid?.trim() || null;
+    const origin = bot && !localBotInCompany(bot, requested, effectiveCompanies) ? null : requested;
+    if (origin) dmOriginCompany = { ...dmOriginCompany, [uid]: origin };
+    const existing = [...railRows, ...searchRows].find(
+      (row) => row.kind === "dm" && row.personUid === uid && !row.channelId,
+    );
+    handleSelect(
+      existing ?? {
+        id: `dm:${uid}`,
+        kind: "dm",
+        title:
+          botSubjectName(uid, [
+            options.name,
+            bot?.displayName,
+            bot?.name,
+            displayNameByUid[uid],
+          ]) || uid,
+        companyUid: origin,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: uid,
+      },
+    );
+  }
+
+  /**
+   * The bot's name for a profile opened from a DM header, resolved from its
+   * UID: the local bot record, then the channel roster, then the rail row's
+   * own title. Never the conversation placeholder (QA-087); an unknown name
+   * stays empty so the pane shows its loader until its status refresh names it.
+   */
+  function headerAgentName(uid: string): string {
+    const bot = localBots.find((b) => b.agentUid === uid);
+    const roster =
+      channelRosterById[selectedRow?.channelId?.trim() ?? ""] ?? [];
+    return botSubjectName(uid, [
+      bot?.displayName,
+      bot?.name,
+      roster.find((m) => m.personUid === uid)?.displayName,
+      displayNameByUid[uid],
+      selectedRow?.title,
+    ]);
+  }
+
   function openAgentProfileFromHeader(): void {
     const uid = selectedRow?.personUid?.trim();
     if (!uid) return;
     openMemberProfile({
       personUid: uid,
-      displayName: headerTitle,
+      displayName: headerAgentName(uid),
       email: selectedRow?.email?.trim() || null,
       avatarUrl: avatarByUid[uid] ?? null,
       description: null,
@@ -6842,8 +8139,10 @@
       }
       await refreshAvatarsAfterSave();
     } catch (err) {
-      agentAvatarSaveError =
-        err instanceof Error ? err.message : "Could not save the avatar.";
+      // Thrown text can be transport/server output (a failed image fetch);
+      // it is logged, and the picker shows plain copy.
+      console.warn("[avatar] agent avatar save failed", err);
+      agentAvatarSaveError = "Could not save the avatar. Try again.";
     } finally {
       agentAvatarSaving = false;
     }
@@ -6858,7 +8157,7 @@
     if (!uid || !isAgentUid(uid) || selectedRow?.kind !== "dm") return;
     openMemberProfile({
       personUid: uid,
-      displayName: headerTitle,
+      displayName: headerAgentName(uid),
       email: selectedRow.email ?? null,
       avatarUrl: avatarByUid[uid] ?? null,
       description: null,
@@ -6941,19 +8240,21 @@
         const fallbackMessage = isSelfLeave
           ? "Couldn't leave this channel. Refresh and try again."
           : "Couldn't remove this member. Refresh and try again.";
-        const serverMessage = res.message?.trim();
-        channelActionError = isOwnerCannotLeave(res.code, res.message)
-          ? OWNER_CANNOT_LEAVE_MESSAGE
-          : serverMessage || fallbackMessage;
+        const ownerCannotLeave = isOwnerCannotLeave(res.code, res.message);
+        if (!ownerCannotLeave) {
+          console.warn("[channel] remove member failed", res.code, res.message);
+        }
+        channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
       }
     } catch (err) {
+      // raw-error-ok: classified only; the screen gets fixed copy
       const message = (err instanceof Error ? err.message : String(err)).trim();
       const fallbackMessage = isSelfLeave
         ? "Couldn't leave this channel. Refresh and try again."
         : "Couldn't remove this member. Refresh and try again.";
-      channelActionError = isOwnerCannotLeave(undefined, message)
-        ? OWNER_CANNOT_LEAVE_MESSAGE
-        : message || fallbackMessage;
+      const ownerCannotLeave = isOwnerCannotLeave(undefined, message);
+      if (!ownerCannotLeave) console.warn("[channel] remove member failed", err);
+      channelActionError = ownerCannotLeave ? OWNER_CANNOT_LEAVE_MESSAGE : fallbackMessage;
     } finally {
       removingMemberUid = null;
     }
@@ -7059,8 +8360,8 @@
     try {
       const res = await adapter.messaging.deleteChannel(channelId);
       if (!res.ok) {
-        channelActionError =
-          res.message?.trim() || `Couldn't delete #${row.title}.`;
+        console.warn("[channel] delete channel failed", res.code, res.message);
+        channelActionError = `Couldn't delete #${row.title}. Try again.`;
         return;
       }
       // Optimistic: drop the rail row now. The server fans out a directory
@@ -7080,7 +8381,8 @@
       attachTray = null;
       replyPreviewByRoot = {};
     } catch (err) {
-      channelActionError = err instanceof Error ? err.message : String(err);
+      console.warn("[channel] delete channel failed", err);
+      channelActionError = `Couldn't delete #${row.title}. Try again.`;
     } finally {
       deletingChannel = false;
     }
@@ -7338,6 +8640,18 @@
    * (not joined, browse-only, or a DM/group with no roster concept) skips
    * it entirely.
    */
+  /** US-015 header extras (home-channel): cached data only, no fetch. */
+  const headerMemberLabel = $derived(
+    selectedRow?.kind === "channel" ? memberCountLabel(memberPillCount) : null,
+  );
+  const headerPinnedNote = $derived(
+    selectedRow?.kind === "channel"
+      ? pinnedNoteText(channelStatus?.project.description ?? null)
+      : null,
+  );
+  const headerLiveCount = $derived(
+    selectedRow?.kind === "channel" ? liveMemberCount(channelStatus) : 0,
+  );
   const showMemberPill = $derived(
     Boolean(selectedRow) &&
       (memberPillCount > 0 ||
@@ -7773,6 +9087,9 @@
       startedThisSession: tourStartedThisSession,
     });
     if (!ready || adapter.kind === "web") return;
+    // The visual first run comes first; the tour waits for it (and for the
+    // flag's answer, so it never starts under a takeover about to open).
+    if (visualFirstRunOpen || firstRunRouteNow === "pending") return;
     tourAutoTimer = window.setTimeout(() => {
       if (!tourStartedThisSession) startGuidedTour();
     }, TOUR_AUTO_START_DELAY_MS);
@@ -7819,6 +9136,58 @@
   });
   /** The user explicitly asked for another company this session. */
   let createCompanyRequested = $state(false);
+  /** US-037: New company sheet from the More popover. */
+  let newCompanyOpen = $state(false);
+
+  async function createCompanyFromSheet(input: {
+    name: string;
+    slug: string;
+    plan: NewCompanyPlan;
+    invites: string[];
+  }): Promise<{ ok: true; companyUid: string | null } | { ok: false; reason: string }> {
+    const seam = companyCreateSeam;
+    if (!seam) return { ok: false, reason: "Creating a company isn't available yet." };
+    const draft = await seam.open();
+    if (!draft.ok) return { ok: false, reason: draft.reason };
+    const values: Record<string, string> = {};
+    if (draft.form.nameFieldId) values[draft.form.nameFieldId] = input.name;
+    const slugId = slugFieldOf(draft.form.fields);
+    if (slugId) values[slugId] = input.slug;
+    const invites: CompanyInvite[] = input.invites.map((email) => ({ email, role: "member" }));
+    const result = await seam.submit(draft.form, values, invites);
+    if (!result.ok) return { ok: false, reason: result.reason };
+    createCompanyRequested = true;
+    return { ok: true, companyUid: result.company.companyUid };
+  }
+
+  function finishNewCompany(result: {
+    companyUid: string | null;
+    pin: boolean;
+    pinnedIds: string[];
+    invites: string[];
+    projectSlug: string | null;
+    template: ProjectTemplate;
+  }): void {
+    newCompanyOpen = false;
+    if (result.pin && result.companyUid) {
+      const pinned = pinCompany(pinnedCompanyIds ?? [], result.companyUid);
+      if (pinned.status === "pinned") setPinnedCompanies(pinned.ids);
+    }
+    if (!result.companyUid) return;
+    if (result.invites.length > 0) {
+      void sendCompanyInvites(
+        conversationApi,
+        result.companyUid,
+        result.invites.map((email) => ({ email, role: "member" })),
+      );
+    }
+    const nextRecent = rememberCompanyId(companyRecentIds, result.companyUid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
+    changeTenantCompany(result.companyUid);
+    void navigate(companyRowDestination("atlas", result.companyUid));
+  }
 
   /** Sidebar / switcher / #welcome "New company": summary card action, then #setup. */
   async function createCompanyEntry(): Promise<EntryPointResult> {
@@ -7911,6 +9280,14 @@
     companyUid: string,
     draft: CloudBotDraft,
   ): Promise<EntryPointResult> {
+    if (
+      directCloudCreate &&
+      draft.idempotencyKey &&
+      draft.quote &&
+      (await directCloudCreate.isEnabled(companyUid))
+    ) {
+      return createCloudBotDirect(companyUid, draft);
+    }
     const result = await runCreateCloudBotEntry(conversationApi, companyUid, draft);
     if (result.ok) {
       const title = draft.title?.trim() ?? "";
@@ -7930,6 +9307,68 @@
   }
 
   /**
+   * `agents.desktop-agent-creation` (Indigo only for now): New bot → Cloud
+   * creates through POST /v1/agents instead of driving the card sequence.
+   * Null when the adapter has no REST transport, which keeps the card path.
+   */
+  const directCloudCreate = $derived(lazyDirectCloudCreate(adapter));
+
+  /**
+   * Direct create: one POST with the session's idempotency key, Slack
+   * deferred, subscription sign-in. The bot's DM opens straight away; setup
+   * continues on the server. The title goes onto the agent profile the same
+   * way it does for the card path.
+   */
+  async function createCloudBotDirect(
+    companyUid: string,
+    draft: CloudBotDraft,
+  ): Promise<EntryPointResult> {
+    if (!directCloudCreate || !draft.idempotencyKey || !draft.quote) {
+      return { ok: false, reason: "Adding bots isn't available in this build", blocked: false };
+    }
+    const companyLabel =
+      (companies ?? []).find((c) => c.cloudUid === companyUid)?.displayName?.trim() || undefined;
+    // The flag is read for this company on every direct create, not only by
+    // the surface that offered Cloud.
+    const result = await directCloudCreate.create(
+      companyUid,
+      {
+        name: draft.name,
+        handle: draft.handle,
+        ...(draft.runtime ? { runtime: draft.runtime } : {}),
+        idempotencyKey: draft.idempotencyKey,
+        quote: draft.quote,
+      },
+      companyLabel ? { companyLabel } : {},
+    );
+    if (!result.ok) {
+      return { ok: false, reason: result.reason, blocked: result.blocked, fix: result.fix };
+    }
+    const agentUid = result.agentUid;
+    const title = draft.title?.trim() ?? "";
+    if (title) void saveNewBotProfile(agentUid, { title });
+    const existing = railRows.find((r) => r.kind === "dm" && r.personUid === agentUid);
+    handleSelect(
+      existing ?? {
+        id: `dm:${agentUid}`,
+        kind: "dm",
+        title: draft.name,
+        companyUid,
+        unreadDot: false,
+        lastActivityAt: Date.now(),
+        pinned: false,
+        personUid: agentUid,
+      },
+    );
+    // Until the in-DM setup card (US-006) renders sign-in, a Claude bot keeps
+    // the browser sign-in the card path opened.
+    const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
+    if (signInUrl) onopenurl?.(signInUrl);
+    // The DM is opened by the bot's uid, so there is no channel to land on.
+    return { ok: true, target: { channelId: "", cardId: null, cardKind: null, agentUid } };
+  }
+
+  /**
    * New bot → Cloud, from the full-window New Bot takeover. One `create`
    * that names the takeover as its surface and asks for a direct-message bot.
    * The server runs that setup order only for a company with the
@@ -7938,7 +9377,7 @@
    *
    * The takeover owns what happens next (the waking screen, the hand-off to
    * the direct message), so nothing is navigated here. The bot is remembered
-   * as made in the new flow on this device: that is what its sync strip's
+   * as made in the new flow on this device: that is what its sync status's
    * first-download reading, its connection cards and its first message key
    * on.
    */
@@ -8578,7 +10017,9 @@
       case "explorer":
         return { kind: "explorer", vault: explorerVault, path: explorerPath };
       case "projects":
-        return { kind: "projects", company: projectsCompany };
+        return projectsFocus
+          ? { kind: "projects", company: projectsCompany, project: projectsFocus.project, tab: projectsFocus.tab }
+          : { kind: "projects", company: projectsCompany };
       case "extra":
         if (extraPageId) return extraDestination(extraPageId, extraPageParam);
         return { kind: "messages" };
@@ -8742,6 +10183,49 @@
     return null;
   }
 
+  function rowMatchesDestination(
+    row: ConversationRow,
+    destination: NavigationDestination,
+  ): boolean {
+    if (destination.kind === "channel") {
+      return row.channelId === destination.channelId;
+    }
+    if (destination.kind === "dm") {
+      return row.personUid === destination.personUid && !row.channelId;
+    }
+    return false;
+  }
+
+  /**
+   * Rows this window has opened, newest last. A conversation entry can be
+   * applied after a tenant switch re-keyed the sidebar (a DM a Bots page
+   * synthesized opens in the cross-company list; Back to Bots, then Forward),
+   * and the re-keyed rail may not list that row. Plain map: bookkeeping only.
+   */
+  const openedRows = new Map<string, ConversationRow>();
+  const OPENED_ROWS_CAP = 50;
+  let openedRowsAccount = "";
+
+  /** The remembered rows, dropped whenever the signed-in account changes. */
+  function openedRowsForAccount(): Map<string, ConversationRow> {
+    const account = `${currentNavigationScope().accountId}:${tenantGeneration}`;
+    if (account !== openedRowsAccount) {
+      openedRows.clear();
+      openedRowsAccount = account;
+    }
+    return openedRows;
+  }
+
+  function rememberOpenedRow(row: ConversationRow): void {
+    const openedRows = openedRowsForAccount();
+    openedRows.delete(row.id);
+    openedRows.set(row.id, row);
+    if (openedRows.size > OPENED_ROWS_CAP) {
+      const oldest = openedRows.keys().next().value;
+      if (oldest !== undefined) openedRows.delete(oldest);
+    }
+  }
+
   function rowForDestination(
     destination: NavigationDestination,
   ): ConversationRow | null {
@@ -8749,20 +10233,9 @@
       ...searchRows,
       ...railRows,
       ...(selectedRow ? [selectedRow] : []),
+      ...[...openedRowsForAccount().values()].reverse(),
     ];
-    if (destination.kind === "channel") {
-      return (
-        rows.find((row) => row.channelId === destination.channelId) ?? null
-      );
-    }
-    if (destination.kind === "dm") {
-      return (
-        rows.find(
-          (row) => row.personUid === destination.personUid && !row.channelId,
-        ) ?? null
-      );
-    }
-    return null;
+    return rows.find((row) => rowMatchesDestination(row, destination)) ?? null;
   }
 
   function resolveShellDestination(
@@ -8781,6 +10254,13 @@
       };
     }
     if (destination.kind === "extra") {
+      if (
+        railPlaceholderForPage(destination.page) ||
+        accountPlaceholderForPage(destination.page) ||
+        companyPagePlaceholderForPage(destination.page)
+      ) {
+        return { status: "ready", destination };
+      }
       if (!extraPages?.[destination.page]) {
         return {
           status: "rejected",
@@ -8863,13 +10343,40 @@
     const snap = navigationHistory.snapshot();
     navigationCanGoBack = navigationHistory.canGoBack();
     navigationCanGoForward = navigationHistory.canGoForward();
-    libraryBackTargetIndex = priorNonLibraryIndex(snap);
     const back = historyNeighbor(snap, "back");
     const forward = historyNeighbor(snap, "forward");
     navigationBackLabel = back ? destinationLabel(back.destination) : "";
     navigationForwardLabel = forward
       ? destinationLabel(forward.destination)
       : "";
+  }
+
+  /** Membership uid for a uid-or-slug company key, or the key itself. */
+  function companyUidForKey(key: string): string {
+    const workspace = (effectiveCompanies ?? []).find(
+      (company) => company.cloudUid === key || company.slug === key,
+    );
+    return workspace?.cloudUid?.trim() || key;
+  }
+
+  function syncSidepaneToEntry(entry: NavigationEntry): void {
+    const target = paneForEntry(entry);
+    switch (target.pane) {
+      case "company":
+        companyPaneOpen = true;
+        setTenantScope(companyUidForKey(target.companyKey));
+        break;
+      case "home":
+        companyPaneOpen = false;
+        setTenantScope(
+          target.companyKey ? companyUidForKey(target.companyKey) : null,
+        );
+        break;
+      case "meetings":
+      case "none":
+        companyPaneOpen = false;
+        break;
+    }
   }
 
   function applyCommittedNavigation(applied: AppliedNavigation): void {
@@ -8890,6 +10397,9 @@
     }
     navigationUnavailable = null;
     embeddedNavigationError = null;
+    // QA-047/QA-045: the sidepane comes from the entry being applied, in the
+    // same step as the canvas, for every entry point including Back.
+    syncSidepaneToEntry(applied.entry);
     const next = applied.entry.destination;
     if (next.kind !== "notifications") inboxRouteNotice = null;
     meetingFocusRequest = null;
@@ -8955,6 +10465,7 @@
         break;
       case "projects":
         projectsCompany = next.company ?? null;
+        projectsFocus = next.project ? { project: next.project, tab: next.tab ?? null } : null;
         view = "projects";
         settingsSection = null;
         extraPageId = null;
@@ -9035,6 +10546,7 @@
   const navigation = createNavigationController({
     history: navigationHistory,
     getScope: () => currentNavigationScope(),
+    entryCompanyUid: entryCompanyUidForCommit,
     captureCurrent: () => captureCurrentNavigation(),
     captureScroll: () => readNavigationScroll(),
     invalidateScroll: () => navigationScrollTracker.invalidate(),
@@ -9103,14 +10615,6 @@
     return navigate({ kind: "messages" });
   }
 
-  function leaveLibrary(): void {
-    if (libraryBackTargetIndex != null) {
-      void navigation.backTo(libraryBackTargetIndex);
-      return;
-    }
-    void navigate({ kind: "messages" });
-  }
-
   $effect(() => {
     navigation.noteAccount((self?.uid ?? tenantAccountId ?? "").trim());
   });
@@ -9175,6 +10679,7 @@
       selectConversationRow(row, options);
       return;
     }
+    rememberOpenedRow(row);
     if (selectedRow?.id !== row.id) selectedRow = row;
     void navigate(
       destinationFromConversation(row, {
@@ -9354,11 +10859,31 @@
 
   function changeTenantCompany(companyUid: string | null): void {
     if (tenantCompanyId === companyUid) return;
+    setTenantScope(companyUid);
+    void navigate({ kind: "messages" });
+  }
+
+  /**
+   * Rotate tenant scope without navigating. Committed navigation entries call
+   * this directly so applying an entry never starts a second navigation.
+   */
+  function setTenantScope(companyUid: string | null): void {
+    if (tenantCompanyId === companyUid) return;
     // Company switching is in-account navigation: the history stack stays.
     // Existing tenant-generation guards still cancel in-flight company reads.
     // Remove every visible selection before the re-keyed sidebar begins reads
     // in the replacement scope.
     tenantCompanyId = companyUid;
+    if (companyUid) {
+      const prefs = readSettingsPrefs();
+      writeSettingsPrefs({
+        companyRecentIds: rememberCompanyId(prefs.companyRecentIds, companyUid),
+      });
+    }
+    // Re-read the roster on every company switch so a company icon the
+    // server gained since launch replaces the initials (the icon map is
+    // derived from `companies`, which the refresh replaces wholesale).
+    void onrefreshroster?.();
     selectedRow = null;
     liveTimeline = [];
     liveTimelineId = null;
@@ -9389,7 +10914,6 @@
     startMeetingsStore();
     if (view === "meetings") setMeetingsViewActive(true);
     void prefetchMeetings();
-    void navigate({ kind: "messages" });
   }
 
   /**
@@ -9583,6 +11107,43 @@
       cancelled = true;
     };
   });
+
+  /** Forward the message from the open conversation (US-009). No fetch. */
+  function openForward(msg: ConversationMessageWire): void {
+    const row = selectedRow;
+    if (!row) return;
+    const conversationId = (row.kind === "dm" ? row.personUid : row.channelId) ?? "";
+    if (!conversationId || !msg.eventId) return;
+    const fromUid = (msg.fromPersonUid ?? "").trim();
+    const senderName =
+      (msg.fromDisplayName ?? "").trim() ||
+      (fromUid ? displayNameByUid[fromUid] : "") ||
+      (msg.direction === "out" ? (self?.displayName ?? "") : "");
+    forwardSource = forwardSourceFrom(msg, conversationId, row.companyUid ?? null, senderName, {
+      kind: row.kind === "channel" ? "channel" : row.kind === "group" ? "group" : "dm",
+      label: row.title,
+    });
+  }
+
+  async function sendForward(req: ForwardRequest): Promise<ForwardResult> {
+    const send = adapter.messaging.forwardMessage;
+    if (!send) return { ok: false, code: "UNKNOWN", status: null, files: [], notShareable: [] };
+    const http = buildForwardHttpRequest(req);
+    const res = await send({ path: http.path, body: http.body });
+    if (!res.ok) {
+      console.error("[forward] request failed", res);
+      return { ok: false, code: "NETWORK", status: null, files: [], notShareable: [] };
+    }
+    return parseForwardResponse(res.value.status, res.value.body);
+  }
+
+  function showForwardNotice(text: string): void {
+    forwardNotice = text;
+    if (forwardNoticeTimer) clearTimeout(forwardNoticeTimer);
+    forwardNoticeTimer = setTimeout(() => (forwardNotice = null), 5000);
+  }
+
+  const forwardAdminCompanies = $derived(adminCompaniesOf(companies));
 
   const mentionRoster = $derived(
     // Re-run disambiguation after company labels and resolved emails are in,
@@ -10445,13 +12006,389 @@
     }
   }
 
-  function openLibrary(next: LibraryTab = "skills"): void {
+  function openLibrary(next: LibraryTab = "marketplace"): void {
     void navigate({ kind: "library", tab: next });
   }
 
+  // Per-device pin order. null = not seeded yet. Read once from local prefs;
+  // the roster effect below fills it after companies are already cached.
+  let pinnedCompanyIds = $state<string[] | null>(
+    readSettingsPrefs().pinnedCompanyIds,
+  );
+  let companyRecentIds = $state<string[]>(readSettingsPrefs().companyRecentIds);
+  let moreCompaniesOpen = $state(false);
+  let moreCompaniesAnchor = $state({ top: 72, left: 64 });
+  let accountMenuOpen = $state(false);
+  let accountMenuAnchor = $state({ left: 64, bottom: 16 });
+
+  const railCompanyRoster = $derived(
+    memberCompanies(effectiveCompanies)
+      .map((c) => ({
+        uid: c.cloudUid!.trim(),
+        label: c.displayName || c.slug,
+        slug: c.slug,
+        iconUrl: companyIcons.get(c.cloudUid!.trim()) ?? c.iconUrl ?? null,
+      })),
+  );
+
+  const moreCompanyList = $derived.by((): MoreCompany[] => {
+    const snap = presenceSnapshot();
+    const cloud: MoreCompany[] = railCompanyRoster.map((company) => ({
+      uid: company.uid,
+      name: company.label,
+      slug: company.slug,
+      iconUrl: company.iconUrl,
+      liveCount: companyLiveCount(snap, company.uid),
+    }));
+    // A company with a cloud id is listed once, from the roster, even when
+    // its folder is also on this Mac.
+    const cloudSlugs = new Set(
+      (effectiveCompanies ?? [])
+        .filter((c) => (c.cloudUid ?? "").trim())
+        .map((c) => c.slug.toLowerCase()),
+    );
+    const local: MoreCompany[] = localCompanies
+      .filter((c) => !cloudSlugs.has(c.slug.toLowerCase()))
+      .map((c) => ({
+        uid: localCompanyKey(c.slug),
+        name: c.name,
+        slug: c.slug,
+        iconUrl: null,
+        liveCount: 0,
+        localOnly: true,
+      }));
+    return [...cloud, ...local];
+  });
+
+  $effect(() => {
+    if (pinnedCompanyIds != null) return;
+    if (railCompanyRoster.length === 0) return;
+    const seeded = seedPinnedCompanyIds(railCompanyRoster, {
+      defaultCompanyId: tenantCompanyId,
+      recentIds: companyRecentIds,
+    });
+    pinnedCompanyIds = seeded;
+    writeSettingsPrefs({ pinnedCompanyIds: seeded });
+  });
+
+  const railItemList = $derived.by(() => {
+    const byUid = new Map(railCompanyRoster.map((company) => [company.uid, company]));
+    const order =
+      pinnedCompanyIds ??
+      railCompanyRoster.map((company) => company.uid).slice(0, 6);
+    const snap = presenceSnapshot();
+    const pinned = order
+      .map((uid) => byUid.get(uid))
+      .filter((company): company is NonNullable<typeof company> => Boolean(company))
+      .slice(0, 6)
+      .map((company) => ({
+        ...company,
+        liveCount: companyLiveCount(snap, company.uid),
+        unreadCount: companyChannelUnread(railRows, company.uid),
+      }));
+    // OWNER-D 3: members without Telemetry do not see its rail entry.
+    return railItems(pinned, resolvedAccountLabel ?? "You").filter(
+      (item) => item.id !== "telemetry" || telemetryVisible,
+    );
+  });
+  const activeRailId = $derived(
+    activeRailItemId({ view, tenantCompanyId, extraPageId, settingsSection, libraryTab }),
+  );
+  const railPlaceholder = $derived(
+    view === "extra"
+      ? (railPlaceholderForPage(extraPageId) ??
+        accountPlaceholderForPage(extraPageId) ??
+        companyPagePlaceholderForPage(extraPageId))
+      : null,
+  );
+  // Personal rail pages and account pages bring their own 260 px nav, which
+  // replaces the Messages list instead of stacking beside it.
+  const personalPageOwnsSidepane = $derived(
+    view === "extra" &&
+      (extraPageId === "rail-library" ||
+        extraPageId === "rail-deployments" ||
+        accountPlaceholderForPage(extraPageId) != null ||
+        railPlaceholder?.id === "telemetry" ||
+        railPlaceholder?.id === "secrets" ||
+        railPlaceholder?.id === "connections" ||
+        railPlaceholder?.id === "outpost"),
+  );
+  // OWNER-R36: these personal pages have no side pane at all, so the title
+  // bar's sidebar toggle is hidden there instead of toggling an empty column.
+  const pageHasNoSidepane = $derived(
+    view === "extra" &&
+      (extraPageId === "rail-deployments" ||
+        railPlaceholder?.id === "telemetry" ||
+        railPlaceholder?.id === "secrets" ||
+        railPlaceholder?.id === "connections"),
+  );
+  // OWNER-R20: Profile's Companies and roles read the caller's role from each
+  // company's membership roster (GET /membership/company/{uid}); the contacts
+  // read used before carries no role and leaves the caller out, so every row
+  // was a dash. Owner rows first, then by name.
+  const profileOpen = $derived(view === "settings" && (settingsSection == null || settingsSection === "profile"));
+  $effect(() => {
+    if (!profileOpen) return;
+    for (const company of railCompanyRoster) {
+      loadCallerRole({ companyUid: company.uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
+    }
+  });
+  const profileCompanies = $derived(
+    railCompanyRoster
+      .map((company) => ({ uid: company.uid, label: company.label, role: callerRole(company.uid) ?? null }))
+      .sort((x, y) => (x.role === "Owner") === (y.role === "Owner") ? x.label.localeCompare(y.label) : x.role === "Owner" ? -1 : 1),
+  );
+  const youPresence = $derived(
+    ownLiveWork(
+      presenceSnapshot(),
+      self?.uid ?? "",
+      Object.fromEntries(railCompanyRoster.map((company) => [company.uid, company.label])),
+      tenantCompanyId,
+    ),
+  );
+
+  // US-007: a company tile opens the company sidepane; Home returns to chat.
+  let companyPaneOpen = $state(false);
+  const companyPaneCompany = $derived.by(() => {
+    if (!companyPaneOpen || !tenantCompanyId) return null;
+    return (
+      railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? {
+        uid: tenantCompanyId,
+        label: tenantCompanyId,
+        slug: null,
+        iconUrl: null,
+      }
+    );
+  });
+  /**
+   * The open company for the Indigo-only gates: the company the rail has
+   * selected, or null in the personal scope. Not the person's memberships.
+   */
+  const gateCompany = $derived.by((): GateCompany | null => {
+    if (!tenantCompanyId) return null;
+    const hit = railCompanyRoster.find((company) => company.uid === tenantCompanyId);
+    return hit ? { uid: hit.uid, slug: hit.slug ?? null } : { uid: tenantCompanyId, slug: null };
+  });
+  const railGate = (key: IndigoOnlyGateKey): boolean =>
+    isIndigoOnlySurface(key, gateCompany, railGateValues);
+  // OWNER-D 3: Telemetry is hidden (rail, palette, deep links) for members
+  // without the feature, instead of a "Coming soon" page.
+  // The entry belongs to the person: Indigo members keep it on Home and in
+  // every company; others see it once the registry opens it to everyone.
+  const telemetryVisible = $derived(
+    railGate(RAIL_TELEMETRY_FLAG) ||
+      railCompanyRoster.some((company) => isIndigoCompany({ slug: company.slug ?? null })),
+  );
+  $effect(() => {
+    if (railPlaceholder?.id !== "telemetry" || telemetryVisible) return;
+    const company = tenantCompanyId;
+    untrack(() => {
+      void navigate(company ? companyRowDestination("atlas", company) : { kind: "messages" });
+    });
+  });
+  const companyPaneSelectedId = $derived(
+    view === "extra" ? companyRowForPage(extraPageId) : null,
+  );
+  // US-009: Atlas rosters derive from presence plus names the shell already
+  // loaded, so the landing paints from memory with no extra fetch.
+  const atlasRosterNames = $derived(rosterNamesFromRows(railRows));
+  const atlasCompanyRoster = $derived(
+    companyPaneCompany
+      ? atlasRoster(
+          presenceSnapshot(),
+          companyPaneCompany.uid,
+          atlasRosterNames,
+          self?.uid ?? null,
+        )
+      : [],
+  );
+
+  // US-013: live actors for the Atlas map from the presence + live-read
+  // mirrors the shell already subscribes to. No poller, no fetch.
+  const atlasActors = $derived(
+    companyPaneCompany
+      ? atlasLiveActors(
+          liveReadFor(companyPaneCompany.uid),
+          presenceSnapshot(),
+          companyPaneCompany.uid,
+          atlasRosterNames,
+          self?.uid ?? null,
+          avatarByUid,
+        )
+      : [],
+  );
+  // People filter from the Atlas sidepane roster; cleared on company change.
+  let atlasFilterActor = $state<string | null>(null);
+  let atlasFilterCompany: string | null = null;
+  $effect.pre(() => {
+    const uid = companyPaneCompany?.uid ?? null;
+    if (uid !== atlasFilterCompany) {
+      atlasFilterCompany = uid;
+      atlasFilterActor = null;
+    }
+  });
+
+  function selectCompanyPaneRow(rowId: string): void {
+    if (!tenantCompanyId) return;
+    atlasFilterActor = null;
+    if (rowId === "invite-teammate") {
+      // Land on Team with its invite sheet open.
+      teamInviteSeq += 1;
+      void navigate(companyRowDestination("team", tenantCompanyId));
+      return;
+    }
+    void navigate(companyRowDestination(rowId, tenantCompanyId));
+  }
+  /** Bumped by the sidepane Invite a teammate row; TeamPage opens its sheet. */
+  let teamInviteSeq = $state(0);
+  // OWNER-R24: the caller's role in the open company, from the membership
+  // roster. Grants and Billing show only to owners and admins.
+  const companyPaneRole = $derived(callerRole(companyPaneCompany?.uid));
+  $effect(() => {
+    const uid = companyPaneCompany?.uid;
+    if (!uid) return;
+    loadCallerRole({ companyUid: uid, selfUid: self?.uid ?? null, selfEmail: self?.email ?? null, company: adapter.company ?? null });
+  });
+
+  function placeMoreCompanies(): void {
+    const button = document.querySelector("[data-testid='rail-more-companies']");
+    if (button instanceof HTMLElement) {
+      const rect = button.getBoundingClientRect();
+      moreCompaniesAnchor = { top: rect.top, left: rect.right + 8 };
+    }
+  }
+
+  function placeAccountMenu(): void {
+    const button = document.querySelector("[data-testid='rail-you']");
+    if (button instanceof HTMLElement) {
+      const rect = button.getBoundingClientRect();
+      accountMenuAnchor = {
+        left: rect.right + 8,
+        bottom: Math.max(8, window.innerHeight - rect.bottom),
+      };
+    }
+  }
+
+  function toggleAccountMenu(): void {
+    if (accountMenuOpen) {
+      accountMenuOpen = false;
+      return;
+    }
+    moreCompaniesOpen = false;
+    placeAccountMenu();
+    accountMenuOpen = true;
+  }
+
+  function openAccountPage(page: AccountPageId): void {
+    accountMenuOpen = false;
+    // OWNER-R21: Profile and Billing are items in the one Settings list.
+    void navigate({ kind: "settings", section: page === "billing" ? "billing" : "profile" });
+  }
+
+  function toggleMoreCompanies(): void {
+    if (moreCompaniesOpen) {
+      moreCompaniesOpen = false;
+      return;
+    }
+    placeMoreCompanies();
+    moreCompaniesOpen = true;
+  }
+
+  /** Open a company from the popover. Unpinned companies stay unpinned. */
+  function openCompanyFromMore(company: MoreCompany): void {
+    const nextRecent = rememberCompanyId(companyRecentIds, company.uid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
+    changeTenantCompany(company.uid);
+    // US-009: Atlas is the company landing page.
+    void navigate(companyRowDestination("atlas", company.uid));
+    moreCompaniesOpen = false;
+  }
+
+  /** Personal Connections link into a company's own Integrations page. */
+  function openCompanyIntegrations(uid: string): void {
+    companyPaneOpen = true;
+    changeTenantCompany(uid);
+    void navigate(companyRowDestination("integrations", uid));
+  }
+
+  function setPinnedCompanies(ids: string[]): void {
+    pinnedCompanyIds = ids;
+    writeSettingsPrefs({ pinnedCompanyIds: ids });
+  }
+
+  /** Rail clicks and ⌘1–⌘9 both land here, so history sees one push each. */
+  function selectRailItem(item: RailItem): void {
+    meetingFocusRequest = null;
+    if (item.kind === "more-companies") {
+      toggleMoreCompanies();
+      return;
+    }
+    moreCompaniesOpen = false;
+    accountMenuOpen = false;
+    companyPaneOpen = item.kind === "company";
+    if (item.kind === "home") changeTenantCompany(null);
+    else if (item.kind === "company") {
+      const nextRecent = rememberCompanyId(companyRecentIds, item.companyUid);
+      companyRecentIds = nextRecent;
+      writeSettingsPrefs({ companyRecentIds: nextRecent });
+      changeTenantCompany(item.companyUid);
+    }
+    void navigate(railDestination(item, { localFiles: !isWeb }));
+  }
+
+  function reorderPinnedCompanies(fromUid: string, toUid: string): void {
+    const current =
+      pinnedCompanyIds ?? railCompanyRoster.map((company) => company.uid).slice(0, 6);
+    const next = reorderPinnedIds(current, fromUid, toUid);
+    pinnedCompanyIds = next;
+    writeSettingsPrefs({ pinnedCompanyIds: next });
+  }
+
+  function selectRailIndex(index: number): void {
+    const item = railItemList[index];
+    if (item) selectRailItem(item);
+  }
+
+  let notificationsPopoverOpen = $state(false);
+
   function toggleNotifications(): void {
-    if (view === "notifications") void navigate({ kind: "messages" });
-    else void navigate({ kind: "notifications" });
+    notificationsPopoverOpen = !notificationsPopoverOpen;
+  }
+
+  async function acceptCompanyInviteFromBell(
+    item: NotificationItem,
+  ): Promise<
+    | { ok: true }
+    | { ok: false; message: string; upgradeUrl: string | null }
+  > {
+    const slug = (item.actionRef ?? "").trim();
+    const uid = (item.targetRef ?? "").trim();
+    const claimFn = adapter.company?.claimPendingInvite;
+    if (!slug || !claimFn) {
+      return {
+        ok: false,
+        message: "Couldn't join the company. Try again.",
+        upgradeUrl: null,
+      };
+    }
+    const claim = await claimFn(slug);
+    const { inviteClaimOutcome } = await import("../inbox/company-invite-requests.js");
+    const outcome = inviteClaimOutcome(claim, uid, pinnedCompanyIds ?? []);
+    if (!outcome.ok) return outcome;
+    if (outcome.pinnedIds) setPinnedCompanies(outcome.pinnedIds);
+    await readWorkspaceHealth();
+    void onrefreshroster?.();
+    if (!outcome.companyUid) return { ok: true };
+    const nextRecent = rememberCompanyId(companyRecentIds, outcome.companyUid);
+    companyRecentIds = nextRecent;
+    writeSettingsPrefs({ companyRecentIds: nextRecent });
+    companyPaneOpen = true;
+    changeTenantCompany(outcome.companyUid);
+    notificationsPopoverOpen = false;
+    void navigate(companyRowDestination("atlas", outcome.companyUid));
+    return { ok: true };
   }
 
   function openSettings(section: EmbeddedSettingsSection | null = null): void {
@@ -10680,10 +12617,70 @@
     });
   }
 
+  /**
+   * Team page Add agent (US-039): open the one New bot modal (the Messages +
+   * flow) over the Team page. The modal portals to the shell root, so the
+   * company pane stays put behind it. Creating lands in the bot's thread,
+   * where it asks for the rest.
+   */
+  function addAgentFromTeam(): void {
+    const companyUid = companyPaneCompany?.uid ?? null;
+    withSidebar((actions) => actions.openNewAgent(companyUid));
+  }
+
+  /**
+   * Settings › Bots "New bot": close Settings and open the same New bot modal
+   * as the Messages "New" menu. Creating there lands in the bot's DM.
+   */
+  function openNewBotFromSettings(): void {
+    closeSettings();
+    withSidebar((actions) => actions.openNewAgent(null));
+  }
+
   function openNewChat(): void {
     paletteOpen = false;
     cheatSheetOpen = false;
     withSidebar((actions) => actions.openCreate());
+  }
+
+  function createMenuKeys(action: CreateMenuAction): string {
+    return CREATE_MENU_ITEMS.find((item) => item.id === action)!.keys;
+  }
+
+  /** ⇧⌘K: the New message sheet, from any page (QA-077). */
+  function openNewMessage(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    withSidebar((actions) => actions.openNewMessage());
+  }
+
+  /**
+   * ⌘⇧A: Atlas for the active company; on Home the first rail company; with
+   * no company at all, a one-line toast (QA-077).
+   */
+  function openAtlasShortcut(): void {
+    paletteOpen = false;
+    cheatSheetOpen = false;
+    const target = atlasShortcutTarget(
+      companyPaneOpen ? tenantCompanyId : null,
+      railCompanyRoster.map((company) => company.uid),
+    );
+    if (target.kind === "none") {
+      pushToast({ title: "Open a company first", detail: "", tone: "neutral" });
+      return;
+    }
+    const item = railItemList.find(
+      (entry) => entry.kind === "company" && entry.companyUid === target.companyUid,
+    );
+    if (item) {
+      selectRailItem(item);
+      return;
+    }
+    moreCompaniesOpen = false;
+    accountMenuOpen = false;
+    companyPaneOpen = true;
+    changeTenantCompany(target.companyUid);
+    void navigate(companyRowDestination("atlas", target.companyUid));
   }
 
   function stepSelectedConversation(delta: 1 | -1): void {
@@ -10701,8 +12698,8 @@
   const shellShortcuts: ShortcutBinding[] = [
     {
       id: "palette.toggle",
-      keys: "Mod+K",
-      label: "Command palette",
+      keys: advertisedShortcut("palette.toggle").keys,
+      label: advertisedShortcut("palette.toggle").label,
       group: "General",
       run: () => {
         cheatSheetOpen = false;
@@ -10711,10 +12708,17 @@
     },
     {
       id: "view.settings",
-      keys: "Mod+,",
-      label: "Settings",
+      keys: advertisedShortcut("view.settings").keys,
+      label: advertisedShortcut("view.settings").label,
       group: "General",
       run: () => openSettings(),
+    },
+    {
+      id: "view.atlas",
+      keys: advertisedShortcut("view.atlas").keys,
+      label: advertisedShortcut("view.atlas").label,
+      group: "Views",
+      run: () => openAtlasShortcut(),
     },
     {
       id: "help.shortcuts",
@@ -10744,66 +12748,17 @@
         return true;
       },
     },
-    {
-      id: "view.notifications",
-      keys: "Mod+1",
-      label: "Notifications",
-      group: "Views",
-      run: () => {
-        meetingFocusRequest = null;
-        void navigate({ kind: "notifications" });
-      },
-    },
-    {
-      id: "view.meetings",
-      keys: "Mod+2",
-      label: "Meetings",
-      group: "Views",
-      run: () => {
-        meetingFocusRequest = null;
-        void navigate({ kind: "meetings" });
-      },
-    },
-    ...(adapter.kind !== "web"
-      ? [
-          {
-            id: "view.marketplace",
-            keys: "Mod+3",
-            label: "Marketplace",
-            group: "Views",
-            run: () => openLibrary("marketplace"),
-          } satisfies ShortcutBinding,
-        ]
-      : []),
-    {
-      id: "view.library",
-      keys: "Mod+4",
-      label: "Library",
-      group: "Views",
-      run: () => openLibrary("skills"),
-    },
-    ...(adapter.kind !== "web"
-      ? [
-          {
-            id: "view.projects",
-            keys: "Mod+6",
-            label: "Projects",
-            group: "Views",
-            run: () => {
-              void navigate({ kind: "projects" });
-            },
-          } satisfies ShortcutBinding,
-          {
-            id: "view.files",
-            keys: "Mod+5",
-            label: "Files",
-            group: "Views",
-            run: () => {
-              void navigate({ kind: "explorer" });
-            },
-          } satisfies ShortcutBinding,
-        ]
-      : []),
+    // ⌘1–⌘9 select the rail item at that position (console-rail US-003).
+    ...Array.from({ length: RAIL_SHORTCUT_COUNT }, (_, index) =>
+      ({
+        id: `view.rail.${index + 1}`,
+        keys: `Mod+${index + 1}`,
+        label:
+          index === 0 ? "Home" : index === 1 ? "Meetings" : `Rail item ${index + 1}`,
+        group: "Views",
+        run: () => selectRailIndex(index),
+      }) satisfies ShortcutBinding,
+    ),
     {
       id: "conversation.next",
       keys: "Mod+Shift+]",
@@ -10819,9 +12774,39 @@
       run: () => stepSelectedConversation(-1),
     },
     {
+      id: "create.message",
+      keys: advertisedShortcut("create.message").keys,
+      label: advertisedShortcut("create.message").label,
+      group: "Conversations",
+      run: () => openNewMessage(),
+    },
+    {
+      id: "create.channel",
+      keys: createMenuKeys("channel"),
+      label: "New channel",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openNewChannel());
+      },
+    },
+    {
+      id: "create.agent",
+      keys: createMenuKeys("agent"),
+      label: "New bot",
+      group: "Conversations",
+      run: () => {
+        paletteOpen = false;
+        cheatSheetOpen = false;
+        withSidebar((actions) => actions.openNewAgent(null));
+      },
+    },
+    {
+      // ⌘N opens exactly one thing, the search-first create dialog.
       id: "chat.new",
-      keys: "Mod+N",
-      label: "New chat",
+      keys: advertisedShortcut("chat.new").keys,
+      label: advertisedShortcut("chat.new").label,
       group: "Conversations",
       run: () => openNewChat(),
     },
@@ -10869,12 +12854,12 @@
     sweepStaleAttachmentTrays("mount");
     const onPointerDown = () => sweepStaleAttachmentTrays("pointerdown");
     window.addEventListener("pointerdown", onPointerDown, true);
-    applyColorTheme(readStoredTheme());
+    restoreStoredColorTheme();
     // Re-apply on boot, not just on toggle: the attribute lives on <html> and
     // does not survive a reload, so without this the glass returns on every
     // restart and the setting looks like it silently forgot itself.
     const prefs = readSettingsPrefs(tenantStorage);
-    applyUiSize(prefs.uiSize);
+    applyUiSize(readStoredUiSize(undefined, tenantStorage));
     // With the desktop appearance host installed, its persisted preference is
     // already live; re-applying the local pref would round-trip a stale copy
     // through the host and clobber the user's theme. Same guard as
@@ -11043,7 +13028,31 @@
       window.removeEventListener("pointerdown", onPointerDown, true);
     };
   });
+
+  /** OWNER-R4: the web Atlas people read, last 30 days of company telemetry. */
+  async function loadAtlasPeople(slug: string): Promise<unknown> {
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const now = Date.now();
+    const res = await adapter.company.getTeamTelemetry(slug, { from: day(now - 29 * 86_400_000), to: day(now) });
+    if (!res.ok) throw Object.assign(new Error(res.message ?? res.reason), { code: res.reason });
+    return res.value;
+  }
 </script>
+
+{#snippet meetingsAgenda()}
+  <MeetingsPage
+    {adapter}
+    accountId={tenantAccountId}
+    storage={tenantStorage}
+    sessionGeneration={tenantGeneration}
+    companySlugForUid={meetingCompanyFolderSlug}
+    onback={() => {
+      void leaveCurrentDestination();
+    }}
+    openExternal={onopenurl}
+    focusRequest={meetingFocusRequest}
+  />
+{/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -11063,6 +13072,8 @@
     if (e.key === "Enter" || e.key === " ") onShellLinkEvent(e);
   }}
 >
+  <!-- OWNER-003: the one shared toast layer, above sheets and popovers. -->
+  <ToastStack />
   <V4TitleBar
     {adapter}
     {version}
@@ -11078,7 +13089,11 @@
     conflictCount={liveSync.conflicts}
     uploadsPaused={liveSync.uploadsPaused ?? []}
     conflicts={conflictFiles}
-    onresolveconflict={(path, strategy) => resolveConflictFile(path, strategy)}
+    onresolveconflict={(path, strategy) =>
+      resolveConflictFile(
+        path,
+        strategy as "keep-local" | "keep-remote" | "discard",
+      )}
     onopenconflict={(path) => openConflictInEditor(path)}
     onresolveconflicts={openConflictResolution}
     {manifestError}
@@ -11093,20 +13108,12 @@
     {brandCompanyName}
     onopenSync={() => openSettings("sync")}
     {sidebarCollapsed}
+    sidebarToggleHidden={pageHasNoSidepane}
     coreUseFixtures={coreFixtures}
     ontogglesidebar={() => (sidebarCollapsed = !sidebarCollapsed)}
     onopenNotifications={toggleNotifications}
-    onopenMeetings={() => {
-      void navigate({ kind: "meetings" });
-    }}
-    onopenProjects={isWeb ? undefined : () => {
-      void navigate({ kind: "projects" });
-    }}
-    onopenFiles={isWeb ? undefined : () => {
-      void navigate({ kind: "explorer" });
-    }}
     onOpenSettings={() => openSettings()}
-    onopenLibrary={() => openLibrary("skills")}
+    onopenLibrary={() => openLibrary("marketplace")}
     onopenMarketplace={isWeb ? undefined : () => openLibrary("marketplace")}
     {onopenurl}
     canGoBack={navigationCanGoBack}
@@ -11117,6 +13124,107 @@
     onforward={() => void goForward()}
     launchMenuForcedOpen={tourLaunchOpen}
   />
+
+  {#if notificationsPopoverOpen}
+    <LazyDoor
+      door={notificationsPopoverDoor}
+      props={{
+        api: notificationsApi,
+        pendingWorkspaces: syncWorkspaces,
+        onacceptcompany: acceptCompanyInviteFromBell,
+        onclose: () => (notificationsPopoverOpen = false),
+        onopen: openNotification,
+        onopensettings: () => {
+          notificationsPopoverOpen = false;
+          openSettings("notifications");
+        },
+      }}
+    />
+  {/if}
+
+  <!-- Console rail (US-003): 48 px titlebar over a 56 px rail, the 260 px
+       sidepane, and flexible content. Banners and every destination render
+       in the column to the right of the rail. -->
+  <div class="shell-row">
+  {#if !phoneViewport}
+    <AppRail
+      items={railItemList}
+      activeId={activeRailId}
+      {unreadCount}
+      youInitials={resolvedAccountInitials ?? ""}
+      onselect={selectRailItem}
+      onreorderpins={reorderPinnedCompanies}
+      onmore={toggleMoreCompanies}
+      moreExpanded={moreCompaniesOpen}
+      onyou={toggleAccountMenu}
+      youExpanded={accountMenuOpen}
+      youLive={youPresence.live}
+      youWork={youPresence.work}
+    />
+    {#if accountMenuOpen}
+      <AccountMenu
+        name={resolvedAccountLabel ?? "You"}
+        email={self?.email ?? ""}
+        initials={resolvedAccountInitials ?? ""}
+        live={youPresence.live}
+        work={youPresence.work}
+        anchorLeft={accountMenuAnchor.left}
+        anchorBottom={accountMenuAnchor.bottom}
+        onclose={() => (accountMenuOpen = false)}
+        onpage={openAccountPage}
+        onsignout={() => {
+          accountMenuOpen = false;
+          void signOutWithImageCleanup();
+        }}
+      />
+    {/if}
+    {#if moreCompaniesOpen}
+      <LazyDoor
+        door={moreCompaniesDoor}
+        props={{
+          companies: moreCompanyList,
+          pinnedIds: pinnedCompanyIds ?? [],
+          recentIds: companyRecentIds,
+          anchorTop: moreCompaniesAnchor.top,
+          anchorLeft: moreCompaniesAnchor.left,
+          onclose: () => (moreCompaniesOpen = false),
+          onopen: openCompanyFromMore,
+          onpins: setPinnedCompanies,
+          onnewcompany: () => {
+            moreCompaniesOpen = false;
+            newCompanyOpen = true;
+          },
+        }}
+      />
+    {/if}
+    {#if newCompanyOpen}
+      <LazyDoor
+        door={newCompanyDoor}
+        props={{
+          pinnedIds: pinnedCompanyIds ?? [],
+          pinnedInitials: (pinnedCompanyIds ?? [])
+            .map((id) => railCompanyRoster.find((company) => company.uid === id)?.label ?? "")
+            .filter(Boolean)
+            .map((label) => label.slice(0, 2).toUpperCase()),
+          onclose: () => (newCompanyOpen = false),
+          oncheckout: (url: string) => onopenurl?.(url),
+          oncreate: createCompanyFromSheet,
+          onfinish: finishNewCompany,
+        }}
+      >
+        {#snippet skeleton()}
+          <div
+            role="dialog"
+            aria-label="New company"
+            style="position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:480px;padding:16px;box-sizing:border-box;background:var(--v4-popover);border:1px solid var(--v4-hairline);border-radius:8px;z-index:71"
+          >
+            <ReadLoader testid="new-company-loading" />
+          </div>
+        {/snippet}
+      </LazyDoor>
+    {/if}
+  {/if}
+  <div class="shell-column">
 
   {#if recommendBanner}
     <RecommendedUpdateBanner
@@ -11198,6 +13306,25 @@
     </div>
   {/if}
 
+  {#if forwardNotice}
+    <div class="inbox-route-notice" data-testid="forward-confirmation" role="status">
+      {forwardNotice}
+    </div>
+  {/if}
+
+  {#if forwardSource}
+    <ForwardPicker
+      source={forwardSource}
+      rows={railRows}
+      contacts={mentionRoster}
+      adminCompanies={forwardAdminCompanies}
+      {avatarByUid}
+      onsend={sendForward}
+      onclose={() => (forwardSource = null)}
+      ondone={(name, result) => showForwardNotice(forwardConfirmation(name, result.omittedAttachments))}
+    />
+  {/if}
+
   {#if inboxRouteNotice}
     <div
       class="inbox-route-notice"
@@ -11243,7 +13370,7 @@
           data-testid="navigation-unavailable-back"
           onclick={() => void goBack()}
           disabled={!navigationCanGoBack}
-        >
+        ><RailIcon name="arrow-left" />
           Back
         </button>
       </div>
@@ -11253,24 +13380,54 @@
          titlebar. The channel rail is hidden and the whole area becomes the
          two-column Settings surface. -->
     <div class="desktop-body" data-testid="settings-host">
-      <ShellSettings
-        profile={resolvedSettingsProfile}
-        {companies}
+      {#key settingsLoadAttempt}
+      {#await loadShellSettings() then { default: ShellSettings }}
+        <ShellSettings
+          onnewbot={openNewBotFromSettings}
+          profile={resolvedSettingsProfile}
+          {companies}
+          {adapter}
+          sessionGeneration={tenantGeneration}
+          storage={tenantStorage}
+          {version}
+          initialSection={settingsSection}
+          onsectionchange={(section) => openSettings(section)}
+          openExternal={onopenurl}
+          {profileCompanies}
+          oncompany={(uid) => {
+            companyPaneOpen = true;
+            changeTenantCompany(uid);
+            void navigate(companyRowDestination("general", uid));
+          }}
+          onback={closeSettings}
+          onsignout={onsignout ? signOutWithImageCleanup : undefined}
+          onopenconsole={onOpenConsole
+            ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
+            : undefined}
+          consoleBase={HQ_CONSOLE_BASE}
+          {updateWakeSeq}
+          {refreshAppVersion}
+          {uiVersion}
+        />
+      {:catch}
+        <button
+          type="button"
+          class="settings-retry"
+          onclick={() => settingsLoadAttempt++}>Tap to retry</button
+        >
+      {/await}
+      {/key}
+    </div>
+  {:else if view === "library"}
+    <!-- OWNER-R33: the Marketplace is a full destination in the body, under
+         the top bar, like Settings and Files. It is not a layer over the
+         shell, so the top bar's menus open above it. -->
+    <div class="desktop-body" data-testid="marketplace-host">
+      <LibraryOverlay
         {adapter}
-        sessionGeneration={tenantGeneration}
-        storage={tenantStorage}
-        {version}
-        initialSection={settingsSection}
-        onsectionchange={(section) => openSettings(section)}
-        onback={closeSettings}
-        onsignout={onsignout ? signOutWithImageCleanup : undefined}
-        onopenconsole={onOpenConsole
-          ? (url) => onOpenConsole(url ?? HQ_CONSOLE_BASE)
-          : undefined}
-        consoleBase={HQ_CONSOLE_BASE}
-        {updateWakeSeq}
-        {refreshAppVersion}
-        {uiVersion}
+        tab={libraryTab}
+        {packagesEvents}
+        onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
       />
     </div>
   {:else if view === "explorer"}
@@ -11284,13 +13441,17 @@
           backTestId="files-back"
         />
         <div class="explorer-host" data-testid="explorer-host">
-          <VaultExplorer
-            {adapter}
-            {companies}
-            vaultId={explorerVault}
-            path={explorerPath}
-            onlocationchange={(loc) => {
-              void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+          <LazyDoor
+            door={vaultExplorerDoor}
+            props={{
+              adapter,
+              companies,
+              vaultId: explorerVault,
+              path: explorerPath,
+              access: filesAccess,
+              onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                void navigate({ kind: "explorer", vault: loc.vaultId, path: loc.path });
+              },
             }}
           />
         </div>
@@ -11302,12 +13463,45 @@
            loading and the #setup fallback, so unmounting it leaves the phone
            with nothing selected. -->
       {#if !sidebarCollapsed || phoneViewport}
+        {#if companyPaneCompany}
+          <CompanySidepane
+            company={companyPaneCompany}
+            canManage={companyPaneRole === "Owner" || companyPaneRole === "Admin"}
+            selectedId={companyPaneSelectedId}
+            onselect={selectCompanyPaneRow}
+            memory={sidepaneScrollMemory}
+            companyApi={adapter.company ?? null}
+            roster={atlasCompanyRoster}
+            rosterLoading={!directorySettled}
+          />
+        {:else if view === "meetings"}
+          <!-- US-021: Meetings owns the shared 260 px sidepane while it is the
+               destination. The host body loads behind a door; the shared
+               loader paints the click frame. -->
+          <LazyDoor door={meetingsSidepaneDoor} props={{ memory: sidepaneScrollMemory }}>
+            {#snippet skeleton()}
+              <Sidepane modelKey="meetings" memory={sidepaneScrollMemory} label="Meetings">
+                <div class="meetings-door-loading">
+                  <ReadLoader testid="meetings-sidepane-door-loading" />
+                </div>
+              </Sidepane>
+            {/snippet}
+          </LazyDoor>
+        {/if}
+        <!-- Chat stays mounted under the company pane: it owns roster loading. -->
+        <div class="chat-pane-slot" style:display={companyPaneCompany || view === "meetings" || personalPageOwnsSidepane ? "none" : "contents"}>
+        <Sidepane
+          modelKey={sidepaneModelKey({ tenantCompanyId })}
+          scrollSelector=".chat-scroll"
+          memory={sidepaneScrollMemory}
+        >
         {#key `${tenantGeneration}:${tenantCompanyId ?? "all"}`}
         <ChatSidebar
           offscreen={phoneViewport && sidebarCollapsed}
           api={sidebarApi}
           {wakes}
           companies={effectiveCompanies}
+          companiesOnRail={!sidebarCompanies}
           onhomechannelresolved={handleHomeChannelResolved}
           {self}
           {isAdmin}
@@ -11333,6 +13527,7 @@
             void navigate({ kind: "messages" });
           }}
           onopenSettings={() => openSettings()}
+          hideAccountFooter={!phoneViewport}
           onsignout={onsignout ? signOutWithImageCleanup : undefined}
           oncreatecompany={canRunEntryPoints ? createCompanyEntry : null}
           companyCreate={companyCreateSeam}
@@ -11357,6 +13552,7 @@
           loadClaudeProviderFlag={() => adapter.identity.hasFeature(CLAUDE_PROVIDER_FLAG)}
           humanOnly={humanOnlyConversations}
           loadCloudProvisionOptions={(companyUid) => adapter.agents.getProvisionOptions(companyUid)}
+          directCloud={directCloudCreate}
           oncreatebot={adapter.bots ? createBotEntry : null}
           botRuntimeReady={localBotRuntimeReady}
           botRuntimeStatus={localBotRuntimeStatus}
@@ -11370,7 +13566,6 @@
           {existingBotNames}
           {botSignIn}
           onbotsignedin={onBotRuntimeSignedIn}
-          loadAvatarPacks={adapter.identity ? loadAvatarPacks : null}
           {localBots}
           {botDisplayNames}
           {ownedLocalBotUids}
@@ -11378,12 +13573,14 @@
             railRows = rows;
             directorySettled = true;
           }}
+          onretired={(retired) => (retiredEntities = retired)}
           ondisplayrows={(rows) => (displayRows = rows)}
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}
           welcomeFirst={welcomeSetupRun || hasBootDeepLink || initialRow ? false : welcomeSetupOwed === null ? "pending" : welcomeSetupOwed}
           onShellReady={() => {
             tourShellReady = true;
+            premountPaletteWhenIdle();
             onShellReady?.();
           }}
           projectHasPresence={rowHasProjectPresence}
@@ -11391,23 +13588,11 @@
           {rowExtrasLoading}
           {rowExtrasError}
           rowExtras={rowExtras ? (row) => rowExtras?.(row, view === "extra" && extraPageId ? { page: extraPageId, param: extraPageParam } : null) ?? null : null}
-          {showBotMessages}
-          onshowbotmessageschange={handleShowBotMessagesChange}
         >
-          {#snippet bottomContent()}
-            {#if updatePendingVersion}
-              <UpdateAvailableCard
-                version={updatePendingVersion}
-                reasons={updateHoldReasons}
-                installing={updateInstalling}
-                installError={updateInstallError}
-                oninstall={() => void handleUpdateInstall()}
-                ondismiss={handleUpdateDismiss}
-              />
-            {/if}
-          {/snippet}
         </ChatSidebar>
         {/key}
+        </Sidepane>
+        </div>
         {#if !phoneViewport}<SidebarResizeHandle bind:width={sidebarWidth} />{/if}
       {/if}
 
@@ -11433,7 +13618,10 @@
             <ProjectsHome
               {adapter}
               {companies}
+              pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               slug={projectsCompany}
+              focusProject={projectsFocus?.project ?? null}
+              focusTab={projectsFocus?.tab ?? null}
               preferredSlug={selectedCompanySlug || null}
               onslugchange={(slug) => {
                 void navigate({ kind: "projects", company: slug });
@@ -11447,6 +13635,235 @@
               void leaveCurrentDestination();
             }}
           />
+        {:else if railPlaceholder?.id === "atlas" && companyPaneCompany && !railGate(RAIL_ATLAS_FLAG)}
+          <!-- RELEASE-001: with Atlas closed for this company, its landing
+               shows company Activity instead. -->
+          <ActivityRailHost
+            {adapter}
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+            companyUid={companyPaneCompany.uid ?? null}
+            {avatarByUid}
+            onsignin={onsignin ? startReauth : undefined}
+          />
+        {:else if railPlaceholder?.id === "atlas" && companyPaneCompany}
+          <!-- Props read companyPaneCompany through getters that can run once
+               more while this branch tears down (switching rail items), so
+               they tolerate it going null. -->
+          <AtlasLandingHost
+            companyLabel={companyPaneCompany?.label ?? ""}
+            workingNow={atlasWorkingNow(atlasCompanyRoster)}
+            slug={companyPaneCompany?.slug ?? ""}
+            summaryEnabled={Boolean(adapter.company)}
+            companyUid={companyPaneCompany?.uid ?? null}
+            atlasSource={atlasVaultSource}
+            atlasLocal={atlasLocalSource}
+            loadPeople={companyPaneCompany?.slug ? () => loadAtlasPeople(companyPaneCompany?.slug ?? "") : null}
+            actors={atlasActors}
+            filterActor={atlasFilterActor}
+            onclearfilter={() => (atlasFilterActor = null)}
+            onopenpage={selectCompanyPaneRow}
+            onnavigate={(destination) => {
+              void navigate(destination);
+            }}
+            onopenperson={(personUid) => {
+              messagePersonByUid(personUid, { companyUid: companyPaneCompany?.uid });
+            }}
+          />
+        {:else if railPlaceholder?.id === "team" && companyPaneCompany}
+          <LazyDoor
+            door={teamPageDoor}
+            props={{
+              slug: companyPaneCompany.slug ?? "",
+              companyUid: companyPaneCompany.uid,
+              company: adapter.company ?? null,
+              messaging: adapter.messaging ?? null,
+              senderName: resolvedAccountLabel ?? "you",
+              agents: adapter.agents ?? null,
+              inviteSeq: teamInviteSeq,
+              onaddagent: addAgentFromTeam,
+              onmessage: (uid: string) => {
+                messagePersonByUid(uid, { companyUid: companyPaneCompany?.uid });
+              },
+              selfUid: self?.uid ?? null,
+              selfEmail: self?.email ?? null,
+              companyLabel: companyPaneCompany.label,
+              avatarByUid,
+            }}
+          >
+            {#snippet skeleton()}
+              <ReadLoader testid="team-page-loading" surface="team" />
+            {/snippet}
+          </LazyDoor>
+        {:else if railPlaceholder?.id === "projects" && companyPaneCompany}
+          <!-- US-039: the sidepane Projects row opens the US-023 board for
+               this company instead of the placeholder. -->
+          <div class="projects-host" data-testid="projects-host">
+            <ProjectsHome
+              {adapter}
+              {companies}
+              pickerCompanies={companyPickerSlugs(effectiveCompanies)}
+              slug={companyPaneCompany.slug ?? null}
+              preferredSlug={companyPaneCompany.slug ?? null}
+              onslugchange={(slug) => {
+                void navigate({ kind: "projects", company: slug });
+              }}
+            />
+          </div>
+        {:else if (railPlaceholder?.id === "general" || railPlaceholder?.id === "brand" || railPlaceholder?.id === "groups" || railPlaceholder?.id === "grants" || railPlaceholder?.id === "billing") && companyPaneCompany}
+          <!-- OWNER-R24: company settings are panel panes (General, Brand,
+               Billing under Settings; Groups, Grants under People). -->
+          <CompanySettingsHost
+            section={railPlaceholder.id}
+            role={companyPaneRole ?? null}
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+            openExternal={onopenurl}
+            companyUid={companyPaneCompany.uid}
+            company={adapter.company ?? null}
+            messaging={adapter.messaging ?? null}
+            seatLimit={railGate(RAIL_WORKFORCE_LIMITS_FLAG)}
+            files={adapter.files ?? null}
+          />
+        {:else if railPlaceholder?.id === "bots" && companyPaneCompany}
+          <BotsPage
+            companyUid={companyPaneCompany.uid}
+            {adapter}
+            companies={effectiveCompanies}
+            {localBots}
+            companyLabel={companyPaneCompany.label}
+            ownerName={self?.displayName ?? null}
+            onmessage={(uid, name) => {
+              messagePersonByUid(uid, { name, companyUid: companyPaneCompany?.uid });
+            }}
+            onaddbot={addAgentFromTeam}
+          />
+        {:else if railPlaceholder?.id === "activity" && companyPaneCompany}
+          <ActivityRailHost
+            {adapter}
+            slug={companyPaneCompany.slug ?? ""}
+            companyLabel={companyPaneCompany.label}
+            companyUid={companyPaneCompany.uid ?? null}
+            {avatarByUid}
+            onsignin={onsignin ? startReauth : undefined}
+          />
+        {:else if (railPlaceholder?.id === "knowledge" || railPlaceholder?.id === "policies" || railPlaceholder?.id === "skills" || railPlaceholder?.id === "workers") && companyPaneCompany}
+          <LazyDoor
+            door={brainPageDoor}
+            props={{
+              page: railPlaceholder.id,
+              slug: companyPaneCompany.slug ?? "",
+              files: adapter.files ?? null,
+              library: adapter.library ?? null,
+              shell: adapter.shell ?? null,
+              settings: adapter.settings ?? null,
+              appShell: adapter.appShell ?? null,
+              onopenpage: selectCompanyPaneRow,
+              adapter,
+              usage: {
+                team: adapter.company?.getTeamTelemetry ? (s: string, r: { from: string; to: string }) => adapter.company.getTeamTelemetry(s, r) : null,
+                mine: adapter.agents?.getMyTelemetry ? (f: string, t: string) => adapter.agents.getMyTelemetry!(f, t) : null,
+              },
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="rail-placeholder" aria-busy="true">
+                <h1>{railPlaceholder.title}</h1>
+                <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="brain-door-loading" />
+              </div>
+            {/snippet}
+          </LazyDoor>
+        {:else if extraPageId === "rail-library"}
+          <!-- The rail's Files destination is the file explorer only: vault
+               roots and tree, the reading view, and file actions. -->
+          <div class="explorer-host rail-files" data-testid="rail-files-host">
+            {#if adapter.files}
+              <LazyDoor
+                door={vaultExplorerDoor}
+                props={{
+                  adapter,
+                  companies,
+                  vaultId: explorerVault,
+                  path: explorerPath,
+                  access: filesAccess,
+                  onlocationchange: (loc: { vaultId: string; path: string | null }) => {
+                    explorerVault = loc.vaultId;
+                    explorerPath = loc.path;
+                  },
+                }}
+              />
+            {:else}
+              <p class="rail-files-empty" data-testid="rail-files-unavailable">
+                Files open in the desktop app, which reads your local HQ folder.
+              </p>
+            {/if}
+          </div>
+        {:else if extraPageId === "rail-deployments"}
+          <DeploymentsRailHost
+            accountId={tenantAccountId ?? "local"}
+            listDeployApps={adapter.company?.listDeployApps}
+            deployAppPreview={adapter.company?.deployAppPreview}
+            deployAppSnapshot={adapter.company?.deployAppSnapshot}
+            companies={memberCompanies(companies)}
+            openExternal={onopenurl}
+            actions={railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG)}
+          />
+        {:else if (railPlaceholder?.id === "vault" || railPlaceholder?.id === "integrations" || railPlaceholder?.id === "secrets" || railPlaceholder?.id === "deployments") && companyPaneCompany}
+          <LazyDoor
+            door={filesConnectDoor}
+            props={{
+              page: railPlaceholder.id,
+              slug: companyPaneCompany.slug ?? "",
+              files: adapter.files ?? null,
+              shell: adapter.shell ?? null,
+              settings: adapter.settings ?? null,
+              openExternal: onopenurl,
+              listDeployApps: adapter.company?.listDeployApps,
+              adapter,
+              companyUid: companyPaneCompany.uid ?? null,
+              deployActions: railGate(RAIL_DEPLOYMENTS_ACTIONS_FLAG),
+              companyLabel: companyPaneCompany.label,
+              vaultCloudRead: (key: string) => vaultCloudRead(companyPaneCompany?.uid ?? null, key),
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="rail-placeholder" aria-busy="true">
+                <h1>{railPlaceholder.title}</h1>
+                <p>{railPlaceholder.summary}</p>
+                <ReadLoader testid="files-connect-door-loading" />
+              </div>
+            {/snippet}
+          </LazyDoor>
+        {:else if railPlaceholder?.id === "telemetry"}
+          {#if telemetryVisible}
+            <TelemetryRailHost
+              agents={adapter.agents ?? null}
+              onopenthread={(path) => void navigate({ kind: "explorer", vault: "personal", path })}
+            />
+          {/if}
+        {:else if railPlaceholder?.id === "secrets" || railPlaceholder?.id === "connections"}
+          <PersonalRailHost
+            page={railPlaceholder.id}
+            companies={railCompanyRoster.map((company) => ({ uid: company.uid, label: company.label }))}
+            activeCompany={railCompanyRoster.find((company) => company.uid === tenantCompanyId) ?? null}
+            onopenintegrations={openCompanyIntegrations}
+            integrationsApi={adapter.agents ?? null}
+            companyApi={adapter.company ?? null}
+            openExternal={onopenurl}
+          />
+        {:else if railPlaceholder?.id === "outpost"}
+          <OutpostRailHost api={adapter.agents ?? null} openExternal={onopenurl} full={railGate(RAIL_OUTPOST_FLAG)} />
+        {:else if railPlaceholder}
+          <section
+            class="rail-placeholder"
+            data-testid="rail-placeholder"
+            data-story={railPlaceholder.story}
+          >
+            <h1>{railPlaceholder.title}</h1>
+            <p>{railPlaceholder.summary}</p>
+            <p class="rail-placeholder-story">Built in {railPlaceholder.story}.</p>
+          </section>
         {:else if view === "extra" && extraPageId && extraPages?.[extraPageId]}
           {@const Page = extraPages[extraPageId].component}
           <div class="extra-page-host" data-testid="extra-page-host" data-page={extraPageId}>
@@ -11478,17 +13895,24 @@
             onresolved={handleDmRequestResolved}
           />
         {:else if view === "meetings"}
-          <MeetingsPage
-            {adapter}
-            accountId={tenantAccountId}
-            storage={tenantStorage}
-            sessionGeneration={tenantGeneration}
-            onback={() => {
-              void leaveCurrentDestination();
+          <!-- US-021/US-022: the canvas for the selected meeting. The classic
+               agenda (MeetingsPage) stays mounted under it and shows only from
+               More or Earlier. -->
+          <LazyDoor
+            door={meetingCanvasDoor}
+            props={{
+              agenda: meetingsAgenda,
+              openExternal: onopenurl,
+              focusMeetingId: meetingFocusRequest?.meetingId ?? null,
             }}
-            openExternal={onopenurl}
-            focusRequest={meetingFocusRequest}
-          />
+          >
+            {#snippet skeleton()}
+              <div class="meetings-door-loading canvas">
+                <ReadLoader testid="meetings-canvas-door-loading" />
+              </div>
+              <div style:display="none">{@render meetingsAgenda()}</div>
+            {/snippet}
+          </LazyDoor>
         {:else if view === "conversation" && selectedRow}
           <header
             class="channel-header chat-shell"
@@ -11580,6 +14004,21 @@
                     <span class="channel-sub" data-testid="channel-sub"
                       >{channelSubtitle}</span
                     >
+                    {#if headerMemberLabel}
+                      <span class="channel-sub" data-testid="channel-member-count"
+                        >· {headerMemberLabel}</span
+                      >
+                    {/if}
+                    {#if headerPinnedNote}
+                      <span
+                        class="channel-pin"
+                        data-testid="channel-pinned-note"
+                        title={headerPinnedNote}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4h6l-1 6 3 3H7l3-3z" /><path d="M12 13v7" /></svg>
+                        <span class="channel-pin-text">{headerPinnedNote}</span>
+                      </span>
+                    {/if}
                     {#if isProjectChannel}
                       <button
                         type="button"
@@ -11623,6 +14062,14 @@
                   </span>
                 {/if}
               </div>
+              {#if dmCloudBotUid}
+                <!-- The bot's file sync, to the right of "Direct message": a
+                     still glyph and one muted line. It is the title block's
+                     one item that may shrink to nothing, so in a narrow
+                     window it is cut first, and the name, the label and
+                     "Edit profile" keep their places. -->
+                <BotSyncStatus facts={dmCloudBotSync} />
+              {/if}
             </div>
 
             <div class="channel-header-trailing">
@@ -11632,7 +14079,7 @@
                   class="edit-profile-btn"
                   data-testid="agent-edit-profile"
                   onclick={openAgentProfileFromHeader}
-                >
+                ><RailIcon name="pencil" />
                   Edit profile
                 </button>
               {/if}
@@ -11757,6 +14204,12 @@
                 />
               {/if}
 
+              {#if headerLiveCount > 0}
+                <span class="channel-live-chip" data-testid="channel-live-chip"
+                  ><i class="channel-live-dot" aria-hidden="true"></i
+                  >{headerLiveCount} live</span
+                >
+              {/if}
               {#if showMemberPill}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
@@ -11853,6 +14306,21 @@
                   {/if}
                 </div>
               {/if}
+              {#if selectedRow?.kind === "channel"}
+                <button
+                  type="button"
+                  class="channel-details-btn"
+                  data-testid="channel-details"
+                  aria-label="Channel details"
+                  title="Channel details"
+                  onclick={() => {
+                    if (isProjectChannel) projectAboutOpen = !projectAboutOpen;
+                    else membersOpen = !membersOpen;
+                  }}
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.2" /><circle cx="8" cy="8" r="1.2" /><circle cx="12.5" cy="8" r="1.2" /></svg>
+                </button>
+              {/if}
             </div>
           </header>
           {#if channelActionError}
@@ -11913,6 +14381,7 @@
                 {adapter}
                 slug={selectedCompanySlug}
                 companyUid={selectedRow.companyUid ?? null}
+                pickerCompanies={companyPickerSlugs(effectiveCompanies)}
               />
             </div>
           {:else if activeTab === "chat"}
@@ -12063,6 +14532,29 @@
                       ondone={refreshLocalBots}
                     />
                   {/if}
+                  {#if selectedLocalBot && selectedLocalBotNeedsCodingTool}
+                    <div class="local-bot-notice" data-testid="bot-needs-coding-tool" role="status">
+                      <span class="local-bot-notice-text">
+                        {botNeedsCodingToolNotice(selectedLocalBot, { noun: hostComputerNoun() })}
+                      </span>
+                    </div>
+                    {#if setupInstallGuide && (selectedLocalBot.runtime === "claude" || selectedLocalBot.runtime === "codex")}
+                      <div class="bot-needs-coding-tool-guide" data-testid="bot-needs-coding-tool-guide">
+                        <SetupInstallGuide
+                          tools={aiTools ?? null}
+                          preferred={selectedLocalBot.runtime}
+                          oninstall={setupInstallGuide.oninstall}
+                          onsignin={setupInstallGuide.onsignin}
+                          onstatus={setupInstallGuide.onstatus}
+                          oncancelsignin={setupInstallGuide.oncancelsignin}
+                          oncontinue={continueBotAfterCodingTool}
+                          onrefresh={setupInstallGuide.onrefresh}
+                          downloadUrlFor={setupInstallGuide.downloadUrlFor}
+                          onopen={setupInstallGuide.onopen}
+                        />
+                      </div>
+                    {/if}
+                  {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   {#if stoppedRespondingNote}
                     <!-- The bot said it was working and then went quiet: the
@@ -12109,7 +14601,7 @@
                             data-testid="bot-message-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}
@@ -12124,14 +14616,6 @@
                     </div>
                   {/if}
                   {#if botNoticeBelow}{@render localBotNotice()}{/if}
-                {/snippet}
-                {#snippet botSyncStrip()}
-                  <!-- A strip directly under the header, above the message
-                       scroller: the bot's file sync. It stays in view while
-                       the person scrolls. -->
-                  {#if dmCloudBotUid}
-                    <BotSyncWidget facts={dmCloudBotSync} botName={headerTitle} />
-                  {/if}
                 {/snippet}
                 {#snippet setupHeader()}
                   <SetupChannelIntro
@@ -12153,7 +14637,10 @@
                     onsetupstarted={recordWelcomeSetupRun}
                     readyFirstActionEnabled={readyFirstActionEnabled}
                     {readyFirstActionReady}
-                    onstartsync={() => adapter.sync.startSync()}
+                    onstartsync={() => {
+                      restoreSyncToast();
+                      return adapter.sync.startSync();
+                    }}
                     agent={setupAgent}
                     setupBot={setupBotLauncher}
                     installGuide={setupInstallGuide}
@@ -12220,7 +14707,7 @@
                         data-testid="bot-not-runnable-recheck"
                         disabled={botRecheckBusy}
                         onclick={() => void recheckSelectedBot()}
-                      >
+                      ><RailIcon name="refresh" />
                         {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                       </button>
                       {#if botAdoptError}
@@ -12240,7 +14727,7 @@
                             data-testid="local-bot-start"
                             disabled={localBotBusy === selectedLocalBot.name}
                             onclick={() => void startSelectedLocalBot()}
-                          >
+                          ><RailIcon name="play" />
                             {localBotBusy === selectedLocalBot.name ? "Starting…" : "Start"}
                           </button>
                         {:else}
@@ -12255,7 +14742,7 @@
                             data-testid="local-bot-recheck"
                             disabled={botRecheckBusy}
                             onclick={() => void recheckSelectedBot()}
-                          >
+                          ><RailIcon name="refresh" />
                             {botRecheckBusy ? "Checking…" : BOT_NOT_RUNNABLE_RECHECK}
                           </button>
                         {/if}
@@ -12306,6 +14793,7 @@
                   channelId={selectedRow.channelId}
                   peerPersonUid={selectedRow.kind === "dm" ? selectedRow.personUid ?? null : null}
                   oncardaction={handleCardAction}
+                  {hqFolderPath}
                   ontogglereaction={persistReaction}
                   selfDisplayName={self?.displayName ?? null}
                   selfPersonUid={self?.uid ?? null}
@@ -12315,6 +14803,7 @@
                   mentionCandidates={mentionRoster}
                   allowHereMention={Boolean(selectedRow?.channelId)}
                   onreply={timelineDisplayFor(selectedRow).inlineReplies ? undefined : openReply}
+                  onforward={adapter.messaging.forwardMessage ? openForward : undefined}
                   onopenprofile={openProfileForAuthor}
                   onopenattachment={openAttachmentTray}
                   onopenartifact={openArtifact}
@@ -12338,7 +14827,6 @@
                         ? botProgressHeader
                         : undefined}
                   belowMessages={agentThinkingBelow}
-                  aboveMessages={botSyncStrip}
                   suggestionsFrom={suggestionsFromUid}
                   connections={cloudBotConnections}
                   extraBlocksByEventId={cloudBotExtraCards}
@@ -12363,11 +14851,33 @@
                 </div>
               {:else if openAgentMember && openLocalBot}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="local-bot-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "bot",
+                      name: openAgentMember.displayName,
+                      email: openAgentMember.email,
+                      owner: self?.displayName ?? null,
+                      company: profileCompanyUid ? companyDisplayName(profileCompanyUid, companyNames) : null,
+                      live: openAgentMember.online,
+                      agentUid: openLocalBot.agentUid,
+                      runtimeKind: "local",
+                      companyUid: profileCompanyUid,
+                      agents: adapter.agents ?? null,
+                      onclose: closeAgentDetail,
+                      onmessage: () => messageMemberDirectly(openAgentMember!),
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
+                    {/snippet}
+                  </LazyDoor>
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <LocalBotDetailPanel
                     companies={(companies ?? []).filter(c => c.cloudUid?.startsWith("cmp_")).map(c => ({ uid: c.cloudUid!, name: c.displayName || c.slug, slug: c.slug }))}
                     {onopenurl}
@@ -12380,14 +14890,37 @@
                     onstart={startBotFromProfile}
                     onclose={closeAgentDetail}
                   />
+                  </div>
                 </div>
               {:else if openAgentMember}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="agent-detail-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "bot",
+                      name: openAgentMember.displayName,
+                      email: openAgentMember.email,
+                      role: openAgentMember.role,
+                      company: profileCompanyUid ? companyDisplayName(profileCompanyUid, companyNames) : null,
+                      live: openAgentMember.online,
+                      agentUid: openAgentMember.personUid,
+                      runtimeKind: "cloud",
+                      companyUid: promotedBotCompany(localBotRecords, openAgentMember.personUid) ?? profileCompanyUid,
+                      agents: adapter.agents ?? null,
+                      onclose: closeAgentDetail,
+                      onmessage: () => messageMemberDirectly(openAgentMember!),
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
+                    {/snippet}
+                  </LazyDoor>
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <AgentDetailPanel
                     agentUid={openAgentMember.personUid}
                     {localBots}
@@ -12409,14 +14942,39 @@
                     onsaveavatar={saveOpenAgentAvatar}
                     onclose={closeAgentDetail}
                   />
+                  </div>
                 </div>
               {:else if openProfileMember}
                 <div
-                  class="reply-column profile-column"
+                  class="reply-column profile-column inspector-pane"
                   class:overlay={narrowViewport}
                   data-testid="profile-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
+                  <LazyDoor
+                    door={profilePaneDoor}
+                    props={{
+                      kind: "person",
+                      name: openProfileMember.displayName,
+                      email: openProfileMember.email,
+                      role: openProfileMember.role,
+                      company: selectedRow.companyUid ? companyDisplayName(selectedRow.companyUid, companyNames) : null,
+                      live: openProfileMember.online,
+                      onclose: closeMemberProfile,
+                      onmessage: () => messageMemberDirectly(openProfileMember!),
+                      onatlas: selectedRow.companyUid
+                        ? () => void navigate(companyRowDestination("atlas", selectedRow!.companyUid!))
+                        : undefined,
+                      onmanage: selectedRow.companyUid
+                        ? () => void navigate(companyRowDestination("team", selectedRow!.companyUid!))
+                        : undefined,
+                    }}
+                  >
+                    {#snippet skeleton()}
+                      <div class="profile-pane-loading"><ReadLoader testid="profile-pane-loading" /></div>
+                    {/snippet}
+                  </LazyDoor>
+                  <div class="legacy-detail" inert aria-hidden="true">
                   <MemberProfilePanel
                     member={openProfileMember}
                     {self}
@@ -12430,13 +14988,14 @@
                     onmessage={messageMemberDirectly}
                     onclose={closeMemberProfile}
                   />
+                  </div>
                 </div>
               {:else if openReplyRootId && replyScope}
                 <div
                   class="reply-column"
                   class:overlay={narrowViewport}
                   class:resizable-thread={!narrowViewport}
-                  style:--thread-width={threadWidth === null ? "50%" : `${threadWidth}px`}
+                  style:--thread-width={threadWidth === null ? "360px" : `${threadWidth}px`}
                   data-testid="reply-column"
                   data-reply-layout={narrowViewport ? "overlay" : "column"}
                 >
@@ -12467,6 +15026,7 @@
                     channelId={selectedRow.channelId}
                     withPersonUid={selectedRow.personUid}
                     withPersonName={selectedRow.title}
+                    channelName={selectedRow.kind === "channel" ? selectedRow.title : null}
                     companyUid={selectedRow.companyUid}
                     {seedRoot}
                     {wakes}
@@ -12530,29 +15090,22 @@
             Couldn’t load conversations.
           </div>
         {:else}
-          <!-- Pre-selection boot state: skeleton, not a "No data" flash. -->
-          <ChannelSkeleton />
+          <!-- Pre-selection boot state: the shared loader, not a "No data" flash. -->
+          <div class="channel-loading chat-shell">
+            <ReadLoader testid="channel-loading" />
+          </div>
         {/if}
       </main>
     </div>
   {/if}
 
-  {#if view === "library" && !navigationUnavailable}
-    <LibraryOverlay
-      {adapter}
-      tab={libraryTab}
-      itemId={libraryItemId}
-      {packagesEvents}
-      onback={leaveLibrary}
-      onnavigatetab={(next) => void navigate({ kind: "library", tab: next })}
-      onnavigateitem={(id) =>
-        void navigate({ kind: "library", tab: libraryTab, itemId: id })}
-    />
-  {/if}
-
-  {#if paletteOpen}
+  {#if paletteOpen || paletteMounted}
     <CommandPalette
+      open={paletteOpen}
       commands={paletteCommands}
+      companyUid={tenantCompanyId}
+      companyName={paletteCompanies.find((c) => c.companyUid === tenantCompanyId)
+        ?.label ?? "Company"}
       onclose={() => (paletteOpen = false)}
     />
   {/if}
@@ -12570,6 +15123,31 @@
 
   {#if cheatSheetOpen}
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
+  {/if}
+
+  <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
+  {#if visualFirstRunOpen}
+    <FirstRunTakeover
+      initialName={firstRunSuggestedName}
+      runtimeReady={localBotRuntimeReady}
+      runtimeStatus={localBotRuntimeStatus}
+      signInApi={botSignIn}
+      onsignedin={onBotRuntimeSignedIn}
+      onrecheck={recheckLocalBotRuntimes}
+      {aiTools}
+      hqFolderPath={hqFolderPath ?? ""}
+      {onopenassistant}
+      {onassistedinstall}
+      {onrequestaitools}
+      creation={firstRunCreation}
+      onconfirmname={confirmFirstRunName}
+      onruntime={(runtime) => (firstRunRuntime = runtime)}
+      onretry={() => firstRunStarter.retry()}
+      importHost={firstRunImportHost}
+      onimport={recordFirstRunImport}
+      ontalk={talkToFirstRunAssistant}
+      oncontinueinchat={continueFirstRunInChat}
+    />
   {/if}
 
   <!-- The modal a connection card opened. Mounted here, not in the message,
@@ -12601,9 +15179,21 @@
       onclose={() => (linkMenu = null)}
     />
   {/if}
+  </div>
+  </div>
 </div>
 
 <style>
+  /* Hit area (AUDIT-2-10..13): every control here has at least a 28x28 px
+     clickable box. The ::after pad grows only the axes under 28 px, so the
+     drawn size and layout stay as they are. Kept first so a later
+     position rule (e.g. absolute) still wins. */
+  .edit-profile-btn { position: relative; }
+  .edit-profile-btn::after {
+    content: "";
+    position: absolute;
+    inset: min(0px, calc(50% - 14px));
+  }
   .desktop-shell {
     position: relative;
     display: flex;
@@ -12650,6 +15240,69 @@
     --titlebar-leading-inset: calc(96px / 1.12);
   }
 
+  .shell-row {
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .shell-column {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .meetings-door-loading {
+    padding: 16px 12px;
+  }
+
+  .meetings-door-loading.canvas {
+    padding: 24px;
+  }
+
+  .channel-loading {
+    padding: 16px 24px;
+  }
+
+  .rail-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 32px;
+    color: var(--v4-text-2);
+    font-size: 14px;
+  }
+
+  .rail-placeholder h1 {
+    margin: 0 0 4px;
+    color: var(--v4-text-1);
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .rail-placeholder p {
+    margin: 0;
+  }
+
+  .rail-placeholder-story {
+    color: var(--v4-text-3);
+    font: 400 12px/1.4 var(--font-mono, monospace);
+  }
+
+  .settings-retry {
+    margin: auto;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
   .desktop-body {
     display: flex;
     flex: 1 1 auto;
@@ -12669,6 +15322,7 @@
   }
 
   .desktop-main {
+    position: relative;
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
@@ -12700,6 +15354,17 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  .rail-files {
+    height: 100%;
+    background: var(--v4-ground, #161618);
+    color: var(--t1);
+  }
+  .rail-files-empty {
+    margin: 0;
+    padding: 16px;
+    font-size: 13px;
+    color: var(--t3);
   }
   .projects-host > :global(*),
   .explorer-host > :global(*) {
@@ -12838,6 +15503,29 @@
     min-width: min(360px, 50%);
   }
 
+  .reply-column.inspector-pane {
+    width: 340px;
+    flex: 0 0 340px;
+    background: var(--v4-secondary-sidebar, var(--side-bg));
+  }
+
+  /* First frame of a profile pane while its chunk loads (lazy-doors.ts). */
+  .profile-pane-loading {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 16px;
+    box-sizing: border-box;
+    background: var(--v4-secondary-sidebar, var(--side-bg));
+  }
+
+  .legacy-detail {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+
   .reply-column {
     position: relative;
     /* Stacking context (also covers .profile-column). Side-by-side both
@@ -12927,6 +15615,68 @@
   .channel-header[data-reply-open="true"],
   .chat-stage[data-reply-open="true"] {
     --conv-inset: 24px;
+  }
+
+  .channel-pin {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: 420px;
+    margin-left: 10px;
+    padding: 2px 8px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-3, var(--t3));
+    font-size: 12px;
+  }
+
+  .channel-pin svg {
+    flex: none;
+  }
+
+  .channel-pin-text {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .channel-live-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: var(--v4-radius-pill);
+    background: var(--v4-control-faint);
+    color: var(--v4-text-2, var(--t2));
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .channel-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--v4-ok);
+  }
+
+  .channel-details-btn {
+    display: grid;
+    place-items: center;
+    width: var(--hq-btn-h);
+    height: var(--hq-btn-h);
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--t2);
+    cursor: pointer;
+  }
+
+  .channel-details-btn:hover,
+  .channel-details-btn:focus-visible {
+    background: var(--v4-active-row);
+    outline: none;
   }
 
   .channel-header {
@@ -13219,6 +15969,9 @@
   }
   .setup-agent-prompt:empty {
     display: none;
+  }
+  .bot-needs-coding-tool-guide {
+    margin: 4px 16px 8px;
   }
   .local-bot-notice {
     display: flex;

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import RailIcon from "../../common/button/RailIcon.svelte";
+  import Dropdown from "../../common/LazyDropdown.svelte";
   /**
    * BoardTab — the project channel's Board view, ported faithfully from the
    * hq-sync desktop `desktop-alt/chat/BoardTab.svelte` MARKUP + CSS.
@@ -227,17 +229,24 @@
     <p class="board-member-not-enabled" role="status">Adding project members is not turned on for this company yet.</p>
   {:else if onAddMember}
     <form class="board-member-add" aria-label="Add project member" onsubmit={addMember}>
-      <label for="board-member-uid">Company member</label>
-      <select id="board-member-uid" value={memberUid} onchange={(event) => memberUid = event.currentTarget.value} disabled={memberPending || memberRosterLoading || memberRosterError}>
-        <option value="">{memberRosterLoading ? "Loading members…" : "Select a member"}</option>
-        {#each memberOptions as member (member.personUid)}
-          <option value={member.personUid}>{member.label}</option>
-        {/each}
-      </select>
-      <button type="submit" disabled={memberPending || memberRosterLoading || memberRosterError || !memberUid.trim()}>{memberPending ? "Adding…" : "Add member"}</button>
+      <span class="board-member-label">Company member</span>
+      <div class="board-member-pick">
+      <Dropdown
+        testid="board-member-uid"
+        label="Company member"
+        block
+        bind:value={memberUid}
+        options={[
+          { value: "", label: memberRosterLoading ? "Loading members…" : "Select a member" },
+          ...memberOptions.map((member) => ({ value: member.personUid, label: member.label })),
+        ]}
+        disabled={memberPending || memberRosterLoading || memberRosterError}
+      />
+      </div>
+      <button type="submit" disabled={memberPending || memberRosterLoading || memberRosterError || !memberUid.trim()}><RailIcon name="plus" />{memberPending ? "Adding…" : "Add member"}</button>
       {#if memberError}<p role="status">{memberError}</p>{/if}
       {#if memberNotice}<p role="status">{memberNotice}</p>{/if}
-      {#if memberRosterError}<p role="status">Could not load company members.</p><button type="button" onclick={loadCompanyMemberOptions}>Retry loading members</button>{/if}
+      {#if memberRosterError}<p role="status">Could not load company members.</p><button type="button" onclick={loadCompanyMemberOptions}><RailIcon name="refresh" />Retry loading members</button>{/if}
     </form>
   {/if}
 
@@ -247,8 +256,8 @@
       <label>Title <input use:focusOnMount required maxlength="300" bind:value={taskTitle} disabled={createPending} /></label>
       <label>Description <textarea maxlength="2000" bind:value={taskDescription} disabled={createPending}></textarea></label>
       {#if createError}<p role="alert">{createError}</p>{/if}
-      <button type="submit" disabled={createPending || !taskTitle.trim()}>{createPending ? "Creating…" : "Create task"}</button>
-      <button type="button" disabled={createPending} onclick={() => (createStage = null)}>Cancel</button>
+      <button type="submit" disabled={createPending || !taskTitle.trim()}><RailIcon name="plus" />{createPending ? "Creating…" : "Create task"}</button>
+      <button type="button" disabled={createPending} onclick={() => (createStage = null)}><RailIcon name="x" />Cancel</button>
     </form>
   {/if}
   {#if visibleColumns.length === 0}
@@ -419,7 +428,7 @@
               class="panel-btn"
               data-testid="board-open-in-channel"
               onclick={() => onOpenInChannel?.()}
-            >
+            ><RailIcon name="external" />
               Open in channel
             </button>
           </footer>
@@ -435,7 +444,7 @@
   .board-create label { display: block; margin: 8px 0; }
   .board-create input, .board-create textarea { display: block; box-sizing: border-box; width: 100%; padding: 6px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); border-radius: 4px; }
   .board-member-add { display: flex; align-items: center; gap: 8px; padding: 10px 20px; color: var(--t3); font-size: 12px; }
-  .board-member-add select { width: min(280px, 40vw); padding: 6px 8px; color: var(--pop-text); background: var(--c-field-bg); border: 1px solid var(--pop-border); }
+  .board-member-pick { width: min(280px, 40vw); }
   .board-member-add button { padding: 6px 10px; color: var(--t1); background: var(--btn-bg); border: 1px solid var(--line); cursor: pointer; }
   .board-member-add button:disabled { opacity: 0.55; cursor: default; }
   .board-member-add p { margin: 0; }

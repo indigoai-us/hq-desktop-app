@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RailIcon from '@hq/ui/rail-icon';
   import { onDestroy } from 'svelte';
   import { relativeTime } from '../lib/notificationFeedData';
 
@@ -437,7 +438,7 @@
         ? `${actor}: ${text}`
         : text}
   >
-    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Agent" aria-label="Agent sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
+    {#if actor}<span class="nr-actor" data-testid="notification-actor" title={actor}>{actor}</span>{#if agentActor}<span class="nr-agent" data-testid="agent-badge" title="Bot" aria-label="Bot sender"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.5h6v5.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6.5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 2.5v2M5.5 4.5 4 3.5M10.5 4.5 12 3.5M6.5 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>{/if}{' '}{/if}{text}
   </span>
   <span class="nr-trail">
     {#if resolvable}<span class="nr-needs-action" data-testid="notification-needs-action" aria-hidden="true">Needs action</span>{/if}
@@ -568,7 +569,7 @@
           disabled={resolvePending}
           onclick={() => closeResolver()}
         >
-          Cancel
+          <RailIcon name="x" />Cancel
         </button>
       </div>
     {/if}

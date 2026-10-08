@@ -33,8 +33,9 @@
  *                                   host offers the takeover to no other.
  */
 
+import type { AgentCreateQuote, CreateErrorFix } from "@hq/agents";
 import type { CardActionResult, ConversationApi } from "./chat-api.js";
-import { cardActionFailureMessage } from "./card-action.js";
+import { cardActionFailureMessage, cardActionFailureText } from "./card-action.js";
 import {
   parseLifecycleCard,
   type LifecycleCardModel,
@@ -73,6 +74,12 @@ export type EntryPointResult =
       reason: string;
       /** True when the server refused (permission / plan), not a transport error. */
       blocked: boolean;
+      /**
+       * The one action that fixes a refusal (checkout, fresh quote, another
+       * handle). Only the direct create (`agents.desktop-agent-creation`)
+       * sets it; the card driver never does.
+       */
+      fix?: CreateErrorFix | null;
       /**
        * Set when the refusal is the company's plan: where the upgrade card
        * lives, so the caller can offer the way forward instead of a dead end.
@@ -246,6 +253,8 @@ export interface CloudBotDraft {
    * read it.
    */
   idempotencyKey?: string;
+  /** Direct create only (`agents.desktop-agent-creation` on): the size and price the person saw. */
+  quote?: AgentCreateQuote;
 }
 
 /** Console page where a newly-created Claude subscription can be authorized. */
@@ -458,14 +467,6 @@ function valuesForCard(
     else if (field.id === "size" && draft.size) value = draft.size;
     if (!value && field.required) return null;
     values[field.id] = value;
-  }
-  // Auth is carried only on the final create action. In particular, the API
-  // key never enters a lifecycle field or a card snapshot.
-  if (card.fields.some((field) => field.id === "size")) {
-    values.authMode = draft.authMode ?? "subscription";
-    if (values.authMode === "apiKey" && draft.apiKey) {
-      values.apiKey = draft.apiKey;
-    }
   }
   return values;
 }
@@ -786,7 +787,7 @@ export interface CloudBotOneShotOptions {
  * What reaches this code is one string from the native command
  * (`run_card_action` in apps/sync/src-tauri/src/commands/messages.rs):
  *
- *   - `Network error: ...` when the request did not complete (no connection,
+ *   - a line that opens with "Network error" when the request did not complete (no connection,
  *     a timeout): it may or may not have reached the server.
  *   - `Request failed (status NNN)` for a refusal with no words in its body,
  *     which is what a gateway answers (504, 502, 429).
@@ -831,10 +832,10 @@ export const CLOUD_BOT_SERVER_FAILED_REASON =
  * line. The support log gets a code for it (`failureCode`), never the text.
  */
 function shownFailure(err: unknown): { reason: string; raw: boolean } {
-  const message = cardActionFailureMessage(err);
+  const message = cardActionFailureText(err);
   const raw =
     message.length > 140 ||
-    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(/i.test(
+    /arn:aws|not authorized to perform|AccessDenied|Exception\b|statusCode|status \d{3}|\{\s*"|\bat \S+ \(|https?:\/\/|sending request/i.test(
       message,
     );
   return raw

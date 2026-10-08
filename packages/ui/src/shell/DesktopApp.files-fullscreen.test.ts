@@ -61,18 +61,18 @@ describe("DesktopApp Files destination", () => {
     await settle();
 
     expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
-    host.querySelector<HTMLButtonElement>('[data-testid="titlebar-files"]')!.click();
+    host.querySelector<HTMLButtonElement>('[data-testid="rail-library"]')!.click();
     await settle();
 
-    const files = host.querySelector('[data-testid="files-host"]');
-    expect(files).toBeTruthy();
-    expect(files?.querySelector('[data-testid="vault-explorer"]')).toBeTruthy();
-    expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeNull();
-
-    host.querySelector<HTMLButtonElement>('[data-testid="files-back"]')!.click();
-    await settle();
-
-    expect(host.querySelector('[data-testid="files-host"]')).toBeNull();
-    expect(host.querySelector('[data-testid="chat-sidebar"]')).toBeTruthy();
+    const library = host.querySelector('[data-testid="rail-files-host"]');
+    expect(library).toBeTruthy();
+    expect(host.querySelector('[data-testid="rail-placeholder"]')).toBeNull();
+    const sidebar = host.querySelector('[data-testid="chat-sidebar"]');
+    let hidden = false;
+    for (let node = sidebar?.parentElement; node; node = node.parentElement) {
+      const style = node.getAttribute("style") ?? "";
+      if (style.includes("display: none") || style.includes("display:none")) hidden = true;
+    }
+    expect(hidden).toBe(true);
   });
 });

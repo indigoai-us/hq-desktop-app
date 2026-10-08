@@ -1,0 +1,21 @@
+/*
+ * Shared inline banner / callout with a trailing action (owner, 2026-10-05:
+ * the Outpost "Host unreachable" banner's Retry now button sat flush against
+ * the banner edges). The banner insets its content by the same 12px on the
+ * left and right, and by 6px top and bottom, so a standard-height button
+ * (button-standard.css) has room on every side. The text takes the free
+ * space; the action stays at the trailing edge.
+ */
+.inline-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--raised, var(--v4-control-faint));
+  font-size: 13px;
+  line-height: 1.45;
+}
+.inline-banner > .inline-banner-text { flex: 1 1 auto; min-width: 0; }
+.inline-banner > :last-child:not(.inline-banner-text) { flex: none; }

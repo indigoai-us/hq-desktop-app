@@ -9,6 +9,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 import CreateModal from "./CreateModal.svelte";
+import { flushSync } from "svelte";
+import { chooseDropdown, dropdownButton, dropdownValue } from "../test-support/dropdown.js";
+
+// Reads a dropdown's options and closes the menu with a second button click:
+// the modal's capture-phase window Escape handler would otherwise eat an
+// Escape and step back out of the create form.
+async function menuOptions(testid: string) {
+  const button = await dropdownButton(document, testid);
+  button.click();
+  flushSync();
+  const menu = await vi.waitFor(() => {
+    const el = document.querySelector(`[data-testid="${testid}-menu"]`);
+    if (!el) throw new Error(`${testid} menu not open`);
+    return el;
+  });
+  const out = [...menu.querySelectorAll<HTMLElement>('[role="option"]')].map((o) => ({
+    value: o.dataset.value ?? "",
+    disabled: o.getAttribute("aria-disabled") === "true",
+  }));
+  button.click();
+  flushSync();
+  return out;
+}
 import type { ChatSidebarApi } from "./chat-api.js";
 import type { ConversationRow, DmContactInput } from "./sidebar-model.js";
 
@@ -315,7 +338,7 @@ describe("CreateModal create step", () => {
     open();
     await tick();
     await gotoCreate("Growth");
-    expect(host.querySelector(".create-hint")?.textContent).toContain("Ctrl+↵ TO CREATE");
+    expect(host.querySelector(".create-hint")?.textContent).toContain("Ctrl+↵ to create");
   });
 
   it("Escape returns to the find step with the name preserved in the query", async () => {
@@ -487,6 +510,30 @@ describe("CreateModal create step", () => {
 });
 
 describe("CreateModal submit", () => {
+  it("shows plain copy, never the raw transport text, when create fails for an unknown reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const createChannel = vi.fn(async () => {
+      throw new Error(raw);
+    });
+    open({ api: stubApi({ createChannel }) });
+    await tick();
+    await gotoCreate("Growth");
+    $<HTMLButtonElement>('[data-testid="chat-channel-create"]')?.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-channel-error"]')).toBeTruthy();
+    });
+    const error = $('[data-testid="chat-channel-error"]')!;
+    expect(error.textContent).toContain("the request did not go through");
+    expect(document.body.textContent).not.toContain("boom");
+    expect(document.body.textContent).not.toContain("HTTP 500");
+    for (const el of document.querySelectorAll("[title]")) {
+      expect(el.getAttribute("title")).not.toContain("boom");
+    }
+    expect(warn).toHaveBeenCalledWith("[create-channel] create failed", raw);
+    warn.mockRestore();
+  });
+
   it("keeps the create step and remembers the slug when the server 409s", async () => {
     const createChannel = vi.fn(async () => {
       throw new Error(
@@ -964,11 +1011,32 @@ describe("CreateModal Company/Personal scope", () => {
     expect(args).not.toHaveProperty("companyUid");
   });
 
+  // OWNER-R6: the sheet listens for Escape on window in the capture phase;
+  // with the company dropdown open, Escape closes only the menu.
+  it("Escape in the open company dropdown closes the menu and keeps the form", async () => {
+    open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
+    await tick();
+    await gotoCreate("Growth");
+    const button = await dropdownButton(document, "chat-channel-scope");
+    button.click();
+    await tick();
+    const menu = await vi.waitFor(() => {
+      const el = $('[data-testid="chat-channel-scope-menu"]');
+      if (!el) throw new Error("menu not open");
+      return el;
+    });
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect($('[data-testid="chat-channel-scope-menu"]')).toBeNull();
+    expect($('[data-testid="chat-channel-scope"]')).not.toBeNull();
+    expect($('[data-testid="chat-channel-name"]')).not.toBeNull();
+  });
+
   it("shows the company dropdown only while Company is chosen", async () => {
     open({ scopeCompanies: TWO, activeScope: "cmp_amass" });
     await tick();
     await gotoCreate("Growth");
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe(
       "cmp_amass",
     );
 
@@ -979,7 +1047,7 @@ describe("CreateModal Company/Personal scope", () => {
     // Back to Company restores the company that was chosen before.
     $<HTMLButtonElement>('[data-testid="chat-channel-scope-company"]')?.click();
     await tick();
-    expect($<HTMLSelectElement>('[data-testid="chat-channel-scope"]')?.value).toBe(
+    expect(await dropdownValue(document, "chat-channel-scope")).toBe(
       "cmp_amass",
     );
   });
@@ -1082,9 +1150,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     expect(
       $('[data-testid="chat-channel-scope-unavailable"]')?.textContent,
     ).toContain("Kai isn't a member of Indigo");
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
     expect(
-      [...scope.options].find((option) => option.value === "cmp_indigo")
+      (await menuOptions("chat-channel-scope")).find((option) => option.value === "cmp_indigo")
         ?.disabled,
     ).toBe(true);
     const create = $<HTMLButtonElement>('[data-testid="chat-channel-create"]')!;
@@ -1125,9 +1192,7 @@ describe("CreateModal cross-company confirmation (D7)", () => {
       "external",
     );
 
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
-    scope.value = "cmp_indigo";
-    scope.dispatchEvent(new Event("change", { bubbles: true }));
+    await chooseDropdown(document, "chat-channel-scope", "cmp_indigo");
     // The Indigo roster loads asynchronously; the question follows it.
     await vi.waitFor(() => {
       expect($('[data-testid="chat-create-confirm-external"]')).toBeTruthy();
@@ -1237,10 +1302,8 @@ describe("CreateModal cross-company confirmation (D7)", () => {
     await tick();
     await pickMember("Kai");
 
-    const scope = $<HTMLSelectElement>('[data-testid="chat-channel-scope"]')!;
     const select = async (value: string) => {
-      scope.value = value;
-      scope.dispatchEvent(new Event("change", { bubbles: true }));
+      await chooseDropdown(document, "chat-channel-scope", value);
       await tick();
     };
 
@@ -1496,7 +1559,8 @@ describe("CreateModal in-flight and summary", () => {
       expect($('[data-testid="chat-create-summary-error"]')).toBeTruthy();
     });
     const error = $('[data-testid="chat-create-summary-error"]')!;
-    expect(error.textContent).toContain("still broken");
+    expect(error.textContent).toContain("That didn't work either. Try again.");
+    expect(error.textContent).not.toContain("still broken");
     expect(error.textContent).not.toContain("cmp_");
     expect(retry().disabled).toBe(false);
     expect(addChannelMember).toHaveBeenCalledTimes(2);
@@ -1844,6 +1908,29 @@ describe("CreateModal message by email", () => {
     expect(onclose).not.toHaveBeenCalled();
   });
 
+  it("shows plain copy, never raw transport text, when an email send fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const raw = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const sendDmToEmail = vi.fn().mockRejectedValueOnce(new Error(raw));
+    open({ api: stubApi({ sendDmToEmail }) });
+    await tick();
+    await typeEmail();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-row"]')!.click();
+    await tick();
+    type($<HTMLTextAreaElement>('[data-testid="chat-create-email-body"]')!, "hey");
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-email-send"]')!.click();
+    await vi.waitFor(() => {
+      expect($('[data-testid="chat-create-email-error"]')).toBeTruthy();
+    });
+    expect($('[data-testid="chat-create-email-error"]')!.textContent).toContain(
+      "Couldn't send. Check your connection and try again.",
+    );
+    expect(document.body.textContent).not.toContain("boom");
+    expect(warn).toHaveBeenCalledWith("[create-modal] email send failed", raw);
+    warn.mockRestore();
+  });
+
   it("shows the server's refusal inline and lets the user try again", async () => {
     const sendDmToEmail = vi
       .fn()
@@ -1862,7 +1949,10 @@ describe("CreateModal message by email", () => {
     });
     const error = $('[data-testid="chat-create-email-error"]')!;
     expect(error.getAttribute("role")).toBe("alert");
-    expect(error.textContent).toContain("Couldn't send: Daily invite cap reached");
+    expect(error.textContent).toContain(
+      "Couldn't send: you've hit the daily invite limit. Try again tomorrow.",
+    );
+    expect(error.textContent).not.toContain("Daily invite cap reached");
     expect(error.textContent).not.toContain("http-429");
     // The draft survives the failure, and the button becomes the retry.
     expect(
@@ -1901,3 +1991,112 @@ describe("CreateModal message by email", () => {
     expect($('[data-testid="chat-create-email-body"]')).toBeNull();
   });
 });
+
+// AUDIT-2-14: opened straight to the bot step (Messages > New > New bot,
+// Settings > Bots > New bot), Escape closes the modal; reached from the search
+// step, Escape goes back one step. The back arrow returns to search either way.
+describe("New bot step Escape", () => {
+  function openBot(initialStep: "find" | "bot", onclose: (id?: string) => void) {
+    const props = {
+      api: stubApi(),
+      rows: [],
+      contacts: [],
+      scopeCompanies: [{ companyUid: "cmp_indigo", label: "Indigo" }],
+      activeScope: "cmp_indigo",
+      self: { uid: "prs_me", displayName: "Stefan" },
+      onclose,
+      onpick: () => {},
+      oncreated: () => {},
+      oncreatebot: async () => ({ ok: true as const, agentUid: "agt_test", name: "Test bot" }),
+      initialStep,
+    };
+    component = mount(CreateModal, { target: host, props });
+  }
+  const onFind = () => !!$('[data-testid="chat-create-query"]');
+
+  it("closes the modal when it opened straight on the bot step", async () => {
+    const onclose = vi.fn();
+    openBot("bot", onclose);
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onclose).toHaveBeenCalledTimes(1);
+    expect(onFind()).toBe(false);
+  });
+
+  it("back arrow still returns to search when opened straight on the bot step", async () => {
+    const onclose = vi.fn();
+    openBot("bot", onclose);
+    await tick();
+    // The bot step renders in the takeover shell; its first screen's Back
+    // (the step head's Back) is the way back to search.
+    expect($('[data-testid="new-bot-sunrise-flow"]')).toBeTruthy();
+    $<HTMLButtonElement>('[data-testid="create-bot-back"]')!.click();
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+    // Re-entered from search: Escape now steps back instead of closing.
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("New bot from the window's own search opens the shared step flow in the takeover shell", async () => {
+    const onclose = vi.fn();
+    openBot("find", onclose);
+    await tick();
+    expect(onFind()).toBe(true);
+    // Not opened from the "Cloud or Local?" choice: the window's own row.
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    const shell = $('[data-testid="chat-create-modal"]');
+    expect(shell?.getAttribute("data-sunrise")).toBe("true");
+    expect(shell?.classList.contains("new-bot-takeover")).toBe(true);
+    expect($('[data-testid="new-bot-takeover-cancel"]')).toBeTruthy();
+    const card = $('[data-testid="new-bot-sunrise-flow"]');
+    expect(card).toBeTruthy();
+    const flow = card!.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
+    expect(flow).toBeTruthy();
+    // Local only here: the flow opens on the name, the first step everywhere.
+    expect(flow!.getAttribute("data-home")).toBe("local");
+    expect(flow!.getAttribute("data-step")).toBe("name");
+    // The step head: bars (name, coding tool, then the optional who it's for
+    // and fine-tune; no templates here) and Back.
+    const dots = card!.querySelector('[data-testid="new-bot-progress"]');
+    expect(dots?.querySelectorAll("span").length).toBe(4);
+    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 4");
+    expect(card!.querySelector('[data-testid="create-bot-back"]')?.textContent).toContain("Back");
+    expect(card!.querySelector('[data-testid="new-bot-continue-name"]')?.textContent).toContain("Continue");
+    // None of the old wizard's chrome: no step crumbs, no plain modal card.
+    expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
+    expect(document.querySelector(".create-card")).toBeNull();
+    // Continue moves to the next dot.
+    $<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await tick();
+    expect(flow!.getAttribute("data-step")).toBe("home");
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 4");
+    // The same footer as the takeover: "Next: <step>" and "Finish with defaults".
+    expect(card!.querySelector('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Who it's for");
+    expect(card!.querySelector('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
+    expect(onclose).not.toHaveBeenCalled();
+  });
+
+  it("goes back to search when the bot step was reached from search", async () => {
+    const onclose = vi.fn();
+    openBot("find", onclose);
+    await tick();
+    $<HTMLButtonElement>('[data-testid="chat-create-new-bot"]')!.click();
+    await tick();
+    expect(onFind()).toBe(false);
+    press(window, "Escape");
+    await tick();
+    expect(onFind()).toBe(true);
+    expect(onclose).not.toHaveBeenCalled();
+  });
+});
+

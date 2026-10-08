@@ -227,11 +227,31 @@ describe("DesktopApp delete channel", () => {
     const alert = host.querySelector('[data-testid="channel-action-error"]');
     expect(alert, "error renders near the header").toBeTruthy();
     expect(alert?.getAttribute("role")).toBe("alert");
-    expect(alert?.textContent).toContain(
-      "This server doesn't support deleting channels yet.",
-    );
+    // Adapter text is logged, not shown (AUDIT-3c).
+    expect(alert?.textContent).toContain("Couldn't delete #launch. Try again.");
+    expect(alert?.textContent).not.toContain("doesn't support deleting channels");
     expect(removed).toEqual([]);
     expect(host.querySelector('[data-testid="channel-header"]')).toBeTruthy();
+  });
+
+  it("never shows raw transport error text when delete fails", async () => {
+    const RAW = '[invoke] x HTTP 500 Internal Server Error: {"message":"boom"}';
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const deleteChannel = vi.fn(async () => {
+      throw new Error(RAW);
+    });
+    await mountApp({ deleteChannel });
+    await openPopover();
+    host.querySelector<HTMLButtonElement>('[data-testid="status-channel-delete"]')!.click();
+    await settle();
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-ok"]')!.click();
+    await settle();
+    const alert = host.querySelector('[data-testid="channel-action-error"]');
+    expect(alert?.textContent).toContain("Couldn't delete #launch. Try again.");
+    expect(alert?.textContent).not.toContain("boom");
+    expect(alert?.getAttribute("title") ?? "").not.toContain("boom");
+    expect(warn.mock.calls.some((a) => a.some((x) => String(x).includes("boom")))).toBe(true);
+    warn.mockRestore();
   });
 
   it("non-owner: no trash control in the popover", async () => {
