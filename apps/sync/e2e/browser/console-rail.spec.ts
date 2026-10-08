@@ -36,8 +36,8 @@ test.describe('console rail: full user path', () => {
   test('rail switch, company Atlas, projects, task pane, Files tab', async ({ page }) => {
     const errors = await openShell(page);
     const rail = page.getByTestId('app-rail');
-    // OWNER-R22 added Marketplace beneath Connections.
-    await expect(rail.locator('[data-testid^="rail-"]')).toHaveCount(13);
+    // OWNER-R22 added Marketplace beneath Connections; Daily Brief sits after Home.
+    await expect(rail.locator('[data-testid^="rail-"]')).toHaveCount(14);
     await expect(page.getByTestId('rail-marketplace')).toHaveAttribute('aria-label', 'Marketplace');
 
     await clickPaints(page, '[data-testid="rail-company"]', '[data-testid="atlas-landing"]');

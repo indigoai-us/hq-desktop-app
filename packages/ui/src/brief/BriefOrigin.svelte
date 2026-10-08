@@ -1,7 +1,6 @@
 <script lang="ts">
   /** Company logo + repo or org, on every item, so sources are easy to tell apart. */
-  import CompanyIcon from "../company/CompanyIcon.svelte";
-  import { railInitials } from "../shell/app-rail.js";
+  import CompanyLabel from "../company/CompanyLabel.svelte";
   import { useBrief } from "./brief-context.svelte.js";
   import type { BriefOrigin } from "./brief-types.js";
 
@@ -12,15 +11,9 @@
 </script>
 
 {#if company || repo}
-  <span class="org" title={[company?.label, origin.repo].filter(Boolean).join(" · ")} data-testid="brief-origin">
+  <span class="org" title={origin.repo ?? ""} data-testid="brief-origin">
     {#if company}
-      <span class="lgo">
-        {#if company.iconUrl}
-          <CompanyIcon iconUrl={company.iconUrl} size={16} label={company.label} decorative />
-        {:else}
-          {railInitials(company.label)}
-        {/if}
-      </span>
+      <span class="lgo"><CompanyLabel name={company.label} iconUrl={company.iconUrl} companyUid={company.uid} size={16} iconOnly /></span>
     {/if}
     {#if repo}<b>{repo}</b>{/if}
   </span>
