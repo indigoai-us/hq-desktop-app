@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CompanyLabel from "../../company/CompanyLabel.svelte";
   /**
    * Forward a message to one or more destinations (US-009). Candidates are
    * passed in from data the shell already holds (sidebar rows and contacts),
@@ -442,7 +443,7 @@
                     onclick={(e) => {
                       e.stopPropagation();
                       changeCompany(company.uid);
-                    }}>{company.name}</button>
+                    }}><CompanyLabel name={company.name} companyUid={company.uid} /></button>
                 {/each}
               </div>
             {/if}
@@ -859,10 +860,10 @@
     flex-direction: column;
     min-width: 180px;
     padding: 4px;
-    border: 1px solid var(--line2, rgba(255, 255, 255, 0.1));
+    border: 1px solid var(--overlay-border);
     border-radius: 10px;
-    background: var(--v4-surface-solid, var(--elevated, #1e1e24));
-    box-shadow: var(--pop-shadow, 0 12px 32px rgba(0, 0, 0, 0.45));
+    background: var(--overlay-bg);
+    box-shadow: var(--overlay-shadow);
   }
 
   .forward-scope-option {
@@ -1066,8 +1067,8 @@
   .forward-btn {
     appearance: none;
     -webkit-appearance: none;
-    height: 30px;
-    padding: 0 12px;
+    height: var(--hq-btn-h);
+    padding: 0 var(--hq-btn-pad-inline);
     border: 0;
     border-radius: 9px;
     background: var(--v4-control-bg, color-mix(in srgb, var(--t1) 8%, transparent));
