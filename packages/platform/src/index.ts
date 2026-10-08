@@ -34,9 +34,11 @@ export {
   putHqAnywherePersonSetting,
   retryHqAnywhereRequest,
   setHqAnywhereGlobalRuntime,
+  subscribeHqAnywhereGlobalRuntimeStatus,
   HQ_ANYWHERE_RETRY_DELAYS_MS,
   HQ_ANYWHERE_RETRY_ATTEMPTS,
 } from "./hq-anywhere-setting.js";
+export type { HqAnywhereGlobalRuntimeStatus } from "./hq-anywhere-setting.js";
 export {
   compareHumanRecency,
   filterHumanMessages,

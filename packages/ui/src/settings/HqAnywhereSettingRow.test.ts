@@ -2,7 +2,13 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, unmount } from "svelte";
-import { failure, ok, type AdapterResult, type PlatformAdapter } from "@hq/platform";
+import {
+  ensureHqAnywhereGlobalRuntime,
+  failure,
+  ok,
+  type AdapterResult,
+  type PlatformAdapter,
+} from "@hq/platform";
 import HqAnywhereSettingRow from "./HqAnywhereSettingRow.svelte";
 
 type ResolveFeatureFlag = NonNullable<PlatformAdapter["identity"]["resolveFeatureFlagStatus"]>;
@@ -176,6 +182,31 @@ describe("Settings > HQ Anywhere", () => {
     await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
     warn.mockRestore();
+  });
+
+  it("shows a startup reconciliation failure in the row retry hint", async () => {
+    const syncRuntime = vi.fn<() => Promise<AdapterResult<void>>>(async () =>
+      failure("network", "raw startup setup detail"),
+    );
+    const { adapter } = createAdapter({ initialValue: true, syncRuntime });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
+
+    const result = await ensureHqAnywhereGlobalRuntime(
+      adapter.identity,
+      adapter.settings,
+      { pause: async () => {} },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(syncRuntime).toHaveBeenCalledTimes(3);
+    expect(host.textContent).toContain("Tap to retry");
+    expect(host.textContent).not.toContain("raw startup setup detail");
+
+    syncRuntime.mockResolvedValue(ok(undefined));
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
   it("hides the row and skips the person-setting read when the rollout flag is off", async () => {
