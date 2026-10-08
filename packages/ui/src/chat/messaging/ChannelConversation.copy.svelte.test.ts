@@ -43,10 +43,17 @@ function message(i: number, extra: Record<string, unknown> = {}) {
   };
 }
 
-function mountWith(messages: ReturnType<typeof message>[], onreply: ((rootEventId: string) => void) | null = () => {}) {
+function mountWith(
+  messages: ReturnType<typeof message>[],
+  onreply: ((rootEventId: string) => void) | null = () => {},
+  extraProps: Record<string, unknown> = {},
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
-  component = mount(ChannelConversation, { target: host, props: { messages, ...(onreply ? { onreply } : {}) } });
+  component = mount(ChannelConversation, {
+    target: host,
+    props: { messages, ...(onreply ? { onreply } : {}), ...extraProps },
+  });
 }
 
 const copyButtons = () =>
@@ -109,5 +116,56 @@ describe("ChannelConversation message Copy action", () => {
     ]);
     await tick();
     expect(copyButtons()).toHaveLength(0);
+  });
+});
+
+describe("ChannelConversation Copy ID and Copy link", () => {
+  const byId = (id: string) =>
+    host!.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`);
+
+  it("Copy ID writes the raw event id and confirms with Copied", async () => {
+    vi.useFakeTimers();
+    mountWith([message(1)], () => {}, { channelId: "chn_eng", companyUid: "cmp_1" });
+    await tick();
+    const button = byId("message-copy-id")!;
+    expect(button.textContent?.trim()).toBe("Copy ID");
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+    await tick();
+    expect(writeText).toHaveBeenCalledWith("evt_1");
+    expect(button.textContent?.trim()).toBe("Copied");
+    expect(byId("message-copy")!.textContent?.trim()).toBe("Copy");
+    await vi.advanceTimersByTimeAsync(1600);
+    await tick();
+    expect(button.textContent?.trim()).toBe("Copy ID");
+  });
+
+  it("Copy link writes the long form with the company for a channel message", async () => {
+    mountWith([message(1)], () => {}, { channelId: "chn_eng", companyUid: "cmp_1" });
+    await tick();
+    byId("message-copy-link")!.click();
+    await tick();
+    expect(writeText).toHaveBeenCalledWith(
+      "https://work.hq.computer/conversation/cmp_1/chn_eng/message/evt_1",
+    );
+  });
+
+  it("Copy link names the other person in a DM", async () => {
+    mountWith([message(1)], () => {}, { peerPersonUid: "psn_ada", companyUid: "cmp_1" });
+    await tick();
+    byId("message-copy-link")!.click();
+    await tick();
+    expect(writeText).toHaveBeenCalledWith(
+      "https://work.hq.computer/conversation/cmp_1/psn_ada/message/evt_1",
+    );
+  });
+
+  it("offers no Copy link without a company, and no actions on unsent messages", async () => {
+    mountWith([message(1), message(2, { eventId: "local-2" })], () => {}, {
+      channelId: "chn_eng",
+    });
+    await tick();
+    expect(host!.querySelectorAll('[data-testid="message-copy-link"]')).toHaveLength(0);
+    expect(host!.querySelectorAll('[data-testid="message-copy-id"]')).toHaveLength(1);
   });
 });

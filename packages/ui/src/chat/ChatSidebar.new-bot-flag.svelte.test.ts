@@ -129,11 +129,18 @@ afterEach(async () => {
 });
 
 /**
- * "New bot" asks "Cloud or Local?" first, in the full-window takeover. The
- * flag decides what Cloud opens: the takeover's own create screen, or the
- * "+" window's bot flow in the takeover shell.
+ * "New bot" asks the name, then "Where should it live?", in the full-window
+ * takeover. The flag decides what Cloud opens: the takeover's own create
+ * screen, or the "+" window's bot flow in the takeover shell.
  */
-async function chooseKind(kind: "cloud" | "local"): Promise<void> {
+async function chooseKind(kind: "cloud" | "local", name = "Nova"): Promise<void> {
+  const input = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  expect(input).toBeTruthy();
+  input.value = name;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle();
+  click('[data-testid="new-bot-continue-name"]');
+  await settle();
   expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
   click(`[data-testid="new-bot-choice-${kind}"]`);
   await settle();
@@ -272,13 +279,8 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     component = mount(ChatSidebar, { target: host, props });
     await settle();
 
+    // The name was given before Cloud: on to the company step.
     const nameBot = async (): Promise<void> => {
-      const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
-      name.value = "Nova";
-      name.dispatchEvent(new Event("input", { bubbles: true }));
-      await settle();
-      click('[data-testid="new-bot-continue-name"]');
-      await settle();
       click('[data-testid="new-bot-continue-brain"]');
       await settle();
     };
@@ -308,14 +310,21 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     expect(q('[data-testid="new-bot-takeover"]')).toBeNull();
 
-    // Open the takeover from Nova's row.
+    // Open the takeover from Nova's row: it starts on the name.
     click('[data-conversation-id="dm:agt_nova"]');
     await settle();
-    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
+    expect(q('[data-testid="new-bot-name-screen"]')).toBeTruthy();
 
-    // A later read says Indigo is off. The open screen keeps both companies.
+    // A later read says Indigo is off. The open takeover keeps both companies.
     props.newBotCompanyUids = ["cmp_acme"];
     await settle();
+    const first = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+    first.value = "Nova";
+    first.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    click('[data-testid="new-bot-continue-name"]');
+    await settle();
+    expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
     await nameBot();
     expect(offered()).toEqual(["cmp_indigo", "cmp_acme"]);
 
@@ -330,8 +339,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="new-bot-continue-name"]');
     await settle();
-    // One company: no company step, and nothing but Acme to create in.
-    expect(q('[data-testid="new-bot-continue-brain"]')).toBeNull();
+    // One company: no company step (the brain leads to the size), and
+    // nothing but Acme to create in.
+    expect(q('[data-testid="new-bot-continue-brain"]')?.textContent?.trim()).toBe("Next: Size");
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
   });
 

@@ -1,21 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FlagClient, FlagSnapshot } from "@indigoai-us/hq-flags-client";
 import { failure, ok } from "./adapter.js";
-import { FIRST_LAUNCH_SIGNIN_REACH_FLAG as PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG } from "./index.js";
+import {
+  FIRST_LAUNCH_JOIN_KEY_FLAG as PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG,
+  HQ_ANYWHERE_RUNTIME_FLAG as PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG,
+  POST_READY_DROP_REASON_FLAG as PUBLIC_POST_READY_DROP_REASON_FLAG,
+} from "./index.js";
 import {
   CLAUDE_PROVIDER_FLAG,
   COMPANY_NAME_PREFILL_FLAG,
   COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   DESKTOP_LIMIT_STATUS_PUSH_FLAG,
   FIRST_LAUNCH_JOIN_KEY_FLAG,
-  FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   FLAG_REFRESH_INTERVAL_MS,
+  HQ_ANYWHERE_RUNTIME_FLAG,
   LOGIN_RECEIPT_DURABILITY_FLAG,
   MEETINGS_LEGACY_FLAG,
   MEETINGS_REGISTRY_KEY,
   PERSONAL_WORKSPACE_BOARD_FLAG,
   PERSONAL_TRANSCRIPTS_FLAG,
   POST_READY_ACTION_TELEMETRY_FLAG,
+  POST_READY_DROP_REASON_FLAG,
   READY_FIRST_ACTION_FLAG,
   SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   bearerTokenFromHeaders,
@@ -52,10 +57,14 @@ function deferred<T = void>(): {
 }
 
 describe("registry key mapping", () => {
-  it("exports first-launch sign-in reach through the public platform entrypoint", () => {
-    expect(PUBLIC_FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
-      "desktop.first-launch-signin-reach-telemetry-v1",
-    );
+  it("maps HQ Anywhere availability to the admin rollout flag", () => {
+    expect(HQ_ANYWHERE_RUNTIME_FLAG).toBe("hq-anywhere-runtime");
+    expect(PUBLIC_HQ_ANYWHERE_RUNTIME_FLAG).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+    expect(registryKeyFor(HQ_ANYWHERE_RUNTIME_FLAG)).toBe(HQ_ANYWHERE_RUNTIME_FLAG);
+  });
+
+  it("exports the first-launch join-key flag through the public platform entrypoint", () => {
+    expect(PUBLIC_FIRST_LAUNCH_JOIN_KEY_FLAG).toBe(FIRST_LAUNCH_JOIN_KEY_FLAG);
   });
 
   it("maps company name prefill to its hq-flags key", () => {
@@ -77,16 +86,6 @@ describe("registry key mapping", () => {
       FIRST_LAUNCH_JOIN_KEY_FLAG,
     );
   });
-
-  it("registers first-launch sign-in reach as an hq-flags rollout key", () => {
-    expect(FIRST_LAUNCH_SIGNIN_REACH_FLAG).toBe(
-      "desktop.first-launch-signin-reach-telemetry-v1",
-    );
-    expect(registryKeyFor(FIRST_LAUNCH_SIGNIN_REACH_FLAG)).toBe(
-      FIRST_LAUNCH_SIGNIN_REACH_FLAG,
-    );
-  });
-
 
   it("maps the personal workspace board through the default-off hq-flags gate", () => {
     expect(PERSONAL_WORKSPACE_BOARD_FLAG).toBe(
@@ -245,6 +244,22 @@ describe("registry key mapping", () => {
 
     await expect(adapter.identity.hasFeature(POST_READY_ACTION_TELEMETRY_FLAG)).resolves.toEqual(ok(false));
     expect(isEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps post-ready drop diagnostics off until hq-flags configures them", async () => {
+    const isEnabled = vi.fn(() => true);
+    const adapter = createSyncPlatformAdapter({
+      invoke: vi.fn(async () => undefined),
+      createFlagClient: () => fakeClient({
+        ready: async () => {},
+        snapshot: () => ({ version: 1, flags: {} }),
+        isEnabled,
+      }),
+    });
+
+    await expect(adapter.identity.hasFeature(POST_READY_DROP_REASON_FLAG)).resolves.toEqual(ok(false));
+    expect(isEnabled).not.toHaveBeenCalled();
+    expect(PUBLIC_POST_READY_DROP_REASON_FLAG).toBe("desktop.post-ready-drop-reason-v1");
   });
 
   it("keeps login receipt durability off when the registry is unavailable", async () => {

@@ -111,13 +111,73 @@ describe("QA-108 Integrations show plain labels", () => {
       },
     });
     await settle();
+    // One row per app (four providers); every connection shows under its app.
     const rows = [...target.querySelectorAll<HTMLButtonElement>("button.row")];
-    expect(rows.length).toBe(SURFACE.connections.length);
+    expect(rows.length).toBe(4);
+    let connections = 0;
     for (const row of rows) {
       row.click();
       flushSync();
       expect(row.textContent ?? "", "row").not.toMatch(MACHINE);
       expect(target.querySelector("aside.pane")?.textContent ?? "", "inspector").not.toMatch(MACHINE);
+      connections += target.querySelectorAll("[data-testid='integration-connection']").length;
     }
+    expect(connections).toBe(SURFACE.connections.length);
+  });
+
+  it("never shows a factory: prefix or install hash, and groups an app's connections", async () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    const surface = {
+      ...SURFACE,
+      connections: [
+        connection(0, { id: "c_lin_1", provider: "factory:linear", status: "connected", installation: null }),
+        connection(1, { id: "c_lin_2", provider: "factory:linear", status: "error", installation: null, errorReason: "upstream_503" }),
+        connection(2, {
+          id: "c_ph",
+          provider: "factory:remote_mcp_posthog_com_e755da2a91c4",
+          status: "connected",
+          installation: null,
+        }),
+        connection(3, {
+          id: "c_named",
+          provider: "factory:remote_mcp_acme_io_0a1b2c3d4e",
+          status: "needs-reauth",
+          installation: { displayName: "Acme CRM", domain: "mcp.acme.io" },
+        }),
+      ],
+    };
+    component = mount(FilesConnectPage, {
+      target,
+      props: {
+        page: "integrations",
+        slug: "acme",
+        files: null,
+        shell: null,
+        settings: null,
+        companyUid: "cmp_acme",
+        adapter: { company: { listIntegrations: vi.fn(async () => ok(surface)) } } as never,
+      },
+    });
+    await settle();
+    const names = [...target.querySelectorAll("button.row .nm")].map((n) => n.textContent);
+    expect(names).toEqual(["Linear", "PostHog", "Acme CRM"]);
+    expect(target.textContent).not.toMatch(/factory/i);
+    expect(target.textContent).not.toMatch(/e755|0a1b2c/i);
+    const linear = target.querySelector<HTMLButtonElement>("button.row[data-app='linear.app']")!;
+    expect(linear.textContent).toContain("2 connections · Work");
+    expect(linear.querySelector("[data-testid='integration-app-status']")?.textContent).toBe("Needs attention");
+    linear.click();
+    flushSync();
+    const pane = target.querySelector("aside.pane")!;
+    expect(pane.querySelectorAll("[data-testid='integration-connection']")).toHaveLength(2);
+    expect(pane.querySelector("[data-testid='integration-reason']")?.textContent).toBe("The app is temporarily unavailable.");
+    // Bundled brand marks only: a real mark for Linear and PostHog, the glyph for Acme. No <img>.
+    expect(target.querySelector("img")).toBeNull();
+    const logos = [...target.querySelectorAll("button.row [data-testid='connection-card-logo']")].map((l) => l.getAttribute("data-logo"));
+    expect(logos).toEqual(["mark", "mark", "generic"]);
+    const acme = target.querySelector<HTMLButtonElement>("button.row[data-app='acme.io']")!;
+    expect(acme.textContent).toContain("acme.io");
+    expect(acme.querySelector("[data-testid='integration-app-status']")?.textContent).toBe("Needs attention");
   });
 });

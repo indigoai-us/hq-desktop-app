@@ -64,6 +64,7 @@
 //! Tauri runtime and take the whole menubar app down.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -144,6 +145,61 @@ pub async fn meetings_list_active_recordings() -> Result<Vec<ActiveRecording>, S
     Ok(active_recordings_from_ledger(
         recordings_ledger::read_ledger().unwrap_or_default(),
     ))
+}
+
+/// Keep the external update guard derived from the exact durable source used
+/// by `meetings_list_active_recordings`, so a restart guard cannot disagree
+/// with the meeting UI. A local SDK error remains in the recovery ledger, but
+/// is excluded here because that process is no longer recording.
+fn write_recording_activity(excluding_window: Option<&str>) -> Result<(), String> {
+    let ledger = recordings_ledger::read_ledger()?;
+    let inactive = INACTIVE_RECORDING_WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let recordings = ledger
+        .into_iter()
+        .filter(|(window_id, _)| {
+            Some(window_id.as_str()) != excluding_window && !inactive.contains(window_id)
+        })
+        .map(|(window_id, entry)| hq_desktop_core::recording_active::ActiveRecording {
+            recording_id: entry.recording_id,
+            window_id,
+            started_at: entry.started_at,
+        })
+        .collect();
+    hq_desktop_core::recording_active::write(recordings, Utc::now())
+}
+
+static LAST_ACTIVITY_REFRESH: OnceLock<Mutex<Option<std::time::Instant>>> = OnceLock::new();
+static INACTIVE_RECORDING_WINDOWS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn refresh_recording_activity_if_due() {
+    let clock = LAST_ACTIVITY_REFRESH.get_or_init(|| Mutex::new(None));
+    let mut last = clock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if last.is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
+        return;
+    }
+    if write_recording_activity(None).is_ok() {
+        *last = Some(std::time::Instant::now());
+    }
+}
+
+fn mark_recording_active(window_id: &str) {
+    INACTIVE_RECORDING_WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(window_id);
+}
+
+fn mark_recording_inactive(window_id: &str) {
+    INACTIVE_RECORDING_WINDOWS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(window_id.to_string());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -413,6 +469,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     holds.0.acquire(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
                                 }
                             }
+                            mark_recording_active(&payload.window_id);
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_STARTED, &payload) {
                                 log(LOG_TAG, &format!("emit recording:started failed: {e}"));
                             }
@@ -431,6 +488,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
                                 }
                             }
+                            mark_recording_inactive(&payload.window_id);
                             // Clean terminal event: drop the in-flight ledger
                             // entry so the next launch has nothing to reconcile
                             // for this window. This is the canonical clear path
@@ -448,6 +506,9 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     ),
                                 );
                             }
+                            if let Err(e) = write_recording_activity(None) {
+                                log(LOG_TAG, &format!("recording:ended — failed to update activity marker: {e}"));
+                            }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ENDED, &payload) {
                                 log(LOG_TAG, &format!("emit recording:ended failed: {e}"));
                             }
@@ -464,6 +525,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.capture_type, payload.capturing
                                 ),
                             );
+                            refresh_recording_activity_if_due();
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_MEDIA_CAPTURE, &payload) {
                                 log(
                                     LOG_TAG,
@@ -486,6 +548,7 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     holds.0.release(hq_desktop_core::update_gate::HoldReason::MeetingRecording);
                                 }
                             }
+                            mark_recording_inactive(&payload.window_id);
                             if let Err(e) = recordings_ledger::record_local_event(
                                 &payload.window_id,
                                 recordings_ledger::RecordingLedgerEvent::Error,
@@ -497,6 +560,9 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                         payload.window_id
                                     ),
                                 );
+                            }
+                            if let Err(e) = write_recording_activity(Some(&payload.window_id)) {
+                                log(LOG_TAG, &format!("recording:error — failed to update activity marker: {e}"));
                             }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ERROR, &payload) {
                                 log(LOG_TAG, &format!("emit recording:error failed: {e}"));
@@ -919,6 +985,13 @@ pub async fn start_recording(
             ),
         );
     }
+    mark_recording_active(&window_id);
+    if let Err(e) = write_recording_activity(None) {
+        log(
+            LOG_TAG,
+            &format!("start_recording: failed to write activity marker for windowId={window_id}: {e}"),
+        );
+    }
 
     let cmd = serde_json::json!({
         "cmd": "start-recording",
@@ -1104,6 +1177,20 @@ pub async fn reconcile_recordings_on_launch(app: AppHandle) {
                 }
             }
         }
+    }
+
+    // A 404 immediately after an interrupted recording is not evidence of
+    // loss: Recall can finalise it noticeably later. Re-query on a bounded
+    // cadence; the ledger's `notFoundSince` turns the result into a terminal
+    // failure after 30 minutes.
+    if outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, ReconcileOutcome::Finalising { .. }))
+    {
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(60));
+            tauri::async_runtime::block_on(reconcile_recordings_on_launch(app));
+        });
     }
 }
 

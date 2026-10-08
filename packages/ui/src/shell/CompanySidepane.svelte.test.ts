@@ -32,8 +32,8 @@ describe("CompanySidepane (console-rail US-007)", () => {
     expect(header?.textContent).toContain("Indigo");
     expect(target.querySelector("[data-testid='company-sidepane-live']")?.textContent?.trim()).toBe("0");
     const rows = target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']");
-    // 14 earlier rows + Groups, General, Brand (Grants and Billing hidden: no manager role).
-    expect(rows).toHaveLength(17);
+    // 13 earlier rows + Groups, General, Brand (Grants and Billing hidden: no manager role).
+    expect(rows).toHaveLength(16);
     expect(target.querySelector("[data-testid='company-sidepane-settings']")).toBeNull();
     const settings = target.querySelector("[data-row-id='general']");
     expect(
@@ -63,12 +63,12 @@ describe("CompanySidepane (console-rail US-007)", () => {
     flushSync();
     const rowCount = () =>
       target.querySelectorAll("[data-testid='sidepane-body'] [data-testid='sidepane-row']").length;
-    expect(rowCount()).toBe(17);
+    expect(rowCount()).toBe(16);
     expect(target.querySelector("[data-testid='company-sidepane-roster-loading']")).toBeNull();
 
     props.rosterLoading = false;
     flushSync();
-    expect(rowCount()).toBe(17);
+    expect(rowCount()).toBe(16);
     expect(target.textContent).not.toContain("Live now");
     expect(target.textContent).not.toContain("Idle");
     expect(target.querySelector("[data-row-id^='person:']")).toBeNull();
@@ -102,5 +102,31 @@ describe("CompanySidepane (console-rail US-007)", () => {
     props.selectedId = "projects";
     flushSync();
     expect(target.querySelector("[data-row-id='invite-teammate']")).toBeNull();
+  });
+
+  it("draws an icon on every People row, Groups and Grants included", () => {
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    mounted.push(
+      mount(CompanySidepane, {
+        target,
+        props: {
+          company: { uid: "co_indigo", label: "Indigo", slug: null },
+          selectedId: "projects",
+          canManage: true,
+          onselect: vi.fn(),
+        },
+      }),
+    );
+    flushSync();
+    for (const id of ["team", "bots", "groups", "grants"]) {
+      const row = target.querySelector(`[data-row-id='${id}']`);
+      expect(row, id).not.toBeNull();
+      expect(row?.querySelector(".glyph svg"), id).not.toBeNull();
+    }
+    const groups = target.querySelector("[data-row-id='groups'] .glyph")?.innerHTML;
+    const grants = target.querySelector("[data-row-id='grants'] .glyph")?.innerHTML;
+    const team = target.querySelector("[data-row-id='team'] .glyph")?.innerHTML;
+    expect(new Set([groups, grants, team]).size).toBe(3);
   });
 });

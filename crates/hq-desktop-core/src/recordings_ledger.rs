@@ -76,6 +76,10 @@ static LEDGER_PATH_TEST_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::n
 /// status, so a recording whose server-side record is permanently gone can't
 /// pin a ledger entry forever.
 pub const MAX_AGE_DAYS: i64 = 7;
+/// A Recall recording can appear absent briefly after an interrupted desktop
+/// session while Recall finalises it server-side. Keep polling for this window
+/// before calling it lost.
+pub const NOT_FOUND_RETRY_WINDOW_MINUTES: i64 = 30;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -93,6 +97,11 @@ pub struct RecordingEntry {
     pub company_uid: Option<String>,
     /// ISO-8601 timestamp when the recording was started (ledger entry written).
     pub started_at: String,
+    /// First time launch reconciliation observed a server-side 404. Kept
+    /// separately from `startedAt` because recordings can run longer than the
+    /// retry window before a desktop restart interrupts them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_found_since: Option<String>,
 }
 
 /// The ledger map: `windowId` → [`RecordingEntry`].
@@ -144,6 +153,13 @@ pub enum ReconcileOutcome {
         recording_id: String,
         status: String,
     },
+    /// Recall has not exposed the recording yet. Keep it visible as finalising
+    /// and retain the ledger entry until the bounded retry window expires.
+    #[serde(rename_all = "camelCase")]
+    Finalising {
+        window_id: String,
+        recording_id: String,
+    },
     /// The recording reached a terminal failure server-side, or hq-pro has no
     /// record of it (404 — it never finalised). The ledger entry is cleared
     /// and the UI surfaces an "ingest failed" thread so the recording isn't
@@ -171,6 +187,7 @@ impl ReconcileOutcome {
         match self {
             ReconcileOutcome::Saved { window_id, .. }
             | ReconcileOutcome::StillProcessing { window_id, .. }
+            | ReconcileOutcome::Finalising { window_id, .. }
             | ReconcileOutcome::IngestFailed { window_id, .. }
             | ReconcileOutcome::Unknown { window_id, .. } => window_id,
         }
@@ -255,7 +272,8 @@ pub fn upsert(
         RecordingEntry {
             recording_id,
             company_uid: company_uid.filter(|s| !s.is_empty()),
-            started_at: started_at.to_rfc3339(),
+            started_at: started_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            not_found_since: None,
         },
     );
 }
@@ -346,7 +364,8 @@ pub fn record_bridge_died() -> Result<Vec<String>, String> {
 ///
 /// Mapping:
 /// - fetch error → [`ReconcileOutcome::Unknown`] (retry next launch unless aged out)
-/// - `not_found` (404) → [`ReconcileOutcome::IngestFailed`] (never finalised)
+/// - `not_found` (404) → [`ReconcileOutcome::Finalising`] for the bounded
+///   retry window, then [`ReconcileOutcome::IngestFailed`]
 /// - `source_landed` → [`ReconcileOutcome::Saved`]
 /// - status `failed`/`error` → [`ReconcileOutcome::IngestFailed`]
 /// - anything else (scheduled/recording/processing/completed-not-landed) →
@@ -355,6 +374,7 @@ fn classify(
     window_id: &str,
     entry: &RecordingEntry,
     fetched: &Result<RecordingStatus, String>,
+    now: DateTime<Utc>,
 ) -> ReconcileOutcome {
     let recording_id = entry.recording_id.clone();
     let status = match fetched {
@@ -369,6 +389,18 @@ fn classify(
     };
 
     if status.not_found {
+        let retry_started = entry
+            .not_found_since
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc))
+            .unwrap_or(now);
+        if now - retry_started < Duration::minutes(NOT_FOUND_RETRY_WINDOW_MINUTES) {
+            return ReconcileOutcome::Finalising {
+                window_id: window_id.to_string(),
+                recording_id,
+            };
+        }
         return ReconcileOutcome::IngestFailed {
             window_id: window_id.to_string(),
             recording_id,
@@ -429,7 +461,7 @@ where
     for window_id in window_ids {
         // Re-borrow each iteration (entry is cloned-out so the map can be
         // mutated below without an aliasing borrow).
-        let entry = match ledger.get(&window_id) {
+        let mut entry = match ledger.get(&window_id) {
             Some(e) => e.clone(),
             None => continue,
         };
@@ -453,7 +485,13 @@ where
         }
 
         let fetched = fetch_status(&entry.recording_id, entry.company_uid.as_deref());
-        let outcome = classify(&window_id, &entry, &fetched);
+        if matches!(&fetched, Ok(status) if status.not_found) && entry.not_found_since.is_none() {
+            entry.not_found_since = Some(now.to_rfc3339());
+            if let Some(stored) = ledger.get_mut(&window_id) {
+                stored.not_found_since = entry.not_found_since.clone();
+            }
+        }
+        let outcome = classify(&window_id, &entry, &fetched, now);
         if outcome.clears_entry() {
             ledger.remove(&window_id);
         }
