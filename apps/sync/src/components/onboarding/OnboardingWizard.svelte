@@ -189,6 +189,7 @@
     getHqAnywherePersonSetting,
     hqAnywhereRuntimeEnabled as resolveHqAnywhereRuntimeEnabled,
     putHqAnywherePersonSetting,
+    setHqAnywhereGlobalRuntime,
     COMPANY_NAME_PREFILL_FLAG,
     FIRST_LAUNCH_JOIN_KEY_FLAG,
     COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
@@ -388,9 +389,11 @@
   let hqAnywhereSettingLoaded = $state(false);
   let hqAnywhereLoading = $state(false);
   let hqAnywhereSaving = $state(false);
+  let hqAnywhereSettingUp = $state(false);
   let hqAnywhereLoadError = $state(false);
   let hqAnywhereSettingError = $state(false);
   let hqAnywhereRetryValue = $state<boolean | null>(null);
+  let hqAnywhereSetupRetry = $state(false);
   let hqAnywhereLoadStarted = false;
   let consentSubmitting = $state(false);
   /** The ready screen, with its usage-data checkbox, has been on show. */
@@ -3037,6 +3040,7 @@
     hqAnywhereLoadError = false;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
     try {
       const result = await getHqAnywherePersonSetting(onboardingFeatureFlags.settings);
       if (result.ok) {
@@ -3061,20 +3065,52 @@
     await loadHqAnywhereSetting();
   }
 
+  async function configureHqAnywhereGlobalRuntime(value: boolean): Promise<void> {
+    if (hqAnywhereSettingUp) return;
+    hqAnywhereSettingUp = true;
+    hqAnywhereSettingError = false;
+    hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
+    try {
+      const result = await setHqAnywhereGlobalRuntime(
+        onboardingFeatureFlags.identity,
+        onboardingFeatureFlags.settings,
+        value,
+      );
+      if (!result.ok) {
+        console.warn('[onboarding-hq-anywhere] global runtime setup failed:', result);
+        hqAnywhereRetryValue = value;
+        hqAnywhereSetupRetry = true;
+        hqAnywhereSettingError = true;
+      }
+    } catch (error) {
+      console.warn('[onboarding-hq-anywhere] global runtime setup failed:', error);
+      hqAnywhereRetryValue = value;
+      hqAnywhereSetupRetry = true;
+      hqAnywhereSettingError = true;
+    } finally {
+      hqAnywhereSettingUp = false;
+    }
+  }
+
   async function saveHqAnywhereSetting(value: boolean): Promise<void> {
-    if (hqAnywhereSaving || hqAnywhereLoading || !hqAnywhereSettingLoaded) return;
+    if (hqAnywhereSaving || hqAnywhereSettingUp || hqAnywhereLoading || !hqAnywhereSettingLoaded) return;
     const previous = hqAnywhereEnabled;
     hqAnywhereEnabled = value;
     hqAnywhereSaving = true;
     hqAnywhereLoadError = false;
     hqAnywhereSettingError = false;
     hqAnywhereRetryValue = null;
+    hqAnywhereSetupRetry = false;
     try {
       const result = await putHqAnywherePersonSetting(
         onboardingFeatureFlags.settings,
         value,
       );
-      if (!result.ok) {
+      if (result.ok) {
+        hqAnywhereSaving = false;
+        await configureHqAnywhereGlobalRuntime(value);
+      } else {
         console.warn('[onboarding-hq-anywhere] setting write failed:', result);
         hqAnywhereEnabled = previous;
         hqAnywhereRetryValue = value;
@@ -3093,6 +3129,8 @@
   function retryHqAnywhereSetting(): void {
     if (hqAnywhereLoadError) {
       void loadHqAnywhereSetting();
+    } else if (hqAnywhereRetryValue !== null && hqAnywhereSetupRetry) {
+      void configureHqAnywhereGlobalRuntime(hqAnywhereRetryValue);
     } else if (hqAnywhereRetryValue !== null) {
       void saveHqAnywhereSetting(hqAnywhereRetryValue);
     }
@@ -4835,8 +4873,8 @@
                 type="checkbox"
                 data-testid="ready-hq-anywhere"
                 checked={hqAnywhereEnabled}
-                disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || finishing}
-                aria-busy={hqAnywhereLoading || hqAnywhereSaving}
+                disabled={!hqAnywhereSettingLoaded || hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp || finishing}
+                aria-busy={hqAnywhereLoading || hqAnywhereSaving || hqAnywhereSettingUp}
                 onchange={(event) => void saveHqAnywhereSetting(event.currentTarget.checked)}
               />
               <span>Enable HQ Anywhere</span>
@@ -4845,6 +4883,8 @@
               <span role="status" aria-live="polite">Loading…</span>
             {:else if hqAnywhereSaving}
               <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-saving">Saving…</span>
+            {:else if hqAnywhereSettingUp}
+              <span role="status" aria-live="polite" data-testid="hq-anywhere-setting-up">Setting up…</span>
             {/if}
             {#if hqAnywhereLoadError || hqAnywhereSettingError}
               <span data-testid="hq-anywhere-setting-error">

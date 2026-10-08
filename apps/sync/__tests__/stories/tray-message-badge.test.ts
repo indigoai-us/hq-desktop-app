@@ -71,6 +71,9 @@ describe('native HQ menu-bar message badge', () => {
     expect(app).toContain('if (authenticated) void loadUnreadSummary()');
     expect(app).toContain('registerChannelUnreadListeners({');
     expect(channelUnreadListeners).toContain("listen('channel:unread-changed'");
+    expect(app).toContain(
+      'if (authenticated) {\n      void loadUnreadSummary();\n      reconcileHqAnywhereGlobalRuntime();\n    } else resetUnreadSummary();',
+    );
   });
 
   it('clears native counts on DM view, channel read, channel decrease, and sign-out', () => {

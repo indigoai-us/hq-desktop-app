@@ -907,11 +907,19 @@ pub fn hq_version_string(bin: &Path) -> Option<String> {
 }
 
 fn hq_version_string_probe(bin: &Path, path: &str) -> (Option<String>, VersionProbeOutcome) {
+    hq_version_string_probe_with_timeout(bin, path, VERSION_PROCESS_TIMEOUT)
+}
+
+fn hq_version_string_probe_with_timeout(
+    bin: &Path,
+    path: &str,
+    timeout: Duration,
+) -> (Option<String>, VersionProbeOutcome) {
     let bin = bin.to_string_lossy();
     let mut cmd = paths::spawn_command(&bin, &[]);
     let out = match output_with_timeout(
         cmd.arg("--version").env("PATH", path),
-        VERSION_PROCESS_TIMEOUT,
+        timeout,
     ) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
@@ -1027,15 +1035,16 @@ fn parse_version_line(stdout: &str) -> (Option<String>, VersionProbeOutcome) {
 /// when [`shebang_names_node`] confirmed the program is a node entrypoint but
 /// the shebang's own interpreter lookup failed.
 #[cfg(unix)]
-fn hq_version_via_node(
+fn hq_version_via_node_with_timeout(
     node: &Path,
     program: &Path,
     path: &str,
+    timeout: Duration,
 ) -> (Option<String>, VersionProbeOutcome) {
     let node = node.to_string_lossy();
     let program = program.to_string_lossy();
     let mut cmd = paths::spawn_command(node.as_ref(), &[program.as_ref(), "--version"]);
-    let out = match output_with_timeout(cmd.env("PATH", path), VERSION_PROCESS_TIMEOUT) {
+    let out = match output_with_timeout(cmd.env("PATH", path), timeout) {
         Ok(Some(output)) => output,
         Ok(None) => return (None, VersionProbeOutcome::TimedOut),
         Err(error) => return (None, classify_probe_error(&error)),
@@ -1065,10 +1074,11 @@ fn hq_version_via_node(
 /// provisioning a *missing* managed Node is the app check flow's job
 /// (`recover_unreadable_version_once`). Returns the version, the probe outcome,
 /// the projected managed-runtime state, and what the recovery did.
-fn hq_version_with_recovery(
+fn hq_version_with_recovery_timeout(
     hq: Option<&Path>,
     path: &str,
     managed: Option<&crate::toolchain::ManagedRuntime>,
+    timeout: Duration,
 ) -> (
     Option<String>,
     VersionProbeOutcome,
@@ -1084,7 +1094,7 @@ fn hq_version_with_recovery(
         );
     };
 
-    let (local, outcome) = hq_version_string_probe(hq, path);
+    let (local, outcome) = hq_version_string_probe_with_timeout(hq, path, timeout);
     if local.is_some() || !recovery_applicable(outcome) {
         return (
             local,
@@ -1120,7 +1130,8 @@ fn hq_version_with_recovery(
         // Retry 1: put the managed Node's own bin dir first on the child PATH so
         // the shim's `env node` resolves it.
         let widened = paths::path_with_interpreter_hint(path, node_bin);
-        let (recovered, recovered_outcome) = hq_version_string_probe(hq, &widened);
+        let (recovered, recovered_outcome) =
+            hq_version_string_probe_with_timeout(hq, &widened, timeout);
         if recovered.is_some() {
             return (
                 recovered,
@@ -1134,7 +1145,8 @@ fn hq_version_with_recovery(
         // managed Node directly, bypassing the shebang lookup entirely.
         #[cfg(unix)]
         if shebang_names_node(hq) {
-            let (recovered, recovered_outcome) = hq_version_via_node(node, hq, &widened);
+            let (recovered, recovered_outcome) =
+                hq_version_via_node_with_timeout(node, hq, &widened, timeout);
             if recovered.is_some() {
                 return (
                     recovered,
@@ -1257,6 +1269,27 @@ fn probe_local_version(
 }
 
 #[cfg(test)]
+fn probe_local_version_with_timeout(
+    hq: Option<&Path>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
+) -> LocalVersionProbeResult {
+    let kind = match hq {
+        Some(_) => ResolvedProgramKind::Exe,
+        None => ResolvedProgramKind::NotResolved,
+    };
+    probe_local_version_with_managed_and_timeout(
+        hq,
+        kind,
+        None,
+        npm,
+        path,
+        hq_version_timeout,
+    )
+}
+
+#[cfg(test)]
 fn probe_local_version_with_kind(
     hq: Option<&Path>,
     resolved_program_kind: ResolvedProgramKind,
@@ -1279,6 +1312,25 @@ fn probe_local_version_with_managed(
     npm: Option<&str>,
     path: &str,
 ) -> LocalVersionProbeResult {
+    probe_local_version_with_managed_and_timeout(
+        hq,
+        resolved_program_kind,
+        managed,
+        npm,
+        path,
+        VERSION_PROCESS_TIMEOUT,
+    )
+}
+
+#[cfg(test)]
+fn probe_local_version_with_managed_and_timeout(
+    hq: Option<&Path>,
+    resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
+) -> LocalVersionProbeResult {
     let (local, binary_anchor) = match hq {
         Some(hq) => version_from_hq_binary_probe(hq),
         None => (None, VersionProbeOutcome::NotAttempted),
@@ -1299,7 +1351,7 @@ fn probe_local_version_with_managed(
             },
         };
     }
-    probe_local_version_after_binary(
+    probe_local_version_after_binary_with_timeout(
         hq,
         binary_anchor,
         binary_anchor_shape,
@@ -1307,6 +1359,7 @@ fn probe_local_version_with_managed(
         managed,
         npm,
         path,
+        hq_version_timeout,
     )
 }
 
@@ -1318,6 +1371,28 @@ fn probe_local_version_after_binary(
     managed: Option<&crate::toolchain::ManagedRuntime>,
     npm: Option<&str>,
     path: &str,
+) -> LocalVersionProbeResult {
+    probe_local_version_after_binary_with_timeout(
+        hq,
+        binary_anchor,
+        binary_anchor_shape,
+        resolved_program_kind,
+        managed,
+        npm,
+        path,
+        VERSION_PROCESS_TIMEOUT,
+    )
+}
+
+fn probe_local_version_after_binary_with_timeout(
+    hq: Option<&Path>,
+    binary_anchor: VersionProbeOutcome,
+    binary_anchor_shape: BinaryAnchorShape,
+    resolved_program_kind: ResolvedProgramKind,
+    managed: Option<&crate::toolchain::ManagedRuntime>,
+    npm: Option<&str>,
+    path: &str,
+    hq_version_timeout: Duration,
 ) -> LocalVersionProbeResult {
     let hq_installed = hq.is_some();
     // The backing sub-case is derived from the binary-anchor outcome already in
@@ -1344,7 +1419,7 @@ fn probe_local_version_after_binary(
     }
 
     let (local, hq_version, managed_runtime, interpreter_recovery) =
-        hq_version_with_recovery(hq, path, managed);
+        hq_version_with_recovery_timeout(hq, path, managed, hq_version_timeout);
     // Make `hq_installed` truthful for the definitively-foreign case. A resolved
     // `hq` we could read NO version from (npm-root and `hq --version` both failed)
     // AND whose backing is a DEFINITIVE package-absent OUTSIDE every managed root
@@ -1409,16 +1484,10 @@ pub fn cli_install_needed(local: Option<&str>, latest: &str, hq_installed: bool)
 /// Minimum `@indigoai-us/hq-cli` version the desktop app accepts as current
 /// enough to leave alone until the next *scheduled* check.
 ///
-/// Mirrors the `MIN_VERSION` floor in hq-core's
-/// `core/hooks/UserPromptSubmit/30-ensure-hq-cli.sh`, which treats an installed
-/// CLI below this version as missing and reinstalls it on the next prompt. Keep
-/// the two in sync: a CLI hq-core refuses to run with is one the desktop app
-/// should not sit on for the updater's launch stagger or its 6h interval either.
-///
-/// 5.115.4: the create-bot flow passes `--kind`/`--company` for company bots
-/// and relies on the bot-kinds contract (hq-cli #596/#598/#599/#605); an
-/// older CLI answers `unknown option '--kind'`.
-pub const HQ_CLI_MIN_VERSION: &str = "5.115.4";
+/// 5.345.46 adds the Codex hook trust step and `HQ_ROOT` / `CLAUDE_PROJECT_DIR`
+/// environment for global Claude hooks, alongside the `install --global
+/// --runtime` and matching uninstall commands used by HQ Anywhere.
+pub const HQ_CLI_MIN_VERSION: &str = "5.345.46";
 
 /// Is a *readable* installed version below [`HQ_CLI_MIN_VERSION`]?
 ///
@@ -16089,10 +16158,15 @@ mod tests {
         );
         write_executable(&npm, "#!/bin/sh\nexit 8\n");
 
-        let result = probe_local_version(
+        // This assertion is about PATH-based shebang resolution, not the
+        // production one-second watchdog. The child deliberately crosses env
+        // and a shell, so keep its bounded test deadline independent of runner
+        // scheduling; timeout behavior is covered by the watchdog tests.
+        let result = probe_local_version_with_timeout(
             Some(&hq),
             Some(npm.to_str().unwrap()),
             interpreter_dir.to_str().unwrap(),
+            Duration::from_secs(10),
         );
 
         assert_eq!(
@@ -19433,6 +19507,12 @@ mod tests {
 
     #[test]
     fn launch_check_uses_the_shipped_floor() {
+        assert_eq!(
+            launch_cli_check(Some("5.115.4")),
+            LaunchCliCheck::RepairNow {
+                local: "5.115.4".to_string()
+            }
+        );
         assert_eq!(
             launch_cli_check(Some("0.0.1")),
             LaunchCliCheck::RepairNow {

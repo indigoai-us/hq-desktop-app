@@ -1,5 +1,6 @@
 import {
   failure,
+  ok,
   unavailable,
   type AdapterPromise,
   type AdapterResult,
@@ -81,4 +82,34 @@ export function putHqAnywherePersonSetting(
     () => settings.putHqAnywherePersonSetting!(value),
     options,
   );
+}
+
+/** Apply a saved HQ Anywhere choice only while its kill switch is enabled. */
+export async function setHqAnywhereGlobalRuntime(
+  identity: IdentityApi,
+  settings: SettingsApi,
+  enabled: boolean,
+  options?: HqAnywhereRetryOptions,
+): Promise<AdapterResult<void>> {
+  if (!(await hqAnywhereRuntimeEnabled(identity))) return ok(undefined);
+  if (!settings.syncHqAnywhereGlobal) {
+    return unavailable("hq-anywhere-global-runtime-unavailable");
+  }
+  return retryHqAnywhereRequest(
+    () => settings.syncHqAnywhereGlobal!(enabled),
+    options,
+  );
+}
+
+/** Reconcile the local setup after sign-in without changing a saved opt-out. */
+export async function ensureHqAnywhereGlobalRuntime(
+  identity: IdentityApi,
+  settings: SettingsApi,
+  options?: HqAnywhereRetryOptions,
+): Promise<AdapterResult<void>> {
+  if (!(await hqAnywhereRuntimeEnabled(identity))) return ok(undefined);
+  const setting = await getHqAnywherePersonSetting(settings, options);
+  if (!setting.ok) return setting;
+  if (!setting.value) return ok(undefined);
+  return setHqAnywhereGlobalRuntime(identity, settings, true, options);
 }

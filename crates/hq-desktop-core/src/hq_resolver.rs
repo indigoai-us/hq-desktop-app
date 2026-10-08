@@ -2,27 +2,28 @@
 //!
 //! ## Why this exists
 //!
-//! AppBar shells out to `hq` from two places:
+//! AppBar shells out to `hq` from these paths:
 //!   * `commands::run_cli_provision` — Phase B's `hq cloud provision company`
 //!   * `commands::first_push` — Option C3's `hq sync push --creds-from-stdin --json`
+//!   * `commands::hq_anywhere` — global install/uninstall for Claude Code and Codex
 //!
-//! Both contracts depend on flags that arrived in `@indigoai-us/hq-cli@5.7.0`
-//! (the C3 push flags) and earlier versions (`cloud provision company` in
-//! 5.6.0, `--skip-initial-sync` in 5.6.1). The Path A demote-to-local flow
-//! shells out to `hq cloud demote company <slug> --force`, which arrived in
+//! The existing commands depend on flags that arrived in
+//! `@indigoai-us/hq-cli@5.7.0` (the C3 push flags) and earlier versions
+//! (`cloud provision company` in 5.6.0, `--skip-initial-sync` in 5.6.1). The
+//! Path A demote-to-local flow shells out to
+//! `hq cloud demote company <slug> --force`, which arrived in
 //! `@indigoai-us/hq-cli@5.10.0`. If the user's installed `hq` binary is
-//! missing, on a stale PATH, or older than 5.10.0, the subprocess fails
-//! with a cryptic error — "spawn ENOENT" or "unknown option
-//! '--creds-from-stdin'" — that surfaces as a "Sync failed" toast in the
-//! menubar with no actionable hint.
+//! missing or on a stale PATH, the subprocess fails with a cryptic spawn or
+//! unknown-option error. HQ Anywhere additionally requires the global runtime
+//! commands introduced in hq-cli 5.345.46.
 //!
 //! ## What it does
 //!
-//! Runs two `--help` probes against the local `hq` once per AppBar
-//! process: `hq sync push --help` must contain `--creds-from-stdin`
-//! (5.7-era flag), AND `hq cloud --help` must list the `demote`
-//! subcommand (5.10-era; required by Path A's tombstone branch).
-//! If both pass, the local binary is used directly (fast path).
+//! Runs capability probes against the local `hq` once per AppBar process:
+//! `hq sync push --help` must contain `--creds-from-stdin`, `hq cloud --help`
+//! must list the `demote` subcommand, and install/uninstall help must expose
+//! `--global` and `--runtime` for HQ Anywhere setup.
+//! If all probes pass, the local binary is used directly (fast path).
 //! Otherwise we fall back to:
 //!
 //! ```text
@@ -52,12 +53,9 @@ use std::sync::OnceLock;
 use crate::logfile::log;
 use crate::paths;
 
-/// npm range used for the auto-fallback. Bump when AppBar starts depending
-/// on a flag introduced in a newer hq-cli version.
-///
-/// Floor raised 5.7.0 → 5.10.0 to require `hq cloud demote company`, the
-/// CLI subcommand Path A shells out to when an entity is `deleted=true`.
-pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
+/// npm range used for the auto-fallback. HQ Anywhere global runtime commands
+/// require hq-cli 5.345.46.
+pub const HQ_CLI_NPM_RANGE: &str = "^5.345.46";
 
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
@@ -76,7 +74,7 @@ fn npx_serial_lock() -> &'static tokio::sync::Mutex<()> {
 /// How to spawn `hq` for the current AppBar process.
 #[derive(Debug, Clone)]
 pub enum HqInvocation {
-    /// Local `hq` at this absolute path passed the C3 capability probe.
+    /// Local `hq` at this absolute path passed every capability probe.
     Local(String),
     /// Local `hq` was missing or too old; route through `npx -y --package=...@<range> hq`.
     Npx,
@@ -144,7 +142,7 @@ impl HqInvocation {
 }
 
 /// Resolve the right way to invoke `hq`, caching the decision per-process.
-/// Probes `hq sync push --help` synchronously the first time; subsequent
+/// Probes local CLI capabilities synchronously the first time; subsequent
 /// calls return the cached value with no overhead.
 ///
 /// Logs the chosen invocation under the `hq-resolver` tag so a stuck
@@ -185,24 +183,30 @@ fn probe() -> HqInvocation {
         return HqInvocation::Npx;
     }
 
-    let (creds_ok, demote_ok) = (
+    let (creds_ok, demote_ok, global_install_ok) = (
         capability_probe_creds_from_stdin(&local),
         capability_probe_cloud_demote(&local),
+        capability_probe_global_runtime_install(&local),
     );
-    if creds_ok && demote_ok {
+    if creds_ok && demote_ok && global_install_ok {
         HqInvocation::Local(local)
     } else {
-        let missing = match (creds_ok, demote_ok) {
-            (false, false) => "--creds-from-stdin AND `cloud demote` subcommand",
-            (false, true) => "--creds-from-stdin",
-            (true, false) => "`cloud demote` subcommand",
-            (true, true) => unreachable!(),
-        };
+        let mut missing = Vec::new();
+        if !creds_ok {
+            missing.push("--creds-from-stdin");
+        }
+        if !demote_ok {
+            missing.push("`cloud demote` subcommand");
+        }
+        if !global_install_ok {
+            missing.push("global runtime install/uninstall options");
+        }
         log(
             "hq-resolver",
             &format!(
-                "local `hq` at {local} failed capability probe (missing {missing}); \
+                "local `hq` at {local} failed capability probe (missing {}); \
                  falling back to npx. Hint: `npm install -g @indigoai-us/hq-cli@latest` to upgrade.",
+                missing.join(", "),
             ),
         );
         HqInvocation::Npx
@@ -255,18 +259,47 @@ fn capability_probe_cloud_demote(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// True iff local install and uninstall commands both support the global
+/// runtime options used by HQ Anywhere. These options require hq-cli 5.345.46.
+fn capability_probe_global_runtime_install(bin: &str) -> bool {
+    let install_help = run_help(bin, &["install", "--help"]);
+    let uninstall_help = run_help(bin, &["uninstall", "--help"]);
+    match (install_help, uninstall_help) {
+        (Some(install), Some(uninstall)) => {
+            global_runtime_install_help_supported(&install, &uninstall)
+        }
+        _ => false,
+    }
+}
+
+fn global_runtime_install_help_supported(install_help: &str, uninstall_help: &str) -> bool {
+    [install_help, uninstall_help]
+        .iter()
+        .all(|help| help.contains("--global") && help.contains("--runtime"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A bin path that doesn't exist must produce a `false` probe result
-    /// (not a panic, not a hang) for both probes. This is the primary
+    /// A bin path that doesn't exist must produce a `false` result for every
+    /// capability probe (not a panic or hang). This is the primary
     /// `Local → Npx` fallback trigger and we lock the contract here.
     #[test]
     fn capability_probes_reject_nonexistent_binary() {
         let bogus = "/nonexistent/path/to/hq-binary-xyz-123";
         assert!(!capability_probe_creds_from_stdin(bogus));
         assert!(!capability_probe_cloud_demote(bogus));
+        assert!(!capability_probe_global_runtime_install(bogus));
+    }
+
+    #[test]
+    fn global_runtime_install_probe_requires_install_and_uninstall_options() {
+        let install = "Usage: hq install [options]\n--global --runtime <runtime>";
+        let uninstall = "Usage: hq uninstall [options]\n--global --runtime <runtime>";
+        assert!(global_runtime_install_help_supported(install, uninstall));
+        assert!(!global_runtime_install_help_supported(install, "Usage: hq uninstall\n--global"));
+        assert!(!global_runtime_install_help_supported("Usage: hq install\n--runtime", uninstall));
     }
 
     /// The Npx invocation must build the exact npx argv shape the

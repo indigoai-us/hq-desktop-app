@@ -92,8 +92,8 @@ fn fresh_mac_npx_runtime() -> RuntimeDiagnosisInput {
 /// title this file asserts against stops describing the real event.
 #[test]
 fn npm_range_and_labels_are_still_what_this_test_asserts() {
-    assert_eq!(HQ_CLI_NPM_RANGE, "^5.10.0");
-    assert_eq!(HqInvocation::Npx.label(), "npx:@indigoai-us/hq-cli@^5.10.0");
+    assert_eq!(HQ_CLI_NPM_RANGE, "^5.345.46");
+    assert_eq!(HqInvocation::Npx.label(), "npx:@indigoai-us/hq-cli@^5.345.46");
 }
 
 /// THE regression: the reported machine can no longer mint a vault incident for
@@ -130,7 +130,7 @@ fn the_reported_exit1_no_output_event_is_no_longer_a_vault_incident() {
     assert_eq!(event.tags["provision_kind"], "no-output");
     assert_eq!(
         event.tags["cli_invocation"],
-        "npx:@indigoai-us/hq-cli@^5.10.0"
+        "npx:@indigoai-us/hq-cli@^5.345.46"
     );
     assert_eq!(event.tags["exit_code"], "1");
     assert_eq!(event.tags["stderr_reader"], "eof");

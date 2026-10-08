@@ -16,6 +16,7 @@ function createAdapter(options: {
   initialValue?: boolean;
   getSetting?: PlatformAdapter["settings"]["getHqAnywherePersonSetting"];
   putSetting?: PlatformAdapter["settings"]["putHqAnywherePersonSetting"];
+  syncRuntime?: PlatformAdapter["settings"]["syncHqAnywhereGlobal"];
 }) {
   const getHqAnywherePersonSetting = vi.fn(
     options.getSetting ?? (async () => ok(options.initialValue ?? false)),
@@ -23,18 +24,22 @@ function createAdapter(options: {
   const putHqAnywherePersonSetting = vi.fn(
     options.putSetting ?? (async () => ok(undefined)),
   );
+  const syncHqAnywhereGlobal = vi.fn(
+    options.syncRuntime ?? (async () => ok(undefined)),
+  );
   const resolveFeatureFlagStatus = vi.fn(
     options.resolveFlag ??
       (async () => ok({ enabled: options.enabled ?? true, configured: options.configured ?? true })),
   );
   const adapter = {
     identity: { resolveFeatureFlagStatus, subscribeFeature: options.subscribeFeature },
-    settings: { getHqAnywherePersonSetting, putHqAnywherePersonSetting },
+    settings: { getHqAnywherePersonSetting, putHqAnywherePersonSetting, syncHqAnywhereGlobal },
   } as unknown as PlatformAdapter;
   return {
     adapter,
     getHqAnywherePersonSetting,
     putHqAnywherePersonSetting,
+    syncHqAnywhereGlobal,
     resolveFeatureFlagStatus,
     subscribeFeature: options.subscribeFeature,
   };
@@ -83,7 +88,7 @@ describe("Settings > HQ Anywhere", () => {
   });
 
   it("turns the setting on", async () => {
-    const { adapter, putHqAnywherePersonSetting } = createAdapter({ initialValue: false });
+    const { adapter, putHqAnywherePersonSetting, syncHqAnywhereGlobal } = createAdapter({ initialValue: false });
     render(adapter);
     await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
 
@@ -91,10 +96,11 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(true);
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(true));
   });
 
   it("turns the setting off", async () => {
-    const { adapter, putHqAnywherePersonSetting } = createAdapter({ initialValue: true });
+    const { adapter, putHqAnywherePersonSetting, syncHqAnywhereGlobal } = createAdapter({ initialValue: true });
     render(adapter);
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("true"));
 
@@ -102,6 +108,24 @@ describe("Settings > HQ Anywhere", () => {
 
     await vi.waitFor(() => expect(toggle()?.getAttribute("aria-checked")).toBe("false"));
     expect(putHqAnywherePersonSetting).toHaveBeenCalledWith(false);
+    await vi.waitFor(() => expect(syncHqAnywhereGlobal).toHaveBeenCalledWith(false));
+  });
+
+  it("keeps the toggle optimistic and shows a muted setup hint while install runs", async () => {
+    let completeSetup!: (result: AdapterResult<void>) => void;
+    const syncRuntime = vi.fn(
+      () => new Promise<AdapterResult<void>>((resolve) => { completeSetup = resolve; }),
+    );
+    const { adapter } = createAdapter({ initialValue: false, syncRuntime });
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+
+    toggle()!.click();
+
+    await vi.waitFor(() => expect(host.textContent).toContain("Setting up…"));
+    expect(toggle()?.getAttribute("aria-checked")).toBe("true");
+    completeSetup(ok(undefined));
+    await vi.waitFor(() => expect(host.textContent).not.toContain("Setting up…"));
   });
 
   it("rolls back after automatic retries and offers a manual retry", async () => {
@@ -130,6 +154,30 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
   });
 
+  it("retries global setup three times, then offers Tap to retry without exposing the error", async () => {
+    const syncRuntime = vi.fn<() => Promise<AdapterResult<void>>>(async () =>
+      failure("network", "raw setup transport detail"),
+    );
+    const { adapter } = createAdapter({ initialValue: false, syncRuntime });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    render(adapter);
+    await vi.waitFor(() => expect(toggle()?.disabled).toBe(false));
+
+    toggle()!.click();
+
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(3), { timeout: 4000 });
+    expect(toggle()?.getAttribute("aria-checked")).toBe("true");
+    expect(host.textContent).toContain("Tap to retry");
+    expect(host.textContent).not.toContain("raw setup transport detail");
+    expect(warn).toHaveBeenCalled();
+
+    syncRuntime.mockResolvedValue(ok(undefined));
+    host.querySelector<HTMLButtonElement>('[data-testid="hq-anywhere-setting-retry"]')!.click();
+    await vi.waitFor(() => expect(syncRuntime).toHaveBeenCalledTimes(4));
+    expect(host.querySelector('[data-testid="hq-anywhere-setting-retry"]')).toBeNull();
+    warn.mockRestore();
+  });
+
   it("hides the row and skips the person-setting read when the rollout flag is off", async () => {
     let releaseFlag!: () => void;
     let flagSettled = false;
@@ -140,6 +188,7 @@ describe("Settings > HQ Anywhere", () => {
       adapter,
       getHqAnywherePersonSetting,
       putHqAnywherePersonSetting,
+      syncHqAnywhereGlobal,
       resolveFeatureFlagStatus,
     } = createAdapter({
       resolveFlag: async () => {
@@ -158,6 +207,7 @@ describe("Settings > HQ Anywhere", () => {
     expect(host.querySelector('[data-testid="hq-anywhere-setting-row"]')).toBeNull();
     expect(getHqAnywherePersonSetting).not.toHaveBeenCalled();
     expect(putHqAnywherePersonSetting).not.toHaveBeenCalled();
+    expect(syncHqAnywhereGlobal).not.toHaveBeenCalled();
   });
 
   it("hides the row when the rollout flag turns off while Settings stays open", async () => {

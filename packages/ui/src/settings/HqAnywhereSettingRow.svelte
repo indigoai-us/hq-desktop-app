@@ -5,6 +5,7 @@
     getHqAnywherePersonSetting,
     hqAnywhereRuntimeEnabled,
     putHqAnywherePersonSetting,
+    setHqAnywhereGlobalRuntime,
     type PlatformAdapter,
   } from "@hq/platform";
 
@@ -18,7 +19,8 @@
   let enabled = $state(false);
   let loading = $state(false);
   let saving = $state(false);
-  let retryKind = $state<"read" | "write" | null>(null);
+  let setupRunning = $state(false);
+  let retryKind = $state<"read" | "write" | "setup" | null>(null);
   let retryValue = $state<boolean | null>(null);
 
   onMount(() => {
@@ -80,15 +82,18 @@
   }
 
   async function saveSetting(value: boolean): Promise<void> {
-    if (!adapter || !loaded || loading || saving) return;
+    if (!adapter || !loaded || loading || saving || setupRunning) return;
     const previous = enabled;
     enabled = value;
     saving = true;
     retryKind = null;
     retryValue = null;
+    let saved = false;
     try {
       const result = await putHqAnywherePersonSetting(adapter.settings, value);
-      if (!result.ok) {
+      if (result.ok) {
+        saved = true;
+      } else {
         console.warn("[hq-anywhere] setting write failed:", result);
         enabled = previous;
         retryKind = "write";
@@ -102,6 +107,32 @@
     } finally {
       saving = false;
     }
+    if (saved) await configureGlobalRuntime(value);
+  }
+
+  async function configureGlobalRuntime(value: boolean): Promise<void> {
+    if (!adapter || setupRunning) return;
+    setupRunning = true;
+    retryKind = null;
+    retryValue = null;
+    try {
+      const result = await setHqAnywhereGlobalRuntime(
+        adapter.identity,
+        adapter.settings,
+        value,
+      );
+      if (!result.ok) {
+        console.warn("[hq-anywhere] global runtime setup failed:", result);
+        retryKind = "setup";
+        retryValue = value;
+      }
+    } catch (error) {
+      console.warn("[hq-anywhere] global runtime setup failed:", error);
+      retryKind = "setup";
+      retryValue = value;
+    } finally {
+      setupRunning = false;
+    }
   }
 
   function retry(): void {
@@ -109,6 +140,8 @@
       void loadSetting();
     } else if (retryKind === "write" && retryValue !== null) {
       void saveSetting(retryValue);
+    } else if (retryKind === "setup" && retryValue !== null) {
+      void configureGlobalRuntime(retryValue);
     }
   }
 </script>
@@ -126,15 +159,17 @@
       role="switch"
       aria-checked={enabled}
       aria-label="HQ Anywhere"
-      aria-busy={loading || saving}
+      aria-busy={loading || saving || setupRunning}
       data-testid="hq-anywhere-setting-toggle"
-      disabled={!loaded || loading || saving}
+      disabled={!loaded || loading || saving || setupRunning}
       onclick={() => void saveSetting(!enabled)}
     ></button>
     {#if loading}
       <span class="status" role="status" aria-live="polite">Loading…</span>
     {:else if saving}
       <span class="status" role="status" aria-live="polite">Saving…</span>
+    {:else if setupRunning}
+      <span class="status" role="status" aria-live="polite">Setting up…</span>
     {:else if retryKind}
       <button
         type="button"
