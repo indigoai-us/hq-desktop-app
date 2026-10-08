@@ -548,6 +548,31 @@ describe('onboarding directory selection', () => {
   // The folder scene shows the chosen location in `.lpath` (full path in its
   // title) and the directory notice in `.notice`; "Install here" is its
   // primary button.
+  it('resolves the default folder without creating it before Install here', async () => {
+    tauri.invoke.mockImplementation(async (command: string) => {
+      switch (command) {
+        case 'resolve_hq_path':
+          return '/Users/test/hq';
+        case 'detect_ai_tools':
+          return NO_AI_TOOLS;
+        default:
+          return undefined;
+      }
+    });
+
+    component = mount(OnboardingWizard, { target: host, props: { initialStep: 1 } });
+    await flushUntil(() =>
+      tauri.invoke.mock.calls.some(([command]) => command === 'resolve_hq_path'),
+    );
+
+    const resolveCalls = tauri.invoke.mock.calls.filter(
+      ([command]) => command === 'resolve_hq_path',
+    );
+    expect(resolveCalls).toEqual([['resolve_hq_path', { create: false }]]);
+    // Nothing that creates the folder runs until the person presses Install here.
+    expect(tauri.invoke.mock.calls.some(([command]) => command === 'check_writable')).toBe(false);
+  });
+
   it('moves a populated non-HQ default into a safe child before continuing', async () => {
     const defaultPath = '/Users/test/hq';
     const installPath = `${defaultPath}/hq`;

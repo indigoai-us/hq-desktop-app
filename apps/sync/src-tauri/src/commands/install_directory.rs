@@ -94,20 +94,34 @@ pub fn create_directory(parent: String, name: String) -> Result<CreateDirectoryR
             .map_err(|e| format!("Failed to create {}: {}", target.display(), e))?;
     }
 
-    let non_empty = if target.is_dir() {
-        match std::fs::read_dir(&target) {
-            Ok(mut entries) => entries.next().is_some(),
-            Err(_) => false,
-        }
-    } else {
-        false
-    };
+    let non_empty = target.is_dir() && has_foreign_entries(&target);
 
     Ok(CreateDirectoryResult {
         path: target.to_string_lossy().into_owned(),
         already_existed,
         non_empty,
     })
+}
+
+/// Entries that do not make a folder "already has files" for the location
+/// step: HQ's own `.hq` state folder, which HQ writes into the folder it is
+/// set up in, and the Finder's `.DS_Store`. Neither is something the person
+/// put there, so a folder holding only these is offered as is instead of
+/// pushing the install into a nested `hq` folder.
+const SETUP_IGNORED_ENTRIES: &[&str] = &[".hq", ".DS_Store"];
+
+/// True when `dir` holds at least one entry the person (or another program)
+/// put there. Unreadable folders report false, as before.
+fn has_foreign_entries(dir: &std::path::Path) -> bool {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => entries.filter_map(Result::ok).any(|entry| {
+            let name = entry.file_name();
+            !SETUP_IGNORED_ENTRIES
+                .iter()
+                .any(|ignored| name.to_str() == Some(*ignored))
+        }),
+        Err(_) => false,
+    }
 }
 
 /// Read the user's chosen HQ install path from `~/.hq/menubar.json` (`hqPath`),
@@ -132,9 +146,28 @@ fn persisted_install_path() -> Option<PathBuf> {
 /// extraction, git init, personalize, sync) resolves through here, so the
 /// chosen location is honored everywhere rather than silently defaulting to
 /// `~/hq`.
-#[tauri::command]
 pub fn resolve_hq_path() -> Result<String, String> {
+    resolve_hq_path_with(true)
+}
+
+/// Tauri entry point for [`resolve_hq_path`]. `create: false` resolves the
+/// folder without creating it: the setup wizard asks for the default before
+/// the person has chosen a location, and only the install step may create the
+/// HQ folder. Omitting `create` keeps the creating behavior for other callers.
+pub mod command {
+    #[tauri::command]
+    pub fn resolve_hq_path(create: Option<bool>) -> Result<String, String> {
+        super::resolve_hq_path_with(create.unwrap_or(true))
+    }
+}
+
+fn resolve_hq_path_with(create: bool) -> Result<String, String> {
     let hq_path = persisted_install_path().unwrap_or_else(|| expand_tilde("~/hq"));
+    resolve_hq_path_at(hq_path, create)
+}
+
+/// Resolve a known HQ folder path; create it only when `create` is true.
+fn resolve_hq_path_at(hq_path: PathBuf, create: bool) -> Result<String, String> {
     if hq_path.exists() && !hq_path.is_dir() {
         return Err(format!(
             "{} exists but is a file, not a folder",
@@ -142,6 +175,9 @@ pub fn resolve_hq_path() -> Result<String, String> {
         ));
     }
     if !hq_path.exists() {
+        if !create {
+            return Ok(strip_windows_verbatim_prefix(&hq_path.to_string_lossy()));
+        }
         std::fs::create_dir_all(&hq_path)
             .map_err(|e| format!("Failed to create {}: {e}", hq_path.display()))?;
     }
@@ -222,10 +258,7 @@ pub fn detect_hq(path: String) -> DetectHqResult {
     // Report whether the directory already holds any entries so the Directory
     // screen can warn before installing on top of an unrelated non-empty
     // folder. Mirrors the `non_empty` computation in `create_directory`.
-    let non_empty = p.is_dir()
-        && std::fs::read_dir(&p)
-            .map(|mut entries| entries.next().is_some())
-            .unwrap_or(false);
+    let non_empty = p.is_dir() && has_foreign_entries(&p);
     DetectHqResult {
         exists: true,
         is_hq,
@@ -277,6 +310,76 @@ mod tests {
         let r = detect_hq(dir.path().to_string_lossy().into_owned());
         assert!(r.exists);
         assert!(r.is_hq);
+    }
+
+    /// A folder holding only HQ's own `.hq` state (and Finder's `.DS_Store`)
+    /// is not "a location that already has files", so the location step does
+    /// not push a new user into a nested `hq` folder because of it.
+    #[test]
+    fn detect_hq_ignores_hq_state_and_finder_metadata() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".hq")).unwrap();
+        fs::write(dir.path().join(".hq/config.json"), "{}").unwrap();
+        fs::write(dir.path().join(".DS_Store"), "").unwrap();
+        let r = detect_hq(dir.path().to_string_lossy().into_owned());
+        assert!(r.exists);
+        assert!(!r.is_hq);
+        assert!(!r.non_empty);
+
+        // Anything else still counts.
+        fs::write(dir.path().join("notes.txt"), "mine").unwrap();
+        let r = detect_hq(dir.path().to_string_lossy().into_owned());
+        assert!(r.non_empty);
+    }
+
+    /// Resolving without `create` returns the path and leaves the folder
+    /// absent; resolving with it creates the folder. Runs on every platform.
+    #[test]
+    fn resolve_hq_path_at_creates_the_folder_only_when_asked() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("hq");
+
+        let resolved = resolve_hq_path_at(root.clone(), false).unwrap();
+        assert_eq!(
+            PathBuf::from(&resolved),
+            PathBuf::from(strip_windows_verbatim_prefix(&root.to_string_lossy()))
+        );
+        assert!(!root.exists());
+
+        let created = resolve_hq_path_at(root.clone(), true).unwrap();
+        assert!(root.is_dir());
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(created)).unwrap(),
+            fs::canonicalize(&root).unwrap()
+        );
+    }
+
+    /// The setup wizard's default-folder lookup must not create the folder;
+    /// only the install step may. Other callers keep the creating behavior.
+    /// Unix only: the default folder hangs off `$HOME`, which `scoped_home`
+    /// can redirect. On Windows the home folder comes from the known-folder
+    /// API, so this test would resolve (and create) the runner's real
+    /// `%USERPROFILE%\hq`. The test above covers the create switch there.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_hq_path_command_without_create_leaves_the_folder_absent() {
+        let _g = crate::util::test_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = tempdir().unwrap();
+        let _home = crate::util::test_support::scoped_home(home.path());
+        let default_root = home.path().join("hq");
+
+        let resolved = command::resolve_hq_path(Some(false)).unwrap();
+        assert_eq!(PathBuf::from(&resolved), default_root);
+        assert!(!default_root.exists());
+
+        let created = command::resolve_hq_path(None).unwrap();
+        assert!(default_root.is_dir());
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(created)).unwrap(),
+            fs::canonicalize(&default_root).unwrap()
+        );
     }
 
     #[test]
