@@ -67,7 +67,15 @@
       void mobile.flow.handleCallback(url);
     });
     return () => {
-      void unlisten.then((stop) => stop()).catch(() => {});
+      void unlisten.then((stop) => stop()).catch((error) => {
+        console.warn("[hq-work-route] mobile callback listener cleanup failed", {
+          name:
+            error instanceof Error && /^[A-Za-z][A-Za-z0-9_.]*$/.test(error.name)
+              ? error.name
+              : "UnknownError",
+          message: "Mobile callback listener cleanup failed",
+        });
+      });
     };
   });
 </script>

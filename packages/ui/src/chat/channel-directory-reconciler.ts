@@ -160,7 +160,8 @@ export function localDirectoryCursorStorage(
             expiresAt,
           }),
         );
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/channel-directory-reconciler.ts:163", error);
         // Quota / private mode — best-effort; next run re-snapshots.
       }
     },

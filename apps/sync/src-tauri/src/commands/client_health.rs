@@ -42,8 +42,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 use hq_desktop_core::client_health::{
-    parse_client_health_heartbeat, ClientHealthArch, ClientHealthFailureReason,
-    ClientHealthHeartbeat, ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState,
+    clear_staged_update_signal_at_process_start, parse_client_health_heartbeat, ClientHealthArch,
+    ClientHealthFailureReason, ClientHealthHeartbeat, ClientHealthInstallOutcome,
+    ClientHealthPlatform, ClientHealthSource, ClientHealthSyncState, ClientHealthUpdateDeferReason,
     ClientHealthUpdaterState, ClientHealthVersions, CLIENT_HEALTH_CONTRACT_VERSION,
     CLIENT_HEALTH_MAX_CONFLICT_COUNT, CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES,
 };
@@ -98,6 +99,10 @@ struct ClientHealthState {
     /// Closed `ClientHealthUpdaterState` wire token of the last observed
     /// updater transition. `None` = never observed → reported `unchecked`.
     updater_state: Option<String>,
+    /// Closed client-health reason for a staged update whose install is held.
+    update_defer_reason: Option<String>,
+    /// Closed client-health result for the most recent updater install.
+    install_outcome: Option<String>,
 }
 
 fn client_health_home_dir() -> Option<PathBuf> {
@@ -149,6 +154,24 @@ fn with_state<T>(mutate: impl FnOnce(&mut ClientHealthState) -> T) -> Result<T, 
     let out = mutate(&mut state);
     save_state(&path, &state)?;
     Ok(out)
+}
+
+/// Like `with_state`, but skip the disk write when the mutation reports that
+/// the persisted client-health state is already current.
+fn with_state_if_changed(
+    mutate: impl FnOnce(&mut ClientHealthState) -> bool,
+) -> Result<bool, String> {
+    let _guard = state_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let path = state_file_path().ok_or_else(|| "home dir unavailable".to_string())?;
+    let mut state = load_state(&path);
+    if !mutate(&mut state) {
+        return Ok(false);
+    }
+    if state.installation_id.is_empty() {
+        state.installation_id = new_installation_id();
+    }
+    save_state(&path, &state)?;
+    Ok(true)
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$` — the contract's installation-identity
@@ -391,9 +414,47 @@ pub(crate) fn record_updater_status(status: &PendingUpdateStatus) {
     persist_updater_state(updater_wire_state(status));
 }
 
+/// A verified package is staged and its automatic install is being held.
+/// Preserve the staged state even if a later updater check reports no update.
+pub(crate) fn record_staged_update_deferred(reason: ClientHealthUpdateDeferReason) {
+    match with_state_if_changed(|state| {
+        if !hq_desktop_core::client_health::staged_update_deferred_state_changed(
+            state.updater_state.as_deref(),
+            state.update_defer_reason.as_deref(),
+            state.install_outcome.as_deref(),
+            reason,
+        ) {
+            return false;
+        }
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateReady
+                .wire_value()
+                .to_string(),
+        );
+        state.update_defer_reason = Some(reason.wire_value().to_string());
+        state.install_outcome = Some(ClientHealthInstallOutcome::Staged.wire_value().to_string());
+        true
+    }) {
+        Ok(true) => notify_client_health_state_changed(),
+        Ok(false) => {}
+        Err(error) => eprintln!("[client-health] record-staged-update-deferred failed: {error}"),
+    }
+}
+
 /// A desktop update install failed.
 pub(crate) fn record_updater_install_failed() {
-    persist_updater_state(ClientHealthUpdaterState::UpdateFailed);
+    if let Err(e) = with_state(|state| {
+        state.update_defer_reason = None;
+        state.install_outcome = None;
+        state.updater_state = Some(
+            ClientHealthUpdaterState::UpdateFailed
+                .wire_value()
+                .to_string(),
+        );
+    }) {
+        eprintln!("[client-health] record-updater-install-failed failed: {e}");
+    }
+    notify_client_health_state_changed();
 }
 
 // ─── Diagnostics read seam (US-007) ──────────────────────────────────────────
@@ -488,29 +549,15 @@ fn failure_reason_from_wire(value: &str) -> Option<ClientHealthFailureReason> {
     })
 }
 
-fn updater_state_from_wire(value: &str) -> Option<ClientHealthUpdaterState> {
-    use ClientHealthUpdaterState as U;
-    Some(match value {
-        "unchecked" => U::Unchecked,
-        "up_to_date" => U::UpToDate,
-        "update_available" => U::UpdateAvailable,
-        "update_downloading" => U::UpdateDownloading,
-        "update_ready" => U::UpdateReady,
-        "update_failed" => U::UpdateFailed,
-        "unsupported" => U::Unsupported,
-        _ => return None,
-    })
-}
-
 /// The desktop always ships an updater, so a never-observed ledger reports
 /// the closed value `unchecked` — never field absence (absence means "a
 /// client too old to report it", which this client is not).
 fn reported_updater_state(state: &ClientHealthState) -> ClientHealthUpdaterState {
-    state
-        .updater_state
-        .as_deref()
-        .and_then(updater_state_from_wire)
-        .unwrap_or(ClientHealthUpdaterState::Unchecked)
+    hq_desktop_core::client_health::reported_updater_state(
+        state.updater_state.as_deref(),
+        state.update_defer_reason.as_deref(),
+        state.install_outcome.as_deref(),
+    )
 }
 
 fn derive_failure_reason(
@@ -622,7 +669,39 @@ fn build_heartbeat_payload(
             .min(CLIENT_HEALTH_MAX_CONSECUTIVE_FAILURES),
         conflict_count: Some(state.conflict_count.min(CLIENT_HEALTH_MAX_CONFLICT_COUNT)),
         updater_state: Some(reported_updater_state(state)),
+        update_defer_reason: state
+            .update_defer_reason
+            .as_deref()
+            .and_then(update_defer_reason_from_wire),
+        install_outcome: state
+            .install_outcome
+            .as_deref()
+            .and_then(install_outcome_from_wire),
         failure_reason: derive_failure_reason(sync_state, state),
+    }
+}
+
+fn update_defer_reason_from_wire(value: &str) -> Option<ClientHealthUpdateDeferReason> {
+    use ClientHealthUpdateDeferReason as R;
+    match value {
+        "busy_sync" => Some(R::BusySync),
+        "busy_activity" => Some(R::BusyActivity),
+        "pending_restart" => Some(R::PendingRestart),
+        "other" => Some(R::Other),
+        _ => None,
+    }
+}
+
+fn install_outcome_from_wire(value: &str) -> Option<ClientHealthInstallOutcome> {
+    use ClientHealthInstallOutcome as O;
+    match value {
+        "staged" => Some(O::Staged),
+        "handoff_failed" => Some(O::HandoffFailed),
+        "download_failed" => Some(O::DownloadFailed),
+        "installer_failed" => Some(O::InstallerFailed),
+        "rolled_back" => Some(O::RolledBack),
+        "ok" => Some(O::Ok),
+        _ => None,
     }
 }
 
@@ -771,6 +850,8 @@ async fn emit_client_health_heartbeat_with_desktop(
 pub async fn emit_client_health_after_update(installed_version: &str) {
     if let Err(e) = with_state(|state| {
         state.updater_state = Some(ClientHealthUpdaterState::UpToDate.wire_value().to_string());
+        state.update_defer_reason = None;
+        state.install_outcome = None;
     }) {
         eprintln!("[client-health] post-update state clear failed: {e}");
     }
@@ -780,6 +861,17 @@ pub async fn emit_client_health_after_update(installed_version: &str) {
 /// Fire-and-forget startup + 5-minute health heartbeat loop. State-change
 /// triggers (`notify_client_health_state_changed`) wake it immediately, with
 /// a short debounce so a burst of related changes sends one heartbeat.
+pub(crate) fn clear_staged_update_signal_at_startup() {
+    if let Err(error) = with_state(|state| {
+        clear_staged_update_signal_at_process_start(
+            &mut state.update_defer_reason,
+            &mut state.install_outcome,
+        );
+    }) {
+        eprintln!("[client-health] startup staged-signal clear failed: {error}");
+    }
+}
+
 pub fn setup_client_health_heartbeat() {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -1109,6 +1201,33 @@ mod tests {
         assert_ne!(
             updater_wire_state(&PendingUpdateStatus::Unchecked).wire_value(),
             updater_wire_state(&PendingUpdateStatus::Absent).wire_value(),
+        );
+    }
+
+    #[test]
+    fn staged_deferred_automatic_update_reports_ready_instead_of_up_to_date() {
+        // Before the staged/deferred signal is recorded, the updater ledger
+        // can already have been cleared by a subsequent no-update check. This
+        // is the client-health state observed while DownloadedUpdate still
+        // holds the verified package and the automatic install is deferred.
+        let mut state = state_with_id(1);
+        state.updater_state = Some(ClientHealthUpdaterState::UpToDate.wire_value().to_string());
+        state.update_defer_reason = Some("busy_sync".to_string());
+        state.install_outcome = Some("staged".to_string());
+        let heartbeat = build_heartbeat_payload(&state, full_versions(), false, false, now_iso());
+
+        assert_eq!(
+            heartbeat.updater_state,
+            Some(ClientHealthUpdaterState::UpdateReady),
+            "a staged automatic update awaiting installation must not report up_to_date"
+        );
+        assert_eq!(
+            heartbeat.update_defer_reason,
+            Some(ClientHealthUpdateDeferReason::BusySync)
+        );
+        assert_eq!(
+            heartbeat.install_outcome,
+            Some(ClientHealthInstallOutcome::Staged)
         );
     }
 

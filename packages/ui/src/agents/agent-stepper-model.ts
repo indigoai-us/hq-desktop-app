@@ -1,9 +1,10 @@
 /**
  * Bot draft for the profile pane's Edit sheet (Identity → Runtime), mapped
  * onto the create-bot model. The six-step creation sheet that first used it
- * is retired: creating is the three-step New bot modal, and the remaining
- * setup happens in the bot's thread (chat/create-bot/bot-setup-thread.ts). Local create still goes through `toCreateInput`; hosted
- * create through `CloudBotDraft`. No new backend contract.
+ * is retired: creating is the New bot flow, which lands in the bot's thread,
+ * where the bot's own intro greets the person. Local create still goes
+ * through `toCreateInput`; hosted create through `CloudBotDraft`. No new
+ * backend contract.
  *
  * Grant levels are read and write only. Probe text is redacted before paint
  * so an enroll token or secret value never reaches the log.
@@ -246,12 +247,10 @@ export function toCreateBotDraft(
     size: draft.place === "hosted" ? draft.size : "",
     name: draft.name.trim() || base.name,
     handle: draft.handle.trim(),
-    intro: draft.intro.trim(),
     title: draft.description.trim().slice(0, 60),
     scope: home === "local" && company ? "company" : "personal",
     companySlugs: company ? [company.id] : [],
     companyUid: company?.id ?? base.companyUid,
-    model: draft.model,
     autoApprove: draft.slackPost === "auto",
   };
 }
@@ -260,7 +259,15 @@ export function toLocalInput(
   draft: AgentStepperDraft,
   ctx: Pick<CreateBotContext, "canLocal" | "canCloud" | "existingNames" | "companies" | "runtimeReady">,
 ): LocalBotCreateInput {
-  return toCreateInput(toCreateBotDraft(draft, ctx));
+  // The create-bot draft has no intro or model (the New bot flow asks for
+  // those in the bot's first message); this stepper still takes both.
+  const intro = draft.intro.trim();
+  const model = draft.model.trim();
+  return {
+    ...toCreateInput(toCreateBotDraft(draft, ctx)),
+    ...(model ? { model } : {}),
+    ...(intro ? { intro } : {}),
+  };
 }
 
 export function toCloudDraft(draft: AgentStepperDraft): CloudBotDraft {

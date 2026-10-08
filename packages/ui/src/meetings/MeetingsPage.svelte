@@ -5,6 +5,7 @@
   import { onMount, untrack } from "svelte";
   import { dismissToastByKey, pushToast } from "../shell/toast-stack.svelte.js";
   import { hostComputerNoun, PERSONAL_TRANSCRIPTS_FLAG } from "@hq/platform";
+  import { createLocalMeetingDocumentReader } from "./local-meeting-document";
   import type {
     MeetingPermissionsSnapshot,
     PlatformAdapter,
@@ -95,6 +96,11 @@
     storage?: MeetingsStorage | null;
     /** Native auth generation that owns any in-flight meeting hydration. */
     sessionGeneration?: number;
+    /**
+     * The synced folder slug for a company uid, or null when that company is
+     * not on this computer. Lets a recorded meeting open from its synced file.
+     */
+    companySlugForUid?: (companyUid: string) => string | null;
   }
   let {
     adapter,
@@ -111,6 +117,7 @@
     focusRequest = null,
     storage = typeof window !== "undefined" ? window.localStorage : null,
     sessionGeneration = 0,
+    companySlugForUid = () => null,
   }: MeetingsPageProps = $props();
 
   // Store-backed data. The singleton (started at app launch in
@@ -726,6 +733,11 @@
       settings: adapter.settings,
       storage,
       sessionGeneration,
+      readLocalMeetingDocument: createLocalMeetingDocumentReader({
+        vault: adapter.files?.vault,
+        appShell: adapter.appShell,
+        companySlugForUid: (uid) => companySlugForUid(uid),
+      }),
     });
     startMeetingsStore();
     setMeetingsViewActive(true);

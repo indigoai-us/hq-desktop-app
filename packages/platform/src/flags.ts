@@ -83,8 +83,6 @@ export const FIRST_FOLDER_SYNC_STEP_FLAG =
   "desktop.first-folder-sync-step-v1";
 export const FIRST_LAUNCH_JOIN_KEY_FLAG =
   "desktop.first-launch-join-key-v1";
-export const FIRST_LAUNCH_SIGNIN_REACH_FLAG =
-  "desktop.first-launch-signin-reach-telemetry-v1";
 export const COMPANY_ROUTE_LOOKUP_RETRY_FLAG =
   "desktop.company-route-lookup-retry-v1";
 export const COMPANY_NAME_PREFILL_FLAG = "desktop.company-name-prefill-v1";
@@ -94,6 +92,8 @@ export const LOGIN_RECEIPT_DURABILITY_FLAG =
   "desktop.login-receipt-durable-before-return-v1";
 export const POST_READY_ACTION_TELEMETRY_FLAG =
   "desktop.post-ready-action-telemetry-v1";
+export const POST_READY_DROP_REASON_FLAG =
+  "desktop.post-ready-drop-reason-v1";
 export const FIRST_WEEK_RETURN_NUDGE_FLAG =
   "desktop.first-week-return-nudge-v1";
 export const READY_FIRST_ACTION_FLAG = "desktop.ready-first-action-v1";
@@ -104,6 +104,8 @@ export const HUMAN_ONLY_CONVERSATIONS_FLAG =
   "desktop.human-only-conversations";
 export const PERSONAL_TRANSCRIPTS_FLAG =
   "desktop.meetings-personal-transcripts";
+/** Admin-owned rollout gate for the person's self-service HQ Anywhere setting. */
+export const HQ_ANYWHERE_RUNTIME_FLAG = "hq-anywhere-runtime";
 /**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:
@@ -158,15 +160,16 @@ export const LEGACY_TO_REGISTRY: Readonly<Record<string, string>> = {
   "agents.claude-provider": "agents.claude-provider",
   [FIRST_FOLDER_SYNC_STEP_FLAG]: FIRST_FOLDER_SYNC_STEP_FLAG,
   [FIRST_LAUNCH_JOIN_KEY_FLAG]: FIRST_LAUNCH_JOIN_KEY_FLAG,
-  [FIRST_LAUNCH_SIGNIN_REACH_FLAG]: FIRST_LAUNCH_SIGNIN_REACH_FLAG,
   [COMPANY_ROUTE_LOOKUP_RETRY_FLAG]: COMPANY_ROUTE_LOOKUP_RETRY_FLAG,
   [COMPANY_NAME_PREFILL_FLAG]: COMPANY_NAME_PREFILL_FLAG,
   [PERSONAL_WORKSPACE_BOARD_FLAG]: PERSONAL_WORKSPACE_BOARD_FLAG,
   [LOGIN_RECEIPT_DURABILITY_FLAG]: LOGIN_RECEIPT_DURABILITY_FLAG,
   [POST_READY_ACTION_TELEMETRY_FLAG]: POST_READY_ACTION_TELEMETRY_FLAG,
+  [POST_READY_DROP_REASON_FLAG]: POST_READY_DROP_REASON_FLAG,
   [FIRST_WEEK_RETURN_NUDGE_FLAG]: FIRST_WEEK_RETURN_NUDGE_FLAG,
   [READY_FIRST_ACTION_FLAG]: READY_FIRST_ACTION_FLAG,
   [DESKTOP_LIMIT_STATUS_PUSH_FLAG]: DESKTOP_LIMIT_STATUS_PUSH_FLAG,
+  [HQ_ANYWHERE_RUNTIME_FLAG]: HQ_ANYWHERE_RUNTIME_FLAG,
   [SETUP_DEPS_TIMEOUT_RETRY_FLAG]: SETUP_DEPS_TIMEOUT_RETRY_FLAG,
   [HUMAN_ONLY_CONVERSATIONS_FLAG]: HUMAN_ONLY_CONVERSATIONS_FLAG,
   [DESKTOP_AGENT_CREATION_FLAG]: DESKTOP_AGENT_CREATION_FLAG,

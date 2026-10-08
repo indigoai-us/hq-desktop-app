@@ -39,8 +39,7 @@ pub const INGEST_URL: &str = "https://cdp.vyg.app/cdp/ingest";
 pub const SITE_KEY: &str = "hqforwork.com";
 /// The ingest proxy binds `scope` to the requesting Origin.
 pub const ORIGIN: &str = "https://hqforwork.com";
-/// hq-pro's anonymous flag resolver (the same one the website uses for
-/// `welcome.desktop-signin-link` on behalf of hq-desktop-app #1211).
+/// hq-pro's anonymous resolver for browser-safe public feature gates.
 pub const FLAG_RESOLVE_URL: &str = "https://hqapi.hq.computer/v1/flags/resolve-public";
 /// Public hq-flags key gating the whole mirror. Default off.
 pub const FLAG_KEY: &str = "desktop.cdp-mirror";

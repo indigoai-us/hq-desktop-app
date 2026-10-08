@@ -1726,6 +1726,17 @@
 .hq-welcome .ready-consent .consent-link:hover {
   color: var(--w-muted);
 }
+.hq-welcome .ready-setting-error {
+  display: flex;
+  flex-basis: 100%;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  color: var(--w-faint);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
 
 /* ---- panels off the story strip: connector import, tutorial steps ------- */
 .hq-welcome .panel-block {
