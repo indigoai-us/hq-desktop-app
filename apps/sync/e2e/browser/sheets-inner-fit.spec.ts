@@ -64,11 +64,17 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
       await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
       await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     },
-    // Advanced opens on the same step: the handle, who it is for,
-    // permissions and memory.
+    // The optional steps, one per screen: who it's for, then fine-tune
+    // (handle, permissions and memory). This persona has no templates, so
+    // there is no Start from step.
     next: [
       async (page) => {
-        await page.getByTestId('chat-bot-advanced-toggle').click();
+        await page.getByTestId('create-bot-next').click();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'scope');
+      },
+      async (page) => {
+        await page.getByTestId('create-bot-next').click();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'tune');
         await expect(page.getByTestId('chat-bot-advanced')).toBeVisible();
       },
     ],

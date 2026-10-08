@@ -12,7 +12,9 @@ const FILES = [
   "./create-bot.css",
   "./NewBotSunriseShell.svelte",
   "./CreateBotFlow.svelte",
-  "./KindStep.svelte",
+  "./LocalScopeStep.svelte",
+  "./LocalTemplateStep.svelte",
+  "./NewBotExternalStep.svelte",
   "./LocalBotAdvanced.svelte",
   "./CloudDetailsStep.svelte",
   "./HomeStep.svelte",
@@ -102,9 +104,11 @@ describe("create-bot wizard type contract", () => {
     expect(shared).toMatch(/\.cb-pill\s*\{[^}]*border:\s*0;/);
   });
 
-  it("writes the create shortcut hint in sentence case", () => {
+  it("shows no create shortcut hint: the buttons say what they do and Enter finishes", () => {
     const flow = read("./CreateBotFlow.svelte");
     expect(flow).not.toContain("TO CREATE");
-    expect(flow).toContain("{primaryEnterHint}</kbd> to create");
+    expect(flow).not.toContain("to create</p>");
+    expect(flow).not.toContain("primaryEnterHint");
+    expect(flow).not.toContain("<kbd");
   });
 });

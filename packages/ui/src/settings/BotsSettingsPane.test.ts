@@ -225,7 +225,8 @@ describe("Settings → Bots (Work shell)", () => {
     expect(card).not.toBeNull();
     // Settings has no cloud create, so there is no Cloud/Local question.
     expect(card!.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("name");
-    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBe(2);
+    // Name, coding tool, then the optional who it's for, start from and fine-tune.
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBe(5);
     expect(card!.querySelector('[data-testid="new-bot-step-name"]')).not.toBeNull();
     // The old wizard's crumbs are gone.
     expect(document.querySelector('[data-testid^="create-bot-crumb-"]')).toBeNull();
@@ -245,7 +246,7 @@ describe("Settings → Bots (Work shell)", () => {
     expect(dialog()).toBeNull();
     expect(create).not.toHaveBeenCalled();
 
-    // Name → coding tool, a template from its link → Create.
+    // Name → coding tool → Next to Start from, a template → Finish with defaults.
     await open();
     const name = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
     name.value = "ledger";
@@ -254,15 +255,17 @@ describe("Settings → Bots (Work shell)", () => {
     document.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
     await settleFlow();
     expect(step()).toBe("home");
-    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-templates-toggle"]')!.click();
-    await settleFlow();
-    document.querySelector<HTMLButtonElement>('[data-testid="create-bot-kind-template"]')!.click();
-    await settleFlow();
+    for (const next of ["scope", "template"]) {
+      document.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
+      await settleFlow();
+      expect(step()).toBe(next);
+    }
     const analyst = '[data-testid="create-bot-template-card"][data-template="analyst"]';
     await vi.waitFor(() => expect(document.querySelector(analyst)).not.toBeNull());
     document.querySelector<HTMLButtonElement>(analyst)!.click();
     await settleFlow();
-    expect(step()).toBe("home");
+    expect(step()).toBe("template");
+    expect(document.querySelector('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
     document.querySelector<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.click();
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "ledger", runtime: "claude", worker: "analyst" }));

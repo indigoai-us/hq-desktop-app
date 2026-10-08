@@ -2779,23 +2779,6 @@
     newBotOpen = true;
   }
 
-  /**
-   * "Create a cloud bot instead" on the local steps: the cloud create screen
-   * when the takeover has one, else the "+" window's cloud flow.
-   */
-  function switchLocalToCloud(name: string = newBotName): void {
-    if (takeoverHasCloud) {
-      backToNewBotChoice(name);
-      newBotOpenCloud = true;
-      return;
-    }
-    if (!canMakeCloudBotInWindow) return;
-    // Close the local steps first: the window's flow is built for the home
-    // it opens with, so the cloud one must open fresh.
-    createOpen = false;
-    void tick().then(() => openBotFlowFromChoice("cloud", name));
-  }
-
   /** Host entry point (#welcome's "Start a project channel"): open the create modal. */
   export function openCreateChannel(options: { kind?: "channel" | "project" } = {}): void {
     createKind = options.kind ?? "channel";
@@ -5082,7 +5065,6 @@
       initialBotHome={createBotHome}
       initialBotName={createSunrise ? newBotName : null}
       onsunriseback={createSunrise ? backToNewBotChoice : null}
-      onsunrisecloud={createSunrise && newBotCloudReason === null ? switchLocalToCloud : null}
     />
   {/if}
 

@@ -227,8 +227,6 @@
     initialBotName?: string | null;
     /** Back from the bot flow's first step when opened from the choice: return to it, with the name. */
     onsunriseback?: ((name: string) => void) | null;
-    /** The takeover's local steps offer "Create a cloud bot instead" with this, with the name. */
-    onsunrisecloud?: ((name: string) => void) | null;
   }
 
   let {
@@ -272,7 +270,6 @@
     initialBotHome = null,
     initialBotName = null,
     onsunriseback = null,
-    onsunrisecloud = null,
   }: Props = $props();
 
   /** Company channel vs project channel; only meaningful inside a company. */
@@ -696,8 +693,6 @@
    * screens: from the choice (`sunrise`) and from this window's own search.
    */
   const sunriseBot = $derived(step === "bot");
-  /** The takeover's local steps: "Create a cloud bot instead" goes to its cloud screen. */
-  const sunriseLocalSteps = $derived(sunrise && sunriseBot && initialBotHome === "local" && canCreateLocalBot);
   // Opened as "New company" (sidebar switcher): go straight to the second
   // step. Read once, at mount — a later prop change must not yank the person
   // out of the step they are on.
@@ -2194,12 +2189,6 @@
         initialCompanySlug: botCompanySlug,
         initialHome: initialBotHome,
         initialName: initialBotName,
-        onswitchcloud: sunriseLocalSteps && onsunrisecloud
-          ? (name: string) => {
-              if (entryBusy) return;
-              onsunrisecloud?.(name);
-            }
-          : null,
         onCloudCreate: canCreateCloudBot ? newAgentFor : null,
         loadClaudeProviderFlag,
         loadCloudProvisionOptions,

@@ -2065,10 +2065,11 @@ describe("New bot step Escape", () => {
     // Local only here: the flow opens on the name, the first step everywhere.
     expect(flow!.getAttribute("data-home")).toBe("local");
     expect(flow!.getAttribute("data-step")).toBe("name");
-    // The step head: dots (name, coding tool) and Back.
+    // The step head: bars (name, coding tool, then the optional who it's for
+    // and fine-tune; no templates here) and Back.
     const dots = card!.querySelector('[data-testid="new-bot-progress"]');
-    expect(dots?.querySelectorAll("span").length).toBe(2);
-    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 2");
+    expect(dots?.querySelectorAll("span").length).toBe(4);
+    expect(dots?.getAttribute("aria-label")).toBe("Step 1 of 4");
     expect(card!.querySelector('[data-testid="create-bot-back"]')?.textContent).toContain("Back");
     expect(card!.querySelector('[data-testid="new-bot-continue-name"]')?.textContent).toContain("Continue");
     // None of the old wizard's chrome: no step crumbs, no plain modal card.
@@ -2078,7 +2079,10 @@ describe("New bot step Escape", () => {
     $<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
     await tick();
     expect(flow!.getAttribute("data-step")).toBe("home");
-    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 2");
+    expect(card!.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 4");
+    // The same footer as the takeover: "Next: <step>" and "Finish with defaults".
+    expect(card!.querySelector('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Who it's for");
+    expect(card!.querySelector('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
     expect(onclose).not.toHaveBeenCalled();
   });
 

@@ -20,9 +20,15 @@
     backTestId?: string;
     backDisabled?: boolean;
     onpick: (kind: NewBotKind) => void;
+    /**
+     * "Connect it": how to bring in a bot that already runs somewhere else.
+     * Without it the line under the tiles is not shown.
+     */
+    onconnectexternal?: (() => void) | null;
   }
 
   let {
+    onconnectexternal = null,
     name = "",
     cloudReason = null,
     localReason = null,
@@ -135,4 +141,10 @@
       </button>
     {/each}
   </div>
+  {#if onconnectexternal}
+    <p class="new-bot-choice-external" data-testid="new-bot-connect-external-line">
+      Already have a bot running somewhere else?
+      <button type="button" class="new-bot-inline-link" data-testid="new-bot-connect-external" onclick={onconnectexternal}>Connect it</button>
+    </p>
+  {/if}
 </div>

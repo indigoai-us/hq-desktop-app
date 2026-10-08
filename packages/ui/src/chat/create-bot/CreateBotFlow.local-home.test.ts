@@ -130,8 +130,12 @@ describe("New bot flow with Local already picked", () => {
     await settle();
     await toCodingTool();
     expect(step()).toBe("home");
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toMatch(/sign/i);
+    // The card says it, and one line under the cards offers the sign-in.
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Sign in first");
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toMatch(/sign in/i);
+    expect(q('[data-testid="create-bot-issue"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')?.disabled).toBe(true);
     click('[data-testid="chat-bot-runtime-signin"]');
     await settle();
     expect(onsignin).toHaveBeenCalledWith("claude");

@@ -2,12 +2,13 @@
 
 /**
  * Owner (2026-10-07): the bot's name is step 1 on every New bot path, then
- * "Where should <Name> live?", then the home's steps. A local bot has one
- * step after that: the coding tool, defaulting to the signed-in one. A
- * template and the advanced settings (handle, who it is for, permissions,
- * memory) are folded away on that step, and the bot asks for its title,
- * avatar and model in its first message (a kickoff). Every capability the
- * create screens keep is still reachable on them (policy
+ * "Where should <Name> live?", then the home's steps. A local bot's one
+ * required step is the coding tool, defaulting to the signed-in one. Who it
+ * is for, a template and the fine-tuning (handle, permissions, memory) are
+ * optional steps after it, one per screen, each with "Next: <step>" and
+ * "Finish with defaults". The bot asks for its title, avatar and model in its
+ * first message (a kickoff). Every capability the create screens keep is
+ * still reachable on them (policy
  * indigo-never-degrade-bot-experience-to-simplify-setup).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -85,6 +86,15 @@ function open(props: Record<string, unknown> = {}) {
   });
 }
 
+/** "Next: ..." until the given step is on screen. */
+async function toStep(target: string): Promise<void> {
+  for (let i = 0; i < 6 && step() !== target; i += 1) {
+    click('[data-testid="create-bot-next"]');
+    await settle();
+  }
+  expect(step()).toBe(target);
+}
+
 describe("Local bot: name, then the coding tool", () => {
   it("walks name → coding tool, with the takeover's head and dots that count the whole flow", async () => {
     open({ onback: () => undefined });
@@ -100,9 +110,10 @@ describe("Local bot: name, then the coding tool", () => {
     expect(q(".new-bot-takeover-kicker")?.textContent).toBe("A new teammate");
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Enter a name.");
     expect(q("#new-bot-takeover-title em")?.textContent).toBe("name.");
-    // The host asked "Where should it live?": name, where, coding tool.
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 3");
-    expect(q('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBe(3);
+    // The host asked "Where should it live?": name, where, coding tool, then
+    // who it's for and fine-tune (no templates here).
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 5");
+    expect(q('[data-testid="new-bot-progress"]')?.querySelectorAll("span").length).toBe(5);
     expect(q('[data-testid="create-bot-back"]')?.textContent).toContain("Back");
     expect(q('[data-testid="new-bot-continue-name"]')?.textContent).toContain("Continue");
     expect(q('[data-testid="new-bot-continue-name"]')?.classList.contains("new-bot-create-submit")).toBe(true);
@@ -111,12 +122,22 @@ describe("Local bot: name, then the coding tool", () => {
 
     await nameIt();
     expect(step()).toBe("home");
-    expect(q("#new-bot-takeover-title")?.textContent).toBe("Pick the coding tool.");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 3");
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Which tool should Dr Love think with?");
+    expect(q("#new-bot-takeover-title em")?.textContent).toBe("Dr Love");
+    expect(q(".new-bot-create-copy")?.textContent).toBe("It uses your own plan for the tool you pick.");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 5");
     // "Where does it run?" is never asked again.
     expect(q('[data-testid="chat-bot-where"]')).toBeNull();
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create bot");
-    expect(q('[data-testid="create-bot-hint"]')?.textContent).toContain("to create");
+    // Three equal tool cards, each with a short status, and nothing else.
+    const cards = Array.from(host.querySelectorAll('[data-testid="create-bot-runtime-cards"] [role="radio"]'));
+    expect(cards.map((c) => c.querySelector(".new-bot-option-title")?.textContent)).toEqual(["Claude Code", "Codex", "Grok"]);
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Signed in");
+    expect(q('[data-testid="chat-bot-runtime-codex-status"]')?.textContent).toBe("Sign in first");
+    for (const gone of ["chat-bot-handle", "chat-bot-scope", "create-bot-templates-toggle", "chat-bot-advanced-toggle", "chat-bot-where-external", "create-bot-switch-cloud", "create-bot-hint", "new-bot-create-scroll"]) {
+      expect(q(`[data-testid="${gone}"]`), gone).toBeNull();
+    }
+    expect(q('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Who it's for");
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
     expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("Dr Love");
     expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Local · Claude Code · acts as you");
   });
@@ -126,9 +147,8 @@ describe("Local bot: name, then the coding tool", () => {
     await settle();
     expect(step()).toBe("home");
     expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("Nova");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 3");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 5");
   });
-
   it("holds the name step on a name no handle can be made from", async () => {
     open();
     await settle();
@@ -159,20 +179,22 @@ describe("Local bot: name, then the coding tool", () => {
     expect(extras).toEqual({ displayName: "Dr Love" });
   });
 
-  it("keeps the handle, who it is for, permissions and memory under Advanced, with their defaults", async () => {
+  it("keeps the handle, permissions and memory on Fine-tune, with their defaults", async () => {
     const oncreate = vi.fn(async () => undefined);
     open({ oncreate });
     await settle();
     await nameIt("Dr Love");
-    const advanced = q<HTMLButtonElement>('[data-testid="chat-bot-advanced-toggle"]')!;
-    expect(advanced.getAttribute("aria-expanded")).toBe("false");
     expect(q('[data-testid="chat-bot-handle"]')).toBeNull();
-    advanced.click();
-    await settle();
-    expect(q<HTMLInputElement>('[data-testid="chat-bot-handle"]')?.value).toBe("dr-love");
+    await toStep("scope");
     expect(q('[data-testid="chat-bot-scope-personal"]')?.getAttribute("aria-checked")).toBe("true");
+    await toStep("tune");
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Fine-tune Dr Love.");
+    expect(q<HTMLInputElement>('[data-testid="chat-bot-handle"]')?.value).toBe("dr-love");
     expect(q('[data-testid="chat-bot-auto-approve"]')?.getAttribute("aria-checked")).toBe("true");
     expect(q('[data-testid="chat-bot-memory-synced"]')?.getAttribute("aria-checked")).toBe("true");
+    // The last step: only "Create <Name>".
+    expect(q('[data-testid="create-bot-next"]')).toBeNull();
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Create Dr Love");
     click('[data-testid="chat-bot-memory-local"]');
     click('[data-testid="chat-bot-auto-approve"]');
     await settle();
@@ -180,26 +202,17 @@ describe("Local bot: name, then the coding tool", () => {
     await settle(10);
     expect((oncreate.mock.calls[0] as unknown[])[0]).toMatchObject({ autoApprove: false, memory: "local" });
   });
-
-  it("opens Advanced by itself when the handle is taken, and creates once it is changed", async () => {
+  it("Finish with defaults gives a taken handle the next free number, without stopping", async () => {
     const oncreate = vi.fn(async () => undefined);
     open({ oncreate, existingNames: ["scout"] });
     await settle();
     await nameIt("Scout");
-    expect(q('[data-testid="chat-bot-advanced"]')).toBeTruthy();
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toBe("You already have a bot with the handle @scout.");
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
-    handle.value = "scout-2";
-    handle.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect((oncreate.mock.calls[0] as unknown[])[0]).toMatchObject({ name: "scout-2" });
   });
-
-  it("offers a template as a small link on the coding tool step, never a step", async () => {
+  it("offers templates on their own Start from step, Blank first", async () => {
     const oncreate = vi.fn(async () => undefined);
     open({
       oncreate,
@@ -208,17 +221,12 @@ describe("Local bot: name, then the coding tool", () => {
     await settle();
     await nameIt();
     expect(step()).toBe("home");
-    expect(q('[data-testid="create-bot-kind-step"]')).toBeNull();
-    const toggle = q<HTMLButtonElement>('[data-testid="create-bot-templates-toggle"]')!;
-    expect(toggle.textContent).toContain("Start from a template");
-    toggle.click();
-    await settle();
+    expect(q('[data-testid="create-bot-templates"]')).toBeNull();
+    await toStep("scope");
+    expect(q('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Start from");
+    await toStep("template");
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Dr Love start?");
     expect(q('[data-testid="create-bot-kind-blank"]')?.getAttribute("aria-checked")).toBe("true");
-    click('[data-testid="create-bot-kind-template"]');
-    await settle();
-    expect(q('[data-testid="create-bot-templates"]')).toBeTruthy();
-    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toBe("Pick a template.");
     click('[data-testid="create-bot-template-card"]');
     await settle();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
@@ -228,16 +236,16 @@ describe("Local bot: name, then the coding tool", () => {
     expect(oncreate).toHaveBeenCalledOnce();
     expect((oncreate.mock.calls[0] as unknown[])[0]).toMatchObject({ worker: "indigo/iris-cx" });
   });
-
-  it("has no template link when there are no company templates", async () => {
+  it("skips Start from when there are no company templates", async () => {
     open();
     await settle();
     await nameIt();
-    expect(q('[data-testid="create-bot-templates-toggle"]')).toBeNull();
-    expect(q('[data-testid="chat-bot-advanced-toggle"]')).toBeTruthy();
+    await toStep("scope");
+    expect(q('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Fine-tune");
+    await toStep("tune");
+    expect(q('[data-testid="create-bot-templates"]')).toBeNull();
   });
-
-  it("picks the coding tool with its sign-in, and holds Create until it is signed in", async () => {
+  it("picks the coding tool with its sign-in, and holds Next and Finish until it is signed in", async () => {
     const onsignin = vi.fn(async () => undefined);
     open({ onsignin });
     await settle();
@@ -245,14 +253,16 @@ describe("Local bot: name, then the coding tool", () => {
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
     click('[data-testid="chat-bot-runtime-codex"]');
     await settle();
+    expect(q('[data-testid="chat-bot-runtime-codex"]')?.getAttribute("aria-checked")).toBe("true");
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Codex");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
+    // One short line under the cards says why, with the sign-in right there.
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toContain("Codex");
     click('[data-testid="chat-bot-runtime-signin"]');
     await settle();
     expect(onsignin).toHaveBeenCalledWith("codex");
     expect(q('[data-testid="bot-identity-meta"]')?.textContent).toContain("Local · Codex");
   });
-
   it("shows the install help on the coding tool step when the tool is not installed", async () => {
     open({
       botRuntimeReady: { claude: false, codex: false, grok: false },
@@ -291,7 +301,7 @@ describe("Local bot: name, then the coding tool", () => {
     finish();
   });
 
-  it("Enter moves on from the name, and ⌘↵ creates on the coding tool step", async () => {
+  it("Enter moves on from the name, and finishes on the coding tool step", async () => {
     const oncreate = vi.fn(async () => undefined);
     open({ oncreate });
     await settle();
@@ -299,22 +309,16 @@ describe("Local bot: name, then the coding tool", () => {
     await settle();
     expect(step()).toBe("home");
     expect(oncreate).not.toHaveBeenCalled();
-    key({ key: "Enter", metaKey: true, ctrlKey: true });
+    key({ key: "Enter" });
     await settle(10);
     expect(oncreate).toHaveBeenCalledOnce();
   });
-
-  it("offers Create a cloud bot instead on the coding tool step, with the name", async () => {
-    const onswitchcloud = vi.fn();
-    open({ onswitchcloud, initialName: "Nova" });
+  it("has no Create a cloud bot instead link on the local steps: Back covers it", async () => {
+    open({ initialName: "Nova" });
     await settle();
-    const link = q<HTMLButtonElement>('[data-testid="create-bot-switch-cloud"]')!;
-    expect(link.textContent).toBe("Create a cloud bot instead");
-    expect(link.classList.contains("new-bot-takeover-local")).toBe(true);
-    link.click();
-    expect(onswitchcloud).toHaveBeenCalledWith("Nova");
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
+    expect(host.textContent).not.toContain("Create a cloud bot instead");
   });
-
   it("Back from the coding tool hands a name the host asked for back to the host", async () => {
     const onback = vi.fn();
     open({ onback, initialName: "Nova" });
@@ -343,15 +347,14 @@ describe("Local bot: name, then the coding tool", () => {
     expect(step()).toBe("name");
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
     expect(q('[data-testid="new-bot-choice-cloud"]')).toBeNull();
-    // Name, then the coding tool: two dots.
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 2");
+    // Name, then the coding tool, who it's for and fine-tune.
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 4");
     // Back from the name is the host's (there is no choice to return to).
     click('[data-testid="create-bot-back"]');
     expect(onback).toHaveBeenCalledOnce();
     await nameIt();
     expect(step()).toBe("home");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 2");
-    // No cloud create to switch to.
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 4");
     expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
   });
 });
@@ -412,7 +415,8 @@ describe("The flow's own Cloud or Local question", () => {
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
     expect(q("#new-bot-takeover-title em")?.textContent).toBe("Nova");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
+    // The bars count the draft's home until one is picked: Local here.
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 5");
     expect(q<HTMLButtonElement>('[data-testid="new-bot-choice-cloud"]')!.disabled).toBe(false);
     // The tiles carry no tags: no tool is named on the Local tile.
     expect(q('[data-testid="new-bot-choice-local-tags"]')).toBeNull();
@@ -422,10 +426,10 @@ describe("The flow's own Cloud or Local question", () => {
     await settle();
     expect(step()).toBe("home");
     expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 3");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 5");
     expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("Nova");
-    // The flow asked, and cloud is available: the coding tool step offers the switch.
-    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeTruthy();
+    // Back is the way to Cloud: there is no switch link on the local steps.
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
 
     click('[data-testid="create-bot-back"]');
     await settle();
@@ -436,6 +440,26 @@ describe("The flow's own Cloud or Local question", () => {
     await settle();
     expect(step()).toBe("name");
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Nova");
+  });
+
+  it("offers Connect it under the tiles for a bot that runs somewhere else, on its own screen", async () => {
+    openBoth();
+    await settle();
+    await nameIt("Nova");
+    const line = q('[data-testid="new-bot-connect-external-line"]');
+    expect(line?.textContent?.replace(/\s+/g, " ").trim()).toBe("Already have a bot running somewhere else? Connect it");
+    click('[data-testid="new-bot-connect-external"]');
+    await settle();
+    expect(step()).toBe("external");
+    expect(q('[data-testid="new-bot-external-step"]')).toBeTruthy();
+    expect(q('[data-testid="chat-bot-where-external"]')?.textContent).toContain("hq agent enroll");
+    expect(q('[data-testid="chat-bot-external-enroll-mask"]')?.textContent).toBe("••••-••••");
+    // The paid-plan note lives in this flow, not on the Where step.
+    expect(q('[data-testid="chat-bot-external-paid"]')?.textContent).toContain("paid plans");
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(step()).toBe("where");
+    expect(q('[data-testid="chat-bot-external-paid"]')).toBeNull();
   });
 
   it("Cloud reaches the name and size step and creates through onCloudCreate with the quoted size", async () => {
@@ -460,7 +484,9 @@ describe("The flow's own Cloud or Local question", () => {
     await settle();
 
     const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!;
-    expect(create.textContent).toContain("Create in Indigo");
+    // The only cloud step is the last: one button, "Create <Name>".
+    expect(q('[data-testid="create-bot-next"]')).toBeNull();
+    expect(create.textContent?.trim()).toBe("Create Polar");
     expect(create.disabled).toBe(false);
     create.click();
     await settle(10);

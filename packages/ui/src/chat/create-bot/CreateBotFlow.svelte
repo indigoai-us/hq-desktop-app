@@ -8,20 +8,21 @@
    * Settings > Bots) uses it. Owns the draft; the host owns the busy/error
    * state because it runs the create and navigates.
    *
-   * Local: the coding tool, with a template and the advanced settings folded
-   * away on the same screen. The bot asks for its title, avatar and model in
-   * its first message (a kickoff on the CLI input). Cloud: company (when
-   * there is a choice), then name, brain and size. A cloud draft hands
-   * `onCloudCreate` the name, @handle and title; a local draft hands
-   * `oncreate` the CLI input plus the display name.
+   * Local: the coding tool (required), then who it is for, a template and
+   * the fine-tuning, each optional and on its own screen. Every step but the
+   * last has "Next: <step>" and "Finish with defaults"; the last has only
+   * "Create <Name>". The bot asks for its title, avatar and model in its
+   * first message (a kickoff on the CLI input). Cloud: company (when there
+   * is a choice), then brain and size. A cloud draft hands `onCloudCreate`
+   * the name, @handle and title; a local draft hands `oncreate` the CLI
+   * input plus the display name.
    *
-   * Cmd-Enter creates from any step once every walked step is valid, except
-   * on a Cloud draft, where it moves to the next step until the details step
-   * is reached, so a company bot is never made under a name nobody has seen.
+   * Enter finishes from any step (a focused button keeps its own Enter).
+   * Nothing scrolls inside the card: a step that does not fit is doing too
+   * much and is split instead.
    */
   import { onMount, untrack } from "svelte";
   import { hostComputerNoun } from "@hq/platform";
-  import { formatShortcut, matchesShortcut } from "../../common/keyboard-shortcuts.js";
   import type {
     AdapterPromise,
     AgentProvisionOptionsView,
@@ -32,8 +33,10 @@
   import type { LocalBotEntryResult } from "../local-bots.js";
   import CloudDetailsStep from "./CloudDetailsStep.svelte";
   import HomeStep from "./HomeStep.svelte";
-  import KindStep from "./KindStep.svelte";
   import LocalBotAdvanced from "./LocalBotAdvanced.svelte";
+  import LocalScopeStep from "./LocalScopeStep.svelte";
+  import LocalTemplateStep from "./LocalTemplateStep.svelte";
+  import NewBotExternalStep from "./NewBotExternalStep.svelte";
   import NewBotStepHead from "./NewBotStepHead.svelte";
   import NewBotNameStep from "./NewBotNameStep.svelte";
   import NewBotKindChoice, { type NewBotKind } from "./NewBotKindChoice.svelte";
@@ -55,17 +58,17 @@
     defaultCloudRuntime,
     firstBlockingStep,
     initialDraft,
-    localHandleIssue,
     nextStep,
+    nextStepLabel,
+    OPTIONAL_LOCAL_STEPS,
     prevStep,
-    scopeIssue,
     scopeLine,
     stepIssue,
     stepsFor,
     templateCard,
     stepTitle,
-    templateBringsLine,
     toCreateInput,
+    withFreeHandle,
     type BotRuntime,
     type CreateBotContext,
     type CreateBotDraft,
@@ -176,8 +179,6 @@
      * does not ask for the name again.
      */
     initialName?: string | null;
-    /** Local coding tool step: "Create a cloud bot instead", with the name. Without it the flow offers it only after its own Cloud or Local question. */
-    onswitchcloud?: ((name: string) => void) | null;
   }
 
   let {
@@ -205,7 +206,6 @@
     initialCompanySlug = null,
     initialHome = null,
     initialName = null,
-    onswitchcloud = null,
     aiTools = null,
     hqFolderPath = "",
     onopenassistant,
@@ -221,15 +221,6 @@
    * mid-flow.
    */
   const hostNoun = hostComputerNoun();
-  /**
-   * The "submit form with primary modifier + Enter" hint on the footer. Reads
-   * "⌘↵" on macOS and "Ctrl+Enter" on Windows / Linux so a person on a PC
-   * never sees a Mac key symbol they cannot press.
-   */
-  // OWNER-D 8 (AUDIT-2-15): the app's own chord label, read from the window's
-  // platform, so a Mac shows ⌘↵ even before the Tauri host probe answers.
-  const CREATE_CHORD = "Mod+Enter";
-  const primaryEnterHint = formatShortcut(CREATE_CHORD);
   const companies = $derived(agentTargets ?? []);
   const ownerCompanies = $derived(botCompanies ?? []);
   const canLocal = $derived(!!oncreate);
@@ -316,20 +307,20 @@
    * Which screen is on: the name, "Where should it live?", or the home's
    * steps. A name the host already asked for skips the name screen.
    */
-  type Phase = "name" | "where" | "steps";
+  type Phase = "name" | "where" | "steps" | "external";
   let phase = $state<Phase>(untrack(() => (givenName ? (asksHome ? "where" : "steps") : "name")));
   /** A cloud bot gets a "Pick the company" step only when there is a choice. */
   const pickCompany = untrack(() => companies.length > 1);
-  const stepOpts = { pickCompany };
+  /** The local "Start from" step is skipped when there is nothing but Blank to start from. */
+  const stepOpts = $derived({ pickCompany, hasTemplates: templates.length > 0 });
   let step = $state<CreateBotStep>(untrack(() => stepsFor(draft, stepOpts)[0] ?? "details"));
   /** The user answered "who is it for?" themselves; templates no longer pick for them. */
   let scopeAnswered = $state(false);
   /** The user picked a brain themselves; the Cloud default no longer changes it. */
   let runtimeAnswered = false;
 
-  /** The local step's folded parts. */
-  let templatesOpen = $state(untrack(() => draft.kind === "template"));
-  let advancedOpen = $state(false);
+  /** Finish sent the person to Fine-tune to fix the handle: focus it there. */
+  let focusHandle = $state(false);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft, stepOpts));
@@ -357,13 +348,14 @@
    */
   const leadSteps = $derived(1 + (homeGiven || asksHome ? 1 : 0));
   const totalSteps = $derived(leadSteps + steps.length);
-
-  // A handle that cannot be used, or a company bot with no company, is fixed
-  // in Advanced: open it so the field that says so is on screen.
-  $effect(() => {
-    if (draft.home !== "local") return;
-    if (localHandleIssue(draft, names) || scopeIssue(draft, ctx)) advancedOpen = true;
+  /** The first optional step's place in the dots (local only): its bar and the rest are drawn shorter. */
+  const optionalFrom = $derived.by(() => {
+    if (draft.home !== "local") return 0;
+    const at = steps.findIndex((s) => OPTIONAL_LOCAL_STEPS.includes(s));
+    return at < 0 ? 0 : leadSteps + at + 1;
   });
+  /** "Next: Who it's for", or "" on the last step. */
+  const nextLabel = $derived(nextStepLabel(nextStep(step, draft, stepOpts)));
 
   onMount(() => {
     const seam = directCloud;
@@ -496,6 +488,7 @@
 
   function goTo(next: CreateBotStep): void {
     phase = "steps";
+    if (next !== step) focusHandle = false;
     step = next;
   }
 
@@ -532,15 +525,6 @@
     goTo(stepsFor(draft, stepOpts)[0] ?? "details");
   }
 
-  /** "Create a cloud bot instead": the host's cloud screen, or this flow's cloud steps. */
-  const switchCloud = $derived(
-    onswitchcloud
-      ? () => onswitchcloud?.(draft.name.trim())
-      : asksHome && canCloud
-        ? () => pickHome("cloud")
-        : null,
-  );
-
   function advance(): void {
     if (!advanceOk) return;
     const next = nextStep(step, draft, stepOpts);
@@ -560,11 +544,25 @@
     else phase = "name";
   }
 
+  /**
+   * Create now: "Finish with defaults" from any step, or "Create <Name>" on
+   * the last. Steps not visited keep their defaults. A local handle that is
+   * only taken gets the next free numbered one ("scout-2"); anything else
+   * that blocks sends the person to the step that says so, with the handle
+   * field focused when that is the problem.
+   */
   async function submit(): Promise<void> {
     if (busy) return;
+    if (draft.home === "local") {
+      const fixed = withFreeHandle(draft, names);
+      if (fixed !== draft) draft = fixed;
+    }
     if (!canCreate(draft, ctx, stepOpts)) {
       const blocking = firstBlockingStep(draft, ctx, stepOpts);
-      if (blocking) goTo(blocking);
+      if (blocking) {
+        goTo(blocking);
+        focusHandle = blocking === "tune";
+      }
       return;
     }
     const displayName = botDisplayName(draft);
@@ -603,54 +601,36 @@
     await oncreate?.(toCreateInput(draft), displayName ? { displayName } : {});
   }
 
-  /** Primary action: Next until the last step, then Create. */
-  function primary(): void {
-    if (isLast) void submit();
-    else advance();
-  }
-
+  /**
+   * Enter finishes from any step: `submit` creates when every step is
+   * valid, and otherwise moves to the step that still needs the person. A
+   * focused button keeps its own Enter.
+   */
   function onKey(event: KeyboardEvent): void {
-    if (matchesShortcut(CREATE_CHORD, event)) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (busy) return;
-      // A cloud bot is named on the details step, and nothing is created
-      // until the person has seen that name, so from an earlier step the
-      // shortcut takes them there rather than creating under the suggestion.
-      if (draft.home === "cloud" && !isLast && advanceOk) {
-        advance();
-        return;
-      }
-      // Otherwise `submit` is the gate: it creates only when every walked
-      // step is valid, and otherwise moves the user to the step that still
-      // needs them rather than swallowing the keystroke.
-      void submit();
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
-      // The cloud flow's keys: Enter moves on (and creates on the last
-      // step); a button or a list handles its own Enter.
-      const target = event.target as HTMLElement | null;
-      if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
-      event.preventDefault();
-      if (busy) return;
-      if (isLast) {
-        if (createOk) void submit();
-      } else advance();
-      return;
-    }
+    if (event.key !== "Enter" || event.shiftKey || event.altKey) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (busy) return;
+    void submit();
   }
 
+  const shownName = $derived(draft.name.trim() || "your bot");
+  /**
+   * The line that says why this step cannot go on. The coding tool step's
+   * cards already say it (with Sign in or Check again right there), so it is
+   * not said twice.
+   */
+  const shownIssue = $derived(draft.home === "local" && step === "home" && canLocal ? null : issue);
   const primaryLabel = $derived(
     entryBusy === "bot"
       ? "Creating… (about half a minute)"
       : busy
         ? "Creating…"
-        : !isLast
-          ? "Continue"
-          : draft.home === "cloud"
-            ? `Create in ${cloudCompany?.label ?? "the company"}`
-            : "Create bot",
+        : isLast
+          ? `Create ${shownName}`
+          : "Finish with defaults",
   );
   const cloudReason = $derived(canCloud ? null : (cloudBlocked?.reason ?? "Cloud bots aren't available right now."));
 </script>
@@ -679,6 +659,7 @@
     backTestId="create-bot-back"
     backDisabled={busy}
     onpick={pickHome}
+    onconnectexternal={() => (phase = "external")}
   />
   {#if entryError}
     <p class="new-bot-create-error" role="alert" data-testid="chat-create-entry-error">{entryError}</p>
@@ -688,11 +669,14 @@
       <a class="new-bot-takeover-local" href={cloudBlocked.fix.url} target="_blank" rel="noopener noreferrer" data-testid="chat-bot-where-cloud-fix">{cloudBlocked.fix.label}</a>
     </p>
   {/if}
+{:else if phase === "external"}
+  <NewBotExternalStep onback={() => (phase = asksHome ? "where" : "name")} backTestId="create-bot-back" />
 {:else}
-  {@const head = stepTitle(step, draft.home)}
+  {@const head = stepTitle(step, draft.home, draft.name)}
   <NewBotStepHead
     total={totalSteps}
     current={leadSteps + stepIndex + 1}
+    {optionalFrom}
     onback={back}
     backTestId="create-bot-back"
     backDisabled={busy}
@@ -713,38 +697,11 @@
     </p>
   </NewBotStepHead>
 
-  <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
-    <section class="new-bot-step" data-testid={`create-bot-sunrise-${step}`}>
-      <p class="new-bot-create-copy">{head.copy.replace("this computer", `this ${hostNoun}`)}</p>
-      {#if draft.home === "cloud"}
-        {#if step === "home"}
-          <HomeStep
-            runtimeOnly
-            {draft}
-            {canLocal}
-            {canCloud}
-            cloudAlwaysShown={directCloudOn}
-            cloudBlocked={cloudBlocked}
-            {companyBlocks}
-            runtimeReady={botRuntimeReady}
-            runtimeStatus={botRuntimeStatus}
-            {companies}
-            disabled={busy}
-            onpatch={patch}
-          />
-        {:else}
-          <CloudDetailsStep
-            {draft}
-            companyLabel={cloudCompany?.label ?? "your company"}
-            claudeProviderEnabled={claudeAllowedForCloud(ctx)}
-            cloudProvisionOptions={cloudProvisionOptions}
-            cloudQuoteStatus={cloudQuoteStatus}
-            onretryquote={() => (quoteReloadToken += 1)}
-            disabled={busy}
-            onpatch={patch}
-          />
-        {/if}
-      {:else}
+  <!-- One question per screen, and no inner scrolling: the step fits the card. -->
+  <section class="new-bot-step new-bot-step--fit" data-testid={`create-bot-sunrise-${step}`}>
+    <p class="new-bot-create-copy">{head.copy.replace("this computer", `this ${hostNoun}`)}</p>
+    {#if draft.home === "cloud"}
+      {#if step === "home"}
         <HomeStep
           runtimeOnly
           {draft}
@@ -758,51 +715,52 @@
           {companies}
           disabled={busy}
           onpatch={patch}
-          {signInApi}
-          onsignin={onsignin ?? undefined}
-          onsignedin={onsignedin ?? undefined}
-          onrecheck={onrecheckruntimes ?? undefined}
-          {pollMs}
-          {aiTools}
-          {hqFolderPath}
-          {onopenassistant}
-          {onassistedinstall}
-          {onrequestaitools}
         />
-        <!-- A template and the advanced settings: one click away, never a step. -->
-        <div class="new-bot-local-more" data-testid="create-bot-local-more">
-          {#if templates.length > 0}
-            <button
-              type="button"
-              class="new-bot-more"
-              aria-expanded={templatesOpen}
-              data-testid="create-bot-templates-toggle"
-              disabled={busy}
-              onclick={() => (templatesOpen = !templatesOpen)}
-            ><RailIcon name="folder" />{chosenTemplateCard ? `From ${chosenTemplateCard.name}` : "Start from a template"}</button>
-          {/if}
-          <button
-            type="button"
-            class="new-bot-more"
-            aria-expanded={advancedOpen}
-            data-testid="chat-bot-advanced-toggle"
-            disabled={busy}
-            onclick={() => (advancedOpen = !advancedOpen)}
-          ><RailIcon name="sliders" />Advanced</button>
-        </div>
-        {#if templatesOpen && templates.length > 0}
-          <KindStep sunrise {draft} {templates} disabled={busy} onpatch={patch} onadvance={() => (templatesOpen = false)} />
-          {#if chosenTemplateCard && templateBringsLine(chosenTemplateCard)}
-            <!-- What the template brings, where it is picked. -->
-            <p class="cb-help brings" data-testid="chat-bot-template-brings">{templateBringsLine(chosenTemplateCard)}</p>
-          {/if}
-        {/if}
-        {#if advancedOpen}
-          <LocalBotAdvanced {draft} existingNames={names} {ownerCompanies} disabled={busy} onpatch={patch} />
-        {/if}
+      {:else}
+        <CloudDetailsStep
+          {draft}
+          companyLabel={cloudCompany?.label ?? "your company"}
+          claudeProviderEnabled={claudeAllowedForCloud(ctx)}
+          cloudProvisionOptions={cloudProvisionOptions}
+          cloudQuoteStatus={cloudQuoteStatus}
+          onretryquote={() => (quoteReloadToken += 1)}
+          disabled={busy}
+          onpatch={patch}
+        />
       {/if}
-    </section>
-  </div>
+    {:else if step === "home"}
+      <HomeStep
+        runtimeOnly
+        {draft}
+        {canLocal}
+        {canCloud}
+        cloudAlwaysShown={directCloudOn}
+        cloudBlocked={cloudBlocked}
+        {companyBlocks}
+        runtimeReady={botRuntimeReady}
+        runtimeStatus={botRuntimeStatus}
+        {companies}
+        disabled={busy}
+        onpatch={patch}
+        {signInApi}
+        onsignin={onsignin ?? undefined}
+        onsignedin={onsignedin ?? undefined}
+        onrecheck={onrecheckruntimes ?? undefined}
+        {pollMs}
+        {aiTools}
+        {hqFolderPath}
+        {onopenassistant}
+        {onassistedinstall}
+        {onrequestaitools}
+      />
+    {:else if step === "scope"}
+      <LocalScopeStep {draft} {ownerCompanies} disabled={busy} onpatch={patch} />
+    {:else if step === "template"}
+      <LocalTemplateStep {draft} {templates} disabled={busy} onpatch={patch} />
+    {:else if step === "tune"}
+      <LocalBotAdvanced {draft} existingNames={names} {focusHandle} disabled={busy} onpatch={patch} />
+    {/if}
+  </section>
 
   <footer class="new-bot-create-foot">
     {#if entryError}
@@ -817,19 +775,29 @@
         {/if}
       </p>
     {/if}
-    {#if issue}<p class="new-bot-price" data-testid="create-bot-issue" aria-live="polite">{issue}</p>{/if}
-    <button
-      type="button"
-      class="new-bot-create-submit"
-      data-testid={isLast ? "chat-bot-create" : "create-bot-next"}
-      disabled={isLast ? !createOk : !advanceOk}
-      aria-busy={busy ? "true" : undefined}
-      onclick={primary}
-    ><RailIcon name={isLast ? "plus" : "arrow-right"} />{primaryLabel}</button>
-    {#if isLast}<p class="new-bot-price new-bot-chord-hint" aria-hidden="true" data-testid="create-bot-hint"><kbd class="new-bot-chord">{primaryEnterHint}</kbd> to create</p>{/if}
-    {#if step === steps[0] && draft.home === "local" && switchCloud}
-      <button type="button" class="new-bot-takeover-local" data-testid="create-bot-switch-cloud" disabled={busy} onclick={switchCloud}>Create a cloud bot instead</button>
-    {/if}
+    {#if shownIssue}<p class="new-bot-price" data-testid="create-bot-issue" aria-live="polite">{shownIssue}</p>{/if}
+    <!-- Every step but the last: "Next: <step>" and "Finish with defaults",
+         side by side. The last: only "Create <Name>". -->
+    <div class="new-bot-foot-actions" class:single={isLast}>
+      {#if !isLast}
+        <button
+          type="button"
+          class="new-bot-create-next"
+          data-testid="create-bot-next"
+          disabled={!advanceOk}
+          onclick={advance}
+        >{nextLabel}<RailIcon name="arrow-right" /></button>
+      {/if}
+      <button
+        type="button"
+        class="new-bot-create-submit"
+        data-testid="chat-bot-create"
+        data-finish={isLast ? undefined : "defaults"}
+        disabled={busy || (isLast ? !createOk : !!issue)}
+        aria-busy={busy ? "true" : undefined}
+        onclick={() => void submit()}
+      >{primaryLabel}</button>
+    </div>
   </footer>
 {/if}
 </div>

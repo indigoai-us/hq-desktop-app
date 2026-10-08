@@ -19,7 +19,7 @@
   import {
     dedupeSearchedDirs,
     runtimeCanSignIn,
-    runtimeChipSuffix,
+    runtimeCardStatus,
     runtimeFooter,
     runtimeStatusOf,
     type RuntimeStatus,
@@ -287,15 +287,14 @@
 
   {#if draft.home === "local" && canLocal}
     <div class="cb-field">
-      <span class="cb-label" id="create-bot-runtime-label">Thinks with</span>
-      <div class="cb-pills" role="radiogroup" aria-labelledby="create-bot-runtime-label">
+      <!-- Three equal cards, one per coding tool, each with a short status. -->
+      <div class="new-bot-options new-bot-options--3" role="radiogroup" aria-label="Coding tool" data-testid="create-bot-runtime-cards">
         {#each LOCAL_BOT_RUNTIMES as rt (rt.id)}
           {@const status = runtimeStatusOf(runtimeStatus, rt.id)}
           {@const ready = status ? status.state === "signedIn" : runtimeIsReady(runtimeReady, rt.id)}
-          {@const suffix = status ? runtimeChipSuffix(status) : ready ? "" : " · not signed in"}
           <button
             type="button"
-            class="cb-pill"
+            class="new-bot-option"
             role="radio"
             aria-checked={draft.runtime === rt.id}
             data-testid={`chat-bot-runtime-${rt.id}`}
@@ -304,8 +303,10 @@
             disabled={disabled}
             onclick={() => pickRuntime(rt.id)}
           >
-            <span class="cb-pill-dot" class:ready aria-hidden="true"></span>
-            {rt.label}{suffix}
+            <span class="new-bot-option-title">{rt.label}</span>
+            <span class="new-bot-option-status" class:ready data-testid={`chat-bot-runtime-${rt.id}-status`}>
+              <span class="new-bot-option-dot" aria-hidden="true"></span>{runtimeCardStatus(status, ready)}
+            </span>
           </button>
         {/each}
       </div>
@@ -336,10 +337,9 @@
             await onrecheck();
           }}
         />
-      {:else if draftStatus}
+      {:else if draftStatus && draftStatus.state !== "signedIn"}
         <p
           class="cb-help"
-          class:ok={draftStatus.state === "signedIn"}
           class:error={footer.isError}
           data-testid="chat-bot-runtime-help"
           data-runtime-state={draftStatus.state}
@@ -370,7 +370,7 @@
             </ul>
           </details>
         {/if}
-      {:else if !runtimeIsReady(runtimeReady, draft.runtime)}
+      {:else if !draftStatus && !runtimeIsReady(runtimeReady, draft.runtime)}
         <p class="cb-help" data-testid="chat-bot-runtime-help" data-runtime-state="signedOut">
           {draftLabel} is not signed in on this {hostNoun}.
           {#if signInApi || onsignin}
@@ -379,8 +379,6 @@
             Sign in under Settings → AI tools, or pick another.
           {/if}
         </p>
-      {:else}
-        <p class="cb-help ok" data-testid="chat-bot-runtime-help" data-runtime-state="signedIn">Signed in on this {hostNoun}. The bot uses your own {draftLabel} plan.</p>
       {/if}
     </div>
 
@@ -425,13 +423,6 @@
     {/if}
     <p class="cb-help">Hosted by {companies.find((c) => c.companyUid === draft.companyUid)?.label ?? "the company"} and always on. You name it on the next step; it gets its own channel once it is set up.</p>
   {/if}
-  <!-- External: a bot that runs somewhere else enrolls itself with a one-time
-       code. The code is minted by the CLI on the machine that runs the bot,
-       so this step only shows its shape, never a value. -->
-  <details class="cb-help external" data-testid="chat-bot-where-external">
-    <summary>Runs somewhere else? Enroll an external bot <span class="ext-chip" data-testid="chat-bot-external-paid">Paid plans</span></summary>
-    <p>On the machine that runs it: <code>hq agent enroll</code>. It prints a one-time code, shown here as <span class="mono" data-testid="chat-bot-external-enroll-mask">••••-••••</span>; paste it there, not here. The bot joins this company as a member and its DM opens when it checks in.</p>
-  </details>
 </div>
 
 <style>
@@ -448,27 +439,6 @@
     margin: 4px 0 0;
     padding-left: 18px;
     line-height: 1.5;
-  }
-  .external {
-    margin-top: 10px;
-  }
-  .external summary {
-    cursor: pointer;
-  }
-  .external p {
-    margin: 4px 0 0;
-  }
-  .external code,
-  .external .mono {
-    font-family: var(--font-mono);
-  }
-  /* Plain meta text after the summary, not a bordered chip. */
-  .ext-chip {
-    margin-left: 6px;
-    color: var(--t3);
-  }
-  .ext-chip::before {
-    content: "· ";
   }
   .cloud-fix {
     text-align: right;

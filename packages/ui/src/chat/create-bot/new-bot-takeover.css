@@ -1218,3 +1218,265 @@
   gap: 16px;
   margin-top: 4px;
 }
+
+/* ── The step-through New bot (owner, after the live review) ──────────────
+   One question per screen, and the card never scrolls inside: a step that
+   does not fit is doing too much. Options are equal cards like the Where
+   tiles; the selected one takes the same warm border and tint. */
+.new-bot-step.new-bot-step--fit {
+  min-height: 0;
+  gap: 12px;
+}
+
+.new-bot-step-body {
+  display: grid;
+  gap: 12px;
+}
+
+.new-bot-options {
+  display: grid;
+  gap: 10px;
+}
+
+.new-bot-options--2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.new-bot-options--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 460px) {
+  .new-bot-options--2,
+  .new-bot-options--3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.new-bot-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 14px 14px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.new-bot-option:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.new-bot-option[aria-checked="true"] {
+  background: rgba(255, 181, 128, 0.1);
+  border-color: rgba(255, 181, 128, 0.55);
+}
+
+.new-bot-option:focus-visible {
+  outline: 2px solid rgba(255, 181, 128, 0.75);
+  outline-offset: 2px;
+}
+
+.new-bot-option:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.new-bot-option-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.new-bot-option-sub {
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.new-bot-option-sub--clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.new-bot-option-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+}
+
+.new-bot-option-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.new-bot-option-status.ready .new-bot-option-dot {
+  background: #7ee2a8;
+}
+
+.new-bot-option-note {
+  margin: 0;
+  color: var(--new-bot-muted);
+  font-size: 12.5px;
+}
+
+.new-bot-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.new-bot-step-meta:empty {
+  display: none;
+}
+
+.new-bot-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.new-bot-chip {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.new-bot-chip[aria-checked="true"] {
+  background: rgba(255, 181, 128, 0.12);
+  border-color: rgba(255, 181, 128, 0.55);
+}
+
+.new-bot-chip:focus-visible {
+  outline: 2px solid rgba(255, 181, 128, 0.75);
+  outline-offset: 2px;
+}
+
+/* Two equal buttons side by side: "Next: <step>" and the primary. */
+.new-bot-foot-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.new-bot-foot-actions.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.new-bot-create-next {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0;
+  padding: 11px 14px;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.new-bot-create-next:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.new-bot-create-next:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.new-bot-create-next:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+.new-bot-foot-actions .new-bot-create-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+/* Optional steps' bars are shorter, so the required path reads apart. */
+.new-bot-progress span.optional {
+  width: 10px;
+}
+
+/* Where: the quiet way to bring in a bot that already runs elsewhere. */
+.new-bot-choice-external {
+  margin: 16px 0 0;
+  color: var(--new-bot-muted);
+  font-size: 13px;
+}
+
+.new-bot-inline-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--new-bot-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.new-bot-inline-link:focus-visible {
+  outline: 1px solid var(--new-bot-ink);
+  outline-offset: 3px;
+}
+
+/* Step headings use the card's width and break evenly over two lines. */
+.new-bot-takeover-card--steps h1,
+.new-bot-takeover-card:has(.new-bot-external-steps) h1 {
+  max-width: none;
+  text-wrap: balance;
+}
+
+.new-bot-external-steps li {
+  text-wrap: pretty;
+}
+
+.new-bot-external-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--new-bot-ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.new-bot-external-steps code,
+.new-bot-mono {
+  font-family: "Geist Mono", ui-monospace, Menlo, monospace;
+  font-size: 13px;
+}

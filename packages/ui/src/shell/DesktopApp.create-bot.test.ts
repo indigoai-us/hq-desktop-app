@@ -162,24 +162,29 @@ describe("DesktopApp sidebar '+' → New bot", () => {
     mountApp(adapter({ create }));
     await openBotFlow("scout");
 
-    // The worker library came from adapter.bots.workers, with its summary and skill count.
-    click('[data-testid="create-bot-templates-toggle"]');
-    await settle();
-    click('[data-testid="create-bot-kind-template"]');
-    await vi.waitFor(() => expect(q('[data-testid="create-bot-template-card"]')).toBeTruthy());
-    const card = q<HTMLButtonElement>('[data-testid="create-bot-template-card"]')!;
-    expect(card.dataset.template).toBe("iris-cx");
-    expect(card.textContent).toContain("Answers customer questions.");
-    expect(card.textContent).toContain("3 skills");
-    // Blank is all this test needs.
-    click('[data-testid="create-bot-kind-blank"]');
-    await settle();
     // Local was picked already: no "Where does it run?" step. The coding
     // tool has its own step.
     expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
     expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
     // Runtime readiness came from preflight: Claude is signed in, Codex is not.
-    expect(q('[data-testid="chat-bot-runtime-codex"]')?.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Signed in");
+    expect(q('[data-testid="chat-bot-runtime-codex-status"]')?.textContent).toBe("Sign in first");
+
+    // The worker library came from adapter.bots.workers, on the Start from
+    // step, with its summary; picking one says what it brings.
+    click('[data-testid="create-bot-next"]');
+    await settle();
+    click('[data-testid="create-bot-next"]');
+    await vi.waitFor(() => expect(q('[data-testid="create-bot-template-card"]')).toBeTruthy());
+    const card = q<HTMLButtonElement>('[data-testid="create-bot-template-card"]')!;
+    expect(card.dataset.template).toBe("iris-cx");
+    expect(card.textContent).toContain("Answers customer questions.");
+    card.click();
+    await settle();
+    expect(q('[data-testid="chat-bot-template-brings"]')?.textContent).toContain("3 skills");
+    // Blank is all this test needs.
+    click('[data-testid="create-bot-kind-blank"]');
+    await settle();
 
     click('[data-testid="chat-bot-create"]');
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());

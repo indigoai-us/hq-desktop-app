@@ -197,14 +197,15 @@ describe("New bot asks the name, then Cloud or Local", () => {
     expect(shell!.querySelector(".new-bot-takeover-shade")).toBeTruthy();
     expect(shell!.querySelector(".new-bot-takeover-wordmark")?.textContent).toBe("HQ");
     const card = shell!.querySelector(".new-bot-takeover-card.new-bot-takeover-card--flow.new-bot-takeover-card--steps");
-    // The name was asked: the local flow opens on its one step, the coding tool.
+    // The name was asked: the local flow opens on its one required step, the coding tool.
     const flow = card?.querySelector<HTMLElement>('[data-testid="chat-create-bot-step"]');
     expect(flow?.getAttribute("data-home")).toBe("local");
     expect(flow?.getAttribute("data-step")).toBe("home");
-    expect(card?.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 3");
+    // Name, where, coding tool, then the optional who it's for and fine-tune.
+    expect(card?.querySelector('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 5");
     expect(card?.querySelector('[data-testid="new-bot-name"]')).toBeNull();
     expect(card?.querySelector('[data-testid="bot-identity-name"]')?.textContent).toBe("Nova");
-    expect(card?.querySelector("#new-bot-takeover-title")?.textContent).toBe("Pick the coding tool.");
+    expect(card?.querySelector("#new-bot-takeover-title")?.textContent).toBe("Which tool should Nova think with?");
     // "Where does it run?" is not asked again.
     expect(q('[data-testid="create-bot-home-step"]')).toBeNull();
     expect(q('[data-testid="create-bot-runtime-section"]')).toBeTruthy();
@@ -312,7 +313,7 @@ describe("New bot asks the name, then Cloud or Local", () => {
     expect(sunriseFlow()).toBeNull();
   });
 
-  it("Create a cloud bot instead on the local coding tool step opens the takeover's cloud screen with the name, the choice behind Back", async () => {
+  it("the local steps have no Create a cloud bot instead: Back to the choice, then Cloud, opens the takeover's cloud screen with the name", async () => {
     mountSidebar({
       companies: [INDIGO],
       oncreatebot: localBot(),
@@ -326,7 +327,11 @@ describe("New bot asks the name, then Cloud or Local", () => {
     await settle();
     expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-home")).toBe("local");
     expect(q('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("home");
-    click('[data-testid="create-bot-switch-cloud"]');
+    expect(q('[data-testid="create-bot-switch-cloud"]')).toBeNull();
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
+    click('[data-testid="new-bot-choice-cloud"]');
     await settle();
     expect(sunriseFlow()).toBeNull();
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
@@ -337,7 +342,7 @@ describe("New bot asks the name, then Cloud or Local", () => {
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
   });
 
-  it("Create a cloud bot instead with no takeover company opens the window's cloud flow fresh, with the name", async () => {
+  it("Back from the local steps, then Cloud with no takeover company, opens the window's cloud flow fresh, with the name", async () => {
     mountSidebar({
       companies: [INDIGO, ACME],
       oncreatebot: localBot(),
@@ -349,7 +354,9 @@ describe("New bot asks the name, then Cloud or Local", () => {
     await newBotNamed("Nova");
     click('[data-testid="new-bot-choice-local"]');
     await settle();
-    click('[data-testid="create-bot-switch-cloud"]');
+    click('[data-testid="create-bot-back"]');
+    await settle();
+    click('[data-testid="new-bot-choice-cloud"]');
     await settle(12);
     expect(sunriseFlow()).toBeTruthy();
     // Not the local steps any more: the cloud flow, with Home on Cloud, from

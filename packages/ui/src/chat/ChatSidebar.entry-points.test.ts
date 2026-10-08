@@ -301,7 +301,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(q('[data-testid="chat-create-agent-picker"]')).toBeNull();
     expect(q('[data-testid="create-bot-cloud-details-step"]')).toBeTruthy();
     const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]');
-    expect(create?.textContent).toContain("Create in Indigo");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Indigo");
+    expect(create?.textContent?.trim()).toMatch(/^Create /);
     create!.click();
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_indigo", {
@@ -370,7 +371,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     await toCloudFlow();
     // Ramen Bae is the one company: straight to details, Create names it.
     expect(flowStep()).toBe("details");
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Ramen Bae");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Ramen Bae");
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toMatch(/^Create /);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_ramen_bae", {
@@ -433,7 +435,8 @@ describe("ChatSidebar lifecycle entry points", () => {
     expect(options.map((o) => o.getAttribute("aria-selected"))).toEqual(["false", "true"]);
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Acme");
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toMatch(/^Create /);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledWith("cmp_acme", {
@@ -900,10 +903,11 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     // Step 3 of 4 (after the name and where): the company.
     expect(flowStep()).toBe("home");
     expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 4");
-    expect(q('[data-testid="chat-bot-create"]')).toBeNull();
+    // The company step: "Next: Details" and "Finish with defaults".
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toBe("Finish with defaults");
     click('[data-company="cmp_acme"]');
     await settle();
-    expect(q('[data-testid="create-bot-next"]')?.textContent).toContain("Continue");
+    expect(q('[data-testid="create-bot-next"]')?.textContent?.trim()).toBe("Next: Details");
     click('[data-testid="create-bot-next"]');
     await settle();
 
@@ -925,7 +929,8 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     click('[data-testid="cloud-bot-size-basic"]');
     await settle();
     const create = q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!;
-    expect(create.textContent).toContain("Create in Acme");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Acme");
+    expect(create.textContent?.trim()).toMatch(/^Create /);
     expect(create.disabled).toBe(false);
     create.click();
     await settle(10);
@@ -1079,7 +1084,8 @@ describe("ChatSidebar New Bot takeover: only for companies with the flag", () =>
     await settle();
     expectSunriseFlow("cloud");
     expect(flowStep()).toBe("details");
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Indigo");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Indigo");
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toMatch(/^Create /);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledTimes(1);
@@ -1195,18 +1201,17 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
         '[data-testid="chat-bot-runtime-codex"]',
       )?.getAttribute("aria-checked"),
     ).toBe("true");
-    expect(
-      q<HTMLButtonElement>('[data-testid="chat-bot-runtime-claude"]')!
-        .textContent,
-    ).toContain("not signed in");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Sign in first");
     click('[data-testid="chat-bot-runtime-claude"]');
     await settle();
     expect(
       q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
+    // One line under the cards says why, with no second line by the buttons.
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toContain(
       "Claude Code is not signed in",
     );
+    expect(q('[data-testid="create-bot-issue"]')).toBeNull();
     click('[data-testid="chat-bot-runtime-codex"]');
     await settle();
     expect(
@@ -1234,8 +1239,8 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     expect(q('[data-testid="new-bot-name-issue"]')?.textContent).toContain("can't be used for a bot");
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
     // A name whose handle is taken here gets through the name step (Cloud
-    // could still use it) and is held on the local coding tool step, with
-    // the handle field open to fix it in place.
+    // could still use it). Fine-tune says so and holds Create until it is
+    // changed; "Finish with defaults" would take the next free number.
     name.value = "Scout";
     name.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
@@ -1243,10 +1248,14 @@ describe("ChatSidebar 'New bot' entry point (local bots)", () => {
     await settle();
     click('[data-testid="new-bot-choice-local"]');
     await settle();
+    for (let i = 0; i < 4 && q('[data-testid="create-bot-next"]'); i += 1) {
+      click('[data-testid="create-bot-next"]');
+      await settle();
+    }
     expect(
       q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled,
     ).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain(
+    expect(q('[data-testid="chat-bot-handle-help"]')?.textContent).toContain(
       "handle @scout",
     );
     const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
@@ -1417,7 +1426,8 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
     await settle();
     click('[data-testid="create-bot-next"]');
     await settle();
-    expect(q('[data-testid="chat-bot-create"]')?.textContent).toContain("Create in Acme");
+    expect(q('[data-testid="bot-identity-meta"]')?.textContent).toBe("Cloud · Acme");
+    expect(q('[data-testid="chat-bot-create"]')?.textContent?.trim()).toMatch(/^Create /);
     click('[data-testid="chat-bot-create"]');
     await settle(10);
     expect(oncreateagent).toHaveBeenCalledTimes(1);
