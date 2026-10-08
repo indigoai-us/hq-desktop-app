@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-// OWNER-D 8 (AUDIT-2-15): the New bot footer shows the platform's own create
-// chord (⌘↵ on macOS, Ctrl+Enter elsewhere) in the 11px mono chord style, and
-// only that chord creates. Both entry points (Messages create menu and
+// The New bot footer used to show the platform's create chord (OWNER-D 8).
+// After the owner's review it shows none: Enter finishes from any step, and
+// the buttons say what they do. Both entry points (Messages create menu and
 // Settings > Bots) render this same flow.
 import { readFileSync } from "node:fs";
 import { mount, tick, unmount } from "svelte";
@@ -35,27 +35,22 @@ async function renderOn(platform: keyof typeof UA): Promise<HTMLElement> {
     } as never,
   });
   await tick();
-  // The hint sits beside Create, on the last step: walk name → kind → coding tool.
-  for (let i = 0; i < 2; i += 1) {
-    host.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]')!.click();
-    await tick();
-  }
+  // Walk name → coding tool, where the footer buttons are.
+  host.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+  await tick();
   expect(host.querySelector('[data-testid="chat-bot-create"]')).toBeTruthy();
   return host;
 }
 
-describe("New bot create chord per platform", () => {
-  it("shows ⌘↵ on macOS in the chord style", async () => {
-    const host = await renderOn("mac");
-    const chord = host.querySelector('[data-testid="create-bot-hint"] kbd.new-bot-chord');
-    expect(chord?.textContent).toBe("⌘↵");
-    expect(host.querySelector('[data-testid="create-bot-hint"]')?.textContent).not.toContain("Ctrl");
-  });
-
-  it("keeps Ctrl+Enter on Windows and Linux", async () => {
-    const host = await renderOn("windows");
-    expect(host.querySelector('[data-testid="create-bot-hint"] kbd.new-bot-chord')?.textContent).toBe("Ctrl+↵");
-  });
+describe("New bot: Enter finishes, and no shortcut hint is shown", () => {
+  for (const platform of ["mac", "windows"] as const) {
+    it(`shows no chord hint on ${platform}`, async () => {
+      const host = await renderOn(platform);
+      expect(host.querySelector('[data-testid="create-bot-hint"]')).toBeNull();
+      expect(host.querySelector("kbd")).toBeNull();
+      expect(host.textContent).not.toMatch(/⌘↵|Ctrl\+↵|Ctrl\+Enter|to create/);
+    });
+  }
 
   it("both entry points mount this flow", () => {
     const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");

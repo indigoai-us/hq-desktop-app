@@ -821,6 +821,7 @@ mod tests {
                 recording_id: "rec_1".to_string(),
                 company_uid: Some("cmp_1".to_string()),
                 started_at: "2026-06-06T14:57:05Z".to_string(),
+                not_found_since: None,
             },
         );
         ledger.insert(
@@ -829,6 +830,7 @@ mod tests {
                 recording_id: "rec_2".to_string(),
                 company_uid: None,
                 started_at: "2026-06-06T15:00:00Z".to_string(),
+                not_found_since: None,
             },
         );
         let mut rows = active_recordings_from_ledger(ledger);

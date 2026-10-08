@@ -53,6 +53,7 @@ pub(crate) enum OnboardingErrorCategory {
     CancelCleanupFailed,
     UnsupportedPlatform,
     Disk,
+    DiskFull,
     Unknown,
 }
 
@@ -71,6 +72,7 @@ impl OnboardingErrorCategory {
             Self::CancelCleanupFailed => "cancel-cleanup-failed",
             Self::UnsupportedPlatform => "unsupported-platform",
             Self::Disk => "disk",
+            Self::DiskFull => "disk-full",
             Self::Unknown => "unknown",
         }
     }
@@ -384,11 +386,15 @@ fn format_hq_failure(args: &[&str], output: &Output) -> String {
     )
 }
 
-async fn run_hq_output(
+async fn run_hq_output(args: &[&str], hq_root: &Path) -> Result<Output, StageCommandFailure> {
+    run_hq_output_with_invocation(args, hq_root, hq_resolver::resolve_hq()).await
+}
+
+async fn run_hq_output_with_invocation(
     args: &[&str],
     hq_root: &Path,
+    invocation: hq_resolver::HqInvocation,
 ) -> Result<Output, StageCommandFailure> {
-    let invocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
     // Serialize concurrent npx self-heal installs against the shared
     // ~/.npm/_npx cache (HQ-SYNC-6); no-op on the resolved-local fast path.
@@ -502,12 +508,17 @@ async fn run_hq(args: &[&str], hq_root: &Path) -> Result<(), StageCommandFailure
     run_hq_output(args, hq_root).await.map(|_| ())
 }
 
-/// Run `hq <args>` in `hq_root` through the app's own CLI resolution (local
-/// binary or npx self-heal) with the app's child PATH, surfacing only the
-/// failure message. Shared with the Sessions setup self-heal, which has no
-/// use for the onboarding error category.
-pub(crate) async fn run_hq_plain(args: &[&str], hq_root: &Path) -> Result<(), String> {
-    run_hq(args, hq_root).await.map_err(|failure| failure.message)
+/// Run HQ Anywhere's global runtime command through its dedicated resolver so
+/// a newer CLI requirement cannot change the resolver used by shared flows.
+pub(crate) async fn run_hq_global_runtime_plain(
+    args: &[&str],
+    hq_root: &Path,
+) -> Result<(), String> {
+    let invocation = hq_resolver::resolve_hq_for_global_runtime();
+    run_hq_output_with_invocation(args, hq_root, invocation)
+        .await
+        .map(|_| ())
+        .map_err(|failure| failure.message)
 }
 
 async fn run_hq_json(

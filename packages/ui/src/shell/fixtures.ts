@@ -63,7 +63,8 @@ export function seedFixturePins(): void {
     if (!window.localStorage.getItem(PINS_KEY)) {
       window.localStorage.setItem(PINS_KEY, JSON.stringify(FIXTURE_PINS));
     }
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/fixtures.ts:66", error);
     /* private mode — best effort */
   }
 }

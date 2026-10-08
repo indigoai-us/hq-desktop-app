@@ -195,7 +195,8 @@ export function applyColorTheme(
   }
   try {
     storage?.setItem(THEME_STORAGE_KEY, next);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/settings/shell-settings-model.ts:198", error);
     /* private mode */
   }
   return next;

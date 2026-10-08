@@ -4,7 +4,13 @@
   let dragging = $state(false);
   let stop = () => {};
   const clamp = (value: number) => Math.max(220, Math.min(440, value));
-  function save() { try { localStorage.setItem('hq.sidebar.width', String(width)); } catch {} }
+  function save() {
+    try {
+      localStorage.setItem("hq.sidebar.width", String(width));
+    } catch (error) {
+      console.warn("[hq-ui] sidebar width persistence failed", error);
+    }
+  }
   function begin(event: PointerEvent) {
     if (event.button !== 0) return;
     event.preventDefault();
