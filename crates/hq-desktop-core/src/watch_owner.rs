@@ -46,6 +46,11 @@ pub struct WatchOwnerExitPlan {
     pub respawn_once: bool,
 }
 
+/// A successfully terminated desktop orphan is an expected takeover; report every other disposition.
+pub fn should_emit_busy_watch_exit_warning(plan: &WatchOwnerExitPlan) -> bool {
+    plan.classification != "orphan_takeover"
+}
+
 pub fn runner_supports_owner_argument(version: &str) -> bool {
     let version = version.strip_prefix('v').unwrap_or(version);
     let (Ok(version), Ok(minimum)) = (
@@ -852,6 +857,32 @@ mod tests {
             started_at: "2026-09-30T00:00:00Z".to_string(),
             heartbeat_at: None,
         }
+    }
+
+    #[test]
+    fn successful_orphan_takeover_is_the_only_suppressed_watch_owner_warning() {
+        let orphan = plan_busy_watch_exit(Some(20), Some(&status("hq-desktop")), true, false);
+        assert_eq!(orphan.classification, "orphan_takeover");
+        assert!(!should_emit_busy_watch_exit_warning(&orphan));
+
+        let unknown_orphan = plan_busy_watch_exit_with_unknown_orphan(
+            Some(20),
+            Some(&status("unknown")),
+            true,
+            false,
+            true,
+        );
+        assert_eq!(unknown_orphan.classification, "unknown_orphan_takeover");
+        assert!(should_emit_busy_watch_exit_warning(&unknown_orphan));
+
+        for owner in ["hq-daemon", "other"] {
+            let plan = plan_busy_watch_exit(Some(20), Some(&status(owner)), true, false);
+            assert!(should_emit_busy_watch_exit_warning(&plan));
+        }
+
+        let mut failed_takeover = orphan;
+        failed_takeover.classification = "orphan_termination_failed";
+        assert!(should_emit_busy_watch_exit_warning(&failed_takeover));
     }
 
     #[test]

@@ -12,7 +12,7 @@ describe("SettingsMutationQueue", () => {
     const invoke: SettingsInvoker = async <T>(
       command: string,
       args?: Record<string, unknown>,
-    ) => {
+    ): Promise<T> => {
       if (command === "get_settings") return { ...prefs } as T;
       if (command === "save_settings") {
         if (fail) throw new Error("disk full");

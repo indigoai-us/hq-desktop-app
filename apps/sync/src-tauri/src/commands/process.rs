@@ -2,7 +2,7 @@
 //!
 //! `spawn_process` — spawns a child, streams stdout as `process://{handle}/stdout`
 //!                    events, emits `process://{handle}/exit` on termination.
-//! `cancel_process` — sends SIGTERM to the process group; after 5 s, SIGKILL.
+//! `cancel_process` — sends SIGTERM to the process group, then SIGKILL after its bounded grace.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -274,6 +274,11 @@ static NEXT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// still resolving. On expiry the attribution degrades to "not effected",
 /// which keeps the exit alertable rather than silently suppressing it.
 const CANCELLATION_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Keep the watch runner's SIGKILL escalation beyond hq-cloud's 7.5-second
+/// shutdown cap, including when app exit tears down the whole process group.
+/// The bound keeps desktop shutdown finite while allowing the runner to finish.
+pub const SYNC_RUNNER_STOP_GRACE: Duration = Duration::from_secs(9);
 
 /// Raised at the single application-exit choke point before child teardown.
 /// The daemon reads this as exit evidence; it does not alter cancellation or
@@ -4666,23 +4671,44 @@ fn terminate_registered_processes_for_exit(processes: &[RegisteredProcess], grac
         );
         sigterm_delivered.push(matches!(outcome, SignalDispatch::Delivered));
     }
-    if !processes.is_empty() {
-        thread::sleep(grace);
-    }
+    let wait_started = std::time::Instant::now();
+    let survivors = hq_desktop_core::process_exit_wait::wait_for_survivors(
+        processes.len(),
+        grace,
+        Duration::from_millis(75),
+        |index| process_group_is_alive(processes[index].pid),
+        || wait_started.elapsed(),
+        thread::sleep,
+    );
     for (index, process) in processes.iter().enumerate() {
-        let outcome = dispatch_signal_checked(
-            &process.handle,
-            process.generation,
-            process.pid,
-            Signal::SIGKILL,
-        );
+        let sigkill_delivered = survivors.contains(&index)
+            && matches!(
+                dispatch_signal_checked(
+                    &process.handle,
+                    process.generation,
+                    process.pid,
+                    Signal::SIGKILL,
+                ),
+                SignalDispatch::Delivered
+            );
         // Either of this app's own signals reaching the group is an effective
         // teardown: a child killed by the SIGTERM makes the later SIGKILL ESRCH.
-        let effected = sigterm_delivered[index] || matches!(outcome, SignalDispatch::Delivered);
+        let effected = sigterm_delivered[index] || sigkill_delivered;
         let _ = complete_cancellation_publication(&process.handle, process.generation, effected);
         // The matching wait owner performs generation-scoped removal after its
         // terminal callback. Removing here would erase `cancelled` before the
         // reporting boundary can observe this deliberate app-exit teardown.
+    }
+}
+
+#[cfg(unix)]
+fn process_group_is_alive(pid: u32) -> bool {
+    match signal::kill(Pid::from_raw(-(pid as i32)), None) {
+        Ok(()) => true,
+        Err(nix::errno::Errno::ESRCH) => false,
+        // Permission or other transient errors must not turn into an early
+        // success; let the bounded grace expire and retain SIGKILL escalation.
+        Err(_) => true,
     }
 }
 

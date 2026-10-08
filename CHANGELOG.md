@@ -8,8 +8,21 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
+- Goals is no longer in the company sidebar. A saved link or back button that pointed at Goals now opens Atlas. Groups and Grants in the People section now have icons like Team and Bots: two people for Groups and a lock for Grants.
 This beta brings the new HQ interface. A rail on the left holds your companies, and each company opens into its own set of panes: Atlas, Projects, Goals, Activity, Team, Bots, Files and Settings. Home, Messages, Meetings and your personal pages sit at the top of the rail, so everything is in one window.
 - Closing the "Syncing N files" progress notice with its X button now keeps it closed. Before, it came back on the very next file, so during a large first upload it reappeared right after you closed it. It now stays hidden for the rest of that sync, including the "Files up to date" notice at the end, and stays hidden for that company on later syncs and after you restart the app. Starting a sync yourself, for example with Sync now, shows its progress again.
+- Setting up HQ on a new computer no longer fills the default HQ folder before you pick where HQ lives. Auto-sync, the background sync check and sync on launch now wait until setup finishes, and then start in the folder you chose. Before, signing in during setup let sync pull your company into the default folder, so the "Pick where it lives" step said the folder already had files and offered a nested hq folder inside it. The setup step also no longer creates the default folder until you press Install here, and a folder that holds only HQ's own .hq folder no longer counts as already having files.
+- Messages no longer titles a conversation with a person id such as "prs_01M3…". When the contacts list does not name someone, the app looks them up in the member lists of your other companies and in your channel and group rosters, so a teammate from another company shows their name. When no name is known it shows their email, and when nothing is known it shows "Unknown person" (or "Unknown bot"), with matching initials. Search results and group conversation titles follow the same rule.
+- Home's message list looks the same however you get there. Opening a conversation from a company page (a bot's or teammate's Message button on Bots, Team or Atlas, a notification, or a ⌘K pick) used to narrow Home to that company and add its Activity section, which the Home button never shows. Those now land on the same list as the Home button. Picking a company in the list's header still narrows Home to that company and shows its Activity section, and Back and Forward bring back the list you left.
+- A company's Integrations page now matches the web console. Connected shows one row per app with its logo, real name, website, how many connections it has and its category, and one status: "2 active", "Needs attention" or "Disconnected". Selecting an app lists its connections on the right, each with its own status and, when something is wrong, a plain reason and the fix HQ suggests. Apps no longer show raw ids such as "Factory:linear" or "Factory:remote Mcp Posthog Com E755…"; they read "Linear" and "PostHog". Connections that are failing or partly working say "Needs attention" instead of "Disconnected", and ones that need a new sign-in say "Needs sign-in". Available lists the apps HQ can connect from the same catalog the console uses, instead of a fixed list of five. If the catalog does not load, the page tries again once by itself, then shows one line with Try again. People who are not owners or admins are told that only owners and admins can browse apps to connect. Logos come only from the marks bundled with the app; nothing is fetched from other websites. Bot connection cards in Messages use the same app names.
+- Opening a recorded meeting in Meetings now shows its transcript and speakers right away when the meeting's notes file is already synced to this computer. The recap (summary, decisions, action items) fills in a few seconds later, with a loading line in its place until then. Attendees now come from the matching calendar invite (same title, starting within 10 minutes), so they show at once instead of waiting for the transcript. Before, the notes and the attendees could both sit on "Loading" for 15 seconds or more. A meeting whose file is not on this computer loads as before.
+- The Bots page no longer shows "Something went wrong" when a company bot runs on this Mac. That bot was in both the local list and the cloud list, so the page tried to show it twice and stopped. It now lists each bot once, as the local bot, and the Bots count in the sidebar counts it once.
+- New bot now asks for the bot's name first, then "Where should <name> live?" with Cloud and Local side by side. Below them, "Already have a bot running somewhere else? Connect it" shows how to connect a bot you already run.
+- Setting up a local bot is now one short step at a time: the coding tool, who it is for, a template when there are any, and Fine-tune (its handle, permissions and memory). Each step has Next and Finish with defaults, so only the coding tool has to be chosen. If the handle is already taken, Finish picks the next free one, such as "scout-2".
+- A cloud bot's price is shown before it can be created. The company step and the new optional Size step show one line above the buttons, such as "$50.00/month for Basic, billed to Acme." or "Included with Acme's plan.", with "Checking plan..." while it loads. Finish with defaults and Enter wait until the line is shown. The "More options" link is gone, and the company list shows at most four rows, with a filter to find the rest.
+- Local bots no longer ask you to grant them access. Picking the company in New bot is the grant, and a local bot runs on your computer with your own access, so its first message is a short hello before its setup questions. Cloud bots still ask with the access card, and no longer point you at a Capabilities button that was not there.
+- New bot screens say "this Mac" on a Mac, and "this PC" or "this computer" elsewhere, including in the installed app. Buttons, fields and choice cards on these screens now have rounded corners, and every step card is the same width.
 - Activity is now one team view. The Team and Tokens switch, the tokens-by-day chart and the "attributed" line are gone. Each person gets one row: their photo when the app has one (initials otherwise, bots in a rounded square), their role when known, a live dot when they are online, small bars for each day of the range, when they were last active, and their sessions, stories, PRs and deploys. The list puts the most recently active people first; Name sorts it A to Z. The 7d, 30d and 90d range and Export stay.
 - Projects hides complete projects by default on the Board and in the List. A "Show N complete" button where the Complete column was brings them back, and Hide puts them away again; the choice is saved on this computer. Picking Complete in the state filter always shows them. The Projects title now sits on the same line as Activity, Team and Meetings instead of tight under the top bar.
 - Project cards show more at a glance: the repos the project touches and its branch as small chips, a state dot in the column's color, "7 of 15 stories" next to the progress bar, the owner and other people on it, and when it was last updated. The description is one line. Active cards never show a raw id such as "prs_01KQ…"; they show the person's name, or "1 live session" when the name is not known.
@@ -212,6 +225,99 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Atlas is easier to read. Names on the map no longer have an outline, the shaded areas behind each section are much fainter, and sections sit close together instead of spread around a wide ring. Names no longer run across another item's dot.
 - Atlas shows who is working where at a readable size at every zoom: people and bots appear as markers beside the item they are working on. Hovering an item or a marker opens a card with who is there, what they are doing, story progress, related items and dates.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
+
+## [0.10.407] — 2026-10-08
+
+- HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
+
+## [0.10.406] - 2026-10-08
+
+- The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
+- A bot's detail panel no longer shows its skills or its instructions. The Channels section lists only connected platforms, and says "No connected platforms." when there are none.
+
+## [0.10.405] - 2026-10-08
+
+- In a bot's detail panel, each skill now shows a one-line summary, and clicking a skill opens its full text. If the bot is offline, the panel says "The bot is offline, try again later".
+- Routines that HQ manages are tagged "HQ" and have no pause, run, edit or delete buttons. Apps show only connected apps as connected, and other featured apps get a Connect button that does not do anything yet.
+
+## [0.10.404] - 2026-10-08
+
+- When HQ Anywhere is on, the desktop app installs HQ context for Claude Code and Codex runtimes found on the computer. Turning it off removes that setup; sign-in restores it when the saved setting is enabled.
+
+### Fixed
+
+- HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
+
+## [0.10.403] - 2026-10-08
+
+- Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
+
+- Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
+
+### Fixed
+
+- The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
+- Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.52, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
+- Sync no longer keeps re-uploading a file the cloud already has with the same contents. It now marks that file as synced.
+
+## [0.10.402] — 2026-10-07
+
+- "Check for Updates…" opens Settings → Updates when it finds an update. The Recovery window opens only when the desktop window timed out, crashed, or started in safe mode.
+- The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
+- When the app updates a pnpm-installed HQ CLI, it no longer changes your default pnpm version through Corepack, and its pnpm checks stop every process they started when they time out. Before this, a failed update could leave Corepack on pnpm 12 and start thousands of `pnpm dlx` processes.
+
+## [0.10.401] — 2026-10-07
+
+- First sync attribution now includes the company selected or joined during setup, including existing companies.
+
+## [0.10.400] — 2026-10-07
+
+- Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
+- People can turn HQ Anywhere on or off in Settings after onboarding.
+
+## [0.10.399] — 2026-10-07
+
+- The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
+- The bot panel now loads a bot owner's whole profile in one call and adds Channels, Apps, Routines, Brain and Persona sections. Owners can pause, resume, run, edit, create and delete routines, and edit the bot's title. When the profile is not available the panel loads as before.
+- Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
+- Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
+
+- Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
+- Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+- CLI update timeout messages stay actionable when lease-holder details cannot be read.
+
+- Runner exit reports now include a bounded reason when the runner provides one.
+
+## [0.10.398] — 2026-10-06
+
+- First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
+
+- Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
+- Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
+- Setup now explains how to free disk space when an install cannot continue.
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
+- Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+- A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
+- A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
+- The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
+
+- Desktop Core baseline writes now accept an identical baseline left by a concurrent writer and separately report a lost write or invalid target.
+
+## [0.10.397] — 2026-10-06
+
+- The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
+
+- Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
+
+- HQ Desktop no longer emits a warning after it stops an orphaned sync runner during a watch-owner takeover; it continues reporting other watch-owner exits.
+
+## [0.10.396] — 2026-10-05
+
+- People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
 
 ## [0.10.395] — 2026-10-05
 

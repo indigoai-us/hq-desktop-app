@@ -114,6 +114,21 @@ describe("resolveConversationTitle", () => {
     ).toBe(GROUP_MESSAGE_PLACEHOLDER);
   });
 
+  it("keeps a known row title over the rail's Unknown bot / Unknown person label", () => {
+    // The rail could not name the peer, but the open row carries the name
+    // (a bot made in New bot on this device): the name wins.
+    expect(
+      resolveConversationTitle(dm({ title: "Nova" }), [dm({ title: "Unknown bot" })]),
+    ).toBe("Nova");
+    expect(
+      resolveConversationTitle(dm({ title: "Ada" }), [dm({ title: "Unknown person" })]),
+    ).toBe("Ada");
+    // With no better name anywhere, the rail's neutral label still beats the
+    // generic placeholder, and a raw uid is never shown.
+    expect(resolveConversationTitle(dm(), [dm({ title: "Unknown bot" })])).toBe("Unknown bot");
+    expect(resolveConversationTitle(dm({ title: "Unknown bot" }), [])).toBe("Unknown bot");
+  });
+
   it("leaves channel titles unchanged even when they look like identifiers", () => {
     expect(resolveConversationTitle(channel(), [])).toBe("hq-desktop");
     expect(

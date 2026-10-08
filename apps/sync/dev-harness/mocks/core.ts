@@ -31,6 +31,8 @@ const settings = {
   telemetryEnabled: true,
 };
 
+let harnessHqAnywhereSetting = false;
+
 function harnessPersona(): ShellPersona | null {
   if (typeof window === 'undefined') return null;
   return resolveHarnessPersona(window.location.search);
@@ -1171,6 +1173,11 @@ This final paragraph verifies spacing after a thematic break.
     }
     return { ...settings };
   },
+  get_hq_anywhere_person_setting: () => harnessHqAnywhereSetting,
+  put_hq_anywhere_person_setting: (args) => {
+    harnessHqAnywhereSetting = args?.value === true;
+    return null;
+  },
   save_settings: (args) => {
     const prefs = (args?.prefs ?? {}) as Partial<typeof settings>;
     Object.assign(settings, prefs);
@@ -1731,8 +1738,25 @@ This final paragraph verifies spacing after a thematic break.
       connections: [
         { id: 'conn_slack', provider: 'slack', status: 'connected', scopes: ['channels:read', 'chat:write'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-30T00:00:00Z' },
         { id: 'conn_linear', provider: 'linear', status: 'needs-reauth', scopes: [], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-29T00:00:00Z' },
+        // Factory installs: raw provider ids the page must never print.
+        { id: 'conn_linear_factory', provider: 'factory:linear', status: 'connected', scopes: ['factory:auth:required', 'factory:remote_mcp'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-03T00:00:00Z', updatedAt: '2026-09-28T00:00:00Z', installation: { displayName: 'Linear', domain: 'mcp.linear.app', status: 'active' } },
+        { id: 'conn_posthog', provider: 'factory:remote_mcp_posthog_com_e755da2a91c4', status: 'error', errorReason: 'upstream_503', fix_path: 'Try again in a few minutes. If it keeps failing, reconnect PostHog from the console.', scopes: ['factory:remote_mcp'], createdBy: 'prs_b', createdByName: 'Bo Chen', createdAt: '2026-09-04T00:00:00Z', updatedAt: '2026-09-27T00:00:00Z', installation: null },
+        { id: 'conn_acme', provider: 'factory:remote_mcp_acme_io_0a1b2c3d4e', status: 'connected', scopes: ['factory:auth:none'], createdBy: 'prs_a', createdByName: 'Ada Park', createdAt: '2026-09-05T00:00:00Z', updatedAt: '2026-09-26T00:00:00Z', installation: { displayName: 'Acme CRM', domain: 'mcp.acme.io', status: 'active' } },
       ],
       audit: [],
+    }),
+  }) : String(args?.url ?? '').startsWith('/v1/integrations/factory/catalog') ? ({
+    status: 200,
+    // Apps HQ can connect, shaped like hq-pro listFactoryCatalog.
+    body: JSON.stringify({
+      ok: true,
+      companyUid: 'cmp_preview',
+      entries: [
+        { name: 'Canva', domain: 'canva.com', description: 'Create and edit designs.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_canva' },
+        { name: 'Notion', domain: 'notion.com', description: 'Search and edit pages and databases.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_notion' },
+        { name: 'Sentry', domain: 'sentry.io', description: 'Read issues and releases.', mcpReady: true, authClass: 'oauth', source: 'integrations.sh', entryId: 'ent_sentry' },
+        { name: 'Attio', domain: 'attio.com', description: 'Read and update CRM records.', mcpReady: true, authClass: 'key', source: 'hq-discovered', entryId: 'ent_attio' },
+      ],
     }),
   }) : ({
     status: 200,
@@ -1803,6 +1827,15 @@ function harnessNotifyFetch(args?: Record<string, unknown>): { status: number; b
   const url = typeof args?.url === 'string' ? args.url : '';
   const method = typeof args?.method === 'string' ? args.method : 'GET';
   const body = typeof args?.body === 'string' ? JSON.parse(args.body) : null;
+  if (url === '/v1/flags/resolve') {
+    return {
+      status: 200,
+      body: JSON.stringify({
+        version: 1,
+        flags: { 'hq-anywhere-runtime': true },
+      }),
+    };
+  }
   if (url === '/v1/notify/prefs') {
     if (method === 'PUT' && body && typeof body === 'object') Object.assign(harnessNotifyPrefs, body);
     const until = harnessNotifyPrefs.pausedUntil;

@@ -35,24 +35,20 @@ const visibleToasts = (page: Page) =>
   page.locator('[data-testid="toast-stack"] > [data-testid]:not([data-testid="toast-overflow"])').filter({ visible: true });
 
 for (const [width, height] of [[1440, 900], [1000, 700]] as const) {
-  test(`toasts stay off the New objective sheet and its picker at ${width}x${height}`, async ({ page }) => {
+  test(`toasts stay off the New project sheet at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
     await page.goto('/dev-harness/index.html?view=shell&persona=indigo&theme=dark&toast=update');
     await expect(page.getByTestId('app-rail')).toBeVisible({ timeout: 30_000 });
     await expect(visibleToasts(page).first()).toBeVisible({ timeout: 10_000 });
     await page.evaluate(() => (document.querySelector('[data-testid="rail-company"]') as HTMLElement | null)?.click());
-    await page.waitForSelector('[data-row-id="goals"]');
-    await page.evaluate(() => (document.querySelector('[data-row-id="goals"]') as HTMLElement | null)?.click());
-    await page.getByTestId('new-objective').click();
-    await expect(page.getByRole('dialog', { name: 'New objective' })).toBeVisible();
-    await expect.poll(() => coveredOverlays(page)).toEqual([]);
-    await page.getByTestId('new-goal-link').click();
-    await expect(page.getByTestId('link-picker')).toBeVisible();
+    await page.waitForSelector('[data-row-id="projects"]');
+    await page.evaluate(() => (document.querySelector('[data-row-id="projects"]') as HTMLElement | null)?.click());
+    await page.getByTestId('new-project-button').click();
+    await expect(page.getByRole('dialog', { name: 'New project' })).toBeVisible();
     await expect.poll(() => coveredOverlays(page)).toEqual([]);
 
     await page.keyboard.press('Escape');
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog', { name: 'New objective' })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'New project' })).toHaveCount(0);
     // The toast that needs action is back and its buttons can be reached.
     await expect(visibleToasts(page).first()).toBeVisible();
     await expect(visibleToasts(page).first().getByRole('button').first()).toBeEnabled();
