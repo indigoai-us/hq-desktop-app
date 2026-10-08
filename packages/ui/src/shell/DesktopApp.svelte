@@ -266,6 +266,7 @@
     firstRunKickoff,
     firstRunRoute,
     hasFinishedVisualFirstRun,
+    normalizeAssistantName,
     VISUAL_FIRST_RUN_FLAG_GRACE_MS,
     markVisualFirstRunFinished,
     type FirstRunAssistantResult,
@@ -2739,7 +2740,11 @@
     delete next[uid];
     botProgressByUid = next;
   }
-  async function createBotEntry(input: LocalBotCreateInput, extras: CreateBotExtras = {}): Promise<LocalBotEntryResult> {
+  async function createBotEntry(
+    input: LocalBotCreateInput,
+    extras: CreateBotExtras = {},
+    options: { select?: boolean } = {},
+  ): Promise<LocalBotEntryResult> {
     const api = adapter.bots;
     if (!api) return { ok: false, reason: "Bots are only available in the HQ desktop app." };
     const result = await api.create(input);
@@ -2798,7 +2803,10 @@
         access: { state: "pending", level: "read" },
       },
     };
-    handleSelect(row);
+    // The visual first run selects on Done ("Talk to <Name>"), so a create
+    // that lands behind the takeover, or after the person left it for
+    // #welcome, does not move them.
+    if (options.select !== false) handleSelect(row);
     void saveNewBotProfile(agentUid, extras);
     return { ok: true, agentUid, name: input.name };
   }
@@ -2862,7 +2870,17 @@
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
-      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
+      ? {
+          existing: Boolean(existingSetupBot),
+          ready: setupBotRuntimeReady,
+          starting: setupBotStarting,
+          error: setupBotStartError,
+          start: startSetupBot,
+          // The first-run create does not open its conversation by itself.
+          ...(firstRunCreateRunning && firstRunConfirmedName
+            ? { startingBody: `${firstRunConfirmedName} is starting on this ${hostComputerNoun()}. Open it here once it's ready.` }
+            : {}),
+        }
       : null,
   );
   /**
@@ -2907,6 +2925,23 @@
     setupBotStarting = true;
     setupBotStartError = null;
     try {
+      // The visual first run may be creating the setup bot right now (the
+      // person left its takeover for #welcome mid-create). Its bot is not on
+      // any list yet, so a second create would make a second setup bot: wait
+      // for it and open that one instead.
+      // A bot it already made this session is used too: the local list can
+      // lag behind a create that just answered.
+      const firstRun =
+        firstRunCreateInFlight ??
+        (firstRunCreatedBot ? Promise.resolve<FirstRunAssistantResult>({ ok: true, bot: firstRunCreatedBot }) : null);
+      if (firstRun) {
+        const created = await firstRun;
+        if (created.ok) {
+          setupBotAutoStarted = true;
+          openSetupBotDm(created.bot);
+          return { ok: true, existing: true };
+        }
+      }
       const result = await runSetupBotStart();
       if (!result.ok) setupBotStartError = result.reason;
       return result;
@@ -2972,7 +3007,10 @@
     } catch (err) {
       console.warn("[hq-desktop] could not read the roster to name the setup bot:", err);
     }
-    const displayName = pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
+    // A name the person confirmed in the visual first run (then left it for
+    // chat) is kept; otherwise a friendly free one.
+    const displayName =
+      firstRunConfirmedName ?? pickSetupBotName(takenBotNames(rosterContacts, Object.values(botDisplayNames)));
     const created = await createBotEntry(
       {
         name: SETUP_BOT_NAME,
@@ -3116,15 +3154,53 @@
   let firstRunPendingName = $state<string | null>(null);
   /** The coding tool picked on the tools step, when it is signed in. */
   let firstRunRuntime: LocalBotRow["runtime"] | null = null;
+  /**
+   * The name the person confirmed in the takeover. Kept after "Continue in
+   * chat" so #welcome's start creates the setup bot under it. Null on the
+   * flag-off path.
+   */
+  let firstRunConfirmedName: string | null = null;
+  /** The first-run create while it runs, so #welcome's start can wait for it. */
+  let firstRunCreateInFlight: Promise<FirstRunAssistantResult> | null = null;
+  /** True while the first-run create runs (drives #welcome's starting line). */
+  let firstRunCreateRunning = $state(false);
+  /** The setup bot the first run made (or adopted) this session. */
+  let firstRunCreatedBot: SetupBotRef | null = null;
+  /**
+   * The first-run create, visible to #welcome as the setup bot starting (its
+   * button holds) and to `setupBotStartGate`, which waits for it.
+   */
+  function runFirstRunAssistantCreateTracked(name: string): Promise<FirstRunAssistantResult> {
+    setupBotStarting = true;
+    firstRunCreateRunning = true;
+    setupBotStartError = null;
+    const run = runFirstRunAssistantCreate(name)
+      .then((result) => {
+        if (result.ok) firstRunCreatedBot = result.bot;
+        else setupBotStartError = result.reason;
+        return result;
+      })
+      .finally(() => {
+        if (firstRunCreateInFlight === run) firstRunCreateInFlight = null;
+        setupBotStarting = false;
+        firstRunCreateRunning = false;
+      });
+    firstRunCreateInFlight = run;
+    return run;
+  }
   const firstRunStarter = createFirstRunAssistantStarter(
-    (name) => runFirstRunAssistantCreate(name),
+    (name) => runFirstRunAssistantCreateTracked(name),
     (state) => {
       firstRunCreation = state;
     },
   );
-  function confirmFirstRunName(name: string, runtime: LocalBotRow["runtime"]): void {
+  function confirmFirstRunName(typed: string, runtime: LocalBotRow["runtime"]): void {
+    // The host's display-name rule collapses spaces; send what it checks.
+    const name = normalizeAssistantName(typed);
+    if (!name) return;
     firstRunRuntime = runtime;
     firstRunPendingName = name;
+    firstRunConfirmedName = name;
     if (firstSignedInRuntime(localBotRuntimeReady)) firstRunStarter.start(name);
   }
   // A tool signed in after the name was confirmed: start then.
@@ -3197,6 +3273,7 @@
       },
       // The progress card and the DM row carry the person's name for it.
       { displayName },
+      { select: false },
     );
     if (created.ok) {
       if (created.agentUid) {
@@ -3231,6 +3308,8 @@
     markVisualFirstRunFinished();
     visualFirstRunFinished = true;
     visualFirstRunOpen = false;
+    // Nothing starts from the takeover once it is closed.
+    firstRunPendingName = null;
   }
   /** Bots this takeover created in this session (their DM and progress card are already set up). */
   const firstRunCreatedUids = new Set<string>();

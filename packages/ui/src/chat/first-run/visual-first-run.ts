@@ -173,12 +173,21 @@ export function runtimeLabel(runtime: FirstRunRuntime): string {
 export const ASSISTANT_NAME_MAX = 35;
 
 /**
+ * The name as the host keeps it (`validate_display_name`): runs of
+ * whitespace, tabs included, become one space, ends trimmed. Every place the
+ * name goes (the create, the kickoff, the hello, the handoff note) uses this.
+ */
+export function normalizeAssistantName(name: string): string {
+  return name.split(/\s+/).filter(Boolean).join(" ");
+}
+
+/**
  * Why a name cannot be the assistant's display name, or null. The same rule
  * as the host's `validate_display_name` (apps/sync bots.rs): letters first,
  * then letters, spaces, apostrophes, periods and hyphens, at most 35.
  */
 export function assistantNameIssue(name: string): string | null {
-  const collapsed = name.split(/\s+/).filter(Boolean).join(" ");
+  const collapsed = normalizeAssistantName(name);
   if (!collapsed) return "Give your assistant a name.";
   if ([...collapsed].length > ASSISTANT_NAME_MAX) return `Keep the name under ${ASSISTANT_NAME_MAX} characters.`;
   if (!/^\p{L}[\p{L} .'-]*$/u.test(collapsed)) return "Use letters, spaces, apostrophes, periods and hyphens.";
@@ -206,7 +215,7 @@ export function firstRunHandoffNote(handoff: FirstRunHandoff): string {
     from: "desktop-visual-first-run",
     v: 1,
     done: FIRST_RUN_SETTLED_STEPS,
-    name: handoff.name.trim(),
+    name: normalizeAssistantName(handoff.name),
     runtime: handoff.runtime,
     toolsReady: [...new Set(handoff.toolsReady)],
   });
@@ -224,7 +233,7 @@ export const FIRST_RUN_KICKOFF_MAX = 1900;
  */
 export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  const name = handoff.name.trim();
+  const name = normalizeAssistantName(handoff.name);
   const tool = runtimeLabel(handoff.runtime);
   const kickoff =
     `${SETUP_BOT_KICKOFF_PREFIX} setup started in the HQ desktop app's visual setup, where I already finished some steps, ` +
@@ -253,7 +262,7 @@ export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string 
  */
 export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  const name = handoff.name.trim();
+  const name = normalizeAssistantName(handoff.name);
   const tools = [...new Set(handoff.toolsReady)].map(runtimeLabel).join(", ") || runtimeLabel(handoff.runtime);
   const notice =
     "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
@@ -272,7 +281,7 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
  */
 export function firstRunIntro(handoff: Pick<FirstRunHandoff, "name" | "runtime">, opts: { noun?: string } = {}): string {
   const noun = opts.noun?.trim() || "computer";
-  const name = handoff.name.trim() || "your HQ assistant";
+  const name = normalizeAssistantName(handoff.name) || "your HQ assistant";
   return (
     `Hi, I'm ${name}, your HQ assistant. You've named me and signed in ${runtimeLabel(handoff.runtime)}, so I won't ask about those again. ` +
     `I'm checking your ${noun} now, which can take a minute, and I'll post my next question here as soon as I'm done.`

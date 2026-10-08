@@ -11,7 +11,7 @@
    * runs while the person is on the later screens. Every async action shows
    * its pending state at once and holds duplicate presses.
    */
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import RailIcon from "../../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
@@ -46,6 +46,7 @@
     firstRunTalkLabel,
     firstRunToolsTitle,
     nextFirstRunStep,
+    normalizeAssistantName,
     prevFirstRunStep,
     runtimeLabel,
     type FirstRunCreation,
@@ -164,8 +165,8 @@
 
   function confirmName(next: string, finish: boolean): void {
     if (!nameLocked) {
-      name = next;
-      onconfirmname(next, draft.runtime);
+      name = normalizeAssistantName(next);
+      onconfirmname(name, draft.runtime);
     }
     goTo(finish ? firstRunFinishTarget(runtimeReady, steps) : nextFirstRunStep("name", steps));
   }
@@ -193,6 +194,45 @@
       event.stopPropagation();
     }
   }
+
+  /**
+   * What the one live region says. It stays mounted for the whole takeover
+   * and only its text changes, so screen readers hear every change of the
+   * create, on every screen.
+   */
+  const announcement = $derived(
+    creation.state === "failed"
+      ? creation.reason
+      : creation.state === "creating"
+        ? `Getting ${shownName} ready…`
+        : creation.state === "ready"
+          ? `${shownName} is ready.`
+          : "",
+  );
+
+  let cardEl = $state<HTMLDivElement | null>(null);
+  /**
+   * Focus stays in the dialog: on open, and after every step change (the
+   * pressed button is gone). The name step focuses its field itself, unless
+   * the field is locked, when Next takes it.
+   */
+  $effect(() => {
+    void step;
+    const locked = nameLocked;
+    const card = cardEl;
+    if (!card) return;
+    void tick().then(() => {
+      const active = document.activeElement;
+      if (active && active !== card && card.contains(active)) return;
+      const target =
+        (step === "name" && locked
+          ? card.querySelector<HTMLElement>('[data-testid="new-bot-continue-name"]')
+          : card.querySelector<HTMLElement>(
+              'input:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
+            )) ?? card;
+      target.focus();
+    });
+  });
 
   const talkLabel = $derived(
     leaving === "talk"
@@ -226,6 +266,7 @@
   </header>
   <main class="new-bot-takeover-stage">
     <div
+      bind:this={cardEl}
       class="new-bot-takeover-card new-bot-takeover-card--flow new-bot-takeover-card--steps"
       role="dialog"
       aria-modal="true"
@@ -309,7 +350,7 @@
           <footer class="new-bot-create-foot">
             <!-- Creating the assistant runs behind the screens: one quiet line. -->
             {#if creation.state === "failed"}
-              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed" aria-live="polite">
+              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="failed">
                 {creation.reason}
                 <button type="button" class="new-bot-inline-link" data-testid="first-run-retry" onclick={onretry}>{FIRST_RUN_COPY.retry}</button>
                 <span aria-hidden="true">·</span>
@@ -317,11 +358,11 @@
               </p>
             {:else if creation.state === "creating" && !isLast}
               <!-- On Done the held button already says it. -->
-              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="creating" aria-live="polite">Getting {shownName} ready…</p>
+              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="creating">Getting {shownName} ready…</p>
             {:else if creation.state === "ready" && step !== "done"}
-              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="ready" aria-live="polite">{shownName} is ready.</p>
+              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="ready">{shownName} is ready.</p>
             {:else if creation.state === "idle" && !ready}
-              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="waiting" aria-live="polite">{shownName} starts as soon as a coding tool is signed in.</p>
+              <p class="new-bot-price first-run-status" data-testid="first-run-create-status" data-state="waiting">{shownName} starts as soon as a coding tool is signed in.</p>
             {/if}
             {#if isLast}
               <div class="new-bot-foot-actions single">
@@ -360,6 +401,8 @@
       </div>
     </div>
   </main>
+  <!-- The one live region: always here, only its text changes. -->
+  <p class="first-run-live" data-testid="first-run-live" aria-live="polite" aria-atomic="true">{announcement}</p>
 </div>
 
 <style>
@@ -417,5 +460,15 @@
   }
   .first-run-status {
     margin: 0;
+  }
+  /* Read by screen readers only; the visible line says the same. */
+  .first-run-live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 </style>

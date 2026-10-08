@@ -18,6 +18,7 @@ import {
   firstRunStepNumber,
   hasFinishedVisualFirstRun,
   markVisualFirstRunFinished,
+  normalizeAssistantName,
   nextFirstRunStep,
   prevFirstRunStep,
   type FirstRunAssistantResult,
@@ -95,6 +96,20 @@ describe("assistant name", () => {
     expect(assistantNameIssue("-dash")).not.toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX))).toBeNull();
     expect(assistantNameIssue("a".repeat(ASSISTANT_NAME_MAX + 1))).toBe("Keep the name under 35 characters.");
+  });
+});
+
+describe("assistant name whitespace", () => {
+  it("collapses tabs and runs of spaces, which is what the host keeps and checks", () => {
+    expect(normalizeAssistantName(" Mr\tBiscuit  Pants ")).toBe("Mr Biscuit Pants");
+    expect(assistantNameIssue(" Mr\tBiscuit  Pants ")).toBeNull();
+    const kickoff = firstRunKickoff({ name: "Mr\tBiscuit  Pants", runtime: "claude", toolsReady: ["claude"] });
+    expect(kickoff).toContain('"name":"Mr Biscuit Pants"');
+    expect(kickoff).toContain("I chose your name, Mr Biscuit Pants,");
+    expect(firstRunIntro({ name: "Mr\tBiscuit", runtime: "claude" })).toContain("Hi, I'm Mr Biscuit,");
+    expect(firstRunHandoffNotice({ name: "Mr  Biscuit", runtime: "claude", toolsReady: ["claude"] })).toContain(
+      "I named you Mr Biscuit,",
+    );
   });
 });
 

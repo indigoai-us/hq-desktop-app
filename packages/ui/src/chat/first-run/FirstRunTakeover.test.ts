@@ -221,3 +221,30 @@ describe("FirstRunTakeover: done", () => {
     expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(true);
   });
 });
+
+describe("FirstRunTakeover: accessibility", () => {
+  it("keeps one live region mounted on every screen and only changes its text", async () => {
+    render({ creation: { state: "creating", name: "Pickles" } });
+    await settle();
+    const live = q('[data-testid="first-run-live"]')!;
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.textContent).toContain("Getting Pickles ready");
+    // Only the one region is live.
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
+    q<HTMLButtonElement>('[data-testid="new-bot-continue-name"]')!.click();
+    await settle();
+    expect(q('[data-testid="first-run-live"]')).toBe(live);
+    expect(document.querySelectorAll("[aria-live]")).toHaveLength(1);
+  });
+
+  it("puts focus in the dialog on open, and on Next when the name is locked", async () => {
+    render({ initialStep: "tools", creation: { state: "creating", name: "Pickles" } });
+    await settle(8);
+    const card = q('[role="dialog"]')!;
+    expect(card.contains(document.activeElement)).toBe(true);
+    q<HTMLButtonElement>('[data-testid="first-run-back"]')!.click();
+    await settle(8);
+    expect(q('[data-testid="first-run-step"]')?.getAttribute("data-step")).toBe("name");
+    expect(document.activeElement).toBe(q('[data-testid="new-bot-continue-name"]'));
+  });
+});
