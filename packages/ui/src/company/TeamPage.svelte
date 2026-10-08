@@ -39,6 +39,7 @@
   } from "./team-bots-pages.js";
   import { readSettingsCache } from "./company-settings.js";
   import { presenceStatus } from "../chat/presence-store.svelte.js";
+  import Avatar from "../common/avatar/Avatar.svelte";
   import "../home/tokens.css";
   import "../common/button/rail-type.css";
   import "../chat/chat-tokens.css";
@@ -58,6 +59,8 @@
     /** OWNER-R9: the signed-in person, to read their own role here. */
     selfUid?: string | null;
     selfEmail?: string | null;
+    /** personUid/agentUid → photo URL, from the app's identity cache. */
+    avatarByUid?: Readonly<Record<string, string>>;
   }
 
   let {
@@ -72,6 +75,7 @@
     onmessage,
     selfUid = null,
     selfEmail = null,
+    avatarByUid = {},
   }: Props = $props();
 
   const emptyView: TeamTelemetryView = {
@@ -243,12 +247,6 @@
   function roleLine(member: TeamMember): string {
     // QA-048: no invented role. Profile shows the same dash for this company.
     return member.role?.trim() || UNKNOWN_ROLE;
-  }
-
-  function initials(name: string): string {
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-    return name.trim().slice(0, 2).toUpperCase() || "?";
   }
 
   function live(member: TeamMember): boolean {
@@ -566,17 +564,22 @@
       onclick={() => openProfile(member)}
     >
       <span class="who">
-        <span class="mini" class:sq={bot} aria-hidden="true">
-          {#if bot}
-            <svg viewBox="0 0 14 14" width="12" height="12"><rect x="2.5" y="4" width="9" height="7" rx="2" stroke="currentColor" stroke-width="1.3" fill="none" /><path d="M7 2v2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
-          {:else}
-            {initials(member.displayName)}
-          {/if}
-          <span class="ld" class:pulse={live(member)}></span>
+        <Avatar
+          kind={bot ? "bot" : "person"}
+          name={member.displayName}
+          id={member.id}
+          photo={avatarByUid[member.id] ?? null}
+          size={24}
+          presence={live(member) ? "online" : "offline"}
+          testid="team-avatar"
+        />
+        <span class="who-text">
+          <span class="who-line">
+            <span class="nm" title={member.displayName}>{member.displayName}</span>
+            {#if member.badge}<span class="meta badge" data-testid="team-badge">{member.badge}</span>{/if}
+          </span>
+          {#if member.email}<span class="em" title={member.email}>{member.email}</span>{/if}
         </span>
-        <span class="nm">{member.displayName}</span>
-        {#if member.email}<span class="meta em">{member.email}</span>{/if}
-        {#if member.badge}<span class="meta badge" data-testid="team-badge">{member.badge}</span>{/if}
       </span>
       <span class="cell">{roleLine(member)}</span>
       <span class="cell meta">{working(member)}</span>
@@ -764,9 +767,11 @@
   .canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 16px 12px 24px; }
   .profile { flex: 0 0 340px; width: 340px; min-height: 0; border-left: 1px solid var(--line); display: flex; flex-direction: column; }
   .profile-loading { height: 100%; }
+  /* The member column keeps a sane minimum; the other columns give way first. */
+  .canvas { container: team-list / inline-size; }
   .cols, .row-main {
     display: grid;
-    grid-template-columns: minmax(180px, 2fr) minmax(90px, 1fr) minmax(120px, 2fr) 96px;
+    grid-template-columns: minmax(200px, 2fr) minmax(90px, 1fr) minmax(120px, 2fr) 96px;
     gap: 12px;
     align-items: center;
   }
@@ -778,9 +783,9 @@
   .row-main {
     flex: 1;
     min-width: 0;
-    height: 31px;
+    min-height: 44px;
     box-sizing: border-box;
-    padding: 7px 8px;
+    padding: 6px 8px;
     border: 0;
     background: transparent;
     color: var(--t2);
@@ -791,34 +796,31 @@
     cursor: pointer;
   }
   .row-main > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .who { display: flex; align-items: center; gap: 8px; }
-  .nm { color: var(--t1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mini {
-    position: relative;
-    display: inline-grid;
-    place-items: center;
-    flex: 0 0 20px;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: var(--line2);
-    color: var(--t1);
-    font-size: 9px;
-    font-weight: 500;
+  /* Avatar, then name over handle. The avatar's presence badge sits outside
+     its circle; the gap keeps it clear of the name. */
+  .who { display: flex; align-items: center; gap: 10px; padding: 2px 0 2px 1px; --avatar-ring: var(--v4-ground, var(--bg)); }
+  .row:hover .who { --avatar-ring: var(--hover); }
+  .who-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+  .who-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .nm { min-width: 0; color: var(--t1); font-size: 13px; line-height: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .em { min-width: 0; color: var(--t3); font-size: 11px; line-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who-line .badge { flex: none; }
+
+  /* Narrow: drop Working on first, then the handle, then Role, before the
+     name is ever cut short. */
+  @container team-list (max-width: 620px) {
+    .cols, .row-main { grid-template-columns: minmax(170px, 2fr) minmax(80px, 1fr) 80px; }
+    .cols > :nth-child(3), .row-main > :nth-child(3) { display: none; }
   }
-  .mini.sq { border-radius: 5px; color: var(--t2); }
-  .ld {
-    position: absolute;
-    right: -2px;
-    bottom: -2px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--t3);
-    box-shadow: 0 0 0 1.5px var(--side-bg, transparent);
+  @container team-list (max-width: 460px) {
+    .cols, .row-main { grid-template-columns: minmax(150px, 1fr) minmax(70px, auto); }
+    .cols > :nth-child(4), .row-main > :nth-child(4) { display: none; }
+    .em { display: none; }
   }
-  .ld.pulse { background: var(--ok); }
+  @container team-list (max-width: 340px) {
+    .cols, .row-main { grid-template-columns: minmax(0, 1fr); }
+    .cols > :nth-child(2), .row-main > :nth-child(2) { display: none; }
+  }
   .r { text-align: right; font-variant-numeric: tabular-nums; }
   .act { flex: 0 0 36px; display: inline-flex; justify-content: center; }
   .menu-wrap { position: relative; display: inline-flex; }

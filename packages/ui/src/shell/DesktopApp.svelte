@@ -13547,6 +13547,7 @@
               },
               selfUid: self?.uid ?? null,
               selfEmail: self?.email ?? null,
+              avatarByUid,
             }}
           >
             {#snippet skeleton()}
