@@ -18,7 +18,6 @@
     NEW_BOT_COMPANY_GONE_REASON,
     NEW_BOT_LOCAL_LABEL,
     newBotCheckingLine,
-    newBotTargetLine,
     provisionOptionsPriced,
     provisionOptionsProblem,
     provisionOptionsProblemLine,
@@ -66,7 +65,7 @@
      */
     otherWayLabel?: string;
     /**
-     * True when the person belongs to more than one company. The last step
+     * True when the person belongs to more than one company. The plan line
      * then names the company the bot will be created in, whether it was
      * picked here or is the only one this screen offers.
      */
@@ -120,17 +119,39 @@
   let quoteReload = $state(0);
   let selectedSize = $state<"basic" | "power" | "dev" | "">("");
   let runtimeChosen = $state(false);
-  let moreOptions = $state(false);
   let busy = $state(false);
   let refusal = $state<string | null>(null);
-  /** 2: the brain. 3: the company, when there is more than one. (The name, step 1, is the takeover's.) */
-  let step = $state<2 | 3>(2);
+  /**
+   * 2: the brain. 3: the company, when there is more than one. 4: the
+   * machine size. (The name, step 1, is the takeover's.) Only the brain is
+   * required: every step but the last can "Finish with defaults".
+   */
+  type Step = 2 | 3 | 4;
+  let step = $state<Step>(2);
   let quoteGeneration = 0;
   let companyFilter = $state("");
   let companyFocusUid = $state(initialCompany);
   const singleCompany = $derived(companies.length === 1);
-  const finalStep = $derived(singleCompany ? 2 : 3);
+  const steps = $derived<Step[]>(singleCompany ? [2, 4] : [2, 3, 4]);
+  const stepIndex = $derived(Math.max(0, steps.indexOf(step)));
+  const nextOf = $derived<Step | null>(steps[stepIndex + 1] ?? null);
+  const prevOf = $derived<Step | null>(stepIndex > 0 ? (steps[stepIndex - 1] ?? null) : null);
+  const isLast = $derived(nextOf === null);
+  const STEP_NAMES: Record<Step, string> = { 2: "Brain", 3: "Company", 4: "Size" };
   const filteredCompanies = $derived(companies.filter((company) => company.label.toLocaleLowerCase().includes(companyFilter.trim().toLocaleLowerCase())));
+  /**
+   * The grid never scrolls: it shows at most four rows of three. Past that
+   * the filter finds the rest, and the picked company always stays in view.
+   */
+  const COMPANY_TILES = 12;
+  const shownCompanies = $derived.by(() => {
+    if (filteredCompanies.length <= COMPANY_TILES) return filteredCompanies;
+    const first = filteredCompanies.slice(0, COMPANY_TILES);
+    if (first.some((company) => company.companyUid === companyUid)) return first;
+    const picked = filteredCompanies.find((company) => company.companyUid === companyUid);
+    return picked ? [...first.slice(0, COMPANY_TILES - 1), picked] : first;
+  });
+  const hiddenCompanies = $derived(filteredCompanies.length - shownCompanies.length);
   const derivedHandle = $derived(botHandle({ name, handle: "" }));
   // The handle is made from the name and never shown. The name step already
   // refused a name with no letter or digit the handle can use; this holds
@@ -159,14 +180,14 @@
   function optionPrice(option: AgentProvisionOptionsView["options"][number]): string { return option.notBilled || option.netMonthlyCents === 0 ? "Included for your company" : option.netMonthlyCents === null ? "Price unavailable" : `${monthly(option.netMonthlyCents)}/month`; }
   function brainLabel(choice: BotRuntime): string { return choice === "codex" ? "Codex" : choice === "claude" ? "Claude" : "Grok"; }
   function focusStep(): void { void tick().then(() => document.querySelector<HTMLElement>(`[data-testid="new-bot-step-${step}"] input:not([disabled]), [data-testid="new-bot-step-${step}"] button:not([disabled])`)?.focus()); }
-  function go(next: 2 | 3): void { refusal = null; step = next; focusStep(); }
+  function go(next: Step): void { refusal = null; step = next; focusStep(); }
   function chooseSizeAfterLoad(value: AgentProvisionOptionsView): void { const preferred = value.options.find((option) => option.default && option.selectable && option.netMonthlyCents !== null) ?? value.options.find((option) => option.selectable && option.netMonthlyCents !== null); selectedSize = preferred?.key ?? ""; }
   function selectCompany(next: string): void { if (busy) return; companyUid = next; companyFocusUid = next; }
   function leaveUpgrade(): void { upgrade = null; refusal = null; focusStep(); }
   function companyColumns(): number { return window.matchMedia("(max-width: 420px)").matches ? 1 : window.matchMedia("(max-width: 620px)").matches ? 2 : 3; }
   function focusCompanyAt(index: number): void { const radios = [...document.querySelectorAll<HTMLButtonElement>("[data-testid='new-bot-company-grid'] [role='radio']")]; const next = radios[(index + radios.length) % radios.length]; next?.focus(); companyFocusUid = next?.dataset.companyUid ?? companyFocusUid; }
   function onCompanyKeydown(event: KeyboardEvent): void {
-    const visible = filteredCompanies; if (!visible.length) return;
+    const visible = shownCompanies; if (!visible.length) return;
     const index = Math.max(0, visible.findIndex((company) => company.companyUid === companyFocusUid)); const columns = companyColumns();
     let next: number | null = null;
     if (event.key === "ArrowRight") next = index + 1;
@@ -242,8 +263,21 @@
       : "",
   );
   function reloadOptions(): void { quoteReload += 1; }
-  /** Where the bot will be made, said on the last step to a person with more than one company. */
-  const targetLine = $derived(nameCompany && selectedCompanyLabel ? newBotTargetLine(name, selectedCompanyLabel) : "");
+  /**
+   * The plan line: once, short, above the buttons, naming the company the
+   * bot will be made in. "Checking plan..." holds its place until the
+   * company's options answer, so nothing moves when they do.
+   */
+  const planLine = $derived.by(() => {
+    if (!pricedOption) return "";
+    // A person in several companies is told which one (review G-1).
+    const company = nameCompany && selectedCompanyLabel ? selectedCompanyLabel : "";
+    if (pricedOption.notBilled || pricedOption.netMonthlyCents === 0) {
+      return company ? `Included with ${company}'s plan.` : "Included with your company's plan.";
+    }
+    const price = `${optionPrice(pricedOption)} for ${pricedOption.productName}`;
+    return company ? `${price}, billed to ${company}.` : `${price}.`;
+  });
   $effect(() => { focusStep(); });
   // The sun starts low and creeps while the create request is in flight; the
   // Waking up screen takes over from the same low position. One state change,
@@ -331,35 +365,38 @@
        well clear of the title bar, so it is a plain div and its step control
        does not go through the shared page header. -->
   <NewBotStepHead
-    total={leadSteps + finalStep - 1}
-    current={leadSteps + step - 1}
-    onback={step > 2 ? () => go(2) : onback}
-    backTestId={step > 2 ? undefined : "new-bot-back-to-choice"}
+    total={leadSteps + steps.length}
+    current={leadSteps + stepIndex + 1}
+    optionalFrom={leadSteps + 2}
+    onback={prevOf ? () => go(prevOf) : onback}
+    backTestId={prevOf ? undefined : "new-bot-back-to-choice"}
     backDisabled={step === 2 && busy}
-    kicker={step === 2 ? "Choose a brain" : "Your workspace"}
-    lead={step === 2 ? "Pick the" : "Choose a"}
-    em={step === 2 ? "brain." : "company."}
+    kicker={step === 2 ? "Choose a brain" : step === 3 ? "Your workspace" : "Machine size"}
+    lead={step === 2 ? "Pick the" : step === 3 ? "Choose a" : "Pick a"}
+    em={step === 2 ? "brain." : step === 3 ? "company." : "size."}
   >
     <!-- Who is being made, as one line, on every step after the name. -->
     <p class="new-bot-identity" data-testid="bot-identity-line">
       <span class="new-bot-identity-mark" aria-hidden="true"><IdentityMark kind="agent" label={name || "bot"} agentUid={`agt_preview_${derivedHandle || "bot"}`} /></span>
       <span class="new-bot-identity-name" data-testid="bot-identity-name">{name || "your bot"}</span>
-      <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Cloud{selectedCompanyLabel && (step === 3 || singleCompany) ? ` · ${selectedCompanyLabel}` : ""}</span>
+      <span class="new-bot-identity-meta" data-testid="bot-identity-meta">Cloud{selectedCompanyLabel && (step !== 2 || singleCompany) ? ` · ${selectedCompanyLabel}` : ""}</span>
     </p>
   </NewBotStepHead>
 
   <div class="new-bot-create-scroll" data-testid="new-bot-create-scroll">
     {#if step === 2}
       <section class="new-bot-step" data-testid="new-bot-step-2"><p class="new-bot-create-copy">Choose the model your teammate will use.</p><fieldset class="new-bot-brains" disabled={busy}><legend class="sr-only">Brain</legend>{#each brainChoices as choice (choice)}<label class:selected={runtime === choice} class="new-bot-brain"><input type="radio" name="new-bot-brain" value={choice} checked={runtime === choice} onchange={() => { runtimeChosen = true; runtime = choice; }} /><span>{brainLabel(choice)}</span>{#if runtimeReady?.[choice] === true}<small>Signed in on this {hostNoun}</small>{/if}</label>{/each}</fieldset></section>
+    {:else if step === 3}
+      <section class="new-bot-step" data-testid="new-bot-step-3"><p class="new-bot-create-copy">Your bot will work with this company from the start.</p>{#if companies.length > 12}<label class="new-bot-filter-label" for="new-bot-company-filter">Find a company</label><input id="new-bot-company-filter" class="new-bot-create-input" data-testid="new-bot-company-filter" value={companyFilter} autocomplete="off" oninput={(event) => { companyFilter = (event.currentTarget as HTMLInputElement).value; }} />{/if}<div class="new-bot-companies" data-testid="new-bot-company-grid" role="radiogroup" aria-label="Company" onkeydown={onCompanyKeydown}>{#each shownCompanies as company (company.companyUid)}<button type="button" class:selected={companyUid === company.companyUid} class="new-bot-company" role="radio" aria-checked={companyUid === company.companyUid} aria-label={company.label} title={company.label} data-company-uid={company.companyUid} tabindex={companyFocusUid === company.companyUid ? 0 : -1} disabled={busy} onclick={() => selectCompany(company.companyUid)} onfocus={() => (companyFocusUid = company.companyUid)}><span class="new-bot-company-monogram" aria-hidden="true">{company.label.trim().slice(0, 1).toLocaleUpperCase()}</span><span class="new-bot-company-label">{company.label}</span>{#if companyUid === company.companyUid}<svg class="new-bot-company-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>{/if}</button>{:else}<p class="new-bot-company-empty">No company matches that.</p>{/each}</div>{#if hiddenCompanies > 0}<p class="new-bot-muted" data-testid="new-bot-company-more">{hiddenCompanies} more. Type to find {hiddenCompanies === 1 ? "it" : "them"}.</p>{/if}</section>
     {:else}
-      <section class="new-bot-step" data-testid="new-bot-step-3"><p class="new-bot-create-copy">Your bot will work with this company from the start.</p>{#if companies.length > 12}<label class="new-bot-filter-label" for="new-bot-company-filter">Find a company</label><input id="new-bot-company-filter" class="new-bot-create-input" data-testid="new-bot-company-filter" value={companyFilter} autocomplete="off" oninput={(event) => { companyFilter = (event.currentTarget as HTMLInputElement).value; }} />{/if}<div class="new-bot-companies" data-testid="new-bot-company-grid" role="radiogroup" aria-label="Company" onkeydown={onCompanyKeydown}>{#each filteredCompanies as company (company.companyUid)}<button type="button" class:selected={companyUid === company.companyUid} class="new-bot-company" role="radio" aria-checked={companyUid === company.companyUid} aria-label={company.label} title={company.label} data-company-uid={company.companyUid} tabindex={companyFocusUid === company.companyUid ? 0 : -1} disabled={busy} onclick={() => selectCompany(company.companyUid)} onfocus={() => (companyFocusUid = company.companyUid)}><span class="new-bot-company-monogram" aria-hidden="true">{company.label.trim().slice(0, 1).toLocaleUpperCase()}</span><span class="new-bot-company-label">{company.label}</span>{#if companyUid === company.companyUid}<svg class="new-bot-company-check" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8 3 3 7-7" /></svg>{/if}</button>{:else}<p class="new-bot-company-empty">No company matches that.</p>{/each}</div>{#if moreOptions}<fieldset class="new-bot-sizes" disabled={busy || quoteStatus !== "ready"}><legend class="new-bot-create-label">Machine size</legend>{#each options?.options ?? [] as option (option.key)}<label class:selected={selectedSize === option.key} class="new-bot-size"><input type="radio" name="new-bot-size" value={option.key} checked={selectedSize === option.key} disabled={!option.selectable || option.netMonthlyCents === null} onchange={() => (selectedSize = option.key)} /><span>{option.productName} · {optionPrice(option)}</span></label>{:else}<span class="new-bot-muted">{quoteStatus === "loading" ? "Loading server options..." : "Server options could not be loaded."}</span>{/each}</fieldset>{/if}</section>
+      <section class="new-bot-step" data-testid="new-bot-step-4"><p class="new-bot-create-copy">The default fits most bots. A bigger machine runs more work at once.</p><fieldset class="new-bot-sizes" disabled={busy || quoteStatus !== "ready"}><legend class="sr-only">Machine size</legend>{#each options?.options ?? [] as option (option.key)}<label class:selected={selectedSize === option.key} class="new-bot-size"><input type="radio" name="new-bot-size" value={option.key} checked={selectedSize === option.key} disabled={!option.selectable || option.netMonthlyCents === null} onchange={() => (selectedSize = option.key)} /><span>{option.productName} · {optionPrice(option)}</span></label>{:else}<span class="new-bot-muted">{quoteStatus === "loading" ? "Checking plan..." : "Sizes could not be loaded."}</span>{/each}</fieldset></section>
     {/if}
   </div>
 
   <footer class="new-bot-create-foot">
     {#if nameIssue}<p class="new-bot-create-error" role="alert" data-testid="new-bot-name-unusable">{nameIssue}</p>{/if}
     {#if refusal}<p id="new-bot-create-issue" class="new-bot-create-error" role="alert">{refusal}</p>{/if}
-    {#if companyGone && step >= finalStep}
+    {#if companyGone}
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-company-gone">{NEW_BOT_COMPANY_GONE_REASON}</p>
     {:else if quoteProblemLine}
       <!-- Create bot is off because the company's options did not load. Say
@@ -367,15 +404,18 @@
       <p class="new-bot-create-error" role="alert" data-testid="new-bot-options-error" data-kind={quoteProblemKind ?? "load"}>{quoteProblemLine}</p>
       <button type="button" class="new-bot-more" data-testid="new-bot-options-retry" onclick={reloadOptions}><RailIcon name="refresh" />Try again</button>
     {/if}
-    {#if step === 3}<button type="button" class="new-bot-more" aria-expanded={moreOptions} onclick={() => (moreOptions = !moreOptions)}><RailIcon name="sliders" />More options</button>{/if}
-    <!-- The brain step with a company still to pick: "Next: Company" and
-         "Finish with defaults" (the company it opened on). Otherwise one
-         button, "Create <Name>". -->
-    <div class="new-bot-foot-actions" class:single={step === finalStep}>
-      {#if step < finalStep}<button type="button" class="new-bot-create-next" data-testid="new-bot-continue-brain" onclick={() => go(3)}>Next: Company<RailIcon name="arrow-right" /></button>{/if}
-      <button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" data-finish={step < finalStep ? "defaults" : undefined} disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : step < finalStep ? "Finish with defaults" : `Create ${name || "bot"}`}</button>
+    <!-- One short plan line, above the buttons. While the company's plan is
+         checked it says so in the same place, so nothing moves. -->
+    {#if !quoteProblemLine && !companyGone}
+      <p class="new-bot-price new-bot-plan-line" data-testid="new-bot-price" data-state={planLine ? "ready" : quoteStatus === "loading" ? "checking" : "none"} aria-live="polite">{planLine || (quoteStatus === "loading" ? "Checking plan..." : "")}</p>
+    {/if}
+    <!-- Every step but the last: "Next: <step>" and "Finish with defaults"
+         (the brain shown, the company it opened on, the default size). The
+         last: one button, "Create <Name>". -->
+    <div class="new-bot-foot-actions" class:single={isLast}>
+      {#if nextOf}<button type="button" class="new-bot-create-next" data-testid={step === 2 ? "new-bot-continue-brain" : "new-bot-continue-company"} onclick={() => { if (nextOf) go(nextOf); }}>Next: {STEP_NAMES[nextOf]}<RailIcon name="arrow-right" /></button>{/if}
+      <button type="button" class="new-bot-create-submit" data-testid="new-bot-create-submit" data-finish={isLast ? undefined : "defaults"} disabled={!canSubmit} aria-busy={busy ? "true" : undefined} onclick={() => void submit()}>{busy ? "Creating bot..." : isLast ? `Create ${name || "bot"}` : "Finish with defaults"}</button>
     </div>
-    {#if targetLine}<p class="new-bot-price" data-testid="new-bot-target-company">{targetLine}</p>{/if}{#if pricedOption}<p class="new-bot-price" data-testid="new-bot-price">{optionPrice(pricedOption)} for {pricedOption.productName}.</p>{:else if quoteStatus === "loading"}<p class="new-bot-price" aria-live="polite">Loading the price...</p>{/if}
     {#if step === 2 && onopenlocal}<button type="button" class="new-bot-takeover-local" data-testid="new-bot-takeover-local" onclick={onopenlocal}>{otherWay}</button>{/if}
   </footer>
 </div>

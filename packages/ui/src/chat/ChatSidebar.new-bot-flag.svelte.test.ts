@@ -339,8 +339,9 @@ describe("ChatSidebar New Bot takeover: the host's flag answer", () => {
     await settle();
     click('[data-testid="new-bot-continue-name"]');
     await settle();
-    // One company: no company step, and nothing but Acme to create in.
-    expect(q('[data-testid="new-bot-continue-brain"]')).toBeNull();
+    // One company: no company step (the brain leads to the size), and
+    // nothing but Acme to create in.
+    expect(q('[data-testid="new-bot-continue-brain"]')?.textContent?.trim()).toBe("Next: Size");
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
   });
 

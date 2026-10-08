@@ -109,7 +109,7 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Enter a name.");
     expect(document.activeElement).toBe(q('[data-testid="new-bot-name"]'));
     // Name, where, brain: one company, so no company step.
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 3");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 4");
   });
 
   it("asks where the named bot should live, with the name set apart, on two tiles", async () => {
@@ -120,7 +120,7 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
     expect(q("#new-bot-takeover-title")?.textContent).toBe("Where should Nova live?");
     expect(q("#new-bot-takeover-title em")?.textContent).toBe("Nova");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 4");
     // The misleading line about changing it later is gone; the subline says
     // the other kind can be added any time.
     expect(document.body.textContent).not.toContain("change it on the next step");
@@ -212,7 +212,7 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     // The cloud screen has no name step of its own: it names the bot above the brain.
     expect(q('[data-testid="new-bot-name"]')).toBeNull();
     expect(q('[data-testid="bot-identity-name"]')?.textContent).toBe("Nova");
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 3");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 3 of 4");
     q<HTMLButtonElement>('[data-testid="new-bot-back-to-choice"]')!.click();
     await settle();
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeTruthy();
@@ -338,11 +338,11 @@ describe("NewBotTakeover: the name first, then where it should live", () => {
     render({ ...CLOUD_SCREEN });
     await settle();
     // Name and brain: the where question is not part of this way in.
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 2");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 1 of 3");
     await nameIt("Nova");
     expect(q('[data-testid="new-bot-kind-choice"]')).toBeNull();
     expect(q('[data-testid="new-bot-create-screen"]')).toBeTruthy();
-    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 2");
+    expect(q('[data-testid="new-bot-progress"]')?.getAttribute("aria-label")).toBe("Step 2 of 3");
     q<HTMLButtonElement>('[data-testid="new-bot-back-to-choice"]')!.click();
     await settle();
     expect(q<HTMLInputElement>('[data-testid="new-bot-name"]')?.value).toBe("Nova");

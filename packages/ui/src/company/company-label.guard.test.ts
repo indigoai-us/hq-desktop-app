@@ -33,7 +33,7 @@ const ALLOWLIST: Record<string, string> = {
     "The tile's one-letter monogram.",
   "chat/create-bot/CreateBotFlow.svelte::cloudCompany ? ` \u00b7 ${cloudCompany.label}` : \"\"":
     "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
-  "chat/create-bot/NewBotCreateScreen.svelte::selectedCompanyLabel && (step === 3 || singleCompany) ? ` \u00b7 ${selectedCompanyLabel}` : \"\"":
+  "chat/create-bot/NewBotCreateScreen.svelte::selectedCompanyLabel && (step !== 2 || singleCompany) ? ` \u00b7 ${selectedCompanyLabel}` : \"\"":
     "The New bot identity line: one ellipsized line, \"Cloud \u00b7 {name}\".",
   "chat/create-bot/CloudDetailsStep.svelte::nameError ?? `What ${companyLabel} will call it.`":
     "Help sentence.",

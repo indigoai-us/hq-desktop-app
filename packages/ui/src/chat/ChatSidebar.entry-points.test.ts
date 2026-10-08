@@ -1390,7 +1390,8 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
   }
 
   function targetLine(): string {
-    return q('[data-testid="new-bot-target-company"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+    // The one plan line above the buttons names the company it is billed to.
+    return q('[data-testid="new-bot-price"]')?.textContent?.replace(/\s+/g, " ").trim() ?? "";
   }
 
   it("looking at a company without the flag, New bot never creates in the company that has it", async () => {
@@ -1457,7 +1458,7 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
     await nameTakeoverBot("Nova");
     // One target, so nothing to pick. It is named where Create is pressed.
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
-    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    expect(targetLine()).toBe("$12.00/month for Basic, billed to Indigo.");
     click('[data-testid="new-bot-create-submit"]');
     await settle(10);
     expect(oncreatenewbot).toHaveBeenCalledTimes(1);
@@ -1484,7 +1485,7 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
 
     await nameTakeoverBot("Nova");
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
-    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    expect(targetLine()).toBe("$12.00/month for Basic, billed to Indigo.");
     click('[data-testid="new-bot-create-submit"]');
     await settle(10);
     expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
@@ -1535,10 +1536,10 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
 
     // Only the companies with the flag are listed, and the line follows the pick.
     expect(q('[data-testid="new-bot-company-grid"]')?.textContent).not.toContain("Acme");
-    expect(targetLine()).toBe("Nova will be created in Indigo.");
+    expect(targetLine()).toBe("$12.00/month for Basic, billed to Indigo.");
     click('[data-company-uid="cmp_globex"]');
     await settle();
-    expect(targetLine()).toBe("Nova will be created in Globex.");
+    expect(targetLine()).toBe("$12.00/month for Basic, billed to Globex.");
     click('[data-testid="new-bot-create-submit"]');
     await settle(10);
     expect(oncreatenewbot).toHaveBeenCalledWith("cmp_globex", expect.objectContaining({ name: "Nova" }));
@@ -1561,7 +1562,7 @@ describe("ChatSidebar New Bot takeover: the company in view decides (review G-1)
     expect(q('[data-testid="new-bot-takeover-local"]')?.textContent?.trim()).toBe("Create a local bot instead");
     await nameTakeoverBot("Nova");
     expect(q('[data-testid="new-bot-company-grid"]')).toBeNull();
-    expect(q('[data-testid="new-bot-target-company"]')).toBeNull();
+    expect(targetLine()).toBe("$12.00/month for Basic.");
     click('[data-testid="new-bot-create-submit"]');
     await settle(10);
     expect(oncreatenewbot).toHaveBeenCalledWith("cmp_indigo", expect.objectContaining({ name: "Nova" }));
