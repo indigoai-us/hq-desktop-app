@@ -10,6 +10,7 @@
   import { botKindFor } from "./bot-kind.js";
   import AvatarPickerSlot from "./AvatarPickerSlot.svelte";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import { renderMarkdown } from "../common/markdown.js";
   import type { SelfIdentity } from "../identity/self.js";
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
@@ -28,6 +29,7 @@
     routineActionRequest,
     routineBodyFromDraft,
     seedHeader,
+    skillTextFromResult,
     unavailableMessage,
     usageFromCompanyTelemetry,
     type AgentDetailHeader,
@@ -38,6 +40,7 @@
     type LoadState,
     type RoutineActionId,
     type RoutineDraft,
+    type SkillTextState,
   } from "./agent-detail-model.js";
   import "./tokens.css";
   import "./chat-tokens.css";
@@ -95,6 +98,9 @@
   let routineBusy = $state(false);
   let routineError = $state<string | null>(null);
   let appsExpanded = $state(false);
+  let openSkill = $state<string | null>(null);
+  let skillText = $state<SkillTextState>({ status: "loading" });
+  let skillRequest = 0;
   let jobsState = $state<LoadState<AgentJobRow[]>>({ status: "loading" });
   let usageState = $state<LoadState<AgentUsageView>>({ status: "loading" });
   let expandedJobId = $state<string | null>(null);
@@ -139,6 +145,8 @@
     routineEditId = null;
     routineError = null;
     appsExpanded = false;
+    openSkill = null;
+    skillRequest += 1;
     expandedJobId = null;
     saveError = null;
     actionError = null;
@@ -395,6 +403,25 @@
     return true;
   }
 
+  async function toggleSkill(name: string): Promise<void> {
+    if (openSkill === name) {
+      openSkill = null;
+      skillRequest += 1;
+      return;
+    }
+    const request = ++skillRequest;
+    openSkill = name;
+    skillText = { status: "loading" };
+    const getSkill = adapter.agents?.getSkill;
+    if (!getSkill) {
+      skillText = skillTextFromResult({ ok: false, status: 404 }, name);
+      return;
+    }
+    const result = await getSkill(agentUid, name);
+    if (request !== skillRequest) return;
+    skillText = skillTextFromResult(result, name);
+  }
+
   async function setRoutineEnabled(
     row: AgentRoutineRow,
     enabled: boolean,
@@ -568,7 +595,7 @@
         <h3 class="ad-kicker">Apps</h3>
         {#if !view.hasBox}
           <p class="ad-muted">Apps are not available right now.</p>
-        {:else if !view.apps.probed && view.apps.ready.length === 0 && view.apps.attention.length === 0}
+        {:else if !view.apps.probed && view.apps.ready.length === 0 && view.apps.connectable.length === 0}
           <p class="ad-muted">Apps have not been checked yet.</p>
         {:else}
           {#if view.apps.featured.length > 0}
@@ -592,6 +619,7 @@
               {#each view.apps.ready as app (app.provider + app.name)}
                 <li data-testid="agent-detail-app-ready-row">
                   <span class="ad-row-title">{app.name}</span>
+                  <span class="ad-row-meta">Connected</span>
                   {#if app.tools != null}
                     <span class="ad-row-meta">{app.tools} tools</span>
                   {/if}
@@ -599,13 +627,13 @@
               {/each}
             </ul>
           {/if}
-          {#if view.apps.attention.length > 0}
-            <h4 class="ad-sub">Needs attention ({view.apps.attention.length})</h4>
-            <ul class="ad-rows" data-testid="agent-detail-apps-attention">
-              {#each view.apps.attention as app (app.provider + app.name)}
-                <li>
+          {#if view.apps.connectable.length > 0}
+            <h4 class="ad-sub">Available to connect</h4>
+            <ul class="ad-rows" data-testid="agent-detail-apps-connectable">
+              {#each view.apps.connectable as app (app.provider)}
+                <li data-testid="agent-detail-app-connect-row">
                   <span class="ad-row-title">{app.name}</span>
-                  <span class="ad-row-meta">{app.fix ?? app.reason}</span>
+                  <button type="button" class="ad-text-btn">Connect</button>
                 </li>
               {/each}
             </ul>
@@ -638,6 +666,9 @@
                       expandedJobId === routine.id ? null : routine.id)}
                 >
                   <span class="ad-job-title">{routine.name}</span>
+                  {#if routine.source === "hq"}
+                    <span class="ad-note" data-testid="agent-detail-routine-source">HQ</span>
+                  {/if}
                   <span class="ad-job-cadence">{routine.schedule}</span>
                   <span class="ad-job-meta">
                     {#if routine.lastRan}
@@ -657,6 +688,7 @@
                 >
                   {routine.enabled ? "ACTIVE" : "PAUSED"}
                 </span>
+                {#if routine.editable}
                 <div class="ad-row-actions">
                   <button
                     type="button"
@@ -697,6 +729,7 @@
                     Delete
                   </button>
                 </div>
+                {/if}
                 {#if expandedJobId === routine.id}
                   <pre class="ad-prompt">{routine.prompt || "No instructions."}</pre>
                 {/if}
@@ -897,11 +930,39 @@
         {/if}
         {#if view.skills.length > 0}
           <h4 class="ad-sub">Skills</h4>
-          <div class="ad-chips" data-testid="agent-detail-skills">
-            {#each view.skills as skill (skill)}
-              <span>{skill}</span>
+          <ul class="ad-rows" data-testid="agent-detail-skills">
+            {#each view.skills as skill (skill.name)}
+              <li data-testid="agent-detail-skill-row">
+                <button
+                  type="button"
+                  class="ad-job-toggle"
+                  aria-expanded={openSkill === skill.name}
+                  data-testid="agent-detail-skill-toggle"
+                  onclick={() => void toggleSkill(skill.name)}
+                >
+                  <span class="ad-row-title">{skill.name}</span>
+                  {#if skill.summary}
+                    <span class="ad-row-meta">{skill.summary}</span>
+                  {/if}
+                </button>
+                {#if openSkill === skill.name}
+                  <div class="ad-skill-text" data-testid="agent-detail-skill-text">
+                    {#if skillText.status === "loading"}
+                      <p class="ad-muted">Loading...</p>
+                    {:else if skillText.status === "ready"}
+                      {#if skillText.body.trim()}
+                        <div class="ad-markdown">{@html renderMarkdown(skillText.body)}</div>
+                      {:else}
+                        <p class="ad-muted">This skill has no text.</p>
+                      {/if}
+                    {:else}
+                      <p class="ad-muted" data-testid="agent-detail-skill-error">{skillText.message}</p>
+                    {/if}
+                  </div>
+                {/if}
+              </li>
             {/each}
-          </div>
+          </ul>
         {/if}
       </section>
     {:else}
@@ -1422,6 +1483,14 @@
     letter-spacing: 0.08em;
   }
 
+  .ad-skill-text {
+    padding: 6px 0 8px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .ad-markdown :global(p) {
+    margin: 0 0 6px;
+  }
   .ad-prompt {
     grid-column: 1 / -1;
     margin: 4px 0 0;

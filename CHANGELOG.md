@@ -10,14 +10,17 @@ The release moves it under the version it ships in.
 
 - The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
 
+## [0.10.405] - 2026-10-08
+
+- In a bot's detail panel, each skill now shows a one-line summary, and clicking a skill opens its full text. If the bot is offline, the panel says "The bot is offline, try again later".
+- Routines that HQ manages are tagged "HQ" and have no pause, run, edit or delete buttons. Apps show only connected apps as connected, and other featured apps get a Connect button that does not do anything yet.
+
 ## [0.10.404] - 2026-10-08
 
 - When HQ Anywhere is on, the desktop app installs HQ context for Claude Code and Codex runtimes found on the computer. Turning it off removes that setup; sign-in restores it when the saved setting is enabled.
 
 ### Fixed
 
-- The idle sync monitor samples the watcher process group directly on macOS instead of launching `ps` and parsing the system process list. Unchanged sync progress and last-pass files are no longer reparsed every second, and the tray command reader skips unchanged files between 250 ms checks.
-- The macOS menu-bar helper checks its badge and upload-status snapshots every two seconds while idle, while still applying published changes on its next check.
 - HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
 
 ## [0.10.403] - 2026-10-08

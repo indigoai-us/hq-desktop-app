@@ -1192,6 +1192,8 @@ export function createSyncPlatformAdapter(
       pauseJob: (agentUid, jobId) =>
         hqProJson('POST', AGENT_PATHS.pauseJob(agentUid, jobId)),
       getProfile: (agentUid) => hqProJson('GET', AGENT_PATHS.profile(agentUid)),
+      getSkill: (agentUid, name) =>
+        hqProJson('GET', AGENT_PATHS.skill(agentUid, name)),
       runtimeAction: (agentUid, input) =>
         hqProJson('POST', AGENT_PATHS.runtimeActions(agentUid), input),
       updateProfile: (agentUid, patch) =>

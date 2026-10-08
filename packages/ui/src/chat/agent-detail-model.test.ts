@@ -21,6 +21,7 @@ import {
   routineActionRequest,
   routineBodyFromDraft,
   usageFromCompanyTelemetry,
+  skillTextFromResult,
 } from "./agent-detail-model.js";
 
 const NOW = new Date("2026-09-01T15:00:00.000Z");
@@ -342,7 +343,58 @@ describe("profileFromPayload", () => {
       { value: "platform:C1", label: "slack · hq-gtm" },
     ]);
     expect(view?.persona.instructions).toBe("You are Izzy.");
-    expect(view?.skills).toEqual(["email-triage"]);
+    expect(view?.skills).toEqual([
+      { name: "email-triage", summary: null, enabled: true, provenance: null },
+    ]);
+    expect(view?.routines.every((r) => r.source === "box" && r.editable)).toBe(true);
+    expect(view?.apps.connectable).toEqual([]);
+  });
+
+  it("decodes skill summaries, routine source and editable, and connectable apps", () => {
+    const body = {
+      ...PROFILE_FIXTURE,
+      box: {
+        ...PROFILE_FIXTURE.box,
+        skills: [
+          { name: "email-triage", summary: "Sorts the inbox", enabled: false, provenance: "hq" },
+        ],
+        routines: [
+          {
+            id: "h1",
+            name: "HQ sync",
+            schedule: { cadence: "daily", expr: "0 9 * * *" },
+            source: "hq",
+            editable: false,
+          },
+        ],
+        integrations: {
+          probedAt: "2026-10-07T11:38:10Z",
+          featured: ["notion", "linear"],
+          ready: [{ provider: "notion", name: "Notion", tools: 3 }],
+          attention: [],
+        },
+      },
+    };
+    const view = profileFromPayload(body, seed, NOW);
+    expect(view?.skills).toEqual([
+      { name: "email-triage", summary: "Sorts the inbox", enabled: false, provenance: "hq" },
+    ]);
+    expect(view?.routines[0]).toMatchObject({ source: "hq", editable: false });
+    expect(view?.apps.connectable).toEqual([{ provider: "linear", name: "Linear" }]);
+  });
+
+  it("maps skill text results to the offline, not found and error states", () => {
+    expect(skillTextFromResult({ ok: true, value: { name: "a", body: "# A" } }, "a")).toEqual({
+      status: "ready",
+      name: "a",
+      body: "# A",
+    });
+    expect(skillTextFromResult({ ok: false, code: "http-503" }, "a")).toEqual({
+      status: "offline",
+      message: "The bot is offline, try again later",
+    });
+    expect(skillTextFromResult({ ok: false, status: 404 }, "a").status).toBe("not-found");
+    expect(skillTextFromResult({ ok: false, code: "http-500" }, "a").status).toBe("error");
   });
 
   it("returns null for a body that is not a profile so the panel falls back", () => {
