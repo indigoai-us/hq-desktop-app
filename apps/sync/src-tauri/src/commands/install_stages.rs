@@ -566,6 +566,14 @@ fn read_global_git_config(
     Ok((!value.is_empty()).then_some(value))
 }
 
+fn git_would_prompt_for_tools(git: &str) -> bool {
+    crate::commands::command_line_tools::git_would_prompt(
+        &crate::commands::command_line_tools::RealShell,
+        cfg!(target_os = "macos"),
+        git,
+    )
+}
+
 fn git_init_path(
     path: &Path,
     name: Option<&str>,
@@ -637,6 +645,15 @@ pub fn git_init(
                 error_category: OnboardingErrorCategory::Unknown,
             })?;
         let git = paths::resolve_bin("git");
+        // Never run the macOS git shim without Apple's developer tools: it pops
+        // Apple's install dialog and blocks. The wizard installs the tools
+        // first; this is the backstop for any caller that skipped that.
+        if git_would_prompt_for_tools(&git) {
+            return Err(StageCommandFailure {
+                message: "Apple's developer tools are not installed yet".to_string(),
+                error_category: OnboardingErrorCategory::NotFound,
+            });
+        }
         let path_env = paths::child_path();
         let explicit_name = normalize_optional_git_config(name);
         let explicit_email = normalize_optional_git_config(email);
@@ -671,6 +688,9 @@ pub fn git_init(
 #[tauri::command]
 pub fn git_probe_user() -> Result<Option<GitUser>, String> {
     let git = paths::resolve_bin("git");
+    if git_would_prompt_for_tools(&git) {
+        return Ok(None);
+    }
     let path_env = paths::child_path();
     let name = read_global_git_config(&git, &path_env, "user.name").map_err(|e| e.message)?;
     let email = read_global_git_config(&git, &path_env, "user.email").map_err(|e| e.message)?;
