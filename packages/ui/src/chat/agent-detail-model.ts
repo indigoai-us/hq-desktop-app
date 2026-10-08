@@ -694,12 +694,28 @@ export interface AgentAppAttention {
   fix: string | null;
 }
 
+export interface AgentAppConnectable {
+  provider: string;
+  name: string;
+}
+
 export interface AgentAppsView {
   probed: boolean;
   featured: AgentAppReady[];
   ready: AgentAppReady[];
   attention: AgentAppAttention[];
+  /** Featured providers that are not ready yet; shown with a Connect button. */
+  connectable: AgentAppConnectable[];
 }
+
+export interface AgentSkillRow {
+  name: string;
+  summary: string | null;
+  enabled: boolean;
+  provenance: string | null;
+}
+
+export type RoutineSource = "box" | "hq";
 
 export type RoutineCadence = "daily" | "weekly" | "interval" | "once" | "custom";
 
@@ -732,6 +748,8 @@ export interface AgentRoutineRow {
   lastStatus: string | null;
   deliverTo: string | null;
   skills: string[];
+  source: RoutineSource;
+  editable: boolean;
 }
 
 export interface AgentRoutineGroup {
@@ -768,7 +786,7 @@ export interface AgentProfileView {
   routines: AgentRoutineRow[];
   deliverOptions: AgentDeliverOption[];
   persona: { instructions: string; customized: boolean };
-  skills: string[];
+  skills: AgentSkillRow[];
 }
 
 function ownerNameFrom(owner: unknown): string | null {
@@ -822,6 +840,8 @@ export function routinesFromBox(
       skills: Array.isArray(item.skills)
         ? item.skills.map((s) => str(s)).filter(Boolean)
         : [],
+      source: str(item.source) === "hq" ? "hq" : "box",
+      editable: item.editable !== false,
     });
   }
   return rows;
@@ -848,11 +868,10 @@ export function groupRoutines(rows: AgentRoutineRow[]): AgentRoutineGroup[] {
 
 export function appsFromBox(value: unknown): AgentAppsView {
   const rec = isRecord(value) ? value : {};
-  const featuredSlugs = new Set(
-    (Array.isArray(rec.featured) ? rec.featured : [])
-      .map((s) => str(s).toLowerCase())
-      .filter(Boolean),
-  );
+  const featuredList = (Array.isArray(rec.featured) ? rec.featured : [])
+    .map((s) => (isRecord(s) ? { slug: str(s.provider), name: str(s.name) } : { slug: str(s), name: "" }))
+    .filter((s) => s.slug);
+  const featuredSlugs = new Set(featuredList.map((s) => s.slug.toLowerCase()));
   const ready: AgentAppReady[] = listOf(rec.ready)
     .map((row) => {
       const provider = str(row.provider);
@@ -875,11 +894,19 @@ export function appsFromBox(value: unknown): AgentAppsView {
       };
     })
     .filter((row) => row.provider || row.name);
+  const readySlugs = new Set(ready.map((r) => r.provider.toLowerCase()));
+  const connectable = featuredList
+    .filter((f) => !readySlugs.has(f.slug.toLowerCase()))
+    .map((f) => ({
+      provider: f.slug,
+      name: f.name || f.slug.charAt(0).toUpperCase() + f.slug.slice(1),
+    }));
   return {
     probed: str(rec.probedAt) !== "",
     featured: ready.filter((r) => r.featured),
     ready,
     attention,
+    connectable,
   };
 }
 
@@ -985,8 +1012,47 @@ export function profileFromPayload(
       customized: persona.customized === true,
     },
     skills: listOf(box?.skills)
-      .map((row) => str(row.name))
-      .filter(Boolean),
+      .map((row) => ({
+        name: str(row.name),
+        summary: str(row.summary) || null,
+        enabled: row.enabled !== false,
+        provenance: str(row.provenance) || null,
+      }))
+      .filter((row) => row.name),
+  };
+}
+
+export type SkillTextState =
+  | { status: "loading" }
+  | { status: "ready"; name: string; body: string }
+  | { status: "offline"; message: string }
+  | { status: "not-found"; message: string }
+  | { status: "error"; message: string };
+
+export const SKILL_OFFLINE_MESSAGE = "The bot is offline, try again later";
+export const SKILL_NOT_FOUND_MESSAGE = "This skill was not found on the bot.";
+
+export function skillTextFromResult(
+  result:
+    | { ok: true; value: unknown }
+    | { ok: false; code?: string; message?: string; status?: number },
+  name: string,
+): SkillTextState {
+  if (result.ok) {
+    const rec = isRecord(result.value) ? result.value : {};
+    const body = typeof rec.body === "string" ? rec.body : "";
+    return { status: "ready", name: str(rec.name) || name, body };
+  }
+  const code = (result.code ?? "").toLowerCase();
+  if (result.status === 503 || code.includes("503")) {
+    return { status: "offline", message: SKILL_OFFLINE_MESSAGE };
+  }
+  if (result.status === 404 || code.includes("404")) {
+    return { status: "not-found", message: SKILL_NOT_FOUND_MESSAGE };
+  }
+  return {
+    status: "error",
+    message: "Could not load this skill. Try again.",
   };
 }
 
