@@ -25,6 +25,7 @@ export { default as AgencyChatPanel } from "./chat/AgencyChatPanel.svelte";
 // — composed as a fixture-driven, ZERO-NETWORK ChannelConversation).
 export * from "./chat/messaging/index.js";
 export * from "./chat/chat-api.js";
+export * from "./chat/retired-entities.js";
 export * from "./chat/card-action.js";
 export * from "./chat/mesh-wakes.js";
 export * from "./chat/live-directory.js";

@@ -190,13 +190,25 @@
       //
       // This is STRICTLY best-effort: it runs only after the install already
       // succeeded, with the scope the user installed with, and a metrics failure
-      // must NEVER fail or block the install — so it's fire-and-forget and we
-      // swallow any error (`.catch(() => {})`). We do NOT await it.
+      // must NEVER fail or block the install — so it's fire-and-forget and the
+      // failure is logged without listing or scope details. We do NOT await it.
       void recordMarketplaceInstall(
         adapter.marketplace,
         selected.id,
         target.scope,
-      );
+      )
+        .then((result) => {
+          if (!result.ok) {
+            logInstallMetricsFailure(result.code ?? "AdapterFailure");
+          }
+        })
+        .catch((error: unknown) => {
+          const name =
+            error instanceof Error && /^[A-Za-z][A-Za-z0-9_.]*$/.test(error.name)
+              ? error.name
+              : "UnknownError";
+          logInstallMetricsFailure(name);
+        });
     } else {
       if (installRes.reason !== "unavailable") {
         console.warn("[marketplace] install failed", installRes.message);
@@ -282,6 +294,13 @@
   function resetInstallState(): void {
     installLog = [];
     installResult = null;
+  }
+
+  function logInstallMetricsFailure(name: string): void {
+    console.warn("[hq-ui-marketplace] install metrics failed", {
+      name: /^[A-Za-z0-9_.-]{1,80}$/.test(name) ? name : "AdapterFailure",
+      message: "Marketplace install metrics request failed",
+    });
   }
 
   function select(listing: MarketplaceListing): void {

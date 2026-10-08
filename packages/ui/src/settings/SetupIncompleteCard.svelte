@@ -231,7 +231,8 @@
       await navigator.clipboard.writeText(SETUP_PROMPT);
       promptCopied = true;
       setTimeout(() => (promptCopied = false), 1800);
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/settings/SetupIncompleteCard.svelte:233", error);
       // Clipboard unavailable — nothing useful to surface.
     }
   }

@@ -124,10 +124,10 @@
         <h1>Recovery</h1>
         <p class="version" id="version">Version …</p>
       </div>
-      <p>
-        The desktop window did not finish loading. You can install an update
-        (including a server-directed rollback), reinstall the current latest
-        release, or clear local UI state. Sync data is kept.
+      <p id="intro">
+        Use these tools if HQ is not working properly. You can install an
+        update, reinstall the current latest release, or clear local UI state.
+        Sync data is kept.
       </p>
       <p class="status" id="status" role="status"></p>
       <div class="actions">
@@ -154,6 +154,7 @@
       }
 
       const versionEl = document.getElementById("version");
+      const introEl = document.getElementById("intro");
       const statusEl = document.getElementById("status");
       const primaryEl = document.getElementById("primary");
       const buttons = [...document.querySelectorAll("button")];
@@ -167,19 +168,75 @@
         for (const button of buttons) button.disabled = on;
       }
 
+      // Semver precedence: numeric core, then a release outranks its own
+      // prereleases, then dot-separated prerelease identifiers. Returns null
+      // when either side is not a version, so nothing is called a rollback
+      // on a guess.
+      function parseVersion(raw) {
+        const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(
+          String(raw || "").trim(),
+        );
+        if (!match) return null;
+        return {
+          core: [Number(match[1]), Number(match[2]), Number(match[3])],
+          pre: match[4] ? match[4].split(".") : [],
+        };
+      }
+
+      function compareVersions(a, b) {
+        const left = parseVersion(a);
+        const right = parseVersion(b);
+        if (!left || !right) return null;
+        for (let i = 0; i < 3; i++) {
+          if (left.core[i] !== right.core[i]) return left.core[i] < right.core[i] ? -1 : 1;
+        }
+        if (!left.pre.length || !right.pre.length) {
+          return left.pre.length === right.pre.length ? 0 : left.pre.length ? -1 : 1;
+        }
+        const len = Math.max(left.pre.length, right.pre.length);
+        for (let i = 0; i < len; i++) {
+          const x = left.pre[i];
+          const y = right.pre[i];
+          if (x === undefined) return -1;
+          if (y === undefined) return 1;
+          if (x === y) continue;
+          const xNum = /^\d+$/.test(x);
+          const yNum = /^\d+$/.test(y);
+          if (xNum && yNum) return Number(x) < Number(y) ? -1 : 1;
+          if (xNum !== yNum) return xNum ? -1 : 1;
+          return x < y ? -1 : 1;
+        }
+        return 0;
+      }
+
+      // Only a target older than the running build is a rollback.
+      function isRollback(target) {
+        return compareVersions(target, state.version) === -1;
+      }
+
       function showPending(info) {
         if (!info || !info.version) {
           primaryEl.hidden = true;
           return;
         }
         primaryEl.hidden = false;
-        const rollback =
-          info.rollback === true ||
-          (state.version && info.version !== state.version);
+        const rollback = isRollback(info.version);
         primaryEl.textContent = rollback
           ? "Install HQ v" + info.version + " (rollback)"
           : "Install HQ v" + info.version;
         primaryEl.dataset.version = info.version;
+      }
+
+      const INTRO_BY_TRIGGER = {
+        "watchdog-timeout":
+          "The desktop window did not finish loading. You can install an update, reinstall the current latest release, or clear local UI state. Sync data is kept.",
+        "webview-crash":
+          "The desktop view stopped unexpectedly. You can install an update, reinstall the current latest release, or clear local UI state. Sync data is kept.",
+        "safe-mode":
+          "HQ started in safe mode. You can install an update, reinstall the current latest release, or clear local UI state. Sync data is kept.",
+      };
+      if (Object.prototype.hasOwnProperty.call(INTRO_BY_TRIGGER, state.trigger)) {
+        introEl.textContent = INTRO_BY_TRIGGER[state.trigger];
       }
 
       versionEl.textContent = "Currently running v" + (state.version || "unknown");

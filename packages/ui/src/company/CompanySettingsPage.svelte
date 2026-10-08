@@ -6,10 +6,8 @@
    * Cached snapshot paints on the first frame. Upgrade opens Stripe checkout.
    * Manage payment opens the Stripe portal. Delete group asks first.
    */
-  import ConfirmDialog from "../common/ConfirmDialog.svelte";
   import {
     GRANT_FILTERS,
-    deleteGroup,
     emptySnapshot,
     expiringGrantCount,
     filterGrants,
@@ -23,11 +21,28 @@
     type SettingsSnapshot,
     type SettingsTab,
   } from "./company-settings.js";
-  import type { CompanyApi, MessagingApi } from "@hq/platform";
+  import type { CompanyApi, FilesApi, MessagingApi } from "@hq/platform";
+  import ReadLoader from "../common/ReadLoader.svelte";
+  import ShowMoreRow from "../shell/ShowMoreRow.svelte";
+  import { pageRows } from "../shell/list-paging.js";
+  import {
+    DEFAULT_TOP_FOLDERS,
+    WHOLE_COMPANY,
+    cacheGrants,
+    cacheGroups,
+    cachedGrants,
+    cachedGroups,
+    grantSections,
+    groupGrantSummaries,
+    groupsFromBody,
+    readCompanyGrants,
+    topFoldersFromListing,
+    type FolderRead,
+  } from "./company-access.js";
+  import type { CompanyGroup, PathGrant } from "./company-settings.js";
   import { readCompanyTeam, readTeamCache, seatCounts, writeTeamCache } from "./team-bots-pages.js";
   import type { TeamMember } from "./team-telemetry.js";
-  import { resolvePerson } from "../common/people/people.js";
-  import { loadPeople, peopleFor } from "../common/people/people-roster.svelte.js";
+  import { loadPeople } from "../common/people/people-roster.svelte.js";
   import "../home/tokens.css";
   import "../chat/chat-tokens.css";
 
@@ -45,9 +60,11 @@
     section?: "general" | "brand" | "groups" | "grants" | "billing";
     /** OWNER-R24: the caller's role; only an Owner edits General and Brand. */
     role?: string | null;
+    /** Vault reads for the live Groups and Grants panes. */
+    files?: FilesApi | null;
   }
 
-  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null }: Props = $props();
+  let { slug, companyLabel, openExternal, companyUid = null, company = null, messaging = null, seatLimit = true, section = "general", role = null, files = null }: Props = $props();
 
   // OWNER-R24: one pane per panel row; Billing carries the plan (seats and
   // hosted agents, formerly "HQ Workforce") at its top.
@@ -55,11 +72,8 @@
   const showPlan = $derived(section === "billing");
   const canEdit = $derived(role === "Owner");
   let saved = $state("");
-  const people = $derived(peopleFor(slug));
-  const personName = (value: string): string => resolvePerson(people.index, value, { loading: people.loading }).name;
   let grantFilter = $state<GrantFilter>("all");
   let selectedGroup = $state<string | null>(null);
-  let deleteId = $state<string | null>(null);
   let snap = $state<SettingsSnapshot>(emptySnapshot("", ""));
   const dirty = $derived(saved !== "" && JSON.stringify({ g: snap.general, b: snap.brand }) !== saved);
 
@@ -120,12 +134,119 @@
 
   const hostedAgentCount = $derived(snap.agents.length || rosterAgents.length);
 
+  // Live Groups and Grants. Sync does not feed these panes: they read hq-pro
+  // when opened, paint the last good read first, and show loading and failed
+  // states instead of a silent zero.
+  type ReadState = "unavailable" | "loading" | "ready" | "failed";
+  const accessPane = $derived(tab === "groups" || tab === "grants");
+  const canRead = $derived(Boolean(companyUid && files?.listAccessGroups && files?.getAccessTree));
+  let liveGroups = $state<CompanyGroup[]>([]);
+  let groupsState = $state<ReadState>("loading");
+  let liveGrants = $state<PathGrant[]>([]);
+  let grantFolders = $state<FolderRead[]>([]);
+  let grantsState = $state<ReadState>("loading");
+  let grantsProgress = $state<{ done: number; total: number } | null>(null);
+  let accessNonce = $state(0);
+  let openFolder = $state<string | null>(null);
+
+  async function topFolders(): Promise<string[]> {
+    if (!files || !slug) return [...DEFAULT_TOP_FOLDERS];
+    try {
+      const res = await files.listDir(`companies/${slug}`);
+      const names = res.ok ? topFoldersFromListing(res.value) : [];
+      if (!res.ok) console.warn("[settings] company folder listing failed; using default folders", res.code);
+      return names.length ? names : [...DEFAULT_TOP_FOLDERS];
+    } catch (err) {
+      console.warn("[settings] company folder listing threw; using default folders", err);
+      return [...DEFAULT_TOP_FOLDERS];
+    }
+  }
+
   $effect(() => {
-    if (!selectedGroup && snap.groups[0]) selectedGroup = snap.groups[0].id;
+    void accessNonce;
+    if (!accessPane) return;
+    const uid = companyUid;
+    const api = files;
+    if (!uid || !api?.listAccessGroups || !api.getAccessTree) {
+      groupsState = "unavailable";
+      grantsState = "unavailable";
+      return;
+    }
+    const readGroups = api.listAccessGroups.bind(api);
+    const readTree = api.getAccessTree.bind(api);
+    let cancelled = false;
+    const hitGroups = cachedGroups(uid);
+    const hitGrants = cachedGrants(uid);
+    liveGroups = hitGroups ?? [];
+    groupsState = hitGroups ? "ready" : "loading";
+    liveGrants = hitGrants?.grants ?? [];
+    grantFolders = hitGrants?.folders ?? [];
+    grantsState = hitGrants ? "ready" : "loading";
+    grantsProgress = null;
+
+    void (async () => {
+      let names = new Map<string, string>();
+      try {
+        const res = await readGroups(uid);
+        if (cancelled) return;
+        if (!res.ok) throw new Error(res.code ?? res.message ?? "groups read failed");
+        const groups = groupsFromBody(res.value);
+        cacheGroups(uid, groups);
+        liveGroups = groups;
+        groupsState = "ready";
+        names = new Map(groups.map((g) => [g.id, g.name]));
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("[settings] groups read failed", err);
+        if (!hitGroups) groupsState = "failed";
+        names = new Map((hitGroups ?? []).map((g) => [g.id, g.name]));
+      }
+      try {
+        const folders = await topFolders();
+        if (cancelled) return;
+        const read = await readCompanyGrants({
+          readTree,
+          companyUid: uid,
+          folders,
+          ctx: { groupNames: names },
+          onProgress: (done, total) => {
+            if (!cancelled) grantsProgress = { done, total };
+          },
+        });
+        if (cancelled) return;
+        const allFailed = read.folders.length > 0 && read.folders.every((f) => f.status === "failed");
+        if (allFailed) {
+          if (!hitGrants) grantsState = "failed";
+          return;
+        }
+        cacheGrants(uid, read);
+        liveGrants = read.grants;
+        grantFolders = read.folders;
+        grantsState = "ready";
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("[settings] grants read failed", err);
+        if (!hitGrants) grantsState = "failed";
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   });
 
-  const visibleGrants = $derived(filterGrants(snap.grants, grantFilter));
-  const group = $derived(snap.groups.find((g) => g.id === selectedGroup) ?? snap.groups[0] ?? null);
+  $effect(() => {
+    if (!liveGroups.some((g) => g.id === selectedGroup)) selectedGroup = liveGroups[0]?.id ?? null;
+  });
+
+  const visibleGrants = $derived(filterGrants(liveGrants, grantFilter));
+  const sections = $derived(grantSections(visibleGrants));
+  const groupSummaries = $derived(groupGrantSummaries(liveGrants));
+  const unreadFolders = $derived(grantFolders.filter((f) => f.status !== "ok"));
+  const group = $derived(liveGroups.find((g) => g.id === selectedGroup) ?? liveGroups[0] ?? null);
+  let rowPages = $state(1);
+  const openRows = $derived(pageRows(sections.find((s) => s.folder === openFolder)?.grants ?? [], rowPages));
+  const folderLabel = (folder: string): string => (folder === WHOLE_COMPANY ? "Whole company" : `${folder}/`);
+  const n = (value: number): string => value.toLocaleString();
 
   function remember(): void {
     writeSettingsCache(slug, snap);
@@ -139,14 +260,6 @@
   function openStripe(action: "upgrade" | "portal"): void {
     const url = stripeDestination(action);
     openExternal?.(url);
-  }
-
-  function confirmDelete(): void {
-    if (!deleteId) return;
-    snap = { ...snap, groups: deleteGroup(snap.groups, deleteId, true) };
-    if (selectedGroup === deleteId) selectedGroup = snap.groups[0]?.id ?? null;
-    deleteId = null;
-    remember();
   }
 
 </script>
@@ -203,36 +316,56 @@
       <div class="page-head">
         <div>
           <h2>Groups</h2>
-          <p class="sub">{snap.groups.length} groups · share file and secret access with people and agents</p>
+          <p class="sub" data-testid="groups-sub">{groupsState === "ready" ? `${n(liveGroups.length)} groups · ` : ""}share file and secret access with people and agents</p>
         </div>
       </div>
-      {#if snap.groups.length === 0}
-        <p class="note" data-testid="groups-empty">No groups yet. Groups from the company vault appear here after the next sync.</p>
+      {#if groupsState === "loading"}
+        <ReadLoader testid="groups-loading" onretry={() => (accessNonce += 1)} />
+      {:else if groupsState === "failed"}
+        <p class="note" data-testid="groups-failed">Could not read this company's groups.</p>
+        <RailButton icon="refresh" type="button" data-testid="groups-retry" onclick={() => (accessNonce += 1)}>Try again</RailButton>
+      {:else if groupsState === "unavailable"}
+        <p class="note" data-testid="groups-unavailable">Groups are read from the company vault. This company is not in the cloud on this device.</p>
+      {:else if liveGroups.length === 0}
+        <p class="note" data-testid="groups-empty">This company has no groups yet.</p>
       {:else}
         <div class="split">
-          <div class="list">
-            {#each snap.groups as g (g.id)}
-              <button type="button" class="row" aria-current={group?.id === g.id ? "true" : undefined} onclick={() => (selectedGroup = g.id)}>
-                <span class="t">{g.name}</span><span class="count">{g.members.length}</span>
+          <div class="list" data-testid="groups-list">
+            {#each liveGroups as g (g.id)}
+              <button type="button" class="row" data-testid="group-row" aria-current={group?.id === g.id ? "true" : undefined} onclick={() => (selectedGroup = g.id)}>
+                <span class="t">{g.name}</span>{#if typeof g.memberCount === "number"}<span class="count">{n(g.memberCount)}</span>{/if}
               </button>
             {/each}
           </div>
           {#if group}
-            <div>
+            {@const summary = groupSummaries.get(group.id) ?? null}
+            <div data-testid="group-detail">
               <div class="page-head">
                 <div>
                   <h2 class="h-sm">{group.name}</h2>
-                  <p class="sub">{group.description}</p>
+                  <p class="sub mono">{group.id}</p>
                 </div>
-                <span class="grow"></span>
-                <RailButton icon="trash" type="button" data-testid="delete-group" onclick={() => (deleteId = group.id)}>Delete group</RailButton>
               </div>
-              {#each group.members as m (m.id)}
-                <div class="line"><span class="nm">{personName(m.name)}</span><span class="c">{m.role}</span><span class="c">{m.added}</span></div>
-              {/each}
-              {#each group.paths as p (p.path)}
-                <div class="line"><span class="mono">{p.path}</span><span class="c">{grantLevelLabel(p.level)}</span></div>
-              {/each}
+              {#if group.description}<p class="note">{group.description}</p>{/if}
+              <div class="line" data-testid="group-members">
+                <span class="nm">Members</span>
+                <span>{typeof group.memberCount === "number" ? `${n(group.memberCount)} people and bots` : "Not included in the group list"}</span>
+              </div>
+              <div class="line" data-testid="group-grants">
+                <span class="nm">Folder grants</span>
+                {#if summary}
+                  <span>{n(summary.total)} · {summary.byLevel.admin ? `${n(summary.byLevel.admin)} admin, ` : ""}{n(summary.byLevel.write)} write, {n(summary.byLevel.read)} read</span>
+                {:else if grantsState === "ready"}
+                  <span>None</span>
+                {:else if grantsState === "loading"}
+                  <span class="c">Reading grants…</span>
+                {:else}
+                  <span class="c">Grants unavailable</span>
+                {/if}
+              </div>
+              {#if summary}
+                <div class="line"><span class="nm">In</span><span class="mono">{summary.folders.map(folderLabel).join(", ")}</span></div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -241,9 +374,25 @@
       <div class="page-head">
         <div>
           <h2>Grants</h2>
-          <p class="sub">{snap.grants.length} active folder grants · {expiringGrantCount(snap.grants)} expire within 7 days</p>
+          <p class="sub" data-testid="grants-sub">
+            {#if grantsState === "ready"}
+              {n(liveGrants.length)} folder grants · {expiringGrantCount(liveGrants)} expire within 7 days
+            {:else if grantsState === "loading" && grantsProgress}
+              Reading grants · {grantsProgress.done} of {grantsProgress.total} folders
+            {:else}
+              Who can open which folders
+            {/if}
+          </p>
         </div>
       </div>
+      {#if grantsState === "loading"}
+        <ReadLoader testid="grants-loading" onretry={() => (accessNonce += 1)} />
+      {:else if grantsState === "failed"}
+        <p class="note" data-testid="grants-failed">Could not read this company's grants.</p>
+        <RailButton icon="refresh" type="button" data-testid="grants-retry" onclick={() => (accessNonce += 1)}>Try again</RailButton>
+      {:else if grantsState === "unavailable"}
+        <p class="note" data-testid="grants-unavailable">Grants are read from the company vault. This company is not in the cloud on this device.</p>
+      {:else}
       <div class="seg" role="tablist" data-testid="grant-filters">
         {#each GRANT_FILTERS as id (id)}
           <button type="button" class="tab" role="tab" aria-selected={grantFilter === id} data-testid={`grant-filter-${id}`} onclick={() => (grantFilter = id)}>
@@ -251,17 +400,56 @@
           </button>
         {/each}
       </div>
-      <div class="gt hd"><span>Principal</span><span>Folder</span><span>Level</span><span>Expiry</span></div>
-      {#each visibleGrants as g (g.id)}
-        <div class="gt" data-testid="grant-row">
-          <span class="nm">{personName(g.principal)}</span>
-          <span class="mono">{g.path}</span>
-          <span>{grantLevelLabel(g.level)}</span>
-          <span class:soon={g.expiring}>{g.expiry}</span>
-        </div>
+      <div class="sec-hd"><span>Folder</span><span>People</span><span>Groups</span><span>Bots</span><span>Guests</span><span>Total</span></div>
+      {#each sections as s (s.folder)}
+        <button
+          type="button"
+          class="sec-row"
+          data-testid="grant-section"
+          data-folder={s.folder}
+          aria-expanded={openFolder === s.folder}
+          onclick={() => {
+            openFolder = openFolder === s.folder ? null : s.folder;
+            rowPages = 1;
+          }}
+        >
+          <span class="mono nm">{folderLabel(s.folder)}</span>
+          <span>{n(s.counts.person)}</span>
+          <span>{n(s.counts.group)}</span>
+          <span>{n(s.counts.agent)}</span>
+          <span>{n(s.counts.guest)}</span>
+          <span class="nm">{n(s.total)}</span>
+        </button>
+        {#if openFolder === s.folder}
+          <div class="rows" data-testid="grant-rows">
+            <div class="gt hd"><span>Who</span><span>Folder</span><span>Level</span><span>Expiry</span></div>
+            {#each openRows.rows as g (g.id)}
+              <div class="gt" data-testid="grant-row">
+                <span class="nm" title={g.detail}>{g.principal}</span>
+                <span class="mono">{g.path}</span>
+                <span>{grantLevelLabel(g.level)}</span>
+                <span class:soon={g.expiring}>{g.expiry}</span>
+              </div>
+            {/each}
+            {#if openRows.remaining > 0}
+              <ShowMoreRow shown={openRows.rows.length} total={openRows.total} next={openRows.next} noun="grants" testid="grant-rows-show-more" onmore={() => (rowPages += 1)} />
+            {/if}
+          </div>
+        {/if}
       {:else}
-        <p class="note">No grants in this filter. Levels are read or write.</p>
+        <p class="note" data-testid="grants-filter-empty">
+          {grantFilter === "expiring" ? "No folder grants have an expiry date." : "No grants in this filter."}
+        </p>
       {/each}
+      {#if unreadFolders.length}
+        <div class="unread" data-testid="grants-unread">
+          {#each unreadFolders as f (f.folder)}
+            <p class="note"><span class="mono">{folderLabel(f.folder)}</span> · {f.note}</p>
+          {/each}
+          <RailButton icon="refresh" type="button" data-testid="grants-retry-folders" onclick={() => (accessNonce += 1)}>Try again</RailButton>
+        </div>
+      {/if}
+      {/if}
     {:else}
       <div class="page-head">
         <div>
@@ -296,16 +484,6 @@
     {/if}
   </div>
 </section>
-
-<ConfirmDialog
-  open={deleteId !== null}
-  title={group && deleteId === group.id ? `Delete the ${group.name} group?` : "Delete this group?"}
-  message="Grants and workers that reference this group lose it. People keep every direct grant on their own name."
-  confirmLabel="Delete"
-  danger
-  onconfirm={confirmDelete}
-  oncancel={() => (deleteId = null)}
-/>
 
 <style>
   /* Segmented controls size to their tabs; nothing stretches or centres them. */
@@ -407,6 +585,26 @@
     color: var(--t2);
   }
   .gt.hd { color: var(--t3); }
+  .sec-hd, .sec-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) repeat(5, 72px);
+    gap: 8px;
+    align-items: center;
+    min-height: 31px;
+    box-sizing: border-box;
+    padding: 7px 8px;
+    line-height: 17px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+    color: var(--t2);
+    font-variant-numeric: tabular-nums;
+  }
+  .sec-hd { color: var(--t3); margin-top: 12px; }
+  .sec-row { width: 100%; font: inherit; font-size: 13px; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .sec-row:hover { background: var(--hover); }
+  .sec-row[aria-expanded="true"] { background: var(--sel); }
+  .rows { padding-left: 12px; }
+  .unread { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
   .nm { color: var(--t1); }
   .soon { color: var(--t3); }
   .plan { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 520px; padding: 14px 16px; border-radius: 10px; background: var(--raised); }

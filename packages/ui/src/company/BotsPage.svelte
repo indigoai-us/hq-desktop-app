@@ -22,7 +22,7 @@
   import { pageRows } from "../shell/list-paging.js";
   import { cloudBotsFromRoster } from "../settings/cloud-bots.js";
   import { localBotsForCompany } from "../chat/local-bots.js";
-  import { BOT_FILTERS, filterBots, metadata, type BotFilter } from "./team-bots-pages.js";
+  import { BOT_FILTERS, filterBots, mergeBotRows, metadata, type BotFilter } from "./team-bots-pages.js";
   import Avatar from "../common/avatar/Avatar.svelte";
   import {
     BOT_COLUMN_GAP,
@@ -86,24 +86,26 @@
     return localBotsForCompany(localBots, companyUid, companies).map((bot) => localTableRow(bot, ownerName));
   }
 
+  // A company bot running on this Mac is in both lists; list it once.
+  const merged = $derived(mergeBotRows(localRows(), cloud));
   const rows = $derived(
-    sortBotRows(filterBots([...localRows(), ...cloud], filter), sortKey, sortDir, { liveFirst: filter === "live" }),
+    sortBotRows(filterBots(merged, filter), sortKey, sortDir, { liveFirst: filter === "live" }),
   );
   // Row padding is 8px a side; before the first measure assume a wide table.
   const columns = $derived(visibleBotColumns(tableWidth > 0 ? tableWidth - 16 : 1200, rows));
   const template = $derived(gridTemplate(columns));
   // QA-106: the company total, so a filter that hides every bot can say so.
-  const totalBots = $derived(localRows().length + cloud.length);
+  const totalBots = $derived(merged.length);
   const filteredOut = $derived(filter !== "all" && rows.length === 0 && totalBots > 0);
   // The sidepane Bots row shows this same total, before the filter (QA-014).
   $effect(() => {
-    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", localRows().length + cloud.length);
+    if (cloudPhase === "ready" && !cloudFailed) publishCompanyPageCount(companyUid, "bots", merged.length);
   });
   const page = $derived(pageRows(rows, pages));
   const current = $derived(
     dismissed ? null : (rows.find((row) => row.uid === selected) ?? rows[0] ?? null),
   );
-  const empty = $derived(cloudPhase === "ready" && !cloudFailed && localRows().length === 0 && cloud.length === 0);
+  const empty = $derived(cloudPhase === "ready" && !cloudFailed && merged.length === 0);
 
   // AUDIT-3-17: a failed cloud read shows the failed-read line and Try again,
   // never "No bots in this company yet."; local rows stay visible.

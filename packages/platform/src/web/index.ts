@@ -253,6 +253,7 @@ export const WEB_PATHS = {
   agentStatus: AGENT_PATHS.status,
   agentJobs: AGENT_PATHS.jobs,
   agentPauseJob: AGENT_PATHS.pauseJob,
+  agentRuntimeActions: AGENT_PATHS.runtimeActions,
   agentStop: AGENT_PATHS.stop,
   agentStart: AGENT_PATHS.start,
   agentRetryProvisioning: AGENT_PATHS.retryProvisioning,
@@ -1099,6 +1100,9 @@ export class WebPlatformAdapter implements PlatformAdapter {
     listJobs: (agentUid) => this.get(WEB_PATHS.agentJobs(agentUid)),
     pauseJob: (agentUid, jobId) =>
       this.post(WEB_PATHS.agentPauseJob(agentUid, jobId)),
+    getProfile: (agentUid) => this.get(WEB_PATHS.agentProfile(agentUid)),
+    runtimeAction: (agentUid, input) =>
+      this.post(WEB_PATHS.agentRuntimeActions(agentUid), input),
     updateProfile: (agentUid, patch) =>
       this.request("PATCH", WEB_PATHS.agentProfile(agentUid), patch),
     stop: (agentUid) => this.post(WEB_PATHS.agentStop(agentUid)),
@@ -1233,8 +1237,12 @@ export class WebPlatformAdapter implements PlatformAdapter {
       this.get(
         `${WEB_PATHS.filesList}?company=${encodeURIComponent(companyUid)}&prefix=${encodeURIComponent(prefix)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       ),
-    getAccessTree: (companyUid, prefix) =>
-      this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?prefix=${encodeURIComponent(prefix)}`),
+    getAccessTree: (companyUid, prefix, page) => {
+      const query = new URLSearchParams({ prefix });
+      if (page) query.set("limit", String(page.limit));
+      if (page?.cursor) query.set("cursor", page.cursor);
+      return this.get(`/files/${encodeURIComponent(companyUid)}/acl/tree?${query.toString()}`);
+    },
     listAccessGroups: (companyUid) => this.get(`/secrets/${encodeURIComponent(companyUid)}/groups`),
     presignVaultGet: (companyUid, key) =>
       this.post(WEB_PATHS.filesPresign, {

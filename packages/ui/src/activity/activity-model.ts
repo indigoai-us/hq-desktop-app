@@ -1,22 +1,13 @@
 /**
  * Activity page model (console-rail US-026).
  *
- * Pure data: ranges, the token day strip, and CSV. The day strip is the
- * only chart and lives in a lazy chunk. Nothing here runs at boot.
+ * Pure data: ranges, the team list order, per-day activity bars, and CSV.
+ * Nothing here runs at boot.
  */
 
-export type ActivityTab = "team" | "tokens" | "live";
 export type ActivityRange = "7d" | "30d" | "90d";
 
 export const ACTIVITY_RANGES: readonly ActivityRange[] = ["7d", "30d", "90d"];
-
-export interface DayBar {
-  iso: string;
-  label: string;
-  heightPct: number;
-  weekend: boolean;
-  today: boolean;
-}
 
 export interface ActivityMember {
   id: string;
@@ -35,6 +26,8 @@ export interface ActivityMember {
   email?: string;
   prs?: number;
   outcomes?: number;
+  /** Role or team label from the read, when it sends one ("Owner", "Fleet agent"). */
+  role?: string;
   /** Per-day tokens, oldest first (hq-pro perMember.trend). */
   trend?: number[];
   tokensByModel?: { model: string; total: number }[];
@@ -42,38 +35,17 @@ export interface ActivityMember {
   services?: { service: string; count: number }[];
 }
 
-export interface LiveSession {
-  id: string;
-  name: string;
-  mark: string;
-  bot: boolean;
-  live: boolean;
-  what: string;
-  project: string;
-  elapsed: string;
-  signal: string;
-}
-
 export interface ActivitySnapshot {
   members: ActivityMember[];
-  live: LiveSession[];
-  pulse: { at: string; name: string; text: string; project: string }[];
-  /** Optional per-day token weights, oldest first, any length. */
-  dayWeights: number[];
-  attributedPct: number | null;
   updatedLabel: string;
 }
 
 export const EMPTY_ACTIVITY: ActivitySnapshot = {
   members: [],
-  live: [],
-  pulse: [],
-  dayWeights: [],
-  attributedPct: null,
   updatedLabel: "",
 };
 
-/** Scroll budget for the team table, token lists, and live table. */
+/** Scroll budget for the team list. */
 export const metadata = {
   performanceBudget: {
     scrollDroppedFramesPct: 0.01,
@@ -87,46 +59,65 @@ export function rangeDays(range: ActivityRange): number {
   return 30;
 }
 
-function isoDay(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+/** How the team list is ordered: most recently active first, or by name. */
+export type ActivitySort = "recent" | "name";
+
+/**
+ * Days since the member's last active day in the range, from the per-day
+ * trend (oldest first, the last entry is today). Null when the trend has no
+ * active day, e.g. a snapshot cached before trends were read.
+ */
+export function lastActiveDaysAgo(trend: readonly number[] | undefined): number | null {
+  if (!trend || trend.length === 0) return null;
+  for (let i = trend.length - 1; i >= 0; i -= 1) {
+    if (trend[i] > 0) return trend.length - 1 - i;
+  }
+  return null;
+}
+
+/** "Live now", "Today", "Yesterday", "3d ago"; null when unknown. */
+export function lastActiveLabel(daysAgo: number | null, live = false): string | null {
+  if (live) return "Live now";
+  if (daysAgo === null) return null;
+  if (daysAgo === 0) return "Today";
+  if (daysAgo === 1) return "Yesterday";
+  return `${daysAgo}d ago`;
 }
 
 /**
- * One bar per day in the range, ending today. Weekends are flagged so the
- * strip can dim them. Heights come from `weights` when present (oldest
- * first, aligned to the window) and otherwise stay a flat placeholder.
+ * Team rows in display order. Recent: live people first, then the most
+ * recently active day, then more sessions, then name. Name: A to Z.
  */
-export function dayBars(
-  range: ActivityRange,
-  weights: readonly number[] = [],
-  now: Date = new Date(),
-): DayBar[] {
-  const count = rangeDays(range);
-  const slice = weights.slice(-count);
-  const peak = slice.reduce((max, n) => Math.max(max, n), 0);
-  const bars: DayBar[] = [];
-  for (let ago = count - 1; ago >= 0; ago -= 1) {
-    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    date.setDate(date.getDate() - ago);
-    const weekend = date.getDay() === 0 || date.getDay() === 6;
-    const weightIndex = slice.length - (ago + 1);
-    const weight = weightIndex >= 0 ? slice[weightIndex] : 0;
-    const heightPct =
-      peak > 0 ? Math.max(4, Math.round((weight / peak) * 100)) : weekend ? 8 : 18;
-    bars.push({
-      iso: isoDay(date),
-      label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-      heightPct,
-      weekend,
-      today: ago === 0,
-    });
-  }
-  return bars;
+export function sortMembers(
+  members: readonly ActivityMember[],
+  sort: ActivitySort,
+  liveIds: ReadonlySet<string> = new Set(),
+): ActivityMember[] {
+  const byName = (a: ActivityMember, b: ActivityMember) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  if (sort === "name") return [...members].sort(byName);
+  const rank = (m: ActivityMember) => lastActiveDaysAgo(m.trend) ?? Number.POSITIVE_INFINITY;
+  return [...members].sort((a, b) => {
+    const live = Number(liveIds.has(b.id)) - Number(liveIds.has(a.id));
+    if (live !== 0) return live;
+    const recent = rank(a) - rank(b);
+    if (recent !== 0 && Number.isFinite(recent)) return recent;
+    if (rank(a) !== rank(b)) return Number.isFinite(rank(a)) ? -1 : 1;
+    return b.sessions - a.sessions || byName(a, b);
+  });
 }
 
+/**
+ * Bar heights (0–100) for the member's activity over the range, one per day,
+ * oldest first. An idle day is 0; any active day is at least 12 so a light
+ * day still shows.
+ */
+export function activityBars(trend: readonly number[] | undefined, days: number): number[] {
+  const slice = (trend ?? []).slice(-days);
+  const padded = [...Array(Math.max(0, days - slice.length)).fill(0), ...slice];
+  const peak = padded.reduce((max, v) => Math.max(max, v), 0);
+  return padded.map((v) => (v > 0 && peak > 0 ? Math.max(12, Math.round((v / peak) * 100)) : 0));
+}
 
 /** Outcomes per 1M tokens, as the web formats it; a dash when unranked. */
 export function formatEfficiency(value: number | null | undefined): string {
@@ -236,10 +227,6 @@ export function readActivityCache(storage: Storage | null, slug: string): Activi
     if (!parsed || !Array.isArray(parsed.members)) return null;
     return {
       members: parsed.members,
-      live: Array.isArray(parsed.live) ? parsed.live : [],
-      pulse: Array.isArray(parsed.pulse) ? parsed.pulse : [],
-      dayWeights: Array.isArray(parsed.dayWeights) ? parsed.dayWeights : [],
-      attributedPct: typeof parsed.attributedPct === "number" ? parsed.attributedPct : null,
       updatedLabel: typeof parsed.updatedLabel === "string" ? parsed.updatedLabel : "",
     };
   } catch {
@@ -321,11 +308,10 @@ function initials(name: string): string {
  * events }, outcomes?: { byType: { storyCompleted, deploySucceeded } } }],
  * coverage: { attributed, unattributed } }`). Tokens add input, output and
  * cache reads and writes, as the web does. Members with no activity in the
- * range are left out. The response has no live-session or pulse feed, so
- * those stay empty. Production sends the flat shape instead: `members` with
+ * range are left out. Production sends the flat shape instead: `members` with
  * top-level `tokensByModel` / `skills` / `services` maps, `events`, and
- * `distinctSessions`, `team.daily` for the day strip, and names in
- * `identities`. Both shapes are read. A body with neither list is a failed read.
+ * `distinctSessions`, and names in `identities`. Both shapes are read. A body
+ * with neither list is a failed read.
  */
 export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
   const root = rec(body);
@@ -367,6 +353,7 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
       outcomesPerMillion: efficiency,
       spendUsd: null,
       email: email && email !== name ? email : "",
+      role: typeof m.role === "string" && m.role.trim() ? m.role.trim() : "",
       prs: num(byType.prMerged),
       outcomes: num(rec(m.outcomes).total),
       trend: Array.isArray(m.trend) ? m.trend.map(num) : [],
@@ -385,20 +372,8 @@ export function activityFromCompanyTelemetry(body: unknown): ActivitySnapshot {
     if (ar && br && a.outcomesPerMillion !== b.outcomesPerMillion) return (b.outcomesPerMillion as number) - (a.outcomesPerMillion as number);
     return b.tokens - a.tokens || a.name.localeCompare(b.name);
   });
-  const dailyRaw = Array.isArray(root.daily) ? root.daily : rec(root.team).daily;
-  const daily = Array.isArray(dailyRaw) ? dailyRaw.map(rec) : [];
-  const dayWeights = daily
-    .filter((d) => typeof d.date === "string")
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)))
-    .map((d) => tokenTotal(d.tokensByModel));
-  const coverage = rec(root.coverage);
-  const covered = num(coverage.attributed) + num(coverage.unattributed);
   return {
     members,
-    live: [],
-    pulse: [],
-    dayWeights: dayWeights.some((w) => w > 0) ? dayWeights : [],
-    attributedPct: covered > 0 ? Math.round((num(coverage.attributed) / covered) * 100) : null,
     updatedLabel: "Company telemetry",
   };
 }

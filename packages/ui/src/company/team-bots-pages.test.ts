@@ -3,6 +3,7 @@ import {
   addInvite,
   emptyInviteDraft,
   filterBots,
+  mergeBotRows,
   inviteRoleFields,
   metadata,
   pauseAllowed,
@@ -73,5 +74,20 @@ describe("US-027 team and bots", () => {
     expect(filterBots(rows, "all")).toHaveLength(0 + 2);
     expect(pauseAllowed(false)).toBe(false);
     expect(pauseAllowed(true)).toBe(true);
+  });
+
+  it("lists a bot once when it is both local and on the cloud roster", () => {
+    const local: BotListRow[] = [
+      { uid: "agt_buddy", name: "buddy", kind: "local", live: true, status: "running", detail: "claude", canPause: true },
+    ];
+    const cloud: BotListRow[] = [
+      { uid: "agt_buddy", name: "Buddy", kind: "cloud", live: false, status: "ready", detail: "Indigo", canPause: false },
+      { uid: "agt_scout", name: "Scout", kind: "cloud", live: false, status: "ready", detail: "Indigo", canPause: true },
+    ];
+    const rows = mergeBotRows(local, cloud);
+    expect(rows.map((r) => r.uid)).toEqual(["agt_buddy", "agt_scout"]);
+    expect(rows[0].kind).toBe("local");
+    expect(rows[0].canPause).toBe(true);
+    expect(mergeBotRows([], [cloud[1], cloud[1]])).toHaveLength(1);
   });
 });

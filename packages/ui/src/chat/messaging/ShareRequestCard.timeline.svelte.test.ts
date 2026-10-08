@@ -110,4 +110,41 @@ describe("US-015 share and request cards in the DM timeline", () => {
     await tick();
     expect(oncardaction.mock.calls[0][0].actionId).toBe("deny");
   });
+
+  it("a card sent by a bot shows the bot's avatar, not a person's initials", async () => {
+    // Regression: the share/request row hard-coded a person mark, so a bot's
+    // access request showed gray "AS" initials under the bot's own avatar.
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(ChannelConversation, {
+      target: host,
+      props: {
+        channelId: "dm:agt_01ASSIST",
+        messages: [
+          {
+            eventId: "evt_bot_req",
+            direction: "in",
+            fromPersonUid: "agt_01ASSIST",
+            fromDisplayName: "assistant",
+            body: "",
+            createdAt: "2026-10-08T09:00:00.000Z",
+            systemEvent: { v: 1, type: "access_request", id: "req_bot", path: "knowledge/", level: "read" },
+          },
+        ] as ConversationMessageWire[],
+      },
+    });
+    await tick();
+    const row = host.querySelector('[data-testid="share-request-row"]')!;
+    const mark = row.querySelector(".identity")!;
+    expect(mark.getAttribute("data-kind")).toBe("agent");
+    expect(mark.querySelector("img")).not.toBeNull();
+    // A person's card keeps the person mark.
+    await unmount(component);
+    component = null;
+    host.remove();
+    mountWith({});
+    await tick();
+    const personRow = host.querySelectorAll('[data-testid="share-request-row"]')[1]!;
+    expect(personRow.querySelector(".identity")!.getAttribute("data-kind")).toBe("person");
+  });
 });

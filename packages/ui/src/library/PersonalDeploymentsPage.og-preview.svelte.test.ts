@@ -221,3 +221,31 @@ describe("Deployments side-panel og:image preview", () => {
     expect(og.mock.calls.slice(calls).map((call) => call[1])).toEqual(["https://indigo-standup-report.indigo-hq.com"]);
   });
 });
+
+describe("Deployments row click", () => {
+  // Owner report (2026-10-06): "clicking deployment name shouldn't open link.
+  // just the white button on right sidepane".
+  it("selects the row from its name and opens nothing; only Visit opens the site", async () => {
+    const opened: string[] = [];
+    const snapshot = vi.fn<DeploySnapshotFetcher>(async () => ({ ok: true, value: { thumbnail: THUMB } as never }));
+    const fetcher = vi.fn<DeployPreviewFetcher>(async () => ({ ok: true, value: { ogImageUrl: null, thumbnail: null } as never }));
+    const root = await mountPage(fetcher, opened, undefined, snapshot);
+
+    const row = [...root.querySelectorAll<HTMLElement>("[data-testid='deploy-row']")].find((el) =>
+      el.textContent?.includes("hq-desktop-console-rail-storyboard"),
+    )!;
+    row.querySelector<HTMLElement>(".nm .t")!.click();
+    await settle();
+
+    expect(row.getAttribute("aria-current")).toBe("true");
+    expect(root.querySelector("[data-testid='deploy-inspector'] .title")?.textContent).toBe("hq-desktop-console-rail-storyboard");
+    expect(opened).toEqual([]);
+
+    const visit = [...root.querySelectorAll<HTMLButtonElement>("[data-testid='deploy-inspector'] .act button")].find((el) =>
+      el.textContent?.includes("Visit"),
+    )!;
+    visit.click();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toContain("hq-desktop-console-rail-storyboard");
+  });
+});

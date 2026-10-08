@@ -193,6 +193,11 @@ const BACKDROP_FILTER_ALLOWLIST = new Set([
   // buttons do not.
   "packages/ui/src/chat/messaging/card-modal.css::.card-modal-plate",
   "packages/ui/src/chat/messaging/card-modal.css::.card-modal-glass",
+  // New bot takeover: a full-window dialog open only while a person is making
+  // a bot, over its own still room illustration. The step panel is frosted
+  // glass; the creating and waking screens, which animate the dawn on every
+  // frame, are excluded by the selector and keep a plain fill.
+  "packages/ui/src/chat/create-bot/new-bot-takeover.css::.new-bot-takeover-card:not(:has(.new-bot-dawn))",
 ]);
 
 describe("backdrop-filter budget (live shell)", () => {

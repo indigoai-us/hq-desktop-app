@@ -81,6 +81,23 @@ export interface MeetingsStoreApi {
   storage?: MeetingsStorage | null;
   /** Monotonic native auth generation; owns all in-flight meeting work. */
   sessionGeneration?: number;
+  /**
+   * Desktop: the recorded meeting's markdown document as synced to this
+   * computer (`sources/meetings/{meetingId}.md` in the meeting's company, or
+   * the personal folder). Null when the file is not here. Hosts without a
+   * local HQ folder omit it, and the notes come from hq-pro only.
+   */
+  readLocalMeetingDocument?: (
+    meetingId: string,
+    companyUid: string | null,
+  ) => Promise<LocalMeetingDocument | null>;
+}
+
+/** A meeting document read from the synced HQ folder. */
+export interface LocalMeetingDocument {
+  text: string;
+  /** Only the start of the file was read; the server copy is read too. */
+  truncated: boolean;
 }
 
 let api: MeetingsStoreApi | null = null;
@@ -222,6 +239,9 @@ export interface RecordedNotesEntry {
   companyUid?: string | null;
 }
 let recordedNotes = $state<Record<string, RecordedNotesEntry>>({});
+/** The newest load per meeting; an older load (before Try again) never writes. */
+let recordedNotesLoadSeq = 0;
+const recordedNotesLoadToken = new Map<string, number>();
 let membershipsError = $state("");
 let fetchError = $state("");
 let refreshBlocked = $state(false);
@@ -517,10 +537,13 @@ async function readSignalBody(url: string): Promise<string> {
 }
 
 /**
- * Load a recorded meeting's saved notes once per session. The detail call
- * lists signal refs; bodies are read from their presigned URLs, capped per
- * meeting. A failure leaves an "error" entry so the canvas does not retry in
- * a loop; the next session (or refresh of the app) tries again.
+ * Load a recorded meeting's saved notes once per session. The synced
+ * markdown file on this computer is read first and shown at once. The detail
+ * call lists signal refs; bodies are read from their presigned URLs, capped
+ * per meeting, and the recap fills in when they arrive. The server's copy of
+ * the document is read only when the file is not here (or was cut short). A
+ * failure with nothing to show leaves an "error" entry so the canvas does not
+ * retry in a loop; the next session (or refresh of the app) tries again.
  */
 async function loadRecordedNotes(
   meetingId: string,
@@ -534,23 +557,86 @@ async function loadRecordedNotes(
   const rescoped = existing?.status === "error" && (existing.companyUid ?? null) !== companyUid;
   if (existing && !rescoped && !(opts.retry && (existing.status === "error" || existing.recapFailed))) return;
   const epoch = sessionEpoch;
-  recordedNotes = { ...recordedNotes, [meetingId]: { status: "loading", companyUid } };
+  const token = ++recordedNotesLoadSeq;
+  recordedNotesLoadToken.set(meetingId, token);
+  const isCurrent = () => epoch === sessionEpoch && recordedNotesLoadToken.get(meetingId) === token;
+  const patch = (next: Partial<RecordedNotesEntry>): void => {
+    if (!isCurrent()) return;
+    const prev = recordedNotes[meetingId] ?? { status: "loading" as const, companyUid };
+    recordedNotes = { ...recordedNotes, [meetingId]: { ...prev, ...next } };
+  };
+  // Try again keeps the document already on screen while it reads again.
+  recordedNotes = {
+    ...recordedNotes,
+    [meetingId]: { status: "loading", companyUid, document: existing?.document ?? null },
+  };
+
+  // The meeting's markdown is usually already synced to this computer. Show
+  // it as soon as it is read; hq-pro's detail answers in seconds because it
+  // presigns every signal, so it only fills in the recap.
+  let serverDocumentShown = false;
+  const local = readLocalMeetingDocument(meetingId, companyUid).then((found) => {
+    if (found && !serverDocumentShown) patch({ document: found.document });
+    return found;
+  });
+
   try {
     const detail = unwrap(await requireApi().meetings.getRecorded(meetingId, companyUid));
     const refs = parseRecordedDetail(detail);
     // OWNER-019: document-shaped meetings keep notes and transcript in one
     // markdown file behind `source.presigned_url`, not in detail fields.
     const docRef = parseRecordedDocumentRef(detail);
-    const [pages, document] = await Promise.all([
-      loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody),
-      docRef ? readSignalBody(docRef.url).then(parseRecordedDocument) : Promise.resolve(null),
-    ]);
-    if (epoch !== sessionEpoch) return;
-    recordedNotes = { ...recordedNotes, [meetingId]: { ...notesEntryFor(pages), document, companyUid } };
+    // The document and the recap each show as soon as they are read.
+    const documentRead = (async () => {
+      const localDoc = await local;
+      if ((localDoc && !localDoc.truncated) || !docRef) return;
+      try {
+        const document = parseRecordedDocument(await readSignalBody(docRef.url));
+        serverDocumentShown = true;
+        patch({ document });
+      } catch (err) {
+        // The synced copy is already on screen; only a meeting with nothing
+        // to show fails as a whole.
+        if (!localDoc) throw err;
+        console.warn(`[meetings] could not read the full document for ${meetingId}; showing the synced copy`, err);
+      }
+    })();
+    const signalsRead = loadNextRecordedSignalPage({ refs, texts: [] }, readSignalBody).then((pages) => {
+      // Still "loading" until the document read settles too.
+      patch({ ...notesEntryFor(pages), status: "loading" });
+    });
+    await Promise.all([documentRead, signalsRead]);
+    patch({ status: "ready", companyUid });
   } catch (err) {
     console.error(`meetings getRecorded failed for ${meetingId}:`, err);
-    if (epoch !== sessionEpoch) return;
+    const localDoc = await local;
+    if (!isCurrent()) return;
+    if (localDoc) {
+      // The transcript and speakers from the synced file stay; the recap
+      // says it could not load and offers Try again.
+      patch({ status: "ready", recapFailed: true, companyUid });
+      return;
+    }
     recordedNotes = { ...recordedNotes, [meetingId]: { status: "error", companyUid } };
+  }
+}
+
+/** The synced meeting document, parsed; null when it is not on this computer or unreadable. */
+async function readLocalMeetingDocument(
+  meetingId: string,
+  companyUid: string | null,
+): Promise<{ document: RecordedDocument; truncated: boolean } | null> {
+  const read = api?.readLocalMeetingDocument;
+  if (!read) return null;
+  try {
+    const found = await read(meetingId, companyUid);
+    if (!found || !found.text.trim()) return null;
+    const document = parseRecordedDocument(found.text);
+    if (!document.transcript.length && !document.notes.length) return null;
+    return { document, truncated: found.truncated };
+  } catch (err) {
+    console.warn(`[meetings] could not read the synced file for ${meetingId}; reading it from HQ`, err);
+    return null;
   }
 }
 
@@ -1432,6 +1518,7 @@ function resetTenantSession(): void {
   recorded = [];
   recordedError = "";
   recordedNotes = {};
+  recordedNotesLoadToken.clear();
   fetchError = "";
   refreshBlocked = false;
   refreshFailureCount = 0;

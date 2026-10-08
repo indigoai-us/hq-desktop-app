@@ -15,7 +15,24 @@
   import ShowMoreRow from "../../shell/ShowMoreRow.svelte";
   import VaultTree from "../../files/explorer/VaultTree.svelte";
   import WorkerDetailPane from "./WorkerDetailPane.svelte";
-  import { workerStatusLabel } from "./worker-detail.js";
+  import BrainSplit from "./BrainSplit.svelte";
+  import { workerYamlDetail } from "./worker-detail.js";
+  import { renderMarkdownDocument } from "../../common/markdown.js";
+  import { markdownLinks } from "../../common/markdown-links.js";
+  import type { RailIconName } from "../../common/button/rail-icons.js";
+  import {
+    bodyWithoutTitle,
+    knowledgeHeader,
+    policyHeader,
+    policyRowChips,
+    skillRowChips,
+    skillSummary,
+    tagChips,
+    whenTags,
+    workerRowChips,
+    type Chip,
+    type DocHeader,
+  } from "./brain-chips.js";
   import type { TreeEntry, Vault } from "../../files/explorer/vault-model.js";
   import ListEmptyState from "../../common/ListEmptyState.svelte";
   import { publishCompanyPageCount } from "../../shell/company-page-counts.svelte.js";
@@ -239,6 +256,24 @@
     return { ok: true as const, value: knowledgeDirListing(knowledgePaths, dir) };
   }
   const conflictNote = (entry: TreeEntry) => (!entry.isDir && isConflictCopy(entry.name) ? "conflict copy" : null);
+  // Tree rows show the note's frontmatter title, a kind icon, and folder file counts.
+  const knowledgeByPath = $derived(new Map(cache.knowledge.map((row) => [row.path, row])));
+  const folderCounts = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const path of knowledgePaths) {
+      const parts = path.split("/");
+      for (let i = 1; i < parts.length; i++) {
+        const dir = parts.slice(0, i).join("/");
+        counts.set(dir, (counts.get(dir) ?? 0) + 1);
+      }
+    }
+    return counts;
+  });
+  // A conflict copy keeps its file name so it reads apart from the original.
+  const knowledgeLabel = (entry: TreeEntry) =>
+    entry.isDir || isConflictCopy(entry.name) ? null : knowledgeByPath.get(entry.path)?.title ?? null;
+  const knowledgeCount = (entry: TreeEntry) => (entry.isDir ? folderCounts.get(entry.path) ?? null : null);
+  const knowledgeKind = (entry: TreeEntry): RailIconName => (/\.ya?ml$/i.test(entry.name) ? "sliders" : "file");
   const policyRows = $derived(filterPolicies(cache.policies, policyFilter, query));
   const skillRows = $derived(filterSkills(cache.skills, skillFilter, query));
   const workerRows = $derived(filterWorkers(cache.workers, workerScope, workerFilter, query));
@@ -276,6 +311,18 @@
   const selectedWorker = $derived(inspectedRow(workerRows, selected));
   const selectedPolicy = $derived(inspectedRow(policyRows, selected));
   const selectedFile = $derived(inspectedRow(knowledgeRows, selected));
+  // Run counts for skill rows, once the usage read has landed.
+  const runsByPath = $derived(new Map(usageRows.map((row) => [row.path, { runs: row.teamRuns, lastDay: row.lastDay }])));
+  const docHeader = $derived<DocHeader | null>(
+    page === "policies" && selectedPolicy ? policyHeader(selectedPolicy) : page === "knowledge" && selectedFile ? knowledgeHeader(selectedFile) : null,
+  );
+  const docHtml = $derived(
+    page === "policies" && selectedPolicy
+      ? renderMarkdownDocument(bodyWithoutTitle(selectedPolicy.body, selectedPolicy.title))
+      : page === "knowledge" && selectedFile
+        ? renderMarkdownDocument(bodyWithoutTitle(selectedFile.body, selectedFile.title))
+        : "",
+  );
   $effect(() => {
     if (selected && !activeList.some((row) => row.path === selected)) selected = null;
   });
@@ -367,6 +414,8 @@
       if (result.ok) {
         next.skills = result.value.skills.map((skill) => skillRowFromLibrary(skill, key));
         next.workers = result.value.workers.map(workerRowFromLibrary);
+        // Model and skill count live in each worker.yaml; read them after paint.
+        void enrichWorkers(key, next.workers);
       } else {
         console.warn("[brain] library read failed", result.message);
         if (slug === key) {
@@ -381,6 +430,32 @@
   }
 
   const READ_CONCURRENCY = 16;
+
+  async function enrichWorkers(key: string, rows: WorkerRow[]): Promise<void> {
+    const api = files;
+    if (!api || rows.length === 0) return;
+    const details = await mapLimit(rows, READ_CONCURRENCY, async (row) => {
+      const root = row.path.replace(/\/+$/, "");
+      try {
+        const res = await api.getFileContent(`${root}/worker.yaml`);
+        if (!res.ok) return null;
+        const detail = workerYamlDetail(res.value, root);
+        const field = (label: string) => detail.rows.find((r) => r.label === label)?.value ?? "";
+        return { model: field("Model") || null, skillCount: detail.skills.length, type: row.type || field("Type"), team: row.team || field("Team") };
+      } catch (err) {
+        console.warn("[brain] worker.yaml read failed", root, err);
+        return null;
+      }
+    });
+    if (slug !== key) return;
+    const byPath = new Map(rows.map((row, i) => [row.path, details[i]]));
+    const workers = cache.workers.map((row) => {
+      const extra = byPath.get(row.path);
+      return extra ? { ...row, ...extra } : row;
+    });
+    cache = { ...cache, workers };
+    writeBrainCache(key, cache);
+  }
 
   /** Null when the folder listing itself failed (kept apart from "empty"). */
   async function readKnowledge(api: FilesApi, root: string): Promise<KnowledgeFile[] | null> {
@@ -587,17 +662,22 @@
       {/if}
     </div>
   {:else}
-    <div class="split">
+    <BrainSplit {page} hasSelection={selected !== null} onback={() => (selected = null)}>
+      {#snippet list()}
       <div class="list" onscroll={onListScroll} data-testid="brain-list">
         {#if page === "policies"}
           {#each [{ label: "Hard", rows: policyGroups.hard }, { label: "Soft", rows: policyGroups.soft }] as group (group.label)}
             {#if policyFilter === "all" || policyFilter === group.label.toLowerCase()}
-              <div class="sec">{group.label}</div>
+              <div class="sec">{group.label}<span class="sec-count">{group.rows.length}</span></div>
               {#each group.rows as row (row.path)}
-                <button type="button" class="item" aria-current={selectedPolicy?.path === row.path} onclick={() => (selected = row.path)}>
-                  <span class="name">{row.title}</span>
-                  <span class="badge" class:hard={row.enforcement === "hard"}>{row.enforcement}</span>
-                  <span class="meta">{row.createdBy ? `created by ${row.createdBy}` : row.path}{row.edited ? ` · edited ${row.edited}` : ""}</span>
+                {@const triggers = whenTags(row.when)}
+                <button type="button" class="item" aria-current={selectedPolicy?.path === row.path} onclick={() => (selected = row.path)} data-testid="policy-row">
+                  <span class="line"><span class="name">{row.title}</span></span>
+                  <span class="chips row-chips">
+                    {#each policyRowChips(row) as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+                    {#if triggers[0]}{@render chip({ label: triggers[0], icon: "arrow-right", title: `When: ${triggers.join(", ")}` })}{/if}
+                    {#if triggers.length > 1}<span class="more" title={triggers.slice(1).join(", ")}>+{triggers.length - 1}</span>{/if}
+                  </span>
                 </button>
               {/each}
             {/if}
@@ -613,6 +693,9 @@
               reloadKey={treeReload}
               revealAll={query.trim() !== ""}
               noteFor={conflictNote}
+              labelFor={knowledgeLabel}
+              countFor={knowledgeCount}
+              iconFor={knowledgeKind}
               onopen={(path) => (selected = path)}
             />
           </div>
@@ -620,10 +703,13 @@
             <div class="sec">Recent</div>
             {#each pageRows(freshRows, pages).rows as row (row.path)}
               <button type="button" class="item" aria-current={selectedFile?.path === row.path} onclick={() => (selected = row.path)} data-testid="brain-fresh-row">
-                <span class="name">{row.title}</span>
-                {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
-                {#if isConflictCopy(row.name)}<span class="meta">conflict copy</span>{/if}
-                {#if row.changed}<span class="meta" data-testid="brain-fresh-changed">{row.changed}</span>{/if}
+                <span class="line">
+                  <span class="name">{row.title}</span>
+                  {#if row.mark}<span class="badge" class:hard={row.mark === "new"}>{row.mark}</span>{/if}
+                </span>
+                {#if isConflictCopy(row.name) || row.changed}
+                  <span class="meta">{#if isConflictCopy(row.name)}conflict copy{/if}{#if isConflictCopy(row.name) && row.changed} · {/if}{#if row.changed}<span data-testid="brain-fresh-changed">{row.changed}</span>{/if}</span>
+                {/if}
               </button>
             {/each}
           {/if}
@@ -632,17 +718,28 @@
           {#each slice as row (page === "skills" ? (row as unknown as SkillRow).path : page === "workers" ? (row as unknown as WorkerRow).path : (row as unknown as KnowledgeFile).path)}
             {#if page === "skills"}
               {@const skill = row as unknown as SkillRow}
+              {@const summary = skillSummary(skill.description)}
               <button type="button" class="item" aria-current={selectedSkill?.path === skill.path} onclick={() => (selected = skill.path)} data-testid="skill-row">
-                <span class="name">{skill.name}</span>
-                <span class="meta">{skill.description}</span>
-                <span class="meta">{skill.triggers.join(" · ")}</span>
+                <span class="line"><span class="name">{skill.name}</span></span>
+                {#if summary.description}<span class="meta clamp" data-testid="skill-row-description">{summary.description}</span>{/if}
+                <span class="chips row-chips">
+                  {#each skillRowChips(skill, runsByPath.get(skill.path) ?? null) as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+                </span>
               </button>
             {:else if page === "workers"}
               {@const worker = row as unknown as WorkerRow}
+              {@const [statusChip, ...workerChips] = workerRowChips(worker)}
               <button type="button" class="item" class:muted={worker.parked} aria-current={selectedWorker?.path === worker.path} onclick={() => (selected = worker.path)} data-testid="worker-row">
-                <span class="name">{worker.name}</span>
-                <span class="meta">{worker.description}</span>
-                <span class="meta" class:live={worker.live} data-testid="worker-row-status">{worker.live ? "Live" : workerStatusLabel(worker.status)}</span>
+                <span class="line">
+                  <span class="name">{worker.name}</span>
+                  <span class="status-chip" class:live={worker.live} data-tone={statusChip!.tone} data-testid="worker-row-status">{statusChip!.label}</span>
+                </span>
+                {#if worker.description}<span class="meta clamp">{worker.description}</span>{/if}
+                {#if workerChips.length}
+                  <span class="chips row-chips">
+                    {#each workerChips as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+                  </span>
+                {/if}
               </button>
             {:else}
               {@const file = row as KnowledgeFile}
@@ -672,13 +769,31 @@
           />
         {/if}
       </div>
+      {/snippet}
 
+      {#snippet detail()}
       <aside class="detail" data-testid="brain-detail">
         {#if page === "skills" && selectedSkill}
-          <p class="kind">Skill</p>
-          <h2>{selectedSkill.name}</h2>
-          <p class="path">{selectedSkill.path}</p>
-          <p>{selectedSkill.description}</p>
+          {@const summary = skillSummary(selectedSkill.description)}
+          <div class="doc-card">
+            <p class="kind">Skill</p>
+            <div class="doc-title-row">
+              <h2>{selectedSkill.name}</h2>
+              <div class="actions">
+                <RailButton icon="play" variant="primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</RailButton>
+                <RailButton icon="claude-code" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</RailButton>
+                <RailButton icon="link" onclick={() => (shareOpen = true)}>Share</RailButton>
+              </div>
+            </div>
+            <button type="button" class="path copyable" title="Copy path" onclick={() => copyPath(selectedSkill.path)}>{selectedSkill.path}</button>
+            {#if summary.scaffold || summary.blocked}
+              <div class="chips">
+                {#each skillRowChips({ ...selectedSkill, owner: "root" }) as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+              </div>
+            {/if}
+          </div>
+          <p class="lede">{summary.description}</p>
+          {#if summary.blocked}<p class="gate">{summary.blocked}</p>{/if}
           {#if usage && selectedUsage}
             <dl class="skill-usage" data-testid="skill-usage-block">
               <div><dt>Team runs</dt><dd>{runsCell(selectedUsage.teamRuns)}</dd></div>
@@ -687,11 +802,6 @@
               <div><dt>Last run</dt><dd>{lastRunCell(selectedUsage.lastDay)}</dd></div>
             </dl>
           {/if}
-          <div class="actions">
-            <RailButton icon="play" variant="primary" data-testid="skill-run" onclick={() => runPrompt(skillRunPrompt(selectedSkill.name), selectedSkill.name)}>Run</RailButton>
-            <RailButton icon="claude-code" onclick={() => openInClaude(selectedSkill.path)}>Open in Claude Code</RailButton>
-            <RailButton icon="link" onclick={() => (shareOpen = true)}>Share</RailButton>
-          </div>
         {:else if page === "workers" && selectedWorker}
           <WorkerDetailPane
             worker={selectedWorker}
@@ -704,31 +814,34 @@
             onclose={() => (selected = null)}
             onmore={() => (sheet = "picker")}
           />
-        {:else if page === "policies" && selectedPolicy}
-          <p class="path">{selectedPolicy.path}</p>
-          <h2>{selectedPolicy.title}</h2>
-          <div class="chips">
-            <span class="chip">scope {selectedPolicy.scope}</span>
-            <span class="chip" class:hard={selectedPolicy.enforcement === "hard"}>enforcement {selectedPolicy.enforcement}</span>
-            {#if selectedPolicy.when}<span class="chip">when {selectedPolicy.when}</span>{/if}
-            {#if selectedPolicy.satisfiedBy}<span class="chip">satisfied by {selectedPolicy.satisfiedBy}</span>{/if}
+        {:else if docHeader && (selectedPolicy || selectedFile)}
+          {@const openTarget = docHeader.path}
+          <div class="doc-card" data-testid="brain-doc-header">
+            <p class="kind">{docHeader.kind}</p>
+            <div class="doc-title-row">
+              <h2>{docHeader.title}</h2>
+              <div class="actions">
+                <RailButton icon="external" onclick={() => openPath(openTarget)}>Open</RailButton>
+                <RailButton icon="copy" onclick={() => copyPath(openTarget)}>Copy path</RailButton>
+              </div>
+            </div>
+            <button type="button" class="path copyable" title="Copy path" data-testid="brain-doc-path" onclick={() => copyPath(openTarget)}>{docHeader.path}</button>
+            {#if docHeader.chips.length}
+              <div class="chips" data-testid="brain-doc-chips">
+                {#each docHeader.chips as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+              </div>
+            {/if}
+            {#if docHeader.tags.length}
+              <div class="chips" data-testid="brain-doc-tags">
+                {#each docHeader.tags as c, i (`${i}:${c.label}`)}{@render chip(c)}{/each}
+              </div>
+            {/if}
           </div>
-          {#if selectedPolicy.enforcement === "hard"}
+          {#if page === "policies" && selectedPolicy?.enforcement === "hard"}
             <p class="gate"><b>Hard gate.</b> Unmet HARD policies block completion.</p>
           {/if}
-          <div class="actions">
-            <RailButton icon="external" onclick={() => openPath(selectedPolicy.path)}>Open</RailButton>
-            <RailButton icon="copy" onclick={() => copyPath(selectedPolicy.path)}>Copy path</RailButton>
-          </div>
-          <div class="body">{selectedPolicy.body}</div>
-        {:else if page === "knowledge" && selectedFile}
-          <p class="path">{selectedFile.path}</p>
-          <h2>{selectedFile.title}</h2>
-          <div class="actions">
-            <RailButton icon="external" onclick={() => openPath(selectedFile.path)}>Open</RailButton>
-            <RailButton icon="copy" onclick={() => copyPath(selectedFile.path)}>Copy path</RailButton>
-          </div>
-          <div class="body">{selectedFile.body}</div>
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- renderMarkdownDocument escapes the source -->
+          <article class="body markdown-body" data-testid="brain-doc-body" use:markdownLinks={{ currentPath: openTarget, onopenfile: (path) => void openPath(path) }}>{@html docHtml}</article>
         {:else if activeList.length === 0 && sourceTotal > 0 && query.trim()}
           <div class="detail-empty" data-testid="brain-detail-empty">
             <p class="empty">No {listNoun[1]} match “{query.trim()}”</p>
@@ -738,7 +851,8 @@
           <p class="empty">Select a row.</p>
         {/if}
       </aside>
-    </div>
+      {/snippet}
+    </BrainSplit>
   {/if}
 
   {#if readError}
@@ -850,6 +964,11 @@
       </footer>
     </div>
   {/if}
+  {#snippet chip(c: Chip)}
+    <span class="chip-pill" data-tone={c.tone ?? undefined} title={c.title ?? undefined} data-testid="brain-chip">
+      {#if c.icon}<RailIcon name={c.icon} size={11} />{/if}{c.label}
+    </span>
+  {/snippet}
 </section>
 
 <style>
@@ -863,7 +982,7 @@
     font-family: var(--font-sans);
     font-size: 13px;
   }
-  .toolbar, .filters, .actions, .chips, .tabs, .sheet-head, .sheet-foot, .detail-head {
+  .toolbar, .filters, .actions, .chips, .tabs, .sheet-head, .sheet-foot {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -888,7 +1007,7 @@
     border-radius: 6px;
   }
   .chip, .badge { padding: 0; }
-  .badge.hard, .chip.hard { color: var(--t1, var(--v4-text-1)); }
+  .badge.hard { color: var(--t1, var(--v4-text-1)); }
   .tab { height: 26px; padding: 0 8px; cursor: pointer; }
   .tab[aria-selected="true"], .item[aria-current="true"], .opt[aria-checked="true"] {
     background: var(--sel, var(--v4-active-row));
@@ -904,23 +1023,87 @@
     padding: 0 8px;
     width: 200px;
   }
-  .split { display: grid; grid-template-columns: minmax(280px, 1fr) 380px; flex: 1; min-height: 0; }
-  .list, .detail { min-height: 0; overflow: auto; }
+  .list, .detail { flex: 1; min-height: 0; overflow: auto; }
   .ktree { height: 100%; min-height: 240px; }
   .ktree[hidden] { display: none; }
-  .list { padding: 12px 12px 24px; }
+  .list { padding: 8px 8px 24px; }
   .detail {
-    border-left: 1px solid var(--line, var(--v4-rowline));
-    padding: 24px 20px;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 880px;
+    padding: 24px 32px 64px;
   }
+  .doc-card {
+    display: grid;
+    gap: 8px;
+    padding-bottom: 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--line, var(--v4-rowline));
+  }
+  .doc-card .kind { margin: 0; }
+  .doc-title-row { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .doc-title-row h2 { flex: 1 1 240px; min-width: 0; font-size: var(--type-title, 20px); line-height: 1.25; overflow-wrap: anywhere; }
+  .doc-title-row .actions { flex: none; }
+  .copyable {
+    justify-self: start;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: copy;
+  }
+  .copyable:hover { color: var(--t2, var(--v4-text-2)); }
+  .lede { margin: 0 0 12px; color: var(--t2, var(--v4-text-2)); line-height: 1.5; }
+  .line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .line .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clamp {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  .row-chips { gap: 4px; margin-top: 3px; }
+  .chip-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: var(--raised, var(--v4-control-faint));
+    color: var(--t3, var(--v4-text-3));
+    font-size: 11px;
+    line-height: 18px;
+    white-space: nowrap;
+  }
+  .chip-pill[data-tone="hard"] { background: color-mix(in srgb, var(--v4-error, #d9534f) 14%, transparent); color: var(--t1, var(--v4-text-1)); }
+  .chip-pill[data-tone="ok"] { color: var(--t2, var(--v4-text-2)); }
+  .chip-pill[data-tone="warn"] { background: color-mix(in srgb, var(--v4-warn, #c98a1b) 16%, transparent); color: var(--t2, var(--v4-text-2)); }
+  .status-chip {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--t3, var(--v4-text-3));
+    font-size: 11px;
+    text-transform: capitalize;
+  }
+  .status-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--v4-idle, var(--t3, currentColor)); }
+  .status-chip[data-tone="ok"]::before { background: var(--ok, var(--v4-ok)); }
+  .more { color: var(--t3, var(--v4-text-3)); font-size: 11px; }
+  .sec-count { margin-left: 6px; color: var(--t3, var(--v4-text-3)); font-weight: 400; }
   .item {
     display: grid;
     width: 100%;
+    min-width: 0;
     text-align: left;
-    padding: 7px 8px;
+    padding: 6px 8px;
     line-height: 17px;
-    border-radius: 8px;
-    gap: 2px;
+    border-radius: 6px;
+    gap: 1px;
     cursor: pointer;
   }
   .name { color: var(--t1, var(--v4-text-1)); }
@@ -930,7 +1113,6 @@
   }
   .path { font-family: var(--font-mono); }
   .live { color: var(--t2, var(--v4-text-2)); }
-  .live::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--ok, var(--v4-ok)); vertical-align: 1px; }
   .muted .name { color: var(--t3, var(--v4-text-3)); }
   .sec {
     font-size: 13px;
@@ -938,7 +1120,19 @@
     color: var(--t2, var(--v4-text-2));
     padding: 16px 8px 4px;
   }
-  .body { white-space: pre-wrap; color: var(--t2, var(--v4-text-2)); line-height: 1.45; margin-top: 12px; }
+  .body { color: var(--t2, var(--v4-text-2)); line-height: 1.55; margin-top: 4px; overflow-wrap: anywhere; }
+  .body :global(h1), .body :global(h2), .body :global(h3), .body :global(h4) { margin: 20px 0 8px; color: var(--t1, var(--v4-text-1)); font-size: 13px; font-weight: 500; }
+  .body :global(p), .body :global(ul), .body :global(ol), .body :global(blockquote), .body :global(table), .body :global(pre) { margin: 0 0 10px; }
+  .body :global(ul), .body :global(ol) { padding-left: 20px; }
+  .body :global(li) { margin: 2px 0; }
+  .body :global(code) { font-family: var(--font-mono); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--raised, var(--v4-control-faint)); }
+  .body :global(pre) { padding: 10px 12px; border-radius: 6px; background: var(--raised, var(--v4-control-faint)); overflow: auto; }
+  .body :global(pre code) { padding: 0; background: none; }
+  .body :global(table) { border-collapse: collapse; display: block; overflow-x: auto; }
+  .body :global(th), .body :global(td) { padding: 4px 10px; border-bottom: 1px solid var(--line, var(--v4-rowline)); text-align: left; vertical-align: top; }
+  .body :global(th) { color: var(--t1, var(--v4-text-1)); font-weight: 500; }
+  .body :global(blockquote) { padding-left: 12px; color: var(--t3, var(--v4-text-3)); border-left: 0; background: var(--raised, var(--v4-control-faint)); padding: 8px 12px; border-radius: 6px; }
+  .body :global(a) { color: var(--t1, var(--v4-text-1)); }
   .gate { padding: 10px 12px; border-radius: 8px; background: var(--raised, var(--v4-control-faint)); color: var(--t2, var(--v4-text-2)); }
   .usage { padding: 12px 20px; overflow: auto; }
   .usage-grid { display: grid; grid-template-columns: minmax(0, 1fr) 80px 120px 64px 110px; gap: 12px; padding: 8px; }
