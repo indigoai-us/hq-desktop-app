@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 ### Fixed
 
+- The macOS menu-bar helper checks its badge and upload-status snapshots every two seconds while idle, while still applying published changes on its next check.
 - HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
 
 ## [0.10.403] - 2026-10-08
