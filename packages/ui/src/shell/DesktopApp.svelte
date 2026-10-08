@@ -894,6 +894,12 @@
   } from "../chat/pending-conversation.js";
   import type { ChannelDirectoryRow } from "../chat/channel-directory-reconciler.js";
   import {
+    NO_RETIRED_ENTITIES,
+    liveCompanyUidSet,
+    withoutRetiredRows,
+    type RetiredEntities,
+  } from "../chat/retired-entities.js";
+  import {
     mergePaletteRows,
     paletteConversationItems,
     paletteProjectItems,
@@ -2267,6 +2273,12 @@
   })());
   let selectedRow = $state<ConversationRow | null>(initialRow);
   let railRows = $state<ConversationRow[]>([]);
+  /**
+   * Retired companies and gone bots the sidebar learned about. The sidebar's
+   * own rows are already filtered; this drops the same rows from the cached
+   * `searchRows` the palette also indexes.
+   */
+  let retiredEntities = $state<RetiredEntities>(NO_RETIRED_ENTITIES);
   /** Rail rows in display order (pinned → days → expanded last week). */
   let displayRows = $state<ConversationRow[]>([]);
   /** Sidebar entry points for app-wide shortcuts; null while unmounted. */
@@ -4285,7 +4297,12 @@
    * the sidebar was still showing (and vice versa) — a conversation could be in
    * one surface and missing from the other.
    */
-  const paletteRows = $derived(mergePaletteRows(railRows, searchRows));
+  const paletteRows = $derived(
+    mergePaletteRows(
+      railRows,
+      withoutRetiredRows(searchRows, retiredEntities, liveCompanyUidSet(companies)),
+    ),
+  );
 
   /**
    * Projects the palette indexes (QA-079): the same local list the Projects
@@ -13386,6 +13403,7 @@
             railRows = rows;
             directorySettled = true;
           }}
+          onretired={(retired) => (retiredEntities = retired)}
           ondisplayrows={(rows) => (displayRows = rows)}
           onactions={(actions) => (sidebarActions = actions)}
           {bootTimeoutMs}

@@ -769,6 +769,14 @@ export interface MessagingApi {
    */
   deleteChannel(channelId: string): AdapterPromise<Json>;
   listContacts(opts?: ListContactsOptions): AdapterPromise<Json[]>;
+  /**
+   * Which of these company (`cmp_*`) and bot (`agt_*`) uids no longer have a
+   * live cloud entity (desktop `resolve_retired_entities`, which reads
+   * `GET /entity/{uid}`: 404 or `deleted: true` is gone). Answers
+   * `{ retiredCompanyUids, goneAgentUids, liveUids, agentCompanyUids }`.
+   * Optional: hosts without it never hide rows of retired companies.
+   */
+  resolveRetiredEntities?(uids: string[]): AdapterPromise<Json>;
   listDmRequests(): AdapterPromise<Json[]>;
   /**
    * POST /v1/notify/connections/{accept|decline|block} body `{ pairKey }` —

@@ -92,6 +92,15 @@
     browseOnlyCompanyProjectChannels,
   } from "./channel-admin";
   import { isAgentUid } from "./agent-thinking";
+  import {
+    NO_RETIRED_ENTITIES,
+    isRetiredCompany,
+    liveCompanyUidSet,
+    mergeRetiredEntities,
+    retiredProbeCandidates,
+    withoutRetiredRows,
+    type RetiredEntities,
+  } from "./retired-entities.js";
   import { isSelf, selfIsAdmin, type SelfIdentity } from "../identity/self.js";
   import { createTenantStorage } from "../identity/tenant-storage.js";
   import {
@@ -465,6 +474,12 @@
     /** Emits the full normalized conversation list whenever it changes. */
     onrows?: (rows: ConversationRow[]) => void;
     /**
+     * Emits what the sidebar has learned about retired companies and gone
+     * bots, so the host can drop the same rows from its own cached lists
+     * (the palette's search rows).
+     */
+    onretired?: ((retired: RetiredEntities) => void) | null;
+    /**
      * Emits the rail rows in DISPLAY order (pinned → day sections → "Last
      * week" once expanded) so the shell's next/previous-conversation
      * shortcuts walk exactly what the user sees.
@@ -598,6 +613,7 @@
     botDisplayNames = null,
     ownedLocalBotUids = null,
     onrows,
+    onretired = null,
     ondisplayrows,
     onactions,
     bootTimeoutMs = DEFAULT_SIDEBAR_BOOT_TIMEOUT_MS,
@@ -981,6 +997,10 @@
     companiesForChannelCreate(companies, accountLabel),
   );
 
+  /** What is known about retired companies and gone bots (see `retired-entities.ts`). */
+  let retiredEntities = $state<RetiredEntities>(NO_RETIRED_ENTITIES);
+  const liveCompanyUids = $derived(liveCompanyUidSet(companies));
+
   /**
    * Companies a Cloud bot can be added to: the workspace list, plus any company
    * the directory already shows a company channel for. A company created a
@@ -1005,6 +1025,8 @@
       if (!uid || !label || out.has(uid) || channel.scope !== "company") {
         continue;
       }
+      // A retired company's channel must not offer the company back.
+      if (isRetiredCompany(uid, retiredEntities, liveCompanyUids)) continue;
       if (
         knownLabels.has(uid.toLowerCase()) ||
         knownLabels.has(label.toLowerCase())
@@ -1176,7 +1198,7 @@
     return map;
   });
 
-  const allRows = $derived(
+  const unfilteredRows = $derived(
     withCancelledBotRows(
       // Each bot that is starting keeps a row of its own.
       shownWakingBots.reduce<ConversationRow[]>(
@@ -1196,6 +1218,40 @@
       removedBotUids,
     ),
   );
+
+  /**
+   * Rows a retired (tombstoned) company or a gone bot left behind. hq-pro keeps
+   * listing a retired company's channels, and its bots as contacts, with no
+   * retired marker, so the uids this sidebar cannot place are asked about once
+   * (`GET /entity/{uid}` through `resolveRetiredEntities`) and hidden only on
+   * an explicit "gone" answer. A company the list does not know yet (its
+   * channel can arrive before the company list refreshes) answers live and
+   * stays; a failed read hides nothing. See `retired-entities.ts`.
+   */
+  const retiredAsked = new Set<string>();
+  $effect(() => {
+    const live = liveCompanyUids;
+    const rows = unfilteredRows;
+    if (!api.resolveRetiredEntities) return;
+    // A company in the live list is re-asked if it ever leaves it.
+    for (const uid of live) retiredAsked.delete(uid);
+    const candidates = retiredProbeCandidates(rows, live, retiredAsked);
+    if (candidates.length === 0) return;
+    for (const uid of candidates) retiredAsked.add(uid);
+    api.resolveRetiredEntities(candidates).then(
+      (result) => {
+        const next = mergeRetiredEntities(untrack(() => retiredEntities), result);
+        retiredEntities = next;
+        onretired?.(next);
+      },
+      () => {
+        // Ask again the next time the rows change.
+        for (const uid of candidates) retiredAsked.delete(uid);
+      },
+    );
+  });
+
+  const allRows = $derived(withoutRetiredRows(unfilteredRows, retiredEntities, liveCompanyUids));
 
   /**
    * The sidebar's "Companies" section. When the user has pinned any
@@ -1385,13 +1441,17 @@
   // only by the new-message typeahead, never rendered as sidebar rows (G3).
   // The user's own local bots ride along so they can be found and invited.
   const directoryRows = $derived(
-    normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
-      pinnedIds: pinsWithSetup,
-      dmDots,
-      includeContactsWithoutConversation: true,
-      homeChannelIdByUid,
-      peerDirectory,
-    }),
+    withoutRetiredRows(
+      normalizeConversations(channelsWithSetup, localBotsAsContacts(contactsWithUnreads, localBots, botDisplayNames), {
+        pinnedIds: pinsWithSetup,
+        dmDots,
+        includeContactsWithoutConversation: true,
+        homeChannelIdByUid,
+        peerDirectory,
+      }),
+      retiredEntities,
+      liveCompanyUids,
+    ),
   );
 
   // US-021: owner/admin-only "All company projects" view. `companyProjectChannels`
