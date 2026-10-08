@@ -630,7 +630,7 @@ describe("CreateBotFlow", () => {
     expect(oncreate).not.toHaveBeenCalled();
   });
 
-  it("Finish with defaults on the Cloud company step creates with the given name in the picked company", async () => {
+  it("Finish with defaults on the Cloud company step shows the price first, then creates with the given name in the picked company", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
     render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES, initialName: "Polar Bear" });
     await settle();
@@ -638,6 +638,11 @@ describe("CreateBotFlow", () => {
     click('[data-testid="new-bot-choice-cloud"]');
     await settle();
     expect(stepName()).toBe("home");
+    // A paid bot is never made before its price is on screen.
+    const plan = q('[data-testid="create-bot-plan"]');
+    expect(plan?.textContent?.trim()).toBe("$42.00/month for Basic, billed to Indigo.");
+    expect(plan?.getAttribute("data-state")).toBe("ready");
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(false);
     enter();
     await settle();
     expect(onCloudCreate).toHaveBeenCalledWith("cmp_indigo", {
@@ -646,6 +651,54 @@ describe("CreateBotFlow", () => {
       runtime: "claude",
       size: "basic",
     });
+  });
+  it("Finish and Enter on the Cloud company step cannot create while the plan is checking or failed", async () => {
+    const onCloudCreate = vi.fn(async () => undefined);
+    let answer!: (value: unknown) => void;
+    let calls = 0;
+    const loadCloudProvisionOptions = vi.fn(() => {
+      calls += 1;
+      return calls === 1
+        ? new Promise((resolve) => { answer = resolve; })
+        : Promise.resolve(ok(CLOUD_QUOTE));
+    });
+    render({ oncreate: vi.fn(), onCloudCreate, agentTargets: COMPANIES, initialName: "Polar Bear", loadCloudProvisionOptions });
+    await settle();
+    click('[data-testid="new-bot-choice-cloud"]');
+    await settle();
+    expect(stepName()).toBe("home");
+    const finish = () => q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!;
+    const plan = () => q('[data-testid="create-bot-plan"]');
+
+    // Checking: the line says so, Finish is off, Enter does nothing.
+    expect(plan()?.textContent?.trim()).toBe("Checking plan...");
+    expect(finish().disabled).toBe(true);
+    enter();
+    finish().click();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+    expect(stepName()).toBe("home");
+
+    // Failed: the line says so with Try again, and still nothing is created.
+    answer({ ok: false, reason: "error", message: "boom" });
+    await settle();
+    await settle();
+    expect(plan()?.getAttribute("data-state")).toBe("error");
+    expect(plan()?.textContent).toContain("Couldn't check the plan.");
+    expect(finish().disabled).toBe(true);
+    enter();
+    await settle();
+    expect(onCloudCreate).not.toHaveBeenCalled();
+
+    // Try again loads the plan; once shown, Finish creates.
+    click('[data-testid="create-bot-plan-retry"]');
+    await settle();
+    await settle();
+    expect(plan()?.textContent?.trim()).toBe("$42.00/month for Basic, billed to Indigo.");
+    expect(finish().disabled).toBe(false);
+    finish().click();
+    await settle();
+    expect(onCloudCreate).toHaveBeenCalledTimes(1);
   });
   it("Cloud asks for a title too and hands it to the host", async () => {
     const onCloudCreate = vi.fn(async () => undefined);
@@ -942,6 +995,28 @@ describe("CreateBotFlow", () => {
     expect(stepName()).toBe("tune");
     expect(document.activeElement).toBe(q('[data-testid="chat-bot-handle"]'));
     expect(q('[data-testid="chat-bot-handle-help"]')?.textContent).toContain("no letters or digits");
+  });
+  it("Enter on Fine-tune itself, with a handle that cannot be used, focuses the handle again", async () => {
+    const oncreate = vi.fn(async () => undefined);
+    render({ oncreate });
+    await settle();
+    await toCodingTool();
+    await openAdvanced();
+    const handle = q<HTMLInputElement>('[data-testid="chat-bot-handle"]')!;
+    type(handle, "!!!");
+    await settle();
+    // Create is off here, but Enter still finishes: twice from this step,
+    // and each time the field takes focus.
+    expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')?.disabled).toBe(true);
+    for (let i = 0; i < 2; i += 1) {
+      handle.blur();
+      expect(document.activeElement).not.toBe(handle);
+      enter();
+      await settle();
+      expect(oncreate).not.toHaveBeenCalled();
+      expect(stepName()).toBe("tune");
+      expect(document.activeElement).toBe(q('[data-testid="chat-bot-handle"]'));
+    }
   });
   it("creates a Local bot under a derived handle and keeps the display name beside it", async () => {
     const oncreate = vi.fn(async () => undefined);

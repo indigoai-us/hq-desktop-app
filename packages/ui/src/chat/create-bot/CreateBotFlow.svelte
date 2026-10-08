@@ -320,7 +320,8 @@
   let runtimeAnswered = false;
 
   /** Finish sent the person to Fine-tune to fix the handle: focus it there. */
-  let focusHandle = $state(false);
+  /** Bumped each time Finish sends the person to Fine-tune for the handle. */
+  let focusHandle = $state(0);
 
   const busy = $derived(entryBusy !== null && entryBusy !== undefined);
   const steps = $derived(stepsFor(draft, stepOpts));
@@ -341,6 +342,32 @@
   const cloudQuoteCompanyUid = $derived(
     draft.home === "cloud" ? (draft.companyUid ?? "").trim() : "",
   );
+  /**
+   * The cloud company step's one plan line: the price of the size Finish
+   * would create, or that the company's plan includes it. Finish and Enter
+   * wait for it, so a paid bot is never made before its price is shown.
+   * The details step shows the full size and price list itself.
+   */
+  const cloudPricedSize = $derived(
+    draft.home === "cloud" && cloudQuoteStatus === "ready"
+      ? (cloudProvisionOptions?.options.find(
+          (option) => option.key === draft.size && option.selectable && option.netMonthlyCents !== null,
+        ) ?? null)
+      : null,
+  );
+  const cloudPlanLine = $derived.by(() => {
+    const option = cloudPricedSize;
+    if (!option || option.netMonthlyCents === null) return "";
+    const company = cloudCompany?.label?.trim() ?? "";
+    if (option.notBilled || option.netMonthlyCents === 0) {
+      return company ? `Included with ${company}'s plan.` : "Included with your company's plan.";
+    }
+    const price = `$${(option.netMonthlyCents / 100).toFixed(2)}/month for ${option.productName}`;
+    return company ? `${price}, billed to ${company}.` : `${price}.`;
+  });
+  const showsCloudPlan = $derived(phase === "steps" && draft.home === "cloud" && step !== "details");
+  /** Finish from a cloud step before details: only once the plan line is shown. */
+  const cloudFinishBlocked = $derived(showsCloudPlan && !cloudPlanLine);
   /**
    * Step dots for the whole New bot: the name, the where question when it
    * is part of this New bot (asked here or by the host), then the home's
@@ -488,7 +515,7 @@
 
   function goTo(next: CreateBotStep): void {
     phase = "steps";
-    if (next !== step) focusHandle = false;
+    if (next !== step) focusHandle = 0;
     step = next;
   }
 
@@ -552,7 +579,7 @@
    * field focused when that is the problem.
    */
   async function submit(): Promise<void> {
-    if (busy) return;
+    if (busy || cloudFinishBlocked) return;
     if (draft.home === "local") {
       const fixed = withFreeHandle(draft, names);
       if (fixed !== draft) draft = fixed;
@@ -561,7 +588,7 @@
       const blocking = firstBlockingStep(draft, ctx, stepOpts);
       if (blocking) {
         goTo(blocking);
-        focusHandle = blocking === "tune";
+        if (blocking === "tune") focusHandle += 1;
       }
       return;
     }
@@ -612,7 +639,7 @@
     if (target?.tagName === "BUTTON" || target?.tagName === "TEXTAREA") return;
     event.preventDefault();
     event.stopPropagation();
-    if (busy) return;
+    if (busy || cloudFinishBlocked) return;
     void submit();
   }
 
@@ -655,7 +682,7 @@
     {cloudReason}
     total={totalSteps}
     current={2}
-    onback={() => (phase = "name")}
+    onback={() => (givenName ? onback?.(draft.name.trim()) : (phase = "name"))}
     backTestId="create-bot-back"
     backDisabled={busy}
     onpick={pickHome}
@@ -776,6 +803,11 @@
       </p>
     {/if}
     {#if shownIssue}<p class="new-bot-price" data-testid="create-bot-issue" aria-live="polite">{shownIssue}</p>{/if}
+    {#if showsCloudPlan && !shownIssue}
+      <p class="new-bot-price new-bot-plan-line" data-testid="create-bot-plan" data-state={cloudPlanLine ? "ready" : cloudQuoteStatus === "error" ? "error" : "checking"} aria-live="polite">
+        {#if cloudPlanLine}{cloudPlanLine}{:else if cloudQuoteStatus === "error"}Couldn't check the plan. <button type="button" class="new-bot-inline-link" data-testid="create-bot-plan-retry" disabled={busy} onclick={() => (quoteReloadToken += 1)}>Try again</button>{:else}Checking plan...{/if}
+      </p>
+    {/if}
     <!-- Every step but the last: "Next: <step>" and "Finish with defaults",
          side by side. The last: only "Create <Name>". -->
     <div class="new-bot-foot-actions" class:single={isLast}>
@@ -793,7 +825,7 @@
         class="new-bot-create-submit"
         data-testid="chat-bot-create"
         data-finish={isLast ? undefined : "defaults"}
-        disabled={busy || (isLast ? !createOk : !!issue)}
+        disabled={busy || cloudFinishBlocked || (isLast ? !createOk : !!issue)}
         aria-busy={busy ? "true" : undefined}
         onclick={() => void submit()}
       >{primaryLabel}</button>
