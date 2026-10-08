@@ -254,6 +254,27 @@ describe("startReadinessPoll", () => {
     expect(gaps).toEqual([10_000, 20_000, 40_000, 60_000, 60_000]);
   });
 
+  it("logs a thrown read and keeps the first-failure backoff", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const readOnce = reads(new Error("offline"));
+    const stop = startReadinessPoll(readOnce, { onlineTarget: null });
+    try {
+      await settled();
+      expect(readOnce).toHaveBeenCalledTimes(1);
+      expect(warning).toHaveBeenCalledWith(
+        "[hq-ui] agent readiness read failed:",
+        expect.any(Error),
+      );
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(readOnce).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(readOnce).toHaveBeenCalledTimes(2);
+    } finally {
+      stop();
+      warning.mockRestore();
+    }
+  });
+
   it("reads at once when the connection comes back, and starts the back-off over", async () => {
     const target = new EventTarget();
     const readOnce = reads({ kind: "failed" }, { kind: "failed" }, { kind: "failed" }, { kind: "failed" }, NOT_READY);

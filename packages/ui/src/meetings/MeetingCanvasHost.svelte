@@ -17,7 +17,7 @@
   } from "./active-meetings";
   import MeetingCanvas from "./MeetingCanvas.svelte";
   import { meetingsStore } from "./meetings-store.svelte";
-  import { withRecordedDocument, withRecordedEvents } from "./recorded-meetings";
+  import { withRecordedEvents, withRecordedNotes } from "./recorded-meetings";
   import { meetingsRailState } from "./meetings-rail-state.svelte";
   import { defaultMeetingId, meetingsRailSections } from "./meetings-rail-model";
   import { botForEvent, pickLiveMeeting } from "./meetings-model";
@@ -83,11 +83,9 @@
     untrack(() => void meetingsStore.loadRecordedNotes(id, companyUid));
   });
   const notesEntry = $derived(recordedId ? meetingsStore.recordedNotes[recordedId] : undefined);
-  const shownEvent = $derived(
-    event && notesEntry?.signals
-      ? withRecordedDocument({ ...event, signals: notesEntry.signals }, notesEntry.document)
-      : event,
-  );
+  // The synced document shows as soon as it is read; the recap fills in
+  // when hq-pro's detail and signal bodies arrive.
+  const shownEvent = $derived(event ? withRecordedNotes(event, notesEntry) : event);
   const notesLoading = $derived(Boolean(recordedId) && (!notesEntry || notesEntry.status === "loading"));
   const notesFailed = $derived(notesEntry?.status === "error");
   const companyName = $derived(

@@ -127,6 +127,7 @@ export type DesktopAuthErrorCategory =
 export interface EmitDesktopAuthProgressOptions {
   provider: string;
   step: DesktopAuthProgressStep;
+  sessionId?: string;
   invokeCommand?: InvokeCommand;
 }
 
@@ -158,11 +159,13 @@ export function classifyDesktopAuthError(error: unknown): DesktopAuthErrorCatego
 export async function emitDesktopAuthProgress({
   provider,
   step,
+  sessionId,
   invokeCommand,
 }: EmitDesktopAuthProgressOptions): Promise<void> {
   await emitDesktopOperationalTelemetry({
     eventName: 'desktop_auth_progress',
     properties: { provider, step },
+    sessionId,
     invokeCommand,
   });
 }

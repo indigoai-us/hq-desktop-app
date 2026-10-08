@@ -62,6 +62,19 @@ pub struct LifecycleInputs {
     /// fresh-install Welcome card after an auto-update relaunch briefly makes
     /// the read fail (customer report 2026-09-19, v0.10.296 -> v0.10.297).
     pub evidence_unreadable: bool,
+    /// A prior setup on this machine explicitly recorded the HQ folder path
+    /// (hq-installer v0.1.28+ writes `menubar.json.hqPath` at the end of the
+    /// install wizard; the Settings re-tether writes the same key; older
+    /// installer flows wrote `config.json.hq_folder_path`), AND the folder
+    /// those keys name is currently a valid HQ root on disk. This is durable
+    /// evidence that this app installation ran its folder-choice step before,
+    /// even when the app-local completion markers (`installCompleted`,
+    /// `firstRunCompleted`, `machineId`) were later lost — for example by the
+    /// menubar.json concurrent-writer race fixed in #1307, or on a build that
+    /// predated those markers. A truly fresh app install has not yet written
+    /// either path key, so this flag stays false and the reinstall-still-owes
+    /// gate still fires for the scenario #1226 targets.
+    pub hq_root_recorded_by_prior_setup: bool,
 }
 
 /// Classifier verdict: the state plus whether the caller should backfill
@@ -102,15 +115,16 @@ pub fn require_local_toolchain(verdict: LifecycleVerdict, tools_present: bool) -
     }
 }
 
-/// During an updater restart, missing tools on a previously installed machine
-/// must resume at setup repair instead of reopening first-run onboarding. Fresh
-/// installs and the consent-only first-run state keep their existing routing.
-pub fn require_local_toolchain_after_updater_restart(
+/// Missing tools must not reopen onboarding after an ordinary launch of a
+/// completed install. Updater restarts retain their repair routing, and fresh
+/// installs or consent-only first runs still require setup.
+pub fn require_local_toolchain_for_startup(
     verdict: LifecycleVerdict,
-    tools_present: bool,
+    hq_resolved: bool,
+    node_resolved: bool,
     updater_restart: bool,
 ) -> LifecycleVerdict {
-    if tools_present {
+    if hq_resolved && node_resolved {
         return verdict;
     }
 
@@ -127,6 +141,10 @@ pub fn require_local_toolchain_after_updater_restart(
             needs_install_backfill: false,
             needs_first_run_backfill: false,
         };
+    }
+
+    if verdict.state == LifecycleState::SteadyState && !hq_resolved && node_resolved {
+        return verdict;
     }
 
     require_local_toolchain(verdict, false)
@@ -433,9 +451,17 @@ pub fn classify_lifecycle(inputs: LifecycleInputs) -> LifecycleVerdict {
     // launch/restart. The ordinary rule is "valid HQ folder + (prior setup OR
     // auth on disk) => installed, show the menu bar"; the narrow readable,
     // unmarked reinstall case below overrides it while consent is unanswered.
-    let has_prior_setup = has_app_local_setup_marker || inputs.config_valid;
+    let has_prior_setup =
+        has_app_local_setup_marker || inputs.config_valid || inputs.hq_root_recorded_by_prior_setup;
+    // A long-time user whose menubar.json keys were lost (e.g. the race fixed
+    // in #1307) still carries the HQ folder path a prior setup wrote. Treat
+    // that as prior-setup proof so #1226's reinstall gate does NOT send them
+    // back through the folder-choice step. A truly fresh app install never
+    // reaches this branch because the installer has not yet written hqPath or
+    // config.json.hq_folder_path pointing at a valid HQ root.
     let reinstall_still_owes_full_setup = inputs.hq_root_valid
         && !has_app_local_setup_marker
+        && !inputs.hq_root_recorded_by_prior_setup
         && !inputs.consent_answered
         && !inputs.evidence_unreadable
         && (inputs.has_auth || inputs.config_valid);
@@ -514,6 +540,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         }
     }
 
@@ -533,6 +560,7 @@ mod tests {
             hq_root_valid: false,
             has_auth: false,
             evidence_unreadable: true,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
 
@@ -545,6 +573,7 @@ mod tests {
     fn unreadable_evidence_does_not_wave_a_new_machine_through() {
         let verdict = classify_lifecycle(LifecycleInputs {
             evidence_unreadable: true,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
 
@@ -571,6 +600,7 @@ mod tests {
             has_auth: false,
             consent_answered: true,
             evidence_unreadable: root_probe == HqRootProbe::Unreadable,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -587,6 +617,7 @@ mod tests {
             had_machine_id: true,
             hq_root_valid: true,
             evidence_unreadable: true,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
 
@@ -600,6 +631,7 @@ mod tests {
             first_run_completed: true,
             install_in_progress: true,
             evidence_unreadable: true,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
 
@@ -615,6 +647,7 @@ mod tests {
             hq_root_valid: false,
             has_auth: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
             ..input()
         });
         assert_eq!(verdict.state, LifecycleState::NeedsAuthForInstall);
@@ -650,6 +683,7 @@ mod tests {
                 hq_root_valid: false,
                 has_auth: false,
                 evidence_unreadable: false,
+                hq_root_recorded_by_prior_setup: false,
                 ..input()
             });
             assert_eq!(
@@ -742,6 +776,7 @@ mod tests {
             install_in_progress: true,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstallResume);
@@ -771,6 +806,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
@@ -792,6 +828,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::InstalledLegacyUpdate);
@@ -814,6 +851,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
@@ -881,6 +919,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(
@@ -910,6 +949,7 @@ mod tests {
                 install_in_progress: false,
                 consent_answered,
                 evidence_unreadable: false,
+                hq_root_recorded_by_prior_setup: false,
             }
         };
 
@@ -959,10 +999,69 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
         assert!(!verdict.needs_install_backfill);
+    }
+
+    #[test]
+    fn completed_authenticated_install_with_valid_root_does_not_reopen_onboarding_when_hq_missing() {
+        let inputs = LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        };
+        let classified = classify_lifecycle(inputs);
+        assert_eq!(classified.state, LifecycleState::SteadyState);
+
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
+        assert_eq!(
+            startup.state,
+            LifecycleState::SteadyState,
+            "a completed authenticated install with a valid HQ root must not reopen onboarding when the hq executable is unresolved"
+        );
+        assert!(!installation_required(startup.state));
+    }
+
+    #[test]
+    fn completed_install_still_routes_to_install_when_node_is_missing() {
+        let classified = classify_lifecycle(LifecycleInputs {
+            install_completed: true,
+            first_run_completed: true,
+            had_machine_id: true,
+            config_valid: false,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: true,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+        let startup = require_local_toolchain_for_startup(classified, true, false, false);
+
+        assert_eq!(startup.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(startup.state));
+    }
+
+    #[test]
+    fn genuinely_uninstalled_authenticated_user_still_routes_to_install_when_hq_missing() {
+        let classified = classify_lifecycle(LifecycleInputs {
+            has_auth: true,
+            ..input()
+        });
+        let startup = require_local_toolchain_for_startup(classified, false, true, false);
+
+        assert_eq!(startup.state, LifecycleState::NeedsInstall);
+        assert!(installation_required(startup.state));
     }
 
     #[test]
@@ -1023,11 +1122,69 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(verdict.state, LifecycleState::SteadyState);
         // No installCompleted marker yet, so the caller should backfill it.
         assert!(verdict.needs_install_backfill);
+    }
+
+    #[test]
+    fn long_time_user_with_recorded_hq_root_but_lost_menubar_markers_stays_installed() {
+        // Spice/Maxx report (2026-10-05, v0.10.395): a long-time user's menubar.json
+        // lost its installCompleted/firstRunCompleted/machineId keys (the concurrent-
+        // writer race fixed in #1307), their consent predates the current prompt, but
+        // the prior install still has a recorded hqPath pointing at their populated
+        // HQ folder. #1226's reinstall gate must not route them back through
+        // folder-choice onboarding — the folder is theirs and the app recorded it.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            install_completed: false,
+            first_run_completed: false,
+            had_machine_id: false,
+            config_valid: true,
+            hq_root_valid: true,
+            has_auth: true,
+            install_in_progress: false,
+            consent_answered: false,
+            evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: true,
+        });
+
+        // Routed to consent-only onboarding (not folder-choice/NeedsInstall).
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+    }
+
+    #[test]
+    fn recorded_hq_root_without_any_markers_or_consent_still_bypasses_folder_choice() {
+        // Even without a parseable config.json, a recorded hqPath that resolves to
+        // a valid HQ root is prior-setup evidence. The user still owes consent, but
+        // not folder-choice.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            hq_root_valid: true,
+            has_auth: true,
+            hq_root_recorded_by_prior_setup: true,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::InstalledFirstRun);
+    }
+
+    #[test]
+    fn fresh_app_install_without_a_recorded_hq_root_still_routes_through_setup() {
+        // #1226 scenario preserved: a brand-new app install that hasn't yet
+        // written hqPath or config.json.hq_folder_path. The HQ root is readable
+        // (synced down or left over) and auth is present, but no prior setup on
+        // this app installation recorded the folder choice. Must route through
+        // full setup so the user confirms the folder before extraction.
+        let verdict = classify_lifecycle(LifecycleInputs {
+            hq_root_valid: true,
+            has_auth: true,
+            hq_root_recorded_by_prior_setup: false,
+            ..input()
+        });
+
+        assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
     #[test]
@@ -1092,6 +1249,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
         let steady_state = classify_lifecycle(LifecycleInputs {
             install_completed: true,
@@ -1103,6 +1261,7 @@ mod tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
 
         assert_eq!(first_run.state, LifecycleState::InstalledFirstRun);
@@ -1410,6 +1569,7 @@ mod toolchain_readiness_tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         };
         assert_eq!(
             classify_lifecycle(inputs).state,
@@ -1482,6 +1642,7 @@ mod toolchain_readiness_tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         });
         let verdict = require_local_toolchain(fresh_install, tools_present);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
@@ -1523,11 +1684,12 @@ mod toolchain_readiness_tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         };
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);
 
-        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::InstallResume);
         assert!(!verdict.needs_install_backfill && !verdict.needs_first_run_backfill);
         assert!(installation_required(verdict.state));
@@ -1545,9 +1707,10 @@ mod toolchain_readiness_tests {
             install_in_progress: false,
             consent_answered: false,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         };
         let classified = classify_lifecycle(inputs);
-        let verdict = require_local_toolchain_after_updater_restart(classified, false, true);
+        let verdict = require_local_toolchain_for_startup(classified, false, false, true);
         assert_eq!(verdict.state, LifecycleState::NeedsInstall);
     }
 
@@ -1568,6 +1731,7 @@ mod toolchain_readiness_tests {
             install_in_progress: false,
             consent_answered: true,
             evidence_unreadable: false,
+            hq_root_recorded_by_prior_setup: false,
         };
         let classified = classify_lifecycle(inputs);
         assert_eq!(classified.state, LifecycleState::SteadyState);

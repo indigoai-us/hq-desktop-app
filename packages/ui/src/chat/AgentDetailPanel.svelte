@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
@@ -16,21 +17,50 @@
   import type { AvatarPack, AvatarSelection } from "../avatars/types.js";
   import {
     defaultTelemetryRange,
+    draftFromRoutine,
+    emptyRoutineDraft,
+    freshnessNote,
+    groupRoutines,
     headerFromMobileRoster,
     headerFromStatusPayload,
     jobsFromPayload,
     ownerLabelFromPayload,
     ownersIncludePerson,
+    profileFromPayload,
+    routineActionRequest,
+    routineBodyFromDraft,
     seedHeader,
     unavailableMessage,
     usageFromCompanyTelemetry,
     type AgentDetailHeader,
     type AgentJobRow,
+    type AgentProfileView,
+    type AgentRoutineRow,
     type AgentUsageView,
     type LoadState,
+    type RoutineActionId,
+    type RoutineCadence,
+    type RoutineDraft,
   } from "./agent-detail-model.js";
   import "./tokens.css";
   import "./chat-tokens.css";
+
+  const ROUTINE_CADENCE_OPTIONS: { value: RoutineCadence; label: string }[] = [
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "interval", label: "Every few minutes" },
+    { value: "once", label: "One time" },
+    { value: "custom", label: "Custom (cron)" },
+  ];
+  const WEEKDAY_OPTIONS = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ].map((day, i) => ({ value: String(i), label: day }));
 
   interface Props {
     agentUid: string;
@@ -77,6 +107,14 @@
   let header = $state<AgentDetailHeader>(
     seedHeader({ uid: "", displayName: "" }),
   );
+  let profile = $state<AgentProfileView | null>(null);
+  let titleDraft = $state("");
+  let routines = $state<AgentRoutineRow[]>([]);
+  let routineDraft = $state<RoutineDraft | null>(null);
+  let routineEditId = $state<string | null>(null);
+  let routineBusy = $state(false);
+  let routineError = $state<string | null>(null);
+  let appsExpanded = $state(false);
   let jobsState = $state<LoadState<AgentJobRow[]>>({ status: "loading" });
   let usageState = $state<LoadState<AgentUsageView>>({ status: "loading" });
   let expandedJobId = $state<string | null>(null);
@@ -84,9 +122,9 @@
   let descriptionDraft = $state("");
   let saveBusy = $state(false);
   let saveError = $state<string | null>(null);
-  let confirm = $state<"pause-agent" | "remove-agent" | "pause-job" | null>(
-    null,
-  );
+  let confirm = $state<
+    "pause-agent" | "remove-agent" | "pause-job" | "delete-routine" | null
+  >(null);
   let pendingJobId = $state<string | null>(null);
   let actionError = $state<string | null>(null);
   let copied = $state(false);
@@ -95,6 +133,8 @@
   const canManage = $derived(
     header.canManage || isAdmin === true,
   );
+  const routineGroups = $derived(groupRoutines(routines));
+  const freshness = $derived(profile ? freshnessNote(profile.freshness) : null);
 
   $effect(() => {
     const uid = agentUid;
@@ -112,6 +152,13 @@
     descriptionDraft = description ?? "";
     jobsState = { status: "loading" };
     usageState = { status: "loading" };
+    profile = null;
+    titleDraft = "";
+    routines = [];
+    routineDraft = null;
+    routineEditId = null;
+    routineError = null;
+    appsExpanded = false;
     expandedJobId = null;
     saveError = null;
     actionError = null;
@@ -131,18 +178,40 @@
 
     async function load(): Promise<void> {
       const range = defaultTelemetryRange(30);
+      const usagePromise = company
+        ? agents.getCompanyTelemetry(company, range.from, range.to)
+        : Promise.resolve({
+            ok: false as const,
+            reason: "unavailable" as const,
+            message: "No company is bound to this conversation.",
+          });
+      const profileRes = agents.getProfile
+        ? await agents.getProfile(uid)
+        : null;
+      if (cancelled) return;
+      const owned = profileRes?.ok
+        ? profileFromPayload(profileRes.value, currentSeed)
+        : null;
+
+      if (owned) {
+        profile = owned;
+        header = owned.header;
+        routines = owned.routines;
+        nameDraft = owned.header.displayName;
+        titleDraft = owned.header.title;
+        descriptionDraft = owned.header.description;
+        const usageRes = await usagePromise;
+        if (cancelled) return;
+        applyUsage(usageRes);
+        return;
+      }
+
       const [statusRes, rosterRes, jobsRes, usageRes, ownersRes] =
         await Promise.all([
           agents.getStatus(uid),
           agents.listMobileRoster(company),
           agents.listJobs(uid),
-          company
-            ? agents.getCompanyTelemetry(company, range.from, range.to)
-            : Promise.resolve({
-                ok: false as const,
-                reason: "unavailable" as const,
-                message: "No company is bound to this conversation.",
-              }),
+          usagePromise,
           company
             ? agents.listOwners(company, uid)
             : Promise.resolve({
@@ -187,6 +256,14 @@
         };
       }
 
+      applyUsage(usageRes);
+    }
+
+    function applyUsage(
+      usageRes:
+        | { ok: true; value: unknown }
+        | { ok: false; reason: string; code?: string; message?: string },
+    ): void {
       if (usageRes.ok) {
         const usage = usageFromCompanyTelemetry(usageRes.value, uid);
         usageState = {
@@ -252,14 +329,22 @@
     if (!canManage || saveBusy) return;
     saveBusy = true;
     saveError = null;
-    const patch: { displayName?: string; description?: string } = {};
+    const patch: { displayName?: string; title?: string; description?: string } =
+      {};
     if (nameDraft.trim() !== header.displayName) {
       patch.displayName = nameDraft.trim();
+    }
+    if (profile && titleDraft.trim() !== header.title) {
+      patch.title = titleDraft.trim();
     }
     if (descriptionDraft.trim() !== header.description) {
       patch.description = descriptionDraft.trim();
     }
-    if (!patch.displayName && patch.description === undefined) {
+    if (
+      !patch.displayName &&
+      patch.title === undefined &&
+      patch.description === undefined
+    ) {
       saveBusy = false;
       return;
     }
@@ -273,6 +358,7 @@
     header = {
       ...header,
       displayName: patch.displayName ?? header.displayName,
+      title: patch.title ?? header.title,
       description:
         patch.description !== undefined ? patch.description : header.description,
     };
@@ -295,6 +381,77 @@
         ),
       };
     }
+  }
+
+  function openRoutineEditor(row: AgentRoutineRow | null): void {
+    routineError = null;
+    routineEditId = row?.id ?? null;
+    routineDraft = row ? draftFromRoutine(row) : emptyRoutineDraft();
+  }
+
+  function closeRoutineEditor(): void {
+    routineDraft = null;
+    routineEditId = null;
+    routineError = null;
+  }
+
+  async function runRoutineAction(
+    actionId: RoutineActionId,
+    jobId?: string,
+    body?: Record<string, unknown>,
+  ): Promise<boolean> {
+    const send = adapter.agents.runtimeAction;
+    if (!send || routineBusy) return false;
+    routineBusy = true;
+    routineError = null;
+    const res = await send.call(
+      adapter.agents,
+      agentUid,
+      routineActionRequest(actionId, crypto.randomUUID(), jobId, body),
+    );
+    routineBusy = false;
+    if (!res.ok) {
+      routineError = res.message ?? "The bot could not do that.";
+      return false;
+    }
+    return true;
+  }
+
+  async function setRoutineEnabled(
+    row: AgentRoutineRow,
+    enabled: boolean,
+  ): Promise<void> {
+    const done = await runRoutineAction(
+      enabled ? "cron.resume" : "cron.pause",
+      row.id,
+    );
+    if (done) {
+      routines = routines.map((r) => (r.id === row.id ? { ...r, enabled } : r));
+    }
+  }
+
+  async function deleteRoutine(id: string): Promise<void> {
+    const done = await runRoutineAction("cron.delete", id);
+    if (done) routines = routines.filter((r) => r.id !== id);
+  }
+
+  async function saveRoutine(): Promise<void> {
+    if (!routineDraft) return;
+    const body = routineBodyFromDraft(routineDraft);
+    if (!body) {
+      routineError = "Add a name, instructions and a valid schedule.";
+      return;
+    }
+    const done = await runRoutineAction(
+      routineEditId ? "cron.update" : "cron.create",
+      routineEditId ?? undefined,
+      body,
+    );
+    if (!done) return;
+    closeRoutineEditor();
+    const fresh = await adapter.agents.getProfile?.(agentUid);
+    const next = fresh?.ok ? profileFromPayload(fresh.value, header) : null;
+    if (next?.hasBox) routines = next.routines;
   }
 
   async function pauseAgent(): Promise<void> {
@@ -409,6 +566,374 @@
       </div>
     </dl>
 
+    {#if freshness}
+      <p class="ad-muted" data-testid="agent-detail-freshness">{freshness}</p>
+    {/if}
+
+    {#if profile}
+      {@const view = profile}
+      <section class="ad-section" data-testid="agent-detail-channels">
+        <h3 class="ad-kicker">Channels</h3>
+        {#if view.channels.length === 0}
+          <p class="ad-muted">No connected platforms.</p>
+        {:else}
+          <ul class="ad-rows">
+            {#each view.channels as channel (channel.name)}
+              <li data-testid="agent-detail-channel-row">
+                <span class="ad-row-title">{channel.name}</span>
+                <span class="ad-row-meta">{channel.state}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
+      <section class="ad-section" data-testid="agent-detail-apps">
+        <h3 class="ad-kicker">Apps</h3>
+        {#if !view.hasBox}
+          <p class="ad-muted">Apps are not available right now.</p>
+        {:else if !view.apps.probed && view.apps.ready.length === 0 && view.apps.connectable.length === 0}
+          <p class="ad-muted">Apps have not been checked yet.</p>
+        {:else}
+          {#if view.apps.featured.length > 0}
+            <div class="ad-chips" data-testid="agent-detail-apps-featured">
+              {#each view.apps.featured as app (app.provider)}
+                <span>{app.name}</span>
+              {/each}
+            </div>
+          {/if}
+          <button
+            type="button"
+            class="ad-text-btn ad-left"
+            data-testid="agent-detail-apps-ready"
+            aria-expanded={appsExpanded}
+            onclick={() => (appsExpanded = !appsExpanded)}
+          >
+            {view.apps.ready.length} ready {appsExpanded ? "−" : "+"}
+          </button>
+          {#if appsExpanded}
+            <ul class="ad-rows">
+              {#each view.apps.ready as app (app.provider + app.name)}
+                <li data-testid="agent-detail-app-ready-row">
+                  <span class="ad-row-title">{app.name}</span>
+                  <span class="ad-row-meta">Connected</span>
+                  {#if app.tools != null}
+                    <span class="ad-row-meta">{app.tools} tools</span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if view.apps.connectable.length > 0}
+            <h4 class="ad-sub">Available to connect</h4>
+            <ul class="ad-rows" data-testid="agent-detail-apps-connectable">
+              {#each view.apps.connectable as app (app.provider)}
+                <li data-testid="agent-detail-app-connect-row">
+                  <span class="ad-row-title">{app.name}</span>
+                  <button type="button" class="ad-text-btn">Connect</button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        {/if}
+      </section>
+
+      <section class="ad-section" data-testid="agent-detail-routines">
+        <h3 class="ad-kicker">Routines ({routines.length})</h3>
+        {#if !view.hasBox}
+          <p class="ad-muted" data-testid="agent-detail-routines-unavailable">
+            Routines are not available right now.
+          </p>
+        {:else if routines.length === 0 && !routineDraft}
+          <p class="ad-muted" data-testid="agent-detail-routines-empty">
+            No routines yet.
+          </p>
+        {/if}
+        {#each routineGroups as group (group.cadence)}
+          <h4 class="ad-sub">{group.label}</h4>
+          <ul class="ad-jobs">
+            {#each group.routines as routine (routine.id)}
+              <li class="ad-job" data-testid="agent-detail-routine-row">
+                <button
+                  type="button"
+                  class="ad-job-toggle"
+                  aria-expanded={expandedJobId === routine.id}
+                  onclick={() =>
+                    (expandedJobId =
+                      expandedJobId === routine.id ? null : routine.id)}
+                >
+                  <span class="ad-job-title">{routine.name}</span>
+                  {#if routine.source === "hq"}
+                    <span class="ad-note" data-testid="agent-detail-routine-source">HQ</span>
+                  {/if}
+                  <span class="ad-job-cadence">{routine.schedule}</span>
+                  <span class="ad-job-meta">
+                    {#if routine.lastRan}
+                      Last ran {routine.lastRan}{#if routine.lastStatus}
+                        · {routine.lastStatus}{/if}
+                    {:else}
+                      Never ran
+                    {/if}
+                    {#if routine.nextRun}· next {routine.nextRun}{/if}
+                    {#if routine.deliverTo}· {routine.deliverTo}{/if}
+                  </span>
+                </button>
+                <span
+                  class="ad-badge"
+                  data-active={routine.enabled ? "true" : "false"}
+                  data-testid="agent-detail-routine-badge"
+                >
+                  {routine.enabled ? "ACTIVE" : "PAUSED"}
+                </span>
+                {#if routine.editable}
+                <div class="ad-row-actions">
+                  <button
+                    type="button"
+                    class="ad-text-btn"
+                    data-testid="agent-detail-routine-toggle"
+                    disabled={routineBusy}
+                    onclick={() =>
+                      void setRoutineEnabled(routine, !routine.enabled)}
+                  >
+                    {routine.enabled ? "Pause" : "Resume"}
+                  </button>
+                  <button
+                    type="button"
+                    class="ad-text-btn"
+                    data-testid="agent-detail-routine-run"
+                    disabled={routineBusy}
+                    onclick={() => void runRoutineAction("cron.trigger", routine.id)}
+                  >
+                    Run now
+                  </button>
+                  <button
+                    type="button"
+                    class="ad-text-btn"
+                    data-testid="agent-detail-routine-edit"
+                    onclick={() => openRoutineEditor(routine)}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="ad-text-btn danger"
+                    data-testid="agent-detail-routine-delete"
+                    onclick={() => {
+                      pendingJobId = routine.id;
+                      confirm = "delete-routine";
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+                {/if}
+                {#if expandedJobId === routine.id}
+                  <pre class="ad-prompt">{routine.prompt || "No instructions."}</pre>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/each}
+        {#if routineDraft}
+          <div class="ad-editor" data-testid="agent-detail-routine-editor">
+            <label class="ad-field">
+              <span>Name</span>
+              <input
+                data-testid="agent-detail-routine-name"
+                bind:value={routineDraft.name}
+                maxlength="80"
+              />
+            </label>
+            <label class="ad-field">
+              <span>Instructions</span>
+              <textarea
+                data-testid="agent-detail-routine-prompt"
+                bind:value={routineDraft.prompt}
+                rows="4"
+              ></textarea>
+            </label>
+            <label class="ad-field">
+              <span>Repeats</span>
+              <Dropdown
+                block
+                testid="agent-detail-routine-cadence"
+                label="Repeats"
+                value={routineDraft.cadence}
+                options={ROUTINE_CADENCE_OPTIONS}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.cadence = v as RoutineCadence;
+                }}
+              />
+            </label>
+            {#if routineDraft.cadence === "daily" || routineDraft.cadence === "weekly"}
+              <label class="ad-field">
+                <span>Time (bot timezone)</span>
+                <input type="time" bind:value={routineDraft.time} />
+              </label>
+            {/if}
+            {#if routineDraft.cadence === "weekly"}
+              <label class="ad-field">
+                <span>Day</span>
+                <Dropdown
+                  block
+                  testid="agent-detail-routine-weekday"
+                  label="Day"
+                  value={String(routineDraft.weekday)}
+                  options={WEEKDAY_OPTIONS}
+                  onchange={(v) => {
+                    if (routineDraft) routineDraft.weekday = Number(v);
+                  }}
+                />
+              </label>
+            {/if}
+            {#if routineDraft.cadence === "interval"}
+              <label class="ad-field">
+                <span>Minutes between runs</span>
+                <input
+                  type="number"
+                  min="1"
+                  bind:value={routineDraft.intervalMinutes}
+                />
+              </label>
+            {/if}
+            {#if routineDraft.cadence === "once"}
+              <label class="ad-field">
+                <span>Run at</span>
+                <input type="datetime-local" bind:value={routineDraft.onceAt} />
+              </label>
+            {/if}
+            {#if routineDraft.cadence === "custom"}
+              <label class="ad-field">
+                <span>Schedule</span>
+                <input bind:value={routineDraft.custom} placeholder="0 9 * * 1-5" />
+              </label>
+            {/if}
+            <label class="ad-field">
+              <span>Send results to</span>
+              <Dropdown
+                block
+                testid="agent-detail-routine-deliver"
+                label="Send results to"
+                value={routineDraft.deliver}
+                options={[
+                  ...(routineEditId ? [{ value: "", label: "Keep as is" }] : []),
+                  { value: "origin", label: "Where it was asked" },
+                  { value: "local", label: "Keep on the bot" },
+                  ...view.deliverOptions.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  })),
+                ]}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.deliver = v;
+                }}
+              />
+            </label>
+            <div class="ad-row-actions">
+              <button
+                type="button"
+                class="ad-btn"
+                data-testid="agent-detail-routine-save"
+                disabled={routineBusy}
+                onclick={() => void saveRoutine()}
+              >
+                {routineBusy ? "Saving…" : routineEditId ? "Save routine" : "Create routine"}
+              </button>
+              <button type="button" class="ad-text-btn" onclick={closeRoutineEditor}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        {:else if view.hasBox}
+          <button
+            type="button"
+            class="ad-text-btn ad-left"
+            data-testid="agent-detail-routine-new"
+            onclick={() => openRoutineEditor(null)}
+          >
+            + New routine
+          </button>
+        {/if}
+        {#if routineError}
+          <p class="ad-error" data-testid="agent-detail-routine-error">{routineError}</p>
+        {/if}
+      </section>
+
+      <section class="ad-section" data-testid="agent-detail-brain">
+        <h3 class="ad-kicker">Brain</h3>
+        <dl class="ad-meta">
+          {#if view.brain.model}
+            <div>
+              <dt>Model</dt>
+              <dd data-testid="agent-detail-brain-model">
+                {view.brain.model}{#if view.brain.reasoningEffort}
+                  · {view.brain.reasoningEffort}{/if}
+              </dd>
+            </div>
+          {/if}
+          {#if view.role}
+            <div>
+              <dt>Role</dt>
+              <dd>{view.role}</dd>
+            </div>
+          {/if}
+          {#if view.header.ownerLabel}
+            <div>
+              <dt>Owner</dt>
+              <dd>{view.header.ownerLabel}</dd>
+            </div>
+          {/if}
+        </dl>
+        {#if view.brain.logins.length > 0}
+          <ul class="ad-rows" data-testid="agent-detail-brain-logins">
+            {#each view.brain.logins as login (login.provider)}
+              <li>
+                <span class="ad-row-title">{login.provider}</span>
+                <span class="ad-row-meta">
+                  {login.status}{#if login.mode}
+                    · {login.mode}{/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+
+      <section class="ad-section" data-testid="agent-detail-persona">
+        <h3 class="ad-kicker">Persona</h3>
+        <label class="ad-field">
+          <span>Title</span>
+          <input
+            data-testid="agent-detail-title-input"
+            bind:value={titleDraft}
+            maxlength="60"
+            disabled={!view.editable.title}
+          />
+        </label>
+        <label class="ad-field">
+          <span>Description</span>
+          <textarea
+            data-testid="agent-detail-description-input"
+            bind:value={descriptionDraft}
+            maxlength="140"
+            rows="3"
+            disabled={!view.editable.description}
+          ></textarea>
+        </label>
+        {#if saveError}
+          <p class="ad-error">{saveError}</p>
+        {/if}
+        <button
+          type="button"
+          class="ad-btn"
+          data-testid="agent-detail-save"
+          disabled={saveBusy}
+          onclick={() => void saveProfile()}
+        ><RailIcon name="save" />
+          {saveBusy ? "Saving…" : "Save"}
+        </button>
+      </section>
+    {:else}
     <section class="ad-section" data-testid="agent-detail-jobs">
       <h3 class="ad-kicker">
         Scheduled jobs{jobsState.status === "ready"
@@ -481,6 +1006,7 @@
         </ul>
       {/if}
     </section>
+    {/if}
 
     <section class="ad-section" data-testid="agent-detail-usage">
       <h3 class="ad-kicker">Bot · 30d usage</h3>
@@ -575,15 +1101,17 @@
             maxlength="35"
           />
         </label>
-        <label class="ad-field">
-          <span>Description</span>
-          <textarea
-            data-testid="agent-detail-description-input"
-            bind:value={descriptionDraft}
-            maxlength="140"
-            rows="3"
-          ></textarea>
-        </label>
+        {#if !profile}
+          <label class="ad-field">
+            <span>Description</span>
+            <textarea
+              data-testid="agent-detail-description-input"
+              bind:value={descriptionDraft}
+              maxlength="140"
+              rows="3"
+            ></textarea>
+          </label>
+        {/if}
         <AvatarPickerSlot
           agentUid={header.uid}
           displayName={header.displayName}
@@ -601,18 +1129,20 @@
             <span class="ad-note">read-only</span>
           </p>
         {/if}
-        {#if saveError}
-          <p class="ad-error">{saveError}</p>
+        {#if !profile}
+          {#if saveError}
+            <p class="ad-error">{saveError}</p>
+          {/if}
+          <button
+            type="button"
+            class="ad-btn"
+            data-testid="agent-detail-save"
+            disabled={saveBusy}
+            onclick={() => void saveProfile()}
+          ><RailIcon name="save" />
+            {saveBusy ? "Saving…" : "Save"}
+          </button>
         {/if}
-        <button
-          type="button"
-          class="ad-btn"
-          data-testid="agent-detail-save"
-          disabled={saveBusy}
-          onclick={() => void saveProfile()}
-        ><RailIcon name="save" />
-          {saveBusy ? "Saving…" : "Save"}
-        </button>
         <div class="ad-danger-row">
           <button
             type="button"
@@ -650,6 +1180,24 @@
     confirm = null;
     pendingJobId = null;
     if (id) void pauseJob(id);
+  }}
+  oncancel={() => {
+    confirm = null;
+    pendingJobId = null;
+  }}
+/>
+
+<ConfirmDialog
+  open={confirm === "delete-routine"}
+  title="Delete this routine?"
+  message="The routine is removed from the bot and will not run again."
+  confirmLabel="Delete routine"
+  danger
+  onconfirm={() => {
+    const id = pendingJobId;
+    confirm = null;
+    pendingJobId = null;
+    if (id) void deleteRoutine(id);
   }}
   oncancel={() => {
     confirm = null;
@@ -1016,6 +1564,50 @@
 
   .ad-text-btn.danger {
     color: var(--t2);
+  }
+
+  .ad-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .ad-rows li {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .ad-row-title {
+    color: var(--t1);
+    font-size: 13px;
+  }
+
+  .ad-row-meta {
+    color: var(--t3);
+    font-size: 13px;
+    text-align: right;
+  }
+
+  .ad-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    grid-column: 1 / -1;
+    gap: 12px;
+  }
+
+  .ad-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 8px;
+  }
+
+  .ad-left {
+    align-self: flex-start;
   }
 
   .ad-danger-row {

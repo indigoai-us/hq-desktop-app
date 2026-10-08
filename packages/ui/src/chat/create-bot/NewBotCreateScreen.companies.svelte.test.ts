@@ -55,14 +55,8 @@ function createButton(): HTMLButtonElement {
   return q<HTMLButtonElement>("[data-testid='new-bot-create-submit']")!;
 }
 
-/** Name the bot and walk to the last step, where Create bot is. */
+/** Walk to the last step, where Create bot is. The name came from the takeover's first step. */
 async function reachCreate(): Promise<void> {
-  const input = q<HTMLInputElement>("[data-testid='new-bot-name']")!;
-  input.value = "Polar";
-  input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-  await settle();
-  q<HTMLButtonElement>("[data-testid='new-bot-continue-name']")!.click();
-  await settle();
   q<HTMLButtonElement>("[data-testid='new-bot-continue-brain']")!.click();
   await settle();
   await vi.waitFor(() => expect(createButton().disabled).toBe(false));
@@ -93,6 +87,7 @@ describe("NewBotCreateScreen: the selected company leaves the list while the scr
       target: { channelId: "chn_bot", cardId: null, cardKind: null },
     }));
     const props = $state({
+      name: "Polar",
       companies,
       currentCompanyUid: "cmp_current",
       runtimeReady: { codex: true, claude: false, grok: false },

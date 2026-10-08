@@ -7,9 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-#[cfg(unix)]
-use std::io::Read;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(unix)]
@@ -33,7 +31,6 @@ use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
-#[cfg(not(windows))]
 use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -1746,6 +1743,52 @@ where
     node_exe.is_file() && version_ok(node_exe)
 }
 
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn managed_node_should_be_reused<F>(
+    replace_existing: bool,
+    node_exe: &Path,
+    version_ok: F,
+) -> bool
+where
+    F: FnOnce(&Path) -> bool,
+{
+    !replace_existing && managed_node_already_usable(node_exe, version_ok)
+}
+
+/// Hash a managed Node executable so a forced repair can distinguish its
+/// original target from a valid replacement installed by another HQ process.
+/// A forced repair must replace the original executable even when it reports
+/// the expected version, but may accept a different, version-verified file
+/// after losing a concurrent swap.
+fn managed_node_sha256(path: &Path) -> Result<Option<String>, String> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn managed_node_changed_since_repair_started(
+    original_digest: Option<&str>,
+    current_digest: Option<&str>,
+) -> bool {
+    current_digest.is_some() && original_digest != current_digest
+}
+
 /// Name+age predicate for the stale-sibling sweep, split out so it is tested
 /// without depending on filesystem mtime timing. A `.node.bak.*` or
 /// `.node-install-*` entry is swept only when it is at least `min_age` old, so a
@@ -2784,6 +2827,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -2792,10 +2838,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 
@@ -3921,6 +3967,12 @@ async fn run_managed_npm_install_with_cancellation<R: tauri::Runtime>(
     retry_public_registry: bool,
     cancellation: &InstallCancellationRegistration,
 ) -> Result<String, String> {
+    let app_cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("resolve app cache directory: {e}"))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(Path::new(prefix))?;
+    hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at(&app_cache_dir)?;
     let npm_cache = crate::commands::hq_cli_update::app_npm_cache(app).map_err(|(_, error)| {
         emit_install_line(
             app,
@@ -4182,7 +4234,25 @@ pub async fn install_node<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String
     }
     #[cfg(windows)]
     {
-        install_node_windows(app).await
+        install_node_windows(app, false).await
+    }
+}
+
+/// Provision managed Node as part of the bounded repair flow. Native crashes
+/// request replacement of the existing Windows runtime because `--version`
+/// alone does not prove that the ABI and npm probes can run.
+pub(crate) async fn install_node_for_repair<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
+    #[cfg(not(windows))]
+    {
+        let _ = replace_existing;
+        install_node_macos(app).await
+    }
+    #[cfg(windows)]
+    {
+        install_node_windows(app, replace_existing).await
     }
 }
 
@@ -5460,6 +5530,9 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
         let captured = recover_lock(&stderr_lines).clone();
         let stderr = recover_lock(&stderr_tail).clone();
         let msg = format_install_error(code, &captured);
+        let user_msg = hq_desktop_core::installer_disk_space::user_facing_install_error(
+            program, &stderr, &msg,
+        );
         record_setup_command_failure(program, args, Some(code), stdout, stderr, msg.clone());
         let _ = app.emit(
             "install:progress",
@@ -5468,10 +5541,10 @@ async fn run_streaming_with_npm_cache<R: tauri::Runtime>(
                 handle: handle_id.clone(),
                 line: String::new(),
                 finished: true,
-                error: Some(msg.clone()),
+                error: Some(user_msg.clone()),
             },
         );
-        Err(msg)
+        Err(user_msg)
     }
 }
 
@@ -5546,7 +5619,10 @@ async fn scoop_install(app: &AppHandle, name: &str) -> Result<String, String> {
 }
 
 #[cfg(windows)]
-async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<String, String> {
+async fn install_node_windows<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     // Node is a hard prerequisite for qmd and hq-cli, so its installer must be
     // deterministic. Package-manager exit codes do not prove that node/npm/npx
     // landed or are runnable in this process (and managed enterprise machines
@@ -5555,7 +5631,7 @@ async fn install_node_windows<R: tauri::Runtime>(app: AppHandle<R>) -> Result<St
     // all three executables, runs `node --version`, then atomically activates
     // the toolchain directory.
     emit_progress(&app, "Installing HQ's verified Node.js runtime...");
-    install_managed_node(&app).await
+    install_managed_node(&app, replace_existing).await
 }
 
 #[cfg(windows)]
@@ -5701,7 +5777,10 @@ fn ensure_node_version(node_exe: &Path, expected_version: &str) -> Result<(), St
 }
 
 #[cfg(windows)]
-async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+async fn install_managed_node<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    replace_existing: bool,
+) -> Result<String, String> {
     let arch = managed_node_arch().ok_or_else(|| {
         format!(
             "Unsupported architecture for managed Node fallback: {}",
@@ -5709,6 +5788,12 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
         )
     })?;
     let version = WINDOWS_MANAGED_NODE_VERSION;
+    let node_dir = managed_node_dir();
+    let node_exe = node_dir.join("node.exe");
+    // Capture the target before any network or extraction work. A forced repair
+    // may accept a valid node.exe after a failed swap only if another process
+    // actually replaced the file while this attempt was in flight.
+    let original_node_digest = managed_node_sha256(&node_exe)?;
     let expected_sha = windows_managed_node_sha256_for(arch)
         .ok_or_else(|| format!("No pinned Node checksum for Windows arch {arch}"))?;
     let url = format!("https://nodejs.org/dist/{version}/node-{version}-win-{arch}.zip");
@@ -5730,7 +5815,6 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     // in-flight tree is never swept.
     sweep_stale_toolchain_siblings(&target, crate::commands::sync::TOOLCHAIN_REPAIR_COOLDOWN);
 
-    let node_dir = managed_node_dir();
     let staged_node_dir = target.join(format!(".node-install-{}", Uuid::new_v4()));
     emit_progress(app, &format!("Extracting Node into {staged_node_dir:?}..."));
     if let Err(e) = extract_managed_node_zip(&bytes, version, arch, &staged_node_dir) {
@@ -5746,8 +5830,9 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
     // won the race while we were downloading (the repair slot cannot serialize
     // two processes). Accept it rather than fight an open-handle swap, but only
     // if it passes the SAME version check the staged tree did.
-    let node_exe = node_dir.join("node.exe");
-    if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+    if managed_node_should_be_reused(replace_existing, &node_exe, |exe| {
+        ensure_node_version(exe, version).is_ok()
+    }) {
         let _ = std::fs::remove_dir_all(&staged_node_dir);
         append_user_path(&node_dir)?;
         append_user_path(&managed_npm_bin())?;
@@ -5756,11 +5841,22 @@ async fn install_managed_node<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<S
 
     if let Err(e) = activate_staged_dir(&staged_node_dir, &node_dir) {
         // Lost an activation race: another HQ process may have activated a valid
-        // managed Node into the target between our probe and our swap, so our
-        // rename collided with a now-present destination. Re-check with the SAME
-        // version validation before reporting failure and paging — a correctly
-        // versioned live Node is success, not a repair failure (Codex review).
-        if managed_node_already_usable(&node_exe, |exe| ensure_node_version(exe, version).is_ok()) {
+        // managed Node into the target between our probe and our swap. A forced
+        // repair accepts it only when the executable changed after our snapshot.
+        let current_node_digest = match managed_node_sha256(&node_exe) {
+            Ok(digest) => digest,
+            Err(fingerprint_error) => {
+                return Err(format!(
+                    "{e}; could not verify whether a concurrent Node repair replaced the target: {fingerprint_error}"
+                ));
+            }
+        };
+        if managed_node_changed_since_repair_started(
+            original_node_digest.as_deref(),
+            current_node_digest.as_deref(),
+        ) && managed_node_already_usable(&node_exe, |exe| {
+            ensure_node_version(exe, version).is_ok()
+        }) {
             append_user_path(&node_dir)?;
             append_user_path(&managed_npm_bin())?;
             return Ok(format!("Managed Node already present at {node_dir:?}"));
@@ -7185,6 +7281,21 @@ fn setup_error_category(result: &DepInstallResult, diagnostic: Option<&SetupComm
     // exit_code branch; this is what keeps it off the error-level Sentry path.
     if is_concurrent_install_skip_result(result) {
         return OnboardingErrorCategory::ConcurrentInstall;
+    }
+    let preflight_disk_space_message =
+        hq_desktop_core::installer_disk_space::install_disk_space_message();
+    let refused_disk_space_preflight =
+        result.error.as_deref() == Some(preflight_disk_space_message.as_str());
+    let command_reported_disk_full = diagnostic.is_some_and(|diagnostic| {
+        hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stdout)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.stderr)
+            || hq_desktop_core::installer_disk_space::is_disk_full_output(&diagnostic.error)
+    });
+    let result_reports_disk_full = result.error.as_deref().is_some_and(
+        hq_desktop_core::installer_disk_space::is_disk_full_output,
+    );
+    if refused_disk_space_preflight || command_reported_disk_full || result_reports_disk_full {
+        return OnboardingErrorCategory::DiskFull;
     }
     match setup_error_kind(diagnostic) {
         Some("winget_pinned_certificate_mismatch") => return OnboardingErrorCategory::Network,
@@ -10497,6 +10608,39 @@ mod atomic_swap_tests {
     }
 
     #[test]
+    fn forced_repair_accepts_only_a_changed_concurrent_node() {
+        assert!(!managed_node_changed_since_repair_started(Some("old"), Some("old")));
+        assert!(managed_node_changed_since_repair_started(Some("old"), Some("new")));
+        assert!(!managed_node_changed_since_repair_started(Some("old"), None));
+        assert!(managed_node_changed_since_repair_started(None, Some("new")));
+    }
+
+    #[test]
+    fn managed_node_sha256_streams_the_target_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        assert_eq!(managed_node_sha256(&node_exe).unwrap(), None);
+        std::fs::write(&node_exe, b"binary").unwrap();
+        let actual = managed_node_sha256(&node_exe).unwrap().unwrap();
+        use sha2::{Digest, Sha256};
+        assert_eq!(actual, format!("{:x}", Sha256::digest(b"binary")));
+    }
+
+    #[test]
+    fn native_crash_repair_replaces_an_existing_versioned_node() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let node_exe = dir.path().join("node.exe");
+        std::fs::write(&node_exe, b"binary").unwrap();
+
+        assert!(managed_node_should_be_reused(false, &node_exe, |_| true));
+        assert!(!managed_node_should_be_reused(false, &node_exe, |_| false));
+        assert!(
+            !managed_node_should_be_reused(true, &node_exe, |_| true),
+            "native-crash repair must not trust --version alone on the old runtime"
+        );
+    }
+
+    #[test]
     fn is_stale_toolchain_sibling_matches_only_aged_swap_debris() {
         let min = Duration::from_secs(900);
         // An aged staging tree is swept.
@@ -10987,6 +11131,36 @@ mod managed_node_health_tests {
         let p = stub(tmp.path(), "#!/bin/sh\necho v16.20.2\n");
         assert_ne!(managed_node_reported_version(&p).as_deref().map(str::trim), Some(MANAGED_NODE_VERSION));
         assert_eq!(managed_node_reported_version(std::path::Path::new("/nonexistent/node")), None);
+    }
+}
+
+#[cfg(test)]
+mod disk_space_install_wiring_tests {
+    #[test]
+    fn npm_install_wires_preflight_before_cache_creation_and_translates_failures_for_users() {
+        let source = include_str!("install_deps.rs");
+        let install = source
+            .split("async fn run_managed_npm_install_with_cancellation")
+            .nth(1)
+            .expect("managed npm install entry point");
+        let preflight = install
+            .find("installer_disk_space::ensure_setup_disk_space_at")
+            .expect("managed npm storage preflight");
+        let cache_creation = install
+            .find("app_npm_cache(app)")
+            .expect("app-owned npm cache creation");
+        assert!(preflight < cache_creation, "space must be checked before preparing npm cache");
+        let production_source = source
+            .split("#[cfg(test)]\nmod disk_space_install_wiring_tests")
+            .next()
+            .expect("production source before wiring tests");
+        assert_eq!(
+            production_source
+                .matches("installer_disk_space::user_facing_install_error(")
+                .count(),
+            2,
+            "both platform command runners must translate npm disk-full failures"
+        );
     }
 }
 
@@ -11861,6 +12035,54 @@ mod cli_install_lock_skip_tests {
                 send_setup_dependency_failure(&scope, dependency, category, diagnostic, &blocked);
             }
         })
+    }
+
+    #[test]
+    fn preflight_disk_space_refusal_emits_disk_full_category_tag() {
+        let error = hq_desktop_core::installer_disk_space::ensure_setup_disk_space_at_with(
+            Path::new("/tmp/hq-setup-prefix-not-created"),
+            |_| Ok(0),
+        )
+        .expect_err("preflight must refuse a disk below the free-space minimum");
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert("hq-cli", hq_cli_result(&error));
+
+        let events = capture_reporting_loop(&results, &HashMap::new());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_error"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("1 GiB")
+        ));
+    }
+
+    #[test]
+    fn npm_enospc_with_exit_code_emits_disk_full_category_tag() {
+        let stderr = "npm error code ENOSPC: no space left on device (os error 28)";
+        let mut results: HashMap<&'static str, DepInstallResult> = HashMap::new();
+        results.insert(
+            "hq-cli",
+            hq_cli_result("Process exited with code 1: npm error code ENOSPC"),
+        );
+        let mut diagnostics: HashMap<&'static str, SetupCommandDiagnostic> = HashMap::new();
+        diagnostics.insert(
+            "hq-cli",
+            SetupCommandDiagnostic {
+                command: "npm install -g @indigoai-us/hq-cli".to_string(),
+                exit_code: Some(1),
+                stdout: String::new(),
+                stderr: stderr.to_string(),
+                error: "Process exited with code 1".to_string(),
+            },
+        );
+
+        let events = capture_reporting_loop(&results, &diagnostics);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tags["setup_error_category"], "disk-full");
+        assert!(matches!(
+            events[0].extra.get("setup_stderr_tail"),
+            Some(sentry::protocol::Value::String(reason)) if reason.contains("ENOSPC")
+        ));
     }
 
     #[test]

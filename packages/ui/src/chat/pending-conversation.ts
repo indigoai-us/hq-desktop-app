@@ -38,7 +38,8 @@ export function requestConversation(target: ConversationTarget): void {
     window.dispatchEvent(
       new CustomEvent(MESSAGE_PERSON_EVENT, { detail: pending }),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/pending-conversation.ts:41", error);
     // Non-browser context (unit tests) — the stash alone still works.
   }
 }

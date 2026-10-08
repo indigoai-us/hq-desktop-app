@@ -33,6 +33,64 @@ fn cmd_file() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".hq").join(".tray-cmd"))
 }
 
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommandFileRevision {
+    len: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn read_command_file_if_changed(
+    path: &std::path::Path,
+    last_revision: &mut Option<CommandFileRevision>,
+    initialized: &mut bool,
+    mut read: impl FnMut(&std::path::Path) -> std::io::Result<String>,
+) -> std::io::Result<Option<String>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *initialized = true;
+            *last_revision = None;
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let revision = CommandFileRevision {
+        len: metadata.len(),
+        modified: metadata.modified()?,
+        #[cfg(unix)]
+        device: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.dev()
+        },
+        #[cfg(unix)]
+        inode: {
+            use std::os::unix::fs::MetadataExt;
+            metadata.ino()
+        },
+        #[cfg(unix)]
+        changed: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.ctime(), metadata.ctime_nsec())
+        },
+    };
+    if *initialized && *last_revision == Some(revision.clone()) {
+        return Ok(None);
+    }
+
+    let contents = read(path)?;
+    *initialized = true;
+    *last_revision = Some(revision);
+    Ok(Some(contents))
+}
+
 #[cfg(target_os = "macos")]
 fn badge_file() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
@@ -204,11 +262,17 @@ pub fn spawn_and_poll(app: &AppHandle) {
         let Some(cf) = cmd_file() else {
             return;
         };
+        let mut last_revision = None;
+        let mut initialized = false;
         // Clear any stale command from a previous run.
         let _ = std::fs::remove_file(&cf);
         loop {
             std::thread::sleep(Duration::from_millis(250));
-            let Ok(cmd) = std::fs::read_to_string(&cf) else {
+            let Ok(Some(cmd)) =
+                read_command_file_if_changed(&cf, &mut last_revision, &mut initialized, |path| {
+                    std::fs::read_to_string(path)
+                })
+            else {
                 continue;
             };
             let _ = std::fs::remove_file(&cf);
@@ -314,6 +378,63 @@ mod uploads_paused_tests {
         assert_eq!(upgrade_command_company("upgrade "), None);
         assert_eq!(upgrade_command_company("upgrades"), None);
         assert_eq!(upgrade_command_company("sync"), None);
+    }
+}
+
+#[cfg(test)]
+mod command_poll_tests {
+    use super::*;
+    use std::{cell::Cell, io::Write};
+
+    #[test]
+    fn tray_command_poll_skips_read_when_command_file_is_unchanged() {
+        let path = std::env::temp_dir().join(format!(
+            "hq-tray-command-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"sync").unwrap();
+        drop(file);
+
+        let reads = Cell::new(0);
+        let mut revision = None;
+        let mut initialized = false;
+        let mut read = |path: &std::path::Path| {
+            reads.set(reads.get() + 1);
+            std::fs::read_to_string(path)
+        };
+        assert_eq!(
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
+            Some("sync".to_string())
+        );
+        assert_eq!(
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            reads.get(),
+            1,
+            "unchanged 250 ms polls must skip file reads"
+        );
+
+        std::fs::write(&path, "open desktop").unwrap();
+        assert_eq!(
+            read_command_file_if_changed(&path, &mut revision, &mut initialized, &mut read)
+                .unwrap(),
+            Some("open desktop".to_string())
+        );
+        assert_eq!(
+            reads.get(),
+            2,
+            "a new tray command must be read on the next poll"
+        );
+        let _ = std::fs::remove_file(path);
     }
 }
 

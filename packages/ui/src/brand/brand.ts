@@ -266,7 +266,8 @@ export function writeBrandCache(
 ): void {
   try {
     storage.setItem(BRAND_CACHE_KEY, JSON.stringify(cached));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/brand/brand.ts:269", error);
     // Quota / private mode — chrome still applies in-session without cache.
   }
 }
@@ -274,7 +275,8 @@ export function writeBrandCache(
 export function clearBrandCache(storage: Storage = localStorage): void {
   try {
     storage.removeItem(BRAND_CACHE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/brand/brand.ts:277", error);
     // ignore
   }
 }
