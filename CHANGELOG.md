@@ -10,6 +10,10 @@ The release moves it under the version it ships in.
 
 - Show a notice when sync parks a conflict copy, with actions to reveal the preserved file or dismiss the notice.
 
+### Fixed
+
+- On a Mac, the "One shortcut to remember" step of first-run setup now draws a Mac keyboard (fn, control, option, command) with option and shift lit, matching the ⌥ ⇧ O shown under it. It used to draw a Windows keyboard with Alt lit. Windows and Linux keep the Alt Shift O keyboard.
+
 ## [0.10.407] — 2026-10-08
 
 - HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
