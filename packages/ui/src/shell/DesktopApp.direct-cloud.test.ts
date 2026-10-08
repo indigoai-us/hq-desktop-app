@@ -214,17 +214,22 @@ async function createPolar(): Promise<void> {
   await settle(10);
   clickAnywhere('[data-testid="chat-create-menu-agent"]');
   await settle(10);
-  // "New bot" asks "Cloud or Local?" first. This host makes no local bots:
-  // Cloud opens the "+" window's cloud bot steps. With one company there is
-  // no company picker, so the flow opens straight on the cloud details step.
+  // "New bot" asks the name first, then "Where should it live?". This host
+  // makes no local bots: Cloud opens the "+" window's cloud bot steps. With
+  // one company there is no company picker, so the flow opens straight on
+  // the cloud details step, with the name carried in.
+  const firstName = document.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]')!;
+  firstName.value = "Polar";
+  firstName.dispatchEvent(new Event("input", { bubbles: true }));
+  await settle(10);
+  clickAnywhere('[data-testid="new-bot-continue-name"]');
+  await settle(10);
   expect(document.querySelector<HTMLButtonElement>('[data-testid="new-bot-choice-local"]')?.disabled).toBe(true);
   clickAnywhere('[data-testid="new-bot-choice-cloud"]');
   await settle(10);
   expect(document.querySelector('[data-testid="chat-create-bot-step"]')?.getAttribute("data-step")).toBe("details");
   expect(document.querySelector('[data-testid="chat-bot-where-cloud"]')).toBeNull();
-  const nameField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
-  nameField.value = "Polar";
-  nameField.dispatchEvent(new Event("input", { bubbles: true }));
+  expect(document.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]')?.value).toBe("Polar");
   const titleField = document.querySelector<HTMLInputElement>('[data-testid="chat-bot-title"]')!;
   titleField.value = "Ad analyst";
   titleField.dispatchEvent(new Event("input", { bubbles: true }));

@@ -243,6 +243,7 @@ describe('the receipt queue', () => {
       occurredAt: new Date(1_800_000_000_000).toISOString(),
       platform: 'mac',
       version: '1.4.2',
+      joinKeyArm: 'unknown',
     };
     const off = harness({
       downloadJoinEnabled: false,

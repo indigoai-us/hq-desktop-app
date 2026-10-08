@@ -73,6 +73,24 @@ fn resolve_app_path() -> String {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn bundle_identifier_from_exe(exe: &str) -> Option<String> {
+    let app_bundle = Path::new(exe)
+        .ancestors()
+        .find(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))?;
+    let info = std::fs::read_to_string(app_bundle.join("Contents").join("Info.plist")).ok()?;
+    let (_, after_key) = info.split_once("<key>CFBundleIdentifier</key>")?;
+    let after_key = after_key.trim_start();
+    let after_open = after_key.strip_prefix("<string>")?;
+    let end = after_open.find("</string>")?;
+    let identifier = after_open[..end].trim();
+    (!identifier.is_empty()
+        && identifier
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-'))
+    .then(|| identifier.to_string())
+}
+
 /// Extract the first `ProgramArguments` entry (or `Program`) from a LaunchAgent
 /// plist. Returns None when the structure isn't present.
 #[cfg(any(target_os = "macos", test))]
@@ -83,6 +101,9 @@ fn extract_program_path(plist: &str) -> Option<String> {
 /// Generate the LaunchAgent plist XML content for the given app path.
 #[cfg(any(target_os = "macos", test))]
 fn generate_plist(app_path: &str) -> String {
+    let associated_bundle = bundle_identifier_from_exe(app_path)
+        .map(|identifier| format!("    <key>AssociatedBundleIdentifiers</key>\n    <array>\n        <string>{identifier}</string>\n    </array>\n"))
+        .unwrap_or_default();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -90,6 +111,7 @@ fn generate_plist(app_path: &str) -> String {
 <dict>
     <key>Label</key>
     <string>{}</string>
+{}
     <key>ProgramArguments</key>
     <array>
         <string>{}</string>
@@ -104,6 +126,7 @@ fn generate_plist(app_path: &str) -> String {
 </plist>
 "#,
         LAUNCH_AGENT_LABEL,
+        associated_bundle,
         app_path,
         LAUNCH_AGENT_RELAUNCH_ARG,
         KEEP_ALIVE_FAILURE_POLICY,
@@ -121,7 +144,25 @@ fn has_current_restart_policy(plist: &str) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 fn registration_is_current(plist: &str, current_exe: &str) -> bool {
-    extract_program_path(plist).as_deref() == Some(current_exe) && has_current_restart_policy(plist)
+    plist == generate_plist(current_exe)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn write_plist_if_changed(path: &Path, content: &str) -> Result<bool, String> {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if existing == content => Ok(false),
+        Ok(_) => {
+            std::fs::write(path, content)
+                .map_err(|e| format!("Failed to write LaunchAgent plist: {e}"))?;
+            Ok(true)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::write(path, content)
+                .map_err(|e| format!("Failed to write LaunchAgent plist: {e}"))?;
+            Ok(true)
+        }
+        Err(err) => Err(format!("Failed to read LaunchAgent plist: {err}")),
+    }
 }
 
 /// Resolve the installed `HQ Sync.exe` path for the HKCU Run value.
@@ -291,10 +332,16 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
             }
 
             let app_path = resolve_app_path();
+            let is_inside_app_bundle = Path::new(&app_path)
+                .ancestors()
+                .any(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"));
+            if is_inside_app_bundle && bundle_identifier_from_exe(&app_path).is_none() {
+                return Err(format!(
+                    "Could not read CFBundleIdentifier from the HQ app Info.plist for {app_path}"
+                ));
+            }
             let plist_content = generate_plist(&app_path);
-
-            std::fs::write(&path, plist_content)
-                .map_err(|e| format!("Failed to write LaunchAgent plist: {}", e))?;
+            write_plist_if_changed(&path, &plist_content)?;
         } else {
             // Remove the plist if it exists
             if path.exists() {
@@ -337,6 +384,41 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
     {
         let _ = enabled;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod launchagent_write_tests {
+    use super::{bundle_identifier_from_exe, generate_plist, write_plist_if_changed};
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn unchanged_plist_is_not_rewritten() {
+        let temp = TempDir::new().expect("temp directory");
+        let path = temp.path().join("agent.plist");
+        assert!(write_plist_if_changed(&path, "stable plist").expect("first write"));
+        assert!(!write_plist_if_changed(&path, "stable plist").expect("identical write"));
+        assert_eq!(
+            fs::read_to_string(path).expect("plist contents"),
+            "stable plist"
+        );
+    }
+
+    #[test]
+    fn bundle_identity_comes_from_app_info_plist() {
+        let temp = TempDir::new().expect("temp directory");
+        let app = temp.path().join("HQ.app");
+        let contents = app.join("Contents");
+        let executable = contents.join("MacOS").join("hq-sync-menubar");
+        fs::create_dir_all(executable.parent().expect("executable parent")).expect("app folders");
+        fs::write(contents.join("Info.plist"), "<plist><dict><key>CFBundleIdentifier</key><string>ai.indigo.hq-sync-menubar</string></dict></plist>").expect("Info.plist");
+        let executable = executable.to_str().expect("path");
+        assert_eq!(
+            bundle_identifier_from_exe(executable),
+            Some("ai.indigo.hq-sync-menubar".into())
+        );
+        assert!(generate_plist(executable).contains("<key>AssociatedBundleIdentifiers</key>"));
     }
 }
 

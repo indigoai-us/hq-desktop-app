@@ -15,20 +15,18 @@ import { mount, tick, unmount } from "svelte";
 import CreateBotFlow from "./CreateBotFlow.svelte";
 import type { RuntimeStatus } from "./runtime-status.js";
 
-/** details (name) → kind → home: the coding-tool screen is the third local step. */
+/** name → coding tool: the coding-tool screen is the only local step after the name. */
 async function walkToHome(root: HTMLElement, settleFn: () => Promise<void>): Promise<void> {
-  const name = root.querySelector<HTMLInputElement>('[data-testid="chat-bot-name"]');
-  if (!name) throw new Error("missing chat-bot-name");
+  const name = root.querySelector<HTMLInputElement>('[data-testid="new-bot-name"]');
+  if (!name) throw new Error("missing new-bot-name");
   name.value = "Dr Love";
   name.dispatchEvent(new Event("input", { bubbles: true }));
   await settleFn();
-  for (const expected of ["kind", "home"]) {
-    const next = root.querySelector<HTMLButtonElement>('[data-testid="create-bot-next"]');
-    if (!next) throw new Error("missing create-bot-next");
-    next.click();
-    await settleFn();
-    if (!root.querySelector(`[data-testid="create-bot-sunrise-${expected}"]`)) throw new Error(`not on ${expected}`);
-  }
+  const next = root.querySelector<HTMLButtonElement>('[data-testid="new-bot-continue-name"]');
+  if (!next) throw new Error("missing new-bot-continue-name");
+  next.click();
+  await settleFn();
+  if (!root.querySelector('[data-testid="create-bot-sunrise-home"]')) throw new Error("not on home");
 }
 
 let host: HTMLDivElement;
@@ -96,8 +94,8 @@ describe("a runtime that is not installed", () => {
     await openHome(MISSING);
 
     const chip = q('[data-testid="chat-bot-runtime-claude"]')!;
-    expect(chip.textContent).toContain("not installed");
-    expect(chip.textContent).not.toContain("not signed in");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Not installed");
+    expect(chip.textContent).not.toContain("Sign in first");
     expect(chip.dataset.runtimeState).toBe("notInstalled");
 
     const help = q('[data-testid="chat-bot-runtime-help"]')!;
@@ -133,10 +131,13 @@ describe("a runtime that is not installed", () => {
     // to repeat "Claude Code isn't installed on this computer." next to
     // Next while the panel above already said the same in different words.
     // Keep ONE message; the footer now points people to the panel.
+    // After the owner's review the coding tool step says it once: the card's
+    // status and one line under the cards, with no second line by the buttons.
     await openHome(MISSING);
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Finish setting up Claude Code above.");
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).not.toContain("isn’t installed on this computer");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
+    expect(q('[data-testid="create-bot-issue"]')).toBeNull();
+    expect(host.querySelectorAll('[data-testid="chat-bot-runtime-help"]')).toHaveLength(1);
   });
 });
 
@@ -145,7 +146,7 @@ describe("a runtime the app could not check", () => {
     const onrecheckruntimes = vi.fn(async () => undefined);
     await openHome(FAILED, { onrecheckruntimes });
 
-    expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("couldn’t check");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Couldn’t check");
     const help = q('[data-testid="chat-bot-runtime-help"]')!;
     expect(help.textContent).toContain("Couldn’t check Claude Code");
     expect(help.textContent).toContain("it did not answer in time");
@@ -159,7 +160,9 @@ describe("a runtime the app could not check", () => {
   it("blocks Create", async () => {
     await openHome(FAILED);
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("couldn’t check");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toContain("Couldn’t check Claude Code");
+    expect(q('[data-testid="create-bot-issue"]')).toBeNull();
   });
 });
 
@@ -172,7 +175,7 @@ describe("a runtime that is installed and signed out", () => {
     const onsignin = vi.fn(async () => undefined);
     await openHome({ state: "signedOut" }, { onsignin });
 
-    expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Sign in first");
     const help = q('[data-testid="chat-bot-runtime-help"]')!;
     expect(help.textContent).toContain("Claude Code is installed");
     expect(help.textContent).toContain("Sign in to finish");
@@ -190,7 +193,9 @@ describe("a runtime that is installed and signed out", () => {
     // Problem 3.
     await openHome({ state: "signedOut" });
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
-    expect(q('[data-testid="create-bot-issue"]')?.textContent).toContain("Sign in to Claude Code above.");
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(true);
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toContain("Sign in to finish");
+    expect(q('[data-testid="create-bot-issue"]')).toBeNull();
   });
 });
 
@@ -198,11 +203,13 @@ describe("a runtime that is signed in", () => {
   it("is the only state that lets the flow advance", async () => {
     await openHome({ state: "signedIn" });
 
-    expect(q('[data-testid="chat-bot-runtime-claude"]')!.textContent).not.toContain("·");
-    expect(q('[data-testid="chat-bot-runtime-help"]')!.textContent).toContain("Signed in on this computer");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Signed in");
+    // The card says it; no line under the cards repeats it.
+    expect(q('[data-testid="chat-bot-runtime-help"]')).toBeNull();
     expect(q('[data-testid="chat-bot-runtime-signin"]')).toBeNull();
     expect(q('[data-testid="chat-bot-runtime-recheck"]')).toBeNull();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(false);
+    expect(q<HTMLButtonElement>('[data-testid="create-bot-next"]')!.disabled).toBe(false);
   });
 });
 
@@ -210,8 +217,8 @@ describe("a host that reports no status at all", () => {
   it("keeps the old boolean behaviour rather than inventing a state", async () => {
     await openHome(null);
 
-    const chip = q('[data-testid="chat-bot-runtime-claude"]')!;
-    expect(chip.textContent).toContain("not signed in");
+    expect(q('[data-testid="chat-bot-runtime-claude-status"]')?.textContent).toBe("Sign in first");
+    expect(q('[data-testid="chat-bot-runtime-help"]')?.textContent).toContain("not signed in");
     expect(q('[data-testid="chat-bot-runtime-signin"]')).toBeTruthy();
     expect(q<HTMLButtonElement>('[data-testid="chat-bot-create"]')!.disabled).toBe(true);
   });

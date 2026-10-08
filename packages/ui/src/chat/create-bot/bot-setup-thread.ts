@@ -8,8 +8,14 @@
  *
  *   1. a greeting that says what is left,
  *   2. an access request card (Approve read / write, Deny),
- *   3. "Pick my skills", pointing at the profile pane's Capabilities edit,
- *   4. "Verified, I'm ready" once the bot is online.
+ *   3. "Verified, I'm ready" once the bot is online.
+ *
+ * A local bot gets none of the access or skills rows: picking the company
+ * in New bot is the grant, and it runs on this computer with the person's
+ * own access. Its thread is a greeting, then the kickoff conversation.
+ *
+ * There is no "pick my skills" line: the profile's Capabilities edit it
+ * pointed at does not render for any bot.
  *
  * These are local rows; nothing here posts to the server. Approving the
  * access card does not pretend to grant anything: the bot answers with the
@@ -25,6 +31,11 @@ export const BOT_SETUP_DEFAULT_PATH = "knowledge/";
 
 export interface BotSetupEntry {
   agentUid: string;
+  /**
+   * Local bots run with the person's own access, so they never ask for a
+   * grant. Cloud bots ask with the access card.
+   */
+  kind: "local" | "cloud";
   name: string;
   /** Bot email when known; the share command needs a real principal. */
   email: string | null;
@@ -70,14 +81,39 @@ export function botSetupShareCommand(entry: BotSetupEntry): string {
   return `hq files share ${BOT_SETUP_DEFAULT_PATH} --with ${who} --permission ${entry.access.level}${company}`;
 }
 
+/** True when this setup asks for folder access: cloud bots only. */
+export function botSetupAsksAccess(entry: Pick<BotSetupEntry, "kind">): boolean {
+  return entry.kind === "cloud";
+}
+
 export function botSetupWires(entry: BotSetupEntry): ConversationMessageWire[] {
   const at = (offset: number) => new Date(entry.createdAt + offset * 1000).toISOString();
   const from = { fromPersonUid: entry.agentUid, fromDisplayName: entry.name, direction: "in" as const, replyCount: 0 };
+  if (!botSetupAsksAccess(entry)) {
+    // Whatever access state an entry carries, a local bot shows no card.
+    const wires: ConversationMessageWire[] = [
+      {
+        ...from,
+        eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:hello`,
+        body: `Hi, I'm ${entry.name}. I'll ask a few quick questions to finish my setup.`,
+        createdAt: at(1),
+      },
+    ];
+    if (entry.online) {
+      wires.push({
+        ...from,
+        eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:ready`,
+        body: "Verified, I'm ready. Send me a first task here.",
+        createdAt: at(5),
+      });
+    }
+    return wires;
+  }
   const wires: ConversationMessageWire[] = [
     {
       ...from,
       eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:hello`,
-      body: `Hi, I'm ${entry.name}. Two things before I start: grant me access to the company context, and pick my skills.`,
+      body: `Hi, I'm ${entry.name}. One thing before I start: grant me access to the company context.`,
       createdAt: at(1),
     },
     {
@@ -115,12 +151,6 @@ export function botSetupWires(entry: BotSetupEntry): ConversationMessageWire[] {
       createdAt: at(3),
     });
   }
-  wires.push({
-    ...from,
-    eventId: `${BOT_SETUP_CARD_PREFIX}${entry.agentUid}:skills`,
-    body: "Pick my skills: open my profile and use Edit next to Capabilities.",
-    createdAt: at(4),
-  });
   if (entry.online) {
     wires.push({
       ...from,

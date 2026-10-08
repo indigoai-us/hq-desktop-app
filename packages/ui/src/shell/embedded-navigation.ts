@@ -58,6 +58,7 @@ export type EmbeddedNavigationTarget =
       kind: 'channel';
       channelId: string;
       replyRootEventId?: string | null;
+      messageId?: string | null;
     }
   | {
       kind: 'dm';

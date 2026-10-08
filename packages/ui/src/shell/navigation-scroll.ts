@@ -201,7 +201,8 @@ export function createNavigationScrollTracker(
     rafHandle = null;
     try {
       last = captureNavigationScroll(readRoot());
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/navigation-scroll.ts:204", error);
       /* sampling is best-effort */
     }
   };

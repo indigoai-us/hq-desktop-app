@@ -1090,7 +1090,7 @@ fn daemon_env() -> HashMap<String, String> {
 fn local_hq() -> Option<String> {
     match resolve_hq() {
         HqInvocation::Local(path) => Some(path),
-        HqInvocation::Npx => None,
+        HqInvocation::Npx | HqInvocation::NpxGlobalRuntime => None,
     }
 }
 
