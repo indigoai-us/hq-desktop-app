@@ -1681,20 +1681,29 @@
     }
     event.preventDefault();
     if (!selectionMode) selectionMode = true;
+    // In selection mode a plain click toggles the row, the same as its
+    // checkbox, so a mouse-only user can build a selection row by row. Shift
+    // still extends a range from the anchor.
     selection = applySelectionClick(selection, orderedRowIds, row.id, {
       shiftKey: event.shiftKey,
-      metaKey: event.metaKey,
-      ctrlKey: event.ctrlKey,
+      metaKey: !event.shiftKey,
+      ctrlKey: false,
     });
     focusedRowId = row.id;
+    if (selection.selected.length === 0) exitSelectionMode();
   }
 
   /**
    * Checkbox toggle. Always additive/subtractive (never a replace), so ticking
    * a box can build a selection one row at a time without a modifier key.
+   *
+   * The click is NOT cancelled. A real pointer click drains microtasks after
+   * each listener, so Svelte draws the new `checked` value while the event is
+   * still dispatching; a cancelled checkbox click is then undone by the
+   * browser, leaving the box empty while the row counts as selected. Only
+   * propagation is stopped, so the row button underneath never sees it.
    */
   function toggleRowSelection(row: ConversationRow, event: Event): void {
-    event.preventDefault();
     event.stopPropagation();
     if (!selectionMode) selectionMode = true;
     selection = applySelectionClick(selection, orderedRowIds, row.id, {
@@ -1704,6 +1713,12 @@
     });
     focusedRowId = row.id;
     if (selection.selected.length === 0) exitSelectionMode();
+    // Keep the native box in step with the model whatever order the DOM
+    // update and the browser's activation settle in.
+    const box = event.currentTarget;
+    if (box instanceof HTMLInputElement) {
+      box.checked = selectionMode && selection.selected.includes(row.id);
+    }
   }
 
   function selectionKeydown(event: KeyboardEvent): void {
@@ -5289,6 +5304,7 @@
           data-checkbox-for={row.id}
           tabindex={showSelectGutter ? 0 : -1}
           checked={selectionMode && selection.selected.includes(row.id)}
+          aria-checked={selectionMode && selection.selected.includes(row.id)}
           aria-label={`Select ${row.title}`}
           onclick={(e) => toggleRowSelection(row, e)}
         />
@@ -6685,8 +6701,11 @@
     }
   }
 
+  /* Wraps rather than clipping: with icons on every action the bar is wider
+     than a default-width rail, which pushed Archive and Done out of view. */
   .chat-selection-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
     padding: 6px 10px;
