@@ -10,6 +10,7 @@ The release moves it under the version it ships in.
 
 ### Fixed
 
+- HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
 
 ## [0.10.402] — 2026-10-07

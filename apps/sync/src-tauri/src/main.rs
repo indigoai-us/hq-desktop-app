@@ -1550,6 +1550,12 @@ fn main() {
             // See `commands::recall_sdk` for the gate definition and the
             // graceful-degradation contract.
             {
+                // This marker is a live-process claim for external updaters,
+                // never a recovery ledger. Remove a predecessor's claim before
+                // the SDK can start so a crash cannot permanently block updates.
+                if let Err(e) = hq_desktop_core::recording_active::cleanup_on_boot() {
+                    util::logfile::log("recall-sdk", &format!("startup: failed to clear stale recording activity marker: {e}"));
+                }
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if !commands::recall_sdk::meeting_detect_eligible().await {

@@ -105,6 +105,7 @@ pub mod process_types;
 pub mod projects_local;
 pub mod qmd_abi;
 pub mod recall_sdk;
+pub mod recording_active;
 pub mod recordings_ledger;
 pub mod release_channel;
 pub mod request_policy;
