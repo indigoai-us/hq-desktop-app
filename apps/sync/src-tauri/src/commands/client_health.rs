@@ -102,8 +102,8 @@ struct ClientHealthState {
     updater_state: Option<String>,
     /// Timestamp, outcome, and closed error class for the last updater check.
     last_update_check_at: Option<String>,
-    update_check_outcome: Option<ClientHealthUpdateCheckOutcome>,
-    update_check_error_class: Option<ClientHealthUpdaterErrorClass>,
+    update_check_outcome: Option<String>,
+    update_check_error_class: Option<String>,
     /// Closed client-health reason for a staged update whose install is held.
     update_defer_reason: Option<String>,
     /// Closed client-health result for the most recent updater install.
@@ -441,8 +441,8 @@ fn apply_update_check_result(
     error_class: Option<ClientHealthUpdaterErrorClass>,
 ) {
     state.last_update_check_at = Some(checked_at.to_string());
-    state.update_check_outcome = Some(outcome);
-    state.update_check_error_class = error_class;
+    state.update_check_outcome = Some(outcome.wire_value().to_string());
+    state.update_check_error_class = error_class.map(|class| class.wire_value().to_string());
     if outcome == ClientHealthUpdateCheckOutcome::CheckError
         && matches!(
             state.updater_state.as_deref(),
@@ -713,8 +713,14 @@ fn build_heartbeat_payload(
         conflict_count: Some(state.conflict_count.min(CLIENT_HEALTH_MAX_CONFLICT_COUNT)),
         updater_state: Some(reported_updater_state(state)),
         last_update_check_at: state.last_update_check_at.clone(),
-        update_check_outcome: state.update_check_outcome,
-        update_check_error_class: state.update_check_error_class,
+        update_check_outcome: state
+            .update_check_outcome
+            .as_deref()
+            .and_then(update_check_outcome_from_wire),
+        update_check_error_class: state
+            .update_check_error_class
+            .as_deref()
+            .and_then(updater_error_class_from_wire),
         update_defer_reason: state
             .update_defer_reason
             .as_deref()
@@ -724,6 +730,31 @@ fn build_heartbeat_payload(
             .as_deref()
             .and_then(install_outcome_from_wire),
         failure_reason: derive_failure_reason(sync_state, state),
+    }
+}
+
+fn update_check_outcome_from_wire(value: &str) -> Option<ClientHealthUpdateCheckOutcome> {
+    use ClientHealthUpdateCheckOutcome as O;
+    match value {
+        "no_update" => Some(O::NoUpdate),
+        "update_available" => Some(O::UpdateAvailable),
+        "check_error" => Some(O::CheckError),
+        "disabled" => Some(O::Disabled),
+        "deferred" => Some(O::Deferred),
+        _ => None,
+    }
+}
+
+fn updater_error_class_from_wire(value: &str) -> Option<ClientHealthUpdaterErrorClass> {
+    use ClientHealthUpdaterErrorClass as E;
+    match value {
+        "network" => Some(E::Network),
+        "signature" => Some(E::Signature),
+        "manifest_parse" => Some(E::ManifestParse),
+        "http_status" => Some(E::HttpStatus),
+        "timeout" => Some(E::Timeout),
+        "other" => Some(E::Other),
+        _ => None,
     }
 }
 
