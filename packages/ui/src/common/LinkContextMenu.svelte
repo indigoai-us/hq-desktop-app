@@ -40,7 +40,8 @@
     onclose();
     try {
       await copyLinkHref(href);
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] best-effort failure at packages/ui/src/common/LinkContextMenu.svelte:43", error);
       // Clipboard can be missing in tests / locked webviews.
     }
   }

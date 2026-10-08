@@ -56,20 +56,26 @@ const SHEETS: { name: string; root: string; open: (page: Page) => Promise<void>;
     root: '[data-testid="chat-create-bot-step"]',
     open: async (page) => {
       await createMenu(page, 'agent');
-      // New bot asks "Cloud or Local?" first; Local opens the step flow.
+      // New bot asks the name, then "Where should it live?"; Local opens the
+      // step flow on the coding tool.
+      await page.getByTestId('new-bot-name').fill('Scout');
+      await page.getByTestId('new-bot-continue-name').click();
       await page.getByTestId('new-bot-choice-local').click();
+      await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
+      await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
     },
-    // The local steps open on the name; Continue walks blank or a template,
-    // then the coding tool.
+    // The optional steps, one per screen: who it's for, then fine-tune
+    // (handle, permissions and memory). This persona has no templates, so
+    // there is no Start from step.
     next: [
       async (page) => {
         await page.getByTestId('create-bot-next').click();
-        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'kind');
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'scope');
       },
       async (page) => {
         await page.getByTestId('create-bot-next').click();
-        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'home');
-        await expect(page.getByTestId('create-bot-runtime-section')).toBeVisible();
+        await expect(page.getByTestId('chat-create-bot-step')).toHaveAttribute('data-step', 'tune');
+        await expect(page.getByTestId('chat-bot-advanced')).toBeVisible();
       },
     ],
   },

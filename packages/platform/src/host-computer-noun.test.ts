@@ -46,6 +46,32 @@ describe("hostComputerNoun", () => {
   });
 });
 
+describe("hostComputerNoun in a native shell with no OS probe (apps/sync)", () => {
+  const MAC_WEBVIEW =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+  const WINDOWS_WEBVIEW =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+  const LINUX_WEBVIEW = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 (KHTML, like Gecko)";
+  const IPAD = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
+
+  it("reads the webview's user-agent when the shell never reports its OS", () => {
+    expect(hostComputerNoun({ tauri: true, osPlatform: null }, MAC_WEBVIEW)).toBe("Mac");
+    expect(hostComputerNoun({ tauri: true, osPlatform: null }, WINDOWS_WEBVIEW)).toBe("PC");
+    expect(hostComputerNoun({ tauri: true, osPlatform: null }, LINUX_WEBVIEW)).toBe("computer");
+    expect(hostComputerNoun({ tauri: true, osPlatform: null }, IPAD)).toBe("computer");
+    expect(hostComputerNoun({ tauri: true, osPlatform: null }, "")).toBe("computer");
+  });
+
+  it("lets a reported OS win over the user-agent", () => {
+    expect(hostComputerNoun({ tauri: true, osPlatform: "linux" }, MAC_WEBVIEW)).toBe("computer");
+    expect(hostComputerNoun({ tauri: true, osPlatform: "windows" }, MAC_WEBVIEW)).toBe("PC");
+  });
+
+  it("keeps the neutral noun in a plain browser", () => {
+    expect(hostComputerNoun({ tauri: false, osPlatform: null }, MAC_WEBVIEW)).toBe("computer");
+  });
+});
+
 describe("subscribeHostComputerNoun (probe lands after mount)", () => {
   /**
    * The Windows persona's `verify-install-003` report caught the exact bug
