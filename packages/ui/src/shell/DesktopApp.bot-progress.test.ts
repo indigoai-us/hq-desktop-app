@@ -160,7 +160,7 @@ async function poll(): Promise<void> {
   await settle();
 }
 
-/** "+" → New bot → Blank → Local → Details → Create. */
+/** "+" → New bot → name → Local → coding tool → Create. */
 async function createBot(): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -179,18 +179,16 @@ async function createBot(): Promise<void> {
   await settle();
   click('[data-testid="chat-create-menu-agent"]');
   await settle();
-  // "New bot" asks "Cloud or Local?" first.
-  click('[data-testid="new-bot-choice-local"]');
-  await settle();
-  // The local steps: name, then blank or a template, then the coding tool.
-  const name = q<HTMLInputElement>('[data-testid="chat-bot-name"]')!;
+  // "New bot" asks the name first, then "Where should it live?".
+  const name = q<HTMLInputElement>('[data-testid="new-bot-name"]')!;
   name.value = "scout";
   name.dispatchEvent(new Event("input", { bubbles: true }));
   await settle();
-  click('[data-testid="create-bot-next"]');
+  click('[data-testid="new-bot-continue-name"]');
   await settle();
-  click('[data-testid="create-bot-next"]');
+  click('[data-testid="new-bot-choice-local"]');
   await settle();
+  // The local steps: the coding tool, then Create.
   click('[data-testid="chat-bot-create"]');
   await settle(20);
 }

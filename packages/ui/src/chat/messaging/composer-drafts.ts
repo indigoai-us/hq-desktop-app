@@ -137,7 +137,8 @@ function emitChanged(rowId: string, hasDraft: boolean): void {
         { detail: { rowId, hasDraft } },
       ),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/messaging/composer-drafts.ts:140", error);
     // Listener failures never break the composer.
   }
 }

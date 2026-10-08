@@ -49,7 +49,8 @@ export function saveArchived(
   if (!storage) return;
   try {
     storage.setItem(ARCHIVED_STORAGE_KEY, JSON.stringify(uniqueStrings(ids)));
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/session-archive.ts:52", error);
     // Quota / private mode — best-effort.
   }
 }
@@ -73,7 +74,8 @@ export function saveShowArchived(
   try {
     if (show) storage.setItem(SHOW_ARCHIVED_STORAGE_KEY, "1");
     else storage.removeItem(SHOW_ARCHIVED_STORAGE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/chat/session-archive.ts:76", error);
     // Quota / private mode — best-effort.
   }
 }

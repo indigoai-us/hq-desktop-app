@@ -4,6 +4,7 @@
  */
 import {
   channelWakeFromPayload,
+  isDirectoryChangedWake,
   mqttPayloadToText,
   parseDmDeliveredWake,
   parseReplyThreadWake,
@@ -87,7 +88,7 @@ export function toReplyNewWake(ids: ReplyThreadWakeIds): ReplyNewWake {
 export function routeMeshWake(
   payload: unknown,
   wakes: ChatMeshWakeBus,
-): "reply" | "channel" | "dm" | null {
+): "reply" | "channel" | "dm" | "directory" | null {
   const reply = routeReplyWake(payload, wakes);
   if (reply) return "reply";
   const status = agentStatusFromPayload(payload);
@@ -102,6 +103,10 @@ export function routeMeshWake(
       : payload && typeof payload === "object" && !Array.isArray(payload)
         ? JSON.stringify(payload)
         : mqttPayloadToText(payload);
+  if (isDirectoryChangedWake(text)) {
+    wakes.emit("channel:unread-changed", undefined);
+    return "directory";
+  }
   const channel = channelWakeFromPayload(text || undefined);
   if (channel) {
     wakes.emit("channel:new-message", channel);

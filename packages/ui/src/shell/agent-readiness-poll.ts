@@ -148,7 +148,8 @@ export function startReadinessPoll(
     let read: ReadinessRead = { kind: "failed" };
     try {
       read = await readOnce();
-    } catch {
+    } catch (error) {
+      console.warn("[hq-ui] agent readiness read failed:", error);
       // A failed read: ask again, less often each time.
     }
     reading = false;
