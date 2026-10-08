@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf8');
 
 const app = read('src/App.svelte');
+const channelUnreadListeners = read('src/lib/channelUnreadListeners.ts');
 const build = read('src-tauri/build.rs');
 const main = read('src-tauri/src/main.rs');
 const bridge = read('src-tauri/src/tray_helper.rs');
@@ -68,7 +69,8 @@ describe('native HQ menu-bar message badge', () => {
     expect(app).toContain('if (!authenticated) {');
     expect(app).toContain('channelUnreadTracker.reset()');
     expect(app).toContain('if (authenticated) void loadUnreadSummary()');
-    expect(app).toContain("await listen<{ channelId: string; unread: number }>(\n        'channel:unread-changed'");
+    expect(app).toContain('registerChannelUnreadListeners({');
+    expect(channelUnreadListeners).toContain("listen('channel:unread-changed'");
   });
 
   it('clears native counts on DM view, channel read, channel decrease, and sign-out', () => {

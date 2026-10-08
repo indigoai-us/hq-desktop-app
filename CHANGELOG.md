@@ -10,9 +10,14 @@ The release moves it under the version it ships in.
 
 - Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
 
+## [0.10.403] - 2026-10-08
+
+- Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
+
 ### Fixed
 
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
+- Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.51, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
 
 ## [0.10.402] — 2026-10-07
 
