@@ -248,7 +248,7 @@
   async function showConflictBackup(notice: ConflictParkedNoticeRow): Promise<void> {
     setConflictNoticeBusy(notice.id, true);
     try {
-      await invokeFn('show_conflict_backup', { companySlug: notice.companySlug, backupPath: notice.backupPath });
+      await invokeFn('show_conflict_backup', { scope: notice.scope, companySlug: notice.companySlug, backupPath: notice.backupPath });
     } catch (error) {
       console.error('Could not reveal the parked conflict copy.', error);
     } finally {

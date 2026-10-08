@@ -740,16 +740,36 @@ fn safe_conflict_backup_path(value: &str) -> bool {
 }
 
 #[tauri::command]
-pub fn show_conflict_backup(company_slug: String, backup_path: String) -> Result<(), String> {
-    if !company_slug
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-        || !safe_conflict_backup_path(&backup_path)
-    {
+fn conflict_backup_root(hq_root: &Path, scope: &str, company_slug: Option<&str>) -> Result<PathBuf, String> {
+    match scope {
+        "personal" if company_slug.is_none() => Ok(hq_root.to_path_buf()),
+        "company" => {
+            let slug = company_slug
+                .filter(|value| value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
+                .ok_or_else(|| "Conflict company is invalid.".to_string())?;
+            match hq_desktop_core::workspaces::read_manifest(hq_root) {
+                hq_desktop_core::workspaces::ManifestLoad::Present(entries) => Ok(entries
+                    .into_iter()
+                    .find(|entry| entry.slug == slug)
+                    .map(|entry| entry.path)
+                    .unwrap_or_else(|| hq_root.join("companies").join(slug))),
+                hq_desktop_core::workspaces::ManifestLoad::Absent => Ok(hq_root.join("companies").join(slug)),
+                hq_desktop_core::workspaces::ManifestLoad::Failed(error) => {
+                    log(LOG_TAG, &format!("could not resolve conflict company from manifest: {error}"));
+                    Err("Company folder could not be resolved.".to_string())
+                }
+            }
+        }
+        _ => Err("Conflict scope is invalid.".to_string()),
+    }
+}
+
+pub fn show_conflict_backup(scope: String, company_slug: Option<String>, backup_path: String) -> Result<(), String> {
+    if !safe_conflict_backup_path(&backup_path) {
         return Err("Conflict backup path is invalid.".to_string());
     }
     let hq_root = PathBuf::from(hq_desktop_core::daemon::resolve_hq_folder_path()?);
-    let company_root = hq_root.join("companies").join(&company_slug);
+    let company_root = conflict_backup_root(&hq_root, &scope, company_slug.as_deref())?;
     let candidate = company_root.join(&backup_path);
     let root = company_root
         .canonicalize()
@@ -926,6 +946,7 @@ pub fn replay_last_pass<R: Runtime>(app: &AppHandle<R>, hq_folder: &str, pass: &
 
 /// Decide who runs background services on this launch, then start them.
 pub fn setup_sync_host(app: &AppHandle) {
+    crate::commands::sync_progress_watch::setup_last_pass_watch(app);
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         // The previous app may have exited during an automatic update after
@@ -1231,7 +1252,6 @@ fn enter_daemon_mode(handle: AppHandle, launch_sync: bool) {
         );
     }
     std::thread::spawn(watch_env_changes);
-    crate::commands::sync_progress_watch::setup_last_pass_watch(&handle);
     if let Err(e) = set_daemon_sync(sync_wanted()) {
         log(
             LOG_TAG,
@@ -1501,8 +1521,28 @@ fn host_loop() {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+    use std::fs;
     use tauri::Listener;
     use tempfile::TempDir;
+
+    #[test]
+    fn conflict_backup_root_uses_manifest_path_and_personal_scope() {
+        let hq = TempDir::new().unwrap();
+        fs::create_dir_all(hq.path().join("companies")).unwrap();
+        fs::write(
+            hq.path().join("companies/manifest.yaml"),
+            "companies:\n  indigo:\n    name: Indigo\n    path: workspace/indigo-data\n",
+        ).unwrap();
+
+        assert_eq!(
+            conflict_backup_root(hq.path(), "company", Some("indigo")).unwrap(),
+            hq.path().join("workspace/indigo-data"),
+        );
+        assert_eq!(
+            conflict_backup_root(hq.path(), "personal", None).unwrap(),
+            hq.path(),
+        );
+    }
 
     use crate::events::{EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_CONFLICT};
     use hq_desktop_core::hq_daemon::{DaemonState, LastPass};

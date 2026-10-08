@@ -1,6 +1,7 @@
 export interface ConflictParkedNotice {
   id: string;
-  companySlug: string;
+  scope: 'company' | 'personal';
+  companySlug: string | null;
   relativePath: string;
   backupPath: string;
   winnerReason: 'local-newer' | 'remote-newer' | 'remote-changed-since-journal';

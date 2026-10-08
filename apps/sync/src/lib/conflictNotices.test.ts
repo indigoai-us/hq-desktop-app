@@ -8,6 +8,7 @@ import {
 
 const notice = (id: string, companySlug = 'indigo'): ConflictParkedNotice => ({
   id,
+  scope: 'company',
   companySlug,
   relativePath: 'boards/primary.md',
   backupPath: '.hq/conflict-backups/boards/primary.md.backup',

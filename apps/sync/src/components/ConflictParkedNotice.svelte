@@ -36,7 +36,10 @@
   .conflict-notices {
     display: grid;
     gap: 8px;
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 34vh;
+    overflow-y: auto;
     padding: 8px 12px;
     border-bottom: 1px solid var(--v4-line, color-mix(in srgb, currentColor 12%, transparent));
     background: var(--v4-reading-surface, var(--surface));

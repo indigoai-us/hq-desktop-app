@@ -5,6 +5,7 @@ import type { ConflictParkedNotice as Notice } from '../lib/conflictNotices';
 
 const notice: Notice = {
   id: 'a'.repeat(64),
+  scope: 'company',
   companySlug: 'indigo',
   relativePath: 'boards/primary.md',
   backupPath: '.hq/conflict-backups/boards/primary.md.backup',
