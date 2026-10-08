@@ -15,7 +15,7 @@ The release moves it under the version it ships in.
 - A test copy of HQ started from another folder no longer replaces the login item that starts the real HQ. Only the installed HQ sets itself to open at login on launch.
 - On a Mac, the "One shortcut to remember" step of first-run setup now draws a Mac keyboard (fn, control, option, command) with option and shift lit, matching the ⌥ ⇧ O shown under it. It used to draw a Windows keyboard with Alt lit. Windows and Linux keep the Alt Shift O keyboard.
 - "New files are paused" no longer appears for companies whose uploads are working. The notice now shows only when HQ is actually refusing new files for that company, not when a plan allowance is merely close to full.
-- HQ Desktop now checks for a newer compatible sync runner once at app startup and keeps the cached runner if the npm registry is unavailable.
+- HQ Desktop refreshes its npx-cached sync runner at startup only when npm reports a newer compatible version; it keeps the cache when npm is unavailable or a runner is active.
 - Client health now reports the updater check time, outcome, and error class; a failed check no longer leaves an old `up_to_date` status in place.
 - On a Mac without Apple's developer tools, first-run setup no longer stalls behind Apple's install prompt. It shows a card explaining the Install and license prompts, brings Apple's window to the front, waits while the tools install, and then carries on from the same step. If the Apple install is closed early, setup offers to try again.
 
