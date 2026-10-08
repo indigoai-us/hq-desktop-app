@@ -774,6 +774,7 @@ export function createSyncPlatformAdapter(
         if (!result.ok) return result;
         return ok(unwrapNamedArray(result.value, ['contacts']));
       },
+      resolveRetiredEntities: (uids) => call<Json>('resolve_retired_entities', { uids }),
       listDmRequests: async () => {
         const result = await call<unknown>('list_dm_requests');
         if (!result.ok) return result;

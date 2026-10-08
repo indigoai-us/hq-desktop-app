@@ -779,6 +779,7 @@ fn main() {
             commands::windows_teardown_probe::session_end_teardown_probe_status,
             commands::session_end_latch::session_end_latch_status,
             commands::workspaces::list_syncable_workspaces,
+            commands::retired_entities::resolve_retired_entities,
             commands::workspaces::connect_workspace_to_cloud,
             commands::workspaces::claim_pending_company_invite,
             commands::workspaces::set_workspace_sync_enabled,
