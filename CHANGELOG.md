@@ -7,6 +7,7 @@ change, in plain language, describing what changes for the people who use it.
 The release moves it under the version it ships in.
 
 ## [Unreleased]
+- Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
 
 ### Fixed
 
