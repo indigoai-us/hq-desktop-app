@@ -1,5 +1,6 @@
 <script lang="ts">
   import RailIcon from "../common/button/RailIcon.svelte";
+  import Dropdown from "../common/LazyDropdown.svelte";
   import { compactNumber } from "../common/compact-number.js";
   /**
    * Slack-style right-hand agent detail pane: identity, scheduled jobs,
@@ -38,10 +39,28 @@
     type AgentUsageView,
     type LoadState,
     type RoutineActionId,
+    type RoutineCadence,
     type RoutineDraft,
   } from "./agent-detail-model.js";
   import "./tokens.css";
   import "./chat-tokens.css";
+
+  const ROUTINE_CADENCE_OPTIONS: { value: RoutineCadence; label: string }[] = [
+    { value: "daily", label: "Daily" },
+    { value: "weekly", label: "Weekly" },
+    { value: "interval", label: "Every few minutes" },
+    { value: "once", label: "One time" },
+    { value: "custom", label: "Custom (cron)" },
+  ];
+  const WEEKDAY_OPTIONS = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ].map((day, i) => ({ value: String(i), label: day }));
 
   interface Props {
     agentUid: string;
@@ -735,16 +754,16 @@
             </label>
             <label class="ad-field">
               <span>Repeats</span>
-              <select
-                data-testid="agent-detail-routine-cadence"
-                bind:value={routineDraft.cadence}
-              >
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="interval">Every few minutes</option>
-                <option value="once">One time</option>
-                <option value="custom">Custom (cron)</option>
-              </select>
+              <Dropdown
+                block
+                testid="agent-detail-routine-cadence"
+                label="Repeats"
+                value={routineDraft.cadence}
+                options={ROUTINE_CADENCE_OPTIONS}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.cadence = v as RoutineCadence;
+                }}
+              />
             </label>
             {#if routineDraft.cadence === "daily" || routineDraft.cadence === "weekly"}
               <label class="ad-field">
@@ -755,11 +774,16 @@
             {#if routineDraft.cadence === "weekly"}
               <label class="ad-field">
                 <span>Day</span>
-                <select bind:value={routineDraft.weekday}>
-                  {#each ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"] as day, i (day)}
-                    <option value={i}>{day}</option>
-                  {/each}
-                </select>
+                <Dropdown
+                  block
+                  testid="agent-detail-routine-weekday"
+                  label="Day"
+                  value={String(routineDraft.weekday)}
+                  options={WEEKDAY_OPTIONS}
+                  onchange={(v) => {
+                    if (routineDraft) routineDraft.weekday = Number(v);
+                  }}
+                />
               </label>
             {/if}
             {#if routineDraft.cadence === "interval"}
@@ -786,14 +810,24 @@
             {/if}
             <label class="ad-field">
               <span>Send results to</span>
-              <select bind:value={routineDraft.deliver}>
-                {#if routineEditId}<option value="">Keep as is</option>{/if}
-                <option value="origin">Where it was asked</option>
-                <option value="local">Keep on the bot</option>
-                {#each view.deliverOptions as option (option.value)}
-                  <option value={option.value}>{option.label}</option>
-                {/each}
-              </select>
+              <Dropdown
+                block
+                testid="agent-detail-routine-deliver"
+                label="Send results to"
+                value={routineDraft.deliver}
+                options={[
+                  ...(routineEditId ? [{ value: "", label: "Keep as is" }] : []),
+                  { value: "origin", label: "Where it was asked" },
+                  { value: "local", label: "Keep on the bot" },
+                  ...view.deliverOptions.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  })),
+                ]}
+                onchange={(v) => {
+                  if (routineDraft) routineDraft.deliver = v;
+                }}
+              />
             </label>
             <div class="ad-row-actions">
               <button
@@ -1554,7 +1588,7 @@
 
   .ad-row-meta {
     color: var(--t3);
-    font-size: 12px;
+    font-size: 13px;
     text-align: right;
   }
 
@@ -1576,16 +1610,6 @@
     align-self: flex-start;
   }
 
-  .ad-field select {
-    width: 100%;
-    padding: 6px 8px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--t1);
-    font: inherit;
-  }
-
   .ad-danger-row {
     display: flex;
     flex-wrap: wrap;
@@ -1604,8 +1628,7 @@
   .ad-btn:focus-visible,
   .ad-text-btn:focus-visible,
   .ad-field input:focus-visible,
-  .ad-field textarea:focus-visible,
-  .ad-field select:focus-visible {
+  .ad-field textarea:focus-visible {
     outline: 2px solid var(--v4-focus-ring, var(--t1));
     outline-offset: 2px;
   }
