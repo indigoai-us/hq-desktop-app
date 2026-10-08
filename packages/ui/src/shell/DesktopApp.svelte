@@ -511,13 +511,6 @@
   import { vaultsFor } from "../files/explorer/vault-model.js";
   import MemberProfilePanel from "../chat/MemberProfilePanel.svelte";
   import AgentDetailPanel from "../chat/AgentDetailPanel.svelte";
-  import {
-    botSetupMatchesRow,
-    botSetupAsksAccess,
-    botSetupUidFromCardId,
-    botSetupWires,
-    type BotSetupEntry,
-  } from "../chat/create-bot/bot-setup-thread.js";
   import LocalBotDetailPanel from "../chat/LocalBotDetailPanel.svelte";
   import BotSignInBanner from "../chat/BotSignInBanner.svelte";
   import BotRestoreBanner from "../chat/BotRestoreBanner.svelte";
@@ -2781,25 +2774,12 @@
   /** Seconds a fresh bot may take to come online before the card calls it failed. */
   const BOT_PROGRESS_TIMEOUT_MS = 180_000;
   let botProgressByUid = $state<Record<string, BotProgressEntry>>({});
-  /**
-   * The rest of a new bot's setup (access, skills, verify), told by the bot
-   * in the thread the modal lands on. Local rows; see bot-setup-thread.ts.
-   */
-  let botSetupByUid = $state<Record<string, BotSetupEntry>>({});
-  function patchBotSetup(uid: string, patch: Partial<BotSetupEntry>): void {
-    const current = botSetupByUid[uid];
-    if (!current) return;
-    botSetupByUid = { ...botSetupByUid, [uid]: { ...current, ...patch } };
-  }
   function setBotProgress(uid: string, patch: Partial<BotProgressEntry>): void {
     const current = botProgressByUid[uid];
     if (!current) return;
     botProgressByUid = { ...botProgressByUid, [uid]: { ...current, ...patch } };
-    if (patch.state === "online") patchBotSetup(uid, { online: true });
   }
   function clearBotProgress(uid: string): void {
-    // The card goes when the bot is online or has spoken: it is verified.
-    patchBotSetup(uid, { online: true });
     if (!botProgressByUid[uid]) return;
     const next = { ...botProgressByUid };
     delete next[uid];
@@ -2852,22 +2832,10 @@
       pinned: false,
       personUid: agentUid,
     };
-    botSetupByUid = {
-      ...botSetupByUid,
-      [agentUid]: {
-        agentUid,
-        kind: "local",
-        name: label,
-        email: null,
-        companySlug: input.companies?.[0] ?? null,
-        companyUid: null,
-        rowId: row.id,
-        channelId: null,
-        createdAt: Date.now(),
-        online: false,
-        access: { state: "pending", level: "read" },
-      },
-    };
+    // The new bot's DM opens with the progress card above; the bot's own
+    // intro is its greeting. The desktop adds no setup rows of its own: it
+    // has no call that grants vault access, and a Local bot already works
+    // with the person's own permissions.
     // The visual first run selects on Done ("Talk to <Name>"), so a create
     // that lands behind the takeover, or after the person left it for
     // #welcome, does not move them.
@@ -7638,11 +7606,6 @@
       rows =
         setupAgentWires.length > 0 ? [...welcome, ...setupAgentWires] : welcome;
     }
-    const setup = Object.values(botSetupByUid).find((entry) => botSetupMatchesRow(entry, selectedRow));
-    if (setup) {
-      const email = openAgentMember?.personUid === setup.agentUid ? openAgentMember.email : null;
-      rows = [...rows, ...botSetupWires(email ? { ...setup, email } : setup)];
-    }
     return coalesceWorkSessionWires(rows);
   });
 
@@ -9205,24 +9168,6 @@
         // names the profile to write it to.
         console.warn("[hq-desktop] cloud bot title not saved: the create sequence returned no agent uid");
       }
-      if (agentUid) {
-        botSetupByUid = {
-          ...botSetupByUid,
-          [agentUid]: {
-            agentUid,
-            kind: "cloud",
-            name: draft.name.trim() || "New bot",
-            email: null,
-            companySlug: companies?.find((c) => c.cloudUid === companyUid)?.slug ?? null,
-            companyUid,
-            rowId: null,
-            channelId: result.target.channelId,
-            createdAt: Date.now(),
-            online: false,
-            access: { state: "pending", level: "read" },
-          },
-        };
-      }
       navigateToEntryTarget(result.target, companyUid);
       const signInUrl = claudeSubscriptionSignInUrl(draft, agentUid);
       if (signInUrl) onopenurl?.(signInUrl);
@@ -9500,21 +9445,6 @@
   });
 
   async function handleCardAction(event: LifecycleCardActionEvent): Promise<void> {
-    // A new bot's own setup card lives only in this window: settle it here.
-    const setupUid = botSetupUidFromCardId(event.cardId);
-    if (setupUid) {
-      const entry = botSetupByUid[setupUid];
-      // A local bot never shows the access card, so a stray action from an
-      // older render changes nothing.
-      if (!entry || !botSetupAsksAccess(entry)) return;
-      patchBotSetup(setupUid, {
-        access:
-          event.actionId === "deny"
-            ? { state: "denied", level: entry.access.level }
-            : { state: "approved", level: event.actionId === "grant_write" ? "write" : "read" },
-      });
-      return;
-    }
     const actionRow = selectedRow;
     oncardaction?.(event);
     if (typeof adapter.messaging.runCardAction !== "function") return;

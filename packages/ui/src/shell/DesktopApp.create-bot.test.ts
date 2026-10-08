@@ -197,12 +197,54 @@ describe("DesktopApp sidebar '+' → New bot", () => {
           host.textContent,
       ).toContain("scout"),
     );
-    // A local bot runs with the person's own access: its thread greets and
-    // never asks for a grant or shows the access card.
-    await vi.waitFor(() => expect(host.textContent).toContain("Hi, I'm scout. I'll ask a few quick questions to finish my setup."));
+    // A local bot runs with the person's own access: its thread never asks
+    // for a grant or shows the access card. The bot's own hello and kickoff
+    // greet; the desktop adds no greeting of its own.
+    await settle(20);
+    expect(host.textContent).not.toContain("I'll ask a few quick questions to finish my setup");
     expect(q('[data-testid="share-request-card"]')).toBeNull();
     expect(host.textContent).not.toContain("grant me access");
     expect(host.textContent).not.toContain("Pick my skills");
+  });
+
+  it("the new bot's DM has one greeting, the bot's own, and no setup rows the desktop made up", async () => {
+    // Regression (acf10e805, beta only): after create, the desktop appended
+    // its own rows under the bot's intro: a second "Hi, I'm ..." greeting, an
+    // access request card whose Approve granted nothing, "Pick my skills"
+    // pointing at an Edit sheet that saves nothing, and "Verified, I'm ready"
+    // while that request was still pending. Production shows the bot's intro
+    // only, and so does this.
+    const intro = {
+      eventId: "evt_intro",
+      body: "Hi, I'm scout, your HQ bot. What would you like me to do first?",
+      fromPersonUid: "agt_new",
+      fromDisplayName: "scout",
+      createdAt: new Date().toISOString(),
+      direction: "in",
+    };
+    const create = vi.fn(async () => ok({ ok: true, name: "scout", agentUid: "agt_new" }));
+    const value = adapter({ create });
+    (value.messaging as unknown as Record<string, unknown>).fetchDmThread = async () =>
+      ok({ messages: [intro], nextCursor: null });
+    mountApp(value);
+    await openBotFlow("scout");
+    // Finish with defaults from the coding tool step.
+    click('[data-testid="chat-bot-create"]');
+    await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
+    // Lands in the bot's DM, where the bot's intro is the greeting.
+    await vi.waitFor(() => expect(host.textContent).toContain("What would you like me to do first?"));
+    await settle(20);
+
+    const text = host.textContent ?? "";
+    expect(text.match(/Hi, I'm scout/g)?.length).toBe(1);
+    expect(text).not.toContain("I'll ask a few quick questions to finish my setup");
+    expect(text).not.toContain("Two things before I start");
+    expect(text).not.toContain("One thing before I start");
+    expect(text).not.toContain("Pick my skills");
+    expect(text).not.toContain("Verified, I'm ready");
+    expect(host.querySelector('[data-testid="share-request-card"]')).toBeNull();
+    const rows = [...host.querySelectorAll('[data-testid="conversation-message"]')];
+    expect(rows.map((row) => row.getAttribute("data-event-id"))).toEqual(["evt_intro"]);
   });
 
   it("surfaces the CLI's reason and keeps the modal open when creation fails", async () => {
