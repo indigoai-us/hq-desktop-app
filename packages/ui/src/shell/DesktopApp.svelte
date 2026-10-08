@@ -171,6 +171,12 @@
     isAgentUid as isAgentTaskUid,
   } from "../chat/tasks/task-feed-controller.svelte";
   import SetupChannelIntro from "../chat/SetupChannelIntro.svelte";
+  import SetupInstallGuide from "../settings/SetupInstallGuide.svelte";
+  import {
+    botNeedsCodingToolNotice,
+    localBotNeedsCodingTool,
+    withPlainBotFailureReplies,
+  } from "../chat/bot-runtime-failure.js";
   import SetupRunCard from "../chat/SetupRunCard.svelte";
   import SetupConnectStep from "../chat/SetupConnectStep.svelte";
   import SetupFinale from "../chat/SetupFinale.svelte";
@@ -271,6 +277,7 @@
     findSetupBot,
     findSetupBotContact,
     firstSignedInRuntime,
+    setupNeedsCodingTool,
     setupFinaleDue,
     setupFinaleOffersSlack,
     setupSlackOfferText,
@@ -2844,7 +2851,15 @@
   const setupBotRuntimeReady = $derived(Boolean(firstSignedInRuntime(localBotRuntimeReady)));
   const setupBotLauncher = $derived.by<SetupBotLauncher | null>(() =>
     adapter.bots && SETUP_BOT_MODE
-      ? { existing: Boolean(existingSetupBot), ready: setupBotRuntimeReady, starting: setupBotStarting, error: setupBotStartError, start: startSetupBot }
+      ? {
+          existing: Boolean(existingSetupBot),
+          ready: setupBotRuntimeReady,
+          starting: setupBotStarting,
+          error: setupBotStartError,
+          // Known and empty: #welcome shows the install guide before the bot runs.
+          needsCodingTool: setupNeedsCodingTool(localBotRuntimeReady),
+          start: startSetupBot,
+        }
       : null,
   );
   /**
@@ -2929,17 +2944,21 @@
     setupBotAutoStarted = true;
     if (!adapter.bots) return { ok: false, reason: SETUP_BOT_UNAVAILABLE };
     await refreshLocalBots();
-    const existing = await findExistingSetupBot();
-    if (existing) {
-      openSetupBotDm(existing);
-      return { ok: true, existing: true };
-    }
     // Re-read sign-in state: the Connect step signs in through the setup run's
     // own API, so a readiness answer cached at boot can be a click out of date.
     localBotRuntimeReady = null;
     await loadLocalBotRuntimeReady();
     const runtime = firstSignedInRuntime(localBotRuntimeReady);
+    // No coding tool signed in: say so (the install guide renders under this
+    // sentence) before opening OR creating the setup bot. An existing setup
+    // bot with no tool behind it answers every message with a failure, which
+    // is what a freshly wiped Mac showed when it opened one straight away.
     if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
+    const existing = await findExistingSetupBot();
+    if (existing) {
+      openSetupBotDm(existing);
+      return { ok: true, existing: true };
+    }
     // `intro` is sent by the runtime on start, so the first message is
     // instant instead of a ~30 s wait for a model turn; `kickoff` then runs
     // one turn by itself so the bot starts step one without waiting for the
@@ -3265,6 +3284,21 @@
       Boolean(!selectedBotProgress && selectedLocalBot && selectedLocalBotOffline),
   );
   const selectedLocalBotNeedsSignIn = $derived(botNeedsSignIn(selectedLocalBot));
+  /**
+   * The open bot runs on a coding tool that is not installed or not signed in
+   * here (an expired sign-in has its own banner above). The DM says so in one
+   * line and offers the same guided install the setup channel uses, instead
+   * of letting each message come back as a failure.
+   */
+  const selectedLocalBotNeedsCodingTool = $derived(
+    !selectedLocalBotNeedsSignIn && localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady),
+  );
+  /** The install guide's Continue: re-read the tools, then start the bot again. */
+  async function continueBotAfterCodingTool(): Promise<void> {
+    await onBotRuntimeSignedIn();
+    if (localBotNeedsCodingTool(selectedLocalBot, localBotRuntimeReady)) return;
+    await startSelectedLocalBot();
+  }
   /** Coding tools some local bot is paused on — evidence a "Connected" tool is dead. */
   const staleRuntimes = $derived(runtimesNeedingSignIn(localBots));
   /**
@@ -7220,7 +7254,9 @@
       const email = openAgentMember?.personUid === setup.agentUid ? openAgentMember.email : null;
       rows = [...rows, ...botSetupWires(email ? { ...setup, email } : setup)];
     }
-    return coalesceWorkSessionWires(rows);
+    // A bot's failure reply quotes its coding tool's own error; show the
+    // plain sentence instead (chat/bot-runtime-failure.ts).
+    return withPlainBotFailureReplies(coalesceWorkSessionWires(rows), { noun: hostComputerNoun() });
   });
 
   /**
@@ -13973,6 +14009,29 @@
                       ondone={refreshLocalBots}
                     />
                   {/if}
+                  {#if selectedLocalBot && selectedLocalBotNeedsCodingTool}
+                    <div class="local-bot-notice" data-testid="bot-needs-coding-tool" role="status">
+                      <span class="local-bot-notice-text">
+                        {botNeedsCodingToolNotice(selectedLocalBot, { noun: hostComputerNoun() })}
+                      </span>
+                    </div>
+                    {#if setupInstallGuide && (selectedLocalBot.runtime === "claude" || selectedLocalBot.runtime === "codex")}
+                      <div class="bot-needs-coding-tool-guide" data-testid="bot-needs-coding-tool-guide">
+                        <SetupInstallGuide
+                          tools={aiTools ?? null}
+                          preferred={selectedLocalBot.runtime}
+                          oninstall={setupInstallGuide.oninstall}
+                          onsignin={setupInstallGuide.onsignin}
+                          onstatus={setupInstallGuide.onstatus}
+                          oncancelsignin={setupInstallGuide.oncancelsignin}
+                          oncontinue={continueBotAfterCodingTool}
+                          onrefresh={setupInstallGuide.onrefresh}
+                          downloadUrlFor={setupInstallGuide.downloadUrlFor}
+                          onopen={setupInstallGuide.onopen}
+                        />
+                      </div>
+                    {/if}
+                  {/if}
                   <AgentThinkingRow entries={setupThinking ? [...agentThinking, setupThinking] : agentThinking} />
                   {#if stoppedRespondingNote}
                     <!-- The bot said it was working and then went quiet: the
@@ -15356,6 +15415,9 @@
   }
   .setup-agent-prompt:empty {
     display: none;
+  }
+  .bot-needs-coding-tool-guide {
+    margin: 4px 16px 8px;
   }
   .local-bot-notice {
     display: flex;
