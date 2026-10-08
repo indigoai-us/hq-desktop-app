@@ -45,6 +45,7 @@
   import type { WorkspacesResult } from './lib/workspaces';
   import type { Channel } from './lib/channels';
   import { ChannelUnreadTracker } from './lib/channelUnreadTracker';
+  import { registerChannelUnreadListeners } from './lib/channelUnreadListeners';
   import { UnreadSummaryTracker } from './lib/unreadSummaryTracker';
   import { TrayMessageBadgePublisher } from './lib/trayMessageBadge';
   import { RecordingActionAckCoordinator } from './lib/recordingActionAck';
@@ -1102,25 +1103,17 @@
     );
 
     // Exact channel unread snapshots include increases and read/decrement
-    // transitions, so the aggregate and native menu-bar count cannot stick.
-    unlisteners.push(
-      await listen<{ channelId: string; unread: number }>(
-        'channel:unread-changed',
-        (e) => {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        },
-      ),
-    );
-
-    unlisteners.push(
-      await listen<Channel>('channel:updated', (e) => {
-        if (typeof e.payload.unread === 'number') {
-          applyChannelUnread(e.payload.channelId, e.payload.unread);
-        } else {
-          void loadChannelUnreadCount();
-        }
-      }),
-    );
+    // transitions. The directory-change emitter also sends a payload-less
+    // invalidation, which the listener handles by refreshing the full snapshot.
+    const channelUnreadUnlisteners = await registerChannelUnreadListeners({
+      listen: (eventName, handlePayload) =>
+        listen<unknown>(eventName, ({ payload }) => handlePayload(payload)),
+      applyChannelUnread,
+      refreshSnapshot: () => {
+        void loadChannelUnreadCount();
+      },
+    });
+    unlisteners.push(...channelUnreadUnlisteners);
 
     unlisteners.push(
       await listen('tray:replay-intro', () => {
