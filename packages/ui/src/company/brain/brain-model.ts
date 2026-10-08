@@ -9,6 +9,7 @@
 
 import type { LibrarySkill, LibraryWorker } from "../../library/library.js";
 import { displayTitle } from "../../common/display-title.js";
+import { frontmatterList, normalizeDoc } from "./brain-chips.js";
 
 export const metadata = {
   performanceBudget: {
@@ -38,6 +39,10 @@ export interface KnowledgeFile {
   body: string;
   /** Last-changed date from frontmatter (YYYY-MM-DD), when the file has one. */
   changed?: string | null;
+  /** Frontmatter `tags`. */
+  tags?: string[];
+  /** A few frontmatter fields worth showing in the header card. */
+  fields?: { label: string; value: string }[];
 }
 
 export interface PolicyDoc {
@@ -52,6 +57,8 @@ export interface PolicyDoc {
   createdBy: string;
   edited: string;
   body: string;
+  /** Frontmatter `tags`. */
+  tags?: string[];
 }
 
 export interface SkillRow {
@@ -84,6 +91,12 @@ export interface WorkerRow {
   scheduled: boolean;
   live: boolean;
   lastRun: string;
+  /** worker.yaml type and team (the library read carries both). */
+  type?: string;
+  team?: string;
+  /** From worker.yaml once it has been read; null until then. */
+  model?: string | null;
+  skillCount?: number | null;
 }
 
 export interface BrainCache {
@@ -178,7 +191,10 @@ function titleFrom(path: string, text: string): string {
   return base.replace(/\.md$/i, "").replace(/[-_]/g, " ");
 }
 
-export function knowledgeFromFile(path: string, text: string): KnowledgeFile {
+const KNOWLEDGE_FIELDS = [["type", "type"], ["status", "status"], ["owner", "owner"]] as const;
+
+export function knowledgeFromFile(path: string, raw: string): KnowledgeFile {
+  const text = normalizeDoc(raw);
   const meta = fm(text);
   const markRaw = (meta.mark ?? meta.status ?? "").toLowerCase();
   const mark = markRaw === "new" ? "new" : markRaw === "upd" || markRaw === "updated" ? "upd" : null;
@@ -191,6 +207,13 @@ export function knowledgeFromFile(path: string, text: string): KnowledgeFile {
     mark,
     body: bodyAfterFm(text),
     changed: frontmatterDate(meta),
+    tags: frontmatterList(text, "tags"),
+    fields: KNOWLEDGE_FIELDS.flatMap(([key, label]) => {
+      const value = (meta[key] ?? "").replace(/^["']|["']$/g, "").trim();
+      // A status of new/updated is already the row mark.
+      if (!value || (key === "status" && /^(new|upd|updated)$/i.test(value))) return [];
+      return [{ label, value }];
+    }),
   };
 }
 
@@ -250,7 +273,8 @@ export function knowledgeDirListing(
   ];
 }
 
-export function policyFromFile(path: string, text: string): PolicyDoc {
+export function policyFromFile(path: string, raw: string): PolicyDoc {
+  const text = normalizeDoc(raw);
   const meta = fm(text);
   const enforcement: PolicyEnforcement =
     (meta.enforcement ?? "").toLowerCase() === "hard" ? "hard" : "soft";
@@ -266,6 +290,7 @@ export function policyFromFile(path: string, text: string): PolicyDoc {
     createdBy: meta.created_by ?? meta.owner ?? "",
     edited: meta.edited ?? "",
     body: bodyAfterFm(text),
+    tags: frontmatterList(text, "tags"),
   };
 }
 
@@ -309,6 +334,10 @@ export function workerRowFromLibrary(worker: LibraryWorker): WorkerRow {
     // OWNER-R12: no run history is read, so lastRun stays empty. It used to
     // hold the status, which left a parked row showing its scope instead.
     lastRun: "",
+    type: worker.type ?? "",
+    team: worker.team ?? "",
+    model: null,
+    skillCount: null,
   };
 }
 

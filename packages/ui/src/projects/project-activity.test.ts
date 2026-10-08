@@ -105,6 +105,22 @@ describe("projectActivity presence", () => {
     expect(a).toMatchObject({ kind: "lane", label: "active · lane desktop-dev" });
   });
 
+  it("never shows a raw presence id; resolves it to a name or '1 live session'", () => {
+    const raw = live("in-proj-233", 4 * MIN);
+    raw.participants[0].displayName = "prs_01KQ2TZQMA8078CHPDWBAFPN0Z";
+    raw.participants[0].actorUid = "prs_01KQ2TZQMA8078CHPDWBAFPN0Z";
+    const unnamed = projectActivity(project(), { now: NOW, live: raw });
+    expect(unnamed?.label).toBe("active · 1 live session, 4 min ago");
+    expect(unnamed?.label).not.toContain("prs_");
+
+    const named = projectActivity(project(), {
+      now: NOW,
+      live: raw,
+      nameFor: (uid) => (uid === "prs_01KQ2TZQMA8078CHPDWBAFPN0Z" ? "Corey Epstein" : null),
+    });
+    expect(named?.label).toBe("active · Corey Epstein, 4 min ago");
+  });
+
   it("ignores ended sessions", () => {
     expect(
       projectActivity(project(), { now: NOW, live: live("in-proj-233", 2 * MIN, "human", "ended") }),

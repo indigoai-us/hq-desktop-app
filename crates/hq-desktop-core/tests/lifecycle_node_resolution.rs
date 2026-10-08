@@ -1,7 +1,8 @@
 #![cfg(unix)]
 
 use hq_desktop_core::lifecycle::{
-    classify_lifecycle, require_local_toolchain, LifecycleInputs, LifecycleState,
+    classify_lifecycle, require_local_toolchain, require_local_toolchain_for_startup,
+    LifecycleInputs, LifecycleState,
 };
 use hq_desktop_core::paths::{resolve_bin_with_kind, ResolvedProgramKind};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ fn set_up_signed_in_inputs() -> LifecycleInputs {
         install_in_progress: false,
         consent_answered: true,
         evidence_unreadable: false,
+        hq_root_recorded_by_prior_setup: false,
     }
 }
 
@@ -88,6 +90,11 @@ fn updater_launch_uses_node_from_the_runtime_child_path() {
 
 #[test]
 fn a_set_up_machine_still_demotes_when_node_is_absent() {
-    let verdict = require_local_toolchain(classify_lifecycle(set_up_signed_in_inputs()), false);
+    let verdict = require_local_toolchain_for_startup(
+        classify_lifecycle(set_up_signed_in_inputs()),
+        true,
+        false,
+        false,
+    );
     assert_eq!(verdict.state, LifecycleState::NeedsInstall);
 }

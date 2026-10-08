@@ -137,7 +137,8 @@ export function saveMeetingsCache<
   if (writeVerified(storage, raw)) return true;
   try {
     safeRemoveItem(storage, STORAGE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:saveMeetingsCache", error);
     // Fall through to the retry; its result is what we report.
   }
   if (writeVerified(storage, raw)) return true;
@@ -161,7 +162,8 @@ export function clearMeetingsCache(
 ): void {
   try {
     safeRemoveItem(storage, STORAGE_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/meetings/meetings-cache.ts:141", error);
     // No-op.
   }
 }

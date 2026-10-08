@@ -77,6 +77,8 @@ export interface LocalProjectWire {
   updatedAt?: string | null;
   creatorFallback?: string | null;
   prdModifiedAt?: string | null;
+  repos?: string[];
+  branchName?: string | null;
   storyCount: number;
   storiesComplete: number;
   provenance?: unknown;
@@ -244,6 +246,13 @@ export function toProject(wire: LocalProjectWire): Project {
     provenance,
     creatorFallback: usesCreatorFallback ? creatorFallback : null,
     prdModifiedAt: wire.prdModifiedAt ?? null,
+    repos: Array.isArray(wire.repos)
+      ? wire.repos.filter((repo): repo is string => typeof repo === "string" && repo.trim() !== "")
+      : [],
+    branchName:
+      typeof wire.branchName === "string" && wire.branchName.trim()
+        ? wire.branchName.trim()
+        : null,
   };
 }
 

@@ -23,6 +23,14 @@ pub const HOME_CHANNEL: &str = "POST /v1/companies/{companyUid}/home-channel";
 /// `GET /v1/flags/resolve`
 pub const FLAGS_RESOLVE: &str = "GET /v1/flags/resolve";
 
+/// `GET /v1/bot/auto-schedule` reads the caller's setting when
+/// `setting=hq-anywhere`.
+pub const PERSON_SETTING_GET: &str = "GET /v1/bot/auto-schedule";
+
+/// `PUT /v1/bot/auto-schedule` writes the caller's setting when
+/// `setting=hq-anywhere`.
+pub const PERSON_SETTING_PUT: &str = "PUT /v1/bot/auto-schedule";
+
 /// `GET /companies/{companyUid}/crm-projection`
 pub const CRM_PROJECTION: &str = "GET /companies/{companyUid}/crm-projection";
 
@@ -51,6 +59,8 @@ mod tests {
             "/v1/companies/cmp_01ABC/home-channel"
         );
         assert_eq!(path_for(FLAGS_RESOLVE, ""), "/v1/flags/resolve");
+        assert_eq!(path_for(PERSON_SETTING_GET, ""), "/v1/bot/auto-schedule");
+        assert_eq!(path_for(PERSON_SETTING_PUT, ""), "/v1/bot/auto-schedule");
         assert_eq!(path_for(BOARD, "cmp_01ABC"), "/companies/cmp_01ABC/board");
         assert_eq!(path_for(SECRETS, "cmp_01ABC"), "/secrets/cmp_01ABC");
     }

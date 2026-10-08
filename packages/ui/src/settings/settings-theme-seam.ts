@@ -16,10 +16,10 @@ import {
   type AppearanceSeam,
 } from "./appearance-seam.js";
 import {
-  applyColorTheme,
   applyWindowOpacity,
   currentColorTheme,
   readHostWindowOpacity,
+  requestColorTheme,
   THEME_STORAGE_KEY,
 } from "./shell-settings-model.js";
 import { readSettingsPrefs, writeSettingsPrefs } from "./settings-prefs.js";
@@ -60,7 +60,9 @@ export function createShellAppearanceSeam(
     request(patch) {
       const current = read();
       const colorTheme = patch.colorTheme ?? current.colorTheme;
-      if (patch.colorTheme !== undefined) applyColorTheme(colorTheme);
+      if (patch.colorTheme !== undefined) {
+        requestColorTheme(colorTheme, root, target);
+      }
       let windowTransparency = current.windowTransparency;
       if (patch.windowTransparency !== undefined) {
         const opacity = applyWindowOpacity(
@@ -88,6 +90,11 @@ export function createShellAppearanceSeam(
  * an earlier boot step) or the OS appearance is left alone. The old boot path
  * called `applyColorTheme(readStoredTheme())`, and `readStoredTheme` defaults
  * to "dark", so light mode was forced back to dark on every launch.
+ *
+ * A saved theme is also handed to the desktop appearance host, so the native
+ * window theme and the host's shared preference agree with it. Installs that
+ * chose a theme before Settings routed through the host have it only under
+ * THEME_STORAGE_KEY; this carries it over on the next launch.
  */
 export function restoreStoredColorTheme(
   root: HTMLElement | null = globalThis.document?.documentElement ?? null,
@@ -95,6 +102,7 @@ export function restoreStoredColorTheme(
     | Pick<Storage, "getItem" | "setItem">
     | null
     | undefined = globalThis.localStorage,
+  target: EventTarget | null = typeof window === "undefined" ? null : window,
 ): void {
   let stored: string | null = null;
   try {
@@ -103,7 +111,8 @@ export function restoreStoredColorTheme(
     console.warn("[theme] stored theme unreadable; keeping current", error);
     return;
   }
-  if (stored === "light" || stored === "dark" || stored === "system") {
-    applyColorTheme(stored, root, storage);
-  }
+  if (stored !== "light" && stored !== "dark" && stored !== "system") return;
+  // Already in force (the host restored the same choice): no round-trip.
+  if (root && stored === currentColorTheme(root)) return;
+  requestColorTheme(stored, root, target, storage);
 }

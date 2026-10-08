@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   channelWakeFromPayload,
+  isDirectoryChangedWake,
   isTargetedMeshWake,
   mqttPayloadToText,
   parseDmDeliveredWake,
@@ -126,5 +127,38 @@ describe("mqttPayloadToText", () => {
   it("decodes bytes", () => {
     expect(mqttPayloadToText(new TextEncoder().encode("hi"))).toBe("hi");
     expect(mqttPayloadToText("hi")).toBe("hi");
+  });
+});
+
+describe("isDirectoryChangedWake", () => {
+  const envelope = {
+    contractVersion: 2,
+    eventId: "evt_1",
+    eventType: "channel.directory.changed",
+    scope: "work",
+    resourceId: "chn_x",
+    recipientUid: "prs_a",
+    createdAt: "2026-10-05T12:00:00.000Z",
+  };
+
+  it("matches the contract-v2 directory doorbell by eventType", () => {
+    expect(isDirectoryChangedWake(JSON.stringify(envelope))).toBe(true);
+    expect(isDirectoryChangedWake(envelope)).toBe(true);
+  });
+
+  it("does not match other wakes or junk", () => {
+    expect(
+      isDirectoryChangedWake(
+        JSON.stringify({ ...envelope, eventType: "work.changed" }),
+      ),
+    ).toBe(false);
+    expect(
+      isDirectoryChangedWake(
+        JSON.stringify({ kind: "channel.directory.changed" }),
+      ),
+    ).toBe(false);
+    expect(isDirectoryChangedWake("not-json")).toBe(false);
+    expect(isDirectoryChangedWake("[]")).toBe(false);
+    expect(isDirectoryChangedWake(undefined)).toBe(false);
   });
 });

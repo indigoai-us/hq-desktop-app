@@ -28,7 +28,10 @@
   } from "../common/provenance.js";
   import { relativeActivity } from "../common/relative-activity.js";
   import BoardFaces from "./BoardFaces.svelte";
-  import { boardFaces, facesCaption } from "./board-faces.js";
+  import ProjectRepoChips from "./ProjectRepoChips.svelte";
+  import { boardFaces, faceInitials, facesCaption } from "./board-faces.js";
+  import { projectUpdatedAt, storiesLabel, updatedLabel } from "./project-card.js";
+  import type { PortfolioColumn } from "./projects-model.js";
 
   interface Props {
     project: Project;
@@ -57,10 +60,13 @@
     /** Optional goal-link affordance for unlinked portfolio cards. */
     onlinkgoal?: (project: Project) => void;
     linkBusy?: boolean;
+    /** Board column the card sits in; colors the state dot like the header. */
+    column?: PortfolioColumn | null;
   }
 
   let {
     project,
+    column = null,
     showCompany = true,
     goalLabel = null,
     ownerLabel = null,
@@ -92,9 +98,17 @@
   const provenance = $derived(
     provenanceView(cardProvenance, "project", provenanceUnavailable),
   );
-  /** Owner first, then assignee, then creator — the person to show. */
-  const person = $derived(provenance.people[0] ?? null);
-  const personInitials = $derived(person ? initials(person.label) : "");
+  /** Owner first, then assignee, then creator — up to three distinct people. */
+  const people = $derived(
+    provenance.people
+      .map((p) => p.label)
+      .filter((label, index, all) => label.trim() !== "" && all.indexOf(label) === index)
+      .slice(0, 3),
+  );
+  const stories = $derived(storiesLabel(progress.complete, progress.total));
+  const updatedAt = $derived(projectUpdatedAt(project));
+  const updated = $derived(updatedLabel(updatedAt, now));
+  const hasRepos = $derived((project.repos?.length ?? 0) > 0 || Boolean(project.branchName));
   /** Active cards: humans (circles) then live bots (rounded squares). */
   const liveFaces = $derived(
     liveRun
@@ -104,15 +118,6 @@
         )
       : [],
   );
-
-  function initials(label: string): string {
-    const base = label.split("@")[0]?.trim() || label.trim();
-    const parts = base.split(/[\s._-]+/).filter(Boolean);
-    if (parts.length >= 2) {
-      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-    }
-    return base.slice(0, 2).toUpperCase();
-  }
 
   function activate() {
     onselect?.(project);
@@ -140,7 +145,11 @@
       {projectDisplayName(project)}
     </h3>
     {#if project.description}
-      <p class="card-desc">{project.description}</p>
+      <p class="card-desc" title={project.description}>{project.description}</p>
+    {/if}
+
+    {#if hasRepos}
+      <ProjectRepoChips repos={project.repos ?? []} branch={project.branchName ?? null} />
     {/if}
 
     {#if goalLabel || (showCompany && project.company && !showPortfolioMeta)}
@@ -189,11 +198,15 @@
       {/if}
     {/if}
 
-    {#if activityLabel && !liveRun}
-      <p class="card-activity" data-testid="project-activity">{activityLabel}</p>
-    {/if}
-
     <div class="card-foot" title={stateContext ?? undefined}>
+      {#if column}
+        <span
+          class="state-dot"
+          data-column={column}
+          data-testid="project-state-dot"
+          aria-hidden="true"
+        ></span>
+      {/if}
       {#if hasProgress}
         <div class="card-progress">
           <div class="progress-track" aria-hidden="true">
@@ -206,8 +219,9 @@
           </div>
           <span
             class="progress-count"
+            data-testid="project-stories"
             aria-label={`${progress.complete} of ${progress.total} tasks complete`}
-            >{progress.complete}/{progress.total}</span
+            >{stories}</span
           >
         </div>
       {:else}
@@ -226,17 +240,31 @@
         </span>
       {/if}
 
-      {#if personInitials && liveFaces.length === 0}
+      {#if people.length > 0 && liveFaces.length === 0}
         <span
           class="person"
           data-testid="project-card-provenance"
           aria-label={provenance.ariaLabel}
           title={provenance.ariaLabel}
         >
-          <span class="avatar" aria-hidden="true">{personInitials}</span>
+          {#each people as label (label)}
+            <span class="avatar" aria-hidden="true">{faceInitials(label)}</span>
+          {/each}
         </span>
       {/if}
     </div>
+
+    {#if activityLabel || updated}
+      <p class="card-meta" data-testid="project-card-meta">
+        {#if activityLabel && !liveRun}
+          <span class="card-activity" data-testid="project-activity"
+            ><span class="live-dot" aria-hidden="true"></span>{activityLabel}</span
+          >
+        {:else if updated}
+          <span data-testid="project-updated">{updated}</span>
+        {/if}
+      </p>
+    {/if}
   </button>
 
   {#if onlinkgoal && !goalLabel}
@@ -359,18 +387,16 @@
     overflow-wrap: anywhere;
   }
 
+  /* One muted line under the title; the full text is in the tooltip. */
   .card-desc {
-    display: -webkit-box;
     min-width: 0;
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-3);
     font-size: 13px;
     line-height: 1.4;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    overflow-wrap: anywhere;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .card-chips {
@@ -518,6 +544,14 @@
     line-height: 1;
   }
 
+  /* Owner leads; contributors tuck behind with a ring in the card color. */
+  .avatar + .avatar {
+    margin-left: -5px;
+    box-shadow:
+      0 0 0 1.5px var(--v4-raised),
+      inset 0 0 0 1px var(--v4-hairline);
+  }
+
   .live-row {
     display: flex;
     align-items: center;
@@ -642,7 +676,11 @@
       animation: none;
     }
   }
-  .card-activity {
+  /* Quiet last line: when the project last changed, or why it is Active. */
+  .card-meta {
+    display: flex;
+    align-items: center;
+    min-width: 0;
     margin: 0;
     color: var(--v4-text-3);
     font-size: 13px;
@@ -650,5 +688,40 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .card-meta > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-activity {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--v4-text-2);
+  }
+
+  /* State dot, colored like the column header dots. */
+  .state-dot {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--v4-text-3);
+  }
+  .state-dot[data-column="not-started"] {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--v4-text-3);
+  }
+  .state-dot[data-column="in-progress"] {
+    background: var(--v4-text-2);
+  }
+  .state-dot[data-column="active"] {
+    background: var(--v4-ok);
+  }
+  .state-dot[data-column="complete"] {
+    background: var(--v4-text-1);
   }
 </style>

@@ -20,7 +20,7 @@
     type AtlasPresence,
   } from "./atlas-model.js";
   import { ATLAS_PEOPLE_DAYS, type AtlasPeopleState } from "./atlas-people.js";
-  import { ATLAS_TODAY_PAGE, atlasAgo } from "./atlas-today.js";
+  import { ATLAS_TODAY_GROUPS, ATLAS_TODAY_ROWS, atlasAgo, type AtlasTodayGroup, type AtlasTodayKind } from "./atlas-today.js";
 
   interface Props {
     node: AtlasNode | null;
@@ -49,8 +49,8 @@
     onpeopleretry?: () => void;
     /** Map objects lit for the picked person; 0 means none of their skills are on the map. */
     personMatches?: number;
-    /** Today panel: objects changed today, busiest first; null hides the panel (no map). */
-    today?: AtlasNode[] | null;
+    /** Today panel: today's changes grouped by parent, projects first; null hides the panel (no map). */
+    today?: AtlasTodayGroup[] | null;
   }
 
   let {
@@ -77,8 +77,29 @@
     today = null,
   }: Props = $props();
 
-  let todayOpen = $state(false);
-  const todayShown = $derived(today ? (todayOpen ? today : today.slice(0, ATLAS_TODAY_PAGE)) : []);
+  // Progressive: a few groups at a time, a few rows per group; each "more"
+  // expands in place where it was clicked.
+  let todayGroupLimit = $state(ATLAS_TODAY_GROUPS);
+  let todayOpenGroups = $state<Record<string, boolean>>({});
+  const todayShown = $derived(today ? today.slice(0, todayGroupLimit) : []);
+  const todayHidden = $derived(today ? today.slice(todayGroupLimit) : []);
+  const todayHiddenRows = $derived(todayHidden.reduce((sum, g) => sum + Math.max(1, g.rows.length), 0));
+  const todayCount = $derived(today ? today.reduce((sum, g) => sum + g.rows.length + (g.changed ? 1 : 0), 0) : 0);
+  function groupRows(g: AtlasTodayGroup) {
+    return todayOpenGroups[g.key] ? g.rows : g.rows.slice(0, ATLAS_TODAY_ROWS);
+  }
+  const KIND_LABEL: Record<AtlasTodayKind, string> = {
+    prd: "PRD",
+    brainstorm: "Brainstorm",
+    policy: "Policy",
+    knowledge: "Doc",
+    meeting: "Meeting note",
+    source: "Source file",
+    project: "Project",
+    repo: "Repo",
+    worker: "Worker",
+    skill: "Skill",
+  };
 
   function sparkPath(values: number[]): string {
     if (values.length < 2) return "";
@@ -90,6 +111,30 @@
   const isLive = $derived(node ? here.length > 0 : false);
   const firstPerson = $derived(here.find((p) => !p.bot) ?? here[0]);
 </script>
+
+{#snippet kindIcon(kind: AtlasTodayKind)}
+  <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    {#if kind === "project"}
+      <circle cx="8" cy="8" r="4.5" />
+    {:else if kind === "prd"}
+      <path d="M4 2.5h8v11H4z M6.5 6h3 M6.5 8.5h3 M6.5 11h2" />
+    {:else if kind === "brainstorm"}
+      <path d="M8 2.5a4 4 0 0 0-2.3 7.3V11h4.6V9.8A4 4 0 0 0 8 2.5z M6.3 13.5h3.4" />
+    {:else if kind === "policy"}
+      <path d="M8 2l5 2v4c0 3-2.2 5-5 6-2.8-1-5-3-5-6V4z" />
+    {:else if kind === "meeting"}
+      <path d="M2.5 4h11v7h-6l-3 2.5V11h-2z" />
+    {:else if kind === "source" || kind === "repo"}
+      <path d="M6 5L3 8l3 3 M10 5l3 3-3 3" />
+    {:else if kind === "worker"}
+      <path d="M3.5 4.5h9v8h-9z M6 8h.01 M10 8h.01 M8 2v2.5" />
+    {:else if kind === "skill"}
+      <path d="M8 2.5l1.6 3.4 3.6.4-2.7 2.5.8 3.6L8 10.6l-3.3 1.8.8-3.6-2.7-2.5 3.6-.4z" />
+    {:else}
+      <path d="M4 2.5h5.5L12 5v8.5H4z M9.5 2.5V5H12" />
+    {/if}
+  </svg>
+{/snippet}
 
 <aside class="inspector" data-testid="atlas-inspector" aria-label="Atlas inspector">
   {#if node}
@@ -174,13 +219,56 @@
       <div class="hr"></div>
       <div class="section" data-testid="atlas-today-title">Today at {company || "this company"}</div>
       {#if today.length}
-        <div class="kind sub">Changed today</div>
-        <div class="list" data-testid="atlas-today-changed">
-          {#each todayShown as item (item.id)}
-            <AtlasCard node={item} testid="atlas-today-row" meta={atlasAgo(item.touched ?? nowMs, nowMs)} onclick={() => onselect(item.id)} />
+        <div class="kind sub">Changed today <span class="count-muted" data-testid="atlas-today-count">{todayCount}</span></div>
+        <div class="today" data-testid="atlas-today-changed">
+          {#each todayShown as group (group.key)}
+            {@const shownRows = groupRows(group)}
+            <section class="tgroup" data-testid="atlas-today-group" data-kind={group.kind}>
+              <svelte:element
+                this={group.node ? "button" : "div"}
+                type={group.node ? "button" : undefined}
+                class="thead"
+                class:clickable={group.node !== null}
+                data-testid="atlas-today-group-head"
+                role={group.node ? undefined : "group"}
+                aria-label={group.node ? undefined : group.title}
+                onclick={group.node ? () => onselect(group.node!.id) : undefined}
+              >
+                <!-- A project with stories shows its board state dot in the icon slot. -->
+                <span class="ticon">{#if group.column}<i class="column-dot" data-column={group.column} data-testid="atlas-today-state" aria-hidden="true"></i>{:else}{@render kindIcon(group.kind)}{/if}</span>
+                <span class="tbody">
+                  <span class="ttitle">
+                    <span class="tname" data-testid="atlas-today-group-title">{group.title}</span>
+                    <span class="tago">{atlasAgo(group.touched || nowMs, nowMs)}</span>
+                  </span>
+                  {#if group.stories}
+                    <span class="tprog" data-testid="atlas-today-stories" data-done={group.stories.fraction.toFixed(3)}>
+                      <span class="track"><span class="fill" style:width={`${(group.stories.fraction * 100).toFixed(1)}%`}></span></span>
+                      <span class="tcount">{group.stories.text}</span>
+                    </span>
+                  {/if}
+                </span>
+              </svelte:element>
+              {#if shownRows.length}
+                <div class="trows">
+                  {#each shownRows as row (row.node.id)}
+                    <button type="button" class="trow" data-testid="atlas-today-row" data-kind={row.kind} title={`${KIND_LABEL[row.kind]} · ${row.node.path}`} onclick={() => onselect(row.node.id)}>
+                      <span class="ticon" aria-label={KIND_LABEL[row.kind]}>{@render kindIcon(row.kind)}</span>
+                      <span class="tbody">
+                        <span class="tt">{row.title}</span>
+                        <span class="mm">{row.parentPath ? `${row.parentPath} · ` : ""}{atlasAgo(row.node.touched ?? nowMs, nowMs)}</span>
+                      </span>
+                    </button>
+                  {/each}
+                  {#if group.rows.length > shownRows.length}
+                    <button type="button" class="more" data-testid="atlas-today-group-more" onclick={() => (todayOpenGroups = { ...todayOpenGroups, [group.key]: true })}>{group.rows.length - shownRows.length} more in {group.title}</button>
+                  {/if}
+                </div>
+              {/if}
+            </section>
           {/each}
-          {#if today.length > todayShown.length}
-            <button type="button" class="more" data-testid="atlas-today-more" onclick={() => (todayOpen = true)}>Show {today.length - todayShown.length} more</button>
+          {#if todayHidden.length}
+            <button type="button" class="more" data-testid="atlas-today-more" onclick={() => (todayGroupLimit += ATLAS_TODAY_GROUPS)}>Show {todayHidden.length} more {todayHidden.length === 1 ? "group" : "groups"} <span class="count-muted">· {todayHiddenRows} {todayHiddenRows === 1 ? "change" : "changes"}</span></button>
           {/if}
         </div>
       {:else}
@@ -261,7 +349,53 @@
   .people-head { display: flex; gap: 8px; align-items: baseline; }
   /* Section title: small, uppercase, muted (owner rule for section titles). */
   .section { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; color: var(--v4-text-3); }
-  .kind.sub { margin-top: 8px; }
+  .kind.sub { margin-top: 8px; display: flex; gap: 6px; align-items: baseline; }
+  .count-muted { color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  /* Today: one group per parent object, its changed files indented under it. */
+  .today { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .tgroup { display: flex; flex-direction: column; }
+  .thead, .trow {
+    display: grid;
+    grid-template-columns: 14px 1fr;
+    gap: 10px;
+    align-items: start;
+    width: calc(100% + 20px);
+    margin: 0 -10px;
+    padding: 6px 10px;
+    background: none;
+    border: 0;
+    border-radius: var(--v4-radius-button, 6px);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    box-sizing: border-box;
+  }
+  .thead.clickable, .trow { cursor: pointer; }
+  .thead.clickable:hover, .trow:hover { background: var(--v4-hover, var(--v4-control-faint)); }
+  .thead:focus-visible, .trow:focus-visible, .more:focus-visible { outline: 2px solid var(--v4-focus-ring, var(--v4-control-border)); outline-offset: -2px; }
+  .trows { display: flex; flex-direction: column; padding-left: 24px; }
+  .trow { width: calc(100% + 10px); margin: 0 -10px 0 0; padding: 5px 10px 5px 0; }
+  .trows .more { margin: 0 -10px 0 0; padding: 5px 10px 5px 24px; }
+  .ticon { display: inline-grid; place-items: center; width: 14px; height: 14px; margin-top: 2px; }
+  .ticon svg { fill: none; stroke: var(--v4-text-3); stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
+  .tbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ttitle { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .tname { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 500; color: var(--v4-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tago { flex: none; font-size: 13px; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  .trow .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trow .mm { margin-top: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
+  .tprog { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  /* Same tone as the map's story ring and the Atlas cards. */
+  .track { position: relative; flex: 1; height: 2px; border-radius: 1px; background: color-mix(in srgb, var(--v4-text-1) 12%, transparent); overflow: hidden; }
+  .fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--v4-text-1) 45%, transparent); }
+  .thead:hover .fill { background: color-mix(in srgb, var(--v4-text-1) 80%, transparent); }
+  .tcount { flex: none; font-size: 13px; color: var(--v4-text-3); font-variant-numeric: tabular-nums; }
+  /* State dot: the Projects board column dots. */
+  .column-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--v4-text-3); }
+  .column-dot[data-column="not-started"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--v4-text-3); }
+  .column-dot[data-column="in-progress"] { background: var(--v4-text-2); }
+  .column-dot[data-column="active"] { background: var(--v4-ok); }
+  .column-dot[data-column="complete"] { background: var(--v4-text-1); }
   .more { margin: 4px -10px 0; padding: 8px 10px; background: none; border: 0; border-radius: 0; color: var(--v4-text-3); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
   .more:hover { background: var(--v4-hover, var(--v4-control-faint)); }
   .online { margin-top: 8px; font-size: 13px; color: var(--v4-text-3); }

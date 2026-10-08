@@ -565,6 +565,28 @@ describe("Atlas: live actors not on the map", () => {
     flushSync(() => bot.dispatchEvent(new PointerEvent("pointerenter", { bubbles: false })));
     expect(host.querySelector(sel("atlas-hover-card"))!.textContent).toContain("In a session with no project");
   });
+
+  it("lets the keyboard reach every docked chip and shows its name and kind on focus", async () => {
+    mountActors([
+      { actorUid: "u_amy", name: "Amy", bot: false, repo: "elsewhere" },
+      { actorUid: "b_x", name: "scout", bot: true },
+    ]);
+    await settle();
+    const amy = host.querySelector(sel("atlas-unplaced-u_amy")) as HTMLElement;
+    const bot = host.querySelector(sel("atlas-unplaced-b_x")) as HTMLElement;
+    expect(amy.tabIndex).toBe(0);
+    expect(bot.tabIndex).toBe(0);
+    expect(amy.getAttribute("aria-label")).toBe("Amy, person: Working in elsewhere, which is not on this map");
+    expect(bot.getAttribute("aria-label")).toMatch(/^scout, bot: /u);
+    // Bots share the people's circle: no separate square class.
+    expect(bot.classList.contains("bot")).toBe(false);
+    flushSync(() => bot.dispatchEvent(new FocusEvent("focus")));
+    const card = host.querySelector(sel("atlas-hover-card"))!;
+    expect(card.textContent).toContain("Bot");
+    expect(card.textContent).toContain("scout");
+    flushSync(() => bot.dispatchEvent(new FocusEvent("blur")));
+    expect(host.querySelector(sel("atlas-hover-card"))).toBeNull();
+  });
 });
 
 describe("Atlas project dots (activity and story ring)", () => {
@@ -675,7 +697,10 @@ describe("Atlas playback", () => {
 });
 
 describe("Atlas Today panel", () => {
-  it("titles the section with the company and lists what changed today, each row flying to it", async () => {
+  const groupTitles = () => [...host.querySelectorAll(sel("atlas-today-group-title"))].map((el) => el.textContent);
+  const rowTitles = () => [...host.querySelectorAll(sel("atlas-today-row"))].map((r) => r.querySelector(".tt")?.textContent);
+
+  it("titles the section with the company and groups what changed today under each parent, rows flying to it", async () => {
     const graph = smokeAtlasGraph();
     graph.nodes.find((x) => x.id === RAIL)!.touched = NOW - 20 * 60_000;
     graph.nodes.find((x) => x.id === "knowledge:knowledge/pricing.md")!.touched = NOW - 60_000;
@@ -683,14 +708,55 @@ describe("Atlas Today panel", () => {
     await settle();
     flushSync();
     expect(host.querySelector(sel("atlas-today-title"))?.textContent).toBe("Today at Indigo");
+    expect(groupTitles()).toEqual(["HQ desktop console rail", "Knowledge", "HQ desktop app"]);
+    const rail = host.querySelector(sel("atlas-today-group"))!;
+    expect(rail.getAttribute("data-kind")).toBe("project");
+    expect(rail.querySelector(sel("atlas-today-stories"))?.textContent).toContain("0 of 9 stories");
+    expect(rail.querySelector(sel("atlas-today-state"))?.getAttribute("data-column")).toBe("not-started");
     const rows = [...host.querySelectorAll(sel("atlas-today-row"))];
-    expect(rows.map((r) => r.querySelector(".tt")?.textContent)).toEqual(["hq desktop console rail", "pricing", "hq desktop app"]);
-    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("20 min ago");
-    expect(rows[0]!.querySelector(sel("atlas-card-count"))?.textContent).toBe("0 / 9 stories");
-    expect(rows[0]!.textContent).not.toContain("project");
-    expect(rows[1]!.querySelector(sel("atlas-card-progress"))).toBeNull();
-    flushSync(() => (rows[1] as HTMLButtonElement).click());
+    expect(rowTitles()).toEqual(["Pricing"]);
+    expect(rows[0]!.querySelector(".mm")?.textContent).toBe("knowledge/ · 1 min ago");
+    flushSync(() => (rows[0] as HTMLButtonElement).click());
     expect(inspectorPath()).toBe("knowledge/pricing.md");
+  });
+
+  it("puts a brainstorm run's files under their project with a counter and progress, by human title", async () => {
+    const graph = smokeAtlasGraph();
+    const explorer = "project:projects/hq-explorer/";
+    for (const f of ["brainstorm.md", "hq-landscape.md", "market-landscape.md", "opportunity-sizing.md", "references.md"]) {
+      graph.nodes.push({
+        id: `${explorer}${f}`,
+        type: "project",
+        label: f.replace(/-/g, " ").replace(/\.md$/, ""),
+        path: `projects/hq-explorer/${f}`,
+        folder: false,
+        count: 1,
+        touched: NOW - 34 * 60_000,
+        parentId: explorer,
+      });
+    }
+    mountView(createAtlasCache({ fetcher: async () => graph }));
+    await settle();
+    flushSync();
+    expect(groupTitles()).toEqual(["HQ explorer", "HQ desktop console rail", "HQ desktop app"]);
+    const group = host.querySelector(sel("atlas-today-group"))!;
+    const stories = group.querySelector(sel("atlas-today-stories"))!;
+    expect(stories.textContent).toContain("7 of 11 stories");
+    expect(Number(stories.getAttribute("data-done"))).toBeCloseTo(7 / 11, 3);
+    expect(group.querySelector(sel("atlas-today-state"))?.getAttribute("data-column")).toBe("in-progress");
+    // Three rows, then the group's own "more", which expands in place.
+    expect(rowTitles()).toEqual(["Brainstorm", "HQ landscape", "Market landscape"]);
+    expect(host.querySelector(sel("atlas-today-row"))!.getAttribute("data-kind")).toBe("brainstorm");
+    const more = group.querySelector(sel("atlas-today-group-more")) as HTMLButtonElement;
+    expect(more.textContent).toBe("2 more in HQ explorer");
+    flushSync(() => more.click());
+    expect(rowTitles()).toEqual(["Brainstorm", "HQ landscape", "Market landscape", "Opportunity sizing", "References"]);
+    const refs = [...host.querySelectorAll(sel("atlas-today-row"))][4]!;
+    expect(refs.querySelector(".mm")?.textContent).toBe("projects/hq-explorer/ · 34 min ago");
+    expect(refs.getAttribute("title")).toBe("Doc · projects/hq-explorer/references.md");
+    // The header flies to the project.
+    flushSync(() => (group.querySelector(sel("atlas-today-group-head")) as HTMLButtonElement).click());
+    expect(inspectorPath()).toBe("projects/hq-explorer/");
   });
 
   it("shows one quiet line when nothing changed today", async () => {
@@ -703,16 +769,23 @@ describe("Atlas Today panel", () => {
     expect(host.querySelector(sel("atlas-today-changed"))).toBeNull();
   });
 
-  it("pages a long day with a real Show N more", async () => {
+  it("pages a long day by group with a real Show N more groups", async () => {
     const graph = smokeAtlasGraph();
     for (const x of graph.nodes) x.touched = NOW - 60_000;
     mountView(createAtlasCache({ fetcher: async () => graph }));
     await settle();
     flushSync();
-    expect(host.querySelectorAll(sel("atlas-today-row")).length).toBe(5);
-    const more = host.querySelector(sel("atlas-today-more")) as HTMLButtonElement;
-    expect(more.textContent?.trim()).toBe(`Show ${graph.nodes.length - 5} more`);
-    flushSync(() => more.click());
-    expect(host.querySelectorAll(sel("atlas-today-row")).length).toBe(graph.nodes.length);
+    // 4 projects, 3 repos, 2 workers, 2 skills are their own groups; policies and knowledge one each.
+    const total = 13;
+    expect(host.querySelector(sel("atlas-today-count"))?.textContent).toBe(String(graph.nodes.length));
+    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(4);
+    const more = () => host.querySelector(sel("atlas-today-more")) as HTMLButtonElement | null;
+    expect(more()!.textContent?.replace(/\s+/g, " ").trim()).toBe(`Show ${total - 4} more groups · ${graph.nodes.length - 4} changes`);
+    flushSync(() => more()!.click());
+    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(8);
+    flushSync(() => more()!.click());
+    flushSync(() => more()!.click());
+    expect(host.querySelectorAll(sel("atlas-today-group")).length).toBe(total);
+    expect(more()).toBeNull();
   });
 });
