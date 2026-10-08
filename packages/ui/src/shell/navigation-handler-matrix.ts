@@ -178,6 +178,8 @@ export const DESKTOP_APP_FUNCTION_HISTORY: Record<string, HistoryEffect> = {
   applyUpdateGateStatus: "none",
   // Sync progress toast: hiding it is not navigation.
   handleSyncToastDismiss: "none",
+  // Forward picker (US-009): opens a dialog over the current route, not navigation.
+  openForward: "none",
 };
 
 export const NAVIGATION_HANDLER_MATRIX: readonly NavigationHandlerRow[] = [

@@ -725,6 +725,17 @@ export type NotifyPrefsPatch = Partial<Omit<NotifyPrefs, "updatedAt">>;
 
 export interface MessagingApi {
   /**
+   * POST a forward (US-009) to `/v1/notify/dm` or
+   * `/v1/notify/channels/{id}/messages`. Resolves `ok` with the HTTP status and
+   * raw body for any HTTP answer, success or refusal, so the caller can read
+   * the server's `code`. Fails only when HQ could not be reached. Optional:
+   * hosts without it draw no Forward button.
+   */
+  forwardMessage?(args: {
+    path: string;
+    body: Json;
+  }): AdapterPromise<{ status: number | null; body: string }>;
+  /**
    * GET /v1/notify/prefs. Optional: hosts without it hide the fine-grained
    * notification settings. A server that predates the route answers 404
    * (`code: "http-404"`), which callers treat as "not available yet".

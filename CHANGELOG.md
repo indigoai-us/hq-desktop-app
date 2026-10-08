@@ -91,6 +91,7 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Home shows a welcome checklist for new accounts and your recent messages, meetings and work.
 - Messages keeps channels, direct messages and bot conversations in one list, with threads in a side panel.
 - Pending company invites appear in the notifications bell, where you can accept them.
+- Messages can now be forwarded. Every message in a DM, group DM, or channel has a Forward action that opens a picker of the people, bots, and channels you can already message. The picker quotes the message with the sender's avatar, time, and where it came from; lists recent destinations first, then channels, people, and bots, each with an avatar and presence; takes several recipients at once as chips; keeps the company scope as a chip inside the search; and has an optional note. Forwarded messages show a "Forwarded from {name}" header and keep their Details and Prompt cards and files. Before files are shared with someone who cannot open them, the picker asks; forwards to channels and to another company send text and cards only, and say so. Every forward error shows a plain next step.
 
 ### Projects and goals
 
@@ -266,7 +267,6 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 
 - Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
 
-### Fixed
 
 - The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
 - Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.52, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.

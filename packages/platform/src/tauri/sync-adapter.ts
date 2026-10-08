@@ -929,6 +929,21 @@ export function createSyncPlatformAdapter(
         }
         return call('send_dm', { toPersonUid, body });
       },
+      forwardMessage: async ({ path, body }) => {
+        const attempted = await hqProAttemptWithRetries<unknown>('POST', path, body);
+        if (attempted.result.ok) {
+          return ok({
+            status: attempted.status,
+            body: JSON.stringify(attempted.result.value ?? {}),
+          });
+        }
+        // An HTTP refusal keeps its status and body so the server code reaches
+        // the picker; only a transport failure stays a failure.
+        if (attempted.status !== null && attempted.result.code !== 'network') {
+          return ok({ status: attempted.status, body: attempted.body ?? '' });
+        }
+        return attempted.result;
+      },
       // Exactly one recipient key travels; the other is explicitly null to
       // match the Rust `build_compose_payload` contract.
       sendDmToEmail: ({ toEmail, toPersonUid, body }) =>

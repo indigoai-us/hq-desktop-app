@@ -17,6 +17,7 @@
   import { WIZARD_STEPS } from '../src/lib/onboarding-wizard';
   import GlobalErrorBoundary from '../src/components/GlobalErrorBoundary.svelte';
   import GlobalErrorPreview from './GlobalErrorPreview.svelte';
+  import ForwardPickerPreview from './ForwardPickerPreview.svelte';
   import Conversation, {
     type ConversationMessage,
   } from '../src/components/messaging/Conversation.svelte';
@@ -233,7 +234,10 @@
   }
 </script>
 
-{#if view === 'activity'}
+{#if view === 'forward'}
+  <!-- The Forward message dialog with fictional destinations. ~900x760 viewport. -->
+  <ForwardPickerPreview />
+{:else if view === 'activity'}
   <!-- Recent Changes at its native 560x460 size. -->
   <ActivityLog />
 {:else if view === 'new-files'}

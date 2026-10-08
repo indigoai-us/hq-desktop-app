@@ -210,6 +210,15 @@ export interface ConversationMessageWire {
     kind?: string | null;
     previewUrl?: string | null;
   }> | null;
+  /**
+   * Forwarded-message stamp (US-008). Parse via `parseForwardedFrom`; the
+   * "Forwarded from" header comes only from this field, never from body text.
+   */
+  forwardedFrom?: unknown;
+  /** The forwarder's own note on a forwarded row. Absent when empty. */
+  forwardNote?: string | null;
+  /** Files the forwarder left out. Parse via `parseOmittedAttachments`. */
+  omittedAttachments?: unknown;
   /** Legacy singular attachment (hq-sync desktop). */
   attachment?: {
     vaultPath: string;
