@@ -530,8 +530,10 @@ export function pickLiveMeeting(
     recording: 0,
     starting: 1,
     stopping: 2,
-    detected: 3,
-    error: 4,
+    // Keep unresolved ended recordings ahead of new detections and errors.
+    finalising: 3,
+    detected: 4,
+    error: 5,
   };
   return (
     [...activeMeetings].sort((a, b) => {

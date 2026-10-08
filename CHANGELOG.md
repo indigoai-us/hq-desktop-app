@@ -8,6 +8,10 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+### Fixed
+
+- HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
+
 ## [0.10.403] - 2026-10-08
 
 - Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
