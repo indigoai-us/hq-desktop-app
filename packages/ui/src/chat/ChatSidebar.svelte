@@ -2,6 +2,9 @@
   /** See the note on its use below — deliberately outside the instance so a
    *  remount does not re-ask the server for peers it already 404'd on. */
   const dmNameLookupsTried = new Set<string>();
+  /** Companies whose member roster was already read to name DM peers. Same
+   *  reasoning: a remount keeps the names through the conversation cache. */
+  const peerRosterCompaniesTried = new Set<string>();
 </script>
 
 <script lang="ts">
@@ -153,6 +156,7 @@
     wakeMayChangeHumanRecency,
     normalizeChannel,
     normalizeConversations,
+    contactHasConversation,
     rememberRecentDm,
     loadBotSetupChannels,
     rememberBotSetupChannel,
@@ -190,6 +194,14 @@
     type SortMode,
     type ScopeCompany,
   } from "./sidebar-model";
+  import {
+    addToPeerDirectory,
+    applyPeerDirectory,
+    isUnnamedPeer,
+    peersMissingNames,
+    readablePeerName,
+    type PeerNameEntry,
+  } from "./peer-names";
   import type { RowExtrasResolver } from "./row-extras.js";
   import {
     filterSwitcher,
@@ -1071,6 +1083,21 @@
   const contactsWithUnreads = $derived(applyPairUnreads(contacts, pairUnreads));
 
   /**
+   * Names for DM peers the contacts roster does not cover: people read from
+   * other companies' member rosters, plus every channel and group roster.
+   * Rows read it so a peer known only by uid shows a name, not "prs_…".
+   */
+  let rosterPeers = $state<Array<{ personUid: string } & PeerNameEntry>>([]);
+  const peerDirectory = $derived.by(() => {
+    const directory = new Map<string, PeerNameEntry>();
+    addToPeerDirectory(directory, rosterPeers);
+    for (const channel of channels) {
+      addToPeerDirectory(directory, channel.members ?? []);
+    }
+    return directory;
+  });
+
+  /**
    * The user's own agents: local bots this machine runs, plus their own bots
    * this machine cannot run right now. They are never the company-wide
    * broadcast clutter the agent-stub rule exists to remove, so they stay on
@@ -1160,6 +1187,7 @@
           recentDms,
           homeChannelIdByUid,
           companyDisplayNamesByUid,
+          peerDirectory,
         }), botSetupChannels),
       ),
       // A cancel whose create has no known outcome names no bot and has no row.
@@ -1362,6 +1390,7 @@
       dmDots,
       includeContactsWithoutConversation: true,
       homeChannelIdByUid,
+      peerDirectory,
     }),
   );
 
@@ -3288,6 +3317,7 @@
       bootAttempted = true;
       loading = false;
       firstRefreshSettled = true;
+      void resolveUnnamedDmPeers();
       maybeReportShellReady();
       void directory.finally(() => maybeReportShellReady());
     }
@@ -3364,18 +3394,16 @@
    */
   async function resolveUnnamedDmPeers(): Promise<void> {
     const fetchThread = api.fetchDmThread;
-    if (typeof fetchThread !== "function") return;
-    const pending = contacts.filter(
+    const pending = typeof fetchThread !== "function" ? [] : contacts.filter(
       (contact) =>
-        !contact.displayName?.trim() &&
-        !contact.email?.trim() &&
+        isUnnamedPeer(contact) &&
         !dmNameLookupsTried.has(contact.personUid),
     );
     for (const contact of pending) {
       const uid = contact.personUid;
       dmNameLookupsTried.add(uid);
       try {
-        const page = await fetchThread.call(api, {
+        const page = await fetchThread!.call(api, {
           withPersonUid: uid,
           limit: 10,
         });
@@ -3383,21 +3411,82 @@
         const theirs = messages.find(
           (message) => (message.fromPersonUid ?? "").trim() === uid,
         );
-        const displayName = theirs?.fromDisplayName?.trim() ?? "";
+        const displayName = readablePeerName(theirs?.fromDisplayName) ?? "";
         const email = theirs?.fromEmail?.trim() ?? "";
         if (!displayName && !email) continue;
         contacts = contacts.map((entry) =>
           entry.personUid === uid
             ? {
                 ...entry,
-                displayName: entry.displayName || displayName || null,
+                displayName:
+                  readablePeerName(entry.displayName) || displayName || null,
                 email: entry.email || email || null,
               }
             : entry,
         );
       } catch {
-        /* best effort — the row still lists, titled by email or uid */
+        /* best effort: the row still lists, titled by email or "Unknown person" */
       }
+    }
+    // A pair where only you have written has no message from them to name
+    // them. Their company's member roster does.
+    await resolvePeersFromCompanyRosters();
+  }
+
+  /** DM conversation peers still without a readable name, after the directory. */
+  function unnamedConversationPeers(): Set<string> {
+    const options = { dmDots, recentDms };
+    const withConversation = contacts.filter((contact) =>
+      contactHasConversation(contact, options),
+    );
+    return new Set(
+      peersMissingNames(applyPeerDirectory(withConversation, peerDirectory)),
+    );
+  }
+
+  /**
+   * Read the member roster of each of the caller's companies (a few at a
+   * time, each company once) until every DM peer has a name. The global
+   * contacts read does not list everyone in every company, so a teammate in
+   * another company would otherwise keep a raw id as their row title.
+   */
+  async function resolvePeersFromCompanyRosters(): Promise<void> {
+    const load = api.listCompanyMembers;
+    if (typeof load !== "function") return;
+    if (unnamedConversationPeers().size === 0) return;
+    const queue = (companies ?? [])
+      .map((company) => (company.cloudUid ?? "").trim())
+      .filter((uid) => uid && !peerRosterCompaniesTried.has(uid));
+    if (queue.length === 0) return;
+    const worker = async () => {
+      while (queue.length > 0 && unnamedConversationPeers().size > 0) {
+        const companyUid = queue.shift() as string;
+        peerRosterCompaniesTried.add(companyUid);
+        try {
+          const resp = await load.call(api, companyUid);
+          const rows = Array.isArray(resp?.contacts) ? resp.contacts : [];
+          const named = rows
+            .filter((row) => row && typeof row.personUid === "string")
+            .map((row) => ({
+              personUid: row.personUid,
+              displayName: row.displayName ?? null,
+              email: row.email ?? null,
+            }));
+          if (named.length > 0) rosterPeers = [...rosterPeers, ...named];
+        } catch {
+          /* best effort: a company we cannot read leaves the row unnamed */
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    const next = applyPeerDirectory(contacts, peerDirectory);
+    if (next !== contacts) {
+      contacts = next;
+      // Keep the names for the next launch's cache-first paint.
+      saveConversationCache(
+        { channels, contacts, cachedAt: Date.now() },
+        storage,
+      );
     }
   }
 
@@ -3802,7 +3891,7 @@
   }
 
   function openSearchHit(hit: MessageSearchHit) {
-    const row = resolveSearchHitRow(hit, allRows);
+    const row = resolveSearchHitRow(hit, allRows, peerDirectory);
     void openRow(row, {
       messageId: hit.messageId,
       createdAt: hit.createdAt,
@@ -4798,7 +4887,7 @@
               <div class="chat-empty">No matching messages</div>
             {:else}
               {#each messageSearchHits as hit (hit.messageId + (hit.createdAt ?? ""))}
-                {@const row = resolveSearchHitRow(hit, allRows)}
+                {@const row = resolveSearchHitRow(hit, allRows, peerDirectory)}
                 <div role="listitem" class="chat-li">
                   <button
                     type="button"
