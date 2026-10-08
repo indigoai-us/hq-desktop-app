@@ -15,8 +15,8 @@ export async function resolveFirstLaunchPublicFlag(
   visitorId: string,
   fetchPublic: PublicFlagFetch = tauriFetch,
   warn: (message: string, error?: unknown) => void = (message) => console.warn(message),
-): Promise<boolean> {
-  if (!INSTALL_ATTEMPT_ID_RE.test(visitorId)) return false;
+): Promise<boolean | null> {
+  if (!INSTALL_ATTEMPT_ID_RE.test(visitorId)) return null;
   try {
     const url = new URL(PUBLIC_FLAGS_RESOLVE_URL);
     url.searchParams.set('key', flagKey);
@@ -25,13 +25,18 @@ export async function resolveFirstLaunchPublicFlag(
       method: 'GET',
       headers: { accept: 'application/json' },
     });
-    if (!response.ok) return false;
+    if (!response.ok) return null;
     const payload: unknown = await response.json();
-    return typeof payload === 'object' && payload !== null &&
-      'key' in payload && payload.key === flagKey &&
-      'enabled' in payload && payload.enabled === true;
+    if (
+      typeof payload !== 'object' || payload === null ||
+      !('key' in payload) || payload.key !== flagKey ||
+      !('enabled' in payload) || typeof payload.enabled !== 'boolean'
+    ) {
+      return null;
+    }
+    return payload.enabled;
   } catch (error) {
     warn('first-launch public flag unavailable; staying off', error);
-    return false;
+    return null;
   }
 }

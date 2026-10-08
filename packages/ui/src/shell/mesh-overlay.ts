@@ -303,7 +303,8 @@ export function createHybridSidebarApi(
         const feed = await live.fetchChannelDirectory(cursor);
         const count = (feed.rows?.length ?? 0) + (feed.changed?.length ?? 0);
         if (count > 0 || Boolean(cursor)) return feed;
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] live channel directory read failed; using cached overlay:", error);
         /* use cache */
       }
       return cacheDirectoryFeed(getOverlay());
@@ -312,7 +313,8 @@ export function createHybridSidebarApi(
       try {
         const res = await live.listContacts();
         if ((res.contacts?.length ?? 0) > 0) return res;
-      } catch {
+      } catch (error) {
+        console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:315", error);
         /* use cache */
       }
       return { contacts: [...(getContacts?.() ?? [])] };
@@ -678,11 +680,40 @@ export function applyChannelRoster(
     members: named,
     companyLabel: model.companyLabel,
   });
+  const visibleUids = new Set([
+    ...rebuilt.members.map((member) => member.personUid),
+    ...rebuilt.agents.map((agent) => agent.personUid),
+  ]);
+  for (const member of model.members) {
+    if (!member.online || visibleUids.has(member.personUid)) continue;
+    rebuilt.members.push(member);
+    visibleUids.add(member.personUid);
+  }
+  for (const agent of model.agents) {
+    if (!agent.online || visibleUids.has(agent.personUid)) continue;
+    rebuilt.agents.push(agent);
+    visibleUids.add(agent.personUid);
+  }
   return {
     ...model,
     members: rebuilt.members,
     agents: rebuilt.agents,
     memberCount: named.length || model.memberCount,
+  };
+}
+
+export function applyAuthoritativePresence(
+  model: ChannelStatusModel,
+  isOnline: (actorUid: string) => boolean,
+): ChannelStatusModel {
+  const currentRows = (rows: ChannelStatusModel["members"]) =>
+    rows
+      .filter((row) => row.isChannelMember !== false || isOnline(row.personUid))
+      .map((row) => ({ ...row, online: isOnline(row.personUid) }));
+  return {
+    ...model,
+    members: currentRows(model.members),
+    agents: currentRows(model.agents),
   };
 }
 
@@ -837,7 +868,8 @@ export function clearFixtureSidebarState(): void {
     window.localStorage.removeItem(PINS_KEY);
     window.localStorage.removeItem(CONVERSATION_CACHE_KEY);
     window.localStorage.removeItem(DIRECTORY_CURSOR_KEY);
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:840", error);
     /* private mode */
   }
 }
@@ -850,7 +882,8 @@ export function seedMeshPins(channelIds: string[]): void {
       PINS_KEY,
       JSON.stringify(channelIds.map((id) => `ch:${id}`)),
     );
-  } catch {
+  } catch (error) {
+    console.warn("[hq-ui] best-effort failure at packages/ui/src/shell/mesh-overlay.ts:853", error);
     /* private mode */
   }
 }

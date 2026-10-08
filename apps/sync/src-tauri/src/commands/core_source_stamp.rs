@@ -205,7 +205,11 @@ pub(crate) fn persistence_stamp_tags_from_detail(detail: &str) -> PersistenceSta
         _ => "none",
     };
     let yaml_top_level_keys = bounded_marker_yaml_keys(field("yaml_keys"));
-    let outcome = if detail.contains("[baseline_persistence_diagnostics ") {
+    let outcome = if detail.contains("error_kind=baseline_write_lost") {
+        "baseline_write_lost"
+    } else if detail.contains("error_kind=baseline_target_corrupt") {
+        "baseline_target_corrupt"
+    } else if detail.contains("[baseline_persistence_diagnostics ") {
         "io_failure"
     } else if state != "unknown" && state != "stamp_available" {
         "stamp_unreadable"
@@ -504,6 +508,19 @@ mod tests {
             .yaml_top_level_keys
             .split(',')
             .all(|key| key.len() <= 64));
+    }
+
+    #[test]
+    fn concurrent_writer_failures_keep_distinct_persistence_outcomes() {
+        let lost_write = persistence_stamp_tags_from_detail(
+            "[baseline_persistence_diagnostics write_path=rename_temp error_kind=baseline_write_lost directory_state=directory target_state=file temp_state=missing permission_state=not_denied disk_state=not_storage_full concurrent_writer=temp_consumed_target_present concurrent_writer_outcome=baseline_mismatch]",
+        );
+        assert_eq!(lost_write.outcome, "baseline_write_lost");
+
+        let corrupt_target = persistence_stamp_tags_from_detail(
+            "[baseline_persistence_diagnostics write_path=rename_temp error_kind=baseline_target_corrupt directory_state=directory target_state=file temp_state=missing permission_state=not_denied disk_state=not_storage_full concurrent_writer=temp_consumed_target_present concurrent_writer_outcome=target_invalid]",
+        );
+        assert_eq!(corrupt_target.outcome, "baseline_target_corrupt");
     }
 
     #[test]

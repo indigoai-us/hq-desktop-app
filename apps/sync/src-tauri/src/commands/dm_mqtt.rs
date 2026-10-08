@@ -159,6 +159,20 @@ struct RealtimeTopicSet {
 pub const EVENT_WORK_PROJECT_VIEW: &str = "work:project-view";
 pub const EVENT_WORK_CHANGED: &str = "work:changed";
 pub const EVENT_SESSION_EVENT: &str = "work:session-event";
+pub const EVENT_CHANNEL_UNREAD_CHANGED: &str = "channel:unread-changed";
+
+/// A channel directory change is a sidebar refresh, never a DM inbox wake.
+pub(crate) fn is_directory_changed_wake(payload: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("eventType")
+                .and_then(serde_json::Value::as_str)
+                .map(|event_type| event_type == "channel.directory.changed")
+        })
+        .unwrap_or(false)
+}
 
 /// Topics the DM connection subscribes to: the DM topic plus the same work and
 /// notifications topics mobile uses (`credentials.ts` `realtimeSubscribeTopics`).
@@ -677,6 +691,14 @@ async fn drive_eventloop(
                         let _ = app.emit(EVENT_AGENT_STATUS, &status);
                         continue;
                     }
+                    if is_directory_changed_wake(&publish.payload) {
+                        let _ = app.emit_to(
+                            crate::commands::desktop_alt::WINDOW_LABEL,
+                            EVENT_CHANNEL_UNREAD_CHANGED,
+                            (),
+                        );
+                        continue;
+                    }
                     // Work and notification topics are not DM wakes. Forward
                     // the three pushes the projects page applies, and ignore
                     // the rest so a board wake does not poll the DM inbox.
@@ -1045,6 +1067,18 @@ mod tests {
 
         assert!(classify_work_push(br#"{"kind":"board","mutation":"story-patch"}"#).is_none());
         assert!(classify_work_push(b"not json").is_none());
+    }
+
+    #[test]
+    fn directory_changed_wake_is_not_a_dm_inbox_wake() {
+        let directory = br#"{"contractVersion":2,"eventType":"channel.directory.changed","scope":"channel"}"#;
+        assert!(is_directory_changed_wake(directory));
+        assert!(!is_directory_changed_wake(
+            br#"{"eventType":"channel.message","scope":"channel","notify":true}"#
+        ));
+        assert!(!is_directory_changed_wake(br#"{"type":"dm","eventId":"evt_1"}"#));
+        assert!(!is_directory_changed_wake(b"not json"));
+        assert!(!is_directory_changed_wake(b""));
     }
 
     #[test]

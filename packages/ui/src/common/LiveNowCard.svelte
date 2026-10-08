@@ -34,7 +34,9 @@
     meeting?.state === "recording" || meeting?.state === "stopping",
   );
   const isBusy = $derived(
-    meeting?.state === "starting" || meeting?.state === "stopping",
+    meeting?.state === "starting" ||
+      meeting?.state === "stopping" ||
+      meeting?.state === "finalising",
   );
   const title = $derived(
     meeting?.summary || platformLabel(meeting?.platform) || "Detected meeting",
@@ -75,6 +77,8 @@
         return "Recording";
       case "stopping":
         return "Stopping";
+      case "finalising":
+        return "Finalising";
       case "error":
         return "Needs attention";
       case "detected":
@@ -168,7 +172,9 @@
       {/if}
 
       <div class="live-actions detail-primary-actions">
-        {#if isRecording}
+        {#if meeting.state === "finalising"}
+          <RailButton icon="save" type="button" disabled aria-busy="true">Finalising</RailButton>
+        {:else if isRecording}
           <RailButton icon="stop"
             type="button"
             onclick={() => onstop(meeting.windowId)}

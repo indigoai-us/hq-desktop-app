@@ -219,6 +219,99 @@ This beta brings the new HQ interface. A rail on the left holds your companies, 
 - Atlas shows who is working where at a readable size at every zoom: people and bots appear as markers beside the item they are working on. Hovering an item or a marker opens a card with who is there, what they are doing, story progress, related items and dates.
 - Atlas reads project links for up to 30 seconds before drawing the map without them (was 8), and names up to 16 items when zoomed out (was 8).
 
+## [0.10.407] — 2026-10-08
+
+- HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
+
+## [0.10.406] - 2026-10-08
+
+- The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
+- A bot's detail panel no longer shows its skills or its instructions. The Channels section lists only connected platforms, and says "No connected platforms." when there are none.
+
+## [0.10.405] - 2026-10-08
+
+- In a bot's detail panel, each skill now shows a one-line summary, and clicking a skill opens its full text. If the bot is offline, the panel says "The bot is offline, try again later".
+- Routines that HQ manages are tagged "HQ" and have no pause, run, edit or delete buttons. Apps show only connected apps as connected, and other featured apps get a Connect button that does not do anything yet.
+
+## [0.10.404] - 2026-10-08
+
+- When HQ Anywhere is on, the desktop app installs HQ context for Claude Code and Codex runtimes found on the computer. Turning it off removes that setup; sign-in restores it when the saved setting is enabled.
+
+### Fixed
+
+- HQ now tells its updater when a desktop recording is active, so automatic and requested relaunches wait for the recording to end. If Recall is slow to finalise an interrupted recording, HQ keeps checking for up to 30 minutes before reporting it lost.
+
+## [0.10.403] - 2026-10-08
+
+- Completed desktop installs no longer reopen onboarding when the HQ CLI is unresolved.
+
+- Channel unread badges refresh from the full snapshot when an unread invalidation has no channel details.
+
+### Fixed
+
+- The channel status view now shows everyone in your company who is online, not only people on that channel's member list.
+- Sync no longer stalls on slow connections while it downloads the list of deleted files. The app now uses sync engine hq-cloud 6.18.52, which waits for the download to stop making progress instead of giving each page a fixed 60 seconds.
+- Sync no longer keeps re-uploading a file the cloud already has with the same contents. It now marks that file as synced.
+
+## [0.10.402] — 2026-10-07
+
+- "Check for Updates…" opens Settings → Updates when it finds an update. The Recovery window opens only when the desktop window timed out, crashed, or started in safe mode.
+- The Recovery window says the desktop window failed to load only when it did. "(rollback)" appears only when the offered version is older than the running one.
+- When the app updates a pnpm-installed HQ CLI, it no longer changes your default pnpm version through Corepack, and its pnpm checks stop every process they started when they time out. Before this, a failed update could leave Corepack on pnpm 12 and start thousands of `pnpm dlx` processes.
+
+## [0.10.401] — 2026-10-07
+
+- First sync attribution now includes the company selected or joined during setup, including existing companies.
+
+## [0.10.400] — 2026-10-07
+
+- Client health reports staged automatic updates as ready while installation is deferred, with the existing defer reason and staged outcome.
+- People can turn HQ Anywhere on or off in Settings after onboarding.
+
+## [0.10.399] — 2026-10-07
+
+- The message menu has Copy ID and Copy link next to Copy, for channel messages, direct messages and thread replies. HQ links to a message (`hq://conversation/…` and `hq://c/…`) open the conversation at that message, and its thread when it has replies.
+- The bot panel now loads a bot owner's whole profile in one call and adds Channels, Apps, Routines, Brain and Persona sections. Owners can pause, resume, run, edit, create and delete routines, and edit the bot's title. When the profile is not available the panel loads as before.
+- Sync error reports include `runner.error_class` and the `error_class` tag. Fingerprints combine the exit token and class. Runner messages are not sent.
+- Sync error reports replace non-sentinel `path` tags with `[Filtered]` to keep vault paths out of telemetry.
+
+- Watcher-exit reports now include bounded runner-exit meaning and auth-error context.
+- App quit now waits only for the sync runner to exit, up to the nine-second SIGKILL limit.
+- Desktop onboarding now records bounded first-launch sign-in reach outcomes without a feature-flag lookup.
+- People can opt into HQ Anywhere or leave it off from the Ready step during setup. Their choice is saved to their account.
+- CLI update timeout messages stay actionable when lease-holder details cannot be read.
+
+- Runner exit reports now include a bounded reason when the runner provides one.
+
+## [0.10.398] — 2026-10-06
+
+- First-launch receipts now record whether the first-launch join-key flag resolved on, off, or unknown.
+
+- Auto-sync watcher reports now identify a known disk-full exit in its Sentry class and title.
+- Windows hq-cli updates now detect managed Node crashes and attempt a repair before one retry.
+- Setup now explains how to free disk space when an install cannot continue.
+- Desktop sign-in now records an anonymous start receipt before opening the provider, including attempts that never return.
+- Timeout reports for desktop CLI updates now separate holders of the target root from holders of another root.
+
+- Personal vault first push now leaves the cloud-authoritative `person-settings/` projection in place, so local copies cannot bypass hq-pro settings validation.
+- A channel directory change no longer triggers an extra work-list fetch. The channel sidebar still refreshes.
+- A channel directory change delivered on the direct-message channel no longer triggers an extra inbox fetch. The channel sidebar still refreshes, and new direct messages still load.
+- The desktop app's native receiver no longer fetches the direct-message inbox when a channel directory change arrives on the direct-message channel. The channel sidebar still refreshes.
+
+- Desktop Core baseline writes now accept an identical baseline left by a concurrent writer and separately report a lost write or invalid target.
+
+## [0.10.397] — 2026-10-06
+
+- The desktop app can report why a post-ready action event was dropped when its diagnostic flag is enabled.
+
+- Desktop onboarding now saves its install join ID at startup so setup and sign-in receipts can use the same ID.
+
+- HQ Desktop no longer emits a warning after it stops an orphaned sync runner during a watch-owner takeover; it continues reporting other watch-owner exits.
+
+## [0.10.396] — 2026-10-05
+
+- People who already set up HQ no longer land on the "Install here" setup screen after an update when the app's setup markers were lost. If they never answered the privacy question, the app asks only that question.
+
 ## [0.10.395] — 2026-10-05
 
 - Desktop push-events flag resolution uses a valid configured company UID and falls back for stale or legacy IDs.

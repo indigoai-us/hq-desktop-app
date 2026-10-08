@@ -34,6 +34,25 @@ describe('parseHqUrl', () => {
     });
   });
 
+  it('maps conversation message links in long and short form', () => {
+    expect(
+      parseHqUrl('hq://conversation/cmp_1/chn_eng/message/evt_root'),
+    ).toBe('conversation:channel:chn_eng:evt_root');
+    expect(parseHqUrl('hq://conversation/cmp_1/psn_ada/message/evt_1')).toBe(
+      'conversation:dm:psn_ada:evt_1',
+    );
+    expect(parseHqUrl('hq://c/chn_eng/evt_root')).toBe(
+      'conversation:channel:chn_eng:evt_root',
+    );
+    expect(parseDesktopRoute(parseHqUrl('hq://c/psn_ada/evt_1')!)).toEqual({
+      kind: 'conversation',
+      dm: 'psn_ada',
+      messageId: 'evt_1',
+    });
+    expect(parseHqUrl('hq://c/chn_eng')).toBeNull();
+    expect(parseHqUrl('hq://conversation/cmp_1/chn_eng/evt_root')).toBeNull();
+  });
+
   it('maps hq://files/<slug>/<path> onto files:<slug>:<path>', () => {
     expect(
       parseHqUrl('hq://files/indigo/companies/indigo/knowledge/foo.md'),
