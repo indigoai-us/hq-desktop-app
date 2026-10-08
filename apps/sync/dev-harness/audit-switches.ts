@@ -25,10 +25,15 @@
  *       assistant create answers after ?loadingMs (default 2500). visual-notools: no
  *       tool signed in, so the coding tools step is required. visual-fail: the
  *       create fails, to see the failure line with Retry.
+ *   ?firstrun=visual-import[-fast|-slow|-empty|-error|-fail|-update]  as visual, and the
+ *       "Bring in your context" scan replays a fixture stream (import-scan-fixture.ts).
+ *       Plain ?firstrun=visual leaves the scan command unhandled: the stream-failed state.
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
+import { emit } from '@tauri-apps/api/event';
 import { isBootCommand } from './state-flags';
+import { cancelImportScan, replayImportScan, type ImportVariant } from './import-scan-fixture';
 
 function params(search?: string | null): URLSearchParams {
   const raw = search ?? (typeof window === 'undefined' ? '' : window.location.search);
@@ -99,11 +104,28 @@ function newBotProvisionOptions(kind: NewBotSwitch): unknown {
   };
 }
 
-export type FirstRunSwitch = 'visual' | 'visual-notools' | 'visual-fail';
+export type FirstRunSwitch = 'visual' | 'visual-notools' | 'visual-fail' | `visual-import${string}`;
+
+const IMPORT_VARIANTS: Record<string, ImportVariant> = {
+  'visual-import': 'default',
+  'visual-import-fast': 'fast',
+  'visual-import-slow': 'slow',
+  'visual-import-empty': 'empty',
+  'visual-import-error': 'error',
+  'visual-import-fail': 'fail',
+  'visual-import-update': 'update',
+};
 
 export function firstRunSwitch(search?: string | null): FirstRunSwitch | null {
   const value = params(search).get('firstrun');
+  if (value && value in IMPORT_VARIANTS) return value as FirstRunSwitch;
   return value === 'visual' || value === 'visual-notools' || value === 'visual-fail' ? value : null;
+}
+
+/** The scan fixture a `?firstrun=visual-import...` switch replays; null for the other first-run switches. */
+export function importVariant(search?: string | null): ImportVariant | null {
+  const value = params(search).get('firstrun');
+  return value ? (IMPORT_VARIANTS[value] ?? null) : null;
 }
 
 function firstRunPreflight(signedIn: boolean): unknown {
@@ -201,6 +223,14 @@ export function switchedHandler(
     }
     if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun !== 'visual-notools') };
     if (cmd === 'local_bots_list') return { value: { bots: [] } };
+    // "Bring in your context": replay a scan (import-scan-fixture.ts). The
+    // other first-run switches leave the command unhandled, which the screen
+    // shows as a scan that could not finish.
+    const variant = importVariant(search);
+    if (variant && cmd === 'import_scan_start') {
+      return { value: replayImportScan(variant, String(args?.scanId ?? ''), emit) };
+    }
+    if (variant && cmd === 'import_scan_cancel') return { value: cancelImportScan(String(args?.scanId ?? '')) };
     if (cmd === 'local_bots_create') {
       const ms = Number(params(search).get('loadingMs')) || 2500;
       return {

@@ -919,6 +919,8 @@ fn main() {
             commands::bots::local_bots_list_remote,
             commands::bots::local_bots_adopt,
             commands::bots::local_bots_restore,
+            commands::import_scan::import_scan_start,
+            commands::import_scan::import_scan_cancel,
             commands::packages::list_packages,
             commands::packages::list_packages_cached,
             commands::packages::check_package_updates,

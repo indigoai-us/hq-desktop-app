@@ -6,5 +6,8 @@ import Harness from './Harness.svelte';
 // undefined in the harness and colors/dark-mode don't render.
 import '../src/styles/design-system.css';
 import '../src/styles/popover.css';
+// The desktop shell loads Geist Mono (src/desktop-alt/main.ts); the knowledge
+// tree's ASCII grid and the first-run kickers are drawn in it.
+import '@fontsource-variable/geist-mono/wght.css';
 
 mount(Harness, { target: document.getElementById('app')! });

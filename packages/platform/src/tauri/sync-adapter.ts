@@ -1695,6 +1695,14 @@ export function createSyncPlatformAdapter(
       restore: (options) => call('local_bots_restore', { all: options?.all === true }),
     },
 
+    // Visual first run, "Bring in your context": `hq import scan --json
+    // --stream` behind the same launch boundary (src-tauri/src/commands/
+    // import_scan.rs). Lines arrive as IMPORT_SCAN_EVENT events.
+    contextImport: {
+      scanStart: (scanId) => call('import_scan_start', { scanId }),
+      scanCancel: (scanId) => call('import_scan_cancel', { scanId }),
+    },
+
     settings: {
       getConfig: () => call('get_config'),
       getSettings: () => call('get_settings'),
