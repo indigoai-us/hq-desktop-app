@@ -1148,6 +1148,10 @@ async fn channel_aware_updater_with_mode(
     app: &AppHandle,
     mode: UpdateOfferMode,
 ) -> Result<ChannelAwareUpdater, String> {
+    if updater_disabled() {
+        log("updater", "update check skipped: HQ_UPDATER_DISABLED=1");
+        return Err(UPDATER_DISABLED_MESSAGE.to_string());
+    }
     let (channel, resolved) = resolve_endpoint().await;
     let endpoint =
         Url::parse(&resolved.url).map_err(|e| format!("invalid updater endpoint: {e}"))?;
@@ -1417,6 +1421,10 @@ async fn install_verified_update(
 /// A `force` result skips the 10-minute idle wait but still pauses new sync
 /// cycles and drains in-flight transfers for up to [`IN_FLIGHT_DRAIN_TIMEOUT`].
 pub(crate) async fn install_stable_update(app: &AppHandle) -> Result<(), String> {
+    if updater_disabled() {
+        log("updater", "stable install skipped: HQ_UPDATER_DISABLED=1");
+        return Err(UPDATER_DISABLED_MESSAGE.to_string());
+    }
     let _install_guard = UpdateInstallGuard::acquire(&UPDATE_INSTALL_IN_PROGRESS)
         .ok_or_else(|| "An update installation is already in progress".to_string())?;
     let _check_guard = UPDATE_CHECK_SERIALIZER.lock().await;
@@ -2568,7 +2576,7 @@ fn notify_manual_check(app: &AppHandle, body: &str) {
 /// seconds after launch — every `tauri dev` session died to this on
 /// 2026-09-02 once 0.10.175 shipped. Manual "Check for updates" is untouched.
 pub fn background_updates_disabled() -> bool {
-    dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || tauri::is_dev()
+    dev_env_flag_set("HQ_DEV_NO_AUTO_UPDATE") || updater_disabled() || tauri::is_dev()
 }
 
 /// Whether the bundled updater config names at least one feed endpoint.
@@ -2595,8 +2603,26 @@ fn bundled_updater_feed_configured(app: &AppHandle) -> bool {
 
 fn dev_env_flag_set(name: &str) -> bool {
     std::env::var(name)
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .map(|v| env_flag_value_enabled(&v))
         .unwrap_or(false)
+}
+
+fn env_flag_value_enabled(value: &str) -> bool {
+    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes")
+}
+
+const UPDATER_DISABLED_ENV: &str = "HQ_UPDATER_DISABLED";
+const UPDATER_DISABLED_MESSAGE: &str = "Updates are turned off for this build";
+
+/// HQ_UPDATER_DISABLED=1 turns every updater path off for a scratch build:
+/// the background checker, the hard version gate, and the manual check,
+/// download and reinstall commands. A scratch bundle shares the owner's HQ
+/// profile, so the channel resolver reads the stored channel and fetches
+/// GitHub releases even when plugins.updater.endpoints is empty. On
+/// 2026-10-08 a "HQ Lane Check" bundle pulled 0.11.0-beta.11 that way,
+/// installed it over itself and repointed the login LaunchAgent.
+pub fn updater_disabled() -> bool {
+    dev_env_flag_set(UPDATER_DISABLED_ENV)
 }
 
 pub fn setup_update_checker(app: &AppHandle) {
@@ -2820,6 +2846,17 @@ pub async fn update_install_pending(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn updater_disabled_flag_accepts_only_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes "] {
+            assert!(super::env_flag_value_enabled(value), "{value}");
+        }
+        for value in ["", "0", "false", "no", "off"] {
+            assert!(!super::env_flag_value_enabled(value), "{value}");
+        }
+        assert_eq!(super::UPDATER_DISABLED_ENV, "HQ_UPDATER_DISABLED");
+    }
+
     use super::*;
 
     #[test]

@@ -130,7 +130,7 @@ describe("RichMessageContent renders each block type from fixture data", () => {
     expect(badge?.classList.contains("tone-success")).toBe(true);
   });
 
-  it("renders a keyValue definition list with aligned rows", async () => {
+  it("renders a keyValue definition list as inline pairs, not table rows", async () => {
     const el = render({
       v: 1,
       blocks: [
@@ -144,8 +144,9 @@ describe("RichMessageContent renders each block type from fixture data", () => {
       ],
     });
     await tick();
-    const rows = el.querySelectorAll('[data-testid="rich-keyvalue"] .rich-kv-row');
-    expect(rows).toHaveLength(2);
+    expect(el.querySelectorAll('[data-testid="rich-keyvalue"] .rich-kv-row')).toHaveLength(0);
+    const pairs = el.querySelectorAll('[data-testid="rich-keyvalue"] [data-testid="rich-kv-pair"]');
+    expect(pairs).toHaveLength(2);
     expect(el.querySelector(".rich-kv-key")?.textContent).toBe("Owner");
     expect(el.querySelector(".rich-kv-value")?.textContent).toBe("Corey");
   });
@@ -356,5 +357,82 @@ describe("RichMessageContent — decision block interactivity", () => {
     expect(recommended?.classList.contains("is-recommended")).toBe(false);
     // The RECOMMENDED badge itself is informational and remains.
     expect(recommended?.querySelector(".rich-decision-tag")).not.toBeNull();
+  });
+});
+
+describe("RichMessageContent title-label icons and inline key-value", () => {
+  function iconOf(el: Element | null): string | null {
+    return el?.querySelector('svg[data-testid="rich-label-icon"]')?.getAttribute("data-icon") ?? null;
+  }
+
+  it("renders an svg icon before every title label, with per-kind defaults", async () => {
+    const el = render({
+      v: 1,
+      blocks: [
+        { kind: "badge", label: "owner", tone: "success" },
+        { kind: "stat", items: [{ label: "MRR", value: "$4k" }] },
+        { kind: "progress", label: "Rollout", value: 40 },
+        { kind: "callout", tone: "warning", title: "Heads up", body: "Check it." },
+        { kind: "decision", question: "Ship it?", options: ["Yes", "No"] },
+      ],
+    });
+    await tick();
+    expect(iconOf(el.querySelector(".rich-badge"))).toBe("tag");
+    expect(iconOf(el.querySelector(".rich-stat-label"))).toBe("chart");
+    expect(iconOf(el.querySelector(".rich-progress-label"))).toBe("chart");
+    expect(iconOf(el.querySelector(".rich-callout-icon"))).toBe("alert");
+    expect(iconOf(el.querySelector(".rich-decision-q"))).toBe("question");
+    for (const svg of el.querySelectorAll('svg[data-testid="rich-label-icon"]')) {
+      expect(svg.getAttribute("stroke")).toBe("currentColor");
+      const size = Number(svg.getAttribute("width"));
+      expect(size).toBeGreaterThanOrEqual(12);
+      expect(size).toBeLessThanOrEqual(14);
+    }
+  });
+
+  it("uses the agent's named icon, and the default for an unknown name", async () => {
+    const el = render({
+      v: 1,
+      blocks: [
+        { kind: "badge", label: "owner", icon: "user" },
+        { kind: "callout", tone: "info", title: "Note", body: "x", icon: "<svg onload=alert(1)>" },
+      ],
+    });
+    await tick();
+    expect(iconOf(el.querySelector(".rich-badge"))).toBe("user");
+    expect(iconOf(el.querySelector(".rich-callout-icon"))).toBe("info");
+    expect(el.innerHTML).not.toContain("onload");
+  });
+
+  it("renders the screenshot's key-value block inline, in order, keys quiet unless an icon is named", async () => {
+    const long = "v".repeat(200);
+    const el = render({
+      v: 1,
+      blocks: [
+        {
+          kind: "keyValue",
+          items: [
+            { key: "Owner", value: "Jacob Posel", icon: "user" },
+            { key: "Folder", value: "HQ fundraise" },
+            { key: "Memos", value: "Why HQ wins · HQ eats software" },
+            { key: "Pickup", value: long },
+          ],
+        },
+      ],
+    });
+    await tick();
+    const dl = el.querySelector('dl[data-testid="rich-keyvalue"]');
+    expect(dl).not.toBeNull();
+    expect(dl!.querySelectorAll("table, tr, .rich-kv-row")).toHaveLength(0);
+    const pairs = [...dl!.querySelectorAll('[data-testid="rich-kv-pair"]')];
+    expect(pairs.map((p) => p.querySelector("dt")?.textContent)).toEqual(["Owner", "Folder", "Memos", "Pickup"]);
+    expect(pairs.map((p) => p.querySelector("dd")?.textContent)).toEqual([
+      "Jacob Posel",
+      "HQ fundraise",
+      "Why HQ wins · HQ eats software",
+      long,
+    ]);
+    expect(iconOf(pairs[0]!.querySelector("dt"))).toBe("user");
+    expect(iconOf(pairs[1]!.querySelector("dt"))).toBeNull();
   });
 });
