@@ -8,6 +8,8 @@ The release moves it under the version it ships in.
 
 ## [Unreleased]
 
+- HQ background tasks run through the signed app, and the login item is only rewritten when its settings change.
+
 ## [0.10.406] - 2026-10-08
 
 - The sync menu bar estimates watcher memory in-process, without launching a system process scan every 30 seconds.
