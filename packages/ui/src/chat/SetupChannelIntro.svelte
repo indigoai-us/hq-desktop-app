@@ -360,7 +360,7 @@
   const heroBody = $derived(
     setupBot && !scriptedFallback && !rosterLoading
       ? setupBot.starting && !setupBot.existing
-        ? copy.bodyStarting
+        ? setupBot.startingBody || copy.bodyStarting
         : setupBot.existing
         ? copy.bodyExisting
         : copy.body

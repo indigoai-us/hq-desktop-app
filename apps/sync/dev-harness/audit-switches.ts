@@ -19,6 +19,12 @@
  *       (priced) or as included in the company's plan (included)
  *   ?plan=slow                                   with ?newbot=, the plan check answers
  *       after ?loadingMs (default 2500), to see "Checking plan..."
+ *   ?firstrun=visual|visual-notools|visual-fail  a first run with desktop.visual-first-run on:
+ *       the visual first-run takeover opens (Harness.svelte clears the "setup ran"
+ *       and "first run finished" keys). visual: every coding tool signed in, the
+ *       assistant create answers after ?loadingMs (default 2500). visual-notools: no
+ *       tool signed in, so the coding tools step is required. visual-fail: the
+ *       create fails, to see the failure line with Retry.
  *
  * Combine freely with ?persona=, ?theme= and ?route=.
  */
@@ -93,6 +99,28 @@ function newBotProvisionOptions(kind: NewBotSwitch): unknown {
   };
 }
 
+export type FirstRunSwitch = 'visual' | 'visual-notools' | 'visual-fail';
+
+export function firstRunSwitch(search?: string | null): FirstRunSwitch | null {
+  const value = params(search).get('firstrun');
+  return value === 'visual' || value === 'visual-notools' || value === 'visual-fail' ? value : null;
+}
+
+function firstRunPreflight(signedIn: boolean): unknown {
+  return {
+    hqRoot: '/Users/corey/Documents/HQ',
+    hooksReady: true,
+    hooksError: null,
+    claudeAvailable: true,
+    claudeLoggedIn: signedIn,
+    codexAvailable: true,
+    codexLoggedIn: false,
+    grokAvailable: false,
+    grokLoggedIn: false,
+    companies: [],
+  };
+}
+
 export function atlasPopulated(search?: string | null): boolean {
   return params(search).get('atlas') === 'populated';
 }
@@ -150,6 +178,40 @@ export function switchedHandler(
       return { value: { accountId: null, generation: 1, status: auth, reason: null } };
     }
     if (cmd === 'get_auth_state') return { value: { authenticated: false } };
+  }
+  const firstRun = firstRunSwitch(search);
+  if (firstRun) {
+    const url = typeof args?.url === 'string' ? args.url : '';
+    if (cmd === 'hq_pro_fetch' && url.startsWith('/v1/flags/resolve')) {
+      const flags = { 'desktop.visual-first-run': true };
+      return { value: { status: 200, body: JSON.stringify({ version: 1, flags }) } };
+    }
+    if (cmd === 'get_setup_status') {
+      // A first run that still owes setup; the tour counts as shown so it
+      // does not start over the takeover once it closes.
+      return {
+        value: {
+          hqRootValid: true,
+          configured: true,
+          hqFolderPath: '/Users/corey/Documents/HQ',
+          welcomeSetupOwed: true,
+          welcomeTourShown: true,
+        },
+      };
+    }
+    if (cmd === 'agent_session_preflight') return { value: firstRunPreflight(firstRun !== 'visual-notools') };
+    if (cmd === 'local_bots_list') return { value: { bots: [] } };
+    if (cmd === 'local_bots_create') {
+      const ms = Number(params(search).get('loadingMs')) || 2500;
+      return {
+        value: new Promise((resolve, reject) =>
+          setTimeout(() => {
+            if (firstRun === 'visual-fail') reject(new Error('harness: hq bot create failed'));
+            else resolve({ agentUid: 'agt_PREVIEWSETUP', name: 'setup' });
+          }, ms),
+        ),
+      };
+    }
   }
   const newBot = newBotSwitch(search);
   if (newBot && cmd === 'hq_pro_fetch') {

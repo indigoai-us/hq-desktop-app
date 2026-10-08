@@ -328,6 +328,7 @@ export {
 } from "./chat/tasks/task-feed-controller.svelte";
 export * from "./chat/tasks/visible-tasks";
 export { TOUR_SEEN_STORAGE_KEY } from "./tour/guided-tour.js";
+export { VISUAL_FIRST_RUN_DONE_KEY } from "./chat/first-run/visual-first-run.js";
 
 // Atlas map (US-012): lazy door only — never re-export ./atlas statically.
 export { loadAtlas } from "./shell/atlas-lazy.js";
