@@ -406,7 +406,7 @@
     /** ISO 8601 timestamp when the detection fired. */
     detectedAt: string;
     /** Lifecycle state — drives the Record/Stop button label. */
-    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'finalising' | 'error';
     /** Recall.ai recording id (returned by start_recording). */
     recordingId?: string;
     /** Last error message from a failed start/stop, if any. */
