@@ -109,9 +109,8 @@ export const PERSONAL_TRANSCRIPTS_FLAG =
  * opens the New bot step-through takeover (name the HQ assistant, coding
  * tools, done) instead of auto-starting the setup bot's chat. Default off:
  * a missing, unconfigured or unreadable value keeps today's setup chat.
- * The key is the one the owner named for the rollout.
  */
-export const VISUAL_FIRST_RUN_FLAG = "setup.visualFirstRun";
+export const VISUAL_FIRST_RUN_FLAG = "desktop.visual-first-run";
 /**
  * New bot → Cloud creates through POST /v1/agents (desktop-agent-creation).
  * Targeted to one company, so it must be read with that company's uid:

@@ -1,7 +1,7 @@
 /**
  * Visual first-run setup (owner plan, 2026-10-08), slice 1.
  *
- * With `setup.visualFirstRun` on, a first run opens the New bot
+ * With `desktop.visual-first-run` on, a first run opens the New bot
  * step-through takeover instead of auto-starting the setup bot's chat. The
  * first bot IS the setup bot (it still runs the `setup` worker), named by the
  * person. The setup chat stays the fallback ("Continue in chat") and the
@@ -245,6 +245,28 @@ export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string 
 }
 
 /**
+ * The same handoff for a setup bot that already existed (a reinstall, or a
+ * second computer): its kickoff ran long ago, so the app sends this as a
+ * bot-only message in its DM instead. Not a kickoff (no prefix): the bot
+ * carries on from where it is, minus the settled steps. One line, no control
+ * characters, under 2000 characters.
+ */
+export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
+  const noun = opts.noun?.trim() || "computer";
+  const name = handoff.name.trim();
+  const tools = [...new Set(handoff.toolsReady)].map(runtimeLabel).join(", ") || runtimeLabel(handoff.runtime);
+  const notice =
+    "Setup note from the HQ desktop app: I just went through the app's visual setup, which finished some setup steps for you. " +
+    `Handoff from the app: ${firstRunHandoffNote(handoff)}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    `I named you ${name}, so use that name. ` +
+    `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
+  // eslint-disable-next-line no-control-regex
+  return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
+}
+
+/**
  * The bot's hello (`hq bot create --intro`, under 500 characters, one line)
  * when it was named in the takeover: it already knows its name and tool.
  */
@@ -306,6 +328,14 @@ export function markVisualFirstRunFinished(storage?: StorageLike | null): void {
  */
 export type FirstRunRoute = "legacy" | "visual" | "pending";
 
+/**
+ * How long the flag may still answer after the host's "setup owed" answer is
+ * in. Both are read from mount, so with the flag off a first run waits at
+ * most this much longer than it did before the flag existed, and not at all
+ * when the flag answers first.
+ */
+export const VISUAL_FIRST_RUN_FLAG_GRACE_MS = 1000;
+
 export interface FirstRunRouteInput {
   /** The host can run local bots (desktop app). */
   hasBots: boolean;
@@ -313,7 +343,7 @@ export interface FirstRunRouteInput {
   welcomeSetupRun: boolean;
   /** The host says this computer still owes setup; null until it answers. */
   welcomeSetupOwed: boolean | null;
-  /** `setup.visualFirstRun`; null until it answers. */
+  /** `desktop.visual-first-run`; null until it answers. */
   flag: boolean | null;
   /** The takeover was finished or left for chat on this computer. */
   finished: boolean;

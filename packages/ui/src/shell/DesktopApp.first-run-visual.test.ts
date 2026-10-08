@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 /**
- * Visual first-run setup (`setup.visualFirstRun`, slice 1). Flag off, a
+ * Visual first-run setup (`desktop.visual-first-run`, slice 1). Flag off, a
  * first run is exactly today's: the setup bot starts by itself with the
  * setup chat's intro and kickoff. Flag on, the New bot step-through takeover
  * opens instead: the name the person confirms creates the setup bot once (in
@@ -19,21 +19,44 @@ import { createFixtureChatSidebarApi } from "./fixtures.js";
 import { createEmptyNotificationsApi } from "./mesh-overlay.js";
 import { WELCOME_SETUP_RUN_KEY } from "../chat/setup-channel.js";
 import { SETUP_BOT_KICKOFF, SETUP_BOT_NAMES, setupBotIntro } from "../chat/setup-bot.js";
-import { VISUAL_FIRST_RUN_DONE_KEY, firstRunIntro, firstRunKickoff } from "../chat/first-run/visual-first-run.js";
+import {
+  VISUAL_FIRST_RUN_DONE_KEY,
+  VISUAL_FIRST_RUN_FLAG_GRACE_MS,
+  firstRunHandoffNotice,
+  firstRunIntro,
+  firstRunKickoff,
+} from "../chat/first-run/visual-first-run.js";
 import type { SetupRunApi, SetupRunSnapshot } from "../chat/setup-run.js";
 
 const SETUP_BOT_UID = "agt_setup";
 
 interface AdapterOptions {
   create?: NonNullable<PlatformAdapter["bots"]>["create"];
-  /** `setup.visualFirstRun`; undefined leaves `hasFeature` answering false for it. */
+  /** `hq bot list` rows (a setup bot that already exists here). */
+  bots?: unknown[];
+  /** Answer `hasFeature` for the flag this way instead (timing tests). */
+  hasFeatureImpl?: (name: string) => Promise<unknown>;
+  /** Answer the host's setup status this way instead (timing tests). */
+  setupStatusImpl?: () => Promise<unknown>;
+
+  /** `desktop.visual-first-run`; undefined leaves `hasFeature` answering false for it. */
   flag?: boolean;
   claudeLoggedIn?: boolean;
 }
 
-function adapter({ create, flag = false, claudeLoggedIn = true }: AdapterOptions = {}) {
-  const hasFeature = vi.fn(async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false));
+function adapter({
+  create,
+  flag = false,
+  claudeLoggedIn = true,
+  bots = [],
+  hasFeatureImpl,
+  setupStatusImpl,
+}: AdapterOptions = {}) {
+  const hasFeature = vi.fn(
+    hasFeatureImpl ?? (async (name: string) => ok(name === VISUAL_FIRST_RUN_FLAG ? flag : false)),
+  );
   const updateAgentProfile = vi.fn(async () => ok({}));
+  const sendDm = vi.fn(async () => ok({ eventId: "evt_1", createdAt: new Date().toISOString() }));
   const platform = {
     kind: "web",
     isAvailable: () => false,
@@ -44,10 +67,12 @@ function adapter({ create, flag = false, claudeLoggedIn = true }: AdapterOptions
       listChannelMembers: async () => ok({ members: [] }),
       fetchChannel: async () => ({ ok: false as const, reason: "unavailable" }),
       fetchDmThread: async () => ok({ messages: [], nextCursor: null }),
+      sendDm,
     },
     settings: {
-      getSetupStatus: async () =>
-        ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true }),
+      getSetupStatus:
+        setupStatusImpl ??
+        (async () => ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true })),
     },
     shell: {
       detectAiTools: async () => ({ ok: false as const, reason: "unavailable" }),
@@ -64,7 +89,7 @@ function adapter({ create, flag = false, claudeLoggedIn = true }: AdapterOptions
         }),
     },
     bots: {
-      list: async () => ok({ bots: [] }),
+      list: async () => ok({ bots }),
       create: create ?? (async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID })),
       start: async () => ok({}),
       stop: async () => ok({}),
@@ -72,7 +97,7 @@ function adapter({ create, flag = false, claudeLoggedIn = true }: AdapterOptions
       workers: async () => ok({ workers: [] }),
     },
   } as unknown as PlatformAdapter;
-  return { platform, hasFeature, updateAgentProfile };
+  return { platform, hasFeature, updateAgentProfile, sendDm };
 }
 
 function fakeSetupRun(): SetupRunApi {
@@ -127,10 +152,14 @@ function q<T extends Element = HTMLElement>(sel: string): T | null {
   return document.querySelector<T>(sel);
 }
 
-async function boot(platform: PlatformAdapter): Promise<void> {
+async function boot(
+  platform: PlatformAdapter,
+  App: typeof DesktopApp = DesktopApp,
+  mountWith: typeof mount = mount,
+): Promise<void> {
   host = document.createElement("div");
   document.body.appendChild(host);
-  component = mount(DesktopApp, {
+  component = mountWith(App, {
     target: host,
     props: {
       adapter: platform,
@@ -347,5 +376,114 @@ describe("visual first run never reappears", () => {
     await vi.waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(q('[data-testid="first-run-takeover"]')).toBeNull();
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ kickoff: SETUP_BOT_KICKOFF }));
+  });
+});
+
+describe("visual first run with a setup bot that already exists", () => {
+  it("adopts it under the confirmed name and sends it the handoff as a bot-only message", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const existing = {
+      name: "setup",
+      agentUid: SETUP_BOT_UID,
+      ownerUid: "prs_test",
+      runtime: "claude",
+      state: "running",
+      pid: 11,
+      processAlive: true,
+      online: true,
+      lastHeartbeatAt: null,
+      daemonInstalled: true,
+      daemonLoaded: true,
+      dir: "/tmp/HQ/personal/workers/setup",
+      workerId: "setup",
+    };
+    const { platform, sendDm, updateAgentProfile } = adapter({ create, flag: true, bots: [existing] });
+    await boot(platform);
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    q<HTMLButtonElement>('[data-testid="new-bot-finish-name"]')!.click();
+    await vi.waitFor(() => expect(q<HTMLButtonElement>('[data-testid="first-run-talk"]')?.disabled).toBe(false));
+
+    expect(create).not.toHaveBeenCalled();
+    expect(updateAgentProfile).toHaveBeenCalledWith(SETUP_BOT_UID, { displayName: "Biscuit" });
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-handoff:${SETUP_BOT_UID}` });
+    expect(body).toBe(
+      firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }, { noun: "computer" }),
+    );
+  });
+});
+
+describe("the flag read overlaps the setup-owed check (fake timers)", () => {
+  const OWED_AT_MS = 500;
+  const delayed = <T,>(ms: number, value: T) => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+  const owedLater = () =>
+    delayed(OWED_AT_MS, ok({ hqRootValid: true, configured: true, hqFolderPath: "/tmp/HQ", welcomeSetupOwed: true }));
+
+  /**
+   * `hasFeature` where only this flag is slow (off after `ms`, or never with
+   * null); every other flag answers off at once, as in the other tests.
+   */
+  const flagAfter =
+    (ms: number | null) =>
+    (name: string): Promise<unknown> => {
+      if (name !== VISUAL_FIRST_RUN_FLAG || ms === 0) return Promise.resolve(ok(false));
+      return ms === null ? new Promise(() => {}) : delayed(ms, ok(false));
+    };
+
+  /** Milliseconds from mount until the setup bot's automatic start. */
+  async function startTime(options: AdapterOptions): Promise<number> {
+    window.localStorage.clear();
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform } = adapter({ ...options, create, setupStatusImpl: owedLater });
+    // A fresh shell module each time: the shell keeps some boot state at
+    // module level, and a second mount in one test would boot faster.
+    // (Svelte itself is re-imported with it, so the two share one runtime.)
+    vi.resetModules();
+    const svelte = await import("svelte");
+    const fresh = (await import("./DesktopApp.svelte")).default;
+    await boot(platform, fresh, svelte.mount);
+    let elapsed = 0;
+    while (create.mock.calls.length === 0 && elapsed < 6000) {
+      await vi.advanceTimersByTimeAsync(25);
+      await settle(4);
+      elapsed += 25;
+    }
+    await svelte.unmount(component!);
+    component = null;
+    host.remove();
+    return elapsed;
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a flag that answers before the setup-owed answer adds no wait; a slow one adds at most the grace", async () => {
+    // Today's timing: a flag that is off the moment it is asked.
+    const baseline = await startTime({ hasFeatureImpl: flagAfter(0) });
+    // Off, answered at 400 ms: before the owed answer at 500 ms.
+    const answeredFirst = await startTime({
+      hasFeatureImpl: flagAfter(400),
+    });
+    // Off, answered at 1200 ms: the waits overlap, so not 500 + 1200.
+    const answeredLater = await startTime({
+      hasFeatureImpl: flagAfter(1200),
+    });
+    // Never answers: off once the grace past the owed answer runs out.
+    // (Read in sequence, a 1200 ms flag would have started at 1700 ms.)
+    const neverAnswers = await startTime({ hasFeatureImpl: flagAfter(null) });
+
+    expect(answeredFirst).toBe(baseline);
+    expect(baseline).toBeGreaterThanOrEqual(OWED_AT_MS);
+    expect(answeredLater).toBeLessThanOrEqual(1200 + 50);
+    expect(answeredLater).toBeLessThan(OWED_AT_MS + 1200);
+    expect(neverAnswers).toBeGreaterThan(baseline);
+    expect(neverAnswers).toBeLessThanOrEqual(baseline + VISUAL_FIRST_RUN_FLAG_GRACE_MS + 50);
   });
 });

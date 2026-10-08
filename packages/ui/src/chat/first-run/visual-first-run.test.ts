@@ -9,6 +9,7 @@ import {
   firstRunCanLeave,
   firstRunFinishTarget,
   firstRunHandoffNote,
+  firstRunHandoffNotice,
   firstRunIntro,
   firstRunKickoff,
   firstRunNextLabel,
@@ -132,6 +133,17 @@ describe("handoff kickoff", () => {
       { noun: "computer" },
     );
     expect(longest.length).toBeLessThan(2000);
+  });
+
+  it("tells a setup bot that already existed what was settled, without restarting its kickoff", () => {
+    const notice = firstRunHandoffNotice(handoff, { noun: "Mac" });
+    expect(notice.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(false);
+    expect(notice).toContain(firstRunHandoffNote(handoff));
+    expect(notice).toContain("never ask about it again");
+    expect(notice).toContain("signed in on this Mac: Claude Code, Codex");
+    // eslint-disable-next-line no-control-regex
+    expect(notice).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(notice.length).toBeLessThan(2000);
   });
 
   it("the hello names the assistant and the tool, on one line under 500 characters", () => {

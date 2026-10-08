@@ -261,10 +261,12 @@
   import {
     assistantNameIssue,
     createFirstRunAssistantStarter,
+    firstRunHandoffNotice,
     firstRunIntro,
     firstRunKickoff,
     firstRunRoute,
     hasFinishedVisualFirstRun,
+    VISUAL_FIRST_RUN_FLAG_GRACE_MS,
     markVisualFirstRunFinished,
     type FirstRunAssistantResult,
     type FirstRunCreation,
@@ -3015,7 +3017,7 @@
    */
   $effect(() => {
     if (setupBotAutoStarted || !adapter.bots || !SETUP_BOT_MODE || welcomeSetupRun) return;
-    // `setup.visualFirstRun`: nothing starts by itself until the flag has
+    // `desktop.visual-first-run`: nothing starts by itself until the flag has
     // answered, and nothing at all while the visual first run is on screen.
     // Flag off is "legacy" the moment it answers, and this runs as before.
     if (firstRunRouteNow !== "legacy" || visualFirstRunOpen) return;
@@ -3031,7 +3033,7 @@
       .catch((err) => console.warn("[hq-desktop] setup bot did not start by itself:", err));
   });
   /**
-   * VISUAL FIRST-RUN SETUP (`setup.visualFirstRun`, default off; slice 1).
+   * VISUAL FIRST-RUN SETUP (`desktop.visual-first-run`, default off; slice 1).
    * With the flag on, a first run opens the New bot step-through takeover
    * (name your HQ assistant, coding tools, done) instead of the automatic
    * start above. The assistant IS the setup bot, created under the name the
@@ -3039,10 +3041,19 @@
    * opens its DM; "Continue in chat" leaves for #welcome. Either one marks
    * the takeover finished on this computer, so it never opens again.
    */
-  /** The flag; null until it answers. Unreadable or slow counts as off. */
+  /**
+   * The flag; null until it answers. Unreadable counts as off, and so does
+   * slow: the read starts at mount, alongside the host's "setup owed" check
+   * below, and once that check has answered the flag gets at most
+   * `VISUAL_FIRST_RUN_FLAG_GRACE_MS` more. So with the flag off a first run
+   * waits for the later of the two answers, never their sum, and no more than
+   * the grace past the wait it already had.
+   */
   let visualFirstRunFlag = $state<boolean | null>(null);
-  const VISUAL_FIRST_RUN_FLAG_TIMEOUT_MS = 3000;
   let visualFirstRunFinished = $state(hasFinishedVisualFirstRun());
+  function settleVisualFirstRunFlag(value: boolean): void {
+    if (visualFirstRunFlag === null) visualFirstRunFlag = value;
+  }
   onMount(() => {
     const identity = adapter.identity;
     // Only a first run needs the answer: no read at all otherwise.
@@ -3050,26 +3061,28 @@
       visualFirstRunFlag = false;
       return;
     }
-    let settled = false;
-    const settle = (value: boolean): void => {
-      if (settled) return;
-      settled = true;
-      visualFirstRunFlag = value;
-    };
-    const timer = window.setTimeout(() => settle(false), VISUAL_FIRST_RUN_FLAG_TIMEOUT_MS);
+    let active = true;
     void Promise.resolve()
       .then(() => identity.hasFeature(VISUAL_FIRST_RUN_FLAG))
       .then(
-        (result) => settle(result.ok && result.value === true),
+        (result) => {
+          if (active) settleVisualFirstRunFlag(result.ok && result.value === true);
+        },
         (err: unknown) => {
           console.warn("[hq-desktop] visual first-run flag lookup failed:", err);
-          settle(false);
+          if (active) settleVisualFirstRunFlag(false);
         },
       );
     return () => {
-      settled = true;
-      window.clearTimeout(timer);
+      active = false;
     };
+  });
+  // The "setup owed" answer is in and the flag is not: the flag has the grace
+  // left, then counts as off.
+  $effect(() => {
+    if (visualFirstRunFlag !== null || welcomeSetupOwed === null) return;
+    const timer = window.setTimeout(() => settleVisualFirstRunFlag(false), VISUAL_FIRST_RUN_FLAG_GRACE_MS);
+    return () => window.clearTimeout(timer);
   });
   const firstRunRouteNow = $derived.by(() =>
     firstRunRoute({
@@ -3132,6 +3145,25 @@
     }
   }
   /**
+   * A setup bot that already existed ran its kickoff long ago. Tell it what
+   * the takeover settled with a bot-only DM (the same lane and retry ledger
+   * as the app's other notices to bots), once per bot.
+   */
+  function sendFirstRunHandoffNotice(bot: SetupBotRef, displayName: string): void {
+    const ready = localBotRuntimeReady;
+    const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
+    const runtime =
+      localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
+    const key = `first-run-handoff:${bot.agentUid}`;
+    void sendBotNotice(
+      bot.agentUid,
+      firstRunHandoffNotice({ name: displayName, runtime, toolsReady }, { noun: hostComputerNoun() }),
+      key,
+      key,
+      true,
+    );
+  }
+  /**
    * Create the assistant (the setup bot, under the person's name), or adopt
    * the one this account already has. The kickoff tells it which setup steps
    * the takeover settled, so it does not ask them again.
@@ -3142,6 +3174,7 @@
     const existing = await findExistingSetupBot();
     if (existing) {
       void nameExistingAssistant(existing, displayName);
+      sendFirstRunHandoffNotice(existing, displayName);
       return { ok: true, bot: { ...existing, name: displayName } };
     }
     // Asked again (the readiness on screen can be a sign-in out of date), but
@@ -3181,6 +3214,7 @@
       const adopted = await findExistingSetupBot();
       if (adopted) {
         void nameExistingAssistant(adopted, displayName);
+        sendFirstRunHandoffNotice(adopted, displayName);
         return { ok: true, bot: { ...adopted, name: displayName } };
       }
       return { ok: false, reason: SETUP_BOT_ALREADY_ELSEWHERE };
@@ -14776,7 +14810,7 @@
     <ShortcutCheatSheet onclose={() => (cheatSheetOpen = false)} />
   {/if}
 
-  <!-- Visual first-run setup (setup.visualFirstRun). Over the whole window. -->
+  <!-- Visual first-run setup (desktop.visual-first-run). Over the whole window. -->
   {#if visualFirstRunOpen}
     <FirstRunTakeover
       initialName={firstRunSuggestedName}

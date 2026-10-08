@@ -218,8 +218,8 @@ describe("registry key mapping", () => {
     expect(isEnabled).toHaveBeenCalledWith(SETUP_DEPS_TIMEOUT_RETRY_FLAG);
   });
 
-  it("maps visual first-run setup through the owner-named hq-flags key", () => {
-    expect(VISUAL_FIRST_RUN_FLAG).toBe("setup.visualFirstRun");
+  it("maps visual first-run setup through its desktop hq-flags key", () => {
+    expect(VISUAL_FIRST_RUN_FLAG).toBe("desktop.visual-first-run");
     expect(registryKeyFor(VISUAL_FIRST_RUN_FLAG)).toBe(VISUAL_FIRST_RUN_FLAG);
   });
 

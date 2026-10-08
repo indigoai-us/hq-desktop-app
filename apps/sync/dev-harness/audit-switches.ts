@@ -19,7 +19,7 @@
  *       (priced) or as included in the company's plan (included)
  *   ?plan=slow                                   with ?newbot=, the plan check answers
  *       after ?loadingMs (default 2500), to see "Checking plan..."
- *   ?firstrun=visual|visual-notools|visual-fail  a first run with setup.visualFirstRun on:
+ *   ?firstrun=visual|visual-notools|visual-fail  a first run with desktop.visual-first-run on:
  *       the visual first-run takeover opens (Harness.svelte clears the "setup ran"
  *       and "first run finished" keys). visual: every coding tool signed in, the
  *       assistant create answers after ?loadingMs (default 2500). visual-notools: no
@@ -183,7 +183,7 @@ export function switchedHandler(
   if (firstRun) {
     const url = typeof args?.url === 'string' ? args.url : '';
     if (cmd === 'hq_pro_fetch' && url.startsWith('/v1/flags/resolve')) {
-      const flags = { 'setup.visualFirstRun': true };
+      const flags = { 'desktop.visual-first-run': true };
       return { value: { status: 200, body: JSON.stringify({ version: 1, flags }) } };
     }
     if (cmd === 'get_setup_status') {
