@@ -262,6 +262,7 @@
     assistantNameIssue,
     createFirstRunAssistantStarter,
     firstRunHandoffNotice,
+    firstRunImportNotice,
     firstRunIntro,
     firstRunKickoff,
     firstRunRoute,
@@ -271,7 +272,9 @@
     markVisualFirstRunFinished,
     type FirstRunAssistantResult,
     type FirstRunCreation,
+    type FirstRunImportHandoff,
   } from "../chat/first-run/visual-first-run.js";
+  import { createImportScanHost } from "../chat/first-run/knowledge-tree/import-host.js";
   import {
     hasRunWelcomeSetup,
     isSetupChannel,
@@ -3176,8 +3179,11 @@
     setupBotStartError = null;
     const run = runFirstRunAssistantCreate(name)
       .then((result) => {
-        if (result.ok) firstRunCreatedBot = result.bot;
-        else setupBotStartError = result.reason;
+        if (result.ok) {
+          firstRunCreatedBot = result.bot;
+          // A scan that finished while the create ran: its kickoff missed it.
+          deliverFirstRunImport();
+        } else setupBotStartError = result.reason;
         return result;
       })
       .finally(() => {
@@ -3210,6 +3216,34 @@
     if (!firstSignedInRuntime(localBotRuntimeReady)) return;
     untrack(() => firstRunStarter.start(name));
   });
+  /**
+   * "Bring in your context" (slice 4). The scan runs inside the takeover; the
+   * host supplies the command (`adapter.contextImport`) and the event bus.
+   * Without either the flow has no context step.
+   */
+  const firstRunImportHost = createImportScanHost(adapter.contextImport, syncEvents);
+  /** The finished scan's counts and report path, for the setup bot's handoff. */
+  let firstRunImport: FirstRunImportHandoff | null = null;
+  /** The setup bot has the import result (in its kickoff or a notice). */
+  let firstRunImportDelivered = false;
+  function recordFirstRunImport(result: FirstRunImportHandoff): void {
+    firstRunImport = result;
+    deliverFirstRunImport();
+  }
+  /**
+   * The assistant is usually created before the scan finishes (it starts at
+   * the name step), so its kickoff went out without the import. Tell it with
+   * a bot-only note, once. A create that has not started yet carries it in
+   * its kickoff instead.
+   */
+  function deliverFirstRunImport(): void {
+    const imported = firstRunImport;
+    const bot = firstRunCreatedBot;
+    if (!imported || !bot || firstRunImportDelivered) return;
+    firstRunImportDelivered = true;
+    const key = `first-run-import:${bot.agentUid}`;
+    void sendBotNotice(bot.agentUid, firstRunImportNotice(imported), key, key, true);
+  }
   /** Best effort: a setup bot that already existed takes the confirmed name. */
   async function nameExistingAssistant(bot: SetupBotRef, displayName: string): Promise<void> {
     if ((botDisplayNames[bot.agentUid] ?? "").trim() === displayName) return;
@@ -3231,9 +3265,11 @@
     const runtime =
       localBotRecords.find((row) => row.agentUid === bot.agentUid)?.runtime ?? toolsReady[0] ?? "claude";
     const key = `first-run-handoff:${bot.agentUid}`;
+    const imported = firstRunImport;
+    if (imported) firstRunImportDelivered = true;
     void sendBotNotice(
       bot.agentUid,
-      firstRunHandoffNotice({ name: displayName, runtime, toolsReady }, { noun: hostComputerNoun() }),
+      firstRunHandoffNotice({ name: displayName, runtime, toolsReady, imported }, { noun: hostComputerNoun() }),
       key,
       key,
       true,
@@ -3262,6 +3298,9 @@
     if (!runtime) return { ok: false, reason: setupBotNoRuntime({ noun: hostComputerNoun() }) };
     const toolsReady = SETUP_BOT_RUNTIME_ORDER.filter((id) => ready?.[id] === true);
     const noun = hostComputerNoun();
+    // A scan already finished (the name was confirmed late) rides in the kickoff.
+    const imported = firstRunImport;
+    if (imported) firstRunImportDelivered = true;
     const created = await createBotEntry(
       {
         name: SETUP_BOT_NAME,
@@ -3269,7 +3308,7 @@
         worker: SETUP_BOT_WORKER,
         runtime,
         intro: firstRunIntro({ name: displayName, runtime }, { noun }),
-        kickoff: firstRunKickoff({ name: displayName, runtime, toolsReady }, { noun }),
+        kickoff: firstRunKickoff({ name: displayName, runtime, toolsReady, imported }, { noun }),
       },
       // The progress card and the DM row carry the person's name for it.
       { displayName },
@@ -14907,6 +14946,8 @@
       onconfirmname={confirmFirstRunName}
       onruntime={(runtime) => (firstRunRuntime = runtime)}
       onretry={() => firstRunStarter.retry()}
+      importHost={firstRunImportHost}
+      onimport={recordFirstRunImport}
       ontalk={talkToFirstRunAssistant}
       oncontinueinchat={continueFirstRunInChat}
     />

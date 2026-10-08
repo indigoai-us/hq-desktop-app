@@ -16,6 +16,11 @@ import {
   firstRunOffersFinish,
   firstRunRoute,
   firstRunStepNumber,
+  firstRunStepsFor,
+  firstRunImportJson,
+  firstRunImportNotice,
+  FIRST_RUN_REPORT_PATH_MAX,
+  FIRST_RUN_KICKOFF_MAX,
   hasFinishedVisualFirstRun,
   markVisualFirstRunFinished,
   normalizeAssistantName,
@@ -33,35 +38,48 @@ function memoryStorage(): Pick<Storage, "getItem" | "setItem"> {
 }
 
 describe("first-run step list", () => {
-  it("slice 1 shows name, coding tools and done, in that order, ending on done", () => {
-    expect(FIRST_RUN_STEPS.map((s) => s.id)).toEqual(["name", "tools", "done"]);
+  it("shows name, coding tools, Bring in your context (slice 4) and done, in that order, ending on done", () => {
+    expect(FIRST_RUN_STEPS.map((s) => s.id)).toEqual(["name", "tools", "context", "done"]);
+    expect(FIRST_RUN_STEPS.find((s) => s.id === "context")?.label).toBe("Bring in your context");
     expect(firstRunStepNumber("name")).toBe(1);
     expect(firstRunStepNumber("tools")).toBe(2);
-    expect(firstRunStepNumber("done")).toBe(3);
+    expect(firstRunStepNumber("context")).toBe(3);
+    expect(firstRunStepNumber("done")).toBe(4);
     // Screens from later slices are not shown yet.
     expect(firstRunStepNumber("team")).toBe(0);
-    expect(firstRunStepNumber("context")).toBe(0);
+    expect(firstRunStepNumber("notes")).toBe(0);
+  });
+
+  it("leaves the context step out on a host that cannot scan this computer", () => {
+    expect(firstRunStepsFor({ canImport: true }).map((s) => s.id)).toEqual(["name", "tools", "context", "done"]);
+    const without = firstRunStepsFor({ canImport: false });
+    expect(without.map((s) => s.id)).toEqual(["name", "tools", "done"]);
+    expect(nextFirstRunStep("tools", without)).toBe("done");
   });
 
   it("walks forward and back through the listed steps only", () => {
     expect(nextFirstRunStep("name")).toBe("tools");
-    expect(nextFirstRunStep("tools")).toBe("done");
+    expect(nextFirstRunStep("tools")).toBe("context");
+    expect(nextFirstRunStep("context")).toBe("done");
     expect(nextFirstRunStep("done")).toBeNull();
-    expect(prevFirstRunStep("done")).toBe("tools");
+    expect(prevFirstRunStep("done")).toBe("context");
+    expect(prevFirstRunStep("context")).toBe("tools");
     expect(prevFirstRunStep("tools")).toBe("name");
     expect(prevFirstRunStep("name")).toBeNull();
   });
 
   it("labels the forward button with the next step's name", () => {
     expect(firstRunNextLabel("name")).toBe("Next: Your coding tools");
-    expect(firstRunNextLabel("tools")).toBe("Next: Done");
+    expect(firstRunNextLabel("tools")).toBe("Next: Bring in your context");
+    expect(firstRunNextLabel("context")).toBe("Next: Done");
     expect(firstRunNextLabel("done")).toBe("");
   });
 
   it("offers Finish with defaults only where it would skip something", () => {
     expect(firstRunOffersFinish("name")).toBe(true);
+    expect(firstRunOffersFinish("tools")).toBe(true);
     // Next to Done both buttons would do the same thing.
-    expect(firstRunOffersFinish("tools")).toBe(false);
+    expect(firstRunOffersFinish("context")).toBe(false);
     expect(firstRunOffersFinish("done")).toBe(false);
   });
 
@@ -71,7 +89,7 @@ describe("first-run step list", () => {
       { id: "team", label: "Your team" },
       ...FIRST_RUN_STEPS.slice(1),
     ];
-    expect(firstRunStepNumber("done", withTeam)).toBe(4);
+    expect(firstRunStepNumber("done", withTeam)).toBe(5);
     expect(firstRunNextLabel("name", withTeam)).toBe("Next: Your team");
     expect(prevFirstRunStep("tools", withTeam)).toBe("team");
     expect(firstRunOffersFinish("team", withTeam)).toBe(true);
@@ -168,6 +186,74 @@ describe("handoff kickoff", () => {
     expect(intro).toContain("your PC");
     expect(intro.length).toBeLessThan(500);
     expect(intro).not.toContain("\n");
+  });
+});
+
+describe("import handoff (Bring in your context)", () => {
+  const imported = {
+    summary: { companies: 3, projects: 9, sessions: 508 },
+    report: "/Users/me/HQ/workspace/imports/20261008T090807Z/report.json",
+  };
+  const handoff = { name: "Pickles", runtime: "claude" as const, toolsReady: ["claude"] as const, imported };
+
+  it("adds the counts and the report path to the handoff JSON and marks import done", () => {
+    const note = JSON.parse(firstRunHandoffNote(handoff));
+    expect(note.done).toEqual(["name", "codingTools", "import"]);
+    expect(note.import).toEqual({ companies: 3, projects: 9, sessions: 508, report: imported.report });
+  });
+
+  it("carries only whole counts under plain keys and a clean path, never anything else", () => {
+    const json = firstRunImportJson({
+      summary: { companies: 2.7, "bad key": 4, report: 9, negative: -1, ok_key: 5 } as Record<string, number>,
+      report: "/tmp/r.json\nrm -rf /",
+    });
+    expect(json).toEqual({ companies: 2, ok_key: 5 });
+    const long = firstRunImportJson({ summary: { projects: 1 }, report: `/${"a".repeat(FIRST_RUN_REPORT_PATH_MAX)}` });
+    expect(long).toEqual({ projects: 1 });
+  });
+
+  it("the kickoff says the import is finished and stays inside the CLI limits with the longest path", () => {
+    const kickoff = firstRunKickoff(handoff, { noun: "Mac" });
+    expect(kickoff).toContain(firstRunHandoffNote(handoff));
+    expect(kickoff).toContain("The context import is finished");
+    const longest = firstRunKickoff(
+      {
+        name: "A".repeat(ASSISTANT_NAME_MAX),
+        runtime: "grok",
+        toolsReady: ["claude", "codex", "grok"],
+        imported: {
+          summary: { companies: 99999, projects: 99999, sessions: 99999, a: 1, b: 2, c: 3, d: 4, e: 5 },
+          report: `/${"r".repeat(FIRST_RUN_REPORT_PATH_MAX - 1)}`,
+        },
+      },
+      { noun: "computer" },
+    );
+    expect(longest.length).toBeLessThan(FIRST_RUN_KICKOFF_MAX);
+    // eslint-disable-next-line no-control-regex
+    expect(longest).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+
+  it("without an import the kickoff is exactly slice 1's", () => {
+    const plain = { name: "Pickles", runtime: "claude" as const, toolsReady: ["claude"] as const };
+    expect(firstRunKickoff({ ...plain, imported: null })).toBe(firstRunKickoff(plain));
+    expect(JSON.parse(firstRunHandoffNote(plain)).done).toEqual(["name", "codingTools"]);
+  });
+
+  it("a notice tells an assistant created before the scan finished, in one line", () => {
+    const notice = firstRunImportNotice(imported);
+    expect(notice.startsWith(SETUP_BOT_KICKOFF_PREFIX)).toBe(false);
+    const json = notice.match(/Handoff from the app: (\{.*?\})\. /)?.[1];
+    expect(JSON.parse(json!)).toEqual({
+      from: "desktop-visual-first-run",
+      v: 1,
+      done: ["import"],
+      import: { companies: 3, projects: 9, sessions: 508, report: imported.report },
+    });
+    expect(notice).toContain("do not ask me to import it again");
+    // eslint-disable-next-line no-control-regex
+    expect(notice).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(notice.length).toBeLessThan(2000);
+    expect(notice).not.toContain(String.fromCharCode(0x2014));
   });
 });
 

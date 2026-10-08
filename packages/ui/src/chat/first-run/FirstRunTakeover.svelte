@@ -10,8 +10,23 @@
    * starts as soon as the name is confirmed and a coding tool is ready, and
    * runs while the person is on the later screens. Every async action shows
    * its pending state at once and holds duplicate presses.
+   *
+   * Slice 4 adds "Bring in your context" (the knowledge tree) when the host
+   * can scan this computer (`importHost`). The scan runs here, one at a
+   * time; leaving the step (Next, Finish, Back, Continue in chat) cancels a
+   * scan that is still running. A finished scan's counts and report path go
+   * to the host (`onimport`) for the setup bot's handoff.
    */
-  import { onMount, tick, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
+  import LazyDoor from "../../shell/LazyDoor.svelte";
+  import { firstRunImportDoor } from "../../shell/lazy-doors.js";
+  import {
+    createImportRunner,
+    importResultOf,
+    type ImportRunView,
+    type ImportScanHost,
+  } from "./knowledge-tree/import-runner.js";
+  import { createSceneClock, type SceneClock } from "./knowledge-tree/scene-clock.js";
   import { hostComputerNoun, subscribeHostComputerNoun } from "@hq/platform";
   import RailIcon from "../../common/button/RailIcon.svelte";
   import { suspendShortcuts } from "../../common/keyboard-shortcuts.js";
@@ -43,6 +58,7 @@
     firstRunNextLabel,
     firstRunOffersFinish,
     firstRunStepNumber,
+    firstRunStepsFor,
     firstRunTalkLabel,
     firstRunToolsTitle,
     nextFirstRunStep,
@@ -50,6 +66,7 @@
     prevFirstRunStep,
     runtimeLabel,
     type FirstRunCreation,
+    type FirstRunImportHandoff,
     type FirstRunStep,
     type FirstRunStepId,
   } from "./visual-first-run.js";
@@ -86,6 +103,15 @@
     ontalk: () => void | Promise<void>;
     /** Leave for the setup chat (every screen, and the failure line). */
     oncontinueinchat: () => void | Promise<void>;
+    /**
+     * Runs the context scan on this computer. Without it the flow has no
+     * "Bring in your context" step.
+     */
+    importHost?: ImportScanHost | null;
+    /** The scan finished: its counts and report path, for the handoff. */
+    onimport?: ((result: FirstRunImportHandoff) => void) | null;
+    /** Test seam for the context step: null follows prefers-reduced-motion. */
+    reducedMotion?: boolean | null;
   }
 
   let {
@@ -109,7 +135,13 @@
     onretry,
     ontalk,
     oncontinueinchat,
+    importHost = null,
+    onimport = null,
+    reducedMotion = null,
   }: Props = $props();
+
+  /** The steps this host can show (no context step without a scan host). */
+  const shownSteps = $derived(firstRunStepsFor({ canImport: !!importHost }, steps));
 
   let step = $state<FirstRunStepId>(untrack(() => initialStep));
   /** The name as typed or confirmed. */
@@ -134,7 +166,7 @@
   /** One leave at a time: Talk or Continue in chat, whichever was pressed. */
   let leaving = $state<"talk" | "chat" | null>(null);
 
-  const total = $derived(steps.length);
+  const total = $derived(shownSteps.length);
   const ready = $derived(anyToolReady(runtimeReady));
   /** The name is part of setup now: changing it would not reach the bot. */
   const nameLocked = $derived(creation.state === "creating" || creation.state === "ready");
@@ -159,8 +191,47 @@
     }
   });
 
+  // ── Bring in your context ──────────────────────────────────────────────
+  /** The context scene's clock, started the first time the step opens. */
+  let importClock = $state.raw<SceneClock | null>(null);
+  let importRun = $state.raw<ImportRunView>({ phase: "idle", scanStart: null, events: [], failure: null });
+  let importReported = false;
+  const importRunner = createImportRunner(
+    untrack(() => importHost),
+    () => importClock?.now() ?? 0,
+    (view) => {
+      importRun = view;
+      if (view.phase === "done" && !importReported) {
+        importReported = true;
+        const result = importResultOf(view.events);
+        if (result) onimport?.(result);
+      }
+    },
+  );
+  $effect(() => {
+    if (step !== "context" || importClock) return;
+    untrack(() => {
+      importClock = createSceneClock();
+    });
+  });
+  onMount(() => {
+    // Warm the scene's chunk while the person is on the earlier steps.
+    if (untrack(() => importHost)) firstRunImportDoor.preload();
+  });
+  onDestroy(() => {
+    importRunner.dispose();
+    importClock?.dispose();
+  });
+
+  /** A scan still running stops when the person leaves its step, however they leave. */
+  function leaveContext(): void {
+    if (importRunner.current().phase === "running") importRunner.cancel();
+  }
+
   function goTo(next: FirstRunStepId | null): void {
-    if (next) step = next;
+    if (!next) return;
+    if (step === "context" && next !== "context") leaveContext();
+    step = next;
   }
 
   function confirmName(next: string, finish: boolean): void {
@@ -168,7 +239,7 @@
       name = normalizeAssistantName(next);
       onconfirmname(name, draft.runtime);
     }
-    goTo(finish ? firstRunFinishTarget(runtimeReady, steps) : nextFirstRunStep("name", steps));
+    goTo(finish ? firstRunFinishTarget(runtimeReady, shownSteps) : nextFirstRunStep("name", shownSteps));
   }
 
   function patchDraft(patch: Partial<CreateBotDraft>): void {
@@ -179,6 +250,7 @@
   async function leave(kind: "talk" | "chat"): Promise<void> {
     if (leaving) return;
     leaving = kind;
+    leaveContext();
     try {
       await (kind === "talk" ? ontalk() : oncontinueinchat());
     } finally {
@@ -228,7 +300,7 @@
         (step === "name" && locked
           ? card.querySelector<HTMLElement>('[data-testid="new-bot-continue-name"]')
           : card.querySelector<HTMLElement>(
-              'input:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
+              'input:not([disabled]), [data-testid="first-run-import-start"]:not([disabled]), [data-testid="first-run-next"]:not([disabled]), [data-testid="first-run-talk"]:not([disabled])',
             )) ?? card;
       target.focus();
     });
@@ -264,6 +336,50 @@
       onclick={() => void leave("chat")}
     >{leaving === "chat" ? FIRST_RUN_COPY.opening : FIRST_RUN_COPY.continueInChat}</button>
   </header>
+  {#if step === "context"}
+    <!-- Bring in your context: a full-window scene instead of the card. -->
+    <div
+      bind:this={cardEl}
+      class="first-run-import-host"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="new-bot-takeover-title"
+      tabindex="-1"
+    >
+      <div class="first-run-import-step" data-testid="first-run-step" data-step={step} role="group">
+        {#if importClock}
+          <LazyDoor
+            door={firstRunImportDoor}
+            props={{
+              name: shownName,
+              stepNumber: firstRunStepNumber("context", shownSteps),
+              total,
+              run: importRun,
+              clock: importClock,
+              nextLabel: firstRunNextLabel("context", shownSteps),
+              offersFinish: firstRunOffersFinish("context", shownSteps),
+              finishLabel: FIRST_RUN_COPY.finish,
+              leaving: leaving !== null,
+              onback: () => goTo(prevFirstRunStep("context", shownSteps)),
+              onstart: () => importRunner.start(),
+              onskip: () => {
+                importRunner.skip();
+                goTo(nextFirstRunStep("context", shownSteps));
+              },
+              onretry: () => importRunner.retry(),
+              onnext: () => goTo(nextFirstRunStep("context", shownSteps)),
+              onfinish: () => goTo(firstRunFinishTarget(runtimeReady, shownSteps)),
+              reducedMotion,
+            }}
+          >
+            {#snippet skeleton()}
+              <div class="first-run-import-loading" data-testid="first-run-import-loading" aria-hidden="true"></div>
+            {/snippet}
+          </LazyDoor>
+        {/if}
+      </div>
+    </div>
+  {:else}
   <main class="new-bot-takeover-stage">
     <div
       bind:this={cardEl}
@@ -278,12 +394,12 @@
           <NewBotNameStep
             name={creation.state === "idle" ? name : creation.name}
             {total}
-            current={firstRunStepNumber("name", steps)}
+            current={firstRunStepNumber("name", shownSteps)}
             title={FIRST_RUN_NAME_TITLE}
             issueFor={assistantNameIssue}
             showHandle={false}
-            nextLabel={firstRunNextLabel("name", steps)}
-            onfinish={firstRunOffersFinish("name", steps) ? (next) => confirmName(next, true) : null}
+            nextLabel={firstRunNextLabel("name", shownSteps)}
+            onfinish={firstRunOffersFinish("name", shownSteps) ? (next) => confirmName(next, true) : null}
             note={nameLocked ? FIRST_RUN_COPY.nameLocked : ""}
             locked={nameLocked}
             oninput={(next) => { if (!nameLocked) name = next; }}
@@ -291,12 +407,12 @@
           />
         {:else}
           {@const title = step === "tools" ? toolsTitle : doneTitle}
-          {@const isLast = nextFirstRunStep(step, steps) === null}
+          {@const isLast = nextFirstRunStep(step, shownSteps) === null}
           {@const canLeave = firstRunCanLeave(step, runtimeReady)}
           <NewBotStepHead
             {total}
-            current={firstRunStepNumber(step, steps)}
-            onback={() => goTo(prevFirstRunStep(step, steps))}
+            current={firstRunStepNumber(step, shownSteps)}
+            onback={() => goTo(prevFirstRunStep(step, shownSteps))}
             backTestId="first-run-back"
             backDisabled={leaving !== null}
             kicker={title.kicker}
@@ -376,22 +492,22 @@
                 >{talkLabel}</button>
               </div>
             {:else}
-              {@const offersFinish = firstRunOffersFinish(step, steps)}
+              {@const offersFinish = firstRunOffersFinish(step, shownSteps)}
               <div class="new-bot-foot-actions" class:single={!offersFinish}>
                 <button
                   type="button"
                   class={offersFinish ? "new-bot-create-next" : "new-bot-create-submit"}
                   data-testid="first-run-next"
                   disabled={!canLeave}
-                  onclick={() => goTo(nextFirstRunStep(step, steps))}
-                >{firstRunNextLabel(step, steps)}<RailIcon name="arrow-right" /></button>
+                  onclick={() => goTo(nextFirstRunStep(step, shownSteps))}
+                >{firstRunNextLabel(step, shownSteps)}<RailIcon name="arrow-right" /></button>
                 {#if offersFinish}
                   <button
                     type="button"
                     class="new-bot-create-submit"
                     data-testid="first-run-finish"
                     disabled={!canLeave}
-                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, steps))}
+                    onclick={() => goTo(firstRunFinishTarget(runtimeReady, shownSteps))}
                   >{FIRST_RUN_COPY.finish}</button>
                 {/if}
               </div>
@@ -401,11 +517,30 @@
       </div>
     </div>
   </main>
+  {/if}
   <!-- The one live region: always here, only its text changes. -->
   <p class="first-run-live" data-testid="first-run-live" aria-live="polite" aria-atomic="true">{announcement}</p>
 </div>
 
 <style>
+  /* Bring in your context fills the window under the header. */
+  .first-run-import-host,
+  .first-run-import-step,
+  .first-run-import-loading {
+    position: absolute;
+    inset: 0;
+  }
+  .first-run-import-host {
+    z-index: 0;
+    outline: none;
+  }
+  .first-run-import-loading {
+    background: rgba(0, 0, 0, 0.72);
+  }
+  .new-bot-takeover[data-step="context"] .new-bot-takeover-header {
+    position: relative;
+    z-index: 3;
+  }
   .first-run-summary {
     display: grid;
     gap: 10px;

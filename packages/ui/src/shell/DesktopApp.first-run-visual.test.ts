@@ -23,6 +23,7 @@ import {
   VISUAL_FIRST_RUN_DONE_KEY,
   VISUAL_FIRST_RUN_FLAG_GRACE_MS,
   firstRunHandoffNotice,
+  firstRunImportNotice,
   firstRunIntro,
   firstRunKickoff,
 } from "../chat/first-run/visual-first-run.js";
@@ -537,6 +538,84 @@ describe("visual first run with a setup bot that already exists", () => {
     expect(body).toBe(
       firstRunHandoffNotice({ name: "Biscuit", runtime: "claude", toolsReady: ["claude"] }, { noun: "computer" }),
     );
+  });
+});
+
+describe("visual first run: Bring in your context", () => {
+  it("runs the scan through the host and hands the finished import to the assistant once, as a bot-only note", async () => {
+    const create = vi.fn(async () => ok({ ok: true, name: "setup", agentUid: SETUP_BOT_UID }));
+    const { platform, sendDm } = adapter({ create, flag: true });
+    const handlers = new Set<(e: { payload?: unknown }) => void>();
+    const syncEvents = {
+      listen: vi.fn(async (_event: string, h: (e: { payload?: unknown }) => void) => {
+        handlers.add(h);
+        return () => handlers.delete(h);
+      }),
+      emit: vi.fn(async () => undefined),
+    };
+    let finishScan: (v: unknown) => void = () => undefined;
+    const scanStart = vi.fn((_scanId: string) => new Promise((resolve) => (finishScan = resolve)));
+    const scanCancel = vi.fn(async () => ok(true));
+    (platform as unknown as Record<string, unknown>).contextImport = { scanStart, scanCancel };
+
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    component = mount(DesktopApp, {
+      target: host,
+      props: {
+        adapter: platform,
+        sidebarApi: createFixtureChatSidebarApi(),
+        notificationsApi: createEmptyNotificationsApi(),
+        self: { uid: "prs_test", displayName: "Test", email: "test@example.com" },
+        coreFixtures: false,
+        syncEvents: syncEvents as never,
+        extraPages: {
+          sessions: {
+            label: "Sessions",
+            detail: "Local sessions",
+            component: ExtraPageProbe,
+            setupAction: { label: "Run Setup", param: () => "new?draft=x" },
+            setupRun: fakeSetupRun(),
+          },
+        },
+      },
+    });
+    await settle();
+
+    await vi.waitFor(() => expect(q('[data-testid="first-run-takeover"]')).toBeTruthy());
+    typeName("Biscuit");
+    pressEnter();
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    await settle();
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("context");
+    await vi.waitFor(() => expect(q('[data-testid="first-run-import-start"]')).toBeTruthy(), { timeout: 3000 });
+    q<HTMLButtonElement>('[data-testid="first-run-import-start"]')!.click();
+    await vi.waitFor(() => expect(scanStart).toHaveBeenCalledTimes(1));
+    const scanId = scanStart.mock.calls[0]![0];
+    const lines = [
+      { type: "start", sources: [{ id: "claude-code", label: "Claude Code" }] },
+      { type: "source", id: "claude-code", status: "done", counts: { sessions: 12 } },
+      { type: "done", report: "/tmp/HQ/workspace/reports/import.json", summary: { companies: 0, projects: 0, sessions: 12 } },
+    ];
+    for (const line of lines) handlers.forEach((h) => h({ payload: { scanId, event: { v: 1, ...line } } }));
+    finishScan(ok({ status: "done", lines: 3, dropped: 0 }));
+
+    const imported = { summary: { companies: 0, projects: 0, sessions: 12 }, report: "/tmp/HQ/workspace/reports/import.json" };
+    await vi.waitFor(() => expect(sendDm).toHaveBeenCalledTimes(1));
+    const [to, body, extras] = sendDm.mock.calls[0] as unknown as [string, string, Record<string, unknown>];
+    expect(to).toBe(SETUP_BOT_UID);
+    expect(extras).toEqual({ audience: "agent", idempotencyKey: `first-run-import:${SETUP_BOT_UID}` });
+    expect(body).toBe(firstRunImportNotice(imported));
+
+    // Next: Done, then Talk: nothing is sent again.
+    q<HTMLButtonElement>('[data-testid="first-run-next"]')!.click();
+    await settle();
+    expect(step()).toBe("done");
+    await settle();
+    expect(sendDm).toHaveBeenCalledTimes(1);
+    expect(scanCancel).not.toHaveBeenCalled();
   });
 });
 

@@ -86,6 +86,14 @@ export const meetingsSidepaneDoor = door(
 export const meetingCanvasDoor = door(
   () => import("../meetings/MeetingCanvasHost.svelte"),
 );
+/**
+ * The first-run "Bring in your context" scene (the knowledge tree). Only a
+ * first run needs it: the takeover warms it when it opens, so it is not in
+ * the idle preload below.
+ */
+export const firstRunImportDoor = door(
+  () => import("../chat/first-run/knowledge-tree/FirstRunImportStep.svelte"),
+);
 
 /**
  * Warm every door once the first frame is up, so later clicks skip the

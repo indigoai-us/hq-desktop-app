@@ -9,9 +9,10 @@
  *
  * The full plan has seven screens: 1 Name your HQ assistant, 2 Your team,
  * 3 Your coding tools, 4 Bring in your context, 5 Note taker, 6 Project
- * management, 7 Done. This slice ships 1, 3 and 7. The step list below is
- * data: a later slice inserts its screen into `FIRST_RUN_STEPS` and the
- * progress bars, "Next: <step>" labels and Back follow without other edits.
+ * management, 7 Done. Slice 1 shipped 1, 3 and 7; slice 4 adds 4 (the
+ * knowledge tree, knowledge-tree/). The step list below is data: a later
+ * slice inserts its screen into `FIRST_RUN_STEPS` and the progress bars,
+ * "Next: <step>" labels and Back follow without other edits.
  *
  * This module is pure: steps, copy, the name rule, the handoff kickoff, the
  * "never again" marker, the routing decision and the one-create-at-a-time
@@ -41,8 +42,21 @@ export interface FirstRunStep {
 export const FIRST_RUN_STEPS: readonly FirstRunStep[] = [
   { id: "name", label: "Name your assistant" },
   { id: "tools", label: "Your coding tools" },
+  { id: "context", label: "Bring in your context" },
   { id: "done", label: "Done" },
 ];
+
+/**
+ * The steps a host can show. "Bring in your context" needs a host that can
+ * run the scan on this computer (the desktop app); without one the step is
+ * left out rather than shown broken.
+ */
+export function firstRunStepsFor(
+  host: { canImport: boolean },
+  steps: readonly FirstRunStep[] = FIRST_RUN_STEPS,
+): readonly FirstRunStep[] {
+  return host.canImport ? steps : steps.filter((step) => step.id !== "context");
+}
 
 function indexOfStep(id: FirstRunStepId, steps: readonly FirstRunStep[]): number {
   return steps.findIndex((step) => step.id === id);
@@ -196,6 +210,15 @@ export function assistantNameIssue(name: string): string | null {
 
 // ── handoff ─────────────────────────────────────────────────────────────────
 
+/**
+ * What "Bring in your context" found: the scan's summary counts and the path
+ * of the report it wrote on this computer. Never the report's contents.
+ */
+export interface FirstRunImportHandoff {
+  summary: Readonly<Record<string, number>>;
+  report: string | null;
+}
+
 /** What the takeover settled, handed to the setup bot so it never asks again. */
 export interface FirstRunHandoff {
   /** The assistant's display name, as the person confirmed it. */
@@ -204,21 +227,67 @@ export interface FirstRunHandoff {
   runtime: FirstRunRuntime;
   /** Every coding tool signed in when the assistant was created. */
   toolsReady: readonly FirstRunRuntime[];
+  /** The context scan, when it finished before this was written. */
+  imported?: FirstRunImportHandoff | null;
 }
 
 /** Setup steps the takeover finished. Later slices add theirs. */
 export const FIRST_RUN_SETTLED_STEPS = ["name", "codingTools"] as const;
+/** Marked done once the context scan finished. */
+export const FIRST_RUN_IMPORT_STEP = "import";
+
+/** Report paths longer than this are left out of the handoff (the counts still go). */
+export const FIRST_RUN_REPORT_PATH_MAX = 240;
+const COUNT_KEY = /^[a-z][a-z0-9_-]*$/;
+const MAX_HANDOFF_COUNTS = 6;
+
+function hasControlChars(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * The import part of the handoff JSON: whole, non-negative counts under
+ * plain keys (at most 6) and the report path, nothing else.
+ */
+export function firstRunImportJson(imported: FirstRunImportHandoff): Record<string, number | string> {
+  const out: Record<string, number | string> = {};
+  let n = 0;
+  for (const [key, value] of Object.entries(imported.summary)) {
+    if (n >= MAX_HANDOFF_COUNTS) break;
+    if (key.length > 32 || !COUNT_KEY.test(key) || key === "report") continue;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    out[key] = Math.floor(value);
+    n += 1;
+  }
+  const report = imported.report;
+  if (report && report.length <= FIRST_RUN_REPORT_PATH_MAX && !hasControlChars(report)) out.report = report;
+  return out;
+}
 
 /** The machine-readable part of the kickoff: one JSON object, one line. */
 export function firstRunHandoffNote(handoff: FirstRunHandoff): string {
   return JSON.stringify({
     from: "desktop-visual-first-run",
     v: 1,
-    done: FIRST_RUN_SETTLED_STEPS,
+    done: handoff.imported ? [...FIRST_RUN_SETTLED_STEPS, FIRST_RUN_IMPORT_STEP] : FIRST_RUN_SETTLED_STEPS,
     name: normalizeAssistantName(handoff.name),
     runtime: handoff.runtime,
     toolsReady: [...new Set(handoff.toolsReady)],
+    ...(handoff.imported ? { import: firstRunImportJson(handoff.imported) } : {}),
   });
+}
+
+/** The words the kickoff and the notices add about the import, when it ran. */
+function importSentence(imported: FirstRunImportHandoff | null | undefined): string {
+  if (!imported) return "";
+  const report = typeof firstRunImportJson(imported).report === "string";
+  return report
+    ? "The context import is finished (counts and report path are in the handoff): do not ask me to import it again. "
+    : "The context import is finished (counts are in the handoff): do not ask me to import it again. ";
 }
 
 /** Under the CLI's `--kickoff` bound (2000) with room to spare. */
@@ -232,6 +301,15 @@ export const FIRST_RUN_KICKOFF_MAX = 1900;
  * words) so the bot skips them, and otherwise follows the usual opening.
  */
 export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string } = {}): string {
+  const kickoff = buildKickoff(handoff, opts);
+  // A long report path is the one part that can push it past the bound: drop it.
+  if (kickoff.length > FIRST_RUN_KICKOFF_MAX && handoff.imported?.report) {
+    return buildKickoff({ ...handoff, imported: { ...handoff.imported, report: null } }, opts);
+  }
+  return kickoff;
+}
+
+function buildKickoff(handoff: FirstRunHandoff, opts: { noun?: string }): string {
   const noun = opts.noun?.trim() || "computer";
   const name = normalizeAssistantName(handoff.name);
   const tool = runtimeLabel(handoff.runtime);
@@ -242,6 +320,7 @@ export function firstRunKickoff(handoff: FirstRunHandoff, opts: { noun?: string 
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `I chose your name, ${name}, so keep it. ` +
     `The coding tool sign-in is finished: ${tool} is signed in on this ${noun} and you run on it, so do not ask me to pick or sign in to a coding tool. ` +
+    importSentence(handoff.imported) +
     "First work out where this HQ stands, quietly: read your setup-progress.md note if there is one, " +
     "check whether I am signed in to HQ Cloud and as whom, whether this HQ has a company, and whether any other tool HQ leans on is missing, and fix what you can yourself. " +
     "I chose to jump straight in, so do not ask whether I want HQ explained first. " +
@@ -270,6 +349,30 @@ export function firstRunHandoffNotice(handoff: FirstRunHandoff, opts: { noun?: s
     "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
     `I named you ${name}, so use that name. ` +
     `The coding tool sign-in is finished: signed in on this ${noun}: ${tools}. Do not ask me to pick or sign in to a coding tool. ` +
+    importSentence(handoff.imported) +
+    "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
+  // eslint-disable-next-line no-control-regex
+  return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
+}
+
+/**
+ * The import result for an assistant whose kickoff already went out before
+ * the scan finished: a bot-only note in its DM. One line, no control
+ * characters, under 2000 characters. Only counts and the report path, never
+ * what the report says.
+ */
+export function firstRunImportNotice(imported: FirstRunImportHandoff): string {
+  const note = JSON.stringify({
+    from: "desktop-visual-first-run",
+    v: 1,
+    done: [FIRST_RUN_IMPORT_STEP],
+    import: firstRunImportJson(imported),
+  });
+  const notice =
+    "Setup note from the HQ desktop app: I just finished the context import in the app's visual setup. " +
+    `Handoff from the app: ${note}. ` +
+    "Every step in \"done\" is settled: never ask about it again and record it as done in your setup-progress.md note. " +
+    importSentence(imported) +
     "Do not greet me again. When I next write, carry on from the first unfinished step that is not in \"done\".";
   // eslint-disable-next-line no-control-regex
   return notice.replace(/[\u0000-\u001f\u007f]/g, " ");
