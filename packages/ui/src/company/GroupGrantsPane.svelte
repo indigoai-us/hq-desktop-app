@@ -8,6 +8,7 @@
   import { untrack } from "svelte";
   import type { FilesApi } from "@hq/platform";
   import ConfirmDialog from "../common/ConfirmDialog.svelte";
+  import CompanyLabel from "./CompanyLabel.svelte";
   import LazyDropdown from "../common/LazyDropdown.svelte";
   import ReadLoader from "../common/ReadLoader.svelte";
   import RailButton from "../common/button/RailButton.svelte";
@@ -222,7 +223,7 @@
               data-testid="grant-target"
               data-uid={t.uid}
               onclick={() => toggle(t.uid)}
-            >{companyName(t.label, t.uid)}</button>
+            ><CompanyLabel name={companyName(t.label, t.uid)} companyUid={t.uid} /></button>
           {/each}
         </div>
       {/if}
@@ -252,7 +253,7 @@
       {#each outbound.active as g (grantKey(g))}
         <div class="gt" data-testid="outbound-grant-row">
           <span class="nm">{groupName(g.groupId, groups)}</span>
-          <span>{companyName(g.targetCompanyName, g.targetCompanyUid, others)}</span>
+          <span><CompanyLabel name={companyName(g.targetCompanyName, g.targetCompanyUid, others)} companyUid={g.targetCompanyUid} /></span>
           <span>{grantRoleLabel(g.role)}</span>
           <span>{g.status}</span>
           <span class="end">
@@ -275,7 +276,7 @@
       {#each outbound.revoked as g (`revoked:${grantKey(g)}`)}
         <div class="gt muted" data-testid="outbound-grant-revoked-row">
           <span>{groupName(g.groupId, groups)}</span>
-          <span>{companyName(g.targetCompanyName, g.targetCompanyUid, others)}</span>
+          <span><CompanyLabel name={companyName(g.targetCompanyName, g.targetCompanyUid, others)} companyUid={g.targetCompanyUid} /></span>
           <span>{grantRoleLabel(g.role)}</span>
           <span>revoked</span>
           <span></span>
@@ -298,7 +299,7 @@
       <div class="gt hd"><span>Source company</span><span>Group</span><span>Role</span><span>Granted</span><span></span></div>
       {#each inbound.active as g (grantKey(g))}
         <div class="gt" data-testid="inbound-grant-row">
-          <span class="nm">{companyName(g.sourceCompanyName, g.sourceCompanyUid, targets)}</span>
+          <span class="nm"><CompanyLabel name={companyName(g.sourceCompanyName, g.sourceCompanyUid, targets)} companyUid={g.sourceCompanyUid} /></span>
           <span>{g.groupId}</span>
           <span>{grantRoleLabel(g.role)}</span>
           <span>{fmtDate(g.grantedAt)}</span>
@@ -310,7 +311,7 @@
       <h3 class="sub-h">Revoked grants</h3>
       {#each inbound.revoked as g (`revoked:${grantKey(g)}`)}
         <div class="gt muted" data-testid="inbound-grant-revoked-row">
-          <span>{companyName(g.sourceCompanyName, g.sourceCompanyUid, targets)}</span>
+          <span><CompanyLabel name={companyName(g.sourceCompanyName, g.sourceCompanyUid, targets)} companyUid={g.sourceCompanyUid} /></span>
           <span>{g.groupId}</span>
           <span>{grantRoleLabel(g.role)}</span>
           <span>revoked</span>

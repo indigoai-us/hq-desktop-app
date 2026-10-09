@@ -46,7 +46,16 @@ function render(files: unknown, companyUid = "cmp_indigo") {
 
 const q = (t: HTMLElement, id: string) => t.querySelector<HTMLElement>(`[data-testid='${id}']`);
 const all = (t: HTMLElement, id: string) => [...t.querySelectorAll<HTMLElement>(`[data-testid='${id}']`)];
-const text = (t: HTMLElement, id: string) => q(t, id)?.textContent?.replace(/\s+/g, " ").trim() ?? "";
+// Row text without the company icon's initials, which are decorative.
+const read = (el: HTMLElement) => {
+  const copy = el.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll("[data-testid='company-label-initials']").forEach((n) => n.remove());
+  return copy.textContent!.replace(/\s+/g, " ").trim();
+};
+const text = (t: HTMLElement, id: string) => {
+  const el = q(t, id);
+  return el ? read(el) : "";
+};
 
 async function ready(t: HTMLElement) {
   await vi.waitFor(() => {
@@ -63,7 +72,8 @@ describe("GroupGrantsPane", () => {
     await ready(t);
     expect(text(t, "grants-sub")).toContain("Grant Indigo's groups access to other companies");
     expect(text(t, "outbound-grants-empty")).toBe("No active grants yet.");
-    const revoked = all(t, "outbound-grant-revoked-row").map((r) => r.textContent!.replace(/\s+/g, " ").trim());
+    const revoked = all(t, "outbound-grant-revoked-row").map(read);
+    expect(all(t, "outbound-grant-revoked-row").every((r) => r.querySelector("[data-testid='company-label']"))).toBe(true);
     expect(revoked).toEqual(["AE agent Keptwork Admin revoked", "Dev Test Unknown company Admin revoked"]);
     expect(all(t, "grant-target").map((b) => b.dataset.uid)).toEqual(["cmp_kept", "cmp_vyg"]);
     expect(all(t, "grant-target")[1]!.hasAttribute("disabled")).toBe(true);
