@@ -119,16 +119,17 @@
     justify-content: space-between;
     gap: 8px;
     height: 24px;
-    padding-left: 10px;
+    padding-left: 12px;
   }
   .rule {
     position: absolute;
-    top: 4px;
-    bottom: 4px;
+    top: 50%;
     left: 0;
-    width: 1px;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border-radius: 50%;
     background: currentColor;
-    opacity: 0.45;
   }
   .name {
     overflow: hidden;
